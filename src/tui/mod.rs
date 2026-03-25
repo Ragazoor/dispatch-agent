@@ -170,10 +170,31 @@ impl App {
                         // No movement possible (at boundary)
                         return vec![Command::None];
                     }
+
+                    // Clean up worktree/tmux when moving backward from a dispatched state
+                    let cleanup = if matches!(direction, MoveDirection::Backward) {
+                        match (task.worktree.take(), task.tmux_window.take()) {
+                            (Some(wt), Some(tw)) => Some(Command::Cleanup {
+                                repo_path: task.repo_path.clone(),
+                                worktree: wt,
+                                tmux_window: tw,
+                            }),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+
                     task.status = new_status;
                     let task_clone = task.clone();
                     self.clamp_selection();
-                    vec![Command::PersistTask(task_clone)]
+
+                    let mut cmds = Vec::new();
+                    if let Some(c) = cleanup {
+                        cmds.push(c);
+                    }
+                    cmds.push(Command::PersistTask(task_clone));
+                    cmds
                 } else {
                     vec![Command::None]
                 }
@@ -487,5 +508,41 @@ mod tests {
         let mut app = App::new(vec![task]);
         let cmds = app.update(Message::DispatchTask(5));
         assert!(matches!(cmds[0], Command::Dispatch { .. }));
+    }
+
+    #[test]
+    fn move_backward_from_running_emits_cleanup() {
+        let mut task = make_task(4, TaskStatus::Running);
+        task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+        task.tmux_window = Some("task-4".to_string());
+        let mut app = App::new(vec![task]);
+
+        let cmds = app.update(Message::MoveTask {
+            id: 4,
+            direction: MoveDirection::Backward,
+        });
+
+        // Should emit Cleanup then PersistTask
+        assert_eq!(cmds.len(), 2);
+        assert!(matches!(&cmds[0], Command::Cleanup { .. }));
+        assert!(matches!(&cmds[1], Command::PersistTask(_)));
+
+        // In-memory task should have cleared dispatch fields
+        let task = app.tasks.iter().find(|t| t.id == 4).unwrap();
+        assert_eq!(task.status, TaskStatus::Ready);
+        assert!(task.worktree.is_none());
+        assert!(task.tmux_window.is_none());
+    }
+
+    #[test]
+    fn move_backward_without_dispatch_fields_no_cleanup() {
+        let mut app = make_app();
+        // Task 3 is Ready, no dispatch fields
+        let cmds = app.update(Message::MoveTask {
+            id: 3,
+            direction: MoveDirection::Backward,
+        });
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(cmds[0], Command::PersistTask(_)));
     }
 }
