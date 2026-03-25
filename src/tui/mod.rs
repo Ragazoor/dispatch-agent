@@ -181,13 +181,16 @@ impl App {
 
             Message::DispatchTask(id) => {
                 if let Some(task) = self.tasks.iter().find(|t| t.id == id) {
-                    if task.status == TaskStatus::Ready {
-                        let task_clone = task.clone();
-                        return vec![Command::Dispatch { task: task_clone }];
+                    match task.status {
+                        TaskStatus::Ready | TaskStatus::Running | TaskStatus::Review => {
+                            return vec![Command::Dispatch { task: task.clone() }];
+                        }
+                        _ => {
+                            self.status_message = Some(
+                                "Move task to Ready before dispatching (press m)".to_string(),
+                            );
+                        }
                     }
-                    self.status_message = Some(
-                        "Move task to Ready before dispatching (press m)".to_string(),
-                    );
                 }
                 vec![Command::None]
             }
@@ -389,8 +392,8 @@ mod tests {
         let cmds = app.update(Message::DispatchTask(1));
         assert!(matches!(cmds[0], Command::None));
 
-        // Task 4 is Running — should not dispatch
-        let cmds = app.update(Message::DispatchTask(4));
+        // Task 5 is Done — should not dispatch
+        let cmds = app.update(Message::DispatchTask(5));
         assert!(matches!(cmds[0], Command::None));
     }
 
@@ -464,5 +467,25 @@ mod tests {
         let mut app = App::new(vec![]);
         app.update(Message::Error("Something went wrong".to_string()));
         assert_eq!(app.error_popup.as_deref(), Some("Something went wrong"));
+    }
+
+    #[test]
+    fn dispatch_from_running_redispatches() {
+        let mut task = make_task(4, TaskStatus::Running);
+        task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+        task.tmux_window = Some("task-4".to_string());
+        let mut app = App::new(vec![task]);
+        let cmds = app.update(Message::DispatchTask(4));
+        assert!(matches!(cmds[0], Command::Dispatch { .. }));
+    }
+
+    #[test]
+    fn dispatch_from_review_redispatches() {
+        let mut task = make_task(5, TaskStatus::Review);
+        task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+        task.tmux_window = Some("task-5".to_string());
+        let mut app = App::new(vec![task]);
+        let cmds = app.update(Message::DispatchTask(5));
+        assert!(matches!(cmds[0], Command::Dispatch { .. }));
     }
 }
