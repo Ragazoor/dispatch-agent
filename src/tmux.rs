@@ -18,14 +18,26 @@ pub fn new_window(name: &str, working_dir: &str) -> Result<()> {
     Ok(())
 }
 
-/// Send keys to a tmux window (appends Enter).
+/// Send literal text to a tmux window, then press Enter.
+///
+/// Uses `-l` to prevent tmux from interpreting escape sequences in the text.
+/// Enter is sent as a separate `send-keys` call without `-l`.
 pub fn send_keys(window: &str, keys: &str) -> Result<()> {
+    // Send the text literally (no tmux escape sequence interpretation)
     let status = Command::new("tmux")
-        .args(["send-keys", "-t", window, keys, "Enter"])
+        .args(["send-keys", "-t", window, "-l", keys])
         .status()
-        .context("failed to spawn tmux send-keys")?;
+        .context("failed to spawn tmux send-keys (literal)")?;
     if !status.success() {
-        bail!("tmux send-keys failed with status {}", status);
+        bail!("tmux send-keys -l failed with status {}", status);
+    }
+    // Press Enter
+    let status = Command::new("tmux")
+        .args(["send-keys", "-t", window, "Enter"])
+        .status()
+        .context("failed to spawn tmux send-keys (Enter)")?;
+    if !status.success() {
+        bail!("tmux send-keys Enter failed with status {}", status);
     }
     Ok(())
 }

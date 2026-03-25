@@ -25,7 +25,22 @@ impl Database {
         let conn = Connection::open(path)
             .with_context(|| format!("Failed to open database at {}", path.display()))?;
 
-        // PRAGMAs
+        Self::init_schema(&conn)?;
+
+        Ok(Database {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    pub fn open_in_memory() -> Result<Self> {
+        let conn = Connection::open_in_memory().context("Failed to open in-memory database")?;
+        Self::init_schema(&conn)?;
+        Ok(Database {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
@@ -33,7 +48,6 @@ impl Database {
         )
         .context("Failed to set PRAGMAs")?;
 
-        // Schema
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS tasks (
                 id          INTEGER PRIMARY KEY,
@@ -61,9 +75,7 @@ impl Database {
         )
         .context("Failed to create schema")?;
 
-        Ok(Database {
-            conn: Mutex::new(conn),
-        })
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -313,38 +325,7 @@ mod tests {
     use super::*;
 
     fn in_memory_db() -> Database {
-        // Use an in-memory SQLite database for tests
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL;
-             PRAGMA foreign_keys=ON;
-             PRAGMA busy_timeout=5000;",
-        )
-        .unwrap();
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tasks (
-                id          INTEGER PRIMARY KEY,
-                title       TEXT NOT NULL,
-                description TEXT NOT NULL,
-                repo_path   TEXT NOT NULL,
-                status      TEXT NOT NULL DEFAULT 'backlog',
-                worktree    TEXT,
-                tmux_window TEXT,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );
-            CREATE TABLE IF NOT EXISTS notes (
-                id          INTEGER PRIMARY KEY,
-                task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-                content     TEXT NOT NULL,
-                source      TEXT NOT NULL DEFAULT 'user',
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );",
-        )
-        .unwrap();
-        Database {
-            conn: Mutex::new(conn),
-        }
+        Database::open_in_memory().unwrap()
     }
 
     #[test]

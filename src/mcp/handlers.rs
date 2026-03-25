@@ -248,3 +248,188 @@ fn handle_get_task(state: &McpState, id: Option<Value>, args: &Value) -> JsonRpc
         Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+
+    fn test_state() -> Arc<McpState> {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        Arc::new(McpState { db })
+    }
+
+    fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> JsonRpcResponse {
+        let id = Some(json!(1));
+        match method {
+            "initialize" => JsonRpcResponse::ok(
+                id,
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "task-orchestrator", "version": "0.1.0" }
+                }),
+            ),
+            "tools/list" => JsonRpcResponse::ok(id, tool_definitions()),
+            "tools/call" => {
+                let params = params.unwrap_or(Value::Null);
+                let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+                match tool_name {
+                    "update_task" => handle_update_task(state, id, &args),
+                    "add_note" => handle_add_note(state, id, &args),
+                    "get_task" => handle_get_task(state, id, &args),
+                    other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
+                }
+            }
+            other => JsonRpcResponse::err(id, -32601, format!("Method not found: {other}")),
+        }
+    }
+
+    #[test]
+    fn initialize_returns_capabilities() {
+        let state = test_state();
+        let resp = call(&state, "initialize", None);
+        let result = resp.result.unwrap();
+        assert_eq!(result["protocolVersion"], "2024-11-05");
+        assert!(result["capabilities"]["tools"].is_object());
+    }
+
+    #[test]
+    fn tools_list_returns_tools() {
+        let state = test_state();
+        let resp = call(&state, "tools/list", None);
+        let result = resp.result.unwrap();
+        let tools = result["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"update_task"));
+        assert!(names.contains(&"add_note"));
+        assert!(names.contains(&"get_task"));
+    }
+
+    #[test]
+    fn update_task_valid() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id, "status": "running" }
+            })),
+        );
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+
+        let task = state.db.get_task(task_id).unwrap().unwrap();
+        assert_eq!(task.status, crate::models::TaskStatus::Running);
+    }
+
+    #[test]
+    fn update_task_invalid_status() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id, "status": "bogus" }
+            })),
+        );
+        assert!(resp.error.is_some());
+        assert!(resp.error.unwrap().message.contains("Unknown status"));
+    }
+
+    #[test]
+    fn update_task_missing_args() {
+        let state = test_state();
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({ "name": "update_task", "arguments": {} })),
+        );
+        assert!(resp.error.is_some());
+    }
+
+    #[test]
+    fn add_note_valid() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "add_note",
+                "arguments": { "task_id": task_id, "note": "Agent progress" }
+            })),
+        );
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+
+        let notes = state.db.list_notes(task_id).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].content, "Agent progress");
+    }
+
+    #[test]
+    fn get_task_found() {
+        let state = test_state();
+        let task_id = state.db.create_task("My Task", "desc", "/repo").unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "get_task",
+                "arguments": { "task_id": task_id }
+            })),
+        );
+        let result = resp.result.unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("My Task"));
+    }
+
+    #[test]
+    fn get_task_not_found() {
+        let state = test_state();
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "get_task",
+                "arguments": { "task_id": 9999 }
+            })),
+        );
+        assert!(resp.error.is_some());
+        assert!(resp.error.unwrap().message.contains("not found"));
+    }
+
+    #[test]
+    fn unknown_tool() {
+        let state = test_state();
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({ "name": "bogus_tool", "arguments": {} })),
+        );
+        assert!(resp.error.is_some());
+        assert!(resp.error.unwrap().message.contains("Unknown tool"));
+    }
+
+    #[test]
+    fn unknown_method() {
+        let state = test_state();
+        let resp = call(&state, "bogus/method", None);
+        assert!(resp.error.is_some());
+        assert!(resp.error.unwrap().message.contains("Method not found"));
+    }
+}

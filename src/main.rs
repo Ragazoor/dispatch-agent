@@ -1,11 +1,6 @@
-mod db;
-mod dispatch;
-mod mcp;
-mod models;
-mod tmux;
-mod tui;
-
 use anyhow::Result;
+
+use task_orchestrator::{db, dispatch, mcp, models, tmux, tui};
 use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, Event},
@@ -168,16 +163,19 @@ async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     let mut tick_interval = interval(Duration::from_secs(2));
 
     // 7. Main loop
+    let runtime = TuiRuntime {
+        database,
+        msg_tx,
+        port,
+        input_paused,
+    };
     let result = run_loop(
         &mut app,
         &mut terminal,
         &mut key_rx,
         &mut msg_rx,
-        &msg_tx,
         &mut tick_interval,
-        &database,
-        port,
-        &input_paused,
+        &runtime,
     )
     .await;
 
@@ -189,16 +187,20 @@ async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     result
 }
 
+struct TuiRuntime {
+    database: Arc<db::Database>,
+    msg_tx: mpsc::UnboundedSender<Message>,
+    port: u16,
+    input_paused: Arc<AtomicBool>,
+}
+
 async fn run_loop(
     app: &mut App,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
     msg_rx: &mut mpsc::UnboundedReceiver<Message>,
-    msg_tx: &mpsc::UnboundedSender<Message>,
     tick_interval: &mut tokio::time::Interval,
-    database: &Arc<db::Database>,
-    port: u16,
-    input_paused: &Arc<AtomicBool>,
+    rt: &TuiRuntime,
 ) -> Result<()> {
     loop {
         // Draw the current frame
@@ -225,7 +227,7 @@ async fn run_loop(
             }
         };
 
-        execute_commands(app, commands, database, msg_tx, port, terminal, input_paused).await?;
+        execute_commands(app, commands, rt, terminal).await?;
     }
 
     Ok(())
@@ -234,18 +236,15 @@ async fn run_loop(
 async fn execute_commands(
     app: &mut App,
     commands: Vec<Command>,
-    database: &Arc<db::Database>,
-    msg_tx: &mpsc::UnboundedSender<Message>,
-    port: u16,
+    rt: &TuiRuntime,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    input_paused: &Arc<AtomicBool>,
 ) -> Result<()> {
     for command in commands {
         match command {
             Command::PersistTask(mut task) => {
                 if task.id == 0 {
                     // New task — insert into db and update the in-app id
-                    let new_id = database.create_task(&task.title, &task.description, &task.repo_path)?;
+                    let new_id = rt.database.create_task(&task.title, &task.description, &task.repo_path)?;
                     task.id = new_id;
                     // Update the placeholder task in app.tasks (id 0) with the real id.
                     // There may be multiple id=0 tasks if rapid creation; update the first one.
@@ -254,26 +253,35 @@ async fn execute_commands(
                     }
                 } else {
                     // Existing task — update its status and dispatch fields
-                    let _ = database.update_status(task.id, task.status);
-                    let _ = database.update_dispatch(
+                    if let Err(e) = rt.database.update_status(task.id, task.status) {
+                        app.status_message = Some(format!("DB error updating status: {e}"));
+                    }
+                    if let Err(e) = rt.database.update_dispatch(
                         task.id,
                         task.worktree.as_deref(),
                         task.tmux_window.as_deref(),
-                    );
+                    ) {
+                        app.status_message = Some(format!("DB error updating dispatch: {e}"));
+                    }
                 }
             }
 
             Command::DeleteTask(id) => {
-                // Ignore errors for tasks that don't exist (e.g. never persisted)
-                let _ = database.delete_task(id);
+                if let Err(e) = rt.database.delete_task(id) {
+                    // id=0 tasks were never persisted — not a real error
+                    if id != 0 {
+                        app.status_message = Some(format!("DB error deleting task: {e}"));
+                    }
+                }
             }
 
             Command::Dispatch { task } => {
-                let tx = msg_tx.clone();
+                let tx = rt.msg_tx.clone();
                 let title = task.title.clone();
                 let description = task.description.clone();
                 let repo_path = task.repo_path.clone();
                 let id = task.id;
+                let port = rt.port;
 
                 tokio::task::spawn_blocking(move || {
                     match dispatch::dispatch_agent(id, &title, &description, &repo_path, port) {
@@ -292,7 +300,7 @@ async fn execute_commands(
             }
 
             Command::CaptureTmux { id, window } => {
-                let tx = msg_tx.clone();
+                let tx = rt.msg_tx.clone();
 
                 tokio::task::spawn_blocking(move || {
                     match tmux::capture_pane(&window, 5) {
@@ -329,7 +337,7 @@ async fn execute_commands(
                 std::fs::write(&tmp, &content)?;
 
                 // Pause the input polling thread so vim can read keypresses
-                input_paused.store(true, Ordering::Relaxed);
+                rt.input_paused.store(true, Ordering::Relaxed);
                 std::thread::sleep(Duration::from_millis(150));
 
                 // Suspend TUI
@@ -350,7 +358,7 @@ async fn execute_commands(
                 terminal.clear()?;
 
                 // Resume input polling thread
-                input_paused.store(false, Ordering::Relaxed);
+                rt.input_paused.store(false, Ordering::Relaxed);
 
                 if let Ok(exit) = status {
                     if exit.success() {
@@ -379,7 +387,9 @@ async fn execute_commands(
                             }
 
                             // Update DB and in-memory state
-                            let _ = database.update_task(task_id, &title, &description, &repo_path, new_status);
+                            if let Err(e) = rt.database.update_task(task_id, &title, &description, &repo_path, new_status) {
+                                app.status_message = Some(format!("DB error updating task: {e}"));
+                            }
                             if let Some(t) = app.tasks.iter_mut().find(|t| t.id == task_id) {
                                 t.title = title;
                                 t.description = description;
@@ -396,13 +406,13 @@ async fn execute_commands(
             }
 
             Command::SaveRepoPath(path) => {
-                let _ = database.save_repo_path(&path);
-                app.repo_paths = database.list_repo_paths().unwrap_or_default();
+                let _ = rt.database.save_repo_path(&path);
+                app.repo_paths = rt.database.list_repo_paths().unwrap_or_default();
             }
 
             Command::RefreshFromDb => {
                 // Re-read all tasks from SQLite to pick up MCP/CLI updates
-                match database.list_all() {
+                match rt.database.list_all() {
                     Ok(tasks) => {
                         let cmds = app.update(Message::RefreshTasks(tasks));
                         // Don't recurse into execute_commands for RefreshTasks
