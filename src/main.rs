@@ -4,7 +4,21 @@ mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use crossterm::{
+    event::{self, Event},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::Terminal;
+use ratatui::backend::CrosstermBackend;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::mpsc;
+use tokio::time::interval;
+
+use tui::{App, Command, Message};
 
 #[derive(Parser)]
 #[command(name = "task-orchestrator")]
@@ -59,7 +73,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Tui { port } => {
-            println!("TUI mode not yet implemented. DB: {}, Port: {port}", cli.db.display());
+            run_tui(&cli.db, port).await?;
         }
         Commands::Update { id, status } => {
             let new_status = models::TaskStatus::from_str(&status)
@@ -85,6 +99,160 @@ async fn main() -> Result<()> {
                     println!("[{}] {} - {} ({})", task.id, task.title, task.status.as_str(), task.repo_path);
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// TUI main loop
+// ---------------------------------------------------------------------------
+
+async fn run_tui(db_path: &Path, _port: u16) -> Result<()> {
+    // 1. Open database and load initial tasks
+    let database = Arc::new(db::Database::open(db_path)?);
+    let tasks = database.list_all()?;
+
+    // 2. Create App
+    let mut app = App::new(tasks);
+
+    // 3. Set up terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // 4. Create two channels:
+    //    - key_rx: raw crossterm KeyEvents from the blocking poll thread
+    //    - msg_rx: higher-level Messages (e.g. from dispatch results in Phase 3)
+    let (key_tx, mut key_rx) = mpsc::unbounded_channel::<crossterm::event::KeyEvent>();
+    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
+
+    // crossterm::event::poll/read are blocking; run them in a dedicated thread
+    // so they don't block the async runtime.
+    tokio::task::spawn_blocking(move || {
+        loop {
+            if event::poll(Duration::from_millis(50)).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = event::read() {
+                    if key_tx.send(key).is_err() {
+                        break; // receiver dropped — exit
+                    }
+                }
+            }
+        }
+    });
+
+    // 5. Tick interval (2 seconds)
+    let mut tick_interval = interval(Duration::from_secs(2));
+
+    // 6. Main loop
+    let result = run_loop(
+        &mut app,
+        &mut terminal,
+        &mut key_rx,
+        &mut msg_rx,
+        &msg_tx,
+        &mut tick_interval,
+        &database,
+    )
+    .await;
+
+    // 7. Cleanup terminal
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
+}
+
+async fn run_loop(
+    app: &mut App,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
+    msg_rx: &mut mpsc::UnboundedReceiver<Message>,
+    _msg_tx: &mpsc::UnboundedSender<Message>,
+    tick_interval: &mut tokio::time::Interval,
+    database: &Arc<db::Database>,
+) -> Result<()> {
+    loop {
+        // Draw the current frame
+        terminal.draw(|frame| tui::ui::render(frame, app))?;
+
+        if app.should_quit {
+            break;
+        }
+
+        let commands = tokio::select! {
+            // Key events from the blocking poll thread
+            Some(key) = key_rx.recv() => {
+                app.handle_key(key)
+            }
+
+            // Async messages (e.g., from dispatch results in Phase 3)
+            Some(msg) = msg_rx.recv() => {
+                app.update(msg)
+            }
+
+            // Periodic tick for tmux capture
+            _ = tick_interval.tick() => {
+                app.update(Message::Tick)
+            }
+        };
+
+        execute_commands(app, commands, database).await?;
+    }
+
+    Ok(())
+}
+
+async fn execute_commands(
+    app: &mut App,
+    commands: Vec<Command>,
+    database: &Arc<db::Database>,
+) -> Result<()> {
+    for command in commands {
+        match command {
+            Command::PersistTask(mut task) => {
+                if task.id == 0 {
+                    // New task — insert into db and update the in-app id
+                    let new_id = database.create_task(&task.title, &task.description, &task.repo_path)?;
+                    task.id = new_id;
+                    // Update the placeholder task in app.tasks (id 0) with the real id.
+                    // There may be multiple id=0 tasks if rapid creation; update the first one.
+                    if let Some(t) = app.tasks.iter_mut().find(|t| t.id == 0) {
+                        t.id = new_id;
+                    }
+                } else {
+                    // Existing task — update its status and dispatch fields
+                    let _ = database.update_status(task.id, task.status);
+                    let _ = database.update_dispatch(
+                        task.id,
+                        task.worktree.as_deref(),
+                        task.tmux_window.as_deref(),
+                    );
+                }
+            }
+
+            Command::DeleteTask(id) => {
+                // Ignore errors for tasks that don't exist (e.g. never persisted)
+                let _ = database.delete_task(id);
+            }
+
+            Command::Dispatch { task } => {
+                // Phase 3 will implement real dispatch. For now, show a status message.
+                app.status_message = Some(format!(
+                    "Dispatch not yet implemented (task: {})",
+                    task.title
+                ));
+            }
+
+            Command::CaptureTmux { id: _, window: _ } => {
+                // Phase 3 will capture tmux output. No-op for now.
+            }
+
+            Command::None => {}
         }
     }
 
