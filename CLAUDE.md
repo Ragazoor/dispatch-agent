@@ -8,9 +8,10 @@ A terminal kanban board for managing development tasks and dispatching Claude Co
 cargo build
 cargo test
 cargo clippy
+cargo run -- tui   # launch the TUI (requires running inside a tmux session)
 ```
 
-Runtime dependencies: `tmux`, `git` (checked at startup).
+Runtime dependencies: `tmux`, `git` (checked at startup). The TUI must be launched from within a tmux session for agent dispatch to work.
 
 ## Architecture
 

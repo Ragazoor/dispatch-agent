@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -128,7 +128,7 @@ fn tool_definitions() -> Value {
 pub async fn handle_mcp(
     State(state): State<Arc<McpState>>,
     Json(req): Json<JsonRpcRequest>,
-) -> impl IntoResponse {
+) -> (StatusCode, Json<JsonRpcResponse>) {
     let id = req.id;
     let response = match req.method.as_str() {
         "initialize" => {
@@ -263,46 +263,30 @@ mod tests {
         Arc::new(McpState { db })
     }
 
-    fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> JsonRpcResponse {
-        let id = Some(json!(1));
-        match method {
-            "initialize" => JsonRpcResponse::ok(
-                id,
-                json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "task-orchestrator", "version": "0.1.0" }
-                }),
-            ),
-            "tools/list" => JsonRpcResponse::ok(id, tool_definitions()),
-            "tools/call" => {
-                let params = params.unwrap_or(Value::Null);
-                let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-                match tool_name {
-                    "update_task" => handle_update_task(state, id, &args),
-                    "add_note" => handle_add_note(state, id, &args),
-                    "get_task" => handle_get_task(state, id, &args),
-                    other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
-                }
-            }
-            other => JsonRpcResponse::err(id, -32601, format!("Method not found: {other}")),
-        }
+    async fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> JsonRpcResponse {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: method.to_string(),
+            params,
+        };
+        let (_, Json(response)) = handle_mcp(State(state.clone()), Json(req)).await;
+        response
     }
 
-    #[test]
-    fn initialize_returns_capabilities() {
+    #[tokio::test]
+    async fn initialize_returns_capabilities() {
         let state = test_state();
-        let resp = call(&state, "initialize", None);
+        let resp = call(&state, "initialize", None).await;
         let result = resp.result.unwrap();
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert!(result["capabilities"]["tools"].is_object());
     }
 
-    #[test]
-    fn tools_list_returns_tools() {
+    #[tokio::test]
+    async fn tools_list_returns_tools() {
         let state = test_state();
-        let resp = call(&state, "tools/list", None);
+        let resp = call(&state, "tools/list", None).await;
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
@@ -311,8 +295,8 @@ mod tests {
         assert!(names.contains(&"get_task"));
     }
 
-    #[test]
-    fn update_task_valid() {
+    #[tokio::test]
+    async fn update_task_valid() {
         let state = test_state();
         let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
 
@@ -323,7 +307,7 @@ mod tests {
                 "name": "update_task",
                 "arguments": { "task_id": task_id, "status": "running" }
             })),
-        );
+        ).await;
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
 
@@ -331,8 +315,8 @@ mod tests {
         assert_eq!(task.status, crate::models::TaskStatus::Running);
     }
 
-    #[test]
-    fn update_task_invalid_status() {
+    #[tokio::test]
+    async fn update_task_invalid_status() {
         let state = test_state();
         let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
 
@@ -343,24 +327,24 @@ mod tests {
                 "name": "update_task",
                 "arguments": { "task_id": task_id, "status": "bogus" }
             })),
-        );
+        ).await;
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("Unknown status"));
     }
 
-    #[test]
-    fn update_task_missing_args() {
+    #[tokio::test]
+    async fn update_task_missing_args() {
         let state = test_state();
         let resp = call(
             &state,
             "tools/call",
             Some(json!({ "name": "update_task", "arguments": {} })),
-        );
+        ).await;
         assert!(resp.error.is_some());
     }
 
-    #[test]
-    fn add_note_valid() {
+    #[tokio::test]
+    async fn add_note_valid() {
         let state = test_state();
         let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
 
@@ -371,7 +355,7 @@ mod tests {
                 "name": "add_note",
                 "arguments": { "task_id": task_id, "note": "Agent progress" }
             })),
-        );
+        ).await;
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
 
@@ -380,8 +364,8 @@ mod tests {
         assert_eq!(notes[0].content, "Agent progress");
     }
 
-    #[test]
-    fn get_task_found() {
+    #[tokio::test]
+    async fn get_task_found() {
         let state = test_state();
         let task_id = state.db.create_task("My Task", "desc", "/repo").unwrap();
 
@@ -392,14 +376,14 @@ mod tests {
                 "name": "get_task",
                 "arguments": { "task_id": task_id }
             })),
-        );
+        ).await;
         let result = resp.result.unwrap();
         let text = result["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("My Task"));
     }
 
-    #[test]
-    fn get_task_not_found() {
+    #[tokio::test]
+    async fn get_task_not_found() {
         let state = test_state();
         let resp = call(
             &state,
@@ -408,27 +392,27 @@ mod tests {
                 "name": "get_task",
                 "arguments": { "task_id": 9999 }
             })),
-        );
+        ).await;
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("not found"));
     }
 
-    #[test]
-    fn unknown_tool() {
+    #[tokio::test]
+    async fn unknown_tool() {
         let state = test_state();
         let resp = call(
             &state,
             "tools/call",
             Some(json!({ "name": "bogus_tool", "arguments": {} })),
-        );
+        ).await;
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("Unknown tool"));
     }
 
-    #[test]
-    fn unknown_method() {
+    #[tokio::test]
+    async fn unknown_method() {
         let state = test_state();
-        let resp = call(&state, "bogus/method", None);
+        let resp = call(&state, "bogus/method", None).await;
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("Method not found"));
     }
