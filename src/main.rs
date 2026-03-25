@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
 // TUI main loop
 // ---------------------------------------------------------------------------
 
-async fn run_tui(db_path: &Path, _port: u16) -> Result<()> {
+async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     // 1. Open database and load initial tasks
     let database = Arc::new(db::Database::open(db_path)?);
     let tasks = database.list_all()?;
@@ -158,6 +158,7 @@ async fn run_tui(db_path: &Path, _port: u16) -> Result<()> {
         &msg_tx,
         &mut tick_interval,
         &database,
+        port,
     )
     .await;
 
@@ -174,9 +175,10 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
     msg_rx: &mut mpsc::UnboundedReceiver<Message>,
-    _msg_tx: &mpsc::UnboundedSender<Message>,
+    msg_tx: &mpsc::UnboundedSender<Message>,
     tick_interval: &mut tokio::time::Interval,
     database: &Arc<db::Database>,
+    port: u16,
 ) -> Result<()> {
     loop {
         // Draw the current frame
@@ -203,7 +205,7 @@ async fn run_loop(
             }
         };
 
-        execute_commands(app, commands, database).await?;
+        execute_commands(app, commands, database, msg_tx, port).await?;
     }
 
     Ok(())
@@ -213,6 +215,8 @@ async fn execute_commands(
     app: &mut App,
     commands: Vec<Command>,
     database: &Arc<db::Database>,
+    msg_tx: &mpsc::UnboundedSender<Message>,
+    port: u16,
 ) -> Result<()> {
     for command in commands {
         match command {
@@ -243,15 +247,56 @@ async fn execute_commands(
             }
 
             Command::Dispatch { task } => {
-                // Phase 3 will implement real dispatch. For now, show a status message.
-                app.status_message = Some(format!(
-                    "Dispatch not yet implemented (task: {})",
-                    task.title
-                ));
+                let tx = msg_tx.clone();
+                let title = task.title.clone();
+                let description = task.description.clone();
+                let repo_path = task.repo_path.clone();
+                let id = task.id;
+
+                tokio::task::spawn_blocking(move || {
+                    match dispatch::dispatch_agent(id, &title, &description, &repo_path, port) {
+                        Ok(result) => {
+                            let _ = tx.send(Message::Dispatched {
+                                id,
+                                worktree: result.worktree_path,
+                                tmux_window: result.tmux_window,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Message::Error(format!("Dispatch failed: {e}")));
+                        }
+                    }
+                });
             }
 
-            Command::CaptureTmux { id: _, window: _ } => {
-                // Phase 3 will capture tmux output. No-op for now.
+            Command::CaptureTmux { id, window } => {
+                let tx = msg_tx.clone();
+
+                tokio::task::spawn_blocking(move || {
+                    match tmux::capture_pane(&window, 5) {
+                        Ok(output) => {
+                            let _ = tx.send(Message::TmuxOutput { id, output });
+                        }
+                        Err(e) => {
+                            // Non-fatal: log as a status message rather than crashing.
+                            let _ = tx.send(Message::Error(format!(
+                                "tmux capture failed for window {window}: {e}"
+                            )));
+                        }
+                    }
+
+                    // Check if the window is still alive. If it's gone and the task
+                    // is presumably still Running, advance it to Review.
+                    match tmux::has_window(&window) {
+                        Ok(false) => {
+                            let _ = tx.send(Message::MoveTask {
+                                id,
+                                direction: tui::MoveDirection::Forward,
+                            });
+                        }
+                        _ => {} // still running or error — leave it
+                    }
+                });
             }
 
             Command::None => {}
