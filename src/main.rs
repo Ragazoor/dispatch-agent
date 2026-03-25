@@ -17,6 +17,7 @@ use ratatui::backend::CrosstermBackend;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -143,13 +144,20 @@ async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
 
     // crossterm::event::poll/read are blocking; run them in a dedicated thread
-    // so they don't block the async runtime.
+    // so they don't block the async runtime. The thread can be paused (e.g. when
+    // opening an external editor) via the input_paused flag.
+    let input_paused = Arc::new(AtomicBool::new(false));
+    let paused_clone = input_paused.clone();
     tokio::task::spawn_blocking(move || {
         loop {
+            if paused_clone.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
             if event::poll(Duration::from_millis(50)).unwrap_or(false) {
                 if let Ok(Event::Key(key)) = event::read() {
                     if key_tx.send(key).is_err() {
-                        break; // receiver dropped — exit
+                        break;
                     }
                 }
             }
@@ -169,6 +177,7 @@ async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
         &mut tick_interval,
         &database,
         port,
+        &input_paused,
     )
     .await;
 
@@ -189,6 +198,7 @@ async fn run_loop(
     tick_interval: &mut tokio::time::Interval,
     database: &Arc<db::Database>,
     port: u16,
+    input_paused: &Arc<AtomicBool>,
 ) -> Result<()> {
     loop {
         // Draw the current frame
@@ -215,7 +225,7 @@ async fn run_loop(
             }
         };
 
-        execute_commands(app, commands, database, msg_tx, port, terminal).await?;
+        execute_commands(app, commands, database, msg_tx, port, terminal, input_paused).await?;
     }
 
     Ok(())
@@ -228,6 +238,7 @@ async fn execute_commands(
     msg_tx: &mpsc::UnboundedSender<Message>,
     port: u16,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    input_paused: &Arc<AtomicBool>,
 ) -> Result<()> {
     for command in commands {
         match command {
@@ -317,6 +328,10 @@ async fn execute_commands(
                 );
                 std::fs::write(&tmp, &content)?;
 
+                // Pause the input polling thread so vim can read keypresses
+                input_paused.store(true, Ordering::Relaxed);
+                std::thread::sleep(Duration::from_millis(150));
+
                 // Suspend TUI
                 disable_raw_mode()?;
                 execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -333,6 +348,9 @@ async fn execute_commands(
                 execute!(terminal.backend_mut(), EnterAlternateScreen)?;
                 terminal.hide_cursor()?;
                 terminal.clear()?;
+
+                // Resume input polling thread
+                input_paused.store(false, Ordering::Relaxed);
 
                 if let Ok(exit) = status {
                     if exit.success() {
