@@ -83,9 +83,30 @@ pub fn kill_window(window: &str) -> Result<()> {
     Ok(())
 }
 
+/// Switch the active tmux window to the one with the given name.
+pub fn select_window(window: &str) -> Result<()> {
+    let args = select_window_args(window);
+    let status = Command::new("tmux")
+        .args(&args)
+        .status()
+        .context("failed to spawn tmux select-window")?;
+    if !status.success() {
+        bail!("tmux select-window failed with status {}", status);
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers (exposed for unit testing without requiring tmux)
 // ---------------------------------------------------------------------------
+
+fn select_window_args(window: &str) -> Vec<String> {
+    vec![
+        "select-window".to_string(),
+        "-t".to_string(),
+        window.to_string(),
+    ]
+}
 
 fn new_window_args(name: &str, working_dir: &str) -> Vec<String> {
     vec![
@@ -164,5 +185,11 @@ mod tests {
         let target = "task-4";
         let found = fake_output.lines().any(|line| line.trim() == target);
         assert!(!found);
+    }
+
+    #[test]
+    fn select_window_args_correct() {
+        let args = select_window_args("task-42");
+        assert_eq!(args, vec!["select-window", "-t", "task-42"]);
     }
 }
