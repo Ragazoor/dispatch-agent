@@ -3,7 +3,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, List, ListItem, Paragraph},
 };
 
 use crate::models::TaskStatus;
@@ -65,16 +65,26 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect) {
         let is_focused = app.selected_column == col_idx;
         let color = column_color(status);
 
-        let border_style = if is_focused {
-            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        let (border_type, border_style, title_style) = if is_focused {
+            (
+                BorderType::Double,
+                Style::default().fg(color),
+                Style::default().bg(color).fg(Color::Black).add_modifier(Modifier::BOLD),
+            )
         } else {
-            Style::default().fg(color)
+            (
+                BorderType::Plain,
+                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::DarkGray),
+            )
         };
 
         let title = format!(" {} ", status.as_str().to_uppercase());
         let block = Block::default()
             .title(title)
+            .title_style(title_style)
             .borders(Borders::ALL)
+            .border_type(border_type)
             .border_style(border_style);
 
         let tasks = app.tasks_by_status(status);
