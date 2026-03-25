@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::process::Command;
 
-use crate::models::{DispatchResult, Task, slugify};
+use crate::models::{DispatchResult, ResumeResult, Task, slugify};
 use crate::tmux;
 
 // ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ pub fn dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
     let slug = slugify(&task.title);
     let worktree_name = format!("{}-{slug}", task.id);
     let worktree_path = format!("{repo_path}/.worktrees/{worktree_name}");
-    let tmux_window = format!("task-{}", task.id);
+    let tmux_window = build_tmux_window_name(task.id);
 
     // 1. Ensure the .worktrees directory exists.
     fs::create_dir_all(format!("{repo_path}/.worktrees"))
@@ -128,8 +128,38 @@ pub fn cleanup_task(repo_path: &str, worktree_path: &str, tmux_window: Option<&s
 }
 
 // ---------------------------------------------------------------------------
+// resume_agent
+// ---------------------------------------------------------------------------
+
+/// Re-open a tmux window for an existing worktree and resume the most recent
+/// Claude conversation with `claude --continue`.
+///
+/// This function is **synchronous** and should be called via
+/// `tokio::task::spawn_blocking` from async contexts.
+pub fn resume_agent(
+    task_id: i64,
+    worktree_path: &str,
+) -> Result<ResumeResult> {
+    let tmux_window = build_tmux_window_name(task_id);
+
+    // 1. Create a new tmux window at the existing worktree.
+    tmux::new_window(&tmux_window, worktree_path)
+        .context("failed to create tmux window for resume")?;
+
+    // 2. Launch Claude in continue mode (picks up most recent conversation).
+    tmux::send_keys(&tmux_window, "claude --continue")
+        .context("failed to send resume keys to tmux window")?;
+
+    Ok(ResumeResult { tmux_window })
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn build_tmux_window_name(task_id: i64) -> String {
+    format!("task-{task_id}")
+}
 
 fn build_prompt(task_id: i64, title: &str, description: &str, mcp_port: u16) -> String {
     format!(
@@ -196,5 +226,11 @@ mod tests {
     #[test]
     fn expand_tilde_absolute_unchanged() {
         assert_eq!(expand_tilde("/home/user/foo"), "/home/user/foo");
+    }
+
+    #[test]
+    fn resume_window_name_matches_dispatch() {
+        // The resume window name should use the same naming convention as dispatch
+        assert_eq!(build_tmux_window_name(42), "task-42");
     }
 }
