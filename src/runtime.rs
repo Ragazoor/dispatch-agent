@@ -206,14 +206,6 @@ async fn execute_commands(
                 let port = rt.port;
 
                 tokio::task::spawn_blocking(move || {
-                    // Clean up previous dispatch if present
-                    if let Some(wt) = &task.worktree {
-                        if let Err(e) = dispatch::cleanup_task(&task.repo_path, wt, task.tmux_window.as_deref()) {
-                            let _ = tx.send(Message::Error(format!("Cleanup failed: {e:#}")));
-                            return;
-                        }
-                    }
-
                     let id = task.id;
                     match dispatch::dispatch_agent(&task, port) {
                         Ok(result) => {
@@ -370,9 +362,31 @@ async fn execute_commands(
                 });
             }
 
-            // Handled in Task 12
-            Command::Resume { .. } => {}
-            Command::JumpToTmux { .. } => {}
+            Command::Resume { task } => {
+                let tx = rt.msg_tx.clone();
+                let id = task.id;
+                let worktree_path = task.worktree.clone().unwrap_or_default();
+
+                tokio::task::spawn_blocking(move || {
+                    match dispatch::resume_agent(id, &worktree_path) {
+                        Ok(result) => {
+                            let _ = tx.send(Message::Resumed {
+                                id,
+                                tmux_window: result.tmux_window,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Message::Error(format!("Resume failed: {e:#}")));
+                        }
+                    }
+                });
+            }
+
+            Command::JumpToTmux { window } => {
+                if let Err(e) = tmux::select_window(&window) {
+                    app.error_popup = Some(format!("Jump failed: {e:#}"));
+                }
+            }
 
         }
     }
