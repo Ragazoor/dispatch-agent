@@ -336,10 +336,7 @@ async fn execute_commands(
             Command::EditTaskInEditor(task) => {
                 let task_id = task.id;
                 let tmp = std::env::temp_dir().join(format!("task-{task_id}.txt"));
-                let content = format!(
-                    "title: {}\ndescription: {}\nrepo_path: {}\nstatus: {}\n",
-                    task.title, task.description, task.repo_path, task.status.as_str()
-                );
+                let content = format_editor_content(&task.title, &task.description, &task.repo_path, task.status.as_str());
                 std::fs::write(&tmp, &content)?;
 
                 // Pause the input polling thread so vim can read keypresses
@@ -375,21 +372,18 @@ async fn execute_commands(
                             let mut repo_path = task.repo_path.clone();
                             let mut new_status = task.status;
 
-                            for line in edited.lines() {
-                                if let Some((key, value)) = line.split_once(':') {
-                                    let value = value.trim().to_string();
-                                    match key.trim() {
-                                        "title" => title = value,
-                                        "description" => description = value,
-                                        "repo_path" => repo_path = value,
-                                        "status" => {
-                                            if let Some(s) = models::TaskStatus::parse(&value) {
-                                                new_status = s;
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
+                            let fields = parse_editor_content(&edited);
+                            if !fields.title.is_empty() {
+                                title = fields.title;
+                            }
+                            if !fields.description.is_empty() {
+                                description = fields.description;
+                            }
+                            if !fields.repo_path.is_empty() {
+                                repo_path = fields.repo_path;
+                            }
+                            if let Some(s) = models::TaskStatus::parse(&fields.status) {
+                                new_status = s;
                             }
 
                             // Update DB and in-memory state
@@ -416,6 +410,21 @@ async fn execute_commands(
                 app.repo_paths = rt.database.list_repo_paths().unwrap_or_default();
             }
 
+            Command::LoadNotes(task_id) => {
+                let db = rt.database.clone();
+                let tx = rt.msg_tx.clone();
+                tokio::task::spawn_blocking(move || {
+                    match db.list_notes(task_id) {
+                        Ok(notes) => {
+                            let _ = tx.send(Message::NotesLoaded { task_id, notes });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Message::Error(format!("Failed to load notes: {e}")));
+                        }
+                    }
+                });
+            }
+
             Command::RefreshFromDb => {
                 // Re-read all tasks from SQLite to pick up MCP/CLI updates
                 match rt.database.list_all() {
@@ -440,9 +449,100 @@ async fn execute_commands(
                 });
             }
 
-            Command::None => {}
         }
     }
 
     Ok(())
+}
+
+fn format_editor_content(title: &str, description: &str, repo_path: &str, status: &str) -> String {
+    format!(
+        "--- TITLE ---\n{title}\n--- DESCRIPTION ---\n{description}\n--- REPO_PATH ---\n{repo_path}\n--- STATUS ---\n{status}\n"
+    )
+}
+
+struct EditorFields {
+    title: String,
+    description: String,
+    repo_path: String,
+    status: String,
+}
+
+fn parse_editor_content(input: &str) -> EditorFields {
+    let mut current_section: Option<&str> = None;
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut repo_path = String::new();
+    let mut status = String::new();
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--- ") && trimmed.ends_with(" ---") {
+            let section = trimmed.trim_start_matches("--- ").trim_end_matches(" ---");
+            current_section = Some(section);
+            continue;
+        }
+        let target = match current_section {
+            Some("TITLE") => &mut title,
+            Some("DESCRIPTION") => &mut description,
+            Some("REPO_PATH") => &mut repo_path,
+            Some("STATUS") => &mut status,
+            _ => continue,
+        };
+        if !target.is_empty() {
+            target.push('\n');
+        }
+        target.push_str(line);
+    }
+
+    EditorFields {
+        title: title.trim().to_string(),
+        description: description.trim().to_string(),
+        repo_path: repo_path.trim().to_string(),
+        status: status.trim().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editor_roundtrip_basic() {
+        let content = format_editor_content("My Task", "A description", "/repo", "ready");
+        let fields = parse_editor_content(&content);
+        assert_eq!(fields.title, "My Task");
+        assert_eq!(fields.description, "A description");
+        assert_eq!(fields.repo_path, "/repo");
+        assert_eq!(fields.status, "ready");
+    }
+
+    #[test]
+    fn editor_roundtrip_colons_in_title() {
+        let content = format_editor_content("Fix: auth bug", "desc", "/repo", "backlog");
+        let fields = parse_editor_content(&content);
+        assert_eq!(fields.title, "Fix: auth bug");
+    }
+
+    #[test]
+    fn editor_roundtrip_colons_in_description() {
+        let content = format_editor_content("Title", "Step 1: do this\nStep 2: do that", "/repo", "ready");
+        let fields = parse_editor_content(&content);
+        assert_eq!(fields.description, "Step 1: do this\nStep 2: do that");
+    }
+
+    #[test]
+    fn editor_multiline_description() {
+        let content = format_editor_content("Title", "Line 1\nLine 2\nLine 3", "/repo", "done");
+        let fields = parse_editor_content(&content);
+        assert_eq!(fields.description, "Line 1\nLine 2\nLine 3");
+    }
+
+    #[test]
+    fn editor_unknown_section_ignored() {
+        let input = "--- TITLE ---\nHello\n--- UNKNOWN ---\nStuff\n--- STATUS ---\nready\n";
+        let fields = parse_editor_content(input);
+        assert_eq!(fields.title, "Hello");
+        assert_eq!(fields.status, "ready");
+    }
 }

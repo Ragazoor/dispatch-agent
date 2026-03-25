@@ -3,7 +3,7 @@ pub mod ui;
 
 use std::collections::HashMap;
 
-use crate::models::{Task, TaskStatus};
+use crate::models::{Note, Task, TaskStatus};
 
 // ---------------------------------------------------------------------------
 // MoveDirection
@@ -34,6 +34,7 @@ pub enum Message {
     TmuxOutput { id: i64, output: String },
     WindowGone(i64),
     RefreshTasks(Vec<Task>),
+    NotesLoaded { task_id: i64, notes: Vec<Note> },
     Error(String),
 }
 
@@ -50,8 +51,8 @@ pub enum Command {
     CaptureTmux { id: i64, window: String },
     EditTaskInEditor(Task),
     SaveRepoPath(String),
+    LoadNotes(i64),
     RefreshFromDb,
-    None,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,8 +79,8 @@ pub struct App {
     pub mode: InputMode,
     pub input_buffer: String,
     pub detail_visible: bool,
-    pub detail_text: Option<String>,
     pub tmux_outputs: HashMap<i64, String>,
+    pub notes: HashMap<i64, Vec<Note>>,
     pub status_message: Option<String>,
     pub error_popup: Option<String>,
     pub repo_paths: Vec<String>,
@@ -95,8 +96,8 @@ impl App {
             mode: InputMode::Normal,
             input_buffer: String::new(),
             detail_visible: false,
-            detail_text: None,
             tmux_outputs: HashMap::new(),
+            notes: HashMap::new(),
             status_message: None,
             error_popup: None,
             repo_paths: Vec::new(),
@@ -136,7 +137,7 @@ impl App {
         match msg {
             Message::Quit => {
                 self.should_quit = true;
-                vec![Command::None]
+                vec![]
             }
 
             Message::NavigateColumn(delta) => {
@@ -144,7 +145,7 @@ impl App {
                     .clamp(0, 4) as usize;
                 self.selected_column = new_col;
                 self.clamp_selection();
-                vec![Command::None]
+                vec![]
             }
 
             Message::NavigateRow(delta) => {
@@ -157,7 +158,7 @@ impl App {
                         self.selected_row[col] = new_row;
                     }
                 }
-                vec![Command::None]
+                vec![]
             }
 
             Message::MoveTask { id, direction } => {
@@ -168,7 +169,7 @@ impl App {
                     };
                     if new_status == task.status {
                         // No movement possible (at boundary)
-                        return vec![Command::None];
+                        return vec![];
                     }
 
                     // Clean up worktree/tmux when moving backward from a dispatched state
@@ -196,7 +197,7 @@ impl App {
                     cmds.push(Command::PersistTask(task_clone));
                     cmds
                 } else {
-                    vec![Command::None]
+                    vec![]
                 }
             }
 
@@ -213,7 +214,7 @@ impl App {
                         }
                     }
                 }
-                vec![Command::None]
+                vec![]
             }
 
             Message::Dispatched { id, worktree, tmux_window } => {
@@ -225,7 +226,7 @@ impl App {
                     self.clamp_selection();
                     vec![Command::PersistTask(task_clone)]
                 } else {
-                    vec![Command::None]
+                    vec![]
                 }
             }
 
@@ -257,28 +258,12 @@ impl App {
 
             Message::ToggleDetail => {
                 self.detail_visible = !self.detail_visible;
-                if self.detail_visible {
-                    self.detail_text = self.selected_task().map(|t| {
-                        format!(
-                            "ID: {}\nTitle: {}\nStatus: {}\nRepo: {}\nDescription: {}\nWorktree: {}\nTmux: {}",
-                            t.id,
-                            t.title,
-                            t.status.as_str(),
-                            t.repo_path,
-                            t.description,
-                            t.worktree.as_deref().unwrap_or("-"),
-                            t.tmux_window.as_deref().unwrap_or("-"),
-                        )
-                    });
-                } else {
-                    self.detail_text = None;
-                }
-                vec![Command::None]
+                vec![]
             }
 
             Message::TmuxOutput { id, output } => {
                 self.tmux_outputs.insert(id, output);
-                vec![Command::None]
+                vec![]
             }
 
             Message::WindowGone(id) => {
@@ -291,14 +276,19 @@ impl App {
                         });
                     }
                 }
-                vec![Command::None]
+                vec![]
+            }
+
+            Message::NotesLoaded { task_id, notes } => {
+                self.notes.insert(task_id, notes);
+                vec![]
             }
 
             Message::RefreshTasks(new_tasks) => {
                 // Merge DB state into in-memory state, preserving tmux_outputs
                 self.tasks = new_tasks;
                 self.clamp_selection();
-                vec![Command::None]
+                vec![]
             }
 
             Message::Tick => {
@@ -315,12 +305,17 @@ impl App {
                     })
                     .collect();
                 cmds.push(Command::RefreshFromDb);
+                if self.detail_visible {
+                    if let Some(task) = self.selected_task() {
+                        cmds.push(Command::LoadNotes(task.id));
+                    }
+                }
                 cmds
             }
 
             Message::Error(msg) => {
                 self.error_popup = Some(msg);
-                vec![Command::None]
+                vec![]
             }
         }
     }
@@ -398,7 +393,7 @@ mod tests {
             direction: MoveDirection::Backward,
         });
         assert_eq!(app.tasks.iter().find(|t| t.id == 1).unwrap().status, TaskStatus::Backlog);
-        assert!(matches!(cmds[0], Command::None));
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -411,11 +406,11 @@ mod tests {
 
         // Task 1 is Backlog — should not dispatch
         let cmds = app.update(Message::DispatchTask(1));
-        assert!(matches!(cmds[0], Command::None));
+        assert!(cmds.is_empty());
 
         // Task 5 is Done — should not dispatch
         let cmds = app.update(Message::DispatchTask(5));
-        assert!(matches!(cmds[0], Command::None));
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -544,5 +539,108 @@ mod tests {
         });
         assert_eq!(cmds.len(), 1);
         assert!(matches!(cmds[0], Command::PersistTask(_)));
+    }
+
+    #[test]
+    fn repo_path_empty_uses_saved_path() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![]);
+        app.repo_paths = vec!["/saved/repo".to_string()];
+
+        // Set up InputRepoPath mode manually
+        app.mode = InputMode::InputRepoPath {
+            title: "Test".to_string(),
+            description: "desc".to_string(),
+        };
+        app.input_buffer.clear();
+
+        // Press Enter with empty buffer
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let _cmds = app.handle_key(key);
+
+        // Should have created a task with the saved repo path
+        assert_eq!(app.mode, InputMode::Normal);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].repo_path, "/saved/repo");
+    }
+
+    #[test]
+    fn repo_path_empty_no_saved_stays_in_mode() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![]);
+        app.repo_paths = vec![]; // no saved paths
+
+        app.mode = InputMode::InputRepoPath {
+            title: "Test".to_string(),
+            description: "desc".to_string(),
+        };
+        app.input_buffer.clear();
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let _cmds = app.handle_key(key);
+
+        // Should stay in InputRepoPath mode
+        assert!(matches!(app.mode, InputMode::InputRepoPath { .. }));
+        assert!(app.status_message.is_some());
+        assert_eq!(app.tasks.len(), 0); // no task created
+    }
+
+    #[test]
+    fn repo_path_nonempty_used_as_is() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![]);
+        app.repo_paths = vec!["/saved/repo".to_string()];
+
+        app.mode = InputMode::InputRepoPath {
+            title: "Test".to_string(),
+            description: "desc".to_string(),
+        };
+        app.input_buffer = "/custom/path".to_string();
+
+        let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let _cmds = app.handle_key(key);
+
+        assert_eq!(app.mode, InputMode::Normal);
+        assert_eq!(app.tasks.len(), 1);
+        assert_eq!(app.tasks[0].repo_path, "/custom/path");
+    }
+
+    #[test]
+    fn tick_emits_load_notes_when_detail_visible() {
+        let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+        app.detail_visible = true;
+        app.selected_column = 0;
+        app.selected_row[0] = 0;
+
+        let cmds = app.update(Message::Tick);
+        assert!(cmds.iter().any(|c| matches!(c, Command::LoadNotes(1))));
+    }
+
+    #[test]
+    fn tick_skips_load_notes_when_detail_hidden() {
+        let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+        app.detail_visible = false;
+
+        let cmds = app.update(Message::Tick);
+        assert!(!cmds.iter().any(|c| matches!(c, Command::LoadNotes(_))));
+    }
+
+    #[test]
+    fn notes_loaded_stores_in_cache() {
+        use crate::models::{Note, NoteSource};
+        let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+
+        let notes = vec![Note {
+            id: 1,
+            task_id: 1,
+            content: "Agent progress".to_string(),
+            source: NoteSource::Agent,
+            created_at: chrono::Utc::now(),
+        }];
+
+        app.update(Message::NotesLoaded { task_id: 1, notes });
+        let cached = app.notes.get(&1).unwrap();
+        assert_eq!(cached.len(), 1);
+        assert_eq!(cached[0].content, "Agent progress");
     }
 }

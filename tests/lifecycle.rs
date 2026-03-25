@@ -125,7 +125,7 @@ fn dispatch_only_from_ready() {
 
     // Try dispatch from Backlog — should be no-op
     let cmds = app.update(Message::DispatchTask(task_id));
-    assert!(matches!(cmds[0], Command::None));
+    assert!(cmds.is_empty());
 }
 
 #[test]
@@ -158,6 +158,6 @@ fn window_gone_only_advances_running() {
 
     // WindowGone should NOT advance from Review
     let cmds = app.update(Message::WindowGone(task_id));
-    assert!(matches!(cmds[0], Command::None));
+    assert!(cmds.is_empty());
     assert_eq!(app.tasks[0].status, TaskStatus::Review);
 }

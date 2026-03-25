@@ -66,10 +66,12 @@ pub fn dispatch_agent(
     tmux::new_window(&tmux_window, &worktree_path)
         .context("failed to create tmux window")?;
 
-    // 5. Build the prompt and send it to Claude.
+    // 5. Write the prompt file and launch Claude in print mode.
     let prompt = build_prompt(task_id, title, description, mcp_port);
-    let escaped = escape_single_quotes(&prompt);
-    tmux::send_keys(&tmux_window, &format!("claude --prompt '{escaped}'"))
+    let prompt_file = format!("{worktree_path}/.claude-prompt");
+    fs::write(&prompt_file, &prompt)
+        .with_context(|| format!("failed to write {prompt_file}"))?;
+    tmux::send_keys(&tmux_window, "claude -p < .claude-prompt")
         .context("failed to send keys to tmux window")?;
 
     Ok(DispatchResult {
@@ -160,13 +162,6 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
-/// Escape single-quote characters so the prompt can be safely wrapped in
-/// single quotes on the shell command line.
-fn escape_single_quotes(s: &str) -> String {
-    // Replace ' with '\'' (end-quote, literal apostrophe, re-open quote).
-    s.replace('\'', r"'\''")
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -174,22 +169,6 @@ fn escape_single_quotes(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn escape_no_quotes() {
-        assert_eq!(escape_single_quotes("hello world"), "hello world");
-    }
-
-    #[test]
-    fn escape_single_quote_in_middle() {
-        assert_eq!(escape_single_quotes("it's fine"), r"it'\''s fine");
-    }
-
-    #[test]
-    fn escape_multiple_quotes() {
-        let result = escape_single_quotes("don't stop, can't stop");
-        assert_eq!(result, r"don'\''t stop, can'\''t stop");
-    }
 
     #[test]
     fn build_prompt_contains_task_info() {

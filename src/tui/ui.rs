@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::models::TaskStatus;
+use crate::models::{NoteSource, TaskStatus};
 use super::{App, InputMode};
 
 /// Column color per status
@@ -81,15 +81,14 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect) {
             )
         };
 
-        let title = format!(" {} ", status.as_str().to_uppercase());
+        let tasks = app.tasks_by_status(status);
+        let title = format!(" {} ({}) ", status.as_str().to_uppercase(), tasks.len());
         let block = Block::default()
             .title(title)
             .title_style(title_style)
             .borders(Borders::ALL)
             .border_type(border_type)
             .border_style(border_style);
-
-        let tasks = app.tasks_by_status(status);
         let selected_row = app.selected_row[col_idx];
 
         let items: Vec<ListItem> = tasks
@@ -143,24 +142,64 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    let content = if app.detail_visible {
-        if let Some(text) = &app.detail_text {
-            text.as_str()
-        } else if let Some(task) = app.selected_task() {
-            task.title.as_str()
-        } else {
-            "No task selected"
-        }
-    } else {
-        ""
-    };
-
     let block = Block::default()
         .title(" Detail ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
-    let paragraph = Paragraph::new(content).block(block);
+    if !app.detail_visible {
+        let paragraph = Paragraph::new("").block(block);
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let lines: Vec<Line> = if let Some(task) = app.selected_task() {
+        let mut l = vec![
+            Line::from(format!(
+                "ID: {}  Status: {}  Repo: {}",
+                task.id,
+                task.status.as_str(),
+                task.repo_path
+            )),
+            Line::from(format!("Title: {}", task.title)),
+            Line::from(format!("Description: {}", task.description)),
+            Line::from(format!(
+                "Worktree: {}  Tmux: {}",
+                task.worktree.as_deref().unwrap_or("-"),
+                task.tmux_window.as_deref().unwrap_or("-")
+            )),
+        ];
+        if let Some(output) = app.tmux_outputs.get(&task.id) {
+            l.push(Line::from(""));
+            for line in output.lines() {
+                l.push(Line::from(line.to_string()));
+            }
+        }
+        if let Some(notes) = app.notes.get(&task.id) {
+            if !notes.is_empty() {
+                l.push(Line::from(""));
+                l.push(Line::from(Span::styled(
+                    format!("Notes ({})", notes.len()),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                for note in notes {
+                    let prefix = match note.source {
+                        NoteSource::Agent => "[agent]",
+                        NoteSource::User => "[user]",
+                        NoteSource::System => "[sys]",
+                    };
+                    l.push(Line::from(format!("  {} {}", prefix, note.content)));
+                }
+            }
+        }
+        l
+    } else {
+        vec![Line::from("No task selected")]
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
 }
 

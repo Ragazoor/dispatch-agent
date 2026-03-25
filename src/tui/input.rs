@@ -7,7 +7,7 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Command> {
         if self.error_popup.is_some() {
             self.error_popup = None;
-            return vec![Command::None];
+            return vec![];
         }
 
         match &self.mode.clone() {
@@ -32,7 +32,7 @@ impl App {
                 self.mode = InputMode::InputTitle;
                 self.input_buffer.clear();
                 self.status_message = Some("Enter title: ".to_string());
-                vec![Command::None]
+                vec![]
             }
 
             KeyCode::Char('d') => {
@@ -40,7 +40,7 @@ impl App {
                     let id = task.id;
                     self.update(Message::DispatchTask(id))
                 } else {
-                    vec![Command::None]
+                    vec![]
                 }
             }
 
@@ -49,7 +49,7 @@ impl App {
                     let id = task.id;
                     self.update(Message::MoveTask { id, direction: MoveDirection::Forward })
                 } else {
-                    vec![Command::None]
+                    vec![]
                 }
             }
 
@@ -58,7 +58,7 @@ impl App {
                     let id = task.id;
                     self.update(Message::MoveTask { id, direction: MoveDirection::Backward })
                 } else {
-                    vec![Command::None]
+                    vec![]
                 }
             }
 
@@ -68,7 +68,7 @@ impl App {
                 if let Some(task) = self.selected_task() {
                     vec![Command::EditTaskInEditor(task.clone())]
                 } else {
-                    vec![Command::None]
+                    vec![]
                 }
             }
 
@@ -78,10 +78,10 @@ impl App {
                     self.mode = InputMode::ConfirmDelete;
                     self.status_message = Some("Delete task? (y/n)".to_string());
                 }
-                vec![Command::None]
+                vec![]
             }
 
-            _ => vec![Command::None],
+            _ => vec![],
         }
     }
 
@@ -91,7 +91,7 @@ impl App {
                 self.mode = InputMode::Normal;
                 self.input_buffer.clear();
                 self.status_message = None;
-                vec![Command::None]
+                vec![]
             }
 
             KeyCode::Enter => {
@@ -103,11 +103,11 @@ impl App {
                         if value.is_empty() {
                             self.mode = InputMode::Normal;
                             self.status_message = None;
-                            vec![Command::None]
+                            vec![]
                         } else {
                             self.mode = InputMode::InputDescription { title: value };
                             self.status_message = Some("Enter description: ".to_string());
-                            vec![Command::None]
+                            vec![]
                         }
                     }
                     InputMode::InputDescription { title } => {
@@ -116,29 +116,34 @@ impl App {
                             description: value,
                         };
                         self.status_message = Some("Enter repo path: ".to_string());
-                        vec![Command::None]
+                        vec![]
                     }
                     InputMode::InputRepoPath { title, description } => {
-                        self.mode = InputMode::Normal;
-                        self.status_message = None;
                         let repo_path = if value.is_empty() {
-                            "/".to_string()
+                            if let Some(first) = self.repo_paths.first() {
+                                first.clone()
+                            } else {
+                                self.status_message = Some("Repo path required (no saved paths available)".to_string());
+                                return vec![];
+                            }
                         } else {
                             value
                         };
+                        self.mode = InputMode::Normal;
+                        self.status_message = None;
                         self.update(Message::CreateTask {
                             title,
                             description,
                             repo_path,
                         })
                     }
-                    _ => vec![Command::None],
+                    _ => vec![],
                 }
             }
 
             KeyCode::Backspace => {
                 self.input_buffer.pop();
-                vec![Command::None]
+                vec![]
             }
 
             KeyCode::Char(c) => {
@@ -161,10 +166,10 @@ impl App {
                     }
                 }
                 self.input_buffer.push(c);
-                vec![Command::None]
+                vec![]
             }
 
-            _ => vec![Command::None],
+            _ => vec![],
         }
     }
 
@@ -177,13 +182,13 @@ impl App {
                     let id = task.id;
                     self.update(Message::DeleteTask(id))
                 } else {
-                    vec![Command::None]
+                    vec![]
                 }
             }
             _ => {
                 self.mode = InputMode::Normal;
                 self.status_message = None;
-                vec![Command::None]
+                vec![]
             }
         }
     }
