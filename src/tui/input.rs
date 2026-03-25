@@ -129,6 +129,24 @@ impl App {
             }
 
             KeyCode::Char(c) => {
+                // In repo path mode with empty buffer, 1-9 selects a saved path
+                if let InputMode::InputRepoPath { ref title, ref description } = self.mode {
+                    if self.input_buffer.is_empty() && c.is_ascii_digit() && c != '0' {
+                        let idx = (c as usize) - ('1' as usize);
+                        if idx < self.repo_paths.len() {
+                            let title = title.clone();
+                            let description = description.clone();
+                            let repo_path = self.repo_paths[idx].clone();
+                            self.mode = InputMode::Normal;
+                            self.status_message = None;
+                            return self.update(Message::CreateTask {
+                                title,
+                                description,
+                                repo_path,
+                            });
+                        }
+                    }
+                }
                 self.input_buffer.push(c);
                 vec![Command::None]
             }

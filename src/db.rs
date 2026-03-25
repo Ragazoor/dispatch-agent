@@ -52,6 +52,11 @@ impl Database {
                 content     TEXT NOT NULL,
                 source      TEXT NOT NULL DEFAULT 'user',
                 created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS repo_paths (
+                id        INTEGER PRIMARY KEY,
+                path      TEXT NOT NULL UNIQUE,
+                last_used TEXT NOT NULL DEFAULT (datetime('now'))
             );",
         )
         .context("Failed to create schema")?;
@@ -200,6 +205,55 @@ impl Database {
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("Failed to collect notes")?;
         Ok(notes)
+    }
+
+    // -- Repo paths -----------------------------------------------------------
+
+    pub fn list_repo_paths(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT path FROM repo_paths ORDER BY last_used DESC LIMIT 9")
+            .context("Failed to prepare list_repo_paths")?;
+        let paths = stmt
+            .query_map([], |row| row.get(0))
+            .context("Failed to query repo_paths")?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .context("Failed to collect repo_paths")?;
+        Ok(paths)
+    }
+
+    pub fn save_repo_path(&self, path: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO repo_paths (path) VALUES (?1)
+             ON CONFLICT(path) DO UPDATE SET last_used = datetime('now')",
+            params![path],
+        )
+        .context("Failed to save repo_path")?;
+        Ok(())
+    }
+
+    // -- Full task update -----------------------------------------------------
+
+    pub fn update_task(
+        &self,
+        id: i64,
+        title: &str,
+        description: &str,
+        repo_path: &str,
+        status: TaskStatus,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE tasks SET title = ?1, description = ?2, repo_path = ?3, status = ?4, updated_at = datetime('now') WHERE id = ?5",
+                params![title, description, repo_path, status.as_str(), id],
+            )
+            .context("Failed to update task")?;
+        if changed == 0 {
+            anyhow::bail!("Task {id} not found");
+        }
+        Ok(())
     }
 }
 

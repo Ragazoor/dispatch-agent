@@ -125,8 +125,9 @@ async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
         }
     });
 
-    // 3. Create App
+    // 3. Create App and load saved repo paths
     let mut app = App::new(tasks);
+    app.repo_paths = database.list_repo_paths().unwrap_or_default();
 
     // 4. Set up terminal
     enable_raw_mode()?;
@@ -304,6 +305,11 @@ async fn execute_commands(
                         _ => {} // still running or error — leave it
                     }
                 });
+            }
+
+            Command::SaveRepoPath(path) => {
+                let _ = database.save_repo_path(&path);
+                app.repo_paths = database.list_repo_paths().unwrap_or_default();
             }
 
             Command::RefreshFromDb => {

@@ -47,6 +47,7 @@ pub enum Command {
     DeleteTask(i64),
     Dispatch { task: Task },
     CaptureTmux { id: i64, window: String },
+    SaveRepoPath(String),
     RefreshFromDb,
     None,
 }
@@ -199,8 +200,9 @@ impl App {
 
             Message::CreateTask { title, description, repo_path } => {
                 let now = chrono::Utc::now();
+                let save_path = Command::SaveRepoPath(repo_path.clone());
                 let task = Task {
-                    id: 0, // placeholder; db.create_task will assign real id
+                    id: 0,
                     title,
                     description,
                     repo_path,
@@ -213,7 +215,7 @@ impl App {
                 let task_clone = task.clone();
                 self.tasks.push(task);
                 self.clamp_selection();
-                vec![Command::PersistTask(task_clone)]
+                vec![Command::PersistTask(task_clone), save_path]
             }
 
             Message::DeleteTask(id) => {
