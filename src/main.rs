@@ -10,7 +10,7 @@ use std::path::PathBuf;
 #[command(about = "A TUI task orchestrator for managing agent-driven development tasks")]
 struct Cli {
     /// Path to the database file
-    #[arg(long, default_value_os_t = default_db_path())]
+    #[arg(long, env = "TASK_ORCHESTRATOR_DB", default_value_os_t = default_db_path())]
     db: PathBuf,
 
     #[command(subcommand)]
@@ -20,7 +20,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Launch the TUI interface
-    Tui,
+    Tui {
+        /// MCP server port
+        #[arg(long, env = "TASK_ORCHESTRATOR_PORT", default_value = "3142")]
+        port: u16,
+    },
     /// Update a task's status
     Update {
         /// Task ID
@@ -53,8 +57,8 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Tui => {
-            println!("TUI mode not yet implemented");
+        Commands::Tui { port } => {
+            println!("TUI mode not yet implemented. DB: {}, Port: {port}", cli.db.display());
         }
         Commands::Update { id, status } => {
             let new_status = models::TaskStatus::from_str(&status)
