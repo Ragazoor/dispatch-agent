@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, Command, InputMode, Message, MoveDirection};
+use crate::models::TaskStatus;
 
 impl App {
     /// Translate a terminal key event into zero or more commands, depending on current mode.
@@ -38,7 +39,35 @@ impl App {
             KeyCode::Char('d') => {
                 if let Some(task) = self.selected_task() {
                     let id = task.id;
-                    self.update(Message::DispatchTask(id))
+                    let status = task.status.clone();
+                    let has_window = task.tmux_window.is_some();
+                    let has_worktree = task.worktree.is_some();
+                    match status {
+                        TaskStatus::Ready => {
+                            self.update(Message::DispatchTask(id))
+                        }
+                        TaskStatus::Running | TaskStatus::Review => {
+                            if has_window {
+                                self.status_message = Some(
+                                    "Agent already running, press g to jump".to_string(),
+                                );
+                                vec![]
+                            } else if has_worktree {
+                                self.update(Message::ResumeTask(id))
+                            } else {
+                                self.status_message = Some(
+                                    "No worktree to resume, move to Ready and re-dispatch".to_string(),
+                                );
+                                vec![]
+                            }
+                        }
+                        _ => {
+                            self.status_message = Some(
+                                "Move task to Ready before dispatching (press m)".to_string(),
+                            );
+                            vec![]
+                        }
+                    }
                 } else {
                     vec![]
                 }

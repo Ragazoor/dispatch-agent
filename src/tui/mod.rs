@@ -681,4 +681,48 @@ mod tests {
         assert!(matches!(&cmds[0], Command::Cleanup { tmux_window: Some(_), .. }));
         assert!(matches!(&cmds[1], Command::PersistTask(_)));
     }
+
+    #[test]
+    fn d_key_on_ready_dispatches() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![make_task(3, TaskStatus::Ready)]);
+        app.selected_column = 1; // Ready column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(matches!(&cmds[0], Command::Dispatch { .. }));
+    }
+
+    #[test]
+    fn d_key_on_running_with_window_shows_warning() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut task = make_task(4, TaskStatus::Running);
+        task.tmux_window = Some("task-4".to_string());
+        task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+        let mut app = App::new(vec![task]);
+        app.selected_column = 2; // Running column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(cmds.is_empty());
+        assert!(app.status_message.as_deref().unwrap().contains("already running"));
+    }
+
+    #[test]
+    fn d_key_on_running_no_window_resumes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut task = make_task(4, TaskStatus::Running);
+        task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+        task.tmux_window = None;
+        let mut app = App::new(vec![task]);
+        app.selected_column = 2; // Running column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(matches!(&cmds[0], Command::Resume { .. }));
+    }
+
+    #[test]
+    fn d_key_on_backlog_shows_warning() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+        app.selected_column = 0; // Backlog column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(cmds.is_empty());
+        assert!(app.status_message.is_some());
+    }
 }
