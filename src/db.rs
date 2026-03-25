@@ -274,35 +274,35 @@ impl Database {
 // ---------------------------------------------------------------------------
 
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
-    let status_str: String = row.get(4)?;
+    let status_str: String = row.get("status")?;
     let status = TaskStatus::parse(&status_str).unwrap_or(TaskStatus::Backlog);
 
-    let created_str: String = row.get(7)?;
-    let updated_str: String = row.get(8)?;
+    let created_str: String = row.get("created_at")?;
+    let updated_str: String = row.get("updated_at")?;
 
     Ok(Task {
-        id: row.get(0)?,
-        title: row.get(1)?,
-        description: row.get(2)?,
-        repo_path: row.get(3)?,
+        id: row.get("id")?,
+        title: row.get("title")?,
+        description: row.get("description")?,
+        repo_path: row.get("repo_path")?,
         status,
-        worktree: row.get(5)?,
-        tmux_window: row.get(6)?,
+        worktree: row.get("worktree")?,
+        tmux_window: row.get("tmux_window")?,
         created_at: parse_datetime(&created_str),
         updated_at: parse_datetime(&updated_str),
     })
 }
 
 fn row_to_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
-    let source_str: String = row.get(3)?;
+    let source_str: String = row.get("source")?;
     let source = NoteSource::parse(&source_str).unwrap_or(NoteSource::User);
 
-    let created_str: String = row.get(4)?;
+    let created_str: String = row.get("created_at")?;
 
     Ok(Note {
-        id: row.get(0)?,
-        task_id: row.get(1)?,
-        content: row.get(2)?,
+        id: row.get("id")?,
+        task_id: row.get("task_id")?,
+        content: row.get("content")?,
         source,
         created_at: parse_datetime(&created_str),
     })
