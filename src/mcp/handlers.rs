@@ -80,6 +80,15 @@ struct GetTaskArgs {
     task_id: i64,
 }
 
+#[derive(Deserialize)]
+struct CreateTaskArgs {
+    title: String,
+    repo_path: String,
+    #[serde(default)]
+    description: String,
+    plan: Option<String>,
+}
+
 fn parse_args<T: serde::de::DeserializeOwned>(
     id: Option<Value>,
     args: Value,
@@ -145,6 +154,32 @@ fn tool_definitions() -> Value {
                     },
                     "required": ["task_id"]
                 }
+            },
+            {
+                "name": "create_task",
+                "description": "Create a new task on the kanban board. If a plan file path is provided, the task is created in 'ready' status; otherwise it starts in 'backlog'.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Task title"
+                        },
+                        "repo_path": {
+                            "type": "string",
+                            "description": "Path to the repository for this task"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Task description (optional, defaults to empty)"
+                        },
+                        "plan": {
+                            "type": "string",
+                            "description": "File path to the implementation plan (optional). If provided, task starts in 'ready' status."
+                        }
+                    },
+                    "required": ["title", "repo_path"]
+                }
             }
         ]
     })
@@ -184,6 +219,7 @@ pub async fn handle_mcp(
                 "update_task" => handle_update_task(&state, id, args),
                 "add_note" => handle_add_note(&state, id, args),
                 "get_task" => handle_get_task(&state, id, args),
+                "create_task" => handle_create_task(&state, id, args),
                 other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
             }
         }
@@ -232,6 +268,40 @@ fn handle_add_note(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcR
             id,
             json!({"content": [{"type": "text", "text": format!("Note {note_id} added to task {}", parsed.task_id)}]}),
         ),
+        Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+    }
+}
+
+fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
+    let parsed = match parse_args::<CreateTaskArgs>(id.clone(), args) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+
+    let status = if parsed.plan.is_some() {
+        TaskStatus::Ready
+    } else {
+        TaskStatus::Backlog
+    };
+
+    match state.db.create_task(
+        &parsed.title,
+        &parsed.description,
+        &parsed.repo_path,
+        parsed.plan.as_deref(),
+    ) {
+        Ok(task_id) => {
+            // If plan was provided, also update status to ready
+            if status == TaskStatus::Ready {
+                if let Err(e) = state.db.update_status(task_id, status) {
+                    return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
+                }
+            }
+            JsonRpcResponse::ok(
+                id,
+                json!({"content": [{"type": "text", "text": format!("Task {task_id} created")}]}),
+            )
+        }
         Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
     }
 }
@@ -302,6 +372,7 @@ mod tests {
         assert!(names.contains(&"update_task"));
         assert!(names.contains(&"add_note"));
         assert!(names.contains(&"get_task"));
+        assert!(names.contains(&"create_task"));
     }
 
     #[tokio::test]
@@ -424,5 +495,87 @@ mod tests {
         let resp = call(&state, "bogus/method", None).await;
         assert!(resp.error.is_some());
         assert!(resp.error.unwrap().message.contains("Method not found"));
+    }
+
+    #[tokio::test]
+    async fn create_task_minimal() {
+        let state = test_state();
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "create_task",
+                "arguments": { "title": "New Task", "repo_path": "/my/repo" }
+            })),
+        ).await;
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("created"));
+
+        // Verify task was created in DB
+        let tasks = state.db.list_all().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "New Task");
+        assert_eq!(tasks[0].status, TaskStatus::Backlog);
+        assert!(tasks[0].plan.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_task_with_plan_sets_ready() {
+        let state = test_state();
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "create_task",
+                "arguments": {
+                    "title": "Planned Task",
+                    "repo_path": "/my/repo",
+                    "plan": "docs/plan.md"
+                }
+            })),
+        ).await;
+        assert!(resp.error.is_none());
+
+        let tasks = state.db.list_all().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].status, TaskStatus::Ready);
+        assert_eq!(tasks[0].plan.as_deref(), Some("docs/plan.md"));
+    }
+
+    #[tokio::test]
+    async fn create_task_with_description() {
+        let state = test_state();
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "create_task",
+                "arguments": {
+                    "title": "Described Task",
+                    "repo_path": "/repo",
+                    "description": "Some details"
+                }
+            })),
+        ).await;
+        assert!(resp.error.is_none());
+
+        let tasks = state.db.list_all().unwrap();
+        assert_eq!(tasks[0].description, "Some details");
+    }
+
+    #[tokio::test]
+    async fn create_task_missing_title() {
+        let state = test_state();
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "create_task",
+                "arguments": { "repo_path": "/repo" }
+            })),
+        ).await;
+        assert!(resp.error.is_some());
     }
 }
