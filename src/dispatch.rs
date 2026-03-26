@@ -14,7 +14,7 @@ use crate::tmux;
 ///
 /// This function is **synchronous** and should be called via
 /// `tokio::task::spawn_blocking` from async contexts.
-pub fn dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
+pub fn dispatch_agent(task: &Task, mcp_port: u16, db_path: &str) -> Result<DispatchResult> {
     let repo_path = expand_tilde(&task.repo_path);
     let slug = slugify(&task.title);
     let worktree_name = format!("{}-{slug}", task.id);

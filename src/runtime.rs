@@ -82,6 +82,7 @@ pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
         database,
         msg_tx,
         port,
+        db_path: db_path.to_path_buf(),
         input_paused,
     };
     let result = run_loop(
@@ -110,6 +111,7 @@ struct TuiRuntime {
     database: Arc<dyn db::TaskStore>,
     msg_tx: mpsc::UnboundedSender<Message>,
     port: u16,
+    db_path: std::path::PathBuf,
     input_paused: Arc<AtomicBool>,
 }
 
@@ -155,10 +157,11 @@ impl TuiRuntime {
     fn exec_dispatch(&self, task: models::Task) {
         let tx = self.msg_tx.clone();
         let port = self.port;
+        let db_path = self.db_path.to_string_lossy().to_string();
 
         tokio::task::spawn_blocking(move || {
             let id = task.id;
-            match dispatch::dispatch_agent(&task, port) {
+            match dispatch::dispatch_agent(&task, port, &db_path) {
                 Ok(result) => {
                     let _ = tx.send(Message::Dispatched {
                         id,
