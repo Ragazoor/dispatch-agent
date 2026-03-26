@@ -129,15 +129,21 @@ impl App {
                         return vec![];
                     }
 
-                    // Clean up worktree/tmux when moving backward from a dispatched state
-                    let cleanup = if matches!(direction, MoveDirection::Backward) {
-                        match (task.worktree.take(), task.tmux_window.take()) {
-                            (Some(wt), Some(tw)) => Some(Command::Cleanup {
+                    // Clean up worktree/tmux when moving backward from a dispatched state,
+                    // or when moving forward to Done.
+                    let needs_cleanup = matches!(direction, MoveDirection::Backward)
+                        || new_status == TaskStatus::Done;
+                    let cleanup = if needs_cleanup {
+                        match task.worktree.take() {
+                            Some(wt) => Some(Command::Cleanup {
                                 repo_path: task.repo_path.clone(),
                                 worktree: wt,
-                                tmux_window: tw,
+                                tmux_window: task.tmux_window.take(),
                             }),
-                            _ => None,
+                            None => {
+                                task.tmux_window.take(); // clear even if no worktree
+                                None
+                            },
                         }
                     } else {
                         None
@@ -160,15 +166,8 @@ impl App {
 
             Message::DispatchTask(id) => {
                 if let Some(task) = self.tasks.iter().find(|t| t.id == id) {
-                    match task.status {
-                        TaskStatus::Ready | TaskStatus::Running | TaskStatus::Review => {
-                            return vec![Command::Dispatch { task: task.clone() }];
-                        }
-                        _ => {
-                            self.status_message = Some(
-                                "Move task to Ready before dispatching (press m)".to_string(),
-                            );
-                        }
+                    if task.status == TaskStatus::Ready {
+                        return vec![Command::Dispatch { task: task.clone() }];
                     }
                 }
                 vec![]
@@ -224,16 +223,13 @@ impl App {
             }
 
             Message::WindowGone(id) => {
-                // Only auto-advance if the task is still Running
-                if let Some(task) = self.tasks.iter().find(|t| t.id == id) {
-                    if task.status == TaskStatus::Running {
-                        return self.update(Message::MoveTask {
-                            id,
-                            direction: MoveDirection::Forward,
-                        });
-                    }
+                if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
+                    task.tmux_window = None;
+                    let task_clone = task.clone();
+                    vec![Command::PersistTask(task_clone)]
+                } else {
+                    vec![]
                 }
-                vec![]
             }
 
             Message::NotesLoaded { task_id, notes } => {
@@ -253,7 +249,7 @@ impl App {
                 let mut cmds: Vec<Command> = self
                     .tasks
                     .iter()
-                    .filter(|t| t.status == TaskStatus::Running)
+                    .filter(|t| t.tmux_window.is_some())
                     .filter_map(|t| {
                         t.tmux_window.clone().map(|window| Command::CaptureTmux {
                             id: t.id,
@@ -268,6 +264,28 @@ impl App {
                     }
                 }
                 cmds
+            }
+
+            Message::ResumeTask(id) => {
+                if let Some(task) = self.tasks.iter().find(|t| t.id == id) {
+                    if task.worktree.is_some() && task.tmux_window.is_none() {
+                        vec![Command::Resume { task: task.clone() }]
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                }
+            }
+
+            Message::Resumed { id, tmux_window } => {
+                if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
+                    task.tmux_window = Some(tmux_window);
+                    let task_clone = task.clone();
+                    vec![Command::PersistTask(task_clone)]
+                } else {
+                    vec![]
+                }
             }
 
             Message::Error(msg) => {
@@ -439,6 +457,17 @@ mod tests {
     }
 
     #[test]
+    fn tick_captures_review_task_with_live_window() {
+        let mut task = make_task(5, TaskStatus::Review);
+        task.tmux_window = Some("task-5".to_string());
+        let mut app = App::new(vec![task]);
+
+        let cmds = app.update(Message::Tick);
+
+        assert!(cmds.iter().any(|c| matches!(c, Command::CaptureTmux { id: 5, .. })));
+    }
+
+    #[test]
     fn create_task_adds_to_backlog_and_persists() {
         let mut app = App::new(vec![]);
         let cmds = app.update(Message::CreateTask {
@@ -467,23 +496,23 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_from_running_redispatches() {
+    fn dispatch_from_running_is_noop() {
         let mut task = make_task(4, TaskStatus::Running);
         task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
         task.tmux_window = Some("task-4".to_string());
         let mut app = App::new(vec![task]);
         let cmds = app.update(Message::DispatchTask(4));
-        assert!(matches!(cmds[0], Command::Dispatch { .. }));
+        assert!(cmds.is_empty());
     }
 
     #[test]
-    fn dispatch_from_review_redispatches() {
+    fn dispatch_from_review_is_noop() {
         let mut task = make_task(5, TaskStatus::Review);
         task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
         task.tmux_window = Some("task-5".to_string());
         let mut app = App::new(vec![task]);
         let cmds = app.update(Message::DispatchTask(5));
-        assert!(matches!(cmds[0], Command::Dispatch { .. }));
+        assert!(cmds.is_empty());
     }
 
     #[test]
@@ -631,6 +660,27 @@ mod tests {
     }
 
     #[test]
+    fn window_gone_clears_tmux_window_and_persists() {
+        let mut task = make_task(4, TaskStatus::Running);
+        task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+        task.tmux_window = Some("task-4".to_string());
+        let mut app = App::new(vec![task]);
+
+        let cmds = app.update(Message::WindowGone(4));
+
+        // Task should stay Running
+        let task = app.tasks.iter().find(|t| t.id == 4).unwrap();
+        assert_eq!(task.status, TaskStatus::Running);
+        // tmux_window should be cleared
+        assert!(task.tmux_window.is_none());
+        // worktree should be preserved
+        assert!(task.worktree.is_some());
+        // Should emit PersistTask to write cleared tmux_window to DB
+        assert_eq!(cmds.len(), 1);
+        assert!(matches!(&cmds[0], Command::PersistTask(t) if t.tmux_window.is_none()));
+    }
+
+    #[test]
     fn notes_loaded_stores_in_cache() {
         use crate::models::{Note, NoteSource};
         let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
@@ -647,5 +697,135 @@ mod tests {
         let cached = app.notes.get(&1).unwrap();
         assert_eq!(cached.len(), 1);
         assert_eq!(cached[0].content, "Agent progress");
+    }
+
+    #[test]
+    fn move_forward_to_done_emits_cleanup() {
+        let mut task = make_task(5, TaskStatus::Review);
+        task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+        task.tmux_window = None; // session closed, but worktree remains
+        let mut app = App::new(vec![task]);
+
+        let cmds = app.update(Message::MoveTask {
+            id: 5,
+            direction: MoveDirection::Forward,
+        });
+
+        let task = app.tasks.iter().find(|t| t.id == 5).unwrap();
+        assert_eq!(task.status, TaskStatus::Done);
+        assert!(task.worktree.is_none());
+        // Should have Cleanup + PersistTask
+        assert_eq!(cmds.len(), 2);
+        assert!(matches!(&cmds[0], Command::Cleanup { tmux_window: None, .. }));
+        assert!(matches!(&cmds[1], Command::PersistTask(_)));
+    }
+
+    #[test]
+    fn move_forward_to_done_with_live_window_emits_cleanup() {
+        let mut task = make_task(5, TaskStatus::Review);
+        task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+        task.tmux_window = Some("task-5".to_string());
+        let mut app = App::new(vec![task]);
+
+        let cmds = app.update(Message::MoveTask {
+            id: 5,
+            direction: MoveDirection::Forward,
+        });
+
+        assert_eq!(cmds.len(), 2);
+        assert!(matches!(&cmds[0], Command::Cleanup { tmux_window: Some(_), .. }));
+        assert!(matches!(&cmds[1], Command::PersistTask(_)));
+    }
+
+    #[test]
+    fn d_key_on_ready_dispatches() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![make_task(3, TaskStatus::Ready)]);
+        app.selected_column = 1; // Ready column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(matches!(&cmds[0], Command::Dispatch { .. }));
+    }
+
+    #[test]
+    fn d_key_on_running_with_window_shows_warning() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut task = make_task(4, TaskStatus::Running);
+        task.tmux_window = Some("task-4".to_string());
+        task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+        let mut app = App::new(vec![task]);
+        app.selected_column = 2; // Running column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(cmds.is_empty());
+        assert!(app.status_message.as_deref().unwrap().contains("already running"));
+    }
+
+    #[test]
+    fn d_key_on_running_no_window_resumes() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut task = make_task(4, TaskStatus::Running);
+        task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+        task.tmux_window = None;
+        let mut app = App::new(vec![task]);
+        app.selected_column = 2; // Running column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(matches!(&cmds[0], Command::Resume { .. }));
+    }
+
+    #[test]
+    fn d_key_on_backlog_shows_warning() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+        app.selected_column = 0; // Backlog column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(cmds.is_empty());
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn d_key_on_done_shows_warning() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![make_task(1, TaskStatus::Done)]);
+        app.selected_column = 4; // Done column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(cmds.is_empty());
+        assert!(app.status_message.is_some());
+    }
+
+    #[test]
+    fn d_key_on_running_no_worktree_no_window_shows_warning() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut task = make_task(4, TaskStatus::Running);
+        task.worktree = None;
+        task.tmux_window = None;
+        let mut app = App::new(vec![task]);
+        app.selected_column = 2; // Running column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(cmds.is_empty());
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap()
+            .contains("No worktree"));
+    }
+
+    #[test]
+    fn g_key_with_live_window_jumps() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut task = make_task(4, TaskStatus::Running);
+        task.tmux_window = Some("task-4".to_string());
+        let mut app = App::new(vec![task]);
+        app.selected_column = 2; // Running column
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert!(matches!(&cmds[0], Command::JumpToTmux { window } if window == "task-4"));
+    }
+
+    #[test]
+    fn g_key_without_window_shows_message() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+        app.selected_column = 0;
+        let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert!(cmds.is_empty());
+        assert!(app.status_message.as_deref().unwrap().contains("No active session"));
     }
 }

@@ -50,8 +50,10 @@ src/
 Backlog → Ready → Running → Review → Done
 
 - **Ready** = eligible for dispatch (`d` key)
-- **Running** = agent dispatched, tmux output shown on card
-- Tasks auto-advance from Running → Review when the tmux window exits
+- **Running** = agent dispatched in interactive mode, tmux output shown on card
+- Closing a tmux session preserves the worktree; press `d` to resume with `claude --continue`
+- Agents advance their own status to Review via the MCP `update_task` tool
+- Press `g` to jump to an agent's tmux window
 
 ## MCP Server
 

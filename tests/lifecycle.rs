@@ -84,8 +84,17 @@ fn full_lifecycle() {
         Some("task-1")
     );
 
-    // 4. WindowGone → auto-advances to Review
+    // 4. WindowGone → clears tmux_window, keeps task Running (agent advances via MCP)
     let cmds = app.update(Message::WindowGone(task_id));
+    persist(&mut app, &db, &cmds);
+    assert_eq!(app.tasks()[0].status, TaskStatus::Running);
+    assert!(app.tasks()[0].tmux_window.is_none());
+
+    // 4b. Agent advances task to Review via MCP (simulated here as MoveTask)
+    let cmds = app.update(Message::MoveTask {
+        id: task_id,
+        direction: MoveDirection::Forward,
+    });
     persist(&mut app, &db, &cmds);
     assert_eq!(app.tasks()[0].status, TaskStatus::Review);
 
@@ -127,10 +136,10 @@ fn dispatch_only_from_ready() {
 }
 
 #[test]
-fn window_gone_only_advances_running() {
+fn window_gone_clears_tmux_window_without_advancing() {
     let (mut app, _db) = make_app();
 
-    // Create a task in Review (simulate: create, advance to Review)
+    // Create a task and advance it to Running with dispatch fields set
     app.update(Message::CreateTask {
         title: "Task".to_string(),
         description: "desc".to_string(),
@@ -138,24 +147,26 @@ fn window_gone_only_advances_running() {
     });
     let task_id = app.tasks()[0].id;
 
-    // Manually set to Review
     app.update(Message::MoveTask {
         id: task_id,
         direction: MoveDirection::Forward,
     }); // Ready
-    app.update(Message::MoveTask {
-        id: task_id,
-        direction: MoveDirection::Forward,
-    }); // Running
-    app.update(Message::MoveTask {
-        id: task_id,
-        direction: MoveDirection::Forward,
-    }); // Review
 
-    assert_eq!(app.tasks()[0].status, TaskStatus::Review);
+    let cmds = app.update(Message::Dispatched {
+        id: task_id,
+        worktree: "/repo/.worktrees/task".to_string(),
+        tmux_window: "task-1".to_string(),
+    });
+    assert_eq!(app.tasks()[0].status, TaskStatus::Running);
+    assert_eq!(app.tasks()[0].tmux_window.as_deref(), Some("task-1"));
+    drop(cmds);
 
-    // WindowGone should NOT advance from Review
+    // WindowGone should clear tmux_window, keep status Running, emit PersistTask
     let cmds = app.update(Message::WindowGone(task_id));
-    assert!(cmds.is_empty());
-    assert_eq!(app.tasks()[0].status, TaskStatus::Review);
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::PersistTask(t) if t.tmux_window.is_none()));
+    assert_eq!(app.tasks()[0].status, TaskStatus::Running);
+    assert!(app.tasks()[0].tmux_window.is_none());
+    // worktree is preserved — resuming is still possible
+    assert!(app.tasks()[0].worktree.is_some());
 }
