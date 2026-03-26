@@ -16,7 +16,7 @@ fn persist(app: &mut App, db: &Database, cmds: &[Command]) {
         if let Command::PersistTask(task) = cmd {
             if task.id == 0 {
                 let new_id = db
-                    .create_task(&task.title, &task.description, &task.repo_path)
+                    .create_task(&task.title, &task.description, &task.repo_path, task.plan.as_deref())
                     .unwrap();
                 app.update(Message::TaskIdAssigned { placeholder_id: 0, real_id: new_id });
             } else {

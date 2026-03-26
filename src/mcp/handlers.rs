@@ -307,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn update_task_valid() {
         let state = test_state();
-        let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
+        let task_id = state.db.create_task("Test", "desc", "/repo", None).unwrap();
 
         let resp = call(
             &state,
@@ -327,7 +327,7 @@ mod tests {
     #[tokio::test]
     async fn update_task_invalid_status() {
         let state = test_state();
-        let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
+        let task_id = state.db.create_task("Test", "desc", "/repo", None).unwrap();
 
         let resp = call(
             &state,
@@ -355,7 +355,7 @@ mod tests {
     #[tokio::test]
     async fn add_note_valid() {
         let state = test_state();
-        let task_id = state.db.create_task("Test", "desc", "/repo").unwrap();
+        let task_id = state.db.create_task("Test", "desc", "/repo", None).unwrap();
 
         let resp = call(
             &state,
@@ -376,7 +376,7 @@ mod tests {
     #[tokio::test]
     async fn get_task_found() {
         let state = test_state();
-        let task_id = state.db.create_task("My Task", "desc", "/repo").unwrap();
+        let task_id = state.db.create_task("My Task", "desc", "/repo", None).unwrap();
 
         let resp = call(
             &state,

@@ -171,7 +171,7 @@ async fn execute_commands(
             Command::PersistTask(mut task) => {
                 if task.id == 0 {
                     // New task — insert into db and update the in-app id
-                    let new_id = rt.database.create_task(&task.title, &task.description, &task.repo_path)?;
+                    let new_id = rt.database.create_task(&task.title, &task.description, &task.repo_path, task.plan.as_deref())?;
                     task.id = new_id;
                     // Update the placeholder task in app.tasks (id 0) with the real id.
                     // There may be multiple id=0 tasks if rapid creation; update the first one.
@@ -389,7 +389,7 @@ fn handle_edit_in_editor(
                 }
 
                 // Update DB and in-memory state
-                if let Err(e) = rt.database.update_task(task_id, &title, &description, &repo_path, new_status) {
+                if let Err(e) = rt.database.update_task(task_id, &title, &description, &repo_path, new_status, task.plan.as_deref()) {
                     app.update(Message::Error(format!("DB error updating task: {e}")));
                 }
                 app.update(Message::TaskEdited {
