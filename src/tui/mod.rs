@@ -321,7 +321,9 @@ impl App {
     fn handle_resumed(&mut self, id: i64, tmux_window: String) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = Some(tmux_window);
+            task.status = TaskStatus::Running;
             let task_clone = task.clone();
+            self.clamp_selection();
             vec![Command::PersistTask(task_clone)]
         } else {
             vec![]

@@ -844,6 +844,25 @@ fn resumed_unknown_id_is_noop() {
 }
 
 #[test]
+fn resumed_sets_status_to_running() {
+    let mut task = make_task(4, TaskStatus::Review);
+    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    task.tmux_window = None;
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::Resumed {
+        id: 4,
+        tmux_window: "task-4".to_string(),
+    });
+
+    let task = app.tasks.iter().find(|t| t.id == 4).unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert_eq!(task.tmux_window.as_deref(), Some("task-4"));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::PersistTask(t) if t.status == TaskStatus::Running));
+}
+
+#[test]
 fn tmux_output_stores_in_map() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Running)]);
     let cmds = app.update(Message::TmuxOutput {
