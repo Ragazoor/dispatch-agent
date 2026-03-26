@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
-use task_orchestrator::{db, models, runtime};
+use task_orchestrator::{db, models, plan, runtime};
 
 #[derive(Parser)]
 #[command(name = "task-orchestrator")]
@@ -36,6 +36,24 @@ enum Commands {
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
+    },
+    /// Create a task from a plan file
+    Create {
+        /// Path to the plan markdown file
+        #[arg(long)]
+        from_plan: PathBuf,
+
+        /// Target repository path (defaults to current directory)
+        #[arg(long)]
+        repo_path: Option<PathBuf>,
+
+        /// Override the title extracted from the plan
+        #[arg(long)]
+        title: Option<String>,
+
+        /// Override the description extracted from the plan
+        #[arg(long)]
+        description: Option<String>,
     },
 }
 
@@ -83,6 +101,34 @@ async fn main() -> Result<()> {
                     println!("[{}] {} - {} ({})", task.id, task.title, task.status.as_str(), task.repo_path);
                 }
             }
+        }
+        Commands::Create { from_plan, repo_path, title, description } => {
+            let content = std::fs::read_to_string(&from_plan)
+                .map_err(|e| anyhow::anyhow!("Failed to read plan file {}: {}", from_plan.display(), e))?;
+
+            let metadata = plan::parse_plan(&content)?;
+
+            let title = title.unwrap_or(metadata.title);
+            let description = description.unwrap_or(metadata.description);
+
+            let repo_path = repo_path
+                .or_else(|| std::env::current_dir().ok())
+                .ok_or_else(|| anyhow::anyhow!("Could not determine repo path. Use --repo-path."))?;
+            let repo_path_str = repo_path.to_string_lossy();
+
+            let plan_path = std::fs::canonicalize(&from_plan)
+                .map_err(|e| anyhow::anyhow!("Failed to resolve plan path {}: {}", from_plan.display(), e))?;
+            let plan_str = plan_path.to_string_lossy();
+
+            let db = db::Database::open(&cli.db)?;
+
+            if let Some(existing) = db.find_task_by_plan(&plan_str)? {
+                println!("Task #{} already exists for this plan [{}]", existing.id, existing.status.as_str());
+                return Ok(());
+            }
+
+            let id = db.create_task(&title, &description, &repo_path_str, Some(&plan_str), models::TaskStatus::Ready)?;
+            println!("Created task #{}: \"{}\" [ready]", id, title);
         }
     }
 
