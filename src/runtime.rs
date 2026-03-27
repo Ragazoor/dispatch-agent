@@ -536,3 +536,77 @@ async fn execute_commands(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::process::MockProcessRunner;
+
+    fn test_runtime() -> (TuiRuntime, App) {
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner,
+        };
+        let tasks = db.list_all().unwrap();
+        let app = App::new(tasks);
+        (rt, app)
+    }
+
+    #[test]
+    fn exec_insert_task_adds_to_db_and_app() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into());
+        assert_eq!(app.tasks().len(), 1);
+        assert_eq!(app.tasks()[0].title, "Test");
+        assert_eq!(rt.database.list_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn exec_delete_task_removes_from_db() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into());
+        let id = app.tasks()[0].id;
+        rt.exec_delete_task(&mut app, id);
+        assert!(rt.database.list_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn exec_persist_task_saves_status_to_db() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into());
+        let mut task = app.tasks()[0].clone();
+        task.status = models::TaskStatus::Ready;
+        task.worktree = Some("/repo/.worktrees/1-test".into());
+        rt.exec_persist_task(&mut app, task);
+        let db_task = rt.database.get_task(app.tasks()[0].id).unwrap().unwrap();
+        assert_eq!(db_task.status, models::TaskStatus::Ready);
+        assert_eq!(db_task.worktree.as_deref(), Some("/repo/.worktrees/1-test"));
+    }
+
+    #[test]
+    fn exec_save_repo_path_updates_app_state() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_save_repo_path(&mut app, "/repo".into());
+        assert!(app.repo_paths().contains(&"/repo".to_string()));
+    }
+
+    #[test]
+    fn exec_refresh_from_db_syncs_external_changes() {
+        let (rt, mut app) = test_runtime();
+        // Insert directly into DB, bypassing app
+        rt.database
+            .create_task("External", "Added via CLI", "/repo", None, models::TaskStatus::Backlog)
+            .unwrap();
+        assert!(app.tasks().is_empty());
+        rt.exec_refresh_from_db(&mut app);
+        assert_eq!(app.tasks().len(), 1);
+        assert_eq!(app.tasks()[0].title, "External");
+    }
+}
