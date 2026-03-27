@@ -477,6 +477,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(Color::Red));
             frame.render_widget(bar, area);
         }
+        InputMode::ConfirmArchive => {
+            let bar = Paragraph::new("Archive task? (y/n)")
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(bar, area);
+        }
     }
 }
 

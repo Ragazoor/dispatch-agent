@@ -30,6 +30,8 @@ pub struct App {
     pub(in crate::tui) stale_tasks: HashSet<i64>,
     pub(in crate::tui) crashed_tasks: HashSet<i64>,
     pub(in crate::tui) inactivity_timeout: Duration,
+    pub(in crate::tui) show_archived: bool,
+    pub(in crate::tui) selected_archive_row: usize,
 }
 
 impl App {
@@ -51,6 +53,8 @@ impl App {
             stale_tasks: HashSet::new(),
             crashed_tasks: HashSet::new(),
             inactivity_timeout,
+            show_archived: false,
+            selected_archive_row: 0,
         }
     }
 
@@ -70,10 +74,17 @@ impl App {
     pub fn stale_tasks(&self) -> &HashSet<i64> { &self.stale_tasks }
     pub fn crashed_tasks(&self) -> &HashSet<i64> { &self.crashed_tasks }
     pub fn inactivity_timeout(&self) -> Duration { self.inactivity_timeout }
+    pub fn show_archived(&self) -> bool { self.show_archived }
+    pub fn selected_archive_row(&self) -> usize { self.selected_archive_row }
 
     /// Return all tasks for a given status, ordered as they appear in self.tasks.
     pub fn tasks_by_status(&self, status: TaskStatus) -> Vec<&Task> {
         self.tasks.iter().filter(|t| t.status == status).collect()
+    }
+
+    /// Return all archived tasks, ordered as they appear in self.tasks.
+    pub fn archived_tasks(&self) -> Vec<&Task> {
+        self.tasks.iter().filter(|t| t.status == TaskStatus::Archived).collect()
     }
 
     /// Return the currently selected task (in the focused column), if any.
@@ -144,6 +155,8 @@ impl App {
             Message::KillAndRetry(id) => self.handle_kill_and_retry(id),
             Message::RetryResume(id) => self.handle_retry_resume(id),
             Message::RetryFresh(id) => self.handle_retry_fresh(id),
+            Message::ArchiveTask(id) => self.handle_archive_task(id),
+            Message::ToggleArchive => self.handle_toggle_archive(),
         }
     }
 
@@ -490,6 +503,43 @@ impl App {
         } else {
             vec![]
         }
+    }
+
+    fn handle_archive_task(&mut self, id: i64) -> Vec<Command> {
+        if let Some(task) = self.find_task_mut(id) {
+            let cleanup = match task.worktree.take() {
+                Some(wt) => Some(Command::Cleanup {
+                    repo_path: task.repo_path.clone(),
+                    worktree: wt,
+                    tmux_window: task.tmux_window.take(),
+                }),
+                None => {
+                    task.tmux_window.take();
+                    None
+                }
+            };
+            task.status = TaskStatus::Archived;
+            let task_clone = task.clone();
+            self.clear_agent_tracking(id);
+            self.clamp_selection();
+
+            let mut cmds = Vec::new();
+            if let Some(c) = cleanup {
+                cmds.push(c);
+            }
+            cmds.push(Command::PersistTask(task_clone));
+            cmds
+        } else {
+            vec![]
+        }
+    }
+
+    fn handle_toggle_archive(&mut self) -> Vec<Command> {
+        self.show_archived = !self.show_archived;
+        if self.show_archived {
+            self.selected_archive_row = 0;
+        }
+        vec![]
     }
 }
 

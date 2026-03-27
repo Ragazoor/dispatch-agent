@@ -19,6 +19,7 @@ impl App {
             InputMode::ConfirmDelete => self.handle_key_confirm_delete(key),
             InputMode::QuickDispatch => self.handle_key_quick_dispatch(key),
             InputMode::ConfirmRetry(id) => self.handle_key_confirm_retry(key, id),
+            InputMode::ConfirmArchive => self.handle_key_confirm_archive(key),
         }
     }
 
@@ -313,6 +314,26 @@ impl App {
                 vec![]
             }
             _ => vec![],
+        }
+    }
+
+    fn handle_key_confirm_archive(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                if let Some(task) = self.selected_task() {
+                    let id = task.id;
+                    self.update(Message::ArchiveTask(id))
+                } else {
+                    vec![]
+                }
+            }
+            _ => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                vec![]
+            }
         }
     }
 }

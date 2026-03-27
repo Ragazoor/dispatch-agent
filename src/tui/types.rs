@@ -41,6 +41,8 @@ pub enum Message {
     KillAndRetry(i64),
     RetryResume(i64),
     RetryFresh(i64),
+    ArchiveTask(i64),
+    ToggleArchive,
 }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +80,7 @@ pub enum InputMode {
     ConfirmDelete,
     QuickDispatch,
     ConfirmRetry(i64),
+    ConfirmArchive,
 }
 
 // ---------------------------------------------------------------------------

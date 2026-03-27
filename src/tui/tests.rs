@@ -1342,3 +1342,59 @@ fn confirm_retry_esc_returns_to_normal() {
     assert_eq!(app.mode, InputMode::Normal);
     assert!(cmds.is_empty());
 }
+
+// --- Archive ---
+
+#[test]
+fn archive_task_sets_status_and_emits_persist() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Done),
+    ], Duration::from_secs(300));
+    let cmds = app.update(Message::ArchiveTask(1));
+    let task = app.tasks.iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(task.status, TaskStatus::Archived);
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+}
+
+#[test]
+fn archive_task_with_worktree_emits_cleanup() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = Some("/wt/1-test".to_string());
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+
+    let cmds = app.update(Message::ArchiveTask(1));
+
+    assert!(cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+    let task = app.tasks.iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(task.status, TaskStatus::Archived);
+    assert!(task.worktree.is_none());
+    assert!(task.tmux_window.is_none());
+}
+
+#[test]
+fn archive_task_without_worktree_no_cleanup() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    let cmds = app.update(Message::ArchiveTask(1));
+    assert!(!cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+}
+
+#[test]
+fn archive_clears_agent_tracking() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.stale_tasks.insert(1);
+    app.crashed_tasks.insert(1);
+    app.tmux_outputs.insert(1, "output".to_string());
+
+    app.update(Message::ArchiveTask(1));
+
+    assert!(!app.stale_tasks.contains(&1));
+    assert!(!app.crashed_tasks.contains(&1));
+    assert!(!app.tmux_outputs.contains_key(&1));
+}
