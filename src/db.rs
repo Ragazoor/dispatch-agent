@@ -83,13 +83,6 @@ impl Database {
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
-            CREATE TABLE IF NOT EXISTS notes (
-                id          INTEGER PRIMARY KEY,
-                task_id     INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-                content     TEXT NOT NULL,
-                source      TEXT NOT NULL DEFAULT 'user',
-                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            );
             CREATE TABLE IF NOT EXISTS repo_paths (
                 id        INTEGER PRIMARY KEY,
                 path      TEXT NOT NULL UNIQUE,
@@ -98,8 +91,24 @@ impl Database {
         )
         .context("Failed to create schema")?;
 
-        // Migration: add plan column if it doesn't exist (idempotent).
-        let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN plan TEXT");
+        // Versioned migrations using PRAGMA user_version
+        let current_version: i64 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+
+        if current_version < 1 {
+            // Migration 1: add plan column (idempotent — ignore error if already exists)
+            let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN plan TEXT");
+            conn.pragma_update(None, "user_version", 1i64)
+                .context("Failed to update schema version to 1")?;
+        }
+
+        if current_version < 2 {
+            // Migration 2: drop notes table
+            conn.execute_batch("DROP TABLE IF EXISTS notes")
+                .context("Failed to drop notes table")?;
+            conn.pragma_update(None, "user_version", 2i64)
+                .context("Failed to update schema version to 2")?;
+        }
 
         Ok(())
     }
@@ -608,5 +617,70 @@ mod tests {
         let db = in_memory_db();
         let result = db.update_plan(9999, Some("plan.md"));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn fresh_db_has_latest_schema_version() {
+        let db = in_memory_db();
+        let conn = db.conn.lock().unwrap();
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 2, "fresh DB should be at schema version 2");
+    }
+
+    #[test]
+    fn legacy_db_migrates_to_latest_version() {
+        // Simulate a pre-versioning DB: create tables manually including notes
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE tasks (
+                 id INTEGER PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 description TEXT NOT NULL,
+                 repo_path TEXT NOT NULL,
+                 status TEXT NOT NULL DEFAULT 'backlog',
+                 worktree TEXT,
+                 tmux_window TEXT,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE notes (
+                 id INTEGER PRIMARY KEY,
+                 task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                 content TEXT NOT NULL,
+                 source TEXT NOT NULL DEFAULT 'user',
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE repo_paths (
+                 id INTEGER PRIMARY KEY,
+                 path TEXT NOT NULL UNIQUE,
+                 last_used TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        ).unwrap();
+
+        // Insert a note so we can verify the table gets dropped
+        conn.execute("INSERT INTO tasks (title, description, repo_path) VALUES ('T', 'D', '/r')", []).unwrap();
+        conn.execute("INSERT INTO notes (task_id, content) VALUES (1, 'hello')", []).unwrap();
+
+        // Run init_schema which should migrate
+        Database::init_schema(&conn).unwrap();
+
+        // Notes table should be gone
+        let table_exists: bool = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notes'")
+            .unwrap()
+            .exists([])
+            .unwrap();
+        assert!(!table_exists, "notes table should be dropped after migration");
+
+        // Version should be latest
+        let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, 2);
+
+        // Verify Migration 1 added the plan column
+        let has_plan: bool = conn
+            .prepare("SELECT plan FROM tasks LIMIT 1")
+            .is_ok();
+        assert!(has_plan, "Migration 1 should have added the plan column");
     }
 }
