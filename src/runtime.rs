@@ -564,7 +564,7 @@ mod tests {
             runner,
         };
         let tasks = db.list_all().unwrap();
-        let app = App::new(tasks);
+        let app = App::new(tasks, Duration::from_secs(300));
         (rt, app)
     }
 

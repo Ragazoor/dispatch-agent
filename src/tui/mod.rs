@@ -349,7 +349,6 @@ impl App {
         cmds
     }
 
-<<<<<<< HEAD
     fn handle_stale_agent(&mut self, id: TaskId) -> Vec<Command> {
         self.stale_tasks.insert(id);
         if let Some(task) = self.find_task(id) {
