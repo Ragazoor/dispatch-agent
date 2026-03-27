@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::models::TaskStatus;
+use crate::models::{TaskId, TaskStatus};
 
 use super::McpState;
 
@@ -307,7 +307,7 @@ fn handle_update_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
     let plan = parsed.plan.as_ref().map(|p| Some(p.as_str()));
 
     if let Err(e) = state.db.update_task_partial(
-        parsed.task_id,
+        TaskId(parsed.task_id),
         status,
         plan,
         parsed.title.as_deref(),
@@ -368,7 +368,7 @@ fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcR
         Err(resp) => return resp,
     };
     tracing::info!(task_id = parsed.task_id, "MCP get_task");
-    match state.db.get_task(parsed.task_id) {
+    match state.db.get_task(TaskId(parsed.task_id)) {
         Ok(Some(task)) => {
             let text = format!(
                 "Task {id}: {title}\nStatus: {status}\nRepo: {repo}\nDescription: {desc}",
@@ -441,7 +441,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "running" }
+                "arguments": { "task_id": task_id.0, "status": "running" }
             })),
         ).await;
         assert!(resp.result.is_some());
@@ -461,7 +461,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "bogus" }
+                "arguments": { "task_id": task_id.0, "status": "bogus" }
             })),
         ).await;
         assert!(resp.error.is_some());
@@ -489,7 +489,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "get_task",
-                "arguments": { "task_id": task_id }
+                "arguments": { "task_id": task_id.0 }
             })),
         ).await;
         let result = resp.result.unwrap();
@@ -632,7 +632,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id.to_string(), "status": "running" }
+                "arguments": { "task_id": task_id.0.to_string(), "status": "running" }
             })),
         ).await;
         assert!(resp.error.is_none(), "update_task should accept string task_id, got: {:?}", resp.error);
@@ -651,7 +651,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "get_task",
-                "arguments": { "task_id": task_id.to_string() }
+                "arguments": { "task_id": task_id.0.to_string() }
             })),
         ).await;
         assert!(resp.error.is_none(), "get_task should accept string task_id, got: {:?}", resp.error);
@@ -670,7 +670,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "ready", "plan": "/path/to/plan.md" }
+                "arguments": { "task_id": task_id.0, "status": "ready", "plan": "/path/to/plan.md" }
             })),
         ).await;
         assert!(resp.error.is_none());
@@ -690,7 +690,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "title": "New Title" }
+                "arguments": { "task_id": task_id.0, "title": "New Title" }
             })),
         ).await;
         assert!(resp.error.is_none(), "should succeed with title only: {:?}", resp.error);
@@ -710,7 +710,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "title": "Renamed" }
+                "arguments": { "task_id": task_id.0, "title": "Renamed" }
             })),
         ).await;
         assert!(resp.error.is_none());
@@ -730,7 +730,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "title": "New", "description": "new desc" }
+                "arguments": { "task_id": task_id.0, "title": "New", "description": "new desc" }
             })),
         ).await;
         assert!(resp.error.is_none());
@@ -750,7 +750,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id }
+                "arguments": { "task_id": task_id.0 }
             })),
         ).await;
         assert!(resp.error.is_some(), "should error with no fields to update");
@@ -767,7 +767,7 @@ mod tests {
             Some(json!({
                 "name": "update_task",
                 "arguments": {
-                    "task_id": task_id,
+                    "task_id": task_id.0,
                     "status": "ready",
                     "title": "Updated Title"
                 }
@@ -790,7 +790,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "ready" }
+                "arguments": { "task_id": task_id.0, "status": "ready" }
             })),
         ).await;
         assert!(resp.error.is_none());

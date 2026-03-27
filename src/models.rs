@@ -105,12 +105,25 @@ impl std::str::FromStr for TaskStatus {
 }
 
 // ---------------------------------------------------------------------------
+// TaskId
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TaskId(pub i64);
+
+impl std::fmt::Display for TaskId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Task
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Task {
-    pub id: i64,
+    pub id: TaskId,
     pub title: String,
     pub description: String,
     pub repo_path: String,

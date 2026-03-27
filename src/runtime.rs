@@ -20,6 +20,7 @@ use crate::db::TaskStore;
 use crate::editor::{format_editor_content, parse_editor_content};
 use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::tui::{self, App, Command, Message};
+use crate::models::TaskId;
 use crate::{db, dispatch, models, mcp, tmux};
 
 // ---------------------------------------------------------------------------
@@ -238,7 +239,7 @@ impl TuiRuntime {
         }
     }
 
-    fn exec_delete_task(&self, app: &mut App, id: i64) {
+    fn exec_delete_task(&self, app: &mut App, id: TaskId) {
         if let Err(e) = self.database.delete_task(id) {
             app.update(Message::Error(format!("DB error deleting task: {e}")));
         }
@@ -256,7 +257,7 @@ impl TuiRuntime {
 
         tokio::task::spawn_blocking(move || {
             let id = task.id;
-            tracing::info!(task_id = id, label, "dispatching");
+            tracing::info!(task_id = id.0, label, "dispatching");
             match dispatch_fn(&task, port, &*runner) {
                 Ok(result) => {
                     // receiver dropped = app shutting down; nothing to log
@@ -282,7 +283,7 @@ impl TuiRuntime {
         self.spawn_dispatch(task, dispatch::brainstorm_agent, "Brainstorm");
     }
 
-    fn exec_capture_tmux(&self, id: i64, window: String) {
+    fn exec_capture_tmux(&self, id: TaskId, window: String) {
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
 
@@ -380,14 +381,14 @@ impl TuiRuntime {
                         plan,
                     });
                 } else {
-                    tracing::warn!(task_id, "failed to read edited temp file");
+                    tracing::warn!(task_id = task_id.0, "failed to read edited temp file");
                 }
             }
             Ok(exit) => {
-                tracing::warn!(task_id, ?exit, "editor exited with non-zero status");
+                tracing::warn!(task_id = task_id.0, ?exit, "editor exited with non-zero status");
             }
             Err(e) => {
-                tracing::warn!(task_id, "failed to spawn editor: {e}");
+                tracing::warn!(task_id = task_id.0, "failed to spawn editor: {e}");
             }
         }
 
@@ -438,7 +439,7 @@ impl TuiRuntime {
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            tracing::info!(task_id = id, "resuming task");
+            tracing::info!(task_id = id.0, "resuming task");
             match dispatch::resume_agent(id, &worktree_path, &*runner) {
                 Ok(result) => {
                     let _ = tx.send(Message::Resumed {

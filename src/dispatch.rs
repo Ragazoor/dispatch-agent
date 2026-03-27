@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
 
-use crate::models::{DispatchResult, ResumeResult, Task, slugify};
+use crate::models::{DispatchResult, ResumeResult, Task, TaskId, slugify};
 use crate::process::ProcessRunner;
 use crate::tmux;
 
@@ -23,7 +23,7 @@ fn provision_worktree(task: &Task, runner: &dyn ProcessRunner) -> Result<Provisi
     let worktree_path = format!("{repo_path}/.worktrees/{worktree_name}");
     let tmux_window = build_tmux_window_name(task.id);
 
-    tracing::info!(task_id = task.id, %worktree_path, "provisioning worktree");
+    tracing::info!(task_id = task.id.0, %worktree_path, "provisioning worktree");
 
     fs::create_dir_all(format!("{repo_path}/.worktrees"))
         .context("failed to create .worktrees directory")?;
@@ -65,7 +65,7 @@ fn dispatch_with_prompt(
     )
     .context("failed to send keys to tmux window")?;
 
-    tracing::info!(task_id = task.id, worktree = %provision.worktree_path, "agent dispatched");
+    tracing::info!(task_id = task.id.0, worktree = %provision.worktree_path, "agent dispatched");
 
     Ok(DispatchResult {
         worktree_path: provision.worktree_path,
@@ -148,7 +148,7 @@ pub fn cleanup_task(
 ///
 /// This function is **synchronous** and should be called via
 /// `tokio::task::spawn_blocking` from async contexts.
-pub fn resume_agent(task_id: i64, worktree_path: &str, runner: &dyn ProcessRunner) -> Result<ResumeResult> {
+pub fn resume_agent(task_id: TaskId, worktree_path: &str, runner: &dyn ProcessRunner) -> Result<ResumeResult> {
     let tmux_window = build_tmux_window_name(task_id);
 
     tmux::new_window(&tmux_window, worktree_path, runner)
@@ -157,7 +157,7 @@ pub fn resume_agent(task_id: i64, worktree_path: &str, runner: &dyn ProcessRunne
     tmux::send_keys(&tmux_window, "claude --continue", runner)
         .context("failed to send resume keys to tmux window")?;
 
-    tracing::info!(task_id, %tmux_window, "agent resumed");
+    tracing::info!(task_id = task_id.0, %tmux_window, "agent resumed");
 
     Ok(ResumeResult { tmux_window })
 }
@@ -166,11 +166,11 @@ pub fn resume_agent(task_id: i64, worktree_path: &str, runner: &dyn ProcessRunne
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn build_tmux_window_name(task_id: i64) -> String {
+fn build_tmux_window_name(task_id: TaskId) -> String {
     format!("task-{task_id}")
 }
 
-fn build_prompt(task_id: i64, title: &str, description: &str, plan: Option<&str>) -> String {
+fn build_prompt(task_id: TaskId, title: &str, description: &str, plan: Option<&str>) -> String {
     let plan_section = match plan {
         Some(path) => format!(
             "\n\nPlan: {path}\nRead this file for the full implementation plan. Follow it step by step."
@@ -191,7 +191,7 @@ Do not call update_task for status changes."
     )
 }
 
-fn build_quick_dispatch_prompt(task_id: i64, title: &str, description: &str, mcp_port: u16) -> String {
+fn build_quick_dispatch_prompt(task_id: TaskId, title: &str, description: &str, mcp_port: u16) -> String {
     format!(
         "You are an autonomous coding agent working interactively with the user.\n\
 \n\
@@ -212,7 +212,7 @@ this task with a descriptive title, and get_task to check current state."
     )
 }
 
-fn build_brainstorm_prompt(task_id: i64, title: &str, description: &str, mcp_port: u16) -> String {
+fn build_brainstorm_prompt(task_id: TaskId, title: &str, description: &str, mcp_port: u16) -> String {
     format!(
         "You are an autonomous coding agent starting a brainstorming session.\n\
 \n\
@@ -252,12 +252,12 @@ fn expand_tilde(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::process::MockProcessRunner;
-    use crate::models::{Task, TaskStatus};
+    use crate::models::{Task, TaskId, TaskStatus};
     use chrono::Utc;
 
     fn make_task(repo_path: &str) -> Task {
         Task {
-            id: 42,
+            id: TaskId(42),
             title: "Fix bug".to_string(),
             description: "A nasty crash".to_string(),
             repo_path: repo_path.to_string(),
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn build_prompt_contains_task_info() {
-        let prompt = build_prompt(42, "Fix bug", "A nasty crash", None);
+        let prompt = build_prompt(TaskId(42), "Fix bug", "A nasty crash", None);
         assert!(prompt.contains("42"));
         assert!(prompt.contains("Fix bug"));
         assert!(prompt.contains("A nasty crash"));
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn build_prompt_mentions_automatic_hooks() {
-        let prompt = build_prompt(7, "Title", "Desc", None);
+        let prompt = build_prompt(TaskId(7), "Title", "Desc", None);
         assert!(prompt.contains("automatically via hooks"));
         assert!(!prompt.contains("update the task status to 'review'"));
     }
@@ -306,24 +306,24 @@ mod tests {
     #[test]
     fn resume_window_name_matches_dispatch() {
         // The resume window name should use the same naming convention as dispatch
-        assert_eq!(build_tmux_window_name(42), "task-42");
+        assert_eq!(build_tmux_window_name(TaskId(42)), "task-42");
     }
 
     #[test]
     fn build_prompt_includes_plan_path() {
-        let prompt = build_prompt(1, "Task", "Desc", Some("docs/plans/my-plan.md"));
+        let prompt = build_prompt(TaskId(1), "Task", "Desc", Some("docs/plans/my-plan.md"));
         assert!(prompt.contains("Plan: docs/plans/my-plan.md"));
     }
 
     #[test]
     fn build_prompt_without_plan_omits_plan_section() {
-        let prompt = build_prompt(1, "Task", "Desc", None);
+        let prompt = build_prompt(TaskId(1), "Task", "Desc", None);
         assert!(!prompt.contains("Plan:"));
     }
 
     #[test]
     fn build_quick_dispatch_prompt_contains_rename_instruction() {
-        let prompt = build_quick_dispatch_prompt(42, "Quick task", "", 3142);
+        let prompt = build_quick_dispatch_prompt(TaskId(42), "Quick task", "", 3142);
         assert!(prompt.contains("42"));
         assert!(prompt.contains("Quick task"));
         assert!(prompt.contains("update_task"));
@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn build_quick_dispatch_prompt_mentions_mcp() {
-        let prompt = build_quick_dispatch_prompt(1, "Quick task", "", 3142);
+        let prompt = build_quick_dispatch_prompt(TaskId(1), "Quick task", "", 3142);
         assert!(prompt.contains("3142"));
         assert!(prompt.contains("update_task"));
         assert!(!prompt.contains("add_note"));
@@ -341,15 +341,15 @@ mod tests {
 
     #[test]
     fn build_quick_dispatch_prompt_differs_from_regular() {
-        let regular = build_prompt(1, "Task", "Desc", None);
-        let quick = build_quick_dispatch_prompt(1, "Task", "Desc", 3142);
+        let regular = build_prompt(TaskId(1), "Task", "Desc", None);
+        let quick = build_quick_dispatch_prompt(TaskId(1), "Task", "Desc", 3142);
         assert!(quick.contains("placeholder"));
         assert!(!regular.contains("placeholder"));
     }
 
     #[test]
     fn build_brainstorm_prompt_contains_task_info() {
-        let prompt = build_brainstorm_prompt(7, "Design auth", "Rework the auth flow", 3142);
+        let prompt = build_brainstorm_prompt(TaskId(7), "Design auth", "Rework the auth flow", 3142);
         assert!(prompt.contains("7"));
         assert!(prompt.contains("Design auth"));
         assert!(prompt.contains("Rework the auth flow"));
@@ -423,7 +423,7 @@ mod tests {
             MockProcessRunner::ok(), // tmux send-keys Enter
         ]);
 
-        resume_agent(42, &worktree_path, &mock).unwrap();
+        resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
 
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 3);

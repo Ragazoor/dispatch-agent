@@ -6,7 +6,7 @@ pub use types::*;
 
 use std::collections::HashMap;
 
-use crate::models::{Task, TaskStatus};
+use crate::models::{Task, TaskId, TaskStatus};
 
 // ---------------------------------------------------------------------------
 // App
@@ -20,7 +20,7 @@ pub struct App {
     pub(in crate::tui) input_buffer: String,
     pub(in crate::tui) task_draft: Option<TaskDraft>,
     pub(in crate::tui) detail_visible: bool,
-    pub(in crate::tui) tmux_outputs: HashMap<i64, String>,
+    pub(in crate::tui) tmux_outputs: HashMap<TaskId, String>,
     pub(in crate::tui) status_message: Option<String>,
     pub(in crate::tui) error_popup: Option<String>,
     pub(in crate::tui) repo_paths: Vec<String>,
@@ -53,7 +53,7 @@ impl App {
     pub fn mode(&self) -> &InputMode { &self.mode }
     pub fn input_buffer(&self) -> &str { &self.input_buffer }
     pub fn detail_visible(&self) -> bool { self.detail_visible }
-    pub fn tmux_outputs(&self) -> &HashMap<i64, String> { &self.tmux_outputs }
+    pub fn tmux_outputs(&self) -> &HashMap<TaskId, String> { &self.tmux_outputs }
     pub fn status_message(&self) -> Option<&str> { self.status_message.as_deref() }
     pub fn error_popup(&self) -> Option<&str> { self.error_popup.as_deref() }
     pub fn repo_paths(&self) -> &[String] { &self.repo_paths }
@@ -86,11 +86,11 @@ impl App {
         }
     }
 
-    fn find_task(&self, id: i64) -> Option<&Task> {
+    fn find_task(&self, id: TaskId) -> Option<&Task> {
         self.tasks.iter().find(|t| t.id == id)
     }
 
-    fn find_task_mut(&mut self, id: i64) -> Option<&mut Task> {
+    fn find_task_mut(&mut self, id: TaskId) -> Option<&mut Task> {
         self.tasks.iter_mut().find(|t| t.id == id)
     }
 
@@ -152,7 +152,7 @@ impl App {
         vec![]
     }
 
-    fn handle_move_task(&mut self, id: i64, direction: MoveDirection) -> Vec<Command> {
+    fn handle_move_task(&mut self, id: TaskId, direction: MoveDirection) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             let new_status = match direction {
                 MoveDirection::Forward => task.status.next(),
@@ -198,7 +198,7 @@ impl App {
         }
     }
 
-    fn handle_dispatch_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_dispatch_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
             if task.status == TaskStatus::Ready {
                 return vec![Command::Dispatch { task: task.clone() }];
@@ -207,7 +207,7 @@ impl App {
         vec![]
     }
 
-    fn handle_brainstorm_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_brainstorm_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
             if task.status == TaskStatus::Backlog {
                 return vec![Command::Brainstorm { task: task.clone() }];
@@ -216,7 +216,7 @@ impl App {
         vec![]
     }
 
-    fn handle_dispatched(&mut self, id: i64, worktree: String, tmux_window: String, switch_focus: bool) -> Vec<Command> {
+    fn handle_dispatched(&mut self, id: TaskId, worktree: String, tmux_window: String, switch_focus: bool) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.worktree = Some(worktree);
             task.tmux_window = Some(tmux_window.clone());
@@ -239,7 +239,7 @@ impl App {
         vec![]
     }
 
-    fn handle_delete_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_delete_task(&mut self, id: TaskId) -> Vec<Command> {
         self.tasks.retain(|t| t.id != id);
         self.clamp_selection();
         vec![Command::DeleteTask(id)]
@@ -250,12 +250,12 @@ impl App {
         vec![]
     }
 
-    fn handle_tmux_output(&mut self, id: i64, output: String) -> Vec<Command> {
+    fn handle_tmux_output(&mut self, id: TaskId, output: String) -> Vec<Command> {
         self.tmux_outputs.insert(id, output);
         vec![]
     }
 
-    fn handle_window_gone(&mut self, id: i64) -> Vec<Command> {
+    fn handle_window_gone(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = None;
             let task_clone = task.clone();
@@ -289,7 +289,7 @@ impl App {
         cmds
     }
 
-    fn handle_resume_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_resume_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
             if task.worktree.is_some() && task.tmux_window.is_none() {
                 vec![Command::Resume { task: task.clone() }]
@@ -301,7 +301,7 @@ impl App {
         }
     }
 
-    fn handle_resumed(&mut self, id: i64, tmux_window: String) -> Vec<Command> {
+    fn handle_resumed(&mut self, id: TaskId, tmux_window: String) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = Some(tmux_window);
             task.status = TaskStatus::Running;
@@ -318,7 +318,7 @@ impl App {
         vec![]
     }
 
-    fn handle_task_edited(&mut self, id: i64, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String>) -> Vec<Command> {
+    fn handle_task_edited(&mut self, id: TaskId, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String>) -> Vec<Command> {
         if let Some(t) = self.find_task_mut(id) {
             t.title = title;
             t.description = description;

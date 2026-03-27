@@ -4,30 +4,30 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::models::{Task, TaskStatus};
+use crate::models::{Task, TaskId, TaskStatus};
 
 // ---------------------------------------------------------------------------
 // TaskStore trait
 // ---------------------------------------------------------------------------
 
 pub trait TaskStore: Send + Sync {
-    fn create_task(&self, title: &str, description: &str, repo_path: &str, plan: Option<&str>, status: TaskStatus) -> Result<i64>;
-    fn get_task(&self, id: i64) -> Result<Option<Task>>;
+    fn create_task(&self, title: &str, description: &str, repo_path: &str, plan: Option<&str>, status: TaskStatus) -> Result<TaskId>;
+    fn get_task(&self, id: TaskId) -> Result<Option<Task>>;
     fn list_all(&self) -> Result<Vec<Task>>;
     fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
-    fn update_status(&self, id: i64, status: TaskStatus) -> Result<()>;
-    fn update_dispatch(&self, id: i64, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
-    fn persist_task(&self, id: i64, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
-    fn delete_task(&self, id: i64) -> Result<()>;
-    fn update_task(&self, id: i64, title: &str, description: &str, repo_path: &str, status: TaskStatus, plan: Option<&str>) -> Result<()>;
-    fn update_plan(&self, id: i64, plan: Option<&str>) -> Result<()>;
-    fn update_title_description(&self, id: i64, title: Option<&str>, description: Option<&str>) -> Result<()>;
+    fn update_status(&self, id: TaskId, status: TaskStatus) -> Result<()>;
+    fn update_dispatch(&self, id: TaskId, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
+    fn persist_task(&self, id: TaskId, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
+    fn delete_task(&self, id: TaskId) -> Result<()>;
+    fn update_task(&self, id: TaskId, title: &str, description: &str, repo_path: &str, status: TaskStatus, plan: Option<&str>) -> Result<()>;
+    fn update_plan(&self, id: TaskId, plan: Option<&str>) -> Result<()>;
+    fn update_title_description(&self, id: TaskId, title: Option<&str>, description: Option<&str>) -> Result<()>;
     fn list_repo_paths(&self) -> Result<Vec<String>>;
     fn save_repo_path(&self, path: &str) -> Result<()>;
     fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
     fn update_task_partial(
         &self,
-        id: i64,
+        id: TaskId,
         status: Option<TaskStatus>,
         plan: Option<Option<&str>>,
         title: Option<&str>,
@@ -130,23 +130,23 @@ impl TaskStore for Database {
         repo_path: &str,
         plan: Option<&str>,
         status: TaskStatus,
-    ) -> Result<i64> {
+    ) -> Result<TaskId> {
         let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         conn.execute(
             "INSERT INTO tasks (title, description, repo_path, plan, status) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![title, description, repo_path, plan, status.as_str()],
         )
         .context("Failed to insert task")?;
-        Ok(conn.last_insert_rowid())
+        Ok(TaskId(conn.last_insert_rowid()))
     }
 
-    fn get_task(&self, id: i64) -> Result<Option<Task>> {
+    fn get_task(&self, id: TaskId) -> Result<Option<Task>> {
         let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
                     plan, created_at, updated_at
              FROM tasks WHERE id = ?1",
-            params![id],
+            params![id.0],
             row_to_task,
         )
         .optional()
@@ -187,12 +187,12 @@ impl TaskStore for Database {
         Ok(tasks)
     }
 
-    fn update_status(&self, id: i64, status: TaskStatus) -> Result<()> {
+    fn update_status(&self, id: TaskId, status: TaskStatus) -> Result<()> {
         let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![status.as_str(), id],
+                params![status.as_str(), id.0],
             )
             .context("Failed to update status")?;
         if rows == 0 {
@@ -203,7 +203,7 @@ impl TaskStore for Database {
 
     fn update_dispatch(
         &self,
-        id: i64,
+        id: TaskId,
         worktree: Option<&str>,
         tmux_window: Option<&str>,
     ) -> Result<()> {
@@ -212,7 +212,7 @@ impl TaskStore for Database {
             .execute(
                 "UPDATE tasks SET worktree = ?1, tmux_window = ?2, updated_at = datetime('now')
                  WHERE id = ?3",
-                params![worktree, tmux_window, id],
+                params![worktree, tmux_window, id.0],
             )
             .context("Failed to update dispatch fields")?;
         if rows == 0 {
@@ -221,12 +221,12 @@ impl TaskStore for Database {
         Ok(())
     }
 
-    fn persist_task(&self, id: i64, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()> {
+    fn persist_task(&self, id: TaskId, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()> {
         let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET status = ?1, worktree = ?2, tmux_window = ?3, updated_at = datetime('now') WHERE id = ?4",
-                params![status.as_str(), worktree, tmux_window, id],
+                params![status.as_str(), worktree, tmux_window, id.0],
             )
             .context("Failed to persist task")?;
         if rows == 0 {
@@ -235,10 +235,10 @@ impl TaskStore for Database {
         Ok(())
     }
 
-    fn delete_task(&self, id: i64) -> Result<()> {
+    fn delete_task(&self, id: TaskId) -> Result<()> {
         let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
-            .execute("DELETE FROM tasks WHERE id = ?1", params![id])
+            .execute("DELETE FROM tasks WHERE id = ?1", params![id.0])
             .context("Failed to delete task")?;
         if rows == 0 {
             anyhow::bail!("Task {} not found", id);
@@ -248,7 +248,7 @@ impl TaskStore for Database {
 
     fn update_task(
         &self,
-        id: i64,
+        id: TaskId,
         title: &str,
         description: &str,
         repo_path: &str,
@@ -259,7 +259,7 @@ impl TaskStore for Database {
         let changed = conn
             .execute(
                 "UPDATE tasks SET title = ?1, description = ?2, repo_path = ?3, status = ?4, plan = ?5, updated_at = datetime('now') WHERE id = ?6",
-                params![title, description, repo_path, status.as_str(), plan, id],
+                params![title, description, repo_path, status.as_str(), plan, id.0],
             )
             .context("Failed to update task")?;
         if changed == 0 {
@@ -268,12 +268,12 @@ impl TaskStore for Database {
         Ok(())
     }
 
-    fn update_plan(&self, id: i64, plan: Option<&str>) -> Result<()> {
+    fn update_plan(&self, id: TaskId, plan: Option<&str>) -> Result<()> {
         let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET plan = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![plan, id],
+                params![plan, id.0],
             )
             .context("Failed to update plan")?;
         if rows == 0 {
@@ -282,7 +282,7 @@ impl TaskStore for Database {
         Ok(())
     }
 
-    fn update_title_description(&self, id: i64, title: Option<&str>, description: Option<&str>) -> Result<()> {
+    fn update_title_description(&self, id: TaskId, title: Option<&str>, description: Option<&str>) -> Result<()> {
         let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let mut parts = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -299,7 +299,7 @@ impl TaskStore for Database {
             return Ok(());
         }
         parts.push("updated_at = datetime('now')");
-        params_vec.push(Box::new(id));
+        params_vec.push(Box::new(id.0));
 
         let sql = format!("UPDATE tasks SET {} WHERE id = ?", parts.join(", "));
         let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
@@ -351,7 +351,7 @@ impl TaskStore for Database {
 
     fn update_task_partial(
         &self,
-        id: i64,
+        id: TaskId,
         status: Option<TaskStatus>,
         plan: Option<Option<&str>>,
         title: Option<&str>,
@@ -385,7 +385,7 @@ impl TaskStore for Database {
         }
 
         parts.push("updated_at = datetime('now')");
-        params_vec.push(Box::new(id));
+        params_vec.push(Box::new(id.0));
 
         let sql = format!("UPDATE tasks SET {} WHERE id = ?", parts.join(", "));
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -417,7 +417,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let updated_str: String = row.get("updated_at")?;
 
     Ok(Task {
-        id: row.get("id")?,
+        id: TaskId(row.get("id")?),
         title: row.get("title")?,
         description: row.get("description")?,
         repo_path: row.get("repo_path")?,
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn update_status_nonexistent() {
         let db = in_memory_db();
-        let result = db.update_status(9999, TaskStatus::Done);
+        let result = db.update_status(TaskId(9999), TaskStatus::Done);
         assert!(result.is_err(), "Should error for nonexistent task");
         let msg = format!("{}", result.unwrap_err());
         assert!(msg.contains("9999"), "Error should mention the id");
@@ -540,7 +540,7 @@ mod tests {
     #[test]
     fn get_nonexistent() {
         let db = in_memory_db();
-        let result = db.get_task(9999).unwrap();
+        let result = db.get_task(TaskId(9999)).unwrap();
         assert!(result.is_none());
     }
 
@@ -624,7 +624,7 @@ mod tests {
     #[test]
     fn update_plan_nonexistent_task() {
         let db = in_memory_db();
-        let result = db.update_plan(9999, Some("plan.md"));
+        let result = db.update_plan(TaskId(9999), Some("plan.md"));
         assert!(result.is_err());
     }
 
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn update_title_description_nonexistent() {
         let db = in_memory_db();
-        let result = db.update_title_description(9999, Some("Title"), None);
+        let result = db.update_title_description(TaskId(9999), Some("Title"), None);
         assert!(result.is_err());
     }
 

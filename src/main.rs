@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
         Commands::Update { id, status } => {
             let new_status = parse_status(&status)?;
             let db = db::Database::open(&cli.db)?;
-            db.update_status(id, new_status)?;
+            db.update_status(models::TaskId(id), new_status)?;
             println!("Task {} updated to {}", id, status);
         }
         Commands::List { status } => {
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
             let plan_str = plan_path.to_string_lossy();
 
             let db = db::Database::open(&cli.db)?;
-            db.update_plan(id, Some(&plan_str))?;
+            db.update_plan(models::TaskId(id), Some(&plan_str))?;
             println!("Plan attached to task #{}: {}", id, plan_str);
         }
     }
