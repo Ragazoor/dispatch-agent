@@ -175,7 +175,7 @@ fn tool_definitions() -> Value {
                         },
                         "plan": {
                             "type": "string",
-                            "description": "File path to the implementation plan (optional). If provided, task starts in 'ready' status."
+                            "description": "Absolute file path to the implementation plan (optional). If provided, task starts in 'ready' status."
                         }
                     },
                     "required": ["title", "repo_path"]
@@ -278,7 +278,13 @@ fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         Err(resp) => return resp,
     };
 
-    let status = if parsed.plan.is_some() {
+    let plan = parsed.plan.as_deref().map(|p| {
+        std::fs::canonicalize(p)
+            .map(|abs| abs.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| p.to_string())
+    });
+
+    let status = if plan.is_some() {
         TaskStatus::Ready
     } else {
         TaskStatus::Backlog
@@ -288,7 +294,7 @@ fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         &parsed.title,
         &parsed.description,
         &parsed.repo_path,
-        parsed.plan.as_deref(),
+        plan.as_deref(),
         status,
     ) {
         Ok(task_id) => JsonRpcResponse::ok(
@@ -516,6 +522,10 @@ mod tests {
 
     #[tokio::test]
     async fn create_task_with_plan_sets_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let plan_file = dir.path().join("plan.md");
+        std::fs::write(&plan_file, "# Plan").unwrap();
+
         let state = test_state();
         let resp = call(
             &state,
@@ -525,7 +535,7 @@ mod tests {
                 "arguments": {
                     "title": "Planned Task",
                     "repo_path": "/my/repo",
-                    "plan": "docs/plan.md"
+                    "plan": plan_file.to_string_lossy()
                 }
             })),
         ).await;
@@ -534,7 +544,9 @@ mod tests {
         let tasks = state.db.list_all().unwrap();
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].status, TaskStatus::Ready);
-        assert_eq!(tasks[0].plan.as_deref(), Some("docs/plan.md"));
+        let stored = tasks[0].plan.as_deref().unwrap();
+        assert!(std::path::Path::new(stored).is_absolute(), "plan path should be absolute, got: {stored}");
+        assert_eq!(stored, std::fs::canonicalize(&plan_file).unwrap().to_string_lossy());
     }
 
     #[tokio::test]
