@@ -173,7 +173,7 @@ fn build_tmux_window_name(task_id: i64) -> String {
     format!("task-{task_id}")
 }
 
-fn build_prompt(task_id: i64, title: &str, description: &str, mcp_port: u16, plan: Option<&str>) -> String {
+fn build_prompt(task_id: i64, title: &str, description: &str, _mcp_port: u16, plan: Option<&str>) -> String {
     let plan_section = match plan {
         Some(path) => format!(
             "\n\nPlan: {path}\nRead this file for the full implementation plan. Follow it step by step."
@@ -190,9 +190,7 @@ Your task is:\n\
 {plan_section}\n\
 \n\
 Task status transitions (running/review) are managed automatically via hooks. \
-Do not call update_task for status changes. \
-An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-post notes as you work (tool: task-orchestrator, tool name: add_note)."
+Do not call update_task for status changes."
     )
 }
 
@@ -214,7 +212,6 @@ implementation plan. When done, save the plan and attach it to the task:\n\
 After planning, ask whether to continue implementing or stop.\n\
 \n\
 An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-post notes as you work (tool: task-orchestrator, tool name: add_note) and \
 attach the plan (tool: task-orchestrator, tool name: update_task — set the plan field)."
     )
 }
@@ -243,7 +240,6 @@ mod tests {
         assert!(prompt.contains("42"));
         assert!(prompt.contains("Fix bug"));
         assert!(prompt.contains("A nasty crash"));
-        assert!(prompt.contains("3142"));
         assert!(prompt.contains("automatically via hooks"));
     }
 
