@@ -26,7 +26,7 @@ use crate::{db, dispatch, models, mcp, tmux};
 // run_tui — entry point for the TUI mode
 // ---------------------------------------------------------------------------
 
-pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
+pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Result<()> {
     // 1. Open database and load initial tasks
     let database = Arc::new(db::Database::open(db_path)?);
     let tasks = database.list_all()?;
@@ -40,7 +40,7 @@ pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     });
 
     // 3. Create App and load saved repo paths
-    let mut app = App::new(tasks, Duration::from_secs(300));
+    let mut app = App::new(tasks, Duration::from_secs(inactivity_timeout));
     let paths = database.list_repo_paths().unwrap_or_default();
     app.update(Message::RepoPathsUpdated(paths));
 
@@ -447,6 +447,17 @@ impl TuiRuntime {
             app.update(Message::Error(format!("Jump failed: {e:#}")));
         }
     }
+
+    fn exec_kill_tmux_window(&self, window: String) {
+        let runner = self.runner.clone();
+        let tx = self.msg_tx.clone();
+
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = tmux::kill_window(&window, &*runner) {
+                let _ = tx.send(Message::Error(format!("Kill window failed: {e:#}")));
+            }
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -520,7 +531,7 @@ async fn execute_commands(
             Command::JumpToTmux { window } => rt.exec_jump_to_tmux(app, window),
             Command::QuickDispatch { title, description, repo_path } =>
                 rt.exec_quick_dispatch(app, title, description, repo_path),
-            Command::KillTmuxWindow { .. } => {} // placeholder
+            Command::KillTmuxWindow { window } => rt.exec_kill_tmux_window(window),
         }
     }
 

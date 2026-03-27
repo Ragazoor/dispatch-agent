@@ -26,6 +26,9 @@ enum Commands {
         /// MCP server port
         #[arg(long, env = "TASK_ORCHESTRATOR_PORT", default_value = "3142")]
         port: u16,
+        /// Seconds of unchanged tmux output before marking agent stale
+        #[arg(long, env = "TASK_ORCHESTRATOR_INACTIVITY_TIMEOUT", default_value = "300")]
+        inactivity_timeout: u64,
     },
     /// Update a task's status
     Update {
@@ -92,7 +95,7 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Tui { port } => {
+        Commands::Tui { port, inactivity_timeout } => {
             let data_dir = cli.db.parent().unwrap_or(std::path::Path::new("."));
             std::fs::create_dir_all(data_dir)?;
             let log_path = data_dir.join("app.log");
@@ -107,7 +110,7 @@ async fn main() -> Result<()> {
                     EnvFilter::from_default_env().add_directive(Level::INFO.into()),
                 )
                 .init();
-            runtime::run_tui(&cli.db, port).await?;
+            runtime::run_tui(&cli.db, port, inactivity_timeout).await?;
         }
         Commands::Update { id, status } => {
             let new_status = parse_status(&status)?;
