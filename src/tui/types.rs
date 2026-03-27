@@ -1,4 +1,4 @@
-use crate::models::{Task, TaskStatus};
+use crate::models::{Task, TaskId, TaskStatus};
 
 // ---------------------------------------------------------------------------
 // MoveDirection
@@ -20,20 +20,20 @@ pub enum Message {
     Quit,
     NavigateColumn(isize),
     NavigateRow(isize),
-    MoveTask { id: i64, direction: MoveDirection },
-    DispatchTask(i64),
-    BrainstormTask(i64),
-    Dispatched { id: i64, worktree: String, tmux_window: String, switch_focus: bool },
+    MoveTask { id: TaskId, direction: MoveDirection },
+    DispatchTask(TaskId),
+    BrainstormTask(TaskId),
+    Dispatched { id: TaskId, worktree: String, tmux_window: String, switch_focus: bool },
     TaskCreated { task: Task },
-    DeleteTask(i64),
+    DeleteTask(TaskId),
     ToggleDetail,
-    TmuxOutput { id: i64, output: String },
-    WindowGone(i64),
+    TmuxOutput { id: TaskId, output: String },
+    WindowGone(TaskId),
     RefreshTasks(Vec<Task>),
-    ResumeTask(i64),
-    Resumed { id: i64, tmux_window: String },
+    ResumeTask(TaskId),
+    Resumed { id: TaskId, tmux_window: String },
     Error(String),
-    TaskEdited { id: i64, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String> },
+    TaskEdited { id: TaskId, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String> },
     RepoPathsUpdated(Vec<String>),
     QuickDispatch { repo_path: String },
     StaleAgent(i64),
@@ -50,19 +50,19 @@ pub enum Message {
 #[derive(Debug, Clone)]
 pub enum Command {
     PersistTask(Task),
-    InsertTask { title: String, description: String, repo_path: String },
-    DeleteTask(i64),
+    InsertTask(TaskDraft),
+    DeleteTask(TaskId),
     Dispatch { task: Task },
     Brainstorm { task: Task },
     Cleanup { repo_path: String, worktree: String, tmux_window: Option<String> },
-    CaptureTmux { id: i64, window: String },
+    CaptureTmux { id: TaskId, window: String },
     Resume { task: Task },
     JumpToTmux { window: String },
     KillTmuxWindow { window: String },
     EditTaskInEditor(Task),
     SaveRepoPath(String),
     RefreshFromDb,
-    QuickDispatch { title: String, description: String, repo_path: String },
+    QuickDispatch(TaskDraft),
 }
 
 // ---------------------------------------------------------------------------
@@ -88,4 +88,5 @@ pub enum InputMode {
 pub struct TaskDraft {
     pub title: String,
     pub description: String,
+    pub repo_path: String,
 }

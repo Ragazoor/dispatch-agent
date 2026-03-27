@@ -20,6 +20,7 @@ use crate::db::TaskStore;
 use crate::editor::{format_editor_content, parse_editor_content};
 use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::tui::{self, App, Command, Message};
+use crate::models::TaskId;
 use crate::{db, dispatch, models, mcp, tmux};
 
 // ---------------------------------------------------------------------------
@@ -192,8 +193,13 @@ impl TuiRuntime {
                 // 2. Add task to in-memory state
                 app.update(Message::TaskCreated { task: task.clone() });
                 // 3. Save repo path
-                let _ = self.database.save_repo_path(&repo_path);
-                let paths = self.database.list_repo_paths().unwrap_or_default();
+                if let Err(e) = self.database.save_repo_path(&repo_path) {
+                    tracing::warn!("failed to save repo path: {e}");
+                }
+                let paths = self.database.list_repo_paths().unwrap_or_else(|e| {
+                    tracing::warn!("failed to list repo paths: {e}");
+                    vec![]
+                });
                 app.update(Message::RepoPathsUpdated(paths));
                 // 4. Dispatch the agent
                 let tx = self.msg_tx.clone();
@@ -233,22 +239,28 @@ impl TuiRuntime {
         }
     }
 
-    fn exec_delete_task(&self, app: &mut App, id: i64) {
+    fn exec_delete_task(&self, app: &mut App, id: TaskId) {
         if let Err(e) = self.database.delete_task(id) {
             app.update(Message::Error(format!("DB error deleting task: {e}")));
         }
     }
 
-    fn exec_dispatch(&self, task: models::Task) {
+    fn spawn_dispatch<F>(&self, task: models::Task, dispatch_fn: F, label: &'static str)
+    where
+        F: FnOnce(&models::Task, u16, &dyn ProcessRunner) -> Result<models::DispatchResult>
+            + Send
+            + 'static,
+    {
         let tx = self.msg_tx.clone();
         let port = self.port;
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
             let id = task.id;
-            tracing::info!(task_id = id, "dispatching task");
-            match dispatch::dispatch_agent(&task, port, &*runner) {
+            tracing::info!(task_id = id.0, label, "dispatching");
+            match dispatch_fn(&task, port, &*runner) {
                 Ok(result) => {
+                    // receiver dropped = app shutting down; nothing to log
                     let _ = tx.send(Message::Dispatched {
                         id,
                         worktree: result.worktree_path,
@@ -257,37 +269,21 @@ impl TuiRuntime {
                     });
                 }
                 Err(e) => {
-                    let _ = tx.send(Message::Error(format!("Dispatch failed: {e:#}")));
+                    let _ = tx.send(Message::Error(format!("{label} failed: {e:#}")));
                 }
             }
         });
+    }
+
+    fn exec_dispatch(&self, task: models::Task) {
+        self.spawn_dispatch(task, dispatch::dispatch_agent, "Dispatch");
     }
 
     fn exec_brainstorm(&self, task: models::Task) {
-        let tx = self.msg_tx.clone();
-        let port = self.port;
-        let runner = self.runner.clone();
-
-        tokio::task::spawn_blocking(move || {
-            let id = task.id;
-            tracing::info!(task_id = id, "brainstorming task");
-            match dispatch::brainstorm_agent(&task, port, &*runner) {
-                Ok(result) => {
-                    let _ = tx.send(Message::Dispatched {
-                        id,
-                        worktree: result.worktree_path,
-                        tmux_window: result.tmux_window,
-                        switch_focus: false,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Message::Error(format!("Brainstorm dispatch failed: {e:#}")));
-                }
-            }
-        });
+        self.spawn_dispatch(task, dispatch::brainstorm_agent, "Brainstorm");
     }
 
-    fn exec_capture_tmux(&self, id: i64, window: String) {
+    fn exec_capture_tmux(&self, id: TaskId, window: String) {
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
 
@@ -322,11 +318,7 @@ impl TuiRuntime {
             .suffix(".md")
             .tempfile()?;
         let content = format_editor_content(
-            &task.title,
-            &task.description,
-            &task.repo_path,
-            task.status.as_str(),
-            task.plan.as_deref().unwrap_or(""),
+            &task,
         );
         std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
 
@@ -349,9 +341,8 @@ impl TuiRuntime {
         // Resume input polling thread
         self.input_paused.store(false, Ordering::Relaxed);
 
-        if let Ok(exit) = status {
-            if exit.success() {
-                // Parse the edited file
+        match status {
+            Ok(exit) if exit.success() => {
                 if let Ok(edited) = std::fs::read_to_string(tmp.path()) {
                     let mut title = task.title.clone();
                     let mut description = task.description.clone();
@@ -372,8 +363,9 @@ impl TuiRuntime {
                     }
                     let plan = if fields.plan.is_empty() { None } else { Some(fields.plan) };
 
-                    // Update DB and in-memory state
-                    if let Err(e) = self.database.update_task(task_id, &title, &description, &repo_path, new_status, plan.as_deref()) {
+                    if let Err(e) = self.database.update_task(
+                        task_id, &title, &description, &repo_path, new_status, plan.as_deref(),
+                    ) {
                         app.update(Message::Error(format!("DB error updating task: {e}")));
                     }
                     app.update(Message::TaskEdited {
@@ -384,7 +376,15 @@ impl TuiRuntime {
                         status: new_status,
                         plan,
                     });
+                } else {
+                    tracing::warn!(task_id = task_id.0, "failed to read edited temp file");
                 }
+            }
+            Ok(exit) => {
+                tracing::warn!(task_id = task_id.0, ?exit, "editor exited with non-zero status");
+            }
+            Err(e) => {
+                tracing::warn!(task_id = task_id.0, "failed to spawn editor: {e}");
             }
         }
 
@@ -392,8 +392,13 @@ impl TuiRuntime {
     }
 
     fn exec_save_repo_path(&self, app: &mut App, path: String) {
-        let _ = self.database.save_repo_path(&path);
-        let paths = self.database.list_repo_paths().unwrap_or_default();
+        if let Err(e) = self.database.save_repo_path(&path) {
+            tracing::warn!("failed to save repo path: {e}");
+        }
+        let paths = self.database.list_repo_paths().unwrap_or_else(|e| {
+            tracing::warn!("failed to list repo paths: {e}");
+            vec![]
+        });
         app.update(Message::RepoPathsUpdated(paths));
     }
 
@@ -430,7 +435,7 @@ impl TuiRuntime {
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            tracing::info!(task_id = id, "resuming task");
+            tracing::info!(task_id = id.0, "resuming task");
             match dispatch::resume_agent(id, &worktree_path, &*runner) {
                 Ok(result) => {
                     let _ = tx.send(Message::Resumed {
@@ -519,8 +524,8 @@ async fn execute_commands(
     for command in commands {
         match command {
             Command::PersistTask(task) => rt.exec_persist_task(app, task),
-            Command::InsertTask { title, description, repo_path } =>
-                rt.exec_insert_task(app, title, description, repo_path),
+            Command::InsertTask(draft) =>
+                rt.exec_insert_task(app, draft.title, draft.description, draft.repo_path),
             Command::DeleteTask(id) => rt.exec_delete_task(app, id),
             Command::Dispatch { task } => rt.exec_dispatch(task),
             Command::Brainstorm { task } => rt.exec_brainstorm(task),
@@ -532,11 +537,85 @@ async fn execute_commands(
                 rt.exec_cleanup(repo_path, worktree, tmux_window),
             Command::Resume { task } => rt.exec_resume(task),
             Command::JumpToTmux { window } => rt.exec_jump_to_tmux(app, window),
-            Command::QuickDispatch { title, description, repo_path } =>
-                rt.exec_quick_dispatch(app, title, description, repo_path),
+            Command::QuickDispatch(draft) =>
+                rt.exec_quick_dispatch(app, draft.title, draft.description, draft.repo_path),
             Command::KillTmuxWindow { window } => rt.exec_kill_tmux_window(window),
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Database;
+    use crate::process::MockProcessRunner;
+
+    fn test_runtime() -> (TuiRuntime, App) {
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner,
+        };
+        let tasks = db.list_all().unwrap();
+        let app = App::new(tasks);
+        (rt, app)
+    }
+
+    #[test]
+    fn exec_insert_task_adds_to_db_and_app() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into());
+        assert_eq!(app.tasks().len(), 1);
+        assert_eq!(app.tasks()[0].title, "Test");
+        assert_eq!(rt.database.list_all().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn exec_delete_task_removes_from_db() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into());
+        let id = app.tasks()[0].id;
+        rt.exec_delete_task(&mut app, id);
+        assert!(rt.database.list_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn exec_persist_task_saves_status_to_db() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into());
+        let mut task = app.tasks()[0].clone();
+        task.status = models::TaskStatus::Ready;
+        task.worktree = Some("/repo/.worktrees/1-test".into());
+        rt.exec_persist_task(&mut app, task);
+        let db_task = rt.database.get_task(app.tasks()[0].id).unwrap().unwrap();
+        assert_eq!(db_task.status, models::TaskStatus::Ready);
+        assert_eq!(db_task.worktree.as_deref(), Some("/repo/.worktrees/1-test"));
+    }
+
+    #[test]
+    fn exec_save_repo_path_updates_app_state() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_save_repo_path(&mut app, "/repo".into());
+        assert!(app.repo_paths().contains(&"/repo".to_string()));
+    }
+
+    #[test]
+    fn exec_refresh_from_db_syncs_external_changes() {
+        let (rt, mut app) = test_runtime();
+        // Insert directly into DB, bypassing app
+        rt.database
+            .create_task("External", "Added via CLI", "/repo", None, models::TaskStatus::Backlog)
+            .unwrap();
+        assert!(app.tasks().is_empty());
+        rt.exec_refresh_from_db(&mut app);
+        assert_eq!(app.tasks().len(), 1);
+        assert_eq!(app.tasks()[0].title, "External");
+    }
 }

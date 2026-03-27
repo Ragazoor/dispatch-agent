@@ -7,7 +7,7 @@ pub use types::*;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crate::models::{Task, TaskStatus};
+use crate::models::{Task, TaskId, TaskStatus};
 
 // ---------------------------------------------------------------------------
 // App
@@ -21,14 +21,14 @@ pub struct App {
     pub(in crate::tui) input_buffer: String,
     pub(in crate::tui) task_draft: Option<TaskDraft>,
     pub(in crate::tui) detail_visible: bool,
-    pub(in crate::tui) tmux_outputs: HashMap<i64, String>,
+    pub(in crate::tui) tmux_outputs: HashMap<TaskId, String>,
     pub(in crate::tui) status_message: Option<String>,
     pub(in crate::tui) error_popup: Option<String>,
     pub(in crate::tui) repo_paths: Vec<String>,
     pub(in crate::tui) should_quit: bool,
-    pub(in crate::tui) last_output_change: HashMap<i64, Instant>,
-    pub(in crate::tui) stale_tasks: HashSet<i64>,
-    pub(in crate::tui) crashed_tasks: HashSet<i64>,
+    pub(in crate::tui) last_output_change: HashMap<TaskId, Instant>,
+    pub(in crate::tui) stale_tasks: HashSet<TaskId>,
+    pub(in crate::tui) crashed_tasks: HashSet<TaskId>,
     pub(in crate::tui) inactivity_timeout: Duration,
 }
 
@@ -62,13 +62,13 @@ impl App {
     pub fn mode(&self) -> &InputMode { &self.mode }
     pub fn input_buffer(&self) -> &str { &self.input_buffer }
     pub fn detail_visible(&self) -> bool { self.detail_visible }
-    pub fn tmux_outputs(&self) -> &HashMap<i64, String> { &self.tmux_outputs }
+    pub fn tmux_outputs(&self) -> &HashMap<TaskId, String> { &self.tmux_outputs }
     pub fn status_message(&self) -> Option<&str> { self.status_message.as_deref() }
     pub fn error_popup(&self) -> Option<&str> { self.error_popup.as_deref() }
     pub fn repo_paths(&self) -> &[String] { &self.repo_paths }
     pub fn task_draft(&self) -> Option<&TaskDraft> { self.task_draft.as_ref() }
-    pub fn stale_tasks(&self) -> &HashSet<i64> { &self.stale_tasks }
-    pub fn crashed_tasks(&self) -> &HashSet<i64> { &self.crashed_tasks }
+    pub fn stale_tasks(&self) -> &HashSet<TaskId> { &self.stale_tasks }
+    pub fn crashed_tasks(&self) -> &HashSet<TaskId> { &self.crashed_tasks }
     pub fn inactivity_timeout(&self) -> Duration { self.inactivity_timeout }
 
     /// Return all tasks for a given status, ordered as they appear in self.tasks.
@@ -98,16 +98,16 @@ impl App {
         }
     }
 
-    fn find_task(&self, id: i64) -> Option<&Task> {
+    fn find_task(&self, id: TaskId) -> Option<&Task> {
         self.tasks.iter().find(|t| t.id == id)
     }
 
-    fn find_task_mut(&mut self, id: i64) -> Option<&mut Task> {
+    fn find_task_mut(&mut self, id: TaskId) -> Option<&mut Task> {
         self.tasks.iter_mut().find(|t| t.id == id)
     }
 
     /// Remove all in-memory agent tracking state for a task.
-    fn clear_agent_tracking(&mut self, id: i64) {
+    fn clear_agent_tracking(&mut self, id: TaskId) {
         self.last_output_change.remove(&id);
         self.stale_tasks.remove(&id);
         self.crashed_tasks.remove(&id);
@@ -177,7 +177,7 @@ impl App {
         vec![]
     }
 
-    fn handle_move_task(&mut self, id: i64, direction: MoveDirection) -> Vec<Command> {
+    fn handle_move_task(&mut self, id: TaskId, direction: MoveDirection) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             let new_status = match direction {
                 MoveDirection::Forward => task.status.next(),
@@ -224,7 +224,7 @@ impl App {
         }
     }
 
-    fn handle_dispatch_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_dispatch_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
             if task.status == TaskStatus::Ready {
                 return vec![Command::Dispatch { task: task.clone() }];
@@ -233,7 +233,7 @@ impl App {
         vec![]
     }
 
-    fn handle_brainstorm_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_brainstorm_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
             if task.status == TaskStatus::Backlog {
                 return vec![Command::Brainstorm { task: task.clone() }];
@@ -242,7 +242,7 @@ impl App {
         vec![]
     }
 
-    fn handle_dispatched(&mut self, id: i64, worktree: String, tmux_window: String, switch_focus: bool) -> Vec<Command> {
+    fn handle_dispatched(&mut self, id: TaskId, worktree: String, tmux_window: String, switch_focus: bool) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.worktree = Some(worktree);
             task.tmux_window = Some(tmux_window.clone());
@@ -266,7 +266,7 @@ impl App {
         vec![]
     }
 
-    fn handle_delete_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_delete_task(&mut self, id: TaskId) -> Vec<Command> {
         self.tasks.retain(|t| t.id != id);
         self.clamp_selection();
         vec![Command::DeleteTask(id)]
@@ -277,7 +277,7 @@ impl App {
         vec![]
     }
 
-    fn handle_tmux_output(&mut self, id: i64, output: String) -> Vec<Command> {
+    fn handle_tmux_output(&mut self, id: TaskId, output: String) -> Vec<Command> {
         let changed = self.tmux_outputs.get(&id) != Some(&output);
         if changed {
             self.last_output_change.insert(id, Instant::now());
@@ -288,7 +288,7 @@ impl App {
         vec![]
     }
 
-    fn handle_window_gone(&mut self, id: i64) -> Vec<Command> {
+    fn handle_window_gone(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
             if task.status == TaskStatus::Running {
                 // Running task lost its window — likely crashed
@@ -327,7 +327,7 @@ impl App {
 
         // Check for stale agents
         let timeout = self.inactivity_timeout;
-        let newly_stale: Vec<i64> = self
+        let newly_stale: Vec<TaskId> = self
             .tasks
             .iter()
             .filter(|t| t.status == TaskStatus::Running && t.tmux_window.is_some())
@@ -349,7 +349,8 @@ impl App {
         cmds
     }
 
-    fn handle_stale_agent(&mut self, id: i64) -> Vec<Command> {
+<<<<<<< HEAD
+    fn handle_stale_agent(&mut self, id: TaskId) -> Vec<Command> {
         self.stale_tasks.insert(id);
         if let Some(task) = self.find_task(id) {
             let elapsed = self.last_output_change
@@ -364,7 +365,7 @@ impl App {
         vec![]
     }
 
-    fn handle_agent_crashed(&mut self, id: i64) -> Vec<Command> {
+    fn handle_agent_crashed(&mut self, id: TaskId) -> Vec<Command> {
         self.crashed_tasks.insert(id);
         if let Some(task) = self.find_task(id) {
             self.status_message = Some(format!(
@@ -374,7 +375,7 @@ impl App {
         vec![]
     }
 
-    fn handle_resume_task(&mut self, id: i64) -> Vec<Command> {
+    fn handle_resume_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
             if task.worktree.is_some() && task.tmux_window.is_none() {
                 vec![Command::Resume { task: task.clone() }]
@@ -386,7 +387,7 @@ impl App {
         }
     }
 
-    fn handle_resumed(&mut self, id: i64, tmux_window: String) -> Vec<Command> {
+    fn handle_resumed(&mut self, id: TaskId, tmux_window: String) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = Some(tmux_window);
             task.status = TaskStatus::Running;
@@ -406,7 +407,7 @@ impl App {
         vec![]
     }
 
-    fn handle_task_edited(&mut self, id: i64, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String>) -> Vec<Command> {
+    fn handle_task_edited(&mut self, id: TaskId, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String>) -> Vec<Command> {
         if let Some(t) = self.find_task_mut(id) {
             t.title = title;
             t.description = description;
@@ -425,14 +426,14 @@ impl App {
     }
 
     fn handle_quick_dispatch(&mut self, repo_path: String) -> Vec<Command> {
-        vec![Command::QuickDispatch {
+        vec![Command::QuickDispatch(TaskDraft {
             title: "Quick task".to_string(),
             description: String::new(),
             repo_path,
-        }]
+        })]
     }
 
-    fn handle_kill_and_retry(&mut self, id: i64) -> Vec<Command> {
+    fn handle_kill_and_retry(&mut self, id: TaskId) -> Vec<Command> {
         self.mode = InputMode::ConfirmRetry(id);
         let label = if self.crashed_tasks.contains(&id) {
             "crashed"
@@ -445,7 +446,7 @@ impl App {
         vec![]
     }
 
-    fn handle_retry_resume(&mut self, id: i64) -> Vec<Command> {
+    fn handle_retry_resume(&mut self, id: TaskId) -> Vec<Command> {
         self.mode = InputMode::Normal;
         self.status_message = None;
         self.clear_agent_tracking(id);
@@ -465,7 +466,7 @@ impl App {
         }
     }
 
-    fn handle_retry_fresh(&mut self, id: i64) -> Vec<Command> {
+    fn handle_retry_fresh(&mut self, id: TaskId) -> Vec<Command> {
         self.mode = InputMode::Normal;
         self.status_message = None;
         self.clear_agent_tracking(id);

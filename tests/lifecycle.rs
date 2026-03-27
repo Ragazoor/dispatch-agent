@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use task_orchestrator::db::{Database, TaskStore};
-use task_orchestrator::models::{Task, TaskStatus};
+use task_orchestrator::models::{Task, TaskId, TaskStatus};
 use task_orchestrator::tui::{App, Command, Message, MoveDirection};
 
 fn make_app() -> (App, Database) {
@@ -58,7 +58,7 @@ fn full_lifecycle() {
     assert!(cmds.is_empty());
     assert_eq!(app.tasks().len(), 1);
     assert_eq!(app.tasks()[0].status, TaskStatus::Backlog);
-    assert_ne!(app.tasks()[0].id, 0, "ID should be assigned by DB");
+    assert_ne!(app.tasks()[0].id, TaskId(0), "ID should be assigned by DB");
 
     // Verify DB has the task
     let db_task = db.get_task(task_id).unwrap().unwrap();

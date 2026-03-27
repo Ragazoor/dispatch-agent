@@ -6,9 +6,13 @@ pub struct EditorFields {
     pub plan: String,
 }
 
-pub fn format_editor_content(title: &str, description: &str, repo_path: &str, status: &str, plan: &str) -> String {
+use crate::models::Task;
+
+pub fn format_editor_content(task: &Task) -> String {
+    let plan = task.plan.as_deref().unwrap_or("");
     format!(
-        "--- TITLE ---\n{title}\n--- DESCRIPTION ---\n{description}\n--- REPO_PATH ---\n{repo_path}\n--- STATUS ---\n{status}\n--- PLAN ---\n{plan}\n"
+        "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n--- STATUS ---\n{}\n--- PLAN ---\n{}\n",
+        task.title, task.description, task.repo_path, task.status.as_str(), plan
     )
 }
 
@@ -53,10 +57,28 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{TaskId, TaskStatus};
+    use chrono::Utc;
+
+    fn make_task(title: &str, description: &str, repo_path: &str, status: TaskStatus, plan: Option<&str>) -> Task {
+        Task {
+            id: TaskId(1),
+            title: title.to_string(),
+            description: description.to_string(),
+            repo_path: repo_path.to_string(),
+            status,
+            worktree: None,
+            tmux_window: None,
+            plan: plan.map(|s| s.to_string()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
 
     #[test]
     fn editor_roundtrip_basic() {
-        let content = format_editor_content("My Task", "A description", "/repo", "ready", "docs/plan.md");
+        let task = make_task("My Task", "A description", "/repo", TaskStatus::Ready, Some("docs/plan.md"));
+        let content = format_editor_content(&task);
         let fields = parse_editor_content(&content);
         assert_eq!(fields.title, "My Task");
         assert_eq!(fields.description, "A description");
@@ -67,21 +89,24 @@ mod tests {
 
     #[test]
     fn editor_roundtrip_colons_in_title() {
-        let content = format_editor_content("Fix: auth bug", "desc", "/repo", "backlog", "");
+        let task = make_task("Fix: auth bug", "desc", "/repo", TaskStatus::Backlog, None);
+        let content = format_editor_content(&task);
         let fields = parse_editor_content(&content);
         assert_eq!(fields.title, "Fix: auth bug");
     }
 
     #[test]
     fn editor_roundtrip_colons_in_description() {
-        let content = format_editor_content("Title", "Step 1: do this\nStep 2: do that", "/repo", "ready", "");
+        let task = make_task("Title", "Step 1: do this\nStep 2: do that", "/repo", TaskStatus::Ready, None);
+        let content = format_editor_content(&task);
         let fields = parse_editor_content(&content);
         assert_eq!(fields.description, "Step 1: do this\nStep 2: do that");
     }
 
     #[test]
     fn editor_multiline_description() {
-        let content = format_editor_content("Title", "Line 1\nLine 2\nLine 3", "/repo", "done", "");
+        let task = make_task("Title", "Line 1\nLine 2\nLine 3", "/repo", TaskStatus::Done, None);
+        let content = format_editor_content(&task);
         let fields = parse_editor_content(&content);
         assert_eq!(fields.description, "Line 1\nLine 2\nLine 3");
     }

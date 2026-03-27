@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::models::TaskStatus;
+use crate::models::{TaskId, TaskStatus};
 
 use super::McpState;
 
@@ -287,36 +287,33 @@ fn handle_update_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         );
     }
 
-    if let Some(ref status_str) = parsed.status {
-        let status = match TaskStatus::parse(status_str) {
-            Some(s) => s,
+    let status = if let Some(ref status_str) = parsed.status {
+        match TaskStatus::parse(status_str) {
+            Some(s) => Some(s),
             None => {
                 return JsonRpcResponse::err(
                     id,
                     -32602,
-                    format!("Unknown status: {status_str}. Valid values: backlog, ready, running, review, done"),
+                    format!(
+                        "Unknown status: {status_str}. Valid values: backlog, ready, running, review, done"
+                    ),
                 )
             }
-        };
-        if let Err(e) = state.db.update_status(parsed.task_id, status) {
-            return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
         }
-    }
+    } else {
+        None
+    };
 
-    if let Some(ref plan) = parsed.plan {
-        if let Err(e) = state.db.update_plan(parsed.task_id, Some(plan)) {
-            return JsonRpcResponse::err(id, -32603, format!("Database error updating plan: {e}"));
-        }
-    }
+    let plan = parsed.plan.as_ref().map(|p| Some(p.as_str()));
 
-    if parsed.title.is_some() || parsed.description.is_some() {
-        if let Err(e) = state.db.update_title_description(
-            parsed.task_id,
-            parsed.title.as_deref(),
-            parsed.description.as_deref(),
-        ) {
-            return JsonRpcResponse::err(id, -32603, format!("Database error updating title/description: {e}"));
-        }
+    if let Err(e) = state.db.update_task_partial(
+        TaskId(parsed.task_id),
+        status,
+        plan,
+        parsed.title.as_deref(),
+        parsed.description.as_deref(),
+    ) {
+        return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
     }
 
     let mut updated = Vec::new();
@@ -371,7 +368,7 @@ fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcR
         Err(resp) => return resp,
     };
     tracing::info!(task_id = parsed.task_id, "MCP get_task");
-    match state.db.get_task(parsed.task_id) {
+    match state.db.get_task(TaskId(parsed.task_id)) {
         Ok(Some(task)) => {
             let text = format!(
                 "Task {id}: {title}\nStatus: {status}\nRepo: {repo}\nDescription: {desc}",
@@ -444,7 +441,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "running" }
+                "arguments": { "task_id": task_id.0, "status": "running" }
             })),
         ).await;
         assert!(resp.result.is_some());
@@ -464,7 +461,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "bogus" }
+                "arguments": { "task_id": task_id.0, "status": "bogus" }
             })),
         ).await;
         assert!(resp.error.is_some());
@@ -492,7 +489,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "get_task",
-                "arguments": { "task_id": task_id }
+                "arguments": { "task_id": task_id.0 }
             })),
         ).await;
         let result = resp.result.unwrap();
@@ -635,7 +632,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id.to_string(), "status": "running" }
+                "arguments": { "task_id": task_id.0.to_string(), "status": "running" }
             })),
         ).await;
         assert!(resp.error.is_none(), "update_task should accept string task_id, got: {:?}", resp.error);
@@ -654,7 +651,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "get_task",
-                "arguments": { "task_id": task_id.to_string() }
+                "arguments": { "task_id": task_id.0.to_string() }
             })),
         ).await;
         assert!(resp.error.is_none(), "get_task should accept string task_id, got: {:?}", resp.error);
@@ -673,7 +670,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "ready", "plan": "/path/to/plan.md" }
+                "arguments": { "task_id": task_id.0, "status": "ready", "plan": "/path/to/plan.md" }
             })),
         ).await;
         assert!(resp.error.is_none());
@@ -693,7 +690,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "title": "New Title" }
+                "arguments": { "task_id": task_id.0, "title": "New Title" }
             })),
         ).await;
         assert!(resp.error.is_none(), "should succeed with title only: {:?}", resp.error);
@@ -713,7 +710,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "title": "Renamed" }
+                "arguments": { "task_id": task_id.0, "title": "Renamed" }
             })),
         ).await;
         assert!(resp.error.is_none());
@@ -733,7 +730,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "title": "New", "description": "new desc" }
+                "arguments": { "task_id": task_id.0, "title": "New", "description": "new desc" }
             })),
         ).await;
         assert!(resp.error.is_none());
@@ -753,10 +750,34 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id }
+                "arguments": { "task_id": task_id.0 }
             })),
         ).await;
         assert!(resp.error.is_some(), "should error with no fields to update");
+    }
+
+    #[tokio::test]
+    async fn update_task_partial_sets_multiple_fields() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "Desc", "/repo", None, TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": {
+                    "task_id": task_id.0,
+                    "status": "ready",
+                    "title": "Updated Title"
+                }
+            })),
+        ).await;
+        assert!(resp.error.is_none());
+
+        let task = state.db.get_task(task_id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Ready);
+        assert_eq!(task.title, "Updated Title");
     }
 
     #[tokio::test]
@@ -769,7 +790,7 @@ mod tests {
             "tools/call",
             Some(json!({
                 "name": "update_task",
-                "arguments": { "task_id": task_id, "status": "ready" }
+                "arguments": { "task_id": task_id.0, "status": "ready" }
             })),
         ).await;
         assert!(resp.error.is_none());

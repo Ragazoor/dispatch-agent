@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, Command, InputMode, Message, MoveDirection, TaskDraft};
-use crate::models::TaskStatus;
+use crate::models::{TaskId, TaskStatus};
 
 impl App {
     /// Translate a terminal key event into zero or more commands, depending on current mode.
@@ -178,6 +178,7 @@ impl App {
                             self.task_draft = Some(TaskDraft {
                                 title: value,
                                 description: String::new(),
+                                repo_path: String::new(),
                             });
                             self.mode = InputMode::InputDescription;
                             self.status_message = Some("Enter description: ".to_string());
@@ -193,12 +194,10 @@ impl App {
                         vec![]
                     }
                     InputMode::InputRepoPath => {
-                        let draft = self.task_draft.take().unwrap_or_default();
                         let repo_path = if value.is_empty() {
                             if let Some(first) = self.repo_paths.first() {
                                 first.clone()
                             } else {
-                                self.task_draft = Some(draft);
                                 self.status_message =
                                     Some("Repo path required (no saved paths available)".to_string());
                                 return vec![];
@@ -206,16 +205,7 @@ impl App {
                         } else {
                             value
                         };
-                        self.mode = InputMode::Normal;
-                        self.status_message = None;
-                        vec![
-                            Command::InsertTask {
-                                title: draft.title,
-                                description: draft.description,
-                                repo_path: repo_path.clone(),
-                            },
-                            Command::SaveRepoPath(repo_path),
-                        ]
+                        self.finish_task_creation(repo_path)
                     }
                     _ => vec![],
                 }
@@ -229,22 +219,14 @@ impl App {
             KeyCode::Char(c) => {
                 // In repo path mode with empty buffer, 1-9 selects a saved path
                 if self.mode == InputMode::InputRepoPath
-                    && self.input_buffer.is_empty() && c.is_ascii_digit() && c != '0'
+                    && self.input_buffer.is_empty()
+                    && c.is_ascii_digit()
+                    && c != '0'
                 {
                     let idx = (c as usize) - ('1' as usize);
                     if idx < self.repo_paths.len() {
-                        let draft = self.task_draft.take().unwrap_or_default();
                         let repo_path = self.repo_paths[idx].clone();
-                        self.mode = InputMode::Normal;
-                        self.status_message = None;
-                        return vec![
-                            Command::InsertTask {
-                                title: draft.title,
-                                description: draft.description,
-                                repo_path: repo_path.clone(),
-                            },
-                            Command::SaveRepoPath(repo_path),
-                        ];
+                        return self.finish_task_creation(repo_path);
                     }
                 }
                 self.input_buffer.push(c);
@@ -297,7 +279,7 @@ impl App {
         }
     }
 
-    fn handle_key_confirm_retry(&mut self, key: KeyEvent, id: i64) -> Vec<Command> {
+    fn handle_key_confirm_retry(&mut self, key: KeyEvent, id: TaskId) -> Vec<Command> {
         match key.code {
             KeyCode::Char('r') => self.update(Message::RetryResume(id)),
             KeyCode::Char('f') => self.update(Message::RetryFresh(id)),
@@ -308,5 +290,16 @@ impl App {
             }
             _ => vec![],
         }
+    }
+
+    fn finish_task_creation(&mut self, repo_path: String) -> Vec<Command> {
+        let mut draft = self.task_draft.take().unwrap_or_default();
+        draft.repo_path = repo_path.clone();
+        self.mode = InputMode::Normal;
+        self.status_message = None;
+        vec![
+            Command::InsertTask(draft),
+            Command::SaveRepoPath(repo_path),
+        ]
     }
 }
