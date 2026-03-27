@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -6,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::models::TaskStatus;
+use crate::models::{TaskStatus, Staleness, format_age};
 use super::{App, InputMode};
 
 /// Column color per status
@@ -17,6 +18,36 @@ fn column_color(status: TaskStatus) -> Color {
         TaskStatus::Running => Color::Yellow,
         TaskStatus::Review => Color::Magenta,
         TaskStatus::Done => Color::Green,
+    }
+}
+
+/// Map a staleness tier to a terminal color.
+fn staleness_color(staleness: Staleness) -> Color {
+    match staleness {
+        Staleness::Fresh => Color::Green,
+        Staleness::Aging => Color::Yellow,
+        Staleness::Stale => Color::Red,
+    }
+}
+
+/// Format age for the detail panel — slightly more verbose than card labels.
+fn format_detail_age(updated_at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let age = now.signed_duration_since(updated_at);
+    let total_hours = age.num_hours().max(0);
+
+    if total_hours < 1 {
+        "less than 1 hour".to_string()
+    } else if total_hours == 1 {
+        "1 hour".to_string()
+    } else if total_hours < 24 {
+        format!("{total_hours} hours")
+    } else {
+        let days = total_hours / 24;
+        if days == 1 {
+            "1 day".to_string()
+        } else {
+            format!("{days} days")
+        }
     }
 }
 
@@ -33,6 +64,7 @@ pub fn truncate(s: &str, max: usize) -> String {
 /// Top-level render function.
 pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
+    let now = Utc::now();
 
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -43,14 +75,14 @@ pub fn render(frame: &mut Frame, app: &App) {
         ])
         .split(area);
 
-    render_columns(frame, app, vertical[0]);
-    render_detail(frame, app, vertical[1]);
+    render_columns(frame, app, vertical[0], now);
+    render_detail(frame, app, vertical[1], now);
     render_status_bar(frame, app, vertical[2]);
 
     render_error_popup(frame, app, area);
 }
 
-fn render_columns(frame: &mut Frame, app: &App, area: Rect) {
+fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
     let column_areas = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(
@@ -92,9 +124,19 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect) {
             .enumerate()
             .map(|(row_idx, task)| {
                 let is_selected = is_focused && row_idx == selected_row;
+                let show_age = status != TaskStatus::Running;
 
-                // For Running tasks, show last line of tmux output as a hint
-                let label = if status == TaskStatus::Running {
+                // Build the age suffix for non-Running tasks
+                let age_suffix = if show_age {
+                    format!(" {}", format_age(task.updated_at, now))
+                } else {
+                    String::new()
+                };
+
+                let max_title = 38_usize.saturating_sub(age_suffix.len());
+
+                // Build the title portion
+                let title_text = if status == TaskStatus::Running {
                     if let Some(output) = app.tmux_outputs.get(&task.id) {
                         let last_line = output.lines().last().unwrap_or("").trim();
                         if !last_line.is_empty() {
@@ -110,19 +152,29 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect) {
                         truncate(&task.title, 38)
                     }
                 } else {
-                    truncate(&task.title, 38)
+                    truncate(&task.title, max_title)
                 };
 
-                let style = if is_selected {
-                    Style::default()
+                if is_selected {
+                    // Selected: uniform inverted style (readability over staleness color)
+                    let selected_style = Style::default()
                         .bg(color)
                         .fg(Color::Black)
-                        .add_modifier(Modifier::BOLD)
+                        .add_modifier(Modifier::BOLD);
+                    let full_label = format!("{title_text}{age_suffix}");
+                    ListItem::new(Line::from(Span::styled(full_label, selected_style)))
+                } else if show_age && !age_suffix.is_empty() {
+                    // Unselected with age: two spans (title default, age colored)
+                    let staleness = Staleness::from_age(task.updated_at, now);
+                    let age_style = Style::default().fg(staleness_color(staleness));
+                    ListItem::new(Line::from(vec![
+                        Span::styled(title_text, Style::default()),
+                        Span::styled(age_suffix, age_style),
+                    ]))
                 } else {
-                    Style::default()
-                };
-
-                ListItem::new(Line::from(Span::styled(label, style)))
+                    // Running or no age
+                    ListItem::new(Line::from(Span::styled(title_text, Style::default())))
+                }
             })
             .collect();
 
@@ -132,7 +184,7 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
+fn render_detail(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
     // When in input mode, show the input form instead of detail
     if render_input_form(frame, app, area) {
         return;
@@ -167,6 +219,10 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
                 "Worktree: {}  Tmux: {}",
                 task.worktree.as_deref().unwrap_or("-"),
                 task.tmux_window.as_deref().unwrap_or("-")
+            )),
+            Line::from(format!(
+                "Updated: {} ago",
+                format_detail_age(task.updated_at, now)
             )),
         ];
         if let Some(output) = app.tmux_outputs.get(&task.id) {
