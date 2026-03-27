@@ -104,8 +104,8 @@ impl App {
             Message::MoveTask { id, direction } => self.handle_move_task(id, direction),
             Message::DispatchTask(id) => self.handle_dispatch_task(id),
             Message::BrainstormTask(id) => self.handle_brainstorm_task(id),
-            Message::Dispatched { id, worktree, tmux_window } =>
-                self.handle_dispatched(id, worktree, tmux_window),
+            Message::Dispatched { id, worktree, tmux_window, switch_focus } =>
+                self.handle_dispatched(id, worktree, tmux_window, switch_focus),
             Message::TaskCreated { task } => self.handle_task_created(task),
             Message::DeleteTask(id) => self.handle_delete_task(id),
             Message::ToggleDetail => self.handle_toggle_detail(),
@@ -216,14 +216,18 @@ impl App {
         vec![]
     }
 
-    fn handle_dispatched(&mut self, id: i64, worktree: String, tmux_window: String) -> Vec<Command> {
+    fn handle_dispatched(&mut self, id: i64, worktree: String, tmux_window: String, switch_focus: bool) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.worktree = Some(worktree);
-            task.tmux_window = Some(tmux_window);
+            task.tmux_window = Some(tmux_window.clone());
             task.status = TaskStatus::Running;
             let task_clone = task.clone();
             self.clamp_selection();
-            vec![Command::PersistTask(task_clone)]
+            let mut cmds = vec![Command::PersistTask(task_clone)];
+            if switch_focus {
+                cmds.push(Command::JumpToTmux { window: tmux_window });
+            }
+            cmds
         } else {
             vec![]
         }

@@ -83,6 +83,7 @@ fn full_lifecycle() {
         id: task_id,
         worktree: "/repo/.worktrees/1-fix-auth-bug".to_string(),
         tmux_window: "task-1".to_string(),
+        switch_focus: false,
     });
     execute(&db, &cmds);
     assert_eq!(app.tasks()[0].status, TaskStatus::Running);

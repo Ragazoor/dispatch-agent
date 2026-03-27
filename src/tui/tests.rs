@@ -846,6 +846,7 @@ fn dispatched_sets_fields_and_transitions_to_running() {
         id: 3,
         worktree: "/wt".to_string(),
         tmux_window: "win".to_string(),
+        switch_focus: false,
     });
     let task = app.tasks.iter().find(|t| t.id == 3).unwrap();
     assert_eq!(task.status, TaskStatus::Running);
@@ -856,12 +857,27 @@ fn dispatched_sets_fields_and_transitions_to_running() {
 }
 
 #[test]
+fn dispatched_with_switch_focus_emits_jump() {
+    let mut app = App::new(vec![make_task(3, TaskStatus::Ready)]);
+    let cmds = app.update(Message::Dispatched {
+        id: 3,
+        worktree: "/wt".to_string(),
+        tmux_window: "win".to_string(),
+        switch_focus: true,
+    });
+    assert_eq!(cmds.len(), 2);
+    assert!(matches!(&cmds[0], Command::PersistTask(_)));
+    assert!(matches!(&cmds[1], Command::JumpToTmux { window } if window == "win"));
+}
+
+#[test]
 fn dispatched_unknown_id_is_noop() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Ready)]);
     let cmds = app.update(Message::Dispatched {
         id: 999,
         worktree: "/wt".to_string(),
         tmux_window: "win".to_string(),
+        switch_focus: false,
     });
     assert!(cmds.is_empty());
     assert_eq!(app.tasks[0].status, TaskStatus::Ready);

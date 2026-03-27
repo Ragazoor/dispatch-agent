@@ -23,7 +23,7 @@ pub enum Message {
     MoveTask { id: i64, direction: MoveDirection },
     DispatchTask(i64),
     BrainstormTask(i64),
-    Dispatched { id: i64, worktree: String, tmux_window: String },
+    Dispatched { id: i64, worktree: String, tmux_window: String, switch_focus: bool },
     TaskCreated { task: Task },
     DeleteTask(i64),
     ToggleDetail,

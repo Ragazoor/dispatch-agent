@@ -207,6 +207,7 @@ impl TuiRuntime {
                                 id,
                                 worktree: result.worktree_path,
                                 tmux_window: result.tmux_window,
+                                switch_focus: true,
                             });
                         }
                         Err(e) => {
@@ -252,6 +253,7 @@ impl TuiRuntime {
                         id,
                         worktree: result.worktree_path,
                         tmux_window: result.tmux_window,
+                        switch_focus: false,
                     });
                 }
                 Err(e) => {
@@ -275,6 +277,7 @@ impl TuiRuntime {
                         id,
                         worktree: result.worktree_path,
                         tmux_window: result.tmux_window,
+                        switch_focus: false,
                     });
                 }
                 Err(e) => {
