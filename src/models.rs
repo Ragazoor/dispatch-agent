@@ -205,6 +205,30 @@ impl Staleness {
 }
 
 // ---------------------------------------------------------------------------
+// format_age
+// ---------------------------------------------------------------------------
+
+/// Format the age of `updated_at` relative to `now` as a compact label.
+/// Returns strings like "<1h", "3h", "2d", "3w".
+pub fn format_age(updated_at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let age = now.signed_duration_since(updated_at);
+    let hours = age.num_hours().max(0);
+
+    if hours < 1 {
+        "<1h".to_string()
+    } else if hours < 24 {
+        format!("{hours}h")
+    } else {
+        let days = hours / 24;
+        if days < 14 {
+            format!("{days}d")
+        } else {
+            format!("{}w", days / 7)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -380,6 +404,71 @@ mod tests {
         let now = Utc::now();
         let updated = now + chrono::Duration::hours(1);
         assert_eq!(Staleness::from_age(updated, now), Staleness::Fresh);
+    }
+
+    // --- format_age ---
+
+    #[test]
+    fn format_age_minutes() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::minutes(30);
+        assert_eq!(format_age(updated, now), "<1h");
+    }
+
+    #[test]
+    fn format_age_one_hour() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::hours(1);
+        assert_eq!(format_age(updated, now), "1h");
+    }
+
+    #[test]
+    fn format_age_hours() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::hours(23);
+        assert_eq!(format_age(updated, now), "23h");
+    }
+
+    #[test]
+    fn format_age_one_day() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::hours(24);
+        assert_eq!(format_age(updated, now), "1d");
+    }
+
+    #[test]
+    fn format_age_days() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::days(5);
+        assert_eq!(format_age(updated, now), "5d");
+    }
+
+    #[test]
+    fn format_age_thirteen_days() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::days(13);
+        assert_eq!(format_age(updated, now), "13d");
+    }
+
+    #[test]
+    fn format_age_two_weeks() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::days(14);
+        assert_eq!(format_age(updated, now), "2w");
+    }
+
+    #[test]
+    fn format_age_three_weeks() {
+        let now = Utc::now();
+        let updated = now - chrono::Duration::days(21);
+        assert_eq!(format_age(updated, now), "3w");
+    }
+
+    #[test]
+    fn format_age_future() {
+        let now = Utc::now();
+        let updated = now + chrono::Duration::hours(5);
+        assert_eq!(format_age(updated, now), "<1h");
     }
 
 }
