@@ -130,10 +130,9 @@ impl App {
             }
 
             KeyCode::Char('x') => {
-                // Delete selected task — enter confirm mode
                 if self.selected_task().is_some() {
-                    self.mode = InputMode::ConfirmDelete;
-                    self.status_message = Some("Delete task? (y/n)".to_string());
+                    self.mode = InputMode::ConfirmArchive;
+                    self.status_message = Some("Archive task? (y/n)".to_string());
                 }
                 vec![]
             }
@@ -155,6 +154,8 @@ impl App {
                     }
                 }
             }
+
+            KeyCode::Char('H') => self.update(Message::ToggleArchive),
 
             _ => vec![],
         }

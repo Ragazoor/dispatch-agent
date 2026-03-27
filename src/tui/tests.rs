@@ -658,35 +658,25 @@ fn escape_from_repo_path_mode_cancels() {
     assert!(app.status_message.is_none());
 }
 
-// --- Delete confirmation flow ---
+// --- Delete confirmation flow (via ConfirmDelete mode directly) ---
 
 #[test]
-fn x_key_enters_confirm_delete_mode() {
-    let mut app = make_app();
-    app.selected_column = 0; // Backlog has tasks
-    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
-    assert!(cmds.is_empty());
-    assert_eq!(app.mode, InputMode::ConfirmDelete);
-    assert_eq!(app.status_message.as_deref(), Some("Delete task? (y/n)"));
-}
-
-#[test]
-fn y_confirms_deletion() {
+fn confirm_delete_y_deletes_task() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x'))); // enter confirm mode
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Char('y')));
     assert_eq!(app.mode, InputMode::Normal);
-    assert!(app.tasks.iter().all(|t| t.id != 1)); // task 1 deleted
+    assert!(app.tasks.iter().all(|t| t.id != 1));
     assert!(matches!(&cmds[0], Command::DeleteTask(1)));
     assert!(app.status_message.is_none());
 }
 
 #[test]
-fn uppercase_y_confirms_deletion() {
+fn confirm_delete_uppercase_y_deletes_task() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x')));
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Char('Y')));
     assert_eq!(app.mode, InputMode::Normal);
     assert!(app.tasks.iter().all(|t| t.id != 1));
@@ -694,26 +684,62 @@ fn uppercase_y_confirms_deletion() {
 }
 
 #[test]
-fn n_cancels_deletion() {
+fn confirm_delete_n_cancels() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x')));
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Char('n')));
     assert_eq!(app.mode, InputMode::Normal);
-    assert_eq!(app.tasks.len(), 5); // all tasks still present
+    assert_eq!(app.tasks.len(), 5);
     assert!(cmds.is_empty());
     assert!(app.status_message.is_none());
 }
 
 #[test]
-fn escape_cancels_deletion() {
+fn confirm_delete_esc_cancels() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x')));
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Esc));
     assert_eq!(app.mode, InputMode::Normal);
     assert_eq!(app.tasks.len(), 5);
     assert!(cmds.is_empty());
+}
+
+// --- Archive confirmation flow (x key) ---
+
+#[test]
+fn x_key_enters_confirm_archive_mode() {
+    let mut app = make_app();
+    app.selected_column = 0; // Backlog has tasks
+    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.mode, InputMode::ConfirmArchive);
+    assert_eq!(app.status_message.as_deref(), Some("Archive task? (y/n)"));
+}
+
+#[test]
+fn confirm_archive_y_emits_archive_task() {
+    let mut app = make_app();
+    app.selected_column = 0;
+    app.handle_key(make_key(KeyCode::Char('x')));
+    let _ = app.handle_key(make_key(KeyCode::Char('y')));
+    assert_eq!(app.mode, InputMode::Normal);
+    // Task 1 should now be Archived
+    let task = app.tasks.iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(task.status, TaskStatus::Archived);
+}
+
+#[test]
+fn confirm_archive_n_cancels() {
+    let mut app = make_app();
+    app.selected_column = 0;
+    app.handle_key(make_key(KeyCode::Char('x')));
+    let _ = app.handle_key(make_key(KeyCode::Char('n')));
+    assert_eq!(app.mode, InputMode::Normal);
+    // Task 1 still in Backlog
+    let task = app.tasks.iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(task.status, TaskStatus::Backlog);
 }
 
 #[test]
@@ -721,7 +747,19 @@ fn x_key_on_empty_column_is_noop() {
     let mut app = make_app();
     app.selected_column = 3; // Review column is empty
     app.handle_key(make_key(KeyCode::Char('x')));
-    assert_eq!(app.mode, InputMode::Normal); // did NOT enter ConfirmDelete
+    assert_eq!(app.mode, InputMode::Normal); // did NOT enter ConfirmArchive
+}
+
+// --- H key toggles archive panel ---
+
+#[test]
+fn shift_h_toggles_archive() {
+    let mut app = make_app();
+    assert!(!app.show_archived);
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(app.show_archived);
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(!app.show_archived);
 }
 
 // --- Error popup dismissal ---
