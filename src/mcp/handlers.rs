@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::models::{NoteSource, TaskStatus};
+use crate::models::TaskStatus;
 
 use super::McpState;
 
@@ -110,13 +110,6 @@ struct UpdateTaskArgs {
 }
 
 #[derive(Deserialize)]
-struct AddNoteArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    task_id: i64,
-    note: String,
-}
-
-#[derive(Deserialize)]
 struct GetTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     task_id: i64,
@@ -167,24 +160,6 @@ fn tool_definitions() -> Value {
                         }
                     },
                     "required": ["task_id", "status"]
-                }
-            },
-            {
-                "name": "add_note",
-                "description": "Add a note to a task",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "task_id": {
-                            "type": "integer",
-                            "description": "The task ID"
-                        },
-                        "note": {
-                            "type": "string",
-                            "description": "The note content"
-                        }
-                    },
-                    "required": ["task_id", "note"]
                 }
             },
             {
@@ -263,7 +238,6 @@ pub async fn handle_mcp(
 
             match tool_name {
                 "update_task" => handle_update_task(&state, id, args),
-                "add_note" => handle_add_note(&state, id, args),
                 "get_task" => handle_get_task(&state, id, args),
                 "create_task" => handle_create_task(&state, id, args),
                 other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
@@ -307,20 +281,6 @@ fn handle_update_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         id,
         json!({"content": [{"type": "text", "text": format!("Task {} updated to {}", parsed.task_id, parsed.status)}]}),
     )
-}
-
-fn handle_add_note(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
-    let parsed = match parse_args::<AddNoteArgs>(id.clone(), args) {
-        Ok(a) => a,
-        Err(resp) => return resp,
-    };
-    match state.db.add_note(parsed.task_id, &parsed.note, NoteSource::Agent) {
-        Ok(note_id) => JsonRpcResponse::ok(
-            id,
-            json!({"content": [{"type": "text", "text": format!("Note {note_id} added to task {}", parsed.task_id)}]}),
-        ),
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
-    }
 }
 
 fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
@@ -420,7 +380,6 @@ mod tests {
         let tools = result["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"update_task"));
-        assert!(names.contains(&"add_note"));
         assert!(names.contains(&"get_task"));
         assert!(names.contains(&"create_task"));
     }
@@ -471,27 +430,6 @@ mod tests {
             Some(json!({ "name": "update_task", "arguments": {} })),
         ).await;
         assert!(resp.error.is_some());
-    }
-
-    #[tokio::test]
-    async fn add_note_valid() {
-        let state = test_state();
-        let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
-
-        let resp = call(
-            &state,
-            "tools/call",
-            Some(json!({
-                "name": "add_note",
-                "arguments": { "task_id": task_id, "note": "Agent progress" }
-            })),
-        ).await;
-        assert!(resp.result.is_some());
-        assert!(resp.error.is_none());
-
-        let notes = state.db.list_notes(task_id).unwrap();
-        assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].content, "Agent progress");
     }
 
     #[tokio::test]
@@ -636,25 +574,6 @@ mod tests {
     }
 
     // -- String task_id coercion (Claude Code sends integers as strings) ------
-
-    #[tokio::test]
-    async fn add_note_accepts_string_task_id() {
-        let state = test_state();
-        let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
-
-        let resp = call(
-            &state,
-            "tools/call",
-            Some(json!({
-                "name": "add_note",
-                "arguments": { "task_id": task_id.to_string(), "note": "from agent" }
-            })),
-        ).await;
-        assert!(resp.error.is_none(), "add_note should accept string task_id, got: {:?}", resp.error);
-
-        let notes = state.db.list_notes(task_id).unwrap();
-        assert_eq!(notes.len(), 1);
-    }
 
     #[tokio::test]
     async fn update_task_accepts_string_task_id() {
