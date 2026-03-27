@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::*;
 use crate::models::TaskStatus;
@@ -319,7 +319,8 @@ fn repo_paths_updated_replaces_paths() {
 }
 
 #[test]
-fn window_gone_clears_tmux_window_and_persists() {
+fn window_gone_on_running_task_marks_crashed_compat() {
+    // Running task losing its window now marks it as crashed (not clears window)
     let mut task = make_task(4, TaskStatus::Running);
     task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
     task.tmux_window = Some("task-4".to_string());
@@ -330,13 +331,13 @@ fn window_gone_clears_tmux_window_and_persists() {
     // Task should stay Running
     let task = app.tasks.iter().find(|t| t.id == 4).unwrap();
     assert_eq!(task.status, TaskStatus::Running);
-    // tmux_window should be cleared
-    assert!(task.tmux_window.is_none());
+    // tmux_window should NOT be cleared for crashed Running tasks
+    assert!(task.tmux_window.is_some());
     // worktree should be preserved
     assert!(task.worktree.is_some());
-    // Should emit PersistTask to write cleared tmux_window to DB
-    assert_eq!(cmds.len(), 1);
-    assert!(matches!(&cmds[0], Command::PersistTask(t) if t.tmux_window.is_none()));
+    // Should be marked crashed, not emit PersistTask
+    assert!(app.crashed_tasks.contains(&4));
+    assert!(cmds.is_empty());
 }
 
 #[test]
@@ -828,6 +829,76 @@ fn toggle_detail_flips_visibility() {
     assert!(app.detail_visible);
     app.update(Message::ToggleDetail);
     assert!(!app.detail_visible);
+}
+
+#[test]
+fn stale_agent_detected_after_timeout() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.last_output_change.insert(4, Instant::now() - Duration::from_secs(301));
+
+    let cmds = app.update(Message::Tick);
+    assert!(app.stale_tasks.contains(&4));
+    assert!(cmds.iter().any(|c| matches!(c, Command::CaptureTmux { id: 4, .. })));
+}
+
+#[test]
+fn window_gone_on_running_task_marks_crashed() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+
+    let cmds = app.update(Message::WindowGone(4));
+    assert!(app.crashed_tasks.contains(&4));
+    // tmux_window should NOT be cleared for crashed Running tasks
+    assert!(app.tasks[0].tmux_window.is_some());
+    // Should NOT emit PersistTask
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn window_gone_on_review_task_clears_window() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Review),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+
+    let cmds = app.update(Message::WindowGone(4));
+    assert!(!app.crashed_tasks.contains(&4));
+    assert!(app.tasks[0].tmux_window.is_none());
+    assert!(matches!(&cmds[0], Command::PersistTask(_)));
+}
+
+#[test]
+fn tmux_output_change_resets_staleness_timer() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.last_output_change.insert(4, Instant::now() - Duration::from_secs(301));
+    app.tmux_outputs.insert(4, "old output".to_string());
+
+    app.update(Message::TmuxOutput { id: 4, output: "new output".to_string() });
+    let elapsed = app.last_output_change[&4].elapsed();
+    assert!(elapsed < Duration::from_secs(1));
+}
+
+#[test]
+fn tmux_output_same_does_not_reset_timer() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    let old_instant = Instant::now() - Duration::from_secs(200);
+    app.last_output_change.insert(4, old_instant);
+    app.tmux_outputs.insert(4, "same output".to_string());
+
+    app.update(Message::TmuxOutput { id: 4, output: "same output".to_string() });
+    let elapsed = app.last_output_change[&4].elapsed();
+    assert!(elapsed >= Duration::from_secs(199));
 }
 
 #[test]

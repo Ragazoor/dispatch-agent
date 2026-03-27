@@ -93,11 +93,13 @@ fn full_lifecycle() {
         Some("task-1")
     );
 
-    // 4. WindowGone → clears tmux_window, keeps task Running
+    // 4. WindowGone on a Running task → marks as crashed (tmux_window preserved, no PersistTask)
     let cmds = app.update(Message::WindowGone(task_id));
     execute(&db, &cmds);
     assert_eq!(app.tasks()[0].status, TaskStatus::Running);
-    assert!(app.tasks()[0].tmux_window.is_none());
+    // tmux_window is preserved so the worktree can be resumed later
+    assert!(app.tasks()[0].tmux_window.is_some());
+    assert!(app.crashed_tasks().contains(&task_id));
 
     // 4b. Agent advances task to Review via MCP (simulated as MoveTask)
     let cmds = app.update(Message::MoveTask {
