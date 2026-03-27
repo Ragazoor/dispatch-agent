@@ -86,6 +86,26 @@ pub fn brainstorm_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
     })
 }
 
+/// Provision a worktree and launch a quick dispatch session.
+///
+/// Same infrastructure as `dispatch_agent` but with a prompt that instructs
+/// the agent to rename the placeholder task after understanding user intent.
+pub fn quick_dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
+    let provision = provision_worktree(task)?;
+
+    let prompt = build_quick_dispatch_prompt(task.id, &task.title, &task.description, mcp_port);
+    let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
+    fs::write(&prompt_file, &prompt)
+        .with_context(|| format!("failed to write {prompt_file}"))?;
+    tmux::send_keys(&provision.tmux_window, "claude \"$(cat .claude-prompt)\"")
+        .context("failed to send keys to tmux window")?;
+
+    Ok(DispatchResult {
+        worktree_path: provision.worktree_path,
+        tmux_window: provision.tmux_window,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // cleanup_task
 // ---------------------------------------------------------------------------
