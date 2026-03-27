@@ -17,6 +17,7 @@ impl App {
             InputMode::InputDescription => self.handle_key_text_input(key),
             InputMode::InputRepoPath => self.handle_key_text_input(key),
             InputMode::ConfirmDelete => self.handle_key_confirm_delete(key),
+            InputMode::QuickDispatch => self.handle_key_quick_dispatch(key),
         }
     }
 
@@ -125,6 +126,24 @@ impl App {
                     self.status_message = Some("Delete task? (y/n)".to_string());
                 }
                 vec![]
+            }
+
+            KeyCode::Char('D') => {
+                match self.repo_paths.len() {
+                    0 => {
+                        self.status_message = Some("No saved repo paths — create a task first".to_string());
+                        vec![]
+                    }
+                    1 => {
+                        let repo_path = self.repo_paths[0].clone();
+                        self.update(Message::QuickDispatch { repo_path })
+                    }
+                    _ => {
+                        self.mode = InputMode::QuickDispatch;
+                        self.status_message = Some("Select repo path (1-9) or Esc to cancel".to_string());
+                        vec![]
+                    }
+                }
             }
 
             _ => vec![],
@@ -250,6 +269,28 @@ impl App {
                 self.status_message = None;
                 vec![]
             }
+        }
+    }
+
+    fn handle_key_quick_dispatch(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                vec![]
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
+                let idx = (c as usize) - ('1' as usize);
+                if idx < self.repo_paths.len() {
+                    let repo_path = self.repo_paths[idx].clone();
+                    self.mode = InputMode::Normal;
+                    self.status_message = None;
+                    self.update(Message::QuickDispatch { repo_path })
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![],
         }
     }
 }

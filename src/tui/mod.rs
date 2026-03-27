@@ -118,6 +118,7 @@ impl App {
             Message::TaskEdited { id, title, description, repo_path, status, plan } =>
                 self.handle_task_edited(id, title, description, repo_path, status, plan),
             Message::RepoPathsUpdated(paths) => self.handle_repo_paths_updated(paths),
+            Message::QuickDispatch { repo_path } => self.handle_quick_dispatch(repo_path),
         }
     }
 
@@ -329,6 +330,14 @@ impl App {
     fn handle_repo_paths_updated(&mut self, paths: Vec<String>) -> Vec<Command> {
         self.repo_paths = paths;
         vec![]
+    }
+
+    fn handle_quick_dispatch(&mut self, repo_path: String) -> Vec<Command> {
+        vec![Command::QuickDispatch {
+            title: "Quick task".to_string(),
+            description: String::new(),
+            repo_path,
+        }]
     }
 }
 

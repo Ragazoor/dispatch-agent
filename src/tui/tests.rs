@@ -733,6 +733,81 @@ fn any_key_clears_error_popup() {
     assert!(cmds.is_empty());
 }
 
+// --- QuickDispatch ---
+
+fn make_shift_key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::SHIFT)
+}
+
+#[test]
+fn shift_d_with_one_repo_emits_quick_dispatch() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.repo_paths = vec!["/repo".to_string()];
+    let cmds = app.handle_key(make_shift_key(KeyCode::Char('D')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::QuickDispatch { repo_path, .. } if repo_path == "/repo"));
+    assert_eq!(app.mode, InputMode::Normal);
+}
+
+#[test]
+fn shift_d_with_no_repos_shows_error() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.repo_paths = vec![];
+    let cmds = app.handle_key(make_shift_key(KeyCode::Char('D')));
+    assert!(cmds.is_empty());
+    assert!(app.status_message.is_some());
+    assert_eq!(app.mode, InputMode::Normal);
+}
+
+#[test]
+fn shift_d_with_multiple_repos_enters_quick_dispatch_mode() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string()];
+    let cmds = app.handle_key(make_shift_key(KeyCode::Char('D')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.mode, InputMode::QuickDispatch);
+}
+
+#[test]
+fn quick_dispatch_mode_number_selects_repo() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string()];
+    app.mode = InputMode::QuickDispatch;
+    let cmds = app.handle_key(make_key(KeyCode::Char('2')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::QuickDispatch { repo_path, .. } if repo_path == "/repo2"));
+    assert_eq!(app.mode, InputMode::Normal);
+}
+
+#[test]
+fn quick_dispatch_mode_esc_cancels() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string()];
+    app.mode = InputMode::QuickDispatch;
+    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    assert!(cmds.is_empty());
+    assert_eq!(app.mode, InputMode::Normal);
+}
+
+#[test]
+fn quick_dispatch_mode_invalid_number_is_noop() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.repo_paths = vec!["/repo1".to_string()];
+    app.mode = InputMode::QuickDispatch;
+    let cmds = app.handle_key(make_key(KeyCode::Char('3')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.mode, InputMode::QuickDispatch);
+}
+
+#[test]
+fn quick_dispatch_message_emits_command() {
+    let mut app = App::new(vec![]);
+    let cmds = app.update(Message::QuickDispatch { repo_path: "/my/repo".to_string() });
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::QuickDispatch { title, repo_path, .. }
+        if title == "Quick task" && repo_path == "/my/repo"));
+}
+
 #[test]
 fn error_popup_blocks_normal_key_handling() {
     let mut app = make_app();

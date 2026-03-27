@@ -86,6 +86,26 @@ pub fn brainstorm_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
     })
 }
 
+/// Provision a worktree and launch a quick dispatch session.
+///
+/// Same infrastructure as `dispatch_agent` but with a prompt that instructs
+/// the agent to rename the placeholder task after understanding user intent.
+pub fn quick_dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
+    let provision = provision_worktree(task)?;
+
+    let prompt = build_quick_dispatch_prompt(task.id, &task.title, &task.description, mcp_port);
+    let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
+    fs::write(&prompt_file, &prompt)
+        .with_context(|| format!("failed to write {prompt_file}"))?;
+    tmux::send_keys(&provision.tmux_window, "claude \"$(cat .claude-prompt)\"")
+        .context("failed to send keys to tmux window")?;
+
+    Ok(DispatchResult {
+        worktree_path: provision.worktree_path,
+        tmux_window: provision.tmux_window,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // cleanup_task
 // ---------------------------------------------------------------------------
@@ -194,6 +214,27 @@ Do not call update_task for status changes."
     )
 }
 
+fn build_quick_dispatch_prompt(task_id: i64, title: &str, description: &str, mcp_port: u16) -> String {
+    format!(
+        "You are an autonomous coding agent working interactively with the user.\n\
+\n\
+Task:\n\
+  ID: {task_id}\n\
+  Title: {title}\n\
+  Description: {description}\n\
+\n\
+This is a quick-dispatched task with a placeholder title. After you understand what \
+the user wants, call `update_task` with a descriptive `title` (and optionally \
+`description`) to rename the task on the kanban board.\n\
+\n\
+Task status transitions (running/review) are managed automatically via hooks. \
+Do not call update_task for status changes.\n\
+An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
+post notes as you work (tool: task-orchestrator, tool name: add_note) and \
+rename this task (tool: task-orchestrator, tool name: update_task — set the title field)."
+    )
+}
+
 fn build_brainstorm_prompt(task_id: i64, title: &str, description: &str, mcp_port: u16) -> String {
     format!(
         "You are an autonomous coding agent starting a brainstorming session.\n\
@@ -283,6 +324,31 @@ mod tests {
     fn build_prompt_without_plan_omits_plan_section() {
         let prompt = build_prompt(1, "Task", "Desc", 3142, None);
         assert!(!prompt.contains("Plan:"));
+    }
+
+    #[test]
+    fn build_quick_dispatch_prompt_contains_rename_instruction() {
+        let prompt = build_quick_dispatch_prompt(42, "Quick task", "", 3142);
+        assert!(prompt.contains("42"));
+        assert!(prompt.contains("Quick task"));
+        assert!(prompt.contains("update_task"));
+        assert!(prompt.contains("title"));
+        assert!(prompt.contains("placeholder"));
+    }
+
+    #[test]
+    fn build_quick_dispatch_prompt_mentions_mcp() {
+        let prompt = build_quick_dispatch_prompt(1, "Quick task", "", 3142);
+        assert!(prompt.contains("3142"));
+        assert!(prompt.contains("add_note"));
+    }
+
+    #[test]
+    fn build_quick_dispatch_prompt_differs_from_regular() {
+        let regular = build_prompt(1, "Task", "Desc", 3142, None);
+        let quick = build_quick_dispatch_prompt(1, "Task", "Desc", 3142);
+        assert!(quick.contains("placeholder"));
+        assert!(!regular.contains("placeholder"));
     }
 
     #[test]

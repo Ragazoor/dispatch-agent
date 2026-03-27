@@ -245,11 +245,34 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
             )));
             lines
         }
+        InputMode::QuickDispatch => {
+            let mut lines = vec![
+                Line::from(Span::styled("  Quick Dispatch — select repo:", active)),
+                Line::from(""),
+            ];
+            for (i, path) in app.repo_paths.iter().enumerate() {
+                lines.push(Line::from(Span::styled(
+                    format!("    [{}] {path}", i + 1),
+                    hint,
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Press 1-9 to select, Esc to cancel",
+                hint,
+            )));
+            lines
+        }
         _ => return false,
     };
 
+    let block_title = match &app.mode {
+        InputMode::QuickDispatch => " Quick Dispatch ",
+        _ => " New Task ",
+    };
+
     let block = Block::default()
-        .title(" New Task ")
+        .title(block_title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
 
@@ -305,13 +328,14 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         match &app.mode {
             InputMode::Normal => {
-                "q:quit  h/l:col  j/k:row  n:new  e:edit  m/M:move  d:dispatch  Enter:detail  x:delete"
+                "q:quit  h/l:col  j/k:row  n:new  D:quick  e:edit  m/M:move  d:dispatch  Enter:detail  x:delete"
                     .to_string()
             }
             InputMode::InputTitle => "Creating task: enter title".to_string(),
             InputMode::InputDescription => "Creating task: enter description".to_string(),
             InputMode::InputRepoPath => "Creating task: enter repo path".to_string(),
             InputMode::ConfirmDelete => "Delete? (y/n)".to_string(),
+            InputMode::QuickDispatch => "Quick dispatch: select repo path".to_string(),
         }
     };
 

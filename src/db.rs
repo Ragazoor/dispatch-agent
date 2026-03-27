@@ -21,6 +21,7 @@ pub trait TaskStore: Send + Sync {
     fn delete_task(&self, id: i64) -> Result<()>;
     fn update_task(&self, id: i64, title: &str, description: &str, repo_path: &str, status: TaskStatus, plan: Option<&str>) -> Result<()>;
     fn update_plan(&self, id: i64, plan: Option<&str>) -> Result<()>;
+    fn update_title_description(&self, id: i64, title: Option<&str>, description: Option<&str>) -> Result<()>;
     fn list_repo_paths(&self) -> Result<Vec<String>>;
     fn save_repo_path(&self, path: &str) -> Result<()>;
     fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
@@ -272,6 +273,36 @@ impl TaskStore for Database {
         }
         Ok(())
     }
+
+    fn update_title_description(&self, id: i64, title: Option<&str>, description: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mut parts = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(t) = title {
+            parts.push("title = ?");
+            params_vec.push(Box::new(t.to_string()));
+        }
+        if let Some(d) = description {
+            parts.push("description = ?");
+            params_vec.push(Box::new(d.to_string()));
+        }
+        if parts.is_empty() {
+            return Ok(());
+        }
+        parts.push("updated_at = datetime('now')");
+        params_vec.push(Box::new(id));
+
+        let sql = format!("UPDATE tasks SET {} WHERE id = ?", parts.join(", "));
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = conn.execute(&sql, params_refs.as_slice())
+            .context("Failed to update title/description")?;
+        if rows == 0 {
+            anyhow::bail!("Task {id} not found");
+        }
+        Ok(())
+    }
+
 
     fn list_repo_paths(&self) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
@@ -597,5 +628,48 @@ mod tests {
             .prepare("SELECT plan FROM tasks LIMIT 1")
             .is_ok();
         assert!(has_plan, "Migration 1 should have added the plan column");
+    }
+
+    #[test]
+    fn update_title_description_changes_fields() {
+        let db = in_memory_db();
+        let id = db.create_task("Old Title", "Old desc", "/repo", None, TaskStatus::Backlog).unwrap();
+
+        db.update_title_description(id, Some("New Title"), Some("New desc")).unwrap();
+
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.title, "New Title");
+        assert_eq!(task.description, "New desc");
+    }
+
+    #[test]
+    fn update_title_description_partial_title_only() {
+        let db = in_memory_db();
+        let id = db.create_task("Old Title", "Old desc", "/repo", None, TaskStatus::Backlog).unwrap();
+
+        db.update_title_description(id, Some("New Title"), None).unwrap();
+
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.title, "New Title");
+        assert_eq!(task.description, "Old desc");
+    }
+
+    #[test]
+    fn update_title_description_partial_desc_only() {
+        let db = in_memory_db();
+        let id = db.create_task("Old Title", "Old desc", "/repo", None, TaskStatus::Backlog).unwrap();
+
+        db.update_title_description(id, None, Some("New desc")).unwrap();
+
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.title, "Old Title");
+        assert_eq!(task.description, "New desc");
+    }
+
+    #[test]
+    fn update_title_description_nonexistent() {
+        let db = in_memory_db();
+        let result = db.update_title_description(9999, Some("Title"), None);
+        assert!(result.is_err());
     }
 }

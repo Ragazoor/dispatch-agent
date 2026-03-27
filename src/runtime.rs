@@ -165,6 +165,54 @@ impl TuiRuntime {
         }
     }
 
+    fn exec_quick_dispatch(&self, app: &mut App, title: String, description: String, repo_path: String) {
+        // 1. Create task in DB with status Ready
+        match self.database.create_task(&title, &description, &repo_path, None, models::TaskStatus::Ready) {
+            Ok(new_id) => {
+                let now = chrono::Utc::now();
+                let task = models::Task {
+                    id: new_id,
+                    title,
+                    description,
+                    repo_path: repo_path.clone(),
+                    status: models::TaskStatus::Ready,
+                    worktree: None,
+                    tmux_window: None,
+                    plan: None,
+                    created_at: now,
+                    updated_at: now,
+                };
+                // 2. Add task to in-memory state
+                app.update(Message::TaskCreated { task: task.clone() });
+                // 3. Save repo path
+                let _ = self.database.save_repo_path(&repo_path);
+                let paths = self.database.list_repo_paths().unwrap_or_default();
+                app.update(Message::RepoPathsUpdated(paths));
+                // 4. Dispatch the agent
+                let tx = self.msg_tx.clone();
+                let port = self.port;
+                tokio::task::spawn_blocking(move || {
+                    let id = task.id;
+                    match dispatch::quick_dispatch_agent(&task, port) {
+                        Ok(result) => {
+                            let _ = tx.send(Message::Dispatched {
+                                id,
+                                worktree: result.worktree_path,
+                                tmux_window: result.tmux_window,
+                            });
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Message::Error(format!("Quick dispatch failed: {e:#}")));
+                        }
+                    }
+                });
+            }
+            Err(e) => {
+                app.update(Message::Error(format!("DB error creating task: {e}")));
+            }
+        }
+    }
+
     fn exec_persist_task(&self, app: &mut App, task: models::Task) {
         if let Err(e) = self.database.persist_task(
             task.id,
@@ -447,6 +495,8 @@ async fn execute_commands(
                 rt.exec_cleanup(repo_path, worktree, tmux_window),
             Command::Resume { task } => rt.exec_resume(task),
             Command::JumpToTmux { window } => rt.exec_jump_to_tmux(app, window),
+            Command::QuickDispatch { title, description, repo_path } =>
+                rt.exec_quick_dispatch(app, title, description, repo_path),
         }
     }
 

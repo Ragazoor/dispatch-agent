@@ -104,9 +104,14 @@ where
 struct UpdateTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     task_id: i64,
-    status: String,
+    #[serde(default)]
+    status: Option<String>,
     #[serde(default)]
     plan: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -141,7 +146,7 @@ fn tool_definitions() -> Value {
         "tools": [
             {
                 "name": "update_task",
-                "description": "Update the status of a task, and optionally attach a plan file path",
+                "description": "Update a task's status, title, description, and/or plan. At least one field besides task_id must be provided.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -156,10 +161,18 @@ fn tool_definitions() -> Value {
                         },
                         "plan": {
                             "type": "string",
-                            "description": "Absolute file path to the implementation plan (optional). Used by brainstorming agents to attach a plan after writing it."
+                            "description": "Absolute file path to the implementation plan"
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "New title for the task"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "New description for the task"
                         }
                     },
-                    "required": ["task_id", "status"]
+                    "required": ["task_id"]
                 }
             },
             {
@@ -259,27 +272,61 @@ fn handle_update_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    let status = match TaskStatus::parse(&parsed.status) {
-        Some(s) => s,
-        None => {
-            return JsonRpcResponse::err(
-                id,
-                -32602,
-                format!("Unknown status: {}. Valid values: backlog, ready, running, review, done", parsed.status),
-            )
-        }
-    };
-    if let Err(e) = state.db.update_status(parsed.task_id, status) {
-        return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
+
+    let has_update = parsed.status.is_some()
+        || parsed.plan.is_some()
+        || parsed.title.is_some()
+        || parsed.description.is_some();
+
+    if !has_update {
+        return JsonRpcResponse::err(
+            id,
+            -32602,
+            "At least one of status, plan, title, or description must be provided",
+        );
     }
-    if let Some(plan) = &parsed.plan {
+
+    if let Some(ref status_str) = parsed.status {
+        let status = match TaskStatus::parse(status_str) {
+            Some(s) => s,
+            None => {
+                return JsonRpcResponse::err(
+                    id,
+                    -32602,
+                    format!("Unknown status: {status_str}. Valid values: backlog, ready, running, review, done"),
+                )
+            }
+        };
+        if let Err(e) = state.db.update_status(parsed.task_id, status) {
+            return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
+        }
+    }
+
+    if let Some(ref plan) = parsed.plan {
         if let Err(e) = state.db.update_plan(parsed.task_id, Some(plan)) {
             return JsonRpcResponse::err(id, -32603, format!("Database error updating plan: {e}"));
         }
     }
+
+    if parsed.title.is_some() || parsed.description.is_some() {
+        if let Err(e) = state.db.update_title_description(
+            parsed.task_id,
+            parsed.title.as_deref(),
+            parsed.description.as_deref(),
+        ) {
+            return JsonRpcResponse::err(id, -32603, format!("Database error updating title/description: {e}"));
+        }
+    }
+
+    let mut updated = Vec::new();
+    if let Some(ref s) = parsed.status { updated.push(format!("status={s}")); }
+    if parsed.plan.is_some() { updated.push("plan".to_string()); }
+    if parsed.title.is_some() { updated.push("title".to_string()); }
+    if parsed.description.is_some() { updated.push("description".to_string()); }
+
     JsonRpcResponse::ok(
         id,
-        json!({"content": [{"type": "text", "text": format!("Task {} updated to {}", parsed.task_id, parsed.status)}]}),
+        json!({"content": [{"type": "text", "text": format!("Task {} updated ({})", parsed.task_id, updated.join(", "))}]}),
     )
 }
 
@@ -631,6 +678,82 @@ mod tests {
         let task = state.db.get_task(task_id).unwrap().unwrap();
         assert_eq!(task.status, crate::models::TaskStatus::Ready);
         assert_eq!(task.plan.as_deref(), Some("/path/to/plan.md"));
+    }
+
+    #[tokio::test]
+    async fn update_task_title_only() {
+        let state = test_state();
+        let task_id = state.db.create_task("Old", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id, "title": "New Title" }
+            })),
+        ).await;
+        assert!(resp.error.is_none(), "should succeed with title only: {:?}", resp.error);
+
+        let task = state.db.get_task(task_id).unwrap().unwrap();
+        assert_eq!(task.title, "New Title");
+        assert_eq!(task.status, crate::models::TaskStatus::Backlog); // unchanged
+    }
+
+    #[tokio::test]
+    async fn update_task_status_optional() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id, "title": "Renamed" }
+            })),
+        ).await;
+        assert!(resp.error.is_none());
+
+        let task = state.db.get_task(task_id).unwrap().unwrap();
+        assert_eq!(task.title, "Renamed");
+        assert_eq!(task.status, crate::models::TaskStatus::Backlog);
+    }
+
+    #[tokio::test]
+    async fn update_task_title_and_description() {
+        let state = test_state();
+        let task_id = state.db.create_task("Old", "old desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id, "title": "New", "description": "new desc" }
+            })),
+        ).await;
+        assert!(resp.error.is_none());
+
+        let task = state.db.get_task(task_id).unwrap().unwrap();
+        assert_eq!(task.title, "New");
+        assert_eq!(task.description, "new desc");
+    }
+
+    #[tokio::test]
+    async fn update_task_no_fields_errors() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id }
+            })),
+        ).await;
+        assert!(resp.error.is_some(), "should error with no fields to update");
     }
 
     #[tokio::test]
