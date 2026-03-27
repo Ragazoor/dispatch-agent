@@ -36,11 +36,11 @@ pub enum Message {
     TaskEdited { id: TaskId, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String> },
     RepoPathsUpdated(Vec<String>),
     QuickDispatch { repo_path: String },
-    StaleAgent(i64),
-    AgentCrashed(i64),
-    KillAndRetry(i64),
-    RetryResume(i64),
-    RetryFresh(i64),
+    StaleAgent(TaskId),
+    AgentCrashed(TaskId),
+    KillAndRetry(TaskId),
+    RetryResume(TaskId),
+    RetryFresh(TaskId),
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ pub enum InputMode {
     InputRepoPath,
     ConfirmDelete,
     QuickDispatch,
-    ConfirmRetry(i64),
+    ConfirmRetry(TaskId),
 }
 
 // ---------------------------------------------------------------------------

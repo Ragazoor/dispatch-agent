@@ -336,7 +336,7 @@ fn window_gone_on_running_task_marks_crashed_compat() {
     // worktree should be preserved
     assert!(task.worktree.is_some());
     // Should be marked crashed, not emit PersistTask
-    assert!(app.crashed_tasks.contains(&4));
+    assert!(app.crashed_tasks.contains(&TaskId(4)));
     assert!(cmds.is_empty());
 }
 
@@ -837,11 +837,11 @@ fn stale_agent_detected_after_timeout() {
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.last_output_change.insert(4, Instant::now() - Duration::from_secs(301));
+    app.last_output_change.insert(TaskId(4), Instant::now() - Duration::from_secs(301));
 
     let cmds = app.update(Message::Tick);
-    assert!(app.stale_tasks.contains(&4));
-    assert!(cmds.iter().any(|c| matches!(c, Command::CaptureTmux { id: 4, .. })));
+    assert!(app.stale_tasks.contains(&TaskId(4)));
+    assert!(cmds.iter().any(|c| matches!(c, Command::CaptureTmux { id: TaskId(4), .. })));
 }
 
 #[test]
@@ -851,8 +851,8 @@ fn window_gone_on_running_task_marks_crashed() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
 
-    let cmds = app.update(Message::WindowGone(4));
-    assert!(app.crashed_tasks.contains(&4));
+    let cmds = app.update(Message::WindowGone(TaskId(4)));
+    assert!(app.crashed_tasks.contains(&TaskId(4)));
     // tmux_window should NOT be cleared for crashed Running tasks
     assert!(app.tasks[0].tmux_window.is_some());
     // Should NOT emit PersistTask
@@ -866,8 +866,8 @@ fn window_gone_on_review_task_clears_window() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
 
-    let cmds = app.update(Message::WindowGone(4));
-    assert!(!app.crashed_tasks.contains(&4));
+    let cmds = app.update(Message::WindowGone(TaskId(4)));
+    assert!(!app.crashed_tasks.contains(&TaskId(4)));
     assert!(app.tasks[0].tmux_window.is_none());
     assert!(matches!(&cmds[0], Command::PersistTask(_)));
 }
@@ -878,11 +878,11 @@ fn tmux_output_change_resets_staleness_timer() {
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.last_output_change.insert(4, Instant::now() - Duration::from_secs(301));
-    app.tmux_outputs.insert(4, "old output".to_string());
+    app.last_output_change.insert(TaskId(4), Instant::now() - Duration::from_secs(301));
+    app.tmux_outputs.insert(TaskId(4), "old output".to_string());
 
-    app.update(Message::TmuxOutput { id: 4, output: "new output".to_string() });
-    let elapsed = app.last_output_change[&4].elapsed();
+    app.update(Message::TmuxOutput { id: TaskId(4), output: "new output".to_string() });
+    let elapsed = app.last_output_change[&TaskId(4)].elapsed();
     assert!(elapsed < Duration::from_secs(1));
 }
 
@@ -893,11 +893,11 @@ fn tmux_output_same_does_not_reset_timer() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
     let old_instant = Instant::now() - Duration::from_secs(200);
-    app.last_output_change.insert(4, old_instant);
-    app.tmux_outputs.insert(4, "same output".to_string());
+    app.last_output_change.insert(TaskId(4), old_instant);
+    app.tmux_outputs.insert(TaskId(4), "same output".to_string());
 
-    app.update(Message::TmuxOutput { id: 4, output: "same output".to_string() });
-    let elapsed = app.last_output_change[&4].elapsed();
+    app.update(Message::TmuxOutput { id: TaskId(4), output: "same output".to_string() });
+    let elapsed = app.last_output_change[&TaskId(4)].elapsed();
     assert!(elapsed >= Duration::from_secs(199));
 }
 
@@ -1229,10 +1229,10 @@ fn kill_and_retry_enters_confirm_mode() {
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.stale_tasks.insert(4);
+    app.stale_tasks.insert(TaskId(4));
 
-    app.update(Message::KillAndRetry(4));
-    assert!(matches!(app.mode, InputMode::ConfirmRetry(4)));
+    app.update(Message::KillAndRetry(TaskId(4)));
+    assert!(matches!(app.mode, InputMode::ConfirmRetry(TaskId(4))));
 }
 
 #[test]
@@ -1242,14 +1242,14 @@ fn retry_resume_emits_kill_and_resume() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
     app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    app.stale_tasks.insert(4);
-    app.crashed_tasks.insert(4);
-    app.mode = InputMode::ConfirmRetry(4);
+    app.stale_tasks.insert(TaskId(4));
+    app.crashed_tasks.insert(TaskId(4));
+    app.mode = InputMode::ConfirmRetry(TaskId(4));
 
-    let cmds = app.update(Message::RetryResume(4));
+    let cmds = app.update(Message::RetryResume(TaskId(4)));
 
-    assert!(!app.stale_tasks.contains(&4));
-    assert!(!app.crashed_tasks.contains(&4));
+    assert!(!app.stale_tasks.contains(&TaskId(4)));
+    assert!(!app.crashed_tasks.contains(&TaskId(4)));
     assert_eq!(app.mode, InputMode::Normal);
     assert!(cmds.iter().any(|c| matches!(c, Command::KillTmuxWindow { .. })));
     assert!(cmds.iter().any(|c| matches!(c, Command::Resume { .. })));
@@ -1262,12 +1262,12 @@ fn retry_fresh_emits_cleanup_and_dispatch() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
     app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    app.stale_tasks.insert(4);
-    app.mode = InputMode::ConfirmRetry(4);
+    app.stale_tasks.insert(TaskId(4));
+    app.mode = InputMode::ConfirmRetry(TaskId(4));
 
-    let cmds = app.update(Message::RetryFresh(4));
+    let cmds = app.update(Message::RetryFresh(TaskId(4)));
 
-    assert!(!app.stale_tasks.contains(&4));
+    assert!(!app.stale_tasks.contains(&TaskId(4)));
     assert_eq!(app.mode, InputMode::Normal);
     assert_eq!(app.tasks[0].status, TaskStatus::Ready);
     assert!(cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
@@ -1280,13 +1280,13 @@ fn d_key_on_stale_running_task_enters_retry_mode() {
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.stale_tasks.insert(4);
+    app.stale_tasks.insert(TaskId(4));
     // Navigate to Running column (index 2)
     app.selected_column = 2;
     app.selected_row[2] = 0;
 
     app.handle_key(make_key(KeyCode::Char('d')));
-    assert!(matches!(app.mode, InputMode::ConfirmRetry(4)));
+    assert!(matches!(app.mode, InputMode::ConfirmRetry(TaskId(4))));
 }
 
 #[test]
@@ -1295,12 +1295,12 @@ fn d_key_on_crashed_running_task_enters_retry_mode() {
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.crashed_tasks.insert(4);
+    app.crashed_tasks.insert(TaskId(4));
     app.selected_column = 2;
     app.selected_row[2] = 0;
 
     app.handle_key(make_key(KeyCode::Char('d')));
-    assert!(matches!(app.mode, InputMode::ConfirmRetry(4)));
+    assert!(matches!(app.mode, InputMode::ConfirmRetry(TaskId(4))));
 }
 
 #[test]
@@ -1310,7 +1310,7 @@ fn confirm_retry_r_key_emits_resume() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
     app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    app.mode = InputMode::ConfirmRetry(4);
+    app.mode = InputMode::ConfirmRetry(TaskId(4));
 
     let cmds = app.handle_key(make_key(KeyCode::Char('r')));
     assert_eq!(app.mode, InputMode::Normal);
@@ -1324,7 +1324,7 @@ fn confirm_retry_f_key_emits_fresh() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
     app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    app.mode = InputMode::ConfirmRetry(4);
+    app.mode = InputMode::ConfirmRetry(TaskId(4));
 
     let cmds = app.handle_key(make_key(KeyCode::Char('f')));
     assert_eq!(app.mode, InputMode::Normal);
@@ -1336,7 +1336,7 @@ fn confirm_retry_esc_returns_to_normal() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.mode = InputMode::ConfirmRetry(4);
+    app.mode = InputMode::ConfirmRetry(TaskId(4));
 
     let cmds = app.handle_key(make_key(KeyCode::Esc));
     assert_eq!(app.mode, InputMode::Normal);

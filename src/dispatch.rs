@@ -73,7 +73,7 @@ fn dispatch_with_prompt(
     })
 }
 
-pub fn dispatch_agent(task: &Task, _mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+pub fn dispatch_agent(task: &Task, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
     let prompt = build_prompt(task.id, &task.title, &task.description, task.plan.as_deref());
     dispatch_with_prompt(task, &prompt, runner)
 }
@@ -377,7 +377,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        dispatch_agent(&task, 3142, &mock).unwrap();
+        dispatch_agent(&task, &mock).unwrap();
 
         let calls = mock.recorded_calls();
         assert_eq!(calls[0].0, "git", "first call should be git");
@@ -402,7 +402,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        dispatch_agent(&task, 3142, &mock).unwrap();
+        dispatch_agent(&task, &mock).unwrap();
 
         let calls = mock.recorded_calls();
         // The literal send-keys call (index 2) carries the claude invocation
@@ -464,7 +464,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        let result = dispatch_agent(&task, 3142, &mock);
+        let result = dispatch_agent(&task, &mock);
         assert!(result.is_err());
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1, "only the git call should have been made");

@@ -276,7 +276,7 @@ impl TuiRuntime {
     }
 
     fn exec_dispatch(&self, task: models::Task) {
-        self.spawn_dispatch(task, dispatch::dispatch_agent, "Dispatch");
+        self.spawn_dispatch(task, |t, _port, r| dispatch::dispatch_agent(t, r), "Dispatch");
     }
 
     fn exec_brainstorm(&self, task: models::Task) {
@@ -564,7 +564,7 @@ mod tests {
             runner,
         };
         let tasks = db.list_all().unwrap();
-        let app = App::new(tasks);
+        let app = App::new(tasks, Duration::from_secs(300));
         (rt, app)
     }
 

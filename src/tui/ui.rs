@@ -349,7 +349,7 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
             lines
         }
         InputMode::ConfirmRetry(id) => {
-            let label = if app.crashed_tasks().contains(id) {
+            let label = if app.crashed_tasks().contains(&id) {
                 "crashed"
             } else {
                 "stale"
