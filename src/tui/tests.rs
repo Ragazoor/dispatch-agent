@@ -1168,3 +1168,72 @@ fn retry_fresh_emits_cleanup_and_dispatch() {
     assert!(cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
     assert!(cmds.iter().any(|c| matches!(c, Command::Dispatch { .. })));
 }
+
+#[test]
+fn d_key_on_stale_running_task_enters_retry_mode() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.stale_tasks.insert(4);
+    // Navigate to Running column (index 2)
+    app.selected_column = 2;
+    app.selected_row[2] = 0;
+
+    app.handle_key(make_key(KeyCode::Char('d')));
+    assert!(matches!(app.mode, InputMode::ConfirmRetry(4)));
+}
+
+#[test]
+fn d_key_on_crashed_running_task_enters_retry_mode() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.crashed_tasks.insert(4);
+    app.selected_column = 2;
+    app.selected_row[2] = 0;
+
+    app.handle_key(make_key(KeyCode::Char('d')));
+    assert!(matches!(app.mode, InputMode::ConfirmRetry(4)));
+}
+
+#[test]
+fn confirm_retry_r_key_emits_resume() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    app.mode = InputMode::ConfirmRetry(4);
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('r')));
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::Resume { .. })));
+}
+
+#[test]
+fn confirm_retry_f_key_emits_fresh() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    app.mode = InputMode::ConfirmRetry(4);
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('f')));
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::Dispatch { .. })));
+}
+
+#[test]
+fn confirm_retry_esc_returns_to_normal() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.mode = InputMode::ConfirmRetry(4);
+
+    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(cmds.is_empty());
+}
