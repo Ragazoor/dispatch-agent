@@ -41,6 +41,22 @@ pub enum Message {
     KillAndRetry(TaskId),
     RetryResume(TaskId),
     RetryFresh(TaskId),
+    // Input routing messages
+    DismissError,
+    StartNewTask,
+    CancelInput,
+    ConfirmDeleteStart,
+    ConfirmDeleteYes,
+    CancelDelete,
+    SubmitTitle(String),
+    SubmitDescription(String),
+    SubmitRepoPath(String),
+    InputChar(char),
+    InputBackspace,
+    StartQuickDispatchSelection,
+    SelectQuickDispatchRepo(usize),
+    CancelRetry,
+    StatusInfo(String),
 }
 
 // ---------------------------------------------------------------------------

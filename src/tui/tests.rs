@@ -1342,3 +1342,127 @@ fn confirm_retry_esc_returns_to_normal() {
     assert_eq!(app.mode, InputMode::Normal);
     assert!(cmds.is_empty());
 }
+
+// --- Message-level tests for new input routing handlers ---
+
+#[test]
+fn dismiss_error_clears_popup() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.error_popup = Some("boom".to_string());
+    app.update(Message::DismissError);
+    assert!(app.error_popup.is_none());
+}
+
+#[test]
+fn start_new_task_enters_title_mode() {
+    let mut app = make_app();
+    app.update(Message::StartNewTask);
+    assert_eq!(app.mode, InputMode::InputTitle);
+    assert!(app.input_buffer.is_empty());
+    assert!(app.task_draft.is_none());
+    assert_eq!(app.status_message.as_deref(), Some("Enter title: "));
+}
+
+#[test]
+fn cancel_input_returns_to_normal() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.mode = InputMode::InputTitle;
+    app.input_buffer = "partial".to_string();
+    app.task_draft = Some(TaskDraft::default());
+    app.status_message = Some("Enter title: ".to_string());
+    app.update(Message::CancelInput);
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(app.input_buffer.is_empty());
+    assert!(app.task_draft.is_none());
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn submit_title_with_text_advances_to_description() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.mode = InputMode::InputTitle;
+    app.update(Message::SubmitTitle("My Task".to_string()));
+    assert_eq!(app.mode, InputMode::InputDescription);
+    assert_eq!(app.task_draft.as_ref().unwrap().title, "My Task");
+    assert_eq!(app.status_message.as_deref(), Some("Enter description: "));
+}
+
+#[test]
+fn submit_empty_title_cancels() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.mode = InputMode::InputTitle;
+    app.update(Message::SubmitTitle(String::new()));
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(app.task_draft.is_none());
+}
+
+#[test]
+fn submit_description_advances_to_repo_path() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.mode = InputMode::InputDescription;
+    app.task_draft = Some(TaskDraft { title: "T".to_string(), ..Default::default() });
+    app.update(Message::SubmitDescription("my desc".to_string()));
+    assert_eq!(app.mode, InputMode::InputRepoPath);
+    assert_eq!(app.task_draft.as_ref().unwrap().description, "my desc");
+}
+
+#[test]
+fn submit_repo_path_creates_task() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.mode = InputMode::InputRepoPath;
+    app.task_draft = Some(TaskDraft { title: "T".to_string(), description: "D".to_string(), ..Default::default() });
+    let cmds = app.update(Message::SubmitRepoPath("/my/repo".to_string()));
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask(ref d) if d.repo_path == "/my/repo")));
+}
+
+#[test]
+fn input_char_appends_to_buffer() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.mode = InputMode::InputTitle;
+    app.update(Message::InputChar('H'));
+    app.update(Message::InputChar('i'));
+    assert_eq!(app.input_buffer, "Hi");
+}
+
+#[test]
+fn input_backspace_removes_last_char() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.input_buffer = "abc".to_string();
+    app.update(Message::InputBackspace);
+    assert_eq!(app.input_buffer, "ab");
+}
+
+#[test]
+fn confirm_delete_start_enters_mode() {
+    let mut app = make_app();
+    app.update(Message::ConfirmDeleteStart);
+    assert_eq!(app.mode, InputMode::ConfirmDelete);
+    assert_eq!(app.status_message.as_deref(), Some("Delete task? (y/n)"));
+}
+
+#[test]
+fn confirm_delete_yes_deletes_selected_task() {
+    let mut app = make_app();
+    app.selected_column = 0; // Backlog has tasks
+    let cmds = app.update(Message::ConfirmDeleteYes);
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::DeleteTask(_))));
+}
+
+#[test]
+fn cancel_delete_returns_to_normal() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.mode = InputMode::ConfirmDelete;
+    app.status_message = Some("Delete task? (y/n)".to_string());
+    app.update(Message::CancelDelete);
+    assert_eq!(app.mode, InputMode::Normal);
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn status_info_sets_message() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.update(Message::StatusInfo("hello".to_string()));
+    assert_eq!(app.status_message.as_deref(), Some("hello"));
+}
