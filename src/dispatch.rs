@@ -9,12 +9,14 @@ use crate::tmux;
 // dispatch_agent
 // ---------------------------------------------------------------------------
 
-/// Provision a git worktree, write MCP config, open a tmux window, and
-/// launch the Claude agent with a structured prompt.
-///
-/// This function is **synchronous** and should be called via
-/// `tokio::task::spawn_blocking` from async contexts.
-pub fn dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
+struct ProvisionResult {
+    worktree_path: String,
+    tmux_window: String,
+}
+
+/// Create a git worktree, write MCP config, and open a tmux window.
+/// Shared by both `dispatch_agent` and `brainstorm_agent`.
+fn provision_worktree(task: &Task, mcp_port: u16) -> Result<ProvisionResult> {
     let repo_path = expand_tilde(&task.repo_path);
     let slug = slugify(&task.title);
     let worktree_name = format!("{}-{slug}", task.id);
@@ -27,29 +29,16 @@ pub fn dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
 
     // 2. Create git worktree (-B resets the branch if it already exists).
     let output = Command::new("git")
-        .args([
-            "-C",
-            &repo_path,
-            "worktree",
-            "add",
-            &worktree_path,
-            "-B",
-            &worktree_name,
-        ])
+        .args(["-C", &repo_path, "worktree", "add", &worktree_path, "-B", &worktree_name])
         .output()
         .context("failed to spawn git worktree add")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Show the last meaningful line (git prints progress first, error last)
-        let msg = stderr
-            .lines()
-            .rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or(stderr.trim());
+        let msg = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(stderr.trim());
         anyhow::bail!("git worktree add failed: {msg}");
     }
 
-    // 3. Write .mcp.json into the worktree so Claude picks up the MCP server.
+    // 3. Write .mcp.json into the worktree.
     let mcp_config = build_mcp_config(mcp_port);
     fs::write(format!("{worktree_path}/.mcp.json"), &mcp_config)
         .with_context(|| format!("failed to write {worktree_path}/.mcp.json"))?;
@@ -58,17 +47,46 @@ pub fn dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
     tmux::new_window(&tmux_window, &worktree_path)
         .context("failed to create tmux window")?;
 
-    // 5. Write the prompt file and launch Claude in interactive mode.
+    Ok(ProvisionResult { worktree_path, tmux_window })
+}
+
+/// Provision a git worktree, write MCP config, open a tmux window, and
+/// launch the Claude agent with a structured prompt.
+///
+/// This function is **synchronous** and should be called via
+/// `tokio::task::spawn_blocking` from async contexts.
+pub fn dispatch_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
+    let provision = provision_worktree(task, mcp_port)?;
+
     let prompt = build_prompt(task.id, &task.title, &task.description, mcp_port, task.plan.as_deref());
-    let prompt_file = format!("{worktree_path}/.claude-prompt");
+    let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
     fs::write(&prompt_file, &prompt)
         .with_context(|| format!("failed to write {prompt_file}"))?;
-    tmux::send_keys(&tmux_window, "claude \"$(cat .claude-prompt)\"")
+    tmux::send_keys(&provision.tmux_window, "claude \"$(cat .claude-prompt)\"")
         .context("failed to send keys to tmux window")?;
 
     Ok(DispatchResult {
-        worktree_path,
-        tmux_window,
+        worktree_path: provision.worktree_path,
+        tmux_window: provision.tmux_window,
+    })
+}
+
+/// Provision a worktree and launch a brainstorming session.
+///
+/// Same infrastructure as `dispatch_agent` but with a brainstorming-focused prompt.
+pub fn brainstorm_agent(task: &Task, mcp_port: u16) -> Result<DispatchResult> {
+    let provision = provision_worktree(task, mcp_port)?;
+
+    let prompt = build_brainstorm_prompt(task.id, &task.title, &task.description, mcp_port);
+    let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
+    fs::write(&prompt_file, &prompt)
+        .with_context(|| format!("failed to write {prompt_file}"))?;
+    tmux::send_keys(&provision.tmux_window, "claude \"$(cat .claude-prompt)\"")
+        .context("failed to send keys to tmux window")?;
+
+    Ok(DispatchResult {
+        worktree_path: provision.worktree_path,
+        tmux_window: provision.tmux_window,
     })
 }
 
@@ -188,6 +206,29 @@ post notes as you work (tool: task-orchestrator, tool name: add_note)."
     )
 }
 
+fn build_brainstorm_prompt(task_id: i64, title: &str, description: &str, mcp_port: u16) -> String {
+    format!(
+        "You are an autonomous coding agent starting a brainstorming session.\n\
+\n\
+Task:\n\
+  ID: {task_id}\n\
+  Title: {title}\n\
+  Description: {description}\n\
+\n\
+Your goal is to explore the codebase, brainstorm approaches, and write an \
+implementation plan. When done, save the plan and attach it to the task:\n\
+\n\
+1. Write the plan to docs/plans/ (or docs/superpowers/specs/ if using the brainstorming skill)\n\
+2. Call update_task via MCP to set the plan field to the plan file path\n\
+\n\
+After planning, ask whether to continue implementing or stop.\n\
+\n\
+An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
+post notes as you work (tool: task-orchestrator, tool name: add_note) and \
+attach the plan (tool: task-orchestrator, tool name: update_task — set the plan field)."
+    )
+}
+
 /// Expand a leading `~` or `~/` to the user's home directory.
 fn expand_tilde(path: &str) -> String {
     if path == "~" || path.starts_with("~/") {
@@ -256,6 +297,17 @@ mod tests {
     fn build_prompt_without_plan_omits_plan_section() {
         let prompt = build_prompt(1, "Task", "Desc", 3142, None);
         assert!(!prompt.contains("Plan:"));
+    }
+
+    #[test]
+    fn build_brainstorm_prompt_contains_task_info() {
+        let prompt = build_brainstorm_prompt(7, "Design auth", "Rework the auth flow", 3142);
+        assert!(prompt.contains("7"));
+        assert!(prompt.contains("Design auth"));
+        assert!(prompt.contains("Rework the auth flow"));
+        assert!(prompt.contains("3142"));
+        assert!(prompt.contains("brainstorm"));
+        assert!(prompt.contains("update_task"));
     }
 
     #[test]
