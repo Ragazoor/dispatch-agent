@@ -54,7 +54,7 @@ fn provision_worktree(task: &Task, runner: &dyn ProcessRunner) -> Result<Provisi
 pub fn dispatch_agent(task: &Task, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
     let provision = provision_worktree(task, runner)?;
 
-    let prompt = build_prompt(task.id, &task.title, &task.description, mcp_port, task.plan.as_deref());
+    let prompt = build_prompt(task.id, &task.title, &task.description, task.plan.as_deref());
     let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
     fs::write(&prompt_file, &prompt)
         .with_context(|| format!("failed to write {prompt_file}"))?;
@@ -194,7 +194,7 @@ fn build_tmux_window_name(task_id: i64) -> String {
     format!("task-{task_id}")
 }
 
-fn build_prompt(task_id: i64, title: &str, description: &str, _mcp_port: u16, plan: Option<&str>) -> String {
+fn build_prompt(task_id: i64, title: &str, description: &str, plan: Option<&str>) -> String {
     let plan_section = match plan {
         Some(path) => format!(
             "\n\nPlan: {path}\nRead this file for the full implementation plan. Follow it step by step."
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn build_prompt_contains_task_info() {
-        let prompt = build_prompt(42, "Fix bug", "A nasty crash", 3142, None);
+        let prompt = build_prompt(42, "Fix bug", "A nasty crash", None);
         assert!(prompt.contains("42"));
         assert!(prompt.contains("Fix bug"));
         assert!(prompt.contains("A nasty crash"));
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn build_prompt_mentions_automatic_hooks() {
-        let prompt = build_prompt(7, "Title", "Desc", 3142, None);
+        let prompt = build_prompt(7, "Title", "Desc", None);
         assert!(prompt.contains("automatically via hooks"));
         assert!(!prompt.contains("update the task status to 'review'"));
     }
@@ -335,13 +335,13 @@ mod tests {
 
     #[test]
     fn build_prompt_includes_plan_path() {
-        let prompt = build_prompt(1, "Task", "Desc", 3142, Some("docs/plans/my-plan.md"));
+        let prompt = build_prompt(1, "Task", "Desc", Some("docs/plans/my-plan.md"));
         assert!(prompt.contains("Plan: docs/plans/my-plan.md"));
     }
 
     #[test]
     fn build_prompt_without_plan_omits_plan_section() {
-        let prompt = build_prompt(1, "Task", "Desc", 3142, None);
+        let prompt = build_prompt(1, "Task", "Desc", None);
         assert!(!prompt.contains("Plan:"));
     }
 
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn build_quick_dispatch_prompt_differs_from_regular() {
-        let regular = build_prompt(1, "Task", "Desc", 3142, None);
+        let regular = build_prompt(1, "Task", "Desc", None);
         let quick = build_quick_dispatch_prompt(1, "Task", "Desc", 3142);
         assert!(quick.contains("placeholder"));
         assert!(!regular.contains("placeholder"));
