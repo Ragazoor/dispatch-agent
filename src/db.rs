@@ -25,6 +25,14 @@ pub trait TaskStore: Send + Sync {
     fn list_repo_paths(&self) -> Result<Vec<String>>;
     fn save_repo_path(&self, path: &str) -> Result<()>;
     fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
+    fn update_task_partial(
+        &self,
+        id: i64,
+        status: Option<TaskStatus>,
+        plan: Option<Option<&str>>,
+        title: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<()>;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +347,58 @@ impl TaskStore for Database {
         )
         .optional()
         .context("Failed to find task by plan")
+    }
+
+    fn update_task_partial(
+        &self,
+        id: i64,
+        status: Option<TaskStatus>,
+        plan: Option<Option<&str>>,
+        title: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let tx = conn.transaction().context("Failed to begin transaction")?;
+
+        let mut parts = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(s) = status {
+            parts.push("status = ?");
+            params_vec.push(Box::new(s.as_str().to_string()));
+        }
+        if let Some(p) = plan {
+            parts.push("plan = ?");
+            params_vec.push(Box::new(p.map(|s| s.to_string())));
+        }
+        if let Some(t) = title {
+            parts.push("title = ?");
+            params_vec.push(Box::new(t.to_string()));
+        }
+        if let Some(d) = description {
+            parts.push("description = ?");
+            params_vec.push(Box::new(d.to_string()));
+        }
+
+        if parts.is_empty() {
+            return Ok(());
+        }
+
+        parts.push("updated_at = datetime('now')");
+        params_vec.push(Box::new(id));
+
+        let sql = format!("UPDATE tasks SET {} WHERE id = ?", parts.join(", "));
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+        let rows = tx
+            .execute(&sql, params_refs.as_slice())
+            .context("Failed to update task fields")?;
+        if rows == 0 {
+            anyhow::bail!("Task {id} not found");
+        }
+
+        tx.commit().context("Failed to commit task update")?;
+        Ok(())
     }
 }
 
@@ -674,5 +734,51 @@ mod tests {
         let db = in_memory_db();
         let result = db.update_title_description(9999, Some("Title"), None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_task_partial_applies_all_fields() {
+        let db = in_memory_db();
+        let id = db
+            .create_task("title", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        db.update_task_partial(
+            id,
+            Some(TaskStatus::Ready),
+            Some(Some("plan.md")),
+            Some("new title"),
+            None,
+        )
+        .unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Ready);
+        assert_eq!(task.plan.as_deref(), Some("plan.md"));
+        assert_eq!(task.title, "new title");
+        assert_eq!(task.description, "desc"); // unchanged
+    }
+
+    #[test]
+    fn update_task_partial_none_fields_unchanged() {
+        let db = in_memory_db();
+        let id = db
+            .create_task("title", "desc", "/repo", Some("plan.md"), TaskStatus::Ready)
+            .unwrap();
+        db.update_task_partial(id, None, None, None, None).unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.title, "title");
+        assert_eq!(task.plan.as_deref(), Some("plan.md"));
+        assert_eq!(task.status, TaskStatus::Ready);
+    }
+
+    #[test]
+    fn update_task_partial_clears_plan() {
+        let db = in_memory_db();
+        let id = db
+            .create_task("title", "desc", "/repo", Some("plan.md"), TaskStatus::Ready)
+            .unwrap();
+        db.update_task_partial(id, None, Some(None), None, None)
+            .unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert!(task.plan.is_none());
     }
 }
