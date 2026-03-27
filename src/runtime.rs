@@ -583,4 +583,61 @@ mod tests {
         assert_eq!(app.tasks().len(), 1);
         assert_eq!(app.tasks()[0].title, "External");
     }
+
+    #[test]
+    fn exec_delete_task_nonexistent_shows_error() {
+        let (rt, mut app) = test_runtime();
+        rt.exec_delete_task(&mut app, TaskId(999));
+        assert!(app.error_popup().is_some());
+    }
+
+    #[test]
+    fn exec_jump_to_tmux_calls_select_window() {
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // for select-window
+        ]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner: mock.clone(),
+        };
+        let tasks = db.list_all().unwrap();
+        let mut app = App::new(tasks, Duration::from_secs(300));
+
+        rt.exec_jump_to_tmux(&mut app, "my-window".to_string());
+
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0].1.contains(&"select-window".to_string())
+                || calls[0].1.contains(&"my-window".to_string())
+        );
+        assert!(app.error_popup().is_none());
+    }
+
+    #[test]
+    fn exec_jump_to_tmux_failure_shows_error() {
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("no such window"), // simulate tmux failure
+        ]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner: mock.clone(),
+        };
+        let tasks = db.list_all().unwrap();
+        let mut app = App::new(tasks, Duration::from_secs(300));
+
+        rt.exec_jump_to_tmux(&mut app, "nonexistent-window".to_string());
+
+        assert!(app.error_popup().is_some());
+    }
 }
