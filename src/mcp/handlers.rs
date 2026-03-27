@@ -60,23 +60,63 @@ impl JsonRpcResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Flexible i64 deserializer (accepts both 4 and "4")
+// ---------------------------------------------------------------------------
+
+/// Claude Code sometimes sends integer MCP arguments as strings.
+/// This deserializer accepts both native integers and string-encoded integers.
+fn deserialize_flexible_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct FlexibleI64Visitor;
+
+    impl<'de> de::Visitor<'de> for FlexibleI64Visitor {
+        type Value = i64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an integer or a string containing an integer")
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<i64, E> {
+            Ok(v)
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<i64, E> {
+            i64::try_from(v).map_err(|_| E::custom(format!("u64 out of i64 range: {v}")))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<i64, E> {
+            v.parse::<i64>().map_err(|_| E::custom(format!("invalid integer string: {v}")))
+        }
+    }
+
+    deserializer.deserialize_any(FlexibleI64Visitor)
+}
+
+// ---------------------------------------------------------------------------
 // Typed argument structs for tool calls
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct UpdateTaskArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
     task_id: i64,
     status: String,
 }
 
 #[derive(Deserialize)]
 struct AddNoteArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
     task_id: i64,
     note: String,
 }
 
 #[derive(Deserialize)]
 struct GetTaskArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
     task_id: i64,
 }
 
@@ -582,5 +622,64 @@ mod tests {
             })),
         ).await;
         assert!(resp.error.is_some());
+    }
+
+    // -- String task_id coercion (Claude Code sends integers as strings) ------
+
+    #[tokio::test]
+    async fn add_note_accepts_string_task_id() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "add_note",
+                "arguments": { "task_id": task_id.to_string(), "note": "from agent" }
+            })),
+        ).await;
+        assert!(resp.error.is_none(), "add_note should accept string task_id, got: {:?}", resp.error);
+
+        let notes = state.db.list_notes(task_id).unwrap();
+        assert_eq!(notes.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn update_task_accepts_string_task_id() {
+        let state = test_state();
+        let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id.to_string(), "status": "running" }
+            })),
+        ).await;
+        assert!(resp.error.is_none(), "update_task should accept string task_id, got: {:?}", resp.error);
+
+        let task = state.db.get_task(task_id).unwrap().unwrap();
+        assert_eq!(task.status, crate::models::TaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn get_task_accepts_string_task_id() {
+        let state = test_state();
+        let task_id = state.db.create_task("My Task", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "get_task",
+                "arguments": { "task_id": task_id.to_string() }
+            })),
+        ).await;
+        assert!(resp.error.is_none(), "get_task should accept string task_id, got: {:?}", resp.error);
+        let result = resp.result.unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("My Task"));
     }
 }
