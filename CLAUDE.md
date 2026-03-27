@@ -32,7 +32,7 @@ Tick timer ───────┘                                             
 ```
 src/
 ├── main.rs          # Entry point, CLI argument parsing
-├── models.rs        # Task, TaskStatus, Note, NoteSource, slugify, COLUMN_COUNT
+├── models.rs        # Task, TaskStatus, slugify, COLUMN_COUNT
 ├── db.rs            # TaskStore trait + SQLite Database impl (Mutex<Connection>)
 ├── dispatch.rs      # Agent dispatch: worktree creation, tmux window, MCP config, prompt
 ├── tmux.rs          # tmux subprocess wrappers (new-window, send-keys, capture-pane, has-window)
@@ -46,7 +46,7 @@ src/
 │   └── tests.rs     # Unit tests for App state machine
 └── mcp/
     ├── mod.rs       # Axum router + server setup
-    └── handlers.rs  # JSON-RPC MCP handlers (update_task, add_note, get_task)
+    └── handlers.rs  # JSON-RPC MCP handlers (update_task, get_task, create_task)
 ```
 
 ## Kanban Columns
@@ -63,8 +63,8 @@ Backlog → Ready → Running → Review → Done
 
 ## MCP Server
 
-Starts alongside TUI on `localhost:3142`. Agents use it to report status and post notes.
-Tools: `update_task`, `add_note`, `get_task`.
+Starts alongside TUI on `localhost:3142`. Agents use it to query and update tasks.
+Tools: `update_task`, `get_task`, `create_task`.
 
 ## Configuration
 
