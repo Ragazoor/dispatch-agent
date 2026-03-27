@@ -14,6 +14,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
+use tempfile::Builder as TempfileBuilder;
+
 use crate::db::TaskStore;
 use crate::editor::{format_editor_content, parse_editor_content};
 use crate::process::{ProcessRunner, RealProcessRunner};
@@ -312,9 +314,18 @@ impl TuiRuntime {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<()> {
         let task_id = task.id;
-        let tmp = std::env::temp_dir().join(format!("task-{task_id}.txt"));
-        let content = format_editor_content(&task.title, &task.description, &task.repo_path, task.status.as_str(), task.plan.as_deref().unwrap_or(""));
-        std::fs::write(&tmp, &content)?;
+        let mut tmp = TempfileBuilder::new()
+            .prefix(&format!("task-{task_id}-"))
+            .suffix(".md")
+            .tempfile()?;
+        let content = format_editor_content(
+            &task.title,
+            &task.description,
+            &task.repo_path,
+            task.status.as_str(),
+            task.plan.as_deref().unwrap_or(""),
+        );
+        std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
 
         // Pause the input polling thread so vim can read keypresses
         self.input_paused.store(true, Ordering::Relaxed);
@@ -326,7 +337,7 @@ impl TuiRuntime {
         // Open editor
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
         let status = std::process::Command::new(&editor)
-            .arg(&tmp)
+            .arg(tmp.path())
             .status();
 
         // Guard restores terminal on drop
@@ -338,7 +349,7 @@ impl TuiRuntime {
         if let Ok(exit) = status {
             if exit.success() {
                 // Parse the edited file
-                if let Ok(edited) = std::fs::read_to_string(&tmp) {
+                if let Ok(edited) = std::fs::read_to_string(tmp.path()) {
                     let mut title = task.title.clone();
                     let mut description = task.description.clone();
                     let mut repo_path = task.repo_path.clone();
@@ -374,7 +385,6 @@ impl TuiRuntime {
             }
         }
 
-        let _ = std::fs::remove_file(&tmp);
         Ok(())
     }
 
