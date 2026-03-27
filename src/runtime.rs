@@ -318,11 +318,7 @@ impl TuiRuntime {
             .suffix(".md")
             .tempfile()?;
         let content = format_editor_content(
-            &task.title,
-            &task.description,
-            &task.repo_path,
-            task.status.as_str(),
-            task.plan.as_deref().unwrap_or(""),
+            &task,
         );
         std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
 
