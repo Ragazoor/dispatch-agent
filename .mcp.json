@@ -1,3 +1,8 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "task-orchestrator": {
+      "type": "http",
+      "url": "http://localhost:3142/mcp"
+    }
+  }
 }
