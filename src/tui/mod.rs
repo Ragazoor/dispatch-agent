@@ -108,8 +108,7 @@ impl App {
             Message::DispatchTask(id) => self.handle_dispatch_task(id),
             Message::Dispatched { id, worktree, tmux_window } =>
                 self.handle_dispatched(id, worktree, tmux_window),
-            Message::CreateTask { title, description, repo_path } =>
-                self.handle_create_task(title, description, repo_path),
+            Message::TaskCreated { task } => self.handle_task_created(task),
             Message::DeleteTask(id) => self.handle_delete_task(id),
             Message::ToggleDetail => self.handle_toggle_detail(),
             Message::TmuxOutput { id, output } => self.handle_tmux_output(id, output),
@@ -119,8 +118,6 @@ impl App {
             Message::ResumeTask(id) => self.handle_resume_task(id),
             Message::Resumed { id, tmux_window } => self.handle_resumed(id, tmux_window),
             Message::Error(msg) => self.handle_error(msg),
-            Message::TaskIdAssigned { placeholder_id, real_id } =>
-                self.handle_task_id_assigned(placeholder_id, real_id),
             Message::TaskEdited { id, title, description, repo_path, status, plan } =>
                 self.handle_task_edited(id, title, description, repo_path, status, plan),
             Message::RepoPathsUpdated(paths) => self.handle_repo_paths_updated(paths),
@@ -225,25 +222,10 @@ impl App {
         }
     }
 
-    fn handle_create_task(&mut self, title: String, description: String, repo_path: String) -> Vec<Command> {
-        let now = chrono::Utc::now();
-        let save_path = Command::SaveRepoPath(repo_path.clone());
-        let task = Task {
-            id: 0,
-            title,
-            description,
-            repo_path,
-            status: TaskStatus::Backlog,
-            worktree: None,
-            tmux_window: None,
-            plan: None,
-            created_at: now,
-            updated_at: now,
-        };
-        let task_clone = task.clone();
+    fn handle_task_created(&mut self, task: Task) -> Vec<Command> {
         self.tasks.push(task);
         self.clamp_selection();
-        vec![Command::PersistTask(task_clone), save_path]
+        vec![]
     }
 
     fn handle_delete_task(&mut self, id: i64) -> Vec<Command> {
@@ -332,13 +314,6 @@ impl App {
 
     fn handle_error(&mut self, msg: String) -> Vec<Command> {
         self.error_popup = Some(msg);
-        vec![]
-    }
-
-    fn handle_task_id_assigned(&mut self, placeholder_id: i64, real_id: i64) -> Vec<Command> {
-        if let Some(t) = self.find_task_mut(placeholder_id) {
-            t.id = real_id;
-        }
         vec![]
     }
 

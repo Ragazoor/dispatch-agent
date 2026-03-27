@@ -115,39 +115,44 @@ struct TuiRuntime {
 }
 
 impl TuiRuntime {
-    fn exec_persist_task(&self, app: &mut App, mut task: models::Task) {
-        if task.id == 0 {
-            // New task — insert into db and update the in-app id
-            match self.database.create_task(&task.title, &task.description, &task.repo_path, task.plan.as_deref(), task.status) {
-                Ok(new_id) => {
-                    task.id = new_id;
-                    // Update the placeholder task in app.tasks (id 0) with the real id.
-                    // There may be multiple id=0 tasks if rapid creation; update the first one.
-                    app.update(Message::TaskIdAssigned { placeholder_id: 0, real_id: new_id });
-                }
-                Err(e) => {
-                    app.update(Message::Error(format!("DB error creating task: {e}")));
-                }
+    fn exec_insert_task(&self, app: &mut App, title: String, description: String, repo_path: String) {
+        match self.database.create_task(&title, &description, &repo_path, None, models::TaskStatus::Backlog) {
+            Ok(new_id) => {
+                let now = chrono::Utc::now();
+                let task = models::Task {
+                    id: new_id,
+                    title,
+                    description,
+                    repo_path,
+                    status: models::TaskStatus::Backlog,
+                    worktree: None,
+                    tmux_window: None,
+                    plan: None,
+                    created_at: now,
+                    updated_at: now,
+                };
+                app.update(Message::TaskCreated { task });
             }
-        } else {
-            // Existing task — update status and dispatch fields atomically
-            if let Err(e) = self.database.persist_task(
-                task.id,
-                task.status,
-                task.worktree.as_deref(),
-                task.tmux_window.as_deref(),
-            ) {
-                app.update(Message::Error(format!("DB error persisting task: {e}")));
+            Err(e) => {
+                app.update(Message::Error(format!("DB error creating task: {e}")));
             }
+        }
+    }
+
+    fn exec_persist_task(&self, app: &mut App, task: models::Task) {
+        if let Err(e) = self.database.persist_task(
+            task.id,
+            task.status,
+            task.worktree.as_deref(),
+            task.tmux_window.as_deref(),
+        ) {
+            app.update(Message::Error(format!("DB error persisting task: {e}")));
         }
     }
 
     fn exec_delete_task(&self, app: &mut App, id: i64) {
         if let Err(e) = self.database.delete_task(id) {
-            // id=0 tasks were never persisted — not a real error
-            if id != 0 {
-                app.update(Message::Error(format!("DB error deleting task: {e}")));
-            }
+            app.update(Message::Error(format!("DB error deleting task: {e}")));
         }
     }
 
@@ -402,6 +407,8 @@ async fn execute_commands(
     for command in commands {
         match command {
             Command::PersistTask(task) => rt.exec_persist_task(app, task),
+            Command::InsertTask { title, description, repo_path } =>
+                rt.exec_insert_task(app, title, description, repo_path),
             Command::DeleteTask(id) => rt.exec_delete_task(app, id),
             Command::Dispatch { task } => rt.exec_dispatch(task),
             Command::CaptureTmux { id, window } => rt.exec_capture_tmux(id, window),
