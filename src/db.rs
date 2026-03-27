@@ -582,4 +582,31 @@ mod tests {
         let found = db.find_task_by_plan("/plans/any.md").unwrap();
         assert!(found.is_none());
     }
+
+    #[test]
+    fn update_plan_sets_and_clears() {
+        let db = in_memory_db();
+        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+
+        // Initially no plan
+        let task = db.get_task(id).unwrap().unwrap();
+        assert!(task.plan.is_none());
+
+        // Set plan
+        db.update_plan(id, Some("docs/plans/my-plan.md")).unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.plan.as_deref(), Some("docs/plans/my-plan.md"));
+
+        // Clear plan
+        db.update_plan(id, None).unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert!(task.plan.is_none());
+    }
+
+    #[test]
+    fn update_plan_nonexistent_task() {
+        let db = in_memory_db();
+        let result = db.update_plan(9999, Some("plan.md"));
+        assert!(result.is_err());
+    }
 }
