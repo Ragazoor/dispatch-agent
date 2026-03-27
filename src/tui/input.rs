@@ -18,6 +18,7 @@ impl App {
             InputMode::InputRepoPath => self.handle_key_text_input(key),
             InputMode::ConfirmDelete => self.handle_key_confirm_delete(key),
             InputMode::QuickDispatch => self.handle_key_quick_dispatch(key),
+            InputMode::ConfirmRetry(id) => self.handle_key_confirm_retry(key, id),
         }
     }
 
@@ -52,7 +53,9 @@ impl App {
                             self.update(Message::DispatchTask(id))
                         }
                         TaskStatus::Running | TaskStatus::Review => {
-                            if has_window {
+                            if self.stale_tasks.contains(&id) || self.crashed_tasks.contains(&id) {
+                                self.update(Message::KillAndRetry(id))
+                            } else if has_window {
                                 self.status_message = Some(
                                     "Agent already running, press g to jump".to_string(),
                                 );
@@ -289,6 +292,19 @@ impl App {
                 } else {
                     vec![]
                 }
+            }
+            _ => vec![],
+        }
+    }
+
+    fn handle_key_confirm_retry(&mut self, key: KeyEvent, id: i64) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('r') => self.update(Message::RetryResume(id)),
+            KeyCode::Char('f') => self.update(Message::RetryFresh(id)),
+            KeyCode::Esc => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                vec![]
             }
             _ => vec![],
         }

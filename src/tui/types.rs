@@ -36,6 +36,11 @@ pub enum Message {
     TaskEdited { id: i64, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String> },
     RepoPathsUpdated(Vec<String>),
     QuickDispatch { repo_path: String },
+    StaleAgent(i64),
+    AgentCrashed(i64),
+    KillAndRetry(i64),
+    RetryResume(i64),
+    RetryFresh(i64),
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +58,7 @@ pub enum Command {
     CaptureTmux { id: i64, window: String },
     Resume { task: Task },
     JumpToTmux { window: String },
+    KillTmuxWindow { window: String },
     EditTaskInEditor(Task),
     SaveRepoPath(String),
     RefreshFromDb,
@@ -71,6 +77,7 @@ pub enum InputMode {
     InputRepoPath,
     ConfirmDelete,
     QuickDispatch,
+    ConfirmRetry(i64),
 }
 
 // ---------------------------------------------------------------------------
