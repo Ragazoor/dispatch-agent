@@ -272,6 +272,7 @@ fn handle_update_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         Ok(a) => a,
         Err(resp) => return resp,
     };
+    tracing::info!(task_id = parsed.task_id, status = ?parsed.status, "MCP update_task");
 
     let has_update = parsed.status.is_some()
         || parsed.plan.is_some()
@@ -335,6 +336,7 @@ fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         Ok(a) => a,
         Err(resp) => return resp,
     };
+    tracing::info!(title = %parsed.title, "MCP create_task");
 
     let plan = parsed.plan.as_deref().map(|p| {
         std::fs::canonicalize(p)
@@ -368,6 +370,7 @@ fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcR
         Ok(a) => a,
         Err(resp) => return resp,
     };
+    tracing::info!(task_id = parsed.task_id, "MCP get_task");
     match state.db.get_task(parsed.task_id) {
         Ok(Some(task)) => {
             let text = format!(

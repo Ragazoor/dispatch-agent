@@ -1,9 +1,10 @@
 pub mod db;
 pub mod dispatch;
-pub mod plan;
 pub mod editor;
 pub mod mcp;
 pub mod models;
+pub mod plan;
+pub mod process;
 pub mod runtime;
 pub mod tmux;
 pub mod tui;

@@ -14,8 +14,11 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::interval;
 
+use tempfile::Builder as TempfileBuilder;
+
 use crate::db::TaskStore;
 use crate::editor::{format_editor_content, parse_editor_content};
+use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::tui::{self, App, Command, Message};
 use crate::{db, dispatch, models, mcp, tmux};
 
@@ -79,11 +82,14 @@ pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     let mut tick_interval = interval(Duration::from_secs(2));
 
     // 7. Main loop
+    tracing::info!(port, db = %db_path.display(), "TUI started, MCP server on port {port}");
+
     let runtime = TuiRuntime {
         database,
         msg_tx,
         port,
         input_paused,
+        runner: Arc::new(RealProcessRunner),
     };
     let result = run_loop(
         &mut app,
@@ -138,6 +144,7 @@ struct TuiRuntime {
     msg_tx: mpsc::UnboundedSender<Message>,
     port: u16,
     input_paused: Arc<AtomicBool>,
+    runner: Arc<dyn ProcessRunner>,
 }
 
 impl TuiRuntime {
@@ -191,9 +198,10 @@ impl TuiRuntime {
                 // 4. Dispatch the agent
                 let tx = self.msg_tx.clone();
                 let port = self.port;
+                let runner = self.runner.clone();
                 tokio::task::spawn_blocking(move || {
                     let id = task.id;
-                    match dispatch::quick_dispatch_agent(&task, port) {
+                    match dispatch::quick_dispatch_agent(&task, port, &*runner) {
                         Ok(result) => {
                             let _ = tx.send(Message::Dispatched {
                                 id,
@@ -233,10 +241,12 @@ impl TuiRuntime {
     fn exec_dispatch(&self, task: models::Task) {
         let tx = self.msg_tx.clone();
         let port = self.port;
+        let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
             let id = task.id;
-            match dispatch::dispatch_agent(&task, port) {
+            tracing::info!(task_id = id, "dispatching task");
+            match dispatch::dispatch_agent(&task, port, &*runner) {
                 Ok(result) => {
                     let _ = tx.send(Message::Dispatched {
                         id,
@@ -254,10 +264,12 @@ impl TuiRuntime {
     fn exec_brainstorm(&self, task: models::Task) {
         let tx = self.msg_tx.clone();
         let port = self.port;
+        let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
             let id = task.id;
-            match dispatch::brainstorm_agent(&task, port) {
+            tracing::info!(task_id = id, "brainstorming task");
+            match dispatch::brainstorm_agent(&task, port, &*runner) {
                 Ok(result) => {
                     let _ = tx.send(Message::Dispatched {
                         id,
@@ -274,16 +286,15 @@ impl TuiRuntime {
 
     fn exec_capture_tmux(&self, id: i64, window: String) {
         let tx = self.msg_tx.clone();
+        let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            // Check if the window is still alive first to avoid
-            // capturing from a dead window (which would error).
-            if let Ok(false) = tmux::has_window(&window) {
+            if let Ok(false) = tmux::has_window(&window, &*runner) {
                 let _ = tx.send(Message::WindowGone(id));
                 return;
             }
 
-            match tmux::capture_pane(&window, 5) {
+            match tmux::capture_pane(&window, 5, &*runner) {
                 Ok(output) => {
                     let _ = tx.send(Message::TmuxOutput { id, output });
                 }
@@ -303,9 +314,18 @@ impl TuiRuntime {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<()> {
         let task_id = task.id;
-        let tmp = std::env::temp_dir().join(format!("task-{task_id}.txt"));
-        let content = format_editor_content(&task.title, &task.description, &task.repo_path, task.status.as_str(), task.plan.as_deref().unwrap_or(""));
-        std::fs::write(&tmp, &content)?;
+        let mut tmp = TempfileBuilder::new()
+            .prefix(&format!("task-{task_id}-"))
+            .suffix(".md")
+            .tempfile()?;
+        let content = format_editor_content(
+            &task.title,
+            &task.description,
+            &task.repo_path,
+            task.status.as_str(),
+            task.plan.as_deref().unwrap_or(""),
+        );
+        std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
 
         // Pause the input polling thread so vim can read keypresses
         self.input_paused.store(true, Ordering::Relaxed);
@@ -317,7 +337,7 @@ impl TuiRuntime {
         // Open editor
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
         let status = std::process::Command::new(&editor)
-            .arg(&tmp)
+            .arg(tmp.path())
             .status();
 
         // Guard restores terminal on drop
@@ -329,7 +349,7 @@ impl TuiRuntime {
         if let Ok(exit) = status {
             if exit.success() {
                 // Parse the edited file
-                if let Ok(edited) = std::fs::read_to_string(&tmp) {
+                if let Ok(edited) = std::fs::read_to_string(tmp.path()) {
                     let mut title = task.title.clone();
                     let mut description = task.description.clone();
                     let mut repo_path = task.repo_path.clone();
@@ -365,7 +385,6 @@ impl TuiRuntime {
             }
         }
 
-        let _ = std::fs::remove_file(&tmp);
         Ok(())
     }
 
@@ -392,8 +411,10 @@ impl TuiRuntime {
 
     fn exec_cleanup(&self, repo_path: String, worktree: String, tmux_window: Option<String>) {
         let tx = self.msg_tx.clone();
+        let runner = self.runner.clone();
+
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = dispatch::cleanup_task(&repo_path, &worktree, tmux_window.as_deref()) {
+            if let Err(e) = dispatch::cleanup_task(&repo_path, &worktree, tmux_window.as_deref(), &*runner) {
                 let _ = tx.send(Message::Error(format!("Cleanup failed: {e:#}")));
             }
         });
@@ -403,9 +424,11 @@ impl TuiRuntime {
         let tx = self.msg_tx.clone();
         let id = task.id;
         let worktree_path = task.worktree.clone().unwrap_or_default();
+        let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            match dispatch::resume_agent(id, &worktree_path) {
+            tracing::info!(task_id = id, "resuming task");
+            match dispatch::resume_agent(id, &worktree_path, &*runner) {
                 Ok(result) => {
                     let _ = tx.send(Message::Resumed {
                         id,
@@ -420,7 +443,7 @@ impl TuiRuntime {
     }
 
     fn exec_jump_to_tmux(&self, app: &mut App, window: String) {
-        if let Err(e) = tmux::select_window(&window) {
+        if let Err(e) = tmux::select_window(&window, &*self.runner) {
             app.update(Message::Error(format!("Jump failed: {e:#}")));
         }
     }

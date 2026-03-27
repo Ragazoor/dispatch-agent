@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use tracing::Level;
+use tracing_subscriber::EnvFilter;
 
 use task_orchestrator::{db, models, plan, runtime};
 use task_orchestrator::db::TaskStore;
@@ -65,6 +67,14 @@ enum Commands {
     },
 }
 
+fn parse_status(s: &str) -> anyhow::Result<models::TaskStatus> {
+    models::TaskStatus::parse(s).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Unknown status: {s}. Valid values: backlog, ready, running, review, done"
+        )
+    })
+}
+
 fn default_db_path() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -83,11 +93,24 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Tui { port } => {
+            let data_dir = cli.db.parent().unwrap_or(std::path::Path::new("."));
+            std::fs::create_dir_all(data_dir)?;
+            let log_path = data_dir.join("app.log");
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)?;
+            tracing_subscriber::fmt()
+                .with_writer(log_file)
+                .with_ansi(false)
+                .with_env_filter(
+                    EnvFilter::from_default_env().add_directive(Level::INFO.into()),
+                )
+                .init();
             runtime::run_tui(&cli.db, port).await?;
         }
         Commands::Update { id, status } => {
-            let new_status = models::TaskStatus::parse(&status)
-                .ok_or_else(|| anyhow::anyhow!("Unknown status: {}", status))?;
+            let new_status = parse_status(&status)?;
             let db = db::Database::open(&cli.db)?;
             db.update_status(id, new_status)?;
             println!("Task {} updated to {}", id, status);
@@ -96,8 +119,7 @@ async fn main() -> Result<()> {
             let db = db::Database::open(&cli.db)?;
             let tasks = match status {
                 Some(s) => {
-                    let filter = models::TaskStatus::parse(&s)
-                        .ok_or_else(|| anyhow::anyhow!("Unknown status: {}", s))?;
+                    let filter = parse_status(&s)?;
                     db.list_by_status(filter)?
                 }
                 None => db.list_all()?,

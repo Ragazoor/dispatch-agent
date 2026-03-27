@@ -13,6 +13,8 @@ cargo run -- tui   # launch the TUI (requires running inside a tmux session)
 
 Runtime dependencies: `tmux`, `git` (checked at startup). The TUI must be launched from within a tmux session for agent dispatch to work.
 
+> **Tmux prerequisite:** If you see `not running inside a tmux session`, run `tmux new-session -d -s dev` first, then re-run `cargo run -- tui`.
+
 ## Architecture
 
 **Elm Architecture** — events produce `Message`s, `App::update()` returns `Vec<Command>`, commands are executed by the main loop.
@@ -55,16 +57,30 @@ Backlog → Ready → Running → Review → Done
 
 - **Ready** = eligible for dispatch (`d` key)
 - **Running** = agent dispatched in interactive mode, tmux output shown on card
-- Closing a tmux session preserves the worktree; press `d` to resume with `claude --continue`
-- Status transitions (running/review) are handled by project-level Claude Code hooks in `.claude/settings.local.json` that extract the task ID from the git branch name
+- **Dispatch** (`d` on a Ready task): creates a fresh git worktree + tmux window and launches Claude with the task prompt
+- **Resume** (`d` on a Running task whose window is gone): re-opens a tmux window in the existing worktree and runs `claude --continue`. Closing a tmux window does **not** delete the worktree.
+- Status transitions (running/review) are handled by hooks in `.claude/settings.json` that extract the task ID from the git branch name (`{id}-{slug}` pattern)
 - Press `g` to jump to an agent's tmux window
 
-> **TODO:** Project-level hooks assume worktree branches follow the `{id}-{slug}` naming convention and that `task-orchestrator` is in PATH. For the general case (multi-project dispatch, non-worktree setups), consider MCP-based status reporting or a dedicated CLI subcommand that infers context.
+## Hooks & Branch Naming
+
+Status update hooks in `.claude/settings.json` run when Claude Code starts or stops in a worktree. They parse the branch name, extract the task ID, and call `task-orchestrator update <id> <status>`.
+
+**Requirements:**
+- Worktree branches must follow `{id}-{slug}` (e.g. `42-fix-login-bug`). Non-conforming names silently skip status updates.
+- `task-orchestrator` must be in `PATH`. Add the debug binary: `export PATH="$PATH:$(pwd)/target/debug"`
 
 ## MCP Server
 
 Starts alongside TUI on `localhost:3142`. Agents use it to query and update tasks.
 Tools: `update_task`, `get_task`, `create_task`.
+
+To test tools manually (while TUI is running):
+```bash
+curl -s -X POST http://localhost:3142/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_task","arguments":{"task_id":1}}}'
+```
 
 ## Configuration
 
@@ -87,7 +103,7 @@ Tools: `update_task`, `get_task`, `create_task`.
 
 - Rust edition 2021, SQLite with bundled `libsqlite3-sys`
 - Sync `rusqlite` with `Mutex` (not async wrapper)
-- All subprocess calls go through `src/tmux.rs` or `std::process::Command` in `src/dispatch.rs`
+- All subprocess calls go through `src/tmux.rs` or `src/dispatch.rs`, injected with a `ProcessRunner` (`src/process.rs`). Use `MockProcessRunner` in tests.
 - Tests use in-memory SQLite databases
 - **App field visibility**: All `App` fields use `pub(in crate::tui)` — accessible from `input.rs`, `ui.rs`, `tests.rs` but not outside the `tui` module. External code uses public accessor methods.
 - **Column count**: `TaskStatus::COLUMN_COUNT` is the canonical source. Never hardcode `5`.

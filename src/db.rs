@@ -123,7 +123,7 @@ impl TaskStore for Database {
         plan: Option<&str>,
         status: TaskStatus,
     ) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         conn.execute(
             "INSERT INTO tasks (title, description, repo_path, plan, status) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![title, description, repo_path, plan, status.as_str()],
@@ -133,7 +133,7 @@ impl TaskStore for Database {
     }
 
     fn get_task(&self, id: i64) -> Result<Option<Task>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
                     plan, created_at, updated_at
@@ -146,7 +146,7 @@ impl TaskStore for Database {
     }
 
     fn list_all(&self) -> Result<Vec<Task>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, repo_path, status, worktree, tmux_window,
@@ -163,7 +163,7 @@ impl TaskStore for Database {
     }
 
     fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, repo_path, status, worktree, tmux_window,
@@ -180,7 +180,7 @@ impl TaskStore for Database {
     }
 
     fn update_status(&self, id: i64, status: TaskStatus) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -199,7 +199,7 @@ impl TaskStore for Database {
         worktree: Option<&str>,
         tmux_window: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET worktree = ?1, tmux_window = ?2, updated_at = datetime('now')
@@ -214,7 +214,7 @@ impl TaskStore for Database {
     }
 
     fn persist_task(&self, id: i64, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET status = ?1, worktree = ?2, tmux_window = ?3, updated_at = datetime('now') WHERE id = ?4",
@@ -228,7 +228,7 @@ impl TaskStore for Database {
     }
 
     fn delete_task(&self, id: i64) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute("DELETE FROM tasks WHERE id = ?1", params![id])
             .context("Failed to delete task")?;
@@ -247,7 +247,7 @@ impl TaskStore for Database {
         status: TaskStatus,
         plan: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let changed = conn
             .execute(
                 "UPDATE tasks SET title = ?1, description = ?2, repo_path = ?3, status = ?4, plan = ?5, updated_at = datetime('now') WHERE id = ?6",
@@ -261,7 +261,7 @@ impl TaskStore for Database {
     }
 
     fn update_plan(&self, id: i64, plan: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET plan = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -275,7 +275,7 @@ impl TaskStore for Database {
     }
 
     fn update_title_description(&self, id: i64, title: Option<&str>, description: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let mut parts = Vec::new();
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -305,7 +305,7 @@ impl TaskStore for Database {
 
 
     fn list_repo_paths(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         let mut stmt = conn
             .prepare("SELECT path FROM repo_paths ORDER BY last_used DESC LIMIT 9")
             .context("Failed to prepare list_repo_paths")?;
@@ -318,7 +318,7 @@ impl TaskStore for Database {
     }
 
     fn save_repo_path(&self, path: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         conn.execute(
             "INSERT INTO repo_paths (path) VALUES (?1)
              ON CONFLICT(path) DO UPDATE SET last_used = datetime('now')",
@@ -329,7 +329,7 @@ impl TaskStore for Database {
     }
 
     fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
                     plan, created_at, updated_at
@@ -348,7 +348,10 @@ impl TaskStore for Database {
 
 fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
     let status_str: String = row.get("status")?;
-    let status = TaskStatus::parse(&status_str).unwrap_or(TaskStatus::Backlog);
+    let status = TaskStatus::parse(&status_str).unwrap_or_else(|| {
+        tracing::warn!(raw = %status_str, "unrecognised task status, defaulting to Backlog");
+        TaskStatus::Backlog
+    });
 
     let created_str: String = row.get("created_at")?;
     let updated_str: String = row.get("updated_at")?;
