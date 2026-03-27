@@ -183,11 +183,14 @@ impl App {
                         };
                         self.mode = InputMode::Normal;
                         self.status_message = None;
-                        self.update(Message::CreateTask {
-                            title: draft.title,
-                            description: draft.description,
-                            repo_path,
-                        })
+                        vec![
+                            Command::InsertTask {
+                                title: draft.title,
+                                description: draft.description,
+                                repo_path: repo_path.clone(),
+                            },
+                            Command::SaveRepoPath(repo_path),
+                        ]
                     }
                     _ => vec![],
                 }
@@ -209,11 +212,14 @@ impl App {
                         let repo_path = self.repo_paths[idx].clone();
                         self.mode = InputMode::Normal;
                         self.status_message = None;
-                        return self.update(Message::CreateTask {
-                            title: draft.title,
-                            description: draft.description,
-                            repo_path,
-                        });
+                        return vec![
+                            Command::InsertTask {
+                                title: draft.title,
+                                description: draft.description,
+                                repo_path: repo_path.clone(),
+                            },
+                            Command::SaveRepoPath(repo_path),
+                        ];
                     }
                 }
                 self.input_buffer.push(c);

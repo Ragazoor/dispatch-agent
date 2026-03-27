@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use task_orchestrator::{db, models, plan, runtime};
+use task_orchestrator::db::TaskStore;
 
 #[derive(Parser)]
 #[command(name = "task-orchestrator")]

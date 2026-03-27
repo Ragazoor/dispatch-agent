@@ -17,6 +17,7 @@ pub trait TaskStore: Send + Sync {
     fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
     fn update_status(&self, id: i64, status: TaskStatus) -> Result<()>;
     fn update_dispatch(&self, id: i64, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
+    fn persist_task(&self, id: i64, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
     fn delete_task(&self, id: i64) -> Result<()>;
     fn update_task(&self, id: i64, title: &str, description: &str, repo_path: &str, status: TaskStatus, plan: Option<&str>) -> Result<()>;
     fn add_note(&self, task_id: i64, content: &str, source: NoteSource) -> Result<i64>;
@@ -102,11 +103,10 @@ impl Database {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Task CRUD
-    // -----------------------------------------------------------------------
+}
 
-    pub fn create_task(
+impl TaskStore for Database {
+    fn create_task(
         &self,
         title: &str,
         description: &str,
@@ -123,7 +123,7 @@ impl Database {
         Ok(conn.last_insert_rowid())
     }
 
-    pub fn get_task(&self, id: i64) -> Result<Option<Task>> {
+    fn get_task(&self, id: i64) -> Result<Option<Task>> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
@@ -136,7 +136,7 @@ impl Database {
         .context("Failed to get task")
     }
 
-    pub fn list_all(&self) -> Result<Vec<Task>> {
+    fn list_all(&self) -> Result<Vec<Task>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -153,7 +153,7 @@ impl Database {
         Ok(tasks)
     }
 
-    pub fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>> {
+    fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
             .prepare(
@@ -170,7 +170,7 @@ impl Database {
         Ok(tasks)
     }
 
-    pub fn update_status(&self, id: i64, status: TaskStatus) -> Result<()> {
+    fn update_status(&self, id: i64, status: TaskStatus) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute(
@@ -184,7 +184,7 @@ impl Database {
         Ok(())
     }
 
-    pub fn update_dispatch(
+    fn update_dispatch(
         &self,
         id: i64,
         worktree: Option<&str>,
@@ -204,7 +204,21 @@ impl Database {
         Ok(())
     }
 
-    pub fn delete_task(&self, id: i64) -> Result<()> {
+    fn persist_task(&self, id: i64, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let rows = conn
+            .execute(
+                "UPDATE tasks SET status = ?1, worktree = ?2, tmux_window = ?3, updated_at = datetime('now') WHERE id = ?4",
+                params![status.as_str(), worktree, tmux_window, id],
+            )
+            .context("Failed to persist task")?;
+        if rows == 0 {
+            anyhow::bail!("Task {} not found", id);
+        }
+        Ok(())
+    }
+
+    fn delete_task(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .execute("DELETE FROM tasks WHERE id = ?1", params![id])
@@ -215,80 +229,7 @@ impl Database {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Note CRUD
-    // -----------------------------------------------------------------------
-
-    pub fn add_note(&self, task_id: i64, content: &str, source: NoteSource) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO notes (task_id, content, source) VALUES (?1, ?2, ?3)",
-            params![task_id, content, source.as_str()],
-        )
-        .context("Failed to insert note")?;
-        Ok(conn.last_insert_rowid())
-    }
-
-    pub fn list_notes(&self, task_id: i64) -> Result<Vec<Note>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, task_id, content, source, created_at
-                 FROM notes WHERE task_id = ?1 ORDER BY id",
-            )
-            .context("Failed to prepare list_notes")?;
-        let notes = stmt
-            .query_map(params![task_id], row_to_note)
-            .context("Failed to query notes")?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .context("Failed to collect notes")?;
-        Ok(notes)
-    }
-
-    // -- Repo paths -----------------------------------------------------------
-
-    pub fn list_repo_paths(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT path FROM repo_paths ORDER BY last_used DESC LIMIT 9")
-            .context("Failed to prepare list_repo_paths")?;
-        let paths = stmt
-            .query_map([], |row| row.get(0))
-            .context("Failed to query repo_paths")?
-            .collect::<rusqlite::Result<Vec<String>>>()
-            .context("Failed to collect repo_paths")?;
-        Ok(paths)
-    }
-
-    pub fn save_repo_path(&self, path: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT INTO repo_paths (path) VALUES (?1)
-             ON CONFLICT(path) DO UPDATE SET last_used = datetime('now')",
-            params![path],
-        )
-        .context("Failed to save repo_path")?;
-        Ok(())
-    }
-
-    // -- Plan lookup ----------------------------------------------------------
-
-    pub fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT id, title, description, repo_path, status, worktree, tmux_window,
-                    plan, created_at, updated_at
-             FROM tasks WHERE plan = ?1",
-            params![plan],
-            row_to_task,
-        )
-        .optional()
-        .context("Failed to find task by plan")
-    }
-
-    // -- Full task update -----------------------------------------------------
-
-    pub fn update_task(
+    fn update_task(
         &self,
         id: i64,
         title: &str,
@@ -309,47 +250,68 @@ impl Database {
         }
         Ok(())
     }
-}
 
-impl TaskStore for Database {
-    fn create_task(&self, title: &str, description: &str, repo_path: &str, plan: Option<&str>, status: TaskStatus) -> Result<i64> {
-        Database::create_task(self, title, description, repo_path, plan, status)
-    }
-    fn get_task(&self, id: i64) -> Result<Option<Task>> {
-        Database::get_task(self, id)
-    }
-    fn list_all(&self) -> Result<Vec<Task>> {
-        Database::list_all(self)
-    }
-    fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>> {
-        Database::list_by_status(self, status)
-    }
-    fn update_status(&self, id: i64, status: TaskStatus) -> Result<()> {
-        Database::update_status(self, id, status)
-    }
-    fn update_dispatch(&self, id: i64, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()> {
-        Database::update_dispatch(self, id, worktree, tmux_window)
-    }
-    fn delete_task(&self, id: i64) -> Result<()> {
-        Database::delete_task(self, id)
-    }
-    fn update_task(&self, id: i64, title: &str, description: &str, repo_path: &str, status: TaskStatus, plan: Option<&str>) -> Result<()> {
-        Database::update_task(self, id, title, description, repo_path, status, plan)
-    }
     fn add_note(&self, task_id: i64, content: &str, source: NoteSource) -> Result<i64> {
-        Database::add_note(self, task_id, content, source)
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO notes (task_id, content, source) VALUES (?1, ?2, ?3)",
+            params![task_id, content, source.as_str()],
+        )
+        .context("Failed to insert note")?;
+        Ok(conn.last_insert_rowid())
     }
+
     fn list_notes(&self, task_id: i64) -> Result<Vec<Note>> {
-        Database::list_notes(self, task_id)
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, task_id, content, source, created_at
+                 FROM notes WHERE task_id = ?1 ORDER BY id",
+            )
+            .context("Failed to prepare list_notes")?;
+        let notes = stmt
+            .query_map(params![task_id], row_to_note)
+            .context("Failed to query notes")?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("Failed to collect notes")?;
+        Ok(notes)
     }
+
     fn list_repo_paths(&self) -> Result<Vec<String>> {
-        Database::list_repo_paths(self)
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT path FROM repo_paths ORDER BY last_used DESC LIMIT 9")
+            .context("Failed to prepare list_repo_paths")?;
+        let paths = stmt
+            .query_map([], |row| row.get(0))
+            .context("Failed to query repo_paths")?
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .context("Failed to collect repo_paths")?;
+        Ok(paths)
     }
+
     fn save_repo_path(&self, path: &str) -> Result<()> {
-        Database::save_repo_path(self, path)
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO repo_paths (path) VALUES (?1)
+             ON CONFLICT(path) DO UPDATE SET last_used = datetime('now')",
+            params![path],
+        )
+        .context("Failed to save repo_path")?;
+        Ok(())
     }
+
     fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>> {
-        Database::find_task_by_plan(self, plan)
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, title, description, repo_path, status, worktree, tmux_window,
+                    plan, created_at, updated_at
+             FROM tasks WHERE plan = ?1",
+            params![plan],
+            row_to_task,
+        )
+        .optional()
+        .context("Failed to find task by plan")
     }
 }
 
@@ -505,6 +467,19 @@ mod tests {
         let db = in_memory_db();
         let result = db.get_task(9999).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn persist_task_updates_status_and_dispatch_atomically() {
+        let db = in_memory_db();
+        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+
+        db.persist_task(id, TaskStatus::Running, Some("/wt/task"), Some("task-1")).unwrap();
+
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Running);
+        assert_eq!(task.worktree.as_deref(), Some("/wt/task"));
+        assert_eq!(task.tmux_window.as_deref(), Some("task-1"));
     }
 
     #[test]

@@ -23,7 +23,7 @@ pub enum Message {
     MoveTask { id: i64, direction: MoveDirection },
     DispatchTask(i64),
     Dispatched { id: i64, worktree: String, tmux_window: String },
-    CreateTask { title: String, description: String, repo_path: String },
+    TaskCreated { task: Task },
     DeleteTask(i64),
     ToggleDetail,
     TmuxOutput { id: i64, output: String },
@@ -33,7 +33,6 @@ pub enum Message {
     ResumeTask(i64),
     Resumed { id: i64, tmux_window: String },
     Error(String),
-    TaskIdAssigned { placeholder_id: i64, real_id: i64 },
     TaskEdited { id: i64, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String> },
     RepoPathsUpdated(Vec<String>),
 }
@@ -45,6 +44,7 @@ pub enum Message {
 #[derive(Debug, Clone)]
 pub enum Command {
     PersistTask(Task),
+    InsertTask { title: String, description: String, repo_path: String },
     DeleteTask(i64),
     Dispatch { task: Task },
     Cleanup { repo_path: String, worktree: String, tmux_window: Option<String> },

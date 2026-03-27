@@ -147,16 +147,26 @@ fn tick_captures_review_task_with_live_window() {
 }
 
 #[test]
-fn create_task_adds_to_backlog_and_persists() {
-    let mut app = App::new(vec![]);
-    let cmds = app.update(Message::CreateTask {
+fn task_created_adds_to_list() {
+    let now = chrono::Utc::now();
+    let task = Task {
+        id: 42,
         title: "New Task".to_string(),
         description: "desc".to_string(),
         repo_path: "/repo".to_string(),
-    });
+        status: TaskStatus::Backlog,
+        worktree: None,
+        tmux_window: None,
+        plan: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let mut app = App::new(vec![]);
+    let cmds = app.update(Message::TaskCreated { task });
     assert_eq!(app.tasks.len(), 1);
+    assert_eq!(app.tasks[0].id, 42);
     assert_eq!(app.tasks[0].status, TaskStatus::Backlog);
-    assert!(matches!(cmds[0], Command::PersistTask(_)));
+    assert!(cmds.is_empty());
 }
 
 #[test]
@@ -232,23 +242,18 @@ fn move_backward_without_dispatch_fields_no_cleanup() {
 
 #[test]
 fn repo_path_empty_uses_saved_path() {
-
     let mut app = App::new(vec![]);
     app.repo_paths = vec!["/saved/repo".to_string()];
 
-    // Set up InputRepoPath mode manually
     app.mode = InputMode::InputRepoPath;
     app.task_draft = Some(TaskDraft { title: "Test".to_string(), description: "desc".to_string() });
     app.input_buffer.clear();
 
-    // Press Enter with empty buffer
     let key = make_key(KeyCode::Enter);
-    let _cmds = app.handle_key(key);
+    let cmds = app.handle_key(key);
 
-    // Should have created a task with the saved repo path
     assert_eq!(app.mode, InputMode::Normal);
-    assert_eq!(app.tasks.len(), 1);
-    assert_eq!(app.tasks[0].repo_path, "/saved/repo");
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { repo_path, .. } if repo_path == "/saved/repo")));
 }
 
 #[test]
@@ -272,7 +277,6 @@ fn repo_path_empty_no_saved_stays_in_mode() {
 
 #[test]
 fn repo_path_nonempty_used_as_is() {
-
     let mut app = App::new(vec![]);
     app.repo_paths = vec!["/saved/repo".to_string()];
 
@@ -280,12 +284,12 @@ fn repo_path_nonempty_used_as_is() {
     app.task_draft = Some(TaskDraft { title: "Test".to_string(), description: "desc".to_string() });
     app.input_buffer = "/custom/path".to_string();
 
-    let key = make_key(KeyCode::Enter);
-    let _cmds = app.handle_key(key);
+    let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    let cmds = app.handle_key(key);
 
     assert_eq!(app.mode, InputMode::Normal);
-    assert_eq!(app.tasks.len(), 1);
-    assert_eq!(app.tasks[0].repo_path, "/custom/path");
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { repo_path, .. } if repo_path == "/custom/path")));
+    assert_eq!(app.tasks.len(), 0); // task not added until TaskCreated
 }
 
 #[test]
@@ -306,13 +310,6 @@ fn tick_skips_load_notes_when_detail_hidden() {
 
     let cmds = app.update(Message::Tick);
     assert!(!cmds.iter().any(|c| matches!(c, Command::LoadNotes(_))));
-}
-
-#[test]
-fn task_id_assigned_updates_placeholder() {
-    let mut app = App::new(vec![make_task(0, TaskStatus::Backlog)]);
-    app.update(Message::TaskIdAssigned { placeholder_id: 0, real_id: 42 });
-    assert_eq!(app.tasks[0].id, 42);
 }
 
 #[test]
@@ -606,9 +603,7 @@ fn number_key_in_repo_path_selects_saved_path() {
     app.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string()];
     let cmds = app.handle_key(make_key(KeyCode::Char('2')));
     assert_eq!(app.mode, InputMode::Normal);
-    assert_eq!(app.tasks.len(), 1);
-    assert_eq!(app.tasks[0].repo_path, "/repo2");
-    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { repo_path, .. } if repo_path == "/repo2")));
 }
 
 #[test]
