@@ -1,19 +1,16 @@
 use anyhow::{Context, Result, bail};
-use std::process::Command;
+
+use crate::process::ProcessRunner;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /// Create a new tmux window with the given name, starting in `working_dir`.
-pub fn new_window(name: &str, working_dir: &str) -> Result<()> {
-    let args = new_window_args(name, working_dir);
-    let status = Command::new("tmux")
-        .args(&args)
-        .status()
-        .context("failed to spawn tmux new-window")?;
-    if !status.success() {
-        bail!("tmux new-window failed with status {}", status);
+pub fn new_window(name: &str, working_dir: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let output = runner.run("tmux", &["new-window", "-n", name, "-c", working_dir])?;
+    if !output.status.success() {
+        bail!("tmux new-window failed with status {}", output.status);
     }
     Ok(())
 }
@@ -22,33 +19,25 @@ pub fn new_window(name: &str, working_dir: &str) -> Result<()> {
 ///
 /// Uses `-l` to prevent tmux from interpreting escape sequences in the text.
 /// Enter is sent as a separate `send-keys` call without `-l`.
-pub fn send_keys(window: &str, keys: &str) -> Result<()> {
-    // Send the text literally (no tmux escape sequence interpretation)
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", window, "-l", keys])
-        .status()
-        .context("failed to spawn tmux send-keys (literal)")?;
-    if !status.success() {
-        bail!("tmux send-keys -l failed with status {}", status);
+pub fn send_keys(window: &str, keys: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let output = runner.run("tmux", &["send-keys", "-t", window, "-l", keys])?;
+    if !output.status.success() {
+        bail!("tmux send-keys -l failed with status {}", output.status);
     }
-    // Press Enter
-    let status = Command::new("tmux")
-        .args(["send-keys", "-t", window, "Enter"])
-        .status()
-        .context("failed to spawn tmux send-keys (Enter)")?;
-    if !status.success() {
-        bail!("tmux send-keys Enter failed with status {}", status);
+    let output = runner.run("tmux", &["send-keys", "-t", window, "Enter"])?;
+    if !output.status.success() {
+        bail!("tmux send-keys Enter failed with status {}", output.status);
     }
     Ok(())
 }
 
 /// Capture the last `lines` lines of output from a tmux pane, returned trimmed.
-pub fn capture_pane(window: &str, lines: usize) -> Result<String> {
-    let args = capture_pane_args(window, lines);
-    let output = Command::new("tmux")
-        .args(&args)
-        .output()
-        .context("failed to spawn tmux capture-pane")?;
+pub fn capture_pane(window: &str, lines: usize, runner: &dyn ProcessRunner) -> Result<String> {
+    let lines_arg = format!("-{lines}");
+    let output = runner.run(
+        "tmux",
+        &["capture-pane", "-t", window, "-p", "-S", &lines_arg],
+    )?;
     if !output.status.success() {
         bail!("tmux capture-pane failed with status {}", output.status);
     }
@@ -57,11 +46,10 @@ pub fn capture_pane(window: &str, lines: usize) -> Result<String> {
 }
 
 /// Return true if a tmux window with the given name currently exists.
-pub fn has_window(window: &str) -> Result<bool> {
-    let output = Command::new("tmux")
-        .args(["list-windows", "-F", "#{window_name}"])
-        .output()
-        .context("failed to spawn tmux list-windows")?;
+pub fn has_window(window: &str, runner: &dyn ProcessRunner) -> Result<bool> {
+    let output = runner
+        .run("tmux", &["list-windows", "-F", "#{window_name}"])
+        .context("failed to run tmux list-windows")?;
     // list-windows exits non-zero when there are no windows / no session;
     // treat that as "window not found" rather than a hard error.
     if !output.status.success() {
@@ -72,46 +60,36 @@ pub fn has_window(window: &str) -> Result<bool> {
 }
 
 /// Kill the tmux window with the given name.
-pub fn kill_window(window: &str) -> Result<()> {
-    let status = Command::new("tmux")
-        .args(["kill-window", "-t", window])
-        .status()
-        .context("failed to spawn tmux kill-window")?;
-    if !status.success() {
-        bail!("tmux kill-window failed with status {}", status);
+pub fn kill_window(window: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let output = runner.run("tmux", &["kill-window", "-t", window])?;
+    if !output.status.success() {
+        bail!("tmux kill-window failed with status {}", output.status);
     }
     Ok(())
 }
 
 /// Switch the active tmux window to the one with the given name.
-pub fn select_window(window: &str) -> Result<()> {
-    let args = select_window_args(window);
-    let status = Command::new("tmux")
-        .args(&args)
-        .status()
-        .context("failed to spawn tmux select-window")?;
-    if !status.success() {
-        bail!("tmux select-window failed with status {}", status);
+pub fn select_window(window: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let output = runner.run("tmux", &["select-window", "-t", window])?;
+    if !output.status.success() {
+        bail!("tmux select-window failed with status {}", output.status);
     }
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers (exposed for unit testing without requiring tmux)
+// Internal helpers (kept for arg-shape unit tests)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn select_window_args(window: &str) -> Vec<String> {
-    vec![
-        "select-window".to_string(),
-        "-t".to_string(),
-        window.to_string(),
-    ]
+    vec!["select-window".to_string(), "-t".to_string(), window.to_string()]
 }
 
+#[cfg(test)]
 fn new_window_args(name: &str, working_dir: &str) -> Vec<String> {
     vec![
         "new-window".to_string(),
-        "-d".to_string(),
         "-n".to_string(),
         name.to_string(),
         "-c".to_string(),
@@ -119,6 +97,7 @@ fn new_window_args(name: &str, working_dir: &str) -> Vec<String> {
     ]
 }
 
+#[cfg(test)]
 fn capture_pane_args(window: &str, lines: usize) -> Vec<String> {
     vec![
         "capture-pane".to_string(),
@@ -143,7 +122,7 @@ mod tests {
         let args = new_window_args("task-42", "/some/path");
         assert_eq!(
             args,
-            vec!["new-window", "-d", "-n", "task-42", "-c", "/some/path"]
+            vec!["new-window", "-n", "task-42", "-c", "/some/path"]
         );
     }
 
@@ -164,7 +143,6 @@ mod tests {
 
     #[test]
     fn has_window_finds_match_in_output() {
-        // Simulate what has_window checks against real tmux output lines.
         let fake_output = "main\ntask-42\nother-window\n";
         let target = "task-42";
         let found = fake_output.lines().any(|line| line.trim() == target);
@@ -181,7 +159,6 @@ mod tests {
 
     #[test]
     fn has_window_exact_match_not_prefix() {
-        // "task-4" must not match "task-42"
         let fake_output = "task-42\n";
         let target = "task-4";
         let found = fake_output.lines().any(|line| line.trim() == target);
@@ -192,5 +169,38 @@ mod tests {
     fn select_window_args_correct() {
         let args = select_window_args("task-42");
         assert_eq!(args, vec!["select-window", "-t", "task-42"]);
+    }
+
+    // --- ProcessRunner-based tests ---
+
+    use crate::process::MockProcessRunner;
+
+    #[test]
+    fn new_window_issues_correct_tmux_args() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        new_window("task-42", "/some/path", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tmux");
+        assert_eq!(
+            calls[0].1,
+            vec!["new-window", "-n", "task-42", "-c", "/some/path"]
+        );
+    }
+
+    #[test]
+    fn capture_pane_returns_trimmed_stdout() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"  hello from tmux  \n",
+        )]);
+        let result = capture_pane("task-42", 5, &mock).unwrap();
+        assert_eq!(result, "hello from tmux");
+    }
+
+    #[test]
+    fn has_window_returns_false_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no sessions")]);
+        let result = has_window("task-42", &mock).unwrap();
+        assert!(!result);
     }
 }
