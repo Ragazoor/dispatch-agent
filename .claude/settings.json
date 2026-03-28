@@ -10,7 +10,9 @@
       "Bash(find . -name *.sh -o -name *.bash)",
       "mcp__task-orchestrator__get_task",
       "mcp__task-orchestrator__update_task",
-      "mcp__task-orchestrator__create_task"
+      "mcp__task-orchestrator__create_task",
+      "mcp__task-orchestrator__list_tasks",
+      "mcp__task-orchestrator__claim_task"
     ]
   },
   "hooks": {
