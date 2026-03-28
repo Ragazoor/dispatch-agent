@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::models::{TaskId, TaskStatus};
+use crate::models::{EpicId, TaskId, TaskStatus};
 
 use super::McpState;
 
@@ -143,6 +143,72 @@ struct ClaimTaskArgs {
     tmux_window: String,
 }
 
+fn deserialize_optional_flexible_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+
+    struct OptFlexI64;
+    impl<'de> de::Visitor<'de> for OptFlexI64 {
+        type Value = Option<i64>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("null, an integer, or a string integer")
+        }
+        fn visit_none<E: de::Error>(self) -> Result<Option<i64>, E> { Ok(None) }
+        fn visit_unit<E: de::Error>(self) -> Result<Option<i64>, E> { Ok(None) }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Option<i64>, E> { Ok(Some(v)) }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Option<i64>, E> {
+            i64::try_from(v).map(Some).map_err(|_| E::custom("out of range"))
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Option<i64>, E> {
+            v.parse::<i64>().map(Some).map_err(|_| E::custom("invalid integer string"))
+        }
+    }
+    deserializer.deserialize_any(OptFlexI64)
+}
+
+#[derive(Deserialize)]
+struct CreateEpicArgs {
+    title: String,
+    repo_path: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    plan: String,
+}
+
+#[derive(Deserialize)]
+struct GetEpicArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    epic_id: i64,
+}
+
+#[derive(Deserialize)]
+struct UpdateEpicArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    epic_id: i64,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    plan: Option<String>,
+    #[serde(default)]
+    done: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct CreateTaskWithEpicArgs {
+    title: String,
+    repo_path: String,
+    #[serde(default)]
+    description: String,
+    plan: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
+    epic_id: Option<i64>,
+}
+
 fn parse_args<T: serde::de::DeserializeOwned>(
     id: Option<Value>,
     args: Value,
@@ -224,6 +290,10 @@ fn tool_definitions() -> Value {
                         "plan": {
                             "type": "string",
                             "description": "Absolute file path to the implementation plan (optional). If provided, task starts in 'ready' status."
+                        },
+                        "epic_id": {
+                            "type": "integer",
+                            "description": "Optional epic ID to link this task to"
                         }
                     },
                     "required": ["title", "repo_path"]
@@ -266,6 +336,51 @@ fn tool_definitions() -> Value {
                     },
                     "required": ["task_id", "worktree", "tmux_window"]
                 }
+            },
+            {
+                "name": "create_epic",
+                "description": "Create a new epic on the kanban board.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Epic title" },
+                        "repo_path": { "type": "string", "description": "Repository path" },
+                        "description": { "type": "string", "description": "Epic description" },
+                        "plan": { "type": "string", "description": "High-level markdown plan" }
+                    },
+                    "required": ["title", "repo_path"]
+                }
+            },
+            {
+                "name": "get_epic",
+                "description": "Get details about an epic including its subtask summary.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "epic_id": { "type": "integer", "description": "The epic ID" }
+                    },
+                    "required": ["epic_id"]
+                }
+            },
+            {
+                "name": "list_epics",
+                "description": "List all epics on the kanban board.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "update_epic",
+                "description": "Update an epic's title, description, plan, or done status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "epic_id": { "type": "integer", "description": "The epic ID" },
+                        "title": { "type": "string", "description": "New title" },
+                        "description": { "type": "string", "description": "New description" },
+                        "plan": { "type": "string", "description": "New high-level plan" },
+                        "done": { "type": "boolean", "description": "Mark epic as done" }
+                    },
+                    "required": ["epic_id"]
+                }
             }
         ]
     })
@@ -307,6 +422,10 @@ pub async fn handle_mcp(
                 "create_task" => handle_create_task(&state, id, args),
                 "list_tasks" => handle_list_tasks(&state, id, args),
                 "claim_task" => handle_claim_task(&state, id, args),
+                "create_epic" => handle_create_epic(&state, id, args),
+                "get_epic" => handle_get_epic(&state, id, args),
+                "list_epics" => handle_list_epics(&state, id, args),
+                "update_epic" => handle_update_epic(&state, id, args),
                 other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
             }
         }
@@ -385,11 +504,11 @@ fn handle_update_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
 }
 
 fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
-    let parsed = match parse_args::<CreateTaskArgs>(id.clone(), args) {
+    let parsed = match parse_args::<CreateTaskWithEpicArgs>(id.clone(), args) {
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    tracing::info!(title = %parsed.title, "MCP create_task");
+    tracing::info!(title = %parsed.title, epic_id = ?parsed.epic_id, "MCP create_task");
 
     let plan = parsed.plan.as_deref().map(|p| {
         std::fs::canonicalize(p)
@@ -411,6 +530,11 @@ fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         status,
     ) {
         Ok(task_id) => {
+            if let Some(eid) = parsed.epic_id {
+                if let Err(e) = state.db.set_task_epic_id(task_id, Some(EpicId(eid))) {
+                    return JsonRpcResponse::err(id, -32603, format!("Failed to link task to epic: {e}"));
+                }
+            }
             state.notify();
             JsonRpcResponse::ok(
                 id,
@@ -586,6 +710,109 @@ fn handle_claim_task(state: &McpState, id: Option<Value>, args: Value) -> JsonRp
     JsonRpcResponse::ok(
         id,
         json!({"content": [{"type": "text", "text": format!("Task {} claimed: {}", parsed.task_id, task.title)}]}),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Epic tool implementations
+// ---------------------------------------------------------------------------
+
+fn handle_create_epic(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
+    let parsed = match parse_args::<CreateEpicArgs>(id.clone(), args) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    tracing::info!(title = %parsed.title, "MCP create_epic");
+
+    match state.db.create_epic(&parsed.title, &parsed.description, &parsed.plan, &parsed.repo_path) {
+        Ok(epic) => {
+            state.notify();
+            JsonRpcResponse::ok(
+                id,
+                json!({"content": [{"type": "text", "text": format!("Epic {} created: {}", epic.id, epic.title)}]}),
+            )
+        }
+        Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+    }
+}
+
+fn handle_get_epic(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
+    let parsed = match parse_args::<GetEpicArgs>(id.clone(), args) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    tracing::info!(epic_id = parsed.epic_id, "MCP get_epic");
+
+    match state.db.get_epic(EpicId(parsed.epic_id)) {
+        Ok(Some(epic)) => {
+            let subtasks = state.db.list_tasks_for_epic(epic.id).unwrap_or_default();
+            let done = subtasks.iter().filter(|t| t.status == TaskStatus::Done).count();
+            let total = subtasks.len();
+            let text = format!(
+                "Epic {id}: {title}\nDescription: {desc}\nRepo: {repo}\nDone: {done_flag}\nSubtasks: {done}/{total} done\n\nPlan:\n{plan}",
+                id = epic.id,
+                title = epic.title,
+                desc = epic.description,
+                repo = epic.repo_path,
+                done_flag = epic.done,
+                plan = epic.plan,
+            );
+            JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
+        }
+        Ok(None) => JsonRpcResponse::err(id, -32602, format!("Epic {} not found", parsed.epic_id)),
+        Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+    }
+}
+
+fn handle_list_epics(state: &McpState, id: Option<Value>, _args: Value) -> JsonRpcResponse {
+    tracing::info!("MCP list_epics");
+
+    match state.db.list_epics() {
+        Ok(epics) => {
+            if epics.is_empty() {
+                return JsonRpcResponse::ok(
+                    id,
+                    json!({"content": [{"type": "text", "text": "No epics found"}]}),
+                );
+            }
+            let lines: Vec<String> = epics.iter().map(|e| {
+                let subtasks = state.db.list_tasks_for_epic(e.id).unwrap_or_default();
+                let done = subtasks.iter().filter(|t| t.status == TaskStatus::Done).count();
+                format!("- [{}] {} ({}/{} done): {}", e.id, e.title, done, subtasks.len(), e.description)
+            }).collect();
+            JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": lines.join("\n")}]}))
+        }
+        Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+    }
+}
+
+fn handle_update_epic(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
+    let parsed = match parse_args::<UpdateEpicArgs>(id.clone(), args) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    tracing::info!(epic_id = parsed.epic_id, "MCP update_epic");
+
+    if let Err(e) = state.db.update_epic(
+        EpicId(parsed.epic_id),
+        parsed.title.as_deref(),
+        parsed.description.as_deref(),
+        parsed.plan.as_deref(),
+        parsed.done,
+    ) {
+        return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
+    }
+
+    state.notify();
+    let mut updated = Vec::new();
+    if parsed.title.is_some() { updated.push("title"); }
+    if parsed.description.is_some() { updated.push("description"); }
+    if parsed.plan.is_some() { updated.push("plan"); }
+    if parsed.done.is_some() { updated.push("done"); }
+
+    JsonRpcResponse::ok(
+        id,
+        json!({"content": [{"type": "text", "text": format!("Epic {} updated ({})", parsed.epic_id, updated.join(", "))}]}),
     )
 }
 
@@ -1239,7 +1466,7 @@ mod tests {
             ),
             (
                 "create_task",
-                BTreeSet::from(["title", "repo_path", "description", "plan"]),
+                BTreeSet::from(["title", "repo_path", "description", "plan", "epic_id"]),
                 BTreeSet::from(["title", "repo_path"]),
                 json!({"title": "t", "repo_path": "/r", "description": "d", "plan": "/p.md"}),
             ),
@@ -1254,6 +1481,30 @@ mod tests {
                 BTreeSet::from(["task_id", "worktree", "tmux_window"]),
                 BTreeSet::from(["task_id", "worktree", "tmux_window"]),
                 json!({"task_id": 1, "worktree": "/w", "tmux_window": "tw"}),
+            ),
+            (
+                "create_epic",
+                BTreeSet::from(["title", "repo_path", "description", "plan"]),
+                BTreeSet::from(["title", "repo_path"]),
+                json!({"title": "Epic", "repo_path": "/repo"}),
+            ),
+            (
+                "get_epic",
+                BTreeSet::from(["epic_id"]),
+                BTreeSet::from(["epic_id"]),
+                json!({"epic_id": 1}),
+            ),
+            (
+                "list_epics",
+                BTreeSet::new(),
+                BTreeSet::new(),
+                json!({}),
+            ),
+            (
+                "update_epic",
+                BTreeSet::from(["epic_id", "title", "description", "plan", "done"]),
+                BTreeSet::from(["epic_id"]),
+                json!({"epic_id": 1}),
             ),
         ];
 
@@ -1279,9 +1530,13 @@ mod tests {
             match *name {
                 "update_task" => { serde_json::from_value::<UpdateTaskArgs>(payload.clone()).unwrap(); }
                 "get_task" => { serde_json::from_value::<GetTaskArgs>(payload.clone()).unwrap(); }
-                "create_task" => { serde_json::from_value::<CreateTaskArgs>(payload.clone()).unwrap(); }
+                "create_task" => { serde_json::from_value::<CreateTaskWithEpicArgs>(payload.clone()).unwrap(); }
                 "list_tasks" => { serde_json::from_value::<ListTasksArgs>(payload.clone()).unwrap(); }
                 "claim_task" => { serde_json::from_value::<ClaimTaskArgs>(payload.clone()).unwrap(); }
+                "create_epic" => { serde_json::from_value::<CreateEpicArgs>(payload.clone()).unwrap(); }
+                "get_epic" => { serde_json::from_value::<GetEpicArgs>(payload.clone()).unwrap(); }
+                "list_epics" => {} // no args
+                "update_epic" => { serde_json::from_value::<UpdateEpicArgs>(payload.clone()).unwrap(); }
                 other => panic!("No deserialization check for tool: {other}"),
             }
         }
