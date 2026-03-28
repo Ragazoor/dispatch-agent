@@ -73,7 +73,7 @@ Status update hooks in `.claude/settings.json` run when Claude Code starts or st
 ## MCP Server
 
 Starts alongside TUI on `localhost:3142`. Agents use it to query and update tasks.
-Tools: `update_task`, `get_task`, `create_task`.
+Tools: `update_task`, `get_task`, `create_task`, `list_tasks`, `claim_task`, `create_epic`, `get_epic`, `list_epics`, `update_epic`.
 
 To test tools manually (while TUI is running):
 ```bash

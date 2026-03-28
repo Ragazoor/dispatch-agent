@@ -261,7 +261,6 @@ impl App {
             Message::EnterEpic(epic_id) => self.handle_enter_epic(epic_id),
             Message::ExitEpic => self.handle_exit_epic(),
             Message::RefreshEpics(epics) => self.handle_refresh_epics(epics),
-            Message::CreateEpic => vec![],
             Message::EpicCreated(epic) => self.handle_epic_created(epic),
             Message::EditEpic(id) => self.handle_edit_epic(id),
             Message::EpicEdited(epic) => self.handle_epic_edited(epic),

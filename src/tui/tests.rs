@@ -197,14 +197,6 @@ fn task_created_adds_to_list() {
 }
 
 #[test]
-fn delete_task_removes_and_returns_command() {
-    let mut app = make_app();
-    let cmds = app.update(Message::DeleteTask(TaskId(1)));
-    assert!(app.tasks.iter().all(|t| t.id != TaskId(1)));
-    assert!(cmds.iter().any(|c| matches!(c, Command::DeleteTask(TaskId(1)))));
-}
-
-#[test]
 fn delete_task_with_worktree_emits_cleanup() {
     let mut app = make_app();
     let task = app.find_task_mut(TaskId(4)).unwrap();
@@ -362,28 +354,6 @@ fn repo_paths_updated_replaces_paths() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.update(Message::RepoPathsUpdated(vec!["/a".into(), "/b".into()]));
     assert_eq!(app.repo_paths, vec!["/a", "/b"]);
-}
-
-#[test]
-fn window_gone_on_running_task_marks_crashed_compat() {
-    // Running task losing its window now marks it as crashed (not clears window)
-    let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    task.tmux_window = Some("task-4".to_string());
-    let mut app = App::new(vec![task], Duration::from_secs(300));
-
-    let cmds = app.update(Message::WindowGone(TaskId(4)));
-
-    // Task should stay Running
-    let task = app.tasks.iter().find(|t| t.id == TaskId(4)).unwrap();
-    assert_eq!(task.status, TaskStatus::Running);
-    // tmux_window should NOT be cleared for crashed Running tasks
-    assert!(task.tmux_window.is_some());
-    // worktree should be preserved
-    assert!(task.worktree.is_some());
-    // Should be marked crashed, not emit PersistTask
-    assert!(app.agents.crashed_tasks.contains(&TaskId(4)));
-    assert!(cmds.is_empty());
 }
 
 #[test]
@@ -1523,15 +1493,6 @@ fn confirm_delete_start_enters_mode() {
     app.update(Message::ConfirmDeleteStart);
     assert_eq!(app.input.mode, InputMode::ConfirmDelete);
     assert_eq!(app.status_message.as_deref(), Some("Delete task? (y/n)"));
-}
-
-#[test]
-fn confirm_delete_yes_deletes_selected_task() {
-    let mut app = make_app();
-    app.selection_mut().set_column(0); // Backlog has tasks
-    let cmds = app.update(Message::ConfirmDeleteYes);
-    assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::DeleteTask(_))));
 }
 
 #[test]

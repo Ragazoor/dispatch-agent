@@ -70,7 +70,6 @@ pub enum Message {
     EnterEpic(EpicId),
     ExitEpic,
     RefreshEpics(Vec<Epic>),
-    CreateEpic,
     EpicCreated(Epic),
     EditEpic(EpicId),
     EpicEdited(Epic),
