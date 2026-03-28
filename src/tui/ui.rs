@@ -125,7 +125,9 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
             .iter()
             .enumerate()
             .map(|(row_idx, task)| {
-                let is_selected = is_focused && row_idx == selected_row;
+                let is_cursor = is_focused && row_idx == selected_row;
+                let is_batch_selected = app.selected_tasks.contains(&task.id);
+                let select_prefix = if is_batch_selected { "* " } else { "  " };
                 let show_age = status != TaskStatus::Running;
 
                 // Build the age suffix for non-Running tasks
@@ -135,65 +137,77 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
                     String::new()
                 };
 
-                let max_title = 38_usize.saturating_sub(age_suffix.len());
+                let max_title = 36_usize.saturating_sub(age_suffix.len());
 
                 // Build the title portion
                 let title_text = if status == TaskStatus::Running {
                     if app.crashed_tasks().contains(&task.id) {
-                        format!("{} [crashed]", truncate(&task.title, 28))
+                        format!("{} [crashed]", truncate(&task.title, 26))
                     } else if app.stale_tasks().contains(&task.id) {
-                        format!("{} [stale]", truncate(&task.title, 30))
+                        format!("{} [stale]", truncate(&task.title, 28))
                     } else if let Some(output) = app.tmux_outputs.get(&task.id) {
                         let last_line = output.lines().last().unwrap_or("").trim();
                         if !last_line.is_empty() {
                             format!(
                                 "{} [{}]",
-                                truncate(&task.title, 20),
+                                truncate(&task.title, 18),
                                 truncate(last_line, 15)
                             )
                         } else {
-                            truncate(&task.title, 38)
+                            truncate(&task.title, 36)
                         }
                     } else {
-                        truncate(&task.title, 38)
+                        truncate(&task.title, 36)
                     }
                 } else {
                     truncate(&task.title, max_title)
                 };
 
-                if is_selected {
-                    // Selected: uniform inverted style (readability over staleness color)
-                    let selected_style = Style::default()
+                let batch_style = if is_batch_selected {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                if is_cursor {
+                    // Cursor: uniform inverted style (readability over staleness color)
+                    let cursor_style = Style::default()
                         .bg(color)
                         .fg(Color::Black)
                         .add_modifier(Modifier::BOLD);
-                    let full_label = format!("{title_text}{age_suffix}");
-                    ListItem::new(Line::from(Span::styled(full_label, selected_style)))
+                    let full_label = format!("{select_prefix}{title_text}{age_suffix}");
+                    ListItem::new(Line::from(Span::styled(full_label, cursor_style)))
                 } else if show_age && !age_suffix.is_empty() {
-                    // Unselected with age: two spans (title default, age colored)
+                    // Non-cursor with age: prefix + title + age colored
                     let staleness = Staleness::from_age(task.updated_at, now);
-                    let age_style = Style::default().fg(staleness_color(staleness));
+                    let age_style = Style::default().fg(staleness_color(staleness)).patch(batch_style);
                     ListItem::new(Line::from(vec![
-                        Span::styled(title_text, Style::default()),
+                        Span::styled(select_prefix, batch_style),
+                        Span::styled(title_text, batch_style),
                         Span::styled(age_suffix, age_style),
                     ]))
                 } else if status == TaskStatus::Running
                     && app.crashed_tasks().contains(&task.id)
                 {
-                    ListItem::new(Line::from(Span::styled(
-                        title_text,
-                        Style::default().fg(Color::Red),
-                    )))
+                    let style = Style::default().fg(Color::Red).patch(batch_style);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(select_prefix, style),
+                        Span::styled(title_text, style),
+                    ]))
                 } else if status == TaskStatus::Running
                     && app.stale_tasks().contains(&task.id)
                 {
-                    ListItem::new(Line::from(Span::styled(
-                        title_text,
-                        Style::default().fg(Color::Yellow),
-                    )))
+                    let style = Style::default().fg(Color::Yellow).patch(batch_style);
+                    ListItem::new(Line::from(vec![
+                        Span::styled(select_prefix, style),
+                        Span::styled(title_text, style),
+                    ]))
                 } else {
                     // Normal running or no age
-                    ListItem::new(Line::from(Span::styled(title_text, Style::default())))
+                    ListItem::new(Line::from(vec![
+                        Span::styled(select_prefix, batch_style),
+                        Span::styled(title_text, batch_style),
+                    ]))
                 }
             })
             .collect();
@@ -513,7 +527,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     match &app.mode {
         InputMode::Normal => {
-            let spans = action_hints(app.selected_task());
+            let spans = if !app.selected_tasks.is_empty() {
+                batch_action_hints(app.selected_tasks.len())
+            } else {
+                action_hints(app.selected_task())
+            };
             let bar = Paragraph::new(Line::from(spans));
             frame.render_widget(bar, area);
         }
@@ -611,5 +629,26 @@ pub(in crate::tui) fn action_hints(task: Option<&Task>) -> Vec<Span<'static>> {
     push_hint("[H]", "istory");
     push_hint("[q]", "uit");
 
+    spans
+}
+
+/// Build status bar hints when tasks are batch-selected.
+fn batch_action_hints(count: usize) -> Vec<Span<'static>> {
+    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(Color::DarkGray);
+    let count_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::styled(format!("{count} selected "), count_style));
+    spans.push(Span::styled("[m]", key_style));
+    spans.push(Span::styled("ove ", label_style));
+    spans.push(Span::styled("[M]", key_style));
+    spans.push(Span::styled("back ", label_style));
+    spans.push(Span::styled("[x]", key_style));
+    spans.push(Span::styled("archive ", label_style));
+    spans.push(Span::styled("[Space]", key_style));
+    spans.push(Span::styled("toggle ", label_style));
+    spans.push(Span::styled("[Esc]", key_style));
+    spans.push(Span::styled("clear", label_style));
     spans
 }

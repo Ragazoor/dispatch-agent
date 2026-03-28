@@ -32,6 +32,7 @@ pub struct App {
     pub(in crate::tui) inactivity_timeout: Duration,
     pub(in crate::tui) show_archived: bool,
     pub(in crate::tui) selected_archive_row: usize,
+    pub(in crate::tui) selected_tasks: HashSet<TaskId>,
 }
 
 impl App {
@@ -55,6 +56,7 @@ impl App {
             inactivity_timeout,
             show_archived: false,
             selected_archive_row: 0,
+            selected_tasks: HashSet::new(),
         }
     }
 
@@ -76,6 +78,7 @@ impl App {
     pub fn inactivity_timeout(&self) -> Duration { self.inactivity_timeout }
     pub fn show_archived(&self) -> bool { self.show_archived }
     pub fn selected_archive_row(&self) -> usize { self.selected_archive_row }
+    pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
 
     /// Return all tasks for a given status, ordered as they appear in self.tasks.
     pub fn tasks_by_status(&self, status: TaskStatus) -> Vec<&Task> {
@@ -157,6 +160,10 @@ impl App {
             Message::RetryFresh(id) => self.handle_retry_fresh(id),
             Message::ArchiveTask(id) => self.handle_archive_task(id),
             Message::ToggleArchive => self.handle_toggle_archive(),
+            Message::ToggleSelect(id) => self.handle_toggle_select(id),
+            Message::ClearSelection => self.handle_clear_selection(),
+            Message::BatchMoveTasks { ids, direction } => self.handle_batch_move_tasks(ids, direction),
+            Message::BatchArchiveTasks(ids) => self.handle_batch_archive_tasks(ids),
             Message::DismissError => self.handle_dismiss_error(),
             Message::StartNewTask => self.handle_start_new_task(),
             Message::CancelInput => self.handle_cancel_input(),
@@ -353,6 +360,9 @@ impl App {
 
     fn handle_refresh_tasks(&mut self, new_tasks: Vec<Task>) -> Vec<Command> {
         // Merge DB state into in-memory state, preserving tmux_outputs
+        // Prune selections for tasks that no longer exist
+        let valid_ids: HashSet<TaskId> = new_tasks.iter().map(|t| t.id).collect();
+        self.selected_tasks.retain(|id| valid_ids.contains(id));
         self.tasks = new_tasks;
         self.clamp_selection();
         vec![]
@@ -573,6 +583,38 @@ impl App {
             self.selected_archive_row = 0;
         }
         vec![]
+    }
+
+    fn handle_toggle_select(&mut self, id: TaskId) -> Vec<Command> {
+        if self.selected_tasks.contains(&id) {
+            self.selected_tasks.remove(&id);
+        } else {
+            self.selected_tasks.insert(id);
+        }
+        vec![]
+    }
+
+    fn handle_clear_selection(&mut self) -> Vec<Command> {
+        self.selected_tasks.clear();
+        vec![]
+    }
+
+    fn handle_batch_move_tasks(&mut self, ids: Vec<TaskId>, direction: MoveDirection) -> Vec<Command> {
+        let mut cmds = Vec::new();
+        for id in ids {
+            cmds.extend(self.handle_move_task(id, direction.clone()));
+        }
+        // Selection persists so user can press m repeatedly
+        cmds
+    }
+
+    fn handle_batch_archive_tasks(&mut self, ids: Vec<TaskId>) -> Vec<Command> {
+        let mut cmds = Vec::new();
+        for id in ids {
+            cmds.extend(self.handle_archive_task(id));
+        }
+        self.selected_tasks.clear();
+        cmds
     }
 
     fn handle_dismiss_error(&mut self) -> Vec<Command> {

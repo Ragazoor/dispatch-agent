@@ -1742,3 +1742,188 @@ fn full_archive_flow() {
     assert!(cmds.iter().any(|c| matches!(c, Command::DeleteTask(TaskId(1)))));
     assert!(app.archived_tasks().is_empty());
 }
+
+// -----------------------------------------------------------------------
+// Batch selection tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn space_toggles_task_selection() {
+    let mut app = make_app();
+    // Select task 1 in Backlog
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+
+    // Toggle off
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(!app.selected_tasks.contains(&TaskId(1)));
+}
+
+#[test]
+fn space_on_empty_column_is_noop() {
+    let mut app = make_app();
+    // Navigate to Review column (empty)
+    app.update(Message::NavigateColumn(3));
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn esc_clears_selection() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+    assert_eq!(app.selected_tasks.len(), 2);
+
+    app.handle_key(make_key(KeyCode::Esc));
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn esc_with_no_selection_is_noop() {
+    let mut app = make_app();
+    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    assert!(cmds.is_empty());
+    assert_eq!(app.mode, InputMode::Normal);
+}
+
+#[test]
+fn batch_move_forward_moves_all_selected() {
+    let mut app = make_app();
+    // Select both Backlog tasks
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    // Press m to batch move forward
+    let cmds = app.handle_key(make_key(KeyCode::Char('m')));
+
+    // Both should now be Ready
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Ready);
+    assert_eq!(app.find_task(TaskId(2)).unwrap().status, TaskStatus::Ready);
+    // Should have PersistTask commands
+    let persist_count = cmds.iter().filter(|c| matches!(c, Command::PersistTask(_))).count();
+    assert_eq!(persist_count, 2);
+}
+
+#[test]
+fn batch_move_preserves_selection() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    app.handle_key(make_key(KeyCode::Char('m')));
+
+    // Selection should persist after move
+    assert_eq!(app.selected_tasks.len(), 2);
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+}
+
+#[test]
+fn batch_move_multiple_steps() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    // Move twice: Backlog -> Ready -> Running
+    app.handle_key(make_key(KeyCode::Char('m')));
+    app.handle_key(make_key(KeyCode::Char('m')));
+
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Running);
+    assert_eq!(app.find_task(TaskId(2)).unwrap().status, TaskStatus::Running);
+}
+
+#[test]
+fn batch_move_backward() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Done),
+        make_task(2, TaskStatus::Done),
+        make_task(3, TaskStatus::Done),
+    ], Duration::from_secs(300));
+
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    app.handle_key(make_key(KeyCode::Char('M')));
+
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Review);
+    assert_eq!(app.find_task(TaskId(2)).unwrap().status, TaskStatus::Review);
+    // Task 3 not selected, should remain Done
+    assert_eq!(app.find_task(TaskId(3)).unwrap().status, TaskStatus::Done);
+}
+
+#[test]
+fn batch_archive_archives_all_and_clears_selection() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Done),
+        make_task(2, TaskStatus::Done),
+        make_task(3, TaskStatus::Ready),
+    ], Duration::from_secs(300));
+
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    let cmds = app.update(Message::BatchArchiveTasks(vec![TaskId(1), TaskId(2)]));
+
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Archived);
+    assert_eq!(app.find_task(TaskId(2)).unwrap().status, TaskStatus::Archived);
+    assert_eq!(app.find_task(TaskId(3)).unwrap().status, TaskStatus::Ready);
+    // Selection should be cleared after archive
+    assert!(app.selected_tasks.is_empty());
+    // Should have PersistTask commands
+    let persist_count = cmds.iter().filter(|c| matches!(c, Command::PersistTask(_))).count();
+    assert_eq!(persist_count, 2);
+}
+
+#[test]
+fn x_key_with_selection_shows_count_in_confirm() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.mode, InputMode::ConfirmArchive);
+    assert_eq!(app.status_message.as_deref(), Some("Archive 2 tasks? (y/n)"));
+}
+
+#[test]
+fn confirm_archive_with_selection_dispatches_batch() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Done),
+        make_task(2, TaskStatus::Done),
+    ], Duration::from_secs(300));
+
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+    app.mode = InputMode::ConfirmArchive;
+
+    app.handle_key(make_key(KeyCode::Char('y')));
+
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Archived);
+    assert_eq!(app.find_task(TaskId(2)).unwrap().status, TaskStatus::Archived);
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn single_task_operations_work_without_selection() {
+    let mut app = make_app();
+    assert!(app.selected_tasks.is_empty());
+
+    // Single move should still work
+    let cmds = app.handle_key(make_key(KeyCode::Char('m')));
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Ready);
+    assert!(!cmds.is_empty());
+}
+
+#[test]
+fn refresh_tasks_prunes_stale_selections() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(99))); // non-existent
+
+    // Refresh with only task 1
+    app.update(Message::RefreshTasks(vec![make_task(1, TaskStatus::Backlog)]));
+
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(!app.selected_tasks.contains(&TaskId(99)));
+}

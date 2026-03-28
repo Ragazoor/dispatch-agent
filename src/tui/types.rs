@@ -43,6 +43,10 @@ pub enum Message {
     RetryFresh(TaskId),
     ArchiveTask(TaskId),
     ToggleArchive,
+    ToggleSelect(TaskId),
+    ClearSelection,
+    BatchMoveTasks { ids: Vec<TaskId>, direction: MoveDirection },
+    BatchArchiveTasks(Vec<TaskId>),
     // Input routing messages
     DismissError,
     StartNewTask,

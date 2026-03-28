@@ -121,8 +121,20 @@ impl App {
                 }
             }
 
-            KeyCode::Char('m') => {
+            KeyCode::Char(' ') => {
                 if let Some(task) = self.selected_task() {
+                    let id = task.id;
+                    self.update(Message::ToggleSelect(id))
+                } else {
+                    vec![]
+                }
+            }
+
+            KeyCode::Char('m') => {
+                if !self.selected_tasks.is_empty() {
+                    let ids: Vec<_> = self.selected_tasks.iter().copied().collect();
+                    self.update(Message::BatchMoveTasks { ids, direction: MoveDirection::Forward })
+                } else if let Some(task) = self.selected_task() {
                     let id = task.id;
                     self.update(Message::MoveTask { id, direction: MoveDirection::Forward })
                 } else {
@@ -131,7 +143,10 @@ impl App {
             }
 
             KeyCode::Char('M') => {
-                if let Some(task) = self.selected_task() {
+                if !self.selected_tasks.is_empty() {
+                    let ids: Vec<_> = self.selected_tasks.iter().copied().collect();
+                    self.update(Message::BatchMoveTasks { ids, direction: MoveDirection::Backward })
+                } else if let Some(task) = self.selected_task() {
                     let id = task.id;
                     self.update(Message::MoveTask { id, direction: MoveDirection::Backward })
                 } else {
@@ -150,7 +165,11 @@ impl App {
             }
 
             KeyCode::Char('x') => {
-                if self.selected_task().is_some() {
+                if !self.selected_tasks.is_empty() {
+                    let count = self.selected_tasks.len();
+                    self.mode = InputMode::ConfirmArchive;
+                    self.status_message = Some(format!("Archive {} tasks? (y/n)", count));
+                } else if self.selected_task().is_some() {
                     self.mode = InputMode::ConfirmArchive;
                     self.status_message = Some("Archive task? (y/n)".to_string());
                 }
@@ -171,6 +190,14 @@ impl App {
             }
 
             KeyCode::Char('H') => self.update(Message::ToggleArchive),
+
+            KeyCode::Esc => {
+                if !self.selected_tasks.is_empty() {
+                    self.update(Message::ClearSelection)
+                } else {
+                    vec![]
+                }
+            }
 
             _ => vec![],
         }
@@ -245,7 +272,10 @@ impl App {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.mode = InputMode::Normal;
                 self.status_message = None;
-                if let Some(task) = self.selected_task() {
+                if !self.selected_tasks.is_empty() {
+                    let ids: Vec<_> = self.selected_tasks.iter().copied().collect();
+                    self.update(Message::BatchArchiveTasks(ids))
+                } else if let Some(task) = self.selected_task() {
                     let id = task.id;
                     self.update(Message::ArchiveTask(id))
                 } else {
