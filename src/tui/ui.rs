@@ -7,18 +7,42 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::models::{Epic, Task, TaskStatus, Staleness, format_age, format_detail_age};
+use crate::models::{Epic, Task, TaskStatus, Staleness, format_age};
 use super::{App, ColumnItem, InputMode, ViewMode};
 
 /// Column color per status
 fn column_color(status: TaskStatus) -> Color {
     match status {
-        TaskStatus::Backlog => Color::DarkGray,
-        TaskStatus::Ready => Color::Blue,
-        TaskStatus::Running => Color::Yellow,
-        TaskStatus::Review => Color::Magenta,
-        TaskStatus::Done => Color::Green,
-        TaskStatus::Archived => Color::DarkGray,
+        TaskStatus::Backlog => Color::Rgb(86, 95, 137),
+        TaskStatus::Ready => Color::Rgb(122, 162, 247),
+        TaskStatus::Running => Color::Rgb(224, 175, 104),
+        TaskStatus::Review => Color::Rgb(187, 154, 247),
+        TaskStatus::Done => Color::Rgb(158, 206, 106),
+        TaskStatus::Archived => Color::Rgb(86, 95, 137),
+    }
+}
+
+/// Dark-tinted background for the cursor card in each column.
+fn cursor_bg_color(status: TaskStatus) -> Color {
+    match status {
+        TaskStatus::Backlog => Color::Rgb(26, 28, 48),
+        TaskStatus::Ready => Color::Rgb(26, 34, 64),
+        TaskStatus::Running => Color::Rgb(48, 38, 20),
+        TaskStatus::Review => Color::Rgb(38, 26, 48),
+        TaskStatus::Done => Color::Rgb(26, 38, 28),
+        TaskStatus::Archived => Color::Rgb(26, 28, 48),
+    }
+}
+
+/// Unicode status icon for the metadata line of each card.
+fn status_icon(status: TaskStatus) -> &'static str {
+    match status {
+        TaskStatus::Backlog => "◦",
+        TaskStatus::Ready => "⬡",
+        TaskStatus::Running => "◉",
+        TaskStatus::Review => "◎",
+        TaskStatus::Done => "✓",
+        TaskStatus::Archived => "◦",
     }
 }
 
@@ -96,107 +120,137 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     for (col_idx, &status) in TaskStatus::ALL.iter().enumerate() {
-        let count = app.tasks_by_status(status).len();
+        let count = app.column_items_for_status(status).len();
+        let is_focused = app.selected_column() == col_idx;
         let color = column_color(status);
-        let text = format!("{}: {}", status.as_str().to_uppercase(), count);
+
+        let (prefix, style) = if is_focused {
+            ("\u{25b8} ", Style::default()
+                .fg(color)
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED))
+        } else {
+            ("\u{25e6} ", Style::default().fg(Color::Rgb(86, 95, 137)))
+        };
+
+        let text = format!("{}{} {}", prefix, status.as_str(), count);
         let paragraph = Paragraph::new(text)
-            .style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+            .style(style)
             .alignment(Alignment::Center);
         frame.render_widget(paragraph, segments[col_idx]);
     }
 }
 
-/// Format the title text for a task card, including status annotations for running tasks.
-fn format_task_title(task: &Task, status: TaskStatus, app: &App, age_suffix: &str) -> String {
-    let max_title = 36_usize.saturating_sub(age_suffix.len());
-
-    if status != TaskStatus::Running {
-        return truncate(&task.title, max_title);
-    }
-
-    let is_crashed = app.crashed_tasks().contains(&task.id);
-    let is_stale = app.stale_tasks().contains(&task.id);
-
-    if is_crashed {
-        format!("{} [crashed]", truncate(&task.title, 26))
-    } else if is_stale {
-        format!("{} [stale]", truncate(&task.title, 28))
-    } else if let Some(output) = app.agents.tmux_outputs.get(&task.id) {
-        let last_line = output.lines().last().unwrap_or("").trim();
-        if !last_line.is_empty() {
-            format!(
-                "{} [{}]",
-                truncate(&task.title, 18),
-                truncate(last_line, 15)
-            )
-        } else {
-            truncate(&task.title, 36)
-        }
-    } else {
-        truncate(&task.title, 36)
-    }
+/// Format the title text for a task card (line 1 only — status annotations are on line 2).
+fn format_task_title(task: &Task, max_title: usize) -> String {
+    truncate(&task.title, max_title)
 }
 
-/// Build a styled ListItem for a task card in a kanban column.
+/// Build a styled two-line ListItem for a task card in a kanban column.
+/// Line 1: stripe + title
+/// Line 2: status icon + age/activity metadata
 fn build_task_list_item<'a>(
     task: &Task,
     status: TaskStatus,
     app: &App,
     now: DateTime<Utc>,
     is_cursor: bool,
-    column_color: Color,
+    col_color: Color,
 ) -> ListItem<'a> {
     let is_batch_selected = app.selected_tasks.contains(&task.id);
     let select_prefix = if is_batch_selected { "* " } else { "  " };
-    let show_age = status != TaskStatus::Running;
 
-    let age_suffix = if show_age {
-        format!(" {}", format_age(task.updated_at, now))
-    } else {
-        String::new()
-    };
+    let title_text = format_task_title(task, 32);
 
-    let title_text = format_task_title(task, status, app, &age_suffix);
-
-    let batch_style = if is_batch_selected {
+    // Line 1: prefix + stripe + title
+    let stripe_style = Style::default().fg(col_color);
+    let title_style = if is_batch_selected {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
 
-    if is_cursor {
-        let cursor_style = Style::default()
-            .bg(column_color)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD);
-        let full_label = format!("{select_prefix}{title_text}{age_suffix}");
-        ListItem::new(Line::from(Span::styled(full_label, cursor_style)))
-    } else if show_age && !age_suffix.is_empty() {
-        let staleness = Staleness::from_age(task.updated_at, now);
-        let age_style = Style::default().fg(staleness_color(staleness)).patch(batch_style);
-        ListItem::new(Line::from(vec![
-            Span::styled(select_prefix.to_string(), batch_style),
-            Span::styled(title_text, batch_style),
-            Span::styled(age_suffix, age_style),
-        ]))
-    } else if status == TaskStatus::Running && app.crashed_tasks().contains(&task.id) {
-        let style = Style::default().fg(Color::Red).patch(batch_style);
-        ListItem::new(Line::from(vec![
-            Span::styled(select_prefix.to_string(), style),
-            Span::styled(title_text, style),
-        ]))
-    } else if status == TaskStatus::Running && app.stale_tasks().contains(&task.id) {
-        let style = Style::default().fg(Color::Yellow).patch(batch_style);
-        ListItem::new(Line::from(vec![
-            Span::styled(select_prefix.to_string(), style),
-            Span::styled(title_text, style),
-        ]))
+    let line1 = Line::from(vec![
+        Span::styled(select_prefix.to_string(), title_style),
+        Span::styled("\u{258e}", stripe_style),
+        Span::styled(format!(" {title_text}"), title_style),
+    ]);
+
+    // Line 2: metadata
+    let is_crashed = app.crashed_tasks().contains(&task.id);
+    let is_stale = app.stale_tasks().contains(&task.id);
+
+    let line2 = if is_crashed {
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled("\u{26a0} crashed", Style::default().fg(Color::Red)),
+        ])
+    } else if is_stale {
+        let mins = app.agents.last_output_change.get(&task.id)
+            .map(|t| t.elapsed().as_secs() / 60)
+            .unwrap_or(0);
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                format!("\u{25c9} stale \u{00b7} {}m", mins),
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
+    } else if status == TaskStatus::Running {
+        if let Some(output) = app.agents.tmux_outputs.get(&task.id) {
+            let last_line = output.lines().last().unwrap_or("").trim();
+            if !last_line.is_empty() {
+                Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(
+                        format!("{} {} ", status_icon(status), truncate(last_line, 20)),
+                        Style::default().fg(Color::Rgb(86, 95, 137)),
+                    ),
+                ])
+            } else {
+                Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(
+                        format!("{} running", status_icon(status)),
+                        Style::default().fg(Color::Rgb(86, 95, 137)),
+                    ),
+                ])
+            }
+        } else {
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled(
+                    format!("{} running", status_icon(status)),
+                    Style::default().fg(Color::Rgb(86, 95, 137)),
+                ),
+            ])
+        }
     } else {
-        ListItem::new(Line::from(vec![
-            Span::styled(select_prefix.to_string(), batch_style),
-            Span::styled(title_text, batch_style),
-        ]))
+        let age = format_age(task.updated_at, now);
+        let staleness = Staleness::from_age(task.updated_at, now);
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                format!("{} {}", status_icon(status), age),
+                Style::default().fg(staleness_color(staleness)),
+            ),
+        ])
+    };
+
+    // Build two-line ListItem
+    let mut item = ListItem::new(vec![line1, line2]);
+
+    // Cursor gets tinted background via ListItem::style() for full-width fill
+    if is_cursor {
+        item = item.style(
+            Style::default()
+                .bg(cursor_bg_color(status))
+                .fg(Color::Rgb(192, 202, 245))
+                .add_modifier(Modifier::BOLD),
+        );
     }
+
+    item
 }
 
 fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
@@ -212,28 +266,7 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
         let is_focused = app.selected_column() == col_idx;
         let color = column_color(status);
 
-        let (border_type, border_style, title_style) = if is_focused {
-            (
-                BorderType::Double,
-                Style::default().fg(color),
-                Style::default().bg(color).fg(Color::Black).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            (
-                BorderType::Plain,
-                Style::default().fg(Color::DarkGray),
-                Style::default().fg(Color::DarkGray),
-            )
-        };
-
         let column_items = app.column_items_for_status(status);
-        let title = format!(" {} ({}) ", status.as_str().to_uppercase(), column_items.len());
-        let block = Block::default()
-            .title(title)
-            .title_style(title_style)
-            .borders(Borders::ALL)
-            .border_type(border_type)
-            .border_style(border_style);
         let selected_row = app.selected_row()[col_idx];
 
         let items: Vec<ListItem> = column_items
@@ -248,7 +281,7 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
             })
             .collect();
 
-        let list = List::new(items).block(block);
+        let list = List::new(items);
         frame.render_widget(list, col_area);
     }
 }
@@ -257,7 +290,7 @@ fn render_epic_item(
     epic: &Epic,
     is_cursor: bool,
     app: &App,
-    _color: Color,
+    _col_color: Color,
 ) -> ListItem<'static> {
     let subtask_statuses: Vec<TaskStatus> = app.tasks()
         .iter()
@@ -271,32 +304,47 @@ fn render_epic_item(
     }).count();
     let pending_count = subtask_statuses.len() - done_count - running_count;
 
-    let title_text = truncate(&epic.title, 20);
-    let mut dots = " EPIC".to_string();
+    let title_text = truncate(&epic.title, 28);
+
+    // Line 1: stripe + title
+    let line1 = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("\u{258e}", Style::default().fg(Color::Rgb(187, 154, 247))),
+        Span::styled(
+            format!(" {title_text}"),
+            Style::default().fg(Color::Rgb(187, 154, 247)).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    // Line 2: EPIC + subtask counts
+    let mut meta = " EPIC".to_string();
     if done_count > 0 {
-        dots.push_str(&format!(" +{done_count}"));
+        meta.push_str(&format!(" +{done_count}"));
     }
     if running_count > 0 {
-        dots.push_str(&format!(" ~{running_count}"));
+        meta.push_str(&format!(" ~{running_count}"));
     }
     if pending_count > 0 {
-        dots.push_str(&format!(" .{pending_count}"));
+        meta.push_str(&format!(" .{pending_count}"));
     }
 
+    let line2 = Line::from(vec![
+        Span::raw("   "),
+        Span::styled(meta, Style::default().fg(Color::Rgb(86, 95, 137))),
+    ]);
+
+    let mut item = ListItem::new(vec![line1, line2]);
+
     if is_cursor {
-        let cursor_style = Style::default()
-            .bg(Color::Magenta)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD);
-        let label = format!("  {title_text}{dots}");
-        ListItem::new(Line::from(Span::styled(label, cursor_style)))
-    } else {
-        ListItem::new(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(title_text, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-            Span::styled(dots, Style::default().fg(Color::DarkGray)),
-        ]))
+        item = item.style(
+            Style::default()
+                .bg(Color::Rgb(38, 26, 48))
+                .fg(Color::Rgb(192, 202, 245))
+                .add_modifier(Modifier::BOLD),
+        );
     }
+
+    item
 }
 
 fn render_epic_banner(frame: &mut Frame, app: &App, area: Rect) {
@@ -389,16 +437,16 @@ fn render_archive_overlay(frame: &mut Frame, app: &App, area: Rect, now: DateTim
     frame.render_widget(list, overlay_area);
 }
 
-fn render_detail(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
+fn render_detail(frame: &mut Frame, app: &App, area: Rect, _now: DateTime<Utc>) {
     // When in input mode, show the input form instead of detail
     if render_input_form(frame, app, area) {
         return;
     }
 
+    // Top border separator
     let block = Block::default()
-        .title(" Detail ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .borders(Borders::TOP)
+        .border_style(Style::default().fg(Color::Rgb(41, 46, 66)));
 
     if !app.detail_visible {
         let paragraph = Paragraph::new("").block(block);
@@ -407,40 +455,45 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
     }
 
     let lines: Vec<Line> = if let Some(task) = app.selected_task() {
-        let status_suffix = if app.crashed_tasks().contains(&task.id) {
-            " (crashed)".to_string()
+        let status_color = column_color(task.status);
+
+        // Line 1: title (bold, colored) + inline metadata (dim)
+        let mut line1_spans = vec![
+            Span::styled(
+                task.title.clone(),
+                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" \u{00b7} #{} \u{00b7} {} \u{00b7} {}", task.id, task.status.as_str(), task.repo_path),
+                Style::default().fg(Color::Rgb(86, 95, 137)),
+            ),
+        ];
+
+        // Add crash/stale suffix
+        if app.crashed_tasks().contains(&task.id) {
+            line1_spans.push(Span::styled(
+                " (crashed)",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ));
         } else if app.stale_tasks().contains(&task.id) {
             let mins = app.agents.last_output_change.get(&task.id)
                 .map(|t| t.elapsed().as_secs() / 60)
                 .unwrap_or(0);
-            format!(" (stale - inactive {}m)", mins)
-        } else {
-            String::new()
-        };
+            line1_spans.push(Span::styled(
+                format!(" (stale \u{00b7} {}m)", mins),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
+
         let mut l = vec![
-            Line::from(format!(
-                "ID: {}  Status: {}{}  Repo: {}",
-                task.id,
-                task.status.as_str(),
-                status_suffix,
-                task.repo_path
-            )),
-            Line::from(format!("Title: {}", task.title)),
-            Line::from(format!("Description: {}", task.description)),
-            Line::from(format!(
-                "Plan: {}",
-                task.plan.as_deref().unwrap_or("-")
-            )),
-            Line::from(format!(
-                "Worktree: {}  Tmux: {}",
-                task.worktree.as_deref().unwrap_or("-"),
-                task.tmux_window.as_deref().unwrap_or("-")
-            )),
-            Line::from(format!(
-                "Updated: {} ago",
-                format_detail_age(task.updated_at, now)
+            Line::from(line1_spans),
+            Line::from(Span::styled(
+                task.description.clone(),
+                Style::default().fg(Color::Rgb(120, 124, 153)),
             )),
         ];
+
+        // Tmux output for running tasks
         if let Some(output) = app.agents.tmux_outputs.get(&task.id) {
             l.push(Line::from(""));
             for line in output.lines() {
@@ -449,7 +502,10 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
         }
         l
     } else {
-        vec![Line::from("No task selected")]
+        vec![Line::from(Span::styled(
+            "No task selected",
+            Style::default().fg(Color::Rgb(86, 95, 137)),
+        ))]
     };
 
     let paragraph = Paragraph::new(lines)
@@ -711,17 +767,17 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     // Archive mode status bar
     if app.show_archived() {
-        let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-        let label_style = Style::default().fg(Color::DarkGray);
+        let key_color = Color::Rgb(86, 95, 137);
+        let label_style = Style::default().fg(Color::Rgb(86, 95, 137));
         let spans = vec![
-            Span::styled("[x]", key_style),
-            Span::styled("delete ", label_style),
-            Span::styled("[e]", key_style),
-            Span::styled("dit ", label_style),
-            Span::styled("[H]", key_style),
-            Span::styled("close ", label_style),
-            Span::styled("[q]", key_style),
-            Span::styled("uit ", label_style),
+            Span::styled("x", Style::default().fg(key_color).add_modifier(Modifier::BOLD)),
+            Span::styled(" delete  ", label_style),
+            Span::styled("e", Style::default().fg(key_color).add_modifier(Modifier::BOLD)),
+            Span::styled(" edit  ", label_style),
+            Span::styled("H", Style::default().fg(key_color).add_modifier(Modifier::BOLD)),
+            Span::styled(" close  ", label_style),
+            Span::styled("q", Style::default().fg(key_color).add_modifier(Modifier::BOLD)),
+            Span::styled(" quit  ", label_style),
         ];
         let bar = Paragraph::new(Line::from(spans));
         frame.render_widget(bar, area);
@@ -730,10 +786,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
     match &app.input.mode {
         InputMode::Normal => {
+            let key_color = column_color(TaskStatus::ALL[app.selected_column()]);
             let spans = if !app.selected_tasks.is_empty() {
-                batch_action_hints(app.selected_tasks.len())
+                batch_action_hints(app.selected_tasks.len(), key_color)
             } else {
-                action_hints(app.selected_task())
+                action_hints(app.selected_task(), key_color)
             };
             let bar = Paragraph::new(Line::from(spans));
             frame.render_widget(bar, area);
@@ -808,80 +865,76 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Build context-sensitive keybinding hint spans for the status bar.
 /// Returns styled spans showing available actions for the selected task.
-pub(in crate::tui) fn action_hints(task: Option<&Task>) -> Vec<Span<'static>> {
-    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(Color::DarkGray);
+pub(in crate::tui) fn action_hints(task: Option<&Task>, key_color: Color) -> Vec<Span<'static>> {
+    let label_style = Style::default().fg(Color::Rgb(86, 95, 137));
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    // Helper closure to push a hint like "[d]ispatch "
     let mut push_hint = |key: &'static str, label: &'static str| {
-        spans.push(Span::styled(key, key_style));
-        spans.push(Span::styled(label, label_style));
-        spans.push(Span::raw(" "));
+        spans.push(Span::styled(key, Style::default().fg(key_color).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(format!(" {label}  "), label_style));
     };
 
     if let Some(task) = task {
         match task.status {
             TaskStatus::Backlog => {
-                push_hint("[d]", "brainstorm");
-                push_hint("[e]", "dit");
-                push_hint("[m]", "ove");
-                push_hint("[x]", "archive");
+                push_hint("d", "brainstorm");
+                push_hint("e", "edit");
+                push_hint("m", "move");
+                push_hint("x", "archive");
             }
             TaskStatus::Ready => {
-                push_hint("[d]", "ispatch");
-                push_hint("[e]", "dit");
-                push_hint("[m]", "ove");
-                push_hint("[M]", "back");
-                push_hint("[x]", "archive");
+                push_hint("d", "dispatch");
+                push_hint("e", "edit");
+                push_hint("m", "move");
+                push_hint("M", "back");
+                push_hint("x", "archive");
             }
             TaskStatus::Running | TaskStatus::Review => {
                 if task.tmux_window.is_some() {
-                    push_hint("[g]", "o to session");
+                    push_hint("g", "session");
                 } else if task.worktree.is_some() {
-                    push_hint("[d]", "resume");
+                    push_hint("d", "resume");
                 }
-                push_hint("[e]", "dit");
-                push_hint("[m]", "ove");
-                push_hint("[M]", "back");
-                push_hint("[x]", "archive");
+                push_hint("e", "edit");
+                push_hint("m", "move");
+                push_hint("M", "back");
+                push_hint("x", "archive");
             }
             TaskStatus::Done => {
-                push_hint("[e]", "dit");
-                push_hint("[M]", "back");
-                push_hint("[x]", "archive");
+                push_hint("e", "edit");
+                push_hint("M", "back");
+                push_hint("x", "archive");
             }
             TaskStatus::Archived => {}
         }
     }
 
-    // Global hints — always shown
-    push_hint("[n]", "ew");
-    push_hint("[D]", "quick");
-    push_hint("[H]", "istory");
-    push_hint("[q]", "uit");
+    push_hint("n", "new");
+    push_hint("D", "quick");
+    push_hint("H", "history");
+    push_hint("q", "quit");
 
     spans
 }
 
 /// Build status bar hints when tasks are batch-selected.
-fn batch_action_hints(count: usize) -> Vec<Span<'static>> {
-    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(Color::DarkGray);
-    let count_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+fn batch_action_hints(count: usize, key_color: Color) -> Vec<Span<'static>> {
+    let label_style = Style::default().fg(Color::Rgb(86, 95, 137));
+    let count_style = Style::default().fg(Color::Rgb(224, 175, 104)).add_modifier(Modifier::BOLD);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::styled(format!("{count} selected "), count_style));
-    spans.push(Span::styled("[m]", key_style));
-    spans.push(Span::styled("ove ", label_style));
-    spans.push(Span::styled("[M]", key_style));
-    spans.push(Span::styled("back ", label_style));
-    spans.push(Span::styled("[x]", key_style));
-    spans.push(Span::styled("archive ", label_style));
-    spans.push(Span::styled("[Space]", key_style));
-    spans.push(Span::styled("toggle ", label_style));
-    spans.push(Span::styled("[Esc]", key_style));
-    spans.push(Span::styled("clear", label_style));
+    spans.push(Span::styled(format!("{count} selected  "), count_style));
+
+    let mut push_hint = |key: &'static str, label: &'static str| {
+        spans.push(Span::styled(key, Style::default().fg(key_color).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(format!(" {label}  "), label_style));
+    };
+
+    push_hint("m", "move");
+    push_hint("M", "back");
+    push_hint("x", "archive");
+    push_hint("Space", "toggle");
+    push_hint("Esc", "clear");
     spans
 }
