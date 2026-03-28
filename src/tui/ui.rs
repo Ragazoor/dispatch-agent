@@ -289,7 +289,7 @@ fn render_epic_item(
     epic: &Epic,
     is_cursor: bool,
     app: &App,
-    _color: Color,
+    _col_color: Color,
 ) -> ListItem<'static> {
     let subtask_statuses: Vec<TaskStatus> = app.tasks()
         .iter()
@@ -303,32 +303,47 @@ fn render_epic_item(
     }).count();
     let pending_count = subtask_statuses.len() - done_count - running_count;
 
-    let title_text = truncate(&epic.title, 20);
-    let mut dots = " EPIC".to_string();
+    let title_text = truncate(&epic.title, 28);
+
+    // Line 1: stripe + title
+    let line1 = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("\u{258e}", Style::default().fg(Color::Rgb(187, 154, 247))),
+        Span::styled(
+            format!(" {title_text}"),
+            Style::default().fg(Color::Rgb(187, 154, 247)).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    // Line 2: EPIC + subtask counts
+    let mut meta = " EPIC".to_string();
     if done_count > 0 {
-        dots.push_str(&format!(" +{done_count}"));
+        meta.push_str(&format!(" +{done_count}"));
     }
     if running_count > 0 {
-        dots.push_str(&format!(" ~{running_count}"));
+        meta.push_str(&format!(" ~{running_count}"));
     }
     if pending_count > 0 {
-        dots.push_str(&format!(" .{pending_count}"));
+        meta.push_str(&format!(" .{pending_count}"));
     }
 
+    let line2 = Line::from(vec![
+        Span::raw("   "),
+        Span::styled(meta, Style::default().fg(Color::Rgb(86, 95, 137))),
+    ]);
+
+    let mut item = ListItem::new(vec![line1, line2]);
+
     if is_cursor {
-        let cursor_style = Style::default()
-            .bg(Color::Magenta)
-            .fg(Color::Black)
-            .add_modifier(Modifier::BOLD);
-        let label = format!("  {title_text}{dots}");
-        ListItem::new(Line::from(Span::styled(label, cursor_style)))
-    } else {
-        ListItem::new(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(title_text, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
-            Span::styled(dots, Style::default().fg(Color::DarkGray)),
-        ]))
+        item = item.style(
+            Style::default()
+                .bg(Color::Rgb(38, 26, 48))
+                .fg(Color::Rgb(192, 202, 245))
+                .add_modifier(Modifier::BOLD),
+        );
     }
+
+    item
 }
 
 fn render_epic_banner(frame: &mut Frame, app: &App, area: Rect) {
