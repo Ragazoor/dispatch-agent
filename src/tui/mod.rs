@@ -257,6 +257,7 @@ impl App {
             Message::SelectQuickDispatchRepo(idx) => self.handle_select_quick_dispatch_repo(idx),
             Message::CancelRetry => self.handle_cancel_retry(),
             Message::StatusInfo(msg) => self.handle_status_info(msg),
+            Message::ToggleHelp => self.handle_toggle_help(),
             // Epic messages
             Message::EnterEpic(epic_id) => self.handle_enter_epic(epic_id),
             Message::ExitEpic => self.handle_exit_epic(),
@@ -816,6 +817,15 @@ impl App {
 
     fn handle_status_info(&mut self, msg: String) -> Vec<Command> {
         self.status_message = Some(msg);
+        vec![]
+    }
+
+    fn handle_toggle_help(&mut self) -> Vec<Command> {
+        if self.input.mode == InputMode::Help {
+            self.input.mode = InputMode::Normal;
+        } else {
+            self.input.mode = InputMode::Help;
+        }
         vec![]
     }
 
