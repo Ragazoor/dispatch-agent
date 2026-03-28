@@ -124,6 +124,35 @@ impl std::fmt::Display for TaskId {
 }
 
 // ---------------------------------------------------------------------------
+// EpicId
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EpicId(pub i64);
+
+impl std::fmt::Display for EpicId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Epic
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct Epic {
+    pub id: EpicId,
+    pub title: String,
+    pub description: String,
+    pub plan: String,
+    pub repo_path: String,
+    pub done: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
 // Task
 // ---------------------------------------------------------------------------
 
@@ -585,6 +614,37 @@ mod tests {
         let now = Utc::now();
         let updated = now + chrono::Duration::hours(3);
         assert_eq!(format_detail_age(updated, now), "less than 1 hour");
+    }
+
+    // --- EpicId ---
+
+    #[test]
+    fn epic_id_display() {
+        let id = EpicId(42);
+        assert_eq!(format!("{id}"), "42");
+    }
+
+    #[test]
+    fn epic_id_equality() {
+        assert_eq!(EpicId(1), EpicId(1));
+        assert_ne!(EpicId(1), EpicId(2));
+    }
+
+    #[test]
+    fn epic_struct_fields() {
+        let now = Utc::now();
+        let epic = Epic {
+            id: EpicId(1),
+            title: "Auth Rewrite".to_string(),
+            description: "Rewrite auth system".to_string(),
+            plan: "## Steps\n- Step 1\n- Step 2".to_string(),
+            repo_path: "/repo".to_string(),
+            done: false,
+            created_at: now,
+            updated_at: now,
+        };
+        assert_eq!(epic.id, EpicId(1));
+        assert!(!epic.done);
     }
 
 }
