@@ -221,17 +221,10 @@ impl App {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.input.mode = InputMode::Normal;
                 self.status_message = None;
-                let task_id = if self.archive.visible {
-                    self.archived_tasks()
-                        .get(self.archive.selected_row)
-                        .map(|t| t.id)
+                if self.archive.visible {
+                    self.confirm_delete_archived()
                 } else {
-                    self.selected_task().map(|t| t.id)
-                };
-                if let Some(id) = task_id {
-                    self.update(Message::DeleteTask(id))
-                } else {
-                    vec![]
+                    self.confirm_delete_selected()
                 }
             }
             _ => {
@@ -240,6 +233,21 @@ impl App {
                 vec![]
             }
         }
+    }
+
+    fn confirm_delete_archived(&mut self) -> Vec<Command> {
+        self.archived_tasks()
+            .get(self.archive.selected_row)
+            .map(|t| t.id)
+            .map(|id| self.update(Message::DeleteTask(id)))
+            .unwrap_or_default()
+    }
+
+    fn confirm_delete_selected(&mut self) -> Vec<Command> {
+        self.selected_task()
+            .map(|t| t.id)
+            .map(|id| self.update(Message::DeleteTask(id)))
+            .unwrap_or_default()
     }
 
     fn handle_key_quick_dispatch(&mut self, key: KeyEvent) -> Vec<Command> {
