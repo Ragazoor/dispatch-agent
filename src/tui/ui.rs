@@ -773,6 +773,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(bar, area);
         }
+        InputMode::ConfirmFinish(_) => {
+            let bar = Paragraph::new("Finish: merge to main and clean up? (y/n)")
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(bar, area);
+        }
         InputMode::InputEpicTitle => {
             let bar = Paragraph::new("Creating epic: enter title")
                 .style(Style::default().fg(Color::Magenta));

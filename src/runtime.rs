@@ -672,6 +672,9 @@ async fn execute_commands(
             Command::QuickDispatch(draft) =>
                 rt.exec_quick_dispatch(app, draft.title, draft.description, draft.repo_path),
             Command::KillTmuxWindow { window } => rt.exec_kill_tmux_window(window),
+            Command::Finish { .. } => {
+                // TODO: Task 5 will implement exec_finish
+            }
             // Epic commands
             Command::InsertEpic(draft) =>
                 rt.exec_insert_epic(app, draft.title, draft.description, draft.repo_path),

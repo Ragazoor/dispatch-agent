@@ -24,6 +24,7 @@ impl App {
             | InputMode::InputEpicRepoPath => self.handle_key_epic_text_input(key),
             InputMode::ConfirmDeleteEpic => self.handle_key_confirm_delete_epic(key),
             InputMode::ConfirmArchiveEpic => self.handle_key_confirm_archive_epic(key),
+            InputMode::ConfirmFinish(_) => self.handle_key_confirm_finish(key),
             InputMode::Help => self.handle_key_help(key),
         }
     }
@@ -339,6 +340,13 @@ impl App {
                 self.status_message = None;
                 vec![]
             }
+        }
+    }
+
+    fn handle_key_confirm_finish(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => self.update(Message::ConfirmFinish),
+            _ => self.update(Message::CancelFinish),
         }
     }
 

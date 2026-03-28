@@ -26,6 +26,7 @@ pub struct App {
     pub(in crate::tui) agents: AgentTracking,
     pub(in crate::tui) archive: ArchiveState,
     pub(in crate::tui) selected_tasks: HashSet<TaskId>,
+    pub(in crate::tui) merge_conflict_tasks: HashSet<TaskId>,
 }
 
 impl App {
@@ -43,6 +44,7 @@ impl App {
             agents: AgentTracking::new(inactivity_timeout),
             archive: ArchiveState::default(),
             selected_tasks: HashSet::new(),
+            merge_conflict_tasks: HashSet::new(),
         }
     }
 
@@ -83,6 +85,7 @@ impl App {
     pub fn show_archived(&self) -> bool { self.archive.visible }
     pub fn selected_archive_row(&self) -> usize { self.archive.selected_row }
     pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
+    pub fn merge_conflict_tasks(&self) -> &HashSet<TaskId> { &self.merge_conflict_tasks }
 
     /// Return tasks visible in the current view.
     /// Board view: standalone tasks only (epic_id is None).
@@ -258,6 +261,13 @@ impl App {
             Message::CancelRetry => self.handle_cancel_retry(),
             Message::StatusInfo(msg) => self.handle_status_info(msg),
             Message::ToggleHelp => self.handle_toggle_help(),
+            // Finish (merge + cleanup)
+            Message::FinishTask(id) => self.handle_finish_task(id),
+            Message::ConfirmFinish => self.handle_confirm_finish(),
+            Message::CancelFinish => self.handle_cancel_finish(),
+            Message::FinishComplete(id) => self.handle_finish_complete(id),
+            Message::FinishFailed { id, error, is_conflict } =>
+                self.handle_finish_failed(id, error, is_conflict),
             // Epic messages
             Message::EnterEpic(epic_id) => self.handle_enter_epic(epic_id),
             Message::ExitEpic => self.handle_exit_epic(),
@@ -308,6 +318,7 @@ impl App {
     }
 
     fn handle_move_task(&mut self, id: TaskId, direction: MoveDirection) -> Vec<Command> {
+        self.merge_conflict_tasks.remove(&id);
         if let Some(task) = self.find_task_mut(id) {
             let new_status = match direction {
                 MoveDirection::Forward => task.status.next(),
@@ -521,6 +532,7 @@ impl App {
     }
 
     fn handle_resumed(&mut self, id: TaskId, tmux_window: String) -> Vec<Command> {
+        self.merge_conflict_tasks.remove(&id);
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = Some(tmux_window);
             task.status = TaskStatus::Running;
@@ -841,6 +853,90 @@ impl App {
             Command::InsertTask { draft, epic_id },
             Command::SaveRepoPath(repo_path),
         ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Finish handlers (merge + cleanup)
+    // -----------------------------------------------------------------------
+
+    fn handle_finish_task(&mut self, id: TaskId) -> Vec<Command> {
+        let branch = match self.find_task(id) {
+            Some(t) if t.status == TaskStatus::Review && t.worktree.is_some() => {
+                std::path::Path::new(t.worktree.as_ref().unwrap())
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            }
+            _ => return vec![],
+        };
+
+        self.input.mode = InputMode::ConfirmFinish(id);
+        self.status_message = Some(format!(
+            "Finish: merge {} to main and clean up? (y/n)", branch
+        ));
+        vec![]
+    }
+
+    fn handle_confirm_finish(&mut self) -> Vec<Command> {
+        let id = match self.input.mode {
+            InputMode::ConfirmFinish(id) => id,
+            _ => return vec![],
+        };
+        self.input.mode = InputMode::Normal;
+        self.status_message = Some("Merging...".to_string());
+        self.merge_conflict_tasks.remove(&id);
+
+        if let Some(task) = self.find_task(id) {
+            let worktree = match &task.worktree {
+                Some(wt) => wt.clone(),
+                None => return vec![],
+            };
+            let branch = std::path::Path::new(&worktree)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            vec![Command::Finish {
+                id,
+                repo_path: task.repo_path.clone(),
+                branch,
+                worktree,
+                tmux_window: task.tmux_window.clone(),
+            }]
+        } else {
+            vec![]
+        }
+    }
+
+    fn handle_cancel_finish(&mut self) -> Vec<Command> {
+        self.input.mode = InputMode::Normal;
+        self.status_message = None;
+        vec![]
+    }
+
+    fn handle_finish_complete(&mut self, id: TaskId) -> Vec<Command> {
+        self.merge_conflict_tasks.remove(&id);
+        if let Some(task) = self.find_task_mut(id) {
+            task.worktree = None;
+            task.tmux_window = None;
+            task.status = TaskStatus::Done;
+            let task_clone = task.clone();
+            self.clear_agent_tracking(id);
+            self.clamp_selection();
+            self.status_message = Some(format!("Task {} finished", id));
+            vec![Command::PersistTask(task_clone)]
+        } else {
+            vec![]
+        }
+    }
+
+    fn handle_finish_failed(&mut self, id: TaskId, error: String, is_conflict: bool) -> Vec<Command> {
+        if is_conflict {
+            self.merge_conflict_tasks.insert(id);
+        }
+        self.status_message = Some(error);
+        vec![]
     }
 
     // -----------------------------------------------------------------------

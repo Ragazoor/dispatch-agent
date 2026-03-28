@@ -83,6 +83,12 @@ pub enum Message {
     SubmitEpicTitle(String),
     SubmitEpicDescription(String),
     SubmitEpicRepoPath(String),
+    // Finish (merge + cleanup)
+    FinishTask(TaskId),
+    ConfirmFinish,
+    CancelFinish,
+    FinishComplete(TaskId),
+    FinishFailed { id: TaskId, error: String, is_conflict: bool },
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +103,13 @@ pub enum Command {
     Dispatch { task: Task },
     Brainstorm { task: Task },
     Cleanup { id: TaskId, repo_path: String, worktree: String, tmux_window: Option<String> },
+    Finish {
+        id: TaskId,
+        repo_path: String,
+        branch: String,
+        worktree: String,
+        tmux_window: Option<String>,
+    },
     CaptureTmux { id: TaskId, window: String },
     Resume { task: Task },
     JumpToTmux { window: String },
@@ -127,6 +140,7 @@ pub enum InputMode {
     QuickDispatch,
     ConfirmRetry(TaskId),
     ConfirmArchive,
+    ConfirmFinish(TaskId),
     // Epic input modes
     InputEpicTitle,
     InputEpicDescription,
