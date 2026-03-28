@@ -436,7 +436,7 @@ fn render_archive_overlay(frame: &mut Frame, app: &App, area: Rect, now: DateTim
     frame.render_widget(list, overlay_area);
 }
 
-fn render_detail(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
+fn render_detail(frame: &mut Frame, app: &App, area: Rect, _now: DateTime<Utc>) {
     // When in input mode, show the input form instead of detail
     if render_input_form(frame, app, area) {
         return;
