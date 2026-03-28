@@ -32,10 +32,11 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
     let database = Arc::new(db::Database::open(db_path)?);
     let tasks = database.list_all()?;
 
-    // 2. Spawn MCP server
+    // 2. Spawn MCP server with notification channel
     let mcp_db = database.clone();
+    let (mcp_notify_tx, mut mcp_notify_rx) = mpsc::unbounded_channel::<()>();
     tokio::spawn(async move {
-        if let Err(e) = mcp::serve(mcp_db, port).await {
+        if let Err(e) = mcp::serve(mcp_db, port, mcp_notify_tx).await {
             eprintln!("MCP server error: {e}");
         }
     });
@@ -97,6 +98,7 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
         &mut terminal,
         &mut key_rx,
         &mut msg_rx,
+        &mut mcp_notify_rx,
         &mut tick_interval,
         &runtime,
     )
@@ -333,14 +335,14 @@ impl TuiRuntime {
                     ) {
                         app.update(Message::Error(format!("DB error updating task: {e}")));
                     }
-                    app.update(Message::TaskEdited {
+                    app.update(Message::TaskEdited(tui::TaskEdit {
                         id: task_id,
                         title,
                         description,
                         repo_path,
                         status: new_status,
                         plan,
-                    });
+                    }));
                 } else {
                     tracing::warn!(task_id = task_id.0, "failed to read edited temp file");
                 }
@@ -442,6 +444,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
     msg_rx: &mut mpsc::UnboundedReceiver<Message>,
+    mcp_notify_rx: &mut mpsc::UnboundedReceiver<()>,
     tick_interval: &mut tokio::time::Interval,
     rt: &TuiRuntime,
 ) -> Result<()> {
@@ -459,9 +462,15 @@ async fn run_loop(
                 app.handle_key(key)
             }
 
-            // Async messages (e.g., from dispatch results in Phase 3)
+            // Async messages (e.g., from dispatch results)
             Some(msg) = msg_rx.recv() => {
                 app.update(msg)
+            }
+
+            // MCP mutation notification — immediate refresh
+            Some(()) = mcp_notify_rx.recv() => {
+                rt.exec_refresh_from_db(app);
+                vec![]
             }
 
             // Periodic tick for tmux capture
@@ -615,6 +624,110 @@ mod tests {
         assert!(calls[0].1.contains(&"select-window".to_string()));
         assert!(calls[0].1.contains(&"my-window".to_string()));
         assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_dispatch_sends_dispatched_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        // Create .worktrees/ and fake worktree directory so file writes succeed
+        std::fs::create_dir_all(format!("{repo}/.worktrees/1-test-task")).unwrap();
+
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(),  // git worktree add
+            MockProcessRunner::ok(),  // tmux new-window
+            MockProcessRunner::ok(),  // tmux send-keys -l
+            MockProcessRunner::ok(),  // tmux send-keys Enter
+        ]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner: mock,
+        };
+
+        let task = db.create_task_returning("Test Task", "desc", repo, None, models::TaskStatus::Ready).unwrap();
+        rt.exec_dispatch(task);
+
+        let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(msg, Message::Dispatched { .. }), "Expected Dispatched, got: {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn exec_dispatch_sends_error_on_failure() {
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("fatal: worktree already exists"),  // git worktree add fails
+        ]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner: mock,
+        };
+
+        let task = db.create_task_returning("Fail Task", "desc", "/nonexistent", None, models::TaskStatus::Ready).unwrap();
+        rt.exec_dispatch(task);
+
+        let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(msg, Message::Error(_)), "Expected Error, got: {msg:?}");
+    }
+
+    #[tokio::test]
+    async fn exec_capture_tmux_sends_output() {
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            // has_window: list-windows returns the window name
+            MockProcessRunner::ok_with_stdout(b"test-window\n"),
+            // capture-pane
+            MockProcessRunner::ok_with_stdout(b"Hello from tmux\n"),
+        ]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner: mock,
+        };
+
+        rt.exec_capture_tmux(TaskId(1), "test-window".to_string());
+
+        let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        match msg {
+            Message::TmuxOutput { id, output } => {
+                assert_eq!(id, TaskId(1));
+                assert!(output.contains("Hello from tmux"));
+            }
+            other => panic!("Expected TmuxOutput, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_capture_tmux_window_gone() {
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            // has_window: list-windows returns other window names (not our window)
+            MockProcessRunner::ok_with_stdout(b"other-window\n"),
+        ]));
+        let rt = TuiRuntime {
+            database: db.clone(),
+            msg_tx: tx,
+            port: 3142,
+            input_paused: Arc::new(AtomicBool::new(false)),
+            runner: mock,
+        };
+
+        rt.exec_capture_tmux(TaskId(1), "gone-window".to_string());
+
+        let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(msg, Message::WindowGone(TaskId(1))), "Expected WindowGone, got: {msg:?}");
     }
 
     #[test]

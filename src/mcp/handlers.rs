@@ -316,6 +316,8 @@ fn handle_update_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
     }
 
+    state.notify();
+
     let mut updated = Vec::new();
     if let Some(ref s) = parsed.status { updated.push(format!("status={s}")); }
     if parsed.plan.is_some() { updated.push("plan".to_string()); }
@@ -354,10 +356,13 @@ fn handle_create_task(state: &McpState, id: Option<Value>, args: Value) -> JsonR
         plan.as_deref(),
         status,
     ) {
-        Ok(task_id) => JsonRpcResponse::ok(
-            id,
-            json!({"content": [{"type": "text", "text": format!("Task {task_id} created")}]}),
-        ),
+        Ok(task_id) => {
+            state.notify();
+            JsonRpcResponse::ok(
+                id,
+                json!({"content": [{"type": "text", "text": format!("Task {task_id} created")}]}),
+            )
+        }
         Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
     }
 }
@@ -396,7 +401,7 @@ mod tests {
 
     fn test_state() -> Arc<McpState> {
         let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
-        Arc::new(McpState { db })
+        Arc::new(McpState { db, notify_tx: None })
     }
 
     async fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> JsonRpcResponse {

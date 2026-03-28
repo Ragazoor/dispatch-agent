@@ -4,7 +4,6 @@ pub mod ui;
 
 pub use types::*;
 
-use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use crate::models::{Task, TaskId, TaskStatus};
@@ -17,21 +16,14 @@ pub struct App {
     pub(in crate::tui) tasks: Vec<Task>,
     pub(in crate::tui) selected_column: usize,
     pub(in crate::tui) selected_row: [usize; TaskStatus::COLUMN_COUNT],
-    pub(in crate::tui) mode: InputMode,
-    pub(in crate::tui) input_buffer: String,
-    pub(in crate::tui) task_draft: Option<TaskDraft>,
     pub(in crate::tui) detail_visible: bool,
-    pub(in crate::tui) tmux_outputs: HashMap<TaskId, String>,
     pub(in crate::tui) status_message: Option<String>,
     pub(in crate::tui) error_popup: Option<String>,
     pub(in crate::tui) repo_paths: Vec<String>,
     pub(in crate::tui) should_quit: bool,
-    pub(in crate::tui) last_output_change: HashMap<TaskId, Instant>,
-    pub(in crate::tui) stale_tasks: HashSet<TaskId>,
-    pub(in crate::tui) crashed_tasks: HashSet<TaskId>,
-    pub(in crate::tui) inactivity_timeout: Duration,
-    pub(in crate::tui) show_archived: bool,
-    pub(in crate::tui) selected_archive_row: usize,
+    pub(in crate::tui) input: InputState,
+    pub(in crate::tui) agents: AgentTracking,
+    pub(in crate::tui) archive: ArchiveState,
 }
 
 impl App {
@@ -40,21 +32,14 @@ impl App {
             tasks,
             selected_column: 0,
             selected_row: [0; TaskStatus::COLUMN_COUNT],
-            mode: InputMode::Normal,
-            input_buffer: String::new(),
-            task_draft: None,
             detail_visible: false,
-            tmux_outputs: HashMap::new(),
             status_message: None,
             error_popup: None,
             repo_paths: Vec::new(),
             should_quit: false,
-            last_output_change: HashMap::new(),
-            stale_tasks: HashSet::new(),
-            crashed_tasks: HashSet::new(),
-            inactivity_timeout,
-            show_archived: false,
-            selected_archive_row: 0,
+            input: InputState::default(),
+            agents: AgentTracking::new(inactivity_timeout),
+            archive: ArchiveState::default(),
         }
     }
 
@@ -63,19 +48,19 @@ impl App {
     pub fn should_quit(&self) -> bool { self.should_quit }
     pub fn selected_column(&self) -> usize { self.selected_column }
     pub fn selected_row(&self) -> &[usize; TaskStatus::COLUMN_COUNT] { &self.selected_row }
-    pub fn mode(&self) -> &InputMode { &self.mode }
-    pub fn input_buffer(&self) -> &str { &self.input_buffer }
+    pub fn mode(&self) -> &InputMode { &self.input.mode }
+    pub fn input_buffer(&self) -> &str { &self.input.buffer }
     pub fn detail_visible(&self) -> bool { self.detail_visible }
-    pub fn tmux_outputs(&self) -> &HashMap<TaskId, String> { &self.tmux_outputs }
+    pub fn tmux_outputs(&self) -> &std::collections::HashMap<TaskId, String> { &self.agents.tmux_outputs }
     pub fn status_message(&self) -> Option<&str> { self.status_message.as_deref() }
     pub fn error_popup(&self) -> Option<&str> { self.error_popup.as_deref() }
     pub fn repo_paths(&self) -> &[String] { &self.repo_paths }
-    pub fn task_draft(&self) -> Option<&TaskDraft> { self.task_draft.as_ref() }
-    pub fn stale_tasks(&self) -> &HashSet<TaskId> { &self.stale_tasks }
-    pub fn crashed_tasks(&self) -> &HashSet<TaskId> { &self.crashed_tasks }
-    pub fn inactivity_timeout(&self) -> Duration { self.inactivity_timeout }
-    pub fn show_archived(&self) -> bool { self.show_archived }
-    pub fn selected_archive_row(&self) -> usize { self.selected_archive_row }
+    pub fn task_draft(&self) -> Option<&TaskDraft> { self.input.task_draft.as_ref() }
+    pub fn stale_tasks(&self) -> &std::collections::HashSet<TaskId> { &self.agents.stale_tasks }
+    pub fn crashed_tasks(&self) -> &std::collections::HashSet<TaskId> { &self.agents.crashed_tasks }
+    pub fn inactivity_timeout(&self) -> Duration { self.agents.inactivity_timeout }
+    pub fn show_archived(&self) -> bool { self.archive.visible }
+    pub fn selected_archive_row(&self) -> usize { self.archive.selected_row }
 
     /// Return all tasks for a given status, ordered as they appear in self.tasks.
     pub fn tasks_by_status(&self, status: TaskStatus) -> Vec<&Task> {
@@ -119,10 +104,7 @@ impl App {
 
     /// Remove all in-memory agent tracking state for a task.
     fn clear_agent_tracking(&mut self, id: TaskId) {
-        self.last_output_change.remove(&id);
-        self.stale_tasks.remove(&id);
-        self.crashed_tasks.remove(&id);
-        self.tmux_outputs.remove(&id);
+        self.agents.clear(id);
     }
 
     /// Process a message and return a list of side-effect commands.
@@ -146,8 +128,8 @@ impl App {
             Message::ResumeTask(id) => self.handle_resume_task(id),
             Message::Resumed { id, tmux_window } => self.handle_resumed(id, tmux_window),
             Message::Error(msg) => self.handle_error(msg),
-            Message::TaskEdited { id, title, description, repo_path, status, plan } =>
-                self.handle_task_edited(id, title, description, repo_path, status, plan),
+            Message::TaskEdited(edit) =>
+                self.handle_task_edited(edit),
             Message::RepoPathsUpdated(paths) => self.handle_repo_paths_updated(paths),
             Message::QuickDispatch { repo_path } => self.handle_quick_dispatch(repo_path),
             Message::StaleAgent(id) => self.handle_stale_agent(id),
@@ -276,7 +258,7 @@ impl App {
             task.tmux_window = Some(tmux_window.clone());
             task.status = TaskStatus::Running;
             let task_clone = task.clone();
-            self.last_output_change.insert(id, Instant::now());
+            self.agents.last_output_change.insert(id, Instant::now());
             self.clamp_selection();
             let mut cmds = vec![Command::PersistTask(task_clone)];
             if switch_focus {
@@ -307,8 +289,8 @@ impl App {
         self.tasks.retain(|t| t.id != id);
         self.clamp_selection();
         let archive_count = self.archived_tasks().len();
-        if self.selected_archive_row >= archive_count && archive_count > 0 {
-            self.selected_archive_row = archive_count - 1;
+        if self.archive.selected_row >= archive_count && archive_count > 0 {
+            self.archive.selected_row = archive_count - 1;
         }
         let mut cmds = Vec::new();
         if let Some(c) = cleanup {
@@ -324,13 +306,13 @@ impl App {
     }
 
     fn handle_tmux_output(&mut self, id: TaskId, output: String) -> Vec<Command> {
-        let changed = self.tmux_outputs.get(&id) != Some(&output);
+        let changed = self.agents.tmux_outputs.get(&id) != Some(&output);
         if changed {
-            self.last_output_change.insert(id, Instant::now());
+            self.agents.last_output_change.insert(id, Instant::now());
             // If task was previously stale but output changed, clear stale flag
-            self.stale_tasks.remove(&id);
+            self.agents.stale_tasks.remove(&id);
         }
-        self.tmux_outputs.insert(id, output);
+        self.agents.tmux_outputs.insert(id, output);
         vec![]
     }
 
@@ -372,14 +354,14 @@ impl App {
             .collect();
 
         // Check for stale agents
-        let timeout = self.inactivity_timeout;
+        let timeout = self.agents.inactivity_timeout;
         let newly_stale: Vec<TaskId> = self
             .tasks
             .iter()
             .filter(|t| t.status == TaskStatus::Running && t.tmux_window.is_some())
-            .filter(|t| !self.stale_tasks.contains(&t.id))
+            .filter(|t| !self.agents.stale_tasks.contains(&t.id))
             .filter(|t| {
-                self.last_output_change
+                self.agents.last_output_change
                     .get(&t.id)
                     .is_some_and(|instant| instant.elapsed() > timeout)
             })
@@ -396,9 +378,9 @@ impl App {
     }
 
     fn handle_stale_agent(&mut self, id: TaskId) -> Vec<Command> {
-        self.stale_tasks.insert(id);
+        self.agents.stale_tasks.insert(id);
         if let Some(task) = self.find_task(id) {
-            let elapsed = self.last_output_change
+            let elapsed = self.agents.last_output_change
                 .get(&id)
                 .map(|t| t.elapsed().as_secs() / 60)
                 .unwrap_or(0);
@@ -411,7 +393,7 @@ impl App {
     }
 
     fn handle_agent_crashed(&mut self, id: TaskId) -> Vec<Command> {
-        self.crashed_tasks.insert(id);
+        self.agents.crashed_tasks.insert(id);
         if let Some(task) = self.find_task(id) {
             self.status_message = Some(format!(
                 "Task {} agent crashed - press d to retry", task.id
@@ -437,9 +419,9 @@ impl App {
             task.tmux_window = Some(tmux_window);
             task.status = TaskStatus::Running;
             let task_clone = task.clone();
-            self.last_output_change.insert(id, Instant::now());
-            self.stale_tasks.remove(&id);
-            self.crashed_tasks.remove(&id);
+            self.agents.last_output_change.insert(id, Instant::now());
+            self.agents.stale_tasks.remove(&id);
+            self.agents.crashed_tasks.remove(&id);
             self.clamp_selection();
             vec![Command::PersistTask(task_clone)]
         } else {
@@ -452,13 +434,13 @@ impl App {
         vec![]
     }
 
-    fn handle_task_edited(&mut self, id: TaskId, title: String, description: String, repo_path: String, status: TaskStatus, plan: Option<String>) -> Vec<Command> {
-        if let Some(t) = self.find_task_mut(id) {
-            t.title = title;
-            t.description = description;
-            t.repo_path = repo_path;
-            t.status = status;
-            t.plan = plan;
+    fn handle_task_edited(&mut self, edit: TaskEdit) -> Vec<Command> {
+        if let Some(t) = self.find_task_mut(edit.id) {
+            t.title = edit.title;
+            t.description = edit.description;
+            t.repo_path = edit.repo_path;
+            t.status = edit.status;
+            t.plan = edit.plan;
             t.updated_at = chrono::Utc::now();
         }
         self.clamp_selection();
@@ -479,8 +461,8 @@ impl App {
     }
 
     fn handle_kill_and_retry(&mut self, id: TaskId) -> Vec<Command> {
-        self.mode = InputMode::ConfirmRetry(id);
-        let label = if self.crashed_tasks.contains(&id) {
+        self.input.mode = InputMode::ConfirmRetry(id);
+        let label = if self.agents.crashed_tasks.contains(&id) {
             "crashed"
         } else {
             "stale"
@@ -492,7 +474,7 @@ impl App {
     }
 
     fn handle_retry_resume(&mut self, id: TaskId) -> Vec<Command> {
-        self.mode = InputMode::Normal;
+        self.input.mode = InputMode::Normal;
         self.status_message = None;
         self.clear_agent_tracking(id);
 
@@ -512,7 +494,7 @@ impl App {
     }
 
     fn handle_retry_fresh(&mut self, id: TaskId) -> Vec<Command> {
-        self.mode = InputMode::Normal;
+        self.input.mode = InputMode::Normal;
         self.status_message = None;
         self.clear_agent_tracking(id);
 
@@ -568,9 +550,9 @@ impl App {
     }
 
     fn handle_toggle_archive(&mut self) -> Vec<Command> {
-        self.show_archived = !self.show_archived;
-        if self.show_archived {
-            self.selected_archive_row = 0;
+        self.archive.visible = !self.archive.visible;
+        if self.archive.visible {
+            self.archive.selected_row = 0;
         }
         vec![]
     }
@@ -581,31 +563,31 @@ impl App {
     }
 
     fn handle_start_new_task(&mut self) -> Vec<Command> {
-        self.mode = InputMode::InputTitle;
-        self.input_buffer.clear();
-        self.task_draft = None;
+        self.input.mode = InputMode::InputTitle;
+        self.input.buffer.clear();
+        self.input.task_draft = None;
         self.status_message = Some("Enter title: ".to_string());
         vec![]
     }
 
     fn handle_cancel_input(&mut self) -> Vec<Command> {
-        self.mode = InputMode::Normal;
-        self.input_buffer.clear();
-        self.task_draft = None;
+        self.input.mode = InputMode::Normal;
+        self.input.buffer.clear();
+        self.input.task_draft = None;
         self.status_message = None;
         vec![]
     }
 
     fn handle_confirm_delete_start(&mut self) -> Vec<Command> {
         if self.selected_task().is_some() {
-            self.mode = InputMode::ConfirmDelete;
+            self.input.mode = InputMode::ConfirmDelete;
             self.status_message = Some("Delete task? (y/n)".to_string());
         }
         vec![]
     }
 
     fn handle_confirm_delete_yes(&mut self) -> Vec<Command> {
-        self.mode = InputMode::Normal;
+        self.input.mode = InputMode::Normal;
         self.status_message = None;
         if let Some(task) = self.selected_task() {
             let id = task.id;
@@ -616,41 +598,41 @@ impl App {
     }
 
     fn handle_cancel_delete(&mut self) -> Vec<Command> {
-        self.mode = InputMode::Normal;
+        self.input.mode = InputMode::Normal;
         self.status_message = None;
         vec![]
     }
 
     fn handle_submit_title(&mut self, value: String) -> Vec<Command> {
-        self.input_buffer.clear();
+        self.input.buffer.clear();
         if value.is_empty() {
-            self.mode = InputMode::Normal;
-            self.task_draft = None;
+            self.input.mode = InputMode::Normal;
+            self.input.task_draft = None;
             self.status_message = None;
         } else {
-            self.task_draft = Some(TaskDraft {
+            self.input.task_draft = Some(TaskDraft {
                 title: value,
                 description: String::new(),
                 repo_path: String::new(),
             });
-            self.mode = InputMode::InputDescription;
+            self.input.mode = InputMode::InputDescription;
             self.status_message = Some("Enter description: ".to_string());
         }
         vec![]
     }
 
     fn handle_submit_description(&mut self, value: String) -> Vec<Command> {
-        self.input_buffer.clear();
-        if let Some(ref mut draft) = self.task_draft {
+        self.input.buffer.clear();
+        if let Some(ref mut draft) = self.input.task_draft {
             draft.description = value;
         }
-        self.mode = InputMode::InputRepoPath;
+        self.input.mode = InputMode::InputRepoPath;
         self.status_message = Some("Enter repo path: ".to_string());
         vec![]
     }
 
     fn handle_submit_repo_path(&mut self, value: String) -> Vec<Command> {
-        self.input_buffer.clear();
+        self.input.buffer.clear();
         let repo_path = if value.is_empty() {
             if let Some(first) = self.repo_paths.first() {
                 first.clone()
@@ -666,8 +648,8 @@ impl App {
 
     fn handle_input_char(&mut self, c: char) -> Vec<Command> {
         // In repo path mode with empty buffer, 1-9 selects a saved path
-        if self.mode == InputMode::InputRepoPath
-            && self.input_buffer.is_empty()
+        if self.input.mode == InputMode::InputRepoPath
+            && self.input.buffer.is_empty()
             && c.is_ascii_digit()
             && c != '0'
         {
@@ -677,17 +659,17 @@ impl App {
                 return self.finish_task_creation(repo_path);
             }
         }
-        self.input_buffer.push(c);
+        self.input.buffer.push(c);
         vec![]
     }
 
     fn handle_input_backspace(&mut self) -> Vec<Command> {
-        self.input_buffer.pop();
+        self.input.buffer.pop();
         vec![]
     }
 
     fn handle_start_quick_dispatch_selection(&mut self) -> Vec<Command> {
-        self.mode = InputMode::QuickDispatch;
+        self.input.mode = InputMode::QuickDispatch;
         self.status_message = Some("Select repo path (1-9) or Esc to cancel".to_string());
         vec![]
     }
@@ -695,7 +677,7 @@ impl App {
     fn handle_select_quick_dispatch_repo(&mut self, idx: usize) -> Vec<Command> {
         if idx < self.repo_paths.len() {
             let repo_path = self.repo_paths[idx].clone();
-            self.mode = InputMode::Normal;
+            self.input.mode = InputMode::Normal;
             self.status_message = None;
             self.update(Message::QuickDispatch { repo_path })
         } else {
@@ -704,7 +686,7 @@ impl App {
     }
 
     fn handle_cancel_retry(&mut self) -> Vec<Command> {
-        self.mode = InputMode::Normal;
+        self.input.mode = InputMode::Normal;
         self.status_message = None;
         vec![]
     }
@@ -715,9 +697,9 @@ impl App {
     }
 
     fn finish_task_creation(&mut self, repo_path: String) -> Vec<Command> {
-        let mut draft = self.task_draft.take().unwrap_or_default();
+        let mut draft = self.input.task_draft.take().unwrap_or_default();
         draft.repo_path = repo_path.clone();
-        self.mode = InputMode::Normal;
+        self.input.mode = InputMode::Normal;
         self.status_message = None;
         vec![
             Command::InsertTask(draft),

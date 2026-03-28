@@ -130,6 +130,11 @@ impl Database {
         Ok(())
     }
 
+    fn conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("db lock poisoned"))
+    }
 }
 
 impl TaskStore for Database {
@@ -141,7 +146,7 @@ impl TaskStore for Database {
         plan: Option<&str>,
         status: TaskStatus,
     ) -> Result<TaskId> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO tasks (title, description, repo_path, plan, status) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![title, description, repo_path, plan, status.as_str()],
@@ -151,7 +156,7 @@ impl TaskStore for Database {
     }
 
     fn get_task(&self, id: TaskId) -> Result<Option<Task>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
                     plan, created_at, updated_at
@@ -164,7 +169,7 @@ impl TaskStore for Database {
     }
 
     fn list_all(&self) -> Result<Vec<Task>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, repo_path, status, worktree, tmux_window,
@@ -181,7 +186,7 @@ impl TaskStore for Database {
     }
 
     fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, repo_path, status, worktree, tmux_window,
@@ -198,7 +203,7 @@ impl TaskStore for Database {
     }
 
     fn update_status(&self, id: TaskId, status: TaskStatus) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -212,7 +217,7 @@ impl TaskStore for Database {
     }
 
     fn update_status_if(&self, id: TaskId, new_status: TaskStatus, expected: TaskStatus) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE id = ?2 AND status = ?3",
@@ -228,7 +233,7 @@ impl TaskStore for Database {
         worktree: Option<&str>,
         tmux_window: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET worktree = ?1, tmux_window = ?2, updated_at = datetime('now')
@@ -243,7 +248,7 @@ impl TaskStore for Database {
     }
 
     fn persist_task(&self, id: TaskId, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET status = ?1, worktree = ?2, tmux_window = ?3, updated_at = datetime('now') WHERE id = ?4",
@@ -257,7 +262,7 @@ impl TaskStore for Database {
     }
 
     fn delete_task(&self, id: TaskId) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let rows = conn
             .execute("DELETE FROM tasks WHERE id = ?1", params![id.0])
             .context("Failed to delete task")?;
@@ -276,7 +281,7 @@ impl TaskStore for Database {
         status: TaskStatus,
         plan: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let changed = conn
             .execute(
                 "UPDATE tasks SET title = ?1, description = ?2, repo_path = ?3, status = ?4, plan = ?5, updated_at = datetime('now') WHERE id = ?6",
@@ -290,7 +295,7 @@ impl TaskStore for Database {
     }
 
     fn update_plan(&self, id: TaskId, plan: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let rows = conn
             .execute(
                 "UPDATE tasks SET plan = ?1, updated_at = datetime('now') WHERE id = ?2",
@@ -304,7 +309,7 @@ impl TaskStore for Database {
     }
 
     fn update_title_description(&self, id: TaskId, title: Option<&str>, description: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let rows = match (title, description) {
             (Some(t), Some(d)) => conn.execute(
                 "UPDATE tasks SET title = ?1, description = ?2, updated_at = datetime('now') WHERE id = ?3",
@@ -329,7 +334,7 @@ impl TaskStore for Database {
 
 
     fn list_repo_paths(&self) -> Result<Vec<String>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         let mut stmt = conn
             .prepare("SELECT path FROM repo_paths ORDER BY last_used DESC LIMIT 9")
             .context("Failed to prepare list_repo_paths")?;
@@ -342,7 +347,7 @@ impl TaskStore for Database {
     }
 
     fn save_repo_path(&self, path: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         conn.execute(
             "INSERT INTO repo_paths (path) VALUES (?1)
              ON CONFLICT(path) DO UPDATE SET last_used = datetime('now')",
@@ -353,7 +358,7 @@ impl TaskStore for Database {
     }
 
     fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
                     plan, created_at, updated_at
@@ -386,7 +391,7 @@ impl TaskStore for Database {
         title: Option<&str>,
         description: Option<&str>,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let conn = self.conn()?;
 
         // Fetch current values for fields not being patched
         let existing = conn.query_row(

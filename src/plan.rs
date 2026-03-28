@@ -42,6 +42,29 @@ pub fn parse_plan(content: &str) -> Result<PlanMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(input in "\\PC{0,2000}") {
+            // parse_plan should never panic on arbitrary input — only return Ok/Err
+            let _ = parse_plan(&input);
+        }
+
+        #[test]
+        fn roundtrip_title(title in "[a-zA-Z0-9 ]{1,80}") {
+            let md = format!("# {title}\n\n**Goal:** Some goal.\n");
+            let meta = parse_plan(&md).unwrap();
+            assert_eq!(meta.title, title.trim());
+        }
+
+        #[test]
+        fn roundtrip_description(desc in "[a-zA-Z0-9 .!,]{1,100}") {
+            let md = format!("# Title\n\n**Goal:** {desc}\n");
+            let meta = parse_plan(&md).unwrap();
+            assert_eq!(meta.description, desc.trim());
+        }
+    }
 
     #[test]
     fn parse_standard_plan() {

@@ -10,7 +10,7 @@ impl App {
             return self.update(Message::DismissError);
         }
 
-        match self.mode.clone() {
+        match self.input.mode.clone() {
             InputMode::Normal => self.handle_key_normal(key),
             InputMode::InputTitle
             | InputMode::InputDescription
@@ -24,17 +24,17 @@ impl App {
 
     fn handle_key_normal(&mut self, key: KeyEvent) -> Vec<Command> {
         // Archive panel intercepts certain keys when visible
-        if self.show_archived {
+        if self.archive.visible {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     let count = self.archived_tasks().len();
-                    if count > 0 && self.selected_archive_row < count - 1 {
-                        self.selected_archive_row += 1;
+                    if count > 0 && self.archive.selected_row < count - 1 {
+                        self.archive.selected_row += 1;
                     }
                     return vec![];
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    self.selected_archive_row = self.selected_archive_row.saturating_sub(1);
+                    self.archive.selected_row = self.archive.selected_row.saturating_sub(1);
                     return vec![];
                 }
                 KeyCode::Char('H') => {
@@ -42,15 +42,15 @@ impl App {
                 }
                 KeyCode::Char('x') => {
                     let archived = self.archived_tasks();
-                    if archived.get(self.selected_archive_row).is_some() {
-                        self.mode = InputMode::ConfirmDelete;
+                    if archived.get(self.archive.selected_row).is_some() {
+                        self.input.mode = InputMode::ConfirmDelete;
                         self.status_message = Some("Delete permanently? (y/n)".to_string());
                     }
                     return vec![];
                 }
                 KeyCode::Char('e') => {
                     let archived = self.archived_tasks();
-                    if let Some(task) = archived.get(self.selected_archive_row) {
+                    if let Some(task) = archived.get(self.archive.selected_row) {
                         return vec![Command::EditTaskInEditor((*task).clone())];
                     }
                     return vec![];
@@ -79,11 +79,12 @@ impl App {
                     let status = task.status;
                     let has_window = task.tmux_window.is_some();
                     let has_worktree = task.worktree.is_some();
+                    let is_problematic = self.agents.stale_tasks.contains(&id) || self.agents.crashed_tasks.contains(&id);
                     match status {
                         TaskStatus::Backlog => self.update(Message::BrainstormTask(id)),
                         TaskStatus::Ready => self.update(Message::DispatchTask(id)),
                         TaskStatus::Running | TaskStatus::Review => {
-                            if self.stale_tasks.contains(&id) || self.crashed_tasks.contains(&id) {
+                            if is_problematic {
                                 self.update(Message::KillAndRetry(id))
                             } else if has_window {
                                 self.update(Message::StatusInfo(
@@ -151,7 +152,7 @@ impl App {
 
             KeyCode::Char('x') => {
                 if self.selected_task().is_some() {
-                    self.mode = InputMode::ConfirmArchive;
+                    self.input.mode = InputMode::ConfirmArchive;
                     self.status_message = Some("Archive task? (y/n)".to_string());
                 }
                 vec![]
@@ -180,8 +181,8 @@ impl App {
         match key.code {
             KeyCode::Esc => self.update(Message::CancelInput),
             KeyCode::Enter => {
-                let value = self.input_buffer.trim().to_string();
-                match self.mode.clone() {
+                let value = self.input.buffer.trim().to_string();
+                match self.input.mode.clone() {
                     InputMode::InputTitle => self.update(Message::SubmitTitle(value)),
                     InputMode::InputDescription => self.update(Message::SubmitDescription(value)),
                     InputMode::InputRepoPath => self.update(Message::SubmitRepoPath(value)),
@@ -197,11 +198,11 @@ impl App {
     fn handle_key_confirm_delete(&mut self, key: KeyEvent) -> Vec<Command> {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                self.mode = InputMode::Normal;
+                self.input.mode = InputMode::Normal;
                 self.status_message = None;
-                let task_id = if self.show_archived {
+                let task_id = if self.archive.visible {
                     self.archived_tasks()
-                        .get(self.selected_archive_row)
+                        .get(self.archive.selected_row)
                         .map(|t| t.id)
                 } else {
                     self.selected_task().map(|t| t.id)
@@ -213,7 +214,7 @@ impl App {
                 }
             }
             _ => {
-                self.mode = InputMode::Normal;
+                self.input.mode = InputMode::Normal;
                 self.status_message = None;
                 vec![]
             }
@@ -243,7 +244,7 @@ impl App {
     fn handle_key_confirm_archive(&mut self, key: KeyEvent) -> Vec<Command> {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                self.mode = InputMode::Normal;
+                self.input.mode = InputMode::Normal;
                 self.status_message = None;
                 if let Some(task) = self.selected_task() {
                     let id = task.id;
@@ -253,7 +254,7 @@ impl App {
                 }
             }
             _ => {
-                self.mode = InputMode::Normal;
+                self.input.mode = InputMode::Normal;
                 self.status_message = None;
                 vec![]
             }
