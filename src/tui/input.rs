@@ -24,6 +24,7 @@ impl App {
             | InputMode::InputEpicRepoPath => self.handle_key_epic_text_input(key),
             InputMode::ConfirmDeleteEpic => self.handle_key_confirm_delete_epic(key),
             InputMode::ConfirmArchiveEpic => self.handle_key_confirm_archive_epic(key),
+            InputMode::Help => self.handle_key_help(key),
         }
     }
 
@@ -141,6 +142,8 @@ impl App {
             }
 
             KeyCode::Char('H') => self.update(Message::ToggleArchive),
+
+            KeyCode::Char('?') => self.update(Message::ToggleHelp),
 
             KeyCode::Esc => {
                 if matches!(self.view_mode, ViewMode::Epic { .. }) {
@@ -394,6 +397,13 @@ impl App {
                 self.status_message = None;
                 vec![]
             }
+        }
+    }
+
+    fn handle_key_help(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('?') | KeyCode::Esc => self.update(Message::ToggleHelp),
+            _ => vec![],
         }
     }
 }

@@ -84,6 +84,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     }
 
     render_error_popup(frame, app, area);
+    render_help_overlay(frame, app, area);
 }
 
 fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
@@ -618,6 +619,88 @@ fn render_error_popup(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, popup_area);
 }
 
+fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    if app.input.mode != InputMode::Help {
+        return;
+    }
+
+    let popup_width = (area.width * 80 / 100).clamp(40, 72);
+    let popup_height = (area.height * 80 / 100).clamp(23, 28);
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Help ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+
+    let header = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let key = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(Color::Gray);
+    let note = Style::default().fg(Color::DarkGray);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("  Navigation", header)),
+        Line::from(vec![
+            Span::styled("  h/\u{2190}", key), Span::styled(" previous column   ", desc),
+            Span::styled("j/\u{2193}", key), Span::styled(" next task", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  l/\u{2192}", key), Span::styled(" next column       ", desc),
+            Span::styled("k/\u{2191}", key), Span::styled(" previous task", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Enter", key), Span::styled(" detail panel / enter epic", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  Esc", key), Span::styled(" exit epic / clear selection", desc),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Actions", header)),
+        Line::from(vec![
+            Span::styled("  n", key), Span::styled(" new task   ", desc),
+            Span::styled("E", key), Span::styled(" new epic   ", desc),
+            Span::styled("e", key), Span::styled(" edit", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  d", key), Span::styled(" dispatch*  ", desc),
+            Span::styled("m", key), Span::styled(" move fwd   ", desc),
+            Span::styled("M", key), Span::styled(" move back", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  x", key), Span::styled(" archive    ", desc),
+            Span::styled("D", key), Span::styled(" quick dsp  ", desc),
+            Span::styled("g", key), Span::styled(" go to tmux", desc),
+        ]),
+        Line::from(vec![
+            Span::styled("  H", key), Span::styled(" history    ", desc),
+            Span::styled("V", key), Span::styled(" epic done  ", desc),
+            Span::styled("Space", key), Span::styled(" select", desc),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  * d is context-dependent:", note)),
+        Line::from(Span::styled("    Backlog \u{2192} brainstorm   Ready \u{2192} dispatch", note)),
+        Line::from(Span::styled("    Running \u{2192} resume (if window gone)", note)),
+        Line::from(""),
+        Line::from(Span::styled("  General", header)),
+        Line::from(vec![
+            Span::styled("  ?", key), Span::styled(" this help  ", desc),
+            Span::styled("q", key), Span::styled(" quit", desc),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("  Press ? or Esc to close", note)),
+    ];
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(msg) = &app.status_message {
         let bar = Paragraph::new(msg.as_str())
@@ -713,6 +796,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         InputMode::ConfirmArchiveEpic => {
             let bar = Paragraph::new("Archive epic and subtasks? (y/n)")
                 .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(bar, area);
+        }
+        InputMode::Help => {
+            let bar = Paragraph::new("Press ? or Esc to close help")
+                .style(Style::default().fg(Color::Cyan));
             frame.render_widget(bar, area);
         }
     }

@@ -2824,3 +2824,58 @@ fn d_key_on_archived_shows_warning() {
     // No task selected (archived tasks hidden from kanban) → noop
     assert!(cmds.is_empty());
 }
+
+#[test]
+fn question_mark_toggles_help_mode() {
+    let mut app = make_app();
+    assert_eq!(app.input.mode, InputMode::Normal);
+
+    app.handle_key(make_key(KeyCode::Char('?')));
+    assert_eq!(app.input.mode, InputMode::Help);
+}
+
+#[test]
+fn question_mark_dismisses_help() {
+    let mut app = make_app();
+    app.input.mode = InputMode::Help;
+
+    app.handle_key(make_key(KeyCode::Char('?')));
+    assert_eq!(app.input.mode, InputMode::Normal);
+}
+
+#[test]
+fn esc_dismisses_help() {
+    let mut app = make_app();
+    app.input.mode = InputMode::Help;
+
+    app.handle_key(make_key(KeyCode::Esc));
+    assert_eq!(app.input.mode, InputMode::Normal);
+}
+
+#[test]
+fn help_mode_ignores_other_keys() {
+    let mut app = make_app();
+    app.input.mode = InputMode::Help;
+
+    app.handle_key(make_key(KeyCode::Char('q')));
+    assert_eq!(app.input.mode, InputMode::Help);
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn help_overlay_renders_when_active() {
+    let mut app = make_app();
+    app.input.mode = InputMode::Help;
+
+    let buf = render_to_buffer(&app, 80, 30);
+    assert!(buffer_contains(&buf, "Navigation"));
+    assert!(buffer_contains(&buf, "Actions"));
+    assert!(buffer_contains(&buf, "General"));
+}
+
+#[test]
+fn help_overlay_hidden_in_normal_mode() {
+    let app = make_app();
+    let buf = render_to_buffer(&app, 80, 30);
+    assert!(!buffer_contains(&buf, "Navigation"));
+}
