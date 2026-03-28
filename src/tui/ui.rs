@@ -7,8 +7,8 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-use crate::models::{Task, TaskStatus, Staleness, format_age, format_detail_age};
-use super::{App, InputMode};
+use crate::models::{Epic, Task, TaskStatus, Staleness, format_age, format_detail_age};
+use super::{App, ColumnItem, InputMode, ViewMode};
 
 /// Column color per status
 fn column_color(status: TaskStatus) -> Color {
@@ -46,21 +46,42 @@ pub fn render(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let now = Utc::now();
 
+    let has_banner = matches!(app.view_mode(), ViewMode::Epic { .. });
+
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),   // summary row
-            Constraint::Min(6),     // kanban board
-            Constraint::Length(8),  // detail panel
-            Constraint::Length(1),  // status bar
-        ])
+        .constraints(if has_banner {
+            vec![
+                Constraint::Length(1),   // summary row
+                Constraint::Length(4),   // epic banner
+                Constraint::Min(6),      // kanban board
+                Constraint::Length(8),   // detail panel
+                Constraint::Length(1),   // status bar
+            ]
+        } else {
+            vec![
+                Constraint::Length(1),   // summary row
+                Constraint::Min(6),      // kanban board
+                Constraint::Length(8),   // detail panel
+                Constraint::Length(1),   // status bar
+            ]
+        })
         .split(area);
 
-    render_summary(frame, app, vertical[0]);
-    render_columns(frame, app, vertical[1], now);
-    render_archive_overlay(frame, app, vertical[1], now);
-    render_detail(frame, app, vertical[2], now);
-    render_status_bar(frame, app, vertical[3]);
+    if has_banner {
+        render_summary(frame, app, vertical[0]);
+        render_epic_banner(frame, app, vertical[1]);
+        render_columns(frame, app, vertical[2], now);
+        render_archive_overlay(frame, app, vertical[2], now);
+        render_detail(frame, app, vertical[3], now);
+        render_status_bar(frame, app, vertical[4]);
+    } else {
+        render_summary(frame, app, vertical[0]);
+        render_columns(frame, app, vertical[1], now);
+        render_archive_overlay(frame, app, vertical[1], now);
+        render_detail(frame, app, vertical[2], now);
+        render_status_bar(frame, app, vertical[3]);
+    }
 
     render_error_popup(frame, app, area);
 }
@@ -204,8 +225,8 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
             )
         };
 
-        let tasks = app.tasks_by_status(status);
-        let title = format!(" {} ({}) ", status.as_str().to_uppercase(), tasks.len());
+        let column_items = app.column_items_for_status(status);
+        let title = format!(" {} ({}) ", status.as_str().to_uppercase(), column_items.len());
         let block = Block::default()
             .title(title)
             .title_style(title_style)
@@ -214,18 +235,107 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
             .border_style(border_style);
         let selected_row = app.selected_row()[col_idx];
 
-        let items: Vec<ListItem> = tasks
+        let items: Vec<ListItem> = column_items
             .iter()
             .enumerate()
-            .map(|(row_idx, task)| {
+            .map(|(row_idx, item)| {
                 let is_cursor = is_focused && row_idx == selected_row;
-                build_task_list_item(task, status, app, now, is_cursor, color)
+                match item {
+                    ColumnItem::Task(task) => build_task_list_item(task, status, app, now, is_cursor, color),
+                    ColumnItem::Epic(epic) => render_epic_item(epic, is_cursor, app, color),
+                }
             })
             .collect();
 
         let list = List::new(items).block(block);
         frame.render_widget(list, col_area);
     }
+}
+
+fn render_epic_item(
+    epic: &Epic,
+    is_cursor: bool,
+    app: &App,
+    _color: Color,
+) -> ListItem<'static> {
+    let subtask_statuses: Vec<TaskStatus> = app.tasks()
+        .iter()
+        .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
+        .map(|t| t.status)
+        .collect();
+
+    let done_count = subtask_statuses.iter().filter(|s| **s == TaskStatus::Done).count();
+    let running_count = subtask_statuses.iter().filter(|s| {
+        matches!(s, TaskStatus::Running | TaskStatus::Review)
+    }).count();
+    let pending_count = subtask_statuses.len() - done_count - running_count;
+
+    let title_text = truncate(&epic.title, 20);
+    let mut dots = " EPIC".to_string();
+    if done_count > 0 {
+        dots.push_str(&format!(" +{done_count}"));
+    }
+    if running_count > 0 {
+        dots.push_str(&format!(" ~{running_count}"));
+    }
+    if pending_count > 0 {
+        dots.push_str(&format!(" .{pending_count}"));
+    }
+
+    if is_cursor {
+        let cursor_style = Style::default()
+            .bg(Color::Magenta)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD);
+        let label = format!("  {title_text}{dots}");
+        ListItem::new(Line::from(Span::styled(label, cursor_style)))
+    } else {
+        ListItem::new(Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(title_text, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+            Span::styled(dots, Style::default().fg(Color::DarkGray)),
+        ]))
+    }
+}
+
+fn render_epic_banner(frame: &mut Frame, app: &App, area: Rect) {
+    let ViewMode::Epic { epic_id, .. } = app.view_mode() else {
+        return;
+    };
+    let Some(epic) = app.epics().iter().find(|e| e.id == *epic_id) else {
+        return;
+    };
+
+    let subtask_statuses: Vec<TaskStatus> = app.tasks()
+        .iter()
+        .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
+        .map(|t| t.status)
+        .collect();
+    let total = subtask_statuses.len();
+    let done = subtask_statuses.iter().filter(|s| **s == TaskStatus::Done).count();
+
+    let block = Block::default()
+        .title(format!(" Epic: {} ", epic.title))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Magenta))
+        .title_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
+
+    let desc = truncate(&epic.description, 60);
+    let progress = format!("{done}/{total} done");
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(desc, Style::default().fg(Color::Gray)),
+            Span::styled(format!("  {progress}"), Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(Span::styled(
+            "Esc to return to board",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
 }
 
 fn render_archive_overlay(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
