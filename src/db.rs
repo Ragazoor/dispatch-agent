@@ -77,6 +77,53 @@ impl<'a> TaskPatch<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// EpicPatch — builder for selective epic field updates
+// ---------------------------------------------------------------------------
+
+/// Builder for partial epic updates, mirroring `TaskPatch`. Each field is
+/// `None` by default (= don't change).
+#[derive(Debug, Default)]
+pub struct EpicPatch<'a> {
+    pub title: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub plan: Option<&'a str>,
+    pub done: Option<bool>,
+}
+
+impl<'a> EpicPatch<'a> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn title(mut self, title: &'a str) -> Self {
+        self.title = Some(title);
+        self
+    }
+
+    pub fn description(mut self, description: &'a str) -> Self {
+        self.description = Some(description);
+        self
+    }
+
+    pub fn plan(mut self, plan: &'a str) -> Self {
+        self.plan = Some(plan);
+        self
+    }
+
+    pub fn done(mut self, done: bool) -> Self {
+        self.done = Some(done);
+        self
+    }
+
+    pub fn has_changes(&self) -> bool {
+        self.title.is_some()
+            || self.description.is_some()
+            || self.plan.is_some()
+            || self.done.is_some()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TaskStore trait
 // ---------------------------------------------------------------------------
 
@@ -106,7 +153,7 @@ pub trait TaskStore: Send + Sync {
     fn create_epic(&self, title: &str, description: &str, plan: &str, repo_path: &str) -> Result<Epic>;
     fn get_epic(&self, id: EpicId) -> Result<Option<Epic>>;
     fn list_epics(&self) -> Result<Vec<Epic>>;
-    fn update_epic(&self, id: EpicId, title: Option<&str>, description: Option<&str>, plan: Option<&str>, done: Option<bool>) -> Result<()>;
+    fn patch_epic(&self, id: EpicId, patch: &EpicPatch<'_>) -> Result<()>;
     fn delete_epic(&self, id: EpicId) -> Result<()>;
     fn set_task_epic_id(&self, task_id: TaskId, epic_id: Option<EpicId>) -> Result<()>;
     fn list_tasks_for_epic(&self, epic_id: EpicId) -> Result<Vec<Task>>;
@@ -472,24 +519,24 @@ impl TaskStore for Database {
         Ok(epics)
     }
 
-    fn update_epic(&self, id: EpicId, title: Option<&str>, description: Option<&str>, plan: Option<&str>, done: Option<bool>) -> Result<()> {
+    fn patch_epic(&self, id: EpicId, patch: &EpicPatch<'_>) -> Result<()> {
         let conn = self.conn()?;
         let (cur_title, cur_desc, cur_plan, cur_done): (String, String, String, i64) = conn.query_row(
             "SELECT title, description, plan, done FROM epics WHERE id = ?1",
             params![id.0],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).optional().context("Failed to fetch epic for update")?
+        ).optional().context("Failed to fetch epic for patch")?
             .ok_or_else(|| anyhow::anyhow!("Epic {id} not found"))?;
 
-        let final_title = title.unwrap_or(&cur_title);
-        let final_desc = description.unwrap_or(&cur_desc);
-        let final_plan = plan.unwrap_or(&cur_plan);
-        let final_done = done.map(|d| d as i64).unwrap_or(cur_done);
+        let final_title = patch.title.unwrap_or(&cur_title);
+        let final_desc = patch.description.unwrap_or(&cur_desc);
+        let final_plan = patch.plan.unwrap_or(&cur_plan);
+        let final_done = patch.done.map(|d| d as i64).unwrap_or(cur_done);
 
         conn.execute(
             "UPDATE epics SET title = ?1, description = ?2, plan = ?3, done = ?4, updated_at = datetime('now') WHERE id = ?5",
             params![final_title, final_desc, final_plan, final_done, id.0],
-        ).context("Failed to update epic")?;
+        ).context("Failed to patch epic")?;
         Ok(())
     }
 
@@ -1046,22 +1093,22 @@ mod tests {
     }
 
     #[test]
-    fn update_epic_done_flag() {
+    fn patch_epic_done_flag() {
         let db = in_memory_db();
         let epic = db.create_epic("Epic", "desc", "", "/repo").unwrap();
         assert!(!epic.done);
 
-        db.update_epic(epic.id, None, None, None, Some(true)).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().done(true)).unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert!(updated.done);
     }
 
     #[test]
-    fn update_epic_title_and_plan() {
+    fn patch_epic_title_and_plan() {
         let db = in_memory_db();
         let epic = db.create_epic("Old Title", "desc", "old plan", "/repo").unwrap();
 
-        db.update_epic(epic.id, Some("New Title"), None, Some("new plan"), None).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().title("New Title").plan("new plan")).unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert_eq!(updated.title, "New Title");
         assert_eq!(updated.plan, "new plan");

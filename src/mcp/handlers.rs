@@ -4,7 +4,7 @@ use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::db;
+use crate::db::{self, EpicPatch};
 use crate::models::{EpicId, TaskId, TaskStatus};
 
 use super::McpState;
@@ -792,13 +792,13 @@ fn handle_update_epic(state: &McpState, id: Option<Value>, args: Value) -> JsonR
     };
     tracing::info!(epic_id = parsed.epic_id, "MCP update_epic");
 
-    if let Err(e) = state.db.update_epic(
-        EpicId(parsed.epic_id),
-        parsed.title.as_deref(),
-        parsed.description.as_deref(),
-        parsed.plan.as_deref(),
-        parsed.done,
-    ) {
+    let mut patch = EpicPatch::new();
+    if let Some(ref t) = parsed.title { patch = patch.title(t); }
+    if let Some(ref d) = parsed.description { patch = patch.description(d); }
+    if let Some(ref p) = parsed.plan { patch = patch.plan(p); }
+    if let Some(d) = parsed.done { patch = patch.done(d); }
+
+    if let Err(e) = state.db.patch_epic(EpicId(parsed.epic_id), &patch) {
         return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
     }
 

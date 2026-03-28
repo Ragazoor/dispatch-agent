@@ -16,7 +16,7 @@ use tokio::time::interval;
 
 use tempfile::Builder as TempfileBuilder;
 
-use crate::db::TaskStore;
+use crate::db::{EpicPatch, TaskStore};
 use crate::editor::{format_editor_content, parse_editor_content};
 use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::tui::{self, App, Command, Message};
@@ -487,8 +487,9 @@ impl TuiRuntime {
                         _ => {}
                     }
 
-                    if let Err(e) = self.database.update_epic(
-                        epic_id, Some(&title), Some(&description), Some(&plan), None,
+                    if let Err(e) = self.database.patch_epic(
+                        epic_id,
+                        &EpicPatch::new().title(&title).description(&description).plan(&plan),
                     ) {
                         app.update(Message::Error(format!("DB error updating epic: {e}")));
                     }
@@ -511,8 +512,10 @@ impl TuiRuntime {
     }
 
     fn exec_persist_epic(&self, app: &mut App, id: models::EpicId, done: Option<bool>) {
-        if let Err(e) = self.database.update_epic(id, None, None, None, done) {
-            app.update(Message::Error(format!("DB error updating epic: {e}")));
+        if let Some(d) = done {
+            if let Err(e) = self.database.patch_epic(id, &EpicPatch::new().done(d)) {
+                app.update(Message::Error(format!("DB error updating epic: {e}")));
+            }
         }
     }
 

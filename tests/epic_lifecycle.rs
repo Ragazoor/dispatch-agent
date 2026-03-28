@@ -1,4 +1,4 @@
-use task_orchestrator::db::{Database, TaskPatch, TaskStore};
+use task_orchestrator::db::{Database, EpicPatch, TaskPatch, TaskStore};
 use task_orchestrator::models::*;
 
 #[test]
@@ -44,7 +44,7 @@ fn full_epic_lifecycle() {
     assert_eq!(epic_status(&epic, &statuses), TaskStatus::Review);
 
     // 6. Mark epic as done
-    db.update_epic(epic.id, None, None, None, Some(true))
+    db.patch_epic(epic.id, &EpicPatch::new().done(true))
         .unwrap();
     let epic = db.get_epic(epic.id).unwrap().unwrap();
     assert_eq!(epic_status(&epic, &statuses), TaskStatus::Done);
