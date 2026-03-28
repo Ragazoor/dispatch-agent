@@ -16,6 +16,8 @@ pub trait TaskStore: Send + Sync {
     fn list_all(&self) -> Result<Vec<Task>>;
     fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
     fn update_status(&self, id: TaskId, status: TaskStatus) -> Result<()>;
+    /// Update status only if current status matches `expected`. Returns true if updated.
+    fn update_status_if(&self, id: TaskId, new_status: TaskStatus, expected: TaskStatus) -> Result<bool>;
     fn update_dispatch(&self, id: TaskId, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
     fn persist_task(&self, id: TaskId, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
     fn delete_task(&self, id: TaskId) -> Result<()>;
@@ -207,6 +209,17 @@ impl TaskStore for Database {
             anyhow::bail!("Task {} not found", id);
         }
         Ok(())
+    }
+
+    fn update_status_if(&self, id: TaskId, new_status: TaskStatus, expected: TaskStatus) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let rows = conn
+            .execute(
+                "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE id = ?2 AND status = ?3",
+                params![new_status.as_str(), id.0, expected.as_str()],
+            )
+            .context("Failed to conditional-update status")?;
+        Ok(rows > 0)
     }
 
     fn update_dispatch(
@@ -836,5 +849,36 @@ mod tests {
             .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert!(task.plan.is_none());
+    }
+
+    #[test]
+    fn update_status_if_matching() {
+        let db = in_memory_db();
+        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
+
+        let updated = db.update_status_if(id, TaskStatus::Review, TaskStatus::Running).unwrap();
+        assert!(updated, "should update when current status matches");
+
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Review);
+    }
+
+    #[test]
+    fn update_status_if_not_matching() {
+        let db = in_memory_db();
+        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Done).unwrap();
+
+        let updated = db.update_status_if(id, TaskStatus::Review, TaskStatus::Running).unwrap();
+        assert!(!updated, "should not update when current status doesn't match");
+
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.status, TaskStatus::Done, "status should be unchanged");
+    }
+
+    #[test]
+    fn update_status_if_nonexistent() {
+        let db = in_memory_db();
+        let updated = db.update_status_if(TaskId(9999), TaskStatus::Review, TaskStatus::Running).unwrap();
+        assert!(!updated, "should return false for nonexistent task");
     }
 }

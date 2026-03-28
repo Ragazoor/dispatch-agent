@@ -11,6 +11,7 @@ pub enum TaskStatus {
     Running,
     Review,
     Done,
+    Archived,
 }
 
 impl TaskStatus {
@@ -31,6 +32,7 @@ impl TaskStatus {
             TaskStatus::Running => "running",
             TaskStatus::Review => "review",
             TaskStatus::Done => "done",
+            TaskStatus::Archived => "archived",
         }
     }
 
@@ -41,6 +43,7 @@ impl TaskStatus {
             "running" => Some(TaskStatus::Running),
             "review" => Some(TaskStatus::Review),
             "done" => Some(TaskStatus::Done),
+            "archived" => Some(TaskStatus::Archived),
             _ => None,
         }
     }
@@ -53,6 +56,7 @@ impl TaskStatus {
             TaskStatus::Running => TaskStatus::Review,
             TaskStatus::Review => TaskStatus::Done,
             TaskStatus::Done => TaskStatus::Done,
+            TaskStatus::Archived => TaskStatus::Archived,
         }
     }
 
@@ -64,6 +68,7 @@ impl TaskStatus {
             TaskStatus::Running => TaskStatus::Ready,
             TaskStatus::Review => TaskStatus::Running,
             TaskStatus::Done => TaskStatus::Review,
+            TaskStatus::Archived => TaskStatus::Archived,
         }
     }
 
@@ -75,6 +80,7 @@ impl TaskStatus {
             TaskStatus::Running => 2,
             TaskStatus::Review => 3,
             TaskStatus::Done => 4,
+            TaskStatus::Archived => 0, // Not displayed in kanban
         }
     }
 
@@ -397,6 +403,26 @@ mod tests {
     fn task_status_from_str_error() {
         let result: Result<TaskStatus, _> = "bogus".parse();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn status_archived_roundtrip() {
+        let s = TaskStatus::Archived.as_str();
+        assert_eq!(s, "archived");
+        let parsed = TaskStatus::parse(s).expect("roundtrip failed");
+        assert_eq!(parsed, TaskStatus::Archived);
+    }
+
+    #[test]
+    fn status_archived_is_terminal() {
+        assert_eq!(TaskStatus::Archived.next(), TaskStatus::Archived);
+        assert_eq!(TaskStatus::Archived.prev(), TaskStatus::Archived);
+    }
+
+    #[test]
+    fn status_archived_has_no_column() {
+        // Archived is not a kanban column — COLUMN_COUNT stays 5
+        assert_eq!(TaskStatus::COLUMN_COUNT, 5);
     }
 
     // --- Staleness ---

@@ -41,6 +41,8 @@ pub enum Message {
     KillAndRetry(TaskId),
     RetryResume(TaskId),
     RetryFresh(TaskId),
+    ArchiveTask(TaskId),
+    ToggleArchive,
     // Input routing messages
     DismissError,
     StartNewTask,
@@ -94,6 +96,7 @@ pub enum InputMode {
     ConfirmDelete,
     QuickDispatch,
     ConfirmRetry(TaskId),
+    ConfirmArchive,
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ fn column_color(status: TaskStatus) -> Color {
         TaskStatus::Running => Color::Yellow,
         TaskStatus::Review => Color::Magenta,
         TaskStatus::Done => Color::Green,
+        TaskStatus::Archived => Color::DarkGray,
     }
 }
 
@@ -57,6 +58,7 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_summary(frame, app, vertical[0]);
     render_columns(frame, app, vertical[1], now);
+    render_archive_overlay(frame, app, vertical[1], now);
     render_detail(frame, app, vertical[2], now);
     render_status_bar(frame, app, vertical[3]);
 
@@ -200,6 +202,56 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
 
         frame.render_widget(list, col_area);
     }
+}
+
+fn render_archive_overlay(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
+    if !app.show_archived() {
+        return;
+    }
+
+    let archived = app.archived_tasks();
+
+    // Right-side overlay: 40% of screen width, full height of kanban area
+    let overlay_width = (area.width * 40 / 100).clamp(30, 60);
+    let x = area.x + area.width.saturating_sub(overlay_width);
+    let overlay_area = Rect::new(x, area.y, overlay_width, area.height);
+
+    frame.render_widget(Clear, overlay_area);
+
+    let block = Block::default()
+        .title(format!(" Archive ({}) ", archived.len()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::DarkGray))
+        .title_style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD));
+
+    let items: Vec<ListItem> = archived
+        .iter()
+        .enumerate()
+        .map(|(idx, task)| {
+            let age = format_age(task.updated_at, now);
+            let title = truncate(&task.title, (overlay_width as usize).saturating_sub(10));
+            let label = format!("{title} {age}");
+            let is_selected = idx == app.selected_archive_row();
+            if is_selected {
+                ListItem::new(Line::from(Span::styled(
+                    label,
+                    Style::default()
+                        .bg(Color::DarkGray)
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                )))
+            } else {
+                ListItem::new(Line::from(Span::styled(
+                    label,
+                    Style::default().fg(Color::Gray),
+                )))
+            }
+        })
+        .collect();
+
+    let list = List::new(items).block(block);
+    frame.render_widget(list, overlay_area);
 }
 
 fn render_detail(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
@@ -440,6 +492,25 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    // Archive mode status bar
+    if app.show_archived() {
+        let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        let label_style = Style::default().fg(Color::DarkGray);
+        let spans = vec![
+            Span::styled("[x]", key_style),
+            Span::styled("delete ", label_style),
+            Span::styled("[e]", key_style),
+            Span::styled("dit ", label_style),
+            Span::styled("[H]", key_style),
+            Span::styled("close ", label_style),
+            Span::styled("[q]", key_style),
+            Span::styled("uit ", label_style),
+        ];
+        let bar = Paragraph::new(Line::from(spans));
+        frame.render_widget(bar, area);
+        return;
+    }
+
     match &app.mode {
         InputMode::Normal => {
             let spans = action_hints(app.selected_task());
@@ -476,6 +547,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(Color::Red));
             frame.render_widget(bar, area);
         }
+        InputMode::ConfirmArchive => {
+            let bar = Paragraph::new("Archive task? (y/n)")
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(bar, area);
+        }
     }
 }
 
@@ -500,14 +576,14 @@ pub(in crate::tui) fn action_hints(task: Option<&Task>) -> Vec<Span<'static>> {
                 push_hint("[d]", "brainstorm");
                 push_hint("[e]", "dit");
                 push_hint("[m]", "ove");
-                push_hint("[x]", "delete");
+                push_hint("[x]", "archive");
             }
             TaskStatus::Ready => {
                 push_hint("[d]", "ispatch");
                 push_hint("[e]", "dit");
                 push_hint("[m]", "ove");
                 push_hint("[M]", "back");
-                push_hint("[x]", "delete");
+                push_hint("[x]", "archive");
             }
             TaskStatus::Running | TaskStatus::Review => {
                 if task.tmux_window.is_some() {
@@ -518,19 +594,21 @@ pub(in crate::tui) fn action_hints(task: Option<&Task>) -> Vec<Span<'static>> {
                 push_hint("[e]", "dit");
                 push_hint("[m]", "ove");
                 push_hint("[M]", "back");
-                push_hint("[x]", "delete");
+                push_hint("[x]", "archive");
             }
             TaskStatus::Done => {
                 push_hint("[e]", "dit");
                 push_hint("[M]", "back");
-                push_hint("[x]", "delete");
+                push_hint("[x]", "archive");
             }
+            TaskStatus::Archived => {}
         }
     }
 
     // Global hints — always shown
     push_hint("[n]", "ew");
     push_hint("[D]", "quick");
+    push_hint("[H]", "istory");
     push_hint("[q]", "uit");
 
     spans

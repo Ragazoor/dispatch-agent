@@ -36,6 +36,9 @@ enum Commands {
         id: i64,
         /// New status
         status: String,
+        /// Only update if current status matches this value
+        #[arg(long)]
+        only_if: Option<String>,
     },
     /// List tasks
     List {
@@ -118,11 +121,21 @@ async fn main() -> Result<()> {
                 .init();
             runtime::run_tui(&cli.db, port, inactivity_timeout).await?;
         }
-        Commands::Update { id, status } => {
+        Commands::Update { id, status, only_if } => {
             let new_status = parse_status(&status)?;
             let db = db::Database::open(&cli.db)?;
-            db.update_status(models::TaskId(id), new_status)?;
-            println!("Task {} updated to {}", id, status);
+            if let Some(ref condition) = only_if {
+                let expected = parse_status(condition)?;
+                let updated = db.update_status_if(models::TaskId(id), new_status, expected)?;
+                if updated {
+                    println!("Task {} updated to {}", id, status);
+                } else {
+                    println!("Task {} not updated (status is not {})", id, condition);
+                }
+            } else {
+                db.update_status(models::TaskId(id), new_status)?;
+                println!("Task {} updated to {}", id, status);
+            }
         }
         Commands::List { status } => {
             let db = db::Database::open(&cli.db)?;

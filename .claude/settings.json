@@ -7,7 +7,10 @@
       "Bash(curl:*)",
       "Bash(printf '%s' '— Implementation Plan')",
       "Bash(git:*)",
-      "Bash(find . -name *.sh -o -name *.bash)"
+      "Bash(find . -name *.sh -o -name *.bash)",
+      "mcp__task-orchestrator__get_task",
+      "mcp__task-orchestrator__update_task",
+      "mcp__task-orchestrator__create_task"
     ]
   },
   "hooks": {
@@ -17,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ID=$(git rev-parse --abbrev-ref HEAD | grep -oP '^\\d+'); [ -n \"$ID\" ] && task-orchestrator update \"$ID\" review || true"
+            "command": "ID=$(git rev-parse --abbrev-ref HEAD | grep -oP '^\\d+'); [ -n \"$ID\" ] && task-orchestrator update \"$ID\" review --only-if running || true"
           }
         ]
       }
@@ -28,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "ID=$(git rev-parse --abbrev-ref HEAD | grep -oP '^\\d+'); [ -n \"$ID\" ] && task-orchestrator update \"$ID\" running || true"
+            "command": "ID=$(git rev-parse --abbrev-ref HEAD | grep -oP '^\\d+'); [ -n \"$ID\" ] && task-orchestrator update \"$ID\" running --only-if running || true"
           }
         ]
       }

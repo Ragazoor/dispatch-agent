@@ -18,10 +18,51 @@ impl App {
             InputMode::ConfirmDelete => self.handle_key_confirm_delete(key),
             InputMode::QuickDispatch => self.handle_key_quick_dispatch(key),
             InputMode::ConfirmRetry(id) => self.handle_key_confirm_retry(key, id),
+            InputMode::ConfirmArchive => self.handle_key_confirm_archive(key),
         }
     }
 
     fn handle_key_normal(&mut self, key: KeyEvent) -> Vec<Command> {
+        // Archive panel intercepts certain keys when visible
+        if self.show_archived {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let count = self.archived_tasks().len();
+                    if count > 0 && self.selected_archive_row < count - 1 {
+                        self.selected_archive_row += 1;
+                    }
+                    return vec![];
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.selected_archive_row = self.selected_archive_row.saturating_sub(1);
+                    return vec![];
+                }
+                KeyCode::Char('H') => {
+                    return self.update(Message::ToggleArchive);
+                }
+                KeyCode::Char('x') => {
+                    let archived = self.archived_tasks();
+                    if archived.get(self.selected_archive_row).is_some() {
+                        self.mode = InputMode::ConfirmDelete;
+                        self.status_message = Some("Delete permanently? (y/n)".to_string());
+                    }
+                    return vec![];
+                }
+                KeyCode::Char('e') => {
+                    let archived = self.archived_tasks();
+                    if let Some(task) = archived.get(self.selected_archive_row) {
+                        return vec![Command::EditTaskInEditor((*task).clone())];
+                    }
+                    return vec![];
+                }
+                KeyCode::Char('q') => return self.update(Message::Quit),
+                KeyCode::Esc => {
+                    return self.update(Message::ToggleArchive);
+                }
+                _ => return vec![],
+            }
+        }
+
         match key.code {
             KeyCode::Char('q') => self.update(Message::Quit),
 
@@ -58,6 +99,9 @@ impl App {
                         }
                         TaskStatus::Done => self.update(Message::StatusInfo(
                             "Task is done".to_string(),
+                        )),
+                        TaskStatus::Archived => self.update(Message::StatusInfo(
+                            "Task is archived".to_string(),
                         )),
                     }
                 } else {
@@ -105,7 +149,13 @@ impl App {
                 }
             }
 
-            KeyCode::Char('x') => self.update(Message::ConfirmDeleteStart),
+            KeyCode::Char('x') => {
+                if self.selected_task().is_some() {
+                    self.mode = InputMode::ConfirmArchive;
+                    self.status_message = Some("Archive task? (y/n)".to_string());
+                }
+                vec![]
+            }
 
             KeyCode::Char('D') => {
                 match self.repo_paths.len() {
@@ -119,6 +169,8 @@ impl App {
                     _ => self.update(Message::StartQuickDispatchSelection),
                 }
             }
+
+            KeyCode::Char('H') => self.update(Message::ToggleArchive),
 
             _ => vec![],
         }
@@ -144,8 +196,27 @@ impl App {
 
     fn handle_key_confirm_delete(&mut self, key: KeyEvent) -> Vec<Command> {
         match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => self.update(Message::ConfirmDeleteYes),
-            _ => self.update(Message::CancelDelete),
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                let task_id = if self.show_archived {
+                    self.archived_tasks()
+                        .get(self.selected_archive_row)
+                        .map(|t| t.id)
+                } else {
+                    self.selected_task().map(|t| t.id)
+                };
+                if let Some(id) = task_id {
+                    self.update(Message::DeleteTask(id))
+                } else {
+                    vec![]
+                }
+            }
+            _ => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                vec![]
+            }
         }
     }
 
@@ -166,6 +237,26 @@ impl App {
             KeyCode::Char('f') => self.update(Message::RetryFresh(id)),
             KeyCode::Esc => self.update(Message::CancelRetry),
             _ => vec![],
+        }
+    }
+
+    fn handle_key_confirm_archive(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                if let Some(task) = self.selected_task() {
+                    let id = task.id;
+                    self.update(Message::ArchiveTask(id))
+                } else {
+                    vec![]
+                }
+            }
+            _ => {
+                self.mode = InputMode::Normal;
+                self.status_message = None;
+                vec![]
+            }
         }
     }
 }

@@ -658,23 +658,13 @@ fn escape_from_repo_path_mode_cancels() {
     assert!(app.status_message.is_none());
 }
 
-// --- Delete confirmation flow ---
+// --- Delete confirmation flow (via ConfirmDelete mode directly) ---
 
 #[test]
-fn x_key_enters_confirm_delete_mode() {
-    let mut app = make_app();
-    app.selected_column = 0; // Backlog has tasks
-    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
-    assert!(cmds.is_empty());
-    assert_eq!(app.mode, InputMode::ConfirmDelete);
-    assert_eq!(app.status_message.as_deref(), Some("Delete task? (y/n)"));
-}
-
-#[test]
-fn y_confirms_deletion() {
+fn confirm_delete_y_deletes_task() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x'))); // enter confirm mode
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Char('y')));
     assert_eq!(app.mode, InputMode::Normal);
     assert!(app.tasks.iter().all(|t| t.id != TaskId(1))); // task 1 deleted
@@ -683,10 +673,10 @@ fn y_confirms_deletion() {
 }
 
 #[test]
-fn uppercase_y_confirms_deletion() {
+fn confirm_delete_uppercase_y_deletes_task() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x')));
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Char('Y')));
     assert_eq!(app.mode, InputMode::Normal);
     assert!(app.tasks.iter().all(|t| t.id != TaskId(1)));
@@ -694,26 +684,62 @@ fn uppercase_y_confirms_deletion() {
 }
 
 #[test]
-fn n_cancels_deletion() {
+fn confirm_delete_n_cancels() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x')));
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Char('n')));
     assert_eq!(app.mode, InputMode::Normal);
-    assert_eq!(app.tasks.len(), 5); // all tasks still present
+    assert_eq!(app.tasks.len(), 5);
     assert!(cmds.is_empty());
     assert!(app.status_message.is_none());
 }
 
 #[test]
-fn escape_cancels_deletion() {
+fn confirm_delete_esc_cancels() {
     let mut app = make_app();
     app.selected_column = 0;
-    app.handle_key(make_key(KeyCode::Char('x')));
+    app.mode = InputMode::ConfirmDelete;
     let cmds = app.handle_key(make_key(KeyCode::Esc));
     assert_eq!(app.mode, InputMode::Normal);
     assert_eq!(app.tasks.len(), 5);
     assert!(cmds.is_empty());
+}
+
+// --- Archive confirmation flow (x key) ---
+
+#[test]
+fn x_key_enters_confirm_archive_mode() {
+    let mut app = make_app();
+    app.selected_column = 0; // Backlog has tasks
+    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.mode, InputMode::ConfirmArchive);
+    assert_eq!(app.status_message.as_deref(), Some("Archive task? (y/n)"));
+}
+
+#[test]
+fn confirm_archive_y_emits_archive_task() {
+    let mut app = make_app();
+    app.selected_column = 0;
+    app.handle_key(make_key(KeyCode::Char('x')));
+    let _ = app.handle_key(make_key(KeyCode::Char('y')));
+    assert_eq!(app.mode, InputMode::Normal);
+    // Task 1 should now be Archived
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Archived);
+}
+
+#[test]
+fn confirm_archive_n_cancels() {
+    let mut app = make_app();
+    app.selected_column = 0;
+    app.handle_key(make_key(KeyCode::Char('x')));
+    let _ = app.handle_key(make_key(KeyCode::Char('n')));
+    assert_eq!(app.mode, InputMode::Normal);
+    // Task 1 still in Backlog
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Backlog);
 }
 
 #[test]
@@ -721,7 +747,19 @@ fn x_key_on_empty_column_is_noop() {
     let mut app = make_app();
     app.selected_column = 3; // Review column is empty
     app.handle_key(make_key(KeyCode::Char('x')));
-    assert_eq!(app.mode, InputMode::Normal); // did NOT enter ConfirmDelete
+    assert_eq!(app.mode, InputMode::Normal); // did NOT enter ConfirmArchive
+}
+
+// --- H key toggles archive panel ---
+
+#[test]
+fn shift_h_toggles_archive() {
+    let mut app = make_app();
+    assert!(!app.show_archived);
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(app.show_archived);
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(!app.show_archived);
 }
 
 // --- Error popup dismissal ---
@@ -1502,4 +1540,185 @@ fn cancel_retry_returns_to_normal() {
     app.update(Message::CancelRetry);
     assert_eq!(app.mode, InputMode::Normal);
     assert!(app.status_message.is_none());
+}
+
+// --- Archive ---
+
+#[test]
+fn archive_task_sets_status_and_emits_persist() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Done),
+    ], Duration::from_secs(300));
+    let cmds = app.update(Message::ArchiveTask(TaskId(1)));
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Archived);
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+}
+
+#[test]
+fn archive_task_with_worktree_emits_cleanup() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = Some("/wt/1-test".to_string());
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+
+    let cmds = app.update(Message::ArchiveTask(TaskId(1)));
+
+    assert!(cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Archived);
+    assert!(task.worktree.is_none());
+    assert!(task.tmux_window.is_none());
+}
+
+#[test]
+fn archive_task_without_worktree_no_cleanup() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    let cmds = app.update(Message::ArchiveTask(TaskId(1)));
+    assert!(!cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+}
+
+#[test]
+fn archive_clears_agent_tracking() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.stale_tasks.insert(TaskId(1));
+    app.crashed_tasks.insert(TaskId(1));
+    app.tmux_outputs.insert(TaskId(1), "output".to_string());
+
+    app.update(Message::ArchiveTask(TaskId(1)));
+
+    assert!(!app.stale_tasks.contains(&TaskId(1)));
+    assert!(!app.crashed_tasks.contains(&TaskId(1)));
+    assert!(!app.tmux_outputs.contains_key(&TaskId(1)));
+}
+
+// --- Archive panel key handling ---
+
+#[test]
+fn archive_panel_j_k_navigation() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+        make_task(2, TaskStatus::Archived),
+        make_task(3, TaskStatus::Archived),
+    ], Duration::from_secs(300));
+    app.show_archived = true;
+    assert_eq!(app.selected_archive_row, 0);
+
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert_eq!(app.selected_archive_row, 1);
+
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert_eq!(app.selected_archive_row, 2);
+
+    // Clamp at end
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert_eq!(app.selected_archive_row, 2);
+
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert_eq!(app.selected_archive_row, 1);
+}
+
+#[test]
+fn archive_panel_h_closes() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+    ], Duration::from_secs(300));
+    app.show_archived = true;
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(!app.show_archived);
+}
+
+#[test]
+fn archive_panel_x_enters_confirm_delete() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+    ], Duration::from_secs(300));
+    app.show_archived = true;
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.mode, InputMode::ConfirmDelete);
+}
+
+#[test]
+fn archive_panel_confirm_delete_removes_task() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+    ], Duration::from_secs(300));
+    app.show_archived = true;
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    assert!(app.tasks.is_empty());
+    assert!(cmds.iter().any(|c| matches!(c, Command::DeleteTask(TaskId(1)))));
+}
+
+#[test]
+fn archived_tasks_not_in_kanban_columns() {
+    let app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Archived),
+    ], Duration::from_secs(300));
+
+    for &status in TaskStatus::ALL {
+        let tasks = app.tasks_by_status(status);
+        for t in &tasks {
+            assert_ne!(t.status, TaskStatus::Archived,
+                "archived task should not appear in {} column", status.as_str());
+        }
+    }
+
+    let archived = app.archived_tasks();
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].id, TaskId(2));
+}
+
+// --- End-to-end archive flow ---
+
+#[test]
+fn full_archive_flow() {
+    // Create a running task with worktree
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = Some("/wt/1-test".to_string());
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task, make_task(2, TaskStatus::Backlog)], Duration::from_secs(300));
+
+    // Navigate to Running column (column 2)
+    app.handle_key(make_key(KeyCode::Right));
+    app.handle_key(make_key(KeyCode::Right));
+
+    // Press x to archive
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.mode, InputMode::ConfirmArchive);
+
+    // Confirm
+    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    assert_eq!(app.mode, InputMode::Normal);
+
+    // Task should be archived with cleanup
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Archived);
+    assert!(task.worktree.is_none());
+    assert!(cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
+
+    // Toggle archive panel
+    app.handle_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT));
+    assert!(app.show_archived);
+
+    // Should see 1 archived task
+    assert_eq!(app.archived_tasks().len(), 1);
+
+    // Hard delete from archive
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.mode, InputMode::ConfirmDelete);
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    assert!(cmds.iter().any(|c| matches!(c, Command::DeleteTask(TaskId(1)))));
+    assert!(app.archived_tasks().is_empty());
 }
