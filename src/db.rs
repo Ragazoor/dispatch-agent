@@ -43,6 +43,7 @@ pub trait TaskStore: Send + Sync {
         plan: Option<&str>,
         status: TaskStatus,
     ) -> Result<Task>;
+    fn has_other_tasks_with_worktree(&self, worktree: &str, exclude_id: TaskId) -> Result<bool>;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,6 +422,18 @@ impl TaskStore for Database {
         ).context("Failed to patch task")?;
 
         Ok(())
+    }
+
+    fn has_other_tasks_with_worktree(&self, worktree: &str, exclude_id: TaskId) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|_| anyhow::anyhow!("db lock poisoned"))?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM tasks WHERE worktree = ?1 AND id != ?2 AND status != 'done'",
+                params![worktree, exclude_id.0],
+                |row| row.get(0),
+            )
+            .context("Failed to check shared worktree")?;
+        Ok(count > 0)
     }
 }
 
@@ -837,6 +850,38 @@ mod tests {
         assert_eq!(task.title, "title");
         assert_eq!(task.plan.as_deref(), Some("plan.md"));
         assert_eq!(task.status, TaskStatus::Ready);
+    }
+
+    #[test]
+    fn has_other_tasks_with_worktree_returns_false_when_no_others() {
+        let db = in_memory_db();
+        let id = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.persist_task(id, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+
+        assert!(!db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id).unwrap());
+    }
+
+    #[test]
+    fn has_other_tasks_with_worktree_returns_true_when_shared() {
+        let db = in_memory_db();
+        let id1 = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let id2 = db.create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.persist_task(id1, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+        db.persist_task(id2, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+
+        assert!(db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1).unwrap());
+        assert!(db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id2).unwrap());
+    }
+
+    #[test]
+    fn has_other_tasks_with_worktree_ignores_done_tasks() {
+        let db = in_memory_db();
+        let id1 = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let id2 = db.create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.persist_task(id1, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+        db.persist_task(id2, TaskStatus::Done, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+
+        assert!(!db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1).unwrap());
     }
 
     #[test]

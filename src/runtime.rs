@@ -382,7 +382,22 @@ impl TuiRuntime {
         }
     }
 
-    fn exec_cleanup(&self, repo_path: String, worktree: String, tmux_window: Option<String>) {
+    fn exec_cleanup(&self, id: TaskId, repo_path: String, worktree: String, tmux_window: Option<String>) {
+        let shared = self
+            .database
+            .has_other_tasks_with_worktree(&worktree, id)
+            .unwrap_or(false);
+
+        if shared {
+            // Other active tasks share this worktree — just detach this task
+            tracing::info!(task_id = id.0, "worktree shared, detaching only");
+            if let Err(e) = self.database.update_dispatch(id, None, None) {
+                let _ = self.msg_tx.send(Message::Error(format!("Detach failed: {e:#}")));
+            }
+            return;
+        }
+
+        // No other active tasks — full cleanup
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
 
@@ -498,8 +513,8 @@ async fn execute_commands(
             Command::EditTaskInEditor(task) => rt.exec_edit_in_editor(app, task, terminal)?,
             Command::SaveRepoPath(path) => rt.exec_save_repo_path(app, path),
             Command::RefreshFromDb => rt.exec_refresh_from_db(app),
-            Command::Cleanup { repo_path, worktree, tmux_window } =>
-                rt.exec_cleanup(repo_path, worktree, tmux_window),
+            Command::Cleanup { id, repo_path, worktree, tmux_window } =>
+                rt.exec_cleanup(id, repo_path, worktree, tmux_window),
             Command::Resume { task } => rt.exec_resume(task),
             Command::JumpToTmux { window } => rt.exec_jump_to_tmux(app, window),
             Command::QuickDispatch(draft) =>
@@ -637,5 +652,32 @@ mod tests {
         rt.exec_jump_to_tmux(&mut app, "nonexistent-window".to_string());
 
         assert!(app.error_popup().is_some());
+    }
+
+    #[test]
+    fn exec_cleanup_detaches_when_shared() {
+        let (rt, mut app) = test_runtime();
+
+        // Create two tasks sharing the same worktree
+        rt.exec_insert_task(&mut app, "Task A".into(), "desc".into(), "/repo".into());
+        rt.exec_insert_task(&mut app, "Task B".into(), "desc".into(), "/repo".into());
+
+        let id_a = app.tasks()[0].id;
+        let id_b = app.tasks()[1].id;
+
+        let worktree = "/repo/.worktrees/1-task-a";
+        rt.database.persist_task(id_a, models::TaskStatus::Running, Some(worktree), Some("task-1")).unwrap();
+        rt.database.persist_task(id_b, models::TaskStatus::Running, Some(worktree), Some("task-1")).unwrap();
+
+        // Cleanup task A — should detach only (worktree is shared)
+        rt.exec_cleanup(id_a, "/repo".into(), worktree.into(), Some("task-1".into()));
+
+        let task_a = rt.database.get_task(id_a).unwrap().unwrap();
+        assert!(task_a.worktree.is_none(), "task A should be detached");
+        assert!(task_a.tmux_window.is_none(), "task A tmux should be cleared");
+
+        // Task B should still have the worktree
+        let task_b = rt.database.get_task(id_b).unwrap().unwrap();
+        assert_eq!(task_b.worktree.as_deref(), Some(worktree));
     }
 }

@@ -230,6 +230,7 @@ impl App {
             let cleanup = if needs_cleanup {
                 match task.worktree.take() {
                     Some(wt) => Some(Command::Cleanup {
+                        id,
                         repo_path: task.repo_path.clone(),
                         worktree: wt,
                         tmux_window: task.tmux_window.take(),
@@ -305,6 +306,7 @@ impl App {
         let cleanup = self.find_task_mut(id).and_then(|task| {
             let wt = task.worktree.take()?;
             Some(Command::Cleanup {
+                id,
                 repo_path: task.repo_path.clone(),
                 worktree: wt,
                 tmux_window: task.tmux_window.take(),
@@ -535,6 +537,7 @@ impl App {
             let mut cmds = Vec::new();
             if let Some(wt) = worktree {
                 cmds.push(Command::Cleanup {
+                    id,
                     repo_path: task_clone.repo_path.clone(),
                     worktree: wt,
                     tmux_window,
@@ -552,6 +555,7 @@ impl App {
         if let Some(task) = self.find_task_mut(id) {
             let cleanup = match task.worktree.take() {
                 Some(wt) => Some(Command::Cleanup {
+                    id,
                     repo_path: task.repo_path.clone(),
                     worktree: wt,
                     tmux_window: task.tmux_window.take(),

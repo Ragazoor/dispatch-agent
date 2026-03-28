@@ -76,7 +76,7 @@ pub enum Command {
     DeleteTask(TaskId),
     Dispatch { task: Task },
     Brainstorm { task: Task },
-    Cleanup { repo_path: String, worktree: String, tmux_window: Option<String> },
+    Cleanup { id: TaskId, repo_path: String, worktree: String, tmux_window: Option<String> },
     CaptureTmux { id: TaskId, window: String },
     Resume { task: Task },
     JumpToTmux { window: String },
