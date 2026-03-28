@@ -2879,3 +2879,200 @@ fn help_overlay_hidden_in_normal_mode() {
     let buf = render_to_buffer(&app, 80, 30);
     assert!(!buffer_contains(&buf, "Navigation"));
 }
+
+// ---------------------------------------------------------------------------
+// Finish task tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn finish_task_on_review_with_worktree_emits_command() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.tmux_window = Some("task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+    app.update(Message::NavigateColumn(3));
+
+    // FinishTask enters confirm mode
+    app.update(Message::FinishTask(TaskId(1)));
+    assert!(matches!(app.input.mode, InputMode::ConfirmFinish(TaskId(1))));
+
+    // ConfirmFinish emits Command::Finish
+    let cmds = app.update(Message::ConfirmFinish);
+    assert!(
+        cmds.iter().any(|c| matches!(c, Command::Finish { .. })),
+        "Expected Command::Finish, got: {cmds:?}"
+    );
+}
+
+#[test]
+fn finish_task_on_non_review_is_noop() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Running);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    let cmds = app.update(Message::FinishTask(TaskId(1)));
+    assert!(cmds.is_empty(), "Should not produce commands for non-Review task");
+}
+
+#[test]
+fn finish_task_without_worktree_is_noop() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Review),
+    ], Duration::from_secs(300));
+
+    let cmds = app.update(Message::FinishTask(TaskId(1)));
+    assert!(cmds.is_empty(), "Should not produce commands without worktree");
+}
+
+#[test]
+fn finish_task_shows_confirmation() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishTask(TaskId(1)));
+    assert!(matches!(app.input.mode, InputMode::ConfirmFinish(TaskId(1))));
+    assert!(app.status_message.as_ref().unwrap().contains("merge"));
+}
+
+#[test]
+fn confirm_finish_emits_finish_command() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.tmux_window = Some("task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishTask(TaskId(1)));
+    let cmds = app.update(Message::ConfirmFinish);
+    assert!(cmds.iter().any(|c| matches!(c, Command::Finish { .. })));
+    assert_eq!(app.input.mode, InputMode::Normal);
+}
+
+#[test]
+fn cancel_finish_returns_to_normal() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishTask(TaskId(1)));
+    app.update(Message::CancelFinish);
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn finish_complete_moves_to_done() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.tmux_window = Some("task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    let cmds = app.update(Message::FinishComplete(TaskId(1)));
+    let task = app.tasks().iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert!(task.worktree.is_none());
+    assert!(task.tmux_window.is_none());
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+}
+
+#[test]
+fn finish_failed_with_conflict_sets_flag() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishFailed {
+        id: TaskId(1),
+        error: "Merge conflict".to_string(),
+        is_conflict: true,
+    });
+    assert!(app.merge_conflict_tasks().contains(&TaskId(1)));
+    assert!(app.status_message.as_ref().unwrap().contains("Merge conflict"));
+}
+
+#[test]
+fn finish_failed_without_conflict_does_not_set_flag() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishFailed {
+        id: TaskId(1),
+        error: "Not on main".to_string(),
+        is_conflict: false,
+    });
+    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+}
+
+#[test]
+fn conflict_flag_clears_on_dispatch() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishFailed {
+        id: TaskId(1),
+        error: "conflict".to_string(),
+        is_conflict: true,
+    });
+    assert!(app.merge_conflict_tasks().contains(&TaskId(1)));
+
+    app.update(Message::Resumed { id: TaskId(1), tmux_window: "task-1".to_string() });
+    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+}
+
+#[test]
+fn conflict_flag_clears_on_move_backward() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishFailed {
+        id: TaskId(1),
+        error: "conflict".to_string(),
+        is_conflict: true,
+    });
+
+    app.update(Message::MoveTask { id: TaskId(1), direction: MoveDirection::Backward });
+    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+}
+
+#[test]
+fn confirm_finish_clears_conflict_flag() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.tmux_window = Some("task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+
+    app.update(Message::FinishFailed {
+        id: TaskId(1),
+        error: "conflict".to_string(),
+        is_conflict: true,
+    });
+
+    app.update(Message::FinishTask(TaskId(1)));
+    app.update(Message::ConfirmFinish);
+    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+}
