@@ -66,6 +66,10 @@ pub enum Message {
     SelectQuickDispatchRepo(usize),
     CancelRetry,
     StatusInfo(String),
+    // Epic messages
+    EnterEpic(EpicId),
+    ExitEpic,
+    RefreshEpics(Vec<Epic>),
 }
 
 // ---------------------------------------------------------------------------

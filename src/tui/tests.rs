@@ -3,7 +3,7 @@ use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::models::{TaskId, TaskStatus};
+use crate::models::{Epic, EpicId, TaskId, TaskStatus};
 
 /// Check whether a rendered buffer contains the given text anywhere.
 fn buffer_contains(buf: &Buffer, text: &str) -> bool {
@@ -2135,4 +2135,144 @@ fn stress_db_with_many_tasks() {
         app.update(Message::NavigateRow(1));
     }
     assert_eq!(app.selected_row()[0], 499);
+}
+
+// --- Epic helpers ---
+
+fn make_epic(id: i64) -> Epic {
+    let now = chrono::Utc::now();
+    Epic {
+        id: EpicId(id),
+        title: format!("Epic {id}"),
+        description: String::new(),
+        plan: String::new(),
+        repo_path: "/repo".to_string(),
+        done: false,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+// --- tasks_for_current_view ---
+
+#[test]
+fn tasks_for_current_view_board_excludes_epic_tasks() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let standalone = make_task(1, TaskStatus::Backlog);
+    let mut subtask = make_task(2, TaskStatus::Backlog);
+    subtask.epic_id = Some(EpicId(10));
+    app.tasks = vec![standalone, subtask];
+
+    let visible = app.tasks_for_current_view();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, TaskId(1));
+}
+
+#[test]
+fn tasks_for_current_view_epic_shows_only_subtasks() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let standalone = make_task(1, TaskStatus::Backlog);
+    let mut subtask = make_task(2, TaskStatus::Ready);
+    subtask.epic_id = Some(EpicId(10));
+    app.tasks = vec![standalone, subtask];
+
+    app.view_mode = ViewMode::Epic {
+        epic_id: EpicId(10),
+        selection: BoardSelection::new(),
+        saved_board: BoardSelection::new(),
+    };
+
+    let visible = app.tasks_for_current_view();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, TaskId(2));
+}
+
+// --- enter/exit epic ---
+
+#[test]
+fn enter_epic_switches_to_epic_view() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.selection_mut().set_column(2);
+
+    app.update(Message::EnterEpic(EpicId(10)));
+
+    match &app.view_mode {
+        ViewMode::Epic { epic_id, saved_board, .. } => {
+            assert_eq!(*epic_id, EpicId(10));
+            assert_eq!(saved_board.column(), 2, "board selection should be preserved");
+        }
+        _ => panic!("Expected ViewMode::Epic"),
+    }
+}
+
+#[test]
+fn exit_epic_restores_board_selection() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.selection_mut().set_column(3);
+
+    app.update(Message::EnterEpic(EpicId(10)));
+    app.selection_mut().set_column(1);
+
+    app.update(Message::ExitEpic);
+
+    match &app.view_mode {
+        ViewMode::Board(sel) => {
+            assert_eq!(sel.column(), 3, "board selection should be restored");
+        }
+        _ => panic!("Expected ViewMode::Board"),
+    }
+}
+
+#[test]
+fn exit_epic_when_on_board_is_noop() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.update(Message::ExitEpic);
+    assert!(matches!(app.view_mode, ViewMode::Board(_)));
+}
+
+// --- ColumnItem ---
+
+#[test]
+fn column_items_board_view_includes_epics() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)]; // epic with no subtasks = Backlog
+
+    let items = app.column_items_for_status(TaskStatus::Backlog);
+    assert_eq!(items.len(), 2); // 1 task + 1 epic
+    assert!(matches!(items[0], ColumnItem::Task(_)));
+    assert!(matches!(items[1], ColumnItem::Epic(_)));
+}
+
+#[test]
+fn column_items_epic_view_no_epics() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.view_mode = ViewMode::Epic {
+        epic_id: EpicId(10),
+        selection: BoardSelection::new(),
+        saved_board: BoardSelection::new(),
+    };
+    app.epics = vec![make_epic(10)];
+
+    let items = app.column_items_for_status(TaskStatus::Backlog);
+    assert!(items.iter().all(|i| matches!(i, ColumnItem::Task(_))));
+}
+
+#[test]
+fn selected_column_item_returns_epic() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+
+    // Task is at row 0, Epic at row 1
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 1);
+
+    match app.selected_column_item() {
+        Some(ColumnItem::Epic(e)) => assert_eq!(e.id, EpicId(10)),
+        other => panic!("Expected Epic, got {:?}", other),
+    }
 }

@@ -84,9 +84,26 @@ impl App {
     pub fn selected_archive_row(&self) -> usize { self.archive.selected_row }
     pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
 
-    /// Return all tasks for a given status, ordered as they appear in self.tasks.
+    /// Return tasks visible in the current view.
+    /// Board view: standalone tasks only (epic_id is None).
+    /// Epic view: only subtasks of the active epic.
+    pub fn tasks_for_current_view(&self) -> Vec<&Task> {
+        match &self.view_mode {
+            ViewMode::Board(_) => {
+                self.tasks.iter().filter(|t| t.epic_id.is_none() && t.status != TaskStatus::Archived).collect()
+            }
+            ViewMode::Epic { epic_id, .. } => {
+                self.tasks.iter().filter(|t| t.epic_id == Some(*epic_id) && t.status != TaskStatus::Archived).collect()
+            }
+        }
+    }
+
+    /// Return tasks for a given status in the current view.
     pub fn tasks_by_status(&self, status: TaskStatus) -> Vec<&Task> {
-        self.tasks.iter().filter(|t| t.status == status).collect()
+        self.tasks_for_current_view()
+            .into_iter()
+            .filter(|t| t.status == status)
+            .collect()
     }
 
     /// Return all archived tasks, ordered as they appear in self.tasks.
@@ -94,20 +111,61 @@ impl App {
         self.tasks.iter().filter(|t| t.status == TaskStatus::Archived).collect()
     }
 
-    /// Return the currently selected task (in the focused column), if any.
-    pub fn selected_task(&self) -> Option<&Task> {
+    /// Build a list of items (tasks + epics) for a column in the current view.
+    /// In board view, epics are included (positioned by derived status).
+    /// In epic view, only subtasks are included (no epic cards).
+    pub fn column_items_for_status(&self, status: TaskStatus) -> Vec<ColumnItem<'_>> {
+        let tasks = self.tasks_by_status(status);
+        let mut items: Vec<ColumnItem<'_>> = tasks.into_iter().map(ColumnItem::Task).collect();
+
+        if matches!(self.view_mode, ViewMode::Board(_)) {
+            for epic in &self.epics {
+                if epic_status(epic, &self.subtask_statuses(epic.id)) == status {
+                    items.push(ColumnItem::Epic(epic));
+                }
+            }
+        }
+
+        items.sort_by_key(|item| match item {
+            ColumnItem::Task(t) => t.created_at,
+            ColumnItem::Epic(e) => e.created_at,
+        });
+
+        items
+    }
+
+    /// Get the statuses of all subtasks belonging to an epic.
+    fn subtask_statuses(&self, epic_id: EpicId) -> Vec<TaskStatus> {
+        self.tasks
+            .iter()
+            .filter(|t| t.epic_id == Some(epic_id) && t.status != TaskStatus::Archived)
+            .map(|t| t.status)
+            .collect()
+    }
+
+    /// Return the item (task or epic) currently under the cursor.
+    pub fn selected_column_item(&self) -> Option<ColumnItem<'_>> {
         let col = self.selection().column();
         let status = TaskStatus::from_column_index(col)?;
-        let col_tasks = self.tasks_by_status(status);
+        let items = self.column_items_for_status(status);
         let row = self.selection().row(col);
-        col_tasks.get(row).copied()
+        items.into_iter().nth(row)
+    }
+
+    /// Return the currently selected task (if the cursor is on a task), or None
+    /// if the cursor is on an epic or the column is empty.
+    pub fn selected_task(&self) -> Option<&Task> {
+        match self.selected_column_item() {
+            Some(ColumnItem::Task(task)) => Some(task),
+            _ => None,
+        }
     }
 
     /// Clamp all selected_row values to be within bounds for each column.
     pub fn clamp_selection(&mut self) {
         for col in 0..TaskStatus::COLUMN_COUNT {
             if let Some(status) = TaskStatus::from_column_index(col) {
-                let count = self.tasks_by_status(status).len();
+                let count = self.column_items_for_status(status).len();
                 let sel = self.selection_mut();
                 if count == 0 {
                     sel.set_row(col, 0);
@@ -199,6 +257,10 @@ impl App {
             Message::SelectQuickDispatchRepo(idx) => self.handle_select_quick_dispatch_repo(idx),
             Message::CancelRetry => self.handle_cancel_retry(),
             Message::StatusInfo(msg) => self.handle_status_info(msg),
+            // Epic messages
+            Message::EnterEpic(epic_id) => self.handle_enter_epic(epic_id),
+            Message::ExitEpic => self.handle_exit_epic(),
+            Message::RefreshEpics(epics) => self.handle_refresh_epics(epics),
         }
     }
 
@@ -222,7 +284,7 @@ impl App {
     fn handle_navigate_row(&mut self, delta: isize) -> Vec<Command> {
         let col = self.selection().column();
         if let Some(status) = TaskStatus::from_column_index(col) {
-            let count = self.tasks_by_status(status).len();
+            let count = self.column_items_for_status(status).len();
             if count > 0 {
                 let current = self.selection().row(col);
                 let new_row = (current as isize + delta).clamp(0, count as isize - 1) as usize;
@@ -753,6 +815,37 @@ impl App {
             Command::InsertTask(draft),
             Command::SaveRepoPath(repo_path),
         ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Epic handlers
+    // -----------------------------------------------------------------------
+
+    fn handle_enter_epic(&mut self, epic_id: EpicId) -> Vec<Command> {
+        let saved_board = match &self.view_mode {
+            ViewMode::Board(sel) => sel.clone(),
+            ViewMode::Epic { saved_board, .. } => saved_board.clone(),
+        };
+        self.view_mode = ViewMode::Epic {
+            epic_id,
+            selection: BoardSelection::new(),
+            saved_board,
+        };
+        self.detail_visible = false;
+        vec![]
+    }
+
+    fn handle_exit_epic(&mut self) -> Vec<Command> {
+        if let ViewMode::Epic { saved_board, .. } = &self.view_mode {
+            self.view_mode = ViewMode::Board(saved_board.clone());
+        }
+        self.detail_visible = false;
+        vec![]
+    }
+
+    fn handle_refresh_epics(&mut self, epics: Vec<Epic>) -> Vec<Command> {
+        self.epics = epics;
+        vec![]
     }
 }
 
