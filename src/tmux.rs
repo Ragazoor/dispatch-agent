@@ -8,7 +8,7 @@ use crate::process::ProcessRunner;
 
 /// Create a new tmux window with the given name, starting in `working_dir`.
 pub fn new_window(name: &str, working_dir: &str, runner: &dyn ProcessRunner) -> Result<()> {
-    let output = runner.run("tmux", &["new-window", "-n", name, "-c", working_dir])?;
+    let output = runner.run("tmux", &["new-window", "-d", "-n", name, "-c", working_dir])?;
     if !output.status.success() {
         bail!("tmux new-window failed with status {}", output.status);
     }
@@ -90,6 +90,7 @@ fn select_window_args(window: &str) -> Vec<String> {
 fn new_window_args(name: &str, working_dir: &str) -> Vec<String> {
     vec![
         "new-window".to_string(),
+        "-d".to_string(),
         "-n".to_string(),
         name.to_string(),
         "-c".to_string(),
@@ -122,7 +123,7 @@ mod tests {
         let args = new_window_args("task-42", "/some/path");
         assert_eq!(
             args,
-            vec!["new-window", "-n", "task-42", "-c", "/some/path"]
+            vec!["new-window", "-d", "-n", "task-42", "-c", "/some/path"]
         );
     }
 
@@ -187,7 +188,7 @@ mod tests {
         assert_eq!(calls[0].0, "tmux");
         assert_eq!(
             calls[0].1,
-            vec!["new-window", "-n", "task-42", "-c", "/some/path"]
+            vec!["new-window", "-d", "-n", "task-42", "-c", "/some/path"]
         );
     }
 
