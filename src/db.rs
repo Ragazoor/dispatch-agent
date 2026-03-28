@@ -7,18 +7,6 @@ use std::sync::Mutex;
 use crate::models::{Task, TaskId, TaskStatus};
 
 // ---------------------------------------------------------------------------
-// TaskUpdate — grouped fields for full task updates
-// ---------------------------------------------------------------------------
-
-pub struct TaskUpdate<'a> {
-    pub title: &'a str,
-    pub description: &'a str,
-    pub repo_path: &'a str,
-    pub status: TaskStatus,
-    pub plan: Option<&'a str>,
-}
-
-// ---------------------------------------------------------------------------
 // TaskPatch — builder for selective field updates
 // ---------------------------------------------------------------------------
 
@@ -97,15 +85,9 @@ pub trait TaskStore: Send + Sync {
     fn get_task(&self, id: TaskId) -> Result<Option<Task>>;
     fn list_all(&self) -> Result<Vec<Task>>;
     fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
-    fn update_status(&self, id: TaskId, status: TaskStatus) -> Result<()>;
     /// Update status only if current status matches `expected`. Returns true if updated.
     fn update_status_if(&self, id: TaskId, new_status: TaskStatus, expected: TaskStatus) -> Result<bool>;
-    fn update_dispatch(&self, id: TaskId, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
-    fn persist_task(&self, id: TaskId, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()>;
     fn delete_task(&self, id: TaskId) -> Result<()>;
-    fn update_task(&self, id: TaskId, update: &TaskUpdate<'_>) -> Result<()>;
-    fn update_plan(&self, id: TaskId, plan: Option<&str>) -> Result<()>;
-    fn update_title_description(&self, id: TaskId, title: Option<&str>, description: Option<&str>) -> Result<()>;
     fn list_repo_paths(&self) -> Result<Vec<String>>;
     fn save_repo_path(&self, path: &str) -> Result<()>;
     fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
@@ -278,20 +260,6 @@ impl TaskStore for Database {
         Ok(tasks)
     }
 
-    fn update_status(&self, id: TaskId, status: TaskStatus) -> Result<()> {
-        let conn = self.conn()?;
-        let rows = conn
-            .execute(
-                "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![status.as_str(), id.0],
-            )
-            .context("Failed to update status")?;
-        if rows == 0 {
-            anyhow::bail!("Task {} not found", id);
-        }
-        Ok(())
-    }
-
     fn update_status_if(&self, id: TaskId, new_status: TaskStatus, expected: TaskStatus) -> Result<bool> {
         let conn = self.conn()?;
         let rows = conn
@@ -301,40 +269,6 @@ impl TaskStore for Database {
             )
             .context("Failed to conditional-update status")?;
         Ok(rows > 0)
-    }
-
-    fn update_dispatch(
-        &self,
-        id: TaskId,
-        worktree: Option<&str>,
-        tmux_window: Option<&str>,
-    ) -> Result<()> {
-        let conn = self.conn()?;
-        let rows = conn
-            .execute(
-                "UPDATE tasks SET worktree = ?1, tmux_window = ?2, updated_at = datetime('now')
-                 WHERE id = ?3",
-                params![worktree, tmux_window, id.0],
-            )
-            .context("Failed to update dispatch fields")?;
-        if rows == 0 {
-            anyhow::bail!("Task {} not found", id);
-        }
-        Ok(())
-    }
-
-    fn persist_task(&self, id: TaskId, status: TaskStatus, worktree: Option<&str>, tmux_window: Option<&str>) -> Result<()> {
-        let conn = self.conn()?;
-        let rows = conn
-            .execute(
-                "UPDATE tasks SET status = ?1, worktree = ?2, tmux_window = ?3, updated_at = datetime('now') WHERE id = ?4",
-                params![status.as_str(), worktree, tmux_window, id.0],
-            )
-            .context("Failed to persist task")?;
-        if rows == 0 {
-            anyhow::bail!("Task {} not found", id);
-        }
-        Ok(())
     }
 
     fn delete_task(&self, id: TaskId) -> Result<()> {
@@ -347,59 +281,6 @@ impl TaskStore for Database {
         }
         Ok(())
     }
-
-    fn update_task(&self, id: TaskId, update: &TaskUpdate<'_>) -> Result<()> {
-        let conn = self.conn()?;
-        let changed = conn
-            .execute(
-                "UPDATE tasks SET title = ?1, description = ?2, repo_path = ?3, status = ?4, plan = ?5, updated_at = datetime('now') WHERE id = ?6",
-                params![update.title, update.description, update.repo_path, update.status.as_str(), update.plan, id.0],
-            )
-            .context("Failed to update task")?;
-        if changed == 0 {
-            anyhow::bail!("Task {id} not found");
-        }
-        Ok(())
-    }
-
-    fn update_plan(&self, id: TaskId, plan: Option<&str>) -> Result<()> {
-        let conn = self.conn()?;
-        let rows = conn
-            .execute(
-                "UPDATE tasks SET plan = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![plan, id.0],
-            )
-            .context("Failed to update plan")?;
-        if rows == 0 {
-            anyhow::bail!("Task {id} not found");
-        }
-        Ok(())
-    }
-
-    fn update_title_description(&self, id: TaskId, title: Option<&str>, description: Option<&str>) -> Result<()> {
-        let conn = self.conn()?;
-        let rows = match (title, description) {
-            (Some(t), Some(d)) => conn.execute(
-                "UPDATE tasks SET title = ?1, description = ?2, updated_at = datetime('now') WHERE id = ?3",
-                params![t, d, id.0],
-            ),
-            (Some(t), None) => conn.execute(
-                "UPDATE tasks SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![t, id.0],
-            ),
-            (None, Some(d)) => conn.execute(
-                "UPDATE tasks SET description = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![d, id.0],
-            ),
-            (None, None) => return Ok(()),
-        }
-        .context("Failed to update title/description")?;
-        if rows == 0 {
-            anyhow::bail!("Task {id} not found");
-        }
-        Ok(())
-    }
-
 
     fn list_repo_paths(&self) -> Result<Vec<String>> {
         let conn = self.conn()?;
@@ -600,8 +481,8 @@ mod tests {
         let id2 = db.create_task("Task B", "desc", "/b", None, TaskStatus::Backlog).unwrap();
         db.create_task("Task C", "desc", "/c", None, TaskStatus::Backlog).unwrap();
 
-        db.update_status(id1, TaskStatus::Ready).unwrap();
-        db.update_status(id2, TaskStatus::Ready).unwrap();
+        db.patch_task(id1, &TaskPatch::new().status(TaskStatus::Ready)).unwrap();
+        db.patch_task(id2, &TaskPatch::new().status(TaskStatus::Ready)).unwrap();
 
         let ready = db.list_by_status(TaskStatus::Ready).unwrap();
         assert_eq!(ready.len(), 2);
@@ -612,65 +493,10 @@ mod tests {
     }
 
     #[test]
-    fn update_status() {
-        let db = in_memory_db();
-        let id = db.create_task("My Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.status, TaskStatus::Backlog);
-
-        db.update_status(id, TaskStatus::Running).unwrap();
-
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.status, TaskStatus::Running);
-    }
-
-    #[test]
-    fn update_status_nonexistent() {
-        let db = in_memory_db();
-        let result = db.update_status(TaskId(9999), TaskStatus::Done);
-        assert!(result.is_err(), "Should error for nonexistent task");
-        let msg = format!("{}", result.unwrap_err());
-        assert!(msg.contains("9999"), "Error should mention the id");
-    }
-
-    #[test]
-    fn update_dispatch_fields() {
-        let db = in_memory_db();
-        let id = db.create_task("My Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-        db.update_dispatch(id, Some("/worktrees/my-task"), Some("session:my-task"))
-            .unwrap();
-
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.worktree.as_deref(), Some("/worktrees/my-task"));
-        assert_eq!(task.tmux_window.as_deref(), Some("session:my-task"));
-
-        // Clear them
-        db.update_dispatch(id, None, None).unwrap();
-        let task = db.get_task(id).unwrap().unwrap();
-        assert!(task.worktree.is_none());
-        assert!(task.tmux_window.is_none());
-    }
-
-    #[test]
     fn get_nonexistent() {
         let db = in_memory_db();
         let result = db.get_task(TaskId(9999)).unwrap();
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn persist_task_updates_status_and_dispatch_atomically() {
-        let db = in_memory_db();
-        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-        db.persist_task(id, TaskStatus::Running, Some("/wt/task"), Some("task-1")).unwrap();
-
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.status, TaskStatus::Running);
-        assert_eq!(task.worktree.as_deref(), Some("/wt/task"));
-        assert_eq!(task.tmux_window.as_deref(), Some("task-1"));
     }
 
     #[test]
@@ -715,33 +541,6 @@ mod tests {
 
         let found = db.find_task_by_plan("/plans/any.md").unwrap();
         assert!(found.is_none());
-    }
-
-    #[test]
-    fn update_plan_sets_and_clears() {
-        let db = in_memory_db();
-        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-        // Initially no plan
-        let task = db.get_task(id).unwrap().unwrap();
-        assert!(task.plan.is_none());
-
-        // Set plan
-        db.update_plan(id, Some("docs/plans/my-plan.md")).unwrap();
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.plan.as_deref(), Some("docs/plans/my-plan.md"));
-
-        // Clear plan
-        db.update_plan(id, None).unwrap();
-        let task = db.get_task(id).unwrap().unwrap();
-        assert!(task.plan.is_none());
-    }
-
-    #[test]
-    fn update_plan_nonexistent_task() {
-        let db = in_memory_db();
-        let result = db.update_plan(TaskId(9999), Some("plan.md"));
-        assert!(result.is_err());
     }
 
     #[test]
@@ -807,49 +606,6 @@ mod tests {
             .prepare("SELECT plan FROM tasks LIMIT 1")
             .is_ok();
         assert!(has_plan, "Migration 1 should have added the plan column");
-    }
-
-    #[test]
-    fn update_title_description_changes_fields() {
-        let db = in_memory_db();
-        let id = db.create_task("Old Title", "Old desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-        db.update_title_description(id, Some("New Title"), Some("New desc")).unwrap();
-
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.title, "New Title");
-        assert_eq!(task.description, "New desc");
-    }
-
-    #[test]
-    fn update_title_description_partial_title_only() {
-        let db = in_memory_db();
-        let id = db.create_task("Old Title", "Old desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-        db.update_title_description(id, Some("New Title"), None).unwrap();
-
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.title, "New Title");
-        assert_eq!(task.description, "Old desc");
-    }
-
-    #[test]
-    fn update_title_description_partial_desc_only() {
-        let db = in_memory_db();
-        let id = db.create_task("Old Title", "Old desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-        db.update_title_description(id, None, Some("New desc")).unwrap();
-
-        let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.title, "Old Title");
-        assert_eq!(task.description, "New desc");
-    }
-
-    #[test]
-    fn update_title_description_nonexistent() {
-        let db = in_memory_db();
-        let result = db.update_title_description(TaskId(9999), Some("Title"), None);
-        assert!(result.is_err());
     }
 
     #[test]
@@ -935,7 +691,10 @@ mod tests {
     fn has_other_tasks_with_worktree_returns_false_when_no_others() {
         let db = in_memory_db();
         let id = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.persist_task(id, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+        db.patch_task(id, &TaskPatch::new()
+            .status(TaskStatus::Running)
+            .worktree(Some("/repo/.worktrees/1-task-a"))
+            .tmux_window(Some("task-1"))).unwrap();
 
         assert!(!db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id).unwrap());
     }
@@ -945,8 +704,14 @@ mod tests {
         let db = in_memory_db();
         let id1 = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
         let id2 = db.create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.persist_task(id1, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
-        db.persist_task(id2, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+        db.patch_task(id1, &TaskPatch::new()
+            .status(TaskStatus::Running)
+            .worktree(Some("/repo/.worktrees/1-task-a"))
+            .tmux_window(Some("task-1"))).unwrap();
+        db.patch_task(id2, &TaskPatch::new()
+            .status(TaskStatus::Running)
+            .worktree(Some("/repo/.worktrees/1-task-a"))
+            .tmux_window(Some("task-1"))).unwrap();
 
         assert!(db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1).unwrap());
         assert!(db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id2).unwrap());
@@ -957,8 +722,14 @@ mod tests {
         let db = in_memory_db();
         let id1 = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
         let id2 = db.create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.persist_task(id1, TaskStatus::Running, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
-        db.persist_task(id2, TaskStatus::Done, Some("/repo/.worktrees/1-task-a"), Some("task-1")).unwrap();
+        db.patch_task(id1, &TaskPatch::new()
+            .status(TaskStatus::Running)
+            .worktree(Some("/repo/.worktrees/1-task-a"))
+            .tmux_window(Some("task-1"))).unwrap();
+        db.patch_task(id2, &TaskPatch::new()
+            .status(TaskStatus::Done)
+            .worktree(Some("/repo/.worktrees/1-task-a"))
+            .tmux_window(Some("task-1"))).unwrap();
 
         assert!(!db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1).unwrap());
     }
