@@ -66,6 +66,7 @@ pub enum Message {
     SelectQuickDispatchRepo(usize),
     CancelRetry,
     StatusInfo(String),
+    ToggleHelp,
     // Epic messages
     EnterEpic(EpicId),
     ExitEpic,
@@ -133,6 +134,8 @@ pub enum InputMode {
     InputEpicRepoPath,
     ConfirmDeleteEpic,
     ConfirmArchiveEpic,
+    // Overlay modes
+    Help,
 }
 
 // ---------------------------------------------------------------------------
