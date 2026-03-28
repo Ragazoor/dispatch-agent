@@ -246,28 +246,7 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
         let is_focused = app.selected_column() == col_idx;
         let color = column_color(status);
 
-        let (border_type, border_style, title_style) = if is_focused {
-            (
-                BorderType::Double,
-                Style::default().fg(color),
-                Style::default().bg(color).fg(Color::Black).add_modifier(Modifier::BOLD),
-            )
-        } else {
-            (
-                BorderType::Plain,
-                Style::default().fg(Color::DarkGray),
-                Style::default().fg(Color::DarkGray),
-            )
-        };
-
         let column_items = app.column_items_for_status(status);
-        let title = format!(" {} ({}) ", status.as_str().to_uppercase(), column_items.len());
-        let block = Block::default()
-            .title(title)
-            .title_style(title_style)
-            .borders(Borders::ALL)
-            .border_type(border_type)
-            .border_style(border_style);
         let selected_row = app.selected_row()[col_idx];
 
         let items: Vec<ListItem> = column_items
@@ -282,7 +261,7 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
             })
             .collect();
 
-        let list = List::new(items).block(block);
+        let list = List::new(items);
         frame.render_widget(list, col_area);
     }
 }
