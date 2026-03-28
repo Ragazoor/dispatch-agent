@@ -121,15 +121,6 @@ struct GetTaskArgs {
 }
 
 #[derive(Deserialize)]
-struct CreateTaskArgs {
-    title: String,
-    repo_path: String,
-    #[serde(default)]
-    description: String,
-    plan: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct ListTasksArgs {
     #[serde(default)]
     status: Option<Value>,
