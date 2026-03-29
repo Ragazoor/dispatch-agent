@@ -137,8 +137,7 @@ pub(super) fn tool_definitions() -> Value {
                     "properties": {
                         "title": { "type": "string", "description": "Epic title" },
                         "repo_path": { "type": "string", "description": "Repository path" },
-                        "description": { "type": "string", "description": "Epic description" },
-                        "plan": { "type": "string", "description": "High-level markdown plan" }
+                        "description": { "type": "string", "description": "Epic description" }
                     },
                     "required": ["title", "repo_path"]
                 }
@@ -161,14 +160,13 @@ pub(super) fn tool_definitions() -> Value {
             },
             {
                 "name": "update_epic",
-                "description": "Update an epic's title, description, plan, or done status.",
+                "description": "Update an epic's title, description, or done status.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "epic_id": { "type": "integer", "description": "The epic ID" },
                         "title": { "type": "string", "description": "New title" },
                         "description": { "type": "string", "description": "New description" },
-                        "plan": { "type": "string", "description": "New high-level plan" },
                         "done": { "type": "boolean", "description": "Mark epic as done" }
                     },
                     "required": ["epic_id"]

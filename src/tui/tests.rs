@@ -2268,7 +2268,6 @@ fn make_epic(id: i64) -> Epic {
         id: EpicId(id),
         title: format!("Epic {id}"),
         description: String::new(),
-        plan: String::new(),
         repo_path: "/repo".to_string(),
         done: false,
         created_at: now,

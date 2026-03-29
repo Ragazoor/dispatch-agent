@@ -430,7 +430,7 @@ impl TuiRuntime {
     }
 
     fn exec_insert_epic(&self, app: &mut App, title: String, description: String, repo_path: String) {
-        match self.database.create_epic(&title, &description, "", &repo_path) {
+        match self.database.create_epic(&title, &description, &repo_path) {
             Ok(epic) => {
                 app.update(Message::EpicCreated(epic));
             }
@@ -468,19 +468,17 @@ impl TuiRuntime {
                     let fields = parse_epic_editor_output(&edited);
                     let title = if fields.title.is_empty() { epic.title.clone() } else { fields.title };
                     let description = if fields.description.is_empty() { epic.description.clone() } else { fields.description };
-                    let plan = fields.plan;
                     let repo_path = if fields.repo_path.is_empty() { epic.repo_path.clone() } else { fields.repo_path };
 
                     if let Err(e) = self.database.patch_epic(
                         epic_id,
-                        &EpicPatch::new().title(&title).description(&description).plan(&plan),
+                        &EpicPatch::new().title(&title).description(&description),
                     ) {
                         app.update(Message::Error(Self::db_error("updating epic", e)));
                     }
                     let mut updated = epic;
                     updated.title = title;
                     updated.description = description;
-                    updated.plan = plan;
                     updated.repo_path = repo_path;
                     app.update(Message::EpicEdited(updated));
                 }

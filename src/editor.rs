@@ -18,14 +18,13 @@ use crate::models::{Epic, Task};
 pub struct EpicEditorFields {
     pub title: String,
     pub description: String,
-    pub plan: String,
     pub repo_path: String,
 }
 
 pub fn format_epic_for_editor(epic: &Epic) -> String {
     format!(
-        "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n--- PLAN ---\n{}\n",
-        epic.title, epic.description, epic.repo_path, epic.plan
+        "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n",
+        epic.title, epic.description, epic.repo_path
     )
 }
 
@@ -34,7 +33,6 @@ pub fn parse_epic_editor_output(input: &str) -> EpicEditorFields {
     let mut title = String::new();
     let mut description = String::new();
     let mut repo_path = String::new();
-    let mut plan = String::new();
 
     for line in input.lines() {
         let trimmed = line.trim();
@@ -47,7 +45,6 @@ pub fn parse_epic_editor_output(input: &str) -> EpicEditorFields {
             Some("TITLE") => &mut title,
             Some("DESCRIPTION") => &mut description,
             Some("REPO_PATH") => &mut repo_path,
-            Some("PLAN") => &mut plan,
             _ => continue,
         };
         if !target.is_empty() {
@@ -60,7 +57,6 @@ pub fn parse_epic_editor_output(input: &str) -> EpicEditorFields {
         title: title.trim().to_string(),
         description: description.trim().to_string(),
         repo_path: repo_path.trim().to_string(),
-        plan: plan.trim().to_string(),
     }
 }
 
@@ -116,12 +112,11 @@ mod tests {
     use crate::models::{EpicId, TaskId, TaskStatus};
     use chrono::Utc;
 
-    fn make_epic(title: &str, description: &str, plan: &str, repo_path: &str) -> Epic {
+    fn make_epic(title: &str, description: &str, repo_path: &str) -> Epic {
         Epic {
             id: EpicId(1),
             title: title.to_string(),
             description: description.to_string(),
-            plan: plan.to_string(),
             repo_path: repo_path.to_string(),
             done: false,
             created_at: Utc::now(),
@@ -131,45 +126,25 @@ mod tests {
 
     #[test]
     fn epic_editor_roundtrip_basic() {
-        let epic = make_epic("My Epic", "A description", "docs/plan.md", "/repo");
+        let epic = make_epic("My Epic", "A description", "/repo");
         let content = format_epic_for_editor(&epic);
         let fields = parse_epic_editor_output(&content);
         assert_eq!(fields.title, "My Epic");
         assert_eq!(fields.description, "A description");
-        assert_eq!(fields.plan, "docs/plan.md");
-        assert_eq!(fields.repo_path, "/repo");
-    }
-
-    #[test]
-    fn epic_editor_roundtrip_empty_plan() {
-        let epic = make_epic("Title", "Desc", "", "/repo");
-        let content = format_epic_for_editor(&epic);
-        let fields = parse_epic_editor_output(&content);
-        assert_eq!(fields.title, "Title");
-        assert_eq!(fields.description, "Desc");
-        assert_eq!(fields.plan, "");
         assert_eq!(fields.repo_path, "/repo");
     }
 
     #[test]
     fn epic_editor_roundtrip_multiline_description() {
-        let epic = make_epic("Title", "Line 1\nLine 2\nLine 3", "", "/repo");
+        let epic = make_epic("Title", "Line 1\nLine 2\nLine 3", "/repo");
         let content = format_epic_for_editor(&epic);
         let fields = parse_epic_editor_output(&content);
         assert_eq!(fields.description, "Line 1\nLine 2\nLine 3");
     }
 
     #[test]
-    fn epic_editor_roundtrip_multiline_plan() {
-        let epic = make_epic("Title", "Desc", "Step 1\nStep 2\nStep 3", "/repo");
-        let content = format_epic_for_editor(&epic);
-        let fields = parse_epic_editor_output(&content);
-        assert_eq!(fields.plan, "Step 1\nStep 2\nStep 3");
-    }
-
-    #[test]
     fn epic_editor_roundtrip_colons_in_title() {
-        let epic = make_epic("Fix: auth system", "desc", "", "/repo");
+        let epic = make_epic("Fix: auth system", "desc", "/repo");
         let content = format_epic_for_editor(&epic);
         let fields = parse_epic_editor_output(&content);
         assert_eq!(fields.title, "Fix: auth system");
@@ -177,11 +152,10 @@ mod tests {
 
     #[test]
     fn epic_editor_unknown_section_ignored() {
-        let input = "--- TITLE ---\nHello\n--- UNKNOWN ---\nStuff\n--- PLAN ---\nmy plan\n";
+        let input = "--- TITLE ---\nHello\n--- UNKNOWN ---\nStuff\n--- DESCRIPTION ---\nmy desc\n";
         let fields = parse_epic_editor_output(input);
         assert_eq!(fields.title, "Hello");
-        assert_eq!(fields.plan, "my plan");
-        assert_eq!(fields.description, "");
+        assert_eq!(fields.description, "my desc");
     }
 
     #[test]
@@ -189,7 +163,6 @@ mod tests {
         let fields = parse_epic_editor_output("");
         assert_eq!(fields.title, "");
         assert_eq!(fields.description, "");
-        assert_eq!(fields.plan, "");
         assert_eq!(fields.repo_path, "");
     }
 

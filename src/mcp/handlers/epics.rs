@@ -17,8 +17,6 @@ pub(super) struct CreateEpicArgs {
     pub(super) repo_path: String,
     #[serde(default)]
     pub(super) description: String,
-    #[serde(default)]
-    pub(super) plan: String,
 }
 
 #[derive(Deserialize)]
@@ -36,8 +34,6 @@ pub(super) struct UpdateEpicArgs {
     #[serde(default)]
     pub(super) description: Option<String>,
     #[serde(default)]
-    pub(super) plan: Option<String>,
-    #[serde(default)]
     pub(super) done: Option<bool>,
 }
 
@@ -52,7 +48,7 @@ pub(super) fn handle_create_epic(state: &McpState, id: Option<Value>, args: Valu
     };
     tracing::info!(title = %parsed.title, "MCP create_epic");
 
-    match state.db.create_epic(&parsed.title, &parsed.description, &parsed.plan, &parsed.repo_path) {
+    match state.db.create_epic(&parsed.title, &parsed.description, &parsed.repo_path) {
         Ok(epic) => {
             state.notify();
             JsonRpcResponse::ok(
@@ -77,13 +73,12 @@ pub(super) fn handle_get_epic(state: &McpState, id: Option<Value>, args: Value) 
             let done = subtasks.iter().filter(|t| t.status == TaskStatus::Done).count();
             let total = subtasks.len();
             let text = format!(
-                "Epic {id}: {title}\nDescription: {desc}\nRepo: {repo}\nDone: {done_flag}\nSubtasks: {done}/{total} done\n\nPlan:\n{plan}",
+                "Epic {id}: {title}\nDescription: {desc}\nRepo: {repo}\nDone: {done_flag}\nSubtasks: {done}/{total} done",
                 id = epic.id,
                 title = epic.title,
                 desc = epic.description,
                 repo = epic.repo_path,
                 done_flag = epic.done,
-                plan = epic.plan,
             );
             JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
         }
@@ -124,7 +119,6 @@ pub(super) fn handle_update_epic(state: &McpState, id: Option<Value>, args: Valu
     let mut patch = EpicPatch::new();
     if let Some(ref t) = parsed.title { patch = patch.title(t); }
     if let Some(ref d) = parsed.description { patch = patch.description(d); }
-    if let Some(ref p) = parsed.plan { patch = patch.plan(p); }
     if let Some(d) = parsed.done { patch = patch.done(d); }
 
     if let Err(e) = state.db.patch_epic(EpicId(parsed.epic_id), &patch) {
@@ -135,7 +129,6 @@ pub(super) fn handle_update_epic(state: &McpState, id: Option<Value>, args: Valu
     let mut updated = Vec::new();
     if parsed.title.is_some() { updated.push("title"); }
     if parsed.description.is_some() { updated.push("description"); }
-    if parsed.plan.is_some() { updated.push("plan"); }
     if parsed.done.is_some() { updated.push("done"); }
 
     JsonRpcResponse::ok(

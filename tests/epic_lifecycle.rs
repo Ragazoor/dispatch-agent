@@ -10,7 +10,6 @@ fn full_epic_lifecycle() {
         .create_epic(
             "Auth Rewrite",
             "Rewrite auth system",
-            "## Plan\n- Extract middleware\n- Add JWT\n- Remove legacy",
             "/repo",
         )
         .unwrap();
