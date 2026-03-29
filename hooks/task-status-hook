@@ -18,6 +18,6 @@ ID=$(basename "${CWD:-}" | grep -oP '^\d+' || true)
 case "$EVENT" in
     PreToolUse)   task-orchestrator update "$ID" running ;;
     Stop)         task-orchestrator update "$ID" review  --only-if running ;;
-    Notification) task-orchestrator update "$ID" review  --only-if running ;;
+    Notification) task-orchestrator update "$ID" review  --only-if running --needs-input ;;
     *)            exit 0 ;;
 esac

@@ -39,6 +39,9 @@ enum Commands {
         /// Only update if current status matches this value
         #[arg(long)]
         only_if: Option<String>,
+        /// Mark the task as needing human input (e.g. permission prompt)
+        #[arg(long)]
+        needs_input: bool,
     },
     /// List tasks
     List {
@@ -121,19 +124,21 @@ async fn main() -> Result<()> {
                 .init();
             runtime::run_tui(&cli.db, port, inactivity_timeout).await?;
         }
-        Commands::Update { id, status, only_if } => {
+        Commands::Update { id, status, only_if, needs_input } => {
             let new_status = parse_status(&status)?;
             let db = db::Database::open(&cli.db)?;
+            let task_id = models::TaskId(id);
             if let Some(ref condition) = only_if {
                 let expected = parse_status(condition)?;
-                let updated = db.update_status_if(models::TaskId(id), new_status, expected)?;
+                let updated = db.update_status_if(task_id, new_status, expected)?;
                 if updated {
+                    db.patch_task(task_id, &db::TaskPatch::new().needs_input(needs_input))?;
                     println!("Task {} updated to {}", id, status);
                 } else {
                     println!("Task {} not updated (status is not {})", id, condition);
                 }
             } else {
-                db.patch_task(models::TaskId(id), &db::TaskPatch::new().status(new_status))?;
+                db.patch_task(task_id, &db::TaskPatch::new().status(new_status).needs_input(needs_input))?;
                 println!("Task {} updated to {}", id, status);
             }
         }

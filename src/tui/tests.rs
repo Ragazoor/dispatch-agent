@@ -44,6 +44,7 @@ fn make_task(id: i64, status: TaskStatus) -> Task {
         tmux_window: None,
         plan: None,
         epic_id: None,
+        needs_input: false,
         created_at: now,
         updated_at: now,
     }
@@ -185,6 +186,7 @@ fn task_created_adds_to_list() {
         tmux_window: None,
         plan: None,
         epic_id: None,
+        needs_input: false,
         created_at: now,
         updated_at: now,
     };

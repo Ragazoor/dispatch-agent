@@ -187,7 +187,7 @@ pub(super) fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) 
     tracing::info!(task_id = parsed.task_id, "MCP get_task");
     match state.db.get_task(TaskId(parsed.task_id)) {
         Ok(Some(task)) => {
-            let text = format!(
+            let mut text = format!(
                 "Task {id}: {title}\nStatus: {status}\nRepo: {repo}\nDescription: {desc}",
                 id = task.id,
                 title = task.title,
@@ -195,6 +195,9 @@ pub(super) fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) 
                 repo = task.repo_path,
                 desc = task.description,
             );
+            if task.needs_input {
+                text.push_str("\nNeeds input: yes");
+            }
             JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
         }
         Ok(None) => JsonRpcResponse::err(id, -32602, format!("Task {} not found", parsed.task_id)),

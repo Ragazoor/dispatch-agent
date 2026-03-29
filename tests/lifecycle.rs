@@ -53,6 +53,7 @@ fn full_lifecycle() {
             tmux_window: None,
             plan: None,
             epic_id: None,
+            needs_input: false,
             created_at: now,
             updated_at: now,
         },

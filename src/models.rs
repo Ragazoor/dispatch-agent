@@ -197,6 +197,7 @@ pub struct Task {
     pub tmux_window: Option<String>,
     pub plan: Option<String>,
     pub epic_id: Option<EpicId>,
+    pub needs_input: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -674,6 +675,7 @@ mod tests {
             tmux_window: None,
             plan: None,
             epic_id: None,
+            needs_input: false,
             created_at: now,
             updated_at: now,
         };
@@ -693,6 +695,7 @@ mod tests {
             tmux_window: None,
             plan: None,
             epic_id: Some(EpicId(5)),
+            needs_input: false,
             created_at: now,
             updated_at: now,
         };

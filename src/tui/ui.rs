@@ -219,34 +219,21 @@ fn build_task_list_item<'a>(
             ),
         ])
     } else if status == TaskStatus::Running {
-        if let Some(output) = app.agents.tmux_outputs.get(&task.id) {
-            let last_line = output.lines().last().unwrap_or("").trim();
-            if !last_line.is_empty() {
-                Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(
-                        format!("{} {} ", status_icon(status), truncate(last_line, 20)),
-                        Style::default().fg(Color::Rgb(86, 95, 137)),
-                    ),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw("   "),
-                    Span::styled(
-                        format!("{} running", status_icon(status)),
-                        Style::default().fg(Color::Rgb(86, 95, 137)),
-                    ),
-                ])
-            }
-        } else {
-            Line::from(vec![
-                Span::raw("   "),
-                Span::styled(
-                    format!("{} running", status_icon(status)),
-                    Style::default().fg(Color::Rgb(86, 95, 137)),
-                ),
-            ])
-        }
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                format!("{} running", status_icon(status)),
+                Style::default().fg(Color::Rgb(86, 95, 137)),
+            ),
+        ])
+    } else if status == TaskStatus::Review && task.needs_input {
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                "\u{25c9} needs input",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
     } else {
         let age = format_age(task.updated_at, now);
         let staleness = Staleness::from_age(task.updated_at, now);
@@ -517,7 +504,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect, _now: DateTime<Utc>) 
             ));
         }
 
-        let mut l = vec![
+        let l = vec![
             Line::from(line1_spans),
             Line::from(Span::styled(
                 task.description.clone(),
@@ -525,13 +512,6 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect, _now: DateTime<Utc>) 
             )),
         ];
 
-        // Tmux output for running tasks
-        if let Some(output) = app.agents.tmux_outputs.get(&task.id) {
-            l.push(Line::from(""));
-            for line in output.lines() {
-                l.push(Line::from(line.to_string()));
-            }
-        }
         l
     } else {
         vec![Line::from(Span::styled(

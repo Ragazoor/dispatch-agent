@@ -204,6 +204,7 @@ mod tests {
             tmux_window: None,
             plan: plan.map(|s| s.to_string()),
             epic_id: None,
+            needs_input: false,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
