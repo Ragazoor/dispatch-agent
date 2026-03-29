@@ -594,6 +594,64 @@ impl TuiRuntime {
         }
     }
 
+    fn exec_dispatch_epic(&self, app: &mut App, epic: models::Epic) {
+        let title = format!("Plan: {}", epic.title);
+        let description = format!(
+            "Planning subtask for epic: {}\n\n{}",
+            epic.title, epic.description
+        );
+
+        // Create the planning subtask in DB as Ready
+        let task = match self.database.create_task_returning(
+            &title,
+            &description,
+            &epic.repo_path,
+            None,
+            models::TaskStatus::Ready,
+        ) {
+            Ok(mut task) => {
+                if let Err(e) = self.database.set_task_epic_id(task.id, Some(epic.id)) {
+                    app.update(Message::Error(Self::db_error("linking planning task to epic", e)));
+                    return;
+                }
+                task.epic_id = Some(epic.id);
+                task
+            }
+            Err(e) => {
+                app.update(Message::Error(Self::db_error("creating planning task", e)));
+                return;
+            }
+        };
+
+        app.update(Message::TaskCreated { task: task.clone() });
+
+        // Dispatch the planning subtask asynchronously
+        let tx = self.msg_tx.clone();
+        let port = self.port;
+        let runner = self.runner.clone();
+        let epic_id = epic.id;
+        let epic_title = epic.title.clone();
+        let epic_description = epic.description.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let id = task.id;
+            tracing::info!(task_id = id.0, epic_id = epic_id.0, "dispatching epic planning agent");
+            match dispatch::epic_planning_agent(&task, epic_id, &epic_title, &epic_description, port, &*runner) {
+                Ok(result) => {
+                    let _ = tx.send(Message::Dispatched {
+                        id,
+                        worktree: result.worktree_path,
+                        tmux_window: result.tmux_window,
+                        switch_focus: true,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::Error(format!("Epic planning dispatch failed: {e:#}")));
+                }
+            }
+        });
+    }
+
     fn exec_kill_tmux_window(&self, window: String) {
         let runner = self.runner.clone();
         let tx = self.msg_tx.clone();
@@ -694,9 +752,7 @@ async fn execute_commands(
             Command::DeleteEpic(id) => rt.exec_delete_epic(app, id),
             Command::PersistEpic { id, done } => rt.exec_persist_epic(app, id, done),
             Command::RefreshEpicsFromDb => rt.exec_refresh_epics_from_db(app),
-            Command::DispatchEpic { .. } => {
-                // Will be implemented in Task 5
-            }
+            Command::DispatchEpic { epic } => rt.exec_dispatch_epic(app, epic),
         }
     }
 
@@ -1069,6 +1125,33 @@ mod tests {
             }
             other => panic!("Expected FinishFailed, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn exec_dispatch_epic_creates_planning_subtask() {
+        let (rt, mut app) = test_runtime();
+
+        // Create an epic in the DB
+        let epic = rt.database.create_epic("Auth redesign", "Rework login", "/repo").unwrap();
+
+        rt.exec_dispatch_epic(&mut app, epic.clone());
+
+        // Planning subtask was created in DB and added to app
+        assert_eq!(app.tasks().len(), 1);
+        let task = &app.tasks()[0];
+        assert_eq!(task.title, "Plan: Auth redesign");
+        assert_eq!(task.epic_id, Some(epic.id));
+        assert_eq!(task.repo_path, "/repo");
+        assert_eq!(task.status, models::TaskStatus::Ready);
+
+        // Verify description contains epic info
+        assert!(task.description.contains("Auth redesign"));
+        assert!(task.description.contains("Rework login"));
+
+        // Verify the task is also in the DB
+        let db_tasks = rt.database.list_all().unwrap();
+        assert_eq!(db_tasks.len(), 1);
+        assert_eq!(db_tasks[0].title, "Plan: Auth redesign");
     }
 
     #[tokio::test]
