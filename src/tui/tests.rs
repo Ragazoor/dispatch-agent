@@ -2622,6 +2622,14 @@ fn esc_in_epic_view_exits_to_board() {
     assert!(matches!(app.view_mode, ViewMode::Board(_)));
 }
 
+#[test]
+fn d_key_on_backlog_epic_dispatches_epic() {
+    let mut app = make_app_with_epic_selected(); // epic at row 1 in Backlog
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(cmds[0], Command::DispatchEpic { ref epic } if epic.id == EpicId(10)));
+}
+
 // ---------------------------------------------------------------------------
 // DispatchEpic message
 // ---------------------------------------------------------------------------

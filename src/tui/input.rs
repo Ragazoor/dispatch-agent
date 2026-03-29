@@ -206,42 +206,48 @@ impl App {
         }
     }
 
-    /// Handle the 'd' key: dispatch, brainstorm, resume, or retry depending on task status.
+    /// Handle the 'd' key: dispatch, brainstorm, resume, or retry depending on item type/status.
     fn handle_key_dispatch(&mut self) -> Vec<Command> {
-        let Some(task) = self.selected_task() else {
-            return vec![];
-        };
-        let id = task.id;
-        let status = task.status;
-        let has_window = task.tmux_window.is_some();
-        let has_worktree = task.worktree.is_some();
-        let is_problematic = self.agents.stale_tasks.contains(&id)
-            || self.agents.crashed_tasks.contains(&id);
+        match self.selected_column_item() {
+            Some(ColumnItem::Epic(epic)) => {
+                let id = epic.id;
+                self.update(Message::DispatchEpic(id))
+            }
+            Some(ColumnItem::Task(task)) => {
+                let id = task.id;
+                let status = task.status;
+                let has_window = task.tmux_window.is_some();
+                let has_worktree = task.worktree.is_some();
+                let is_problematic = self.agents.stale_tasks.contains(&id)
+                    || self.agents.crashed_tasks.contains(&id);
 
-        match status {
-            TaskStatus::Backlog => self.update(Message::BrainstormTask(id)),
-            TaskStatus::Ready => self.update(Message::DispatchTask(id)),
-            TaskStatus::Running | TaskStatus::Review => {
-                if is_problematic {
-                    self.update(Message::KillAndRetry(id))
-                } else if has_window {
-                    self.update(Message::StatusInfo(
-                        "Agent already running, press g to jump".to_string(),
-                    ))
-                } else if has_worktree {
-                    self.update(Message::ResumeTask(id))
-                } else {
-                    self.update(Message::StatusInfo(
-                        "No worktree to resume, move to Ready and re-dispatch".to_string(),
-                    ))
+                match status {
+                    TaskStatus::Backlog => self.update(Message::BrainstormTask(id)),
+                    TaskStatus::Ready => self.update(Message::DispatchTask(id)),
+                    TaskStatus::Running | TaskStatus::Review => {
+                        if is_problematic {
+                            self.update(Message::KillAndRetry(id))
+                        } else if has_window {
+                            self.update(Message::StatusInfo(
+                                "Agent already running, press g to jump".to_string(),
+                            ))
+                        } else if has_worktree {
+                            self.update(Message::ResumeTask(id))
+                        } else {
+                            self.update(Message::StatusInfo(
+                                "No worktree to resume, move to Ready and re-dispatch".to_string(),
+                            ))
+                        }
+                    }
+                    TaskStatus::Done => self.update(Message::StatusInfo(
+                        "Task is done".to_string(),
+                    )),
+                    TaskStatus::Archived => self.update(Message::StatusInfo(
+                        "Task is archived".to_string(),
+                    )),
                 }
             }
-            TaskStatus::Done => self.update(Message::StatusInfo(
-                "Task is done".to_string(),
-            )),
-            TaskStatus::Archived => self.update(Message::StatusInfo(
-                "Task is archived".to_string(),
-            )),
+            None => vec![],
         }
     }
 
