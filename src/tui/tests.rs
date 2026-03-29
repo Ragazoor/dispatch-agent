@@ -3305,3 +3305,21 @@ fn confirm_delete_start_running_with_worktree_shows_warning() {
         Some("Delete \"Task 4\" [running] (has worktree)? (y/n)")
     );
 }
+
+#[test]
+fn focused_column_has_tinted_background() {
+    let app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Ready),
+    ], Duration::from_secs(300));
+    let buf = render_to_buffer(&app, 120, 20);
+
+    // Focused column (Backlog, col 0) should have a tinted bg
+    let expected_bg = Color::Rgb(30, 33, 55);
+    let col_width = 120 / 5;
+    let cell = &buf[(1, 3)];
+    let cell2 = &buf[(col_width + 1, 3)];
+
+    assert_eq!(cell.bg, expected_bg, "Focused column should have tinted background");
+    assert_ne!(cell2.bg, expected_bg, "Unfocused column should NOT have tinted background");
+}

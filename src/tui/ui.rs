@@ -35,14 +35,16 @@ fn cursor_bg_color(status: TaskStatus) -> Color {
 }
 
 /// Faint background wash for the focused column, tinted to the column color.
+/// Values must be noticeably brighter than a typical dark terminal bg (~26,27,38)
+/// so the highlight is visible, while still remaining subtle.
 fn column_bg_color(status: TaskStatus) -> Color {
     match status {
-        TaskStatus::Backlog => Color::Rgb(22, 24, 38),
-        TaskStatus::Ready => Color::Rgb(22, 26, 42),
-        TaskStatus::Running => Color::Rgb(32, 28, 20),
-        TaskStatus::Review => Color::Rgb(28, 22, 36),
-        TaskStatus::Done => Color::Rgb(22, 30, 24),
-        TaskStatus::Archived => Color::Rgb(22, 24, 38),
+        TaskStatus::Backlog => Color::Rgb(30, 33, 55),
+        TaskStatus::Ready => Color::Rgb(28, 38, 68),
+        TaskStatus::Running => Color::Rgb(52, 42, 26),
+        TaskStatus::Review => Color::Rgb(42, 30, 58),
+        TaskStatus::Done => Color::Rgb(28, 46, 32),
+        TaskStatus::Archived => Color::Rgb(30, 33, 55),
     }
 }
 
