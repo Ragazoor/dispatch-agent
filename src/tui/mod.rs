@@ -192,6 +192,14 @@ impl App {
         self.agents.clear(id);
     }
 
+    /// Extract the branch name from a worktree path (its last path component).
+    fn branch_from_worktree(worktree: &str) -> Option<String> {
+        std::path::Path::new(worktree)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string())
+    }
+
     /// Take worktree/tmux fields from a task and build a Cleanup command.
     /// Returns `None` if the task has no worktree (still clears tmux_window).
     fn take_cleanup(task: &mut Task) -> Option<Command> {
@@ -452,6 +460,7 @@ impl App {
         // Prune selections for tasks that no longer exist
         let valid_ids: HashSet<TaskId> = new_tasks.iter().map(|t| t.id).collect();
         self.selected_tasks.retain(|id| valid_ids.contains(id));
+        self.merge_conflict_tasks.retain(|id| valid_ids.contains(id));
         self.tasks = new_tasks;
         self.clamp_selection();
         vec![]
@@ -861,12 +870,11 @@ impl App {
 
     fn handle_finish_task(&mut self, id: TaskId) -> Vec<Command> {
         let branch = match self.find_task(id) {
-            Some(t) if t.status == TaskStatus::Review && t.worktree.is_some() => {
-                std::path::Path::new(t.worktree.as_ref().unwrap())
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string()
+            Some(t) if t.status == TaskStatus::Review => {
+                match t.worktree.as_deref().and_then(Self::branch_from_worktree) {
+                    Some(b) => b,
+                    None => return vec![],
+                }
             }
             _ => return vec![],
         };
@@ -892,11 +900,10 @@ impl App {
                 Some(wt) => wt.clone(),
                 None => return vec![],
             };
-            let branch = std::path::Path::new(&worktree)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
+            let branch = match Self::branch_from_worktree(&worktree) {
+                Some(b) => b,
+                None => return vec![],
+            };
             vec![Command::Finish {
                 id,
                 repo_path: task.repo_path.clone(),
