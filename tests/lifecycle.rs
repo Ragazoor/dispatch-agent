@@ -112,11 +112,16 @@ fn full_lifecycle() {
     execute(&db, &cmds);
     assert_eq!(app.tasks()[0].status, TaskStatus::Review);
 
-    // 5. Move to Done → PersistTask
+    // 5. Move to Done → requires confirmation
     let cmds = app.update(Message::MoveTask {
         id: task_id,
         direction: MoveDirection::Forward,
     });
+    assert!(cmds.is_empty(), "MoveTask should not produce commands when entering ConfirmDone");
+    assert_eq!(app.tasks()[0].status, TaskStatus::Review, "Task stays in Review until confirmed");
+
+    // Confirm the Done transition
+    let cmds = app.update(Message::ConfirmDone);
     execute(&db, &cmds);
     assert_eq!(app.tasks()[0].status, TaskStatus::Done);
 

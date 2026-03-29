@@ -287,7 +287,8 @@ impl App {
             Message::FinishFailed { id, error, is_conflict } =>
                 self.handle_finish_failed(id, error, is_conflict),
             // Done confirmation (no cleanup, just status change)
-            Message::ConfirmDone | Message::CancelDone => vec![],
+            Message::ConfirmDone => self.handle_confirm_done(),
+            Message::CancelDone => self.handle_cancel_done(),
             // Epic messages
             Message::EnterEpic(epic_id) => self.handle_enter_epic(epic_id),
             Message::ExitEpic => self.handle_exit_epic(),
@@ -345,15 +346,19 @@ impl App {
                 MoveDirection::Backward => task.status.prev(),
             };
             if new_status == task.status {
-                // No movement possible (at boundary)
                 return vec![];
             }
 
-            // Clean up worktree/tmux when moving backward from a dispatched state,
-            // or when moving forward to Done.
-            let needs_cleanup = matches!(direction, MoveDirection::Backward)
-                || new_status == TaskStatus::Done;
-            let cleanup = if needs_cleanup {
+            // Confirm before moving to Done
+            if new_status == TaskStatus::Done {
+                let title = truncate_title(&task.title, 30);
+                self.input.mode = InputMode::ConfirmDone(id);
+                self.status_message = Some(format!("Move {title} to Done? (y/n)"));
+                return vec![];
+            }
+
+            // Clean up worktree/tmux when moving backward from a dispatched state
+            let cleanup = if matches!(direction, MoveDirection::Backward) {
                 Self::take_cleanup(task)
             } else {
                 None
@@ -373,6 +378,31 @@ impl App {
         } else {
             vec![]
         }
+    }
+
+    fn handle_confirm_done(&mut self) -> Vec<Command> {
+        let id = match self.input.mode {
+            InputMode::ConfirmDone(id) => id,
+            _ => return vec![],
+        };
+        self.input.mode = InputMode::Normal;
+        self.status_message = None;
+
+        if let Some(task) = self.find_task_mut(id) {
+            task.status = TaskStatus::Done;
+            let task_clone = task.clone();
+            self.clear_agent_tracking(id);
+            self.clamp_selection();
+            vec![Command::PersistTask(task_clone)]
+        } else {
+            vec![]
+        }
+    }
+
+    fn handle_cancel_done(&mut self) -> Vec<Command> {
+        self.input.mode = InputMode::Normal;
+        self.status_message = None;
+        vec![]
     }
 
     fn handle_dispatch_task(&mut self, id: TaskId) -> Vec<Command> {

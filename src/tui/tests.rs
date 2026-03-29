@@ -357,7 +357,7 @@ fn repo_paths_updated_replaces_paths() {
 }
 
 #[test]
-fn move_forward_to_done_emits_cleanup() {
+fn move_forward_to_done_enters_confirm_mode() {
     let mut task = make_task(5, TaskStatus::Review);
     task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
     task.tmux_window = None; // session closed, but worktree remains
@@ -368,17 +368,17 @@ fn move_forward_to_done_emits_cleanup() {
         direction: MoveDirection::Forward,
     });
 
+    // Should enter confirmation mode, not move immediately
+    assert!(cmds.is_empty());
+    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(5))));
     let task = app.tasks.iter().find(|t| t.id == TaskId(5)).unwrap();
-    assert_eq!(task.status, TaskStatus::Done);
-    assert!(task.worktree.is_none());
-    // Should have Cleanup + PersistTask
-    assert_eq!(cmds.len(), 2);
-    assert!(matches!(&cmds[0], Command::Cleanup { tmux_window: None, .. }));
-    assert!(matches!(&cmds[1], Command::PersistTask(_)));
+    assert_eq!(task.status, TaskStatus::Review);
+    // Worktree preserved — not taken during confirmation
+    assert!(task.worktree.is_some());
 }
 
 #[test]
-fn move_forward_to_done_with_live_window_emits_cleanup() {
+fn move_forward_to_done_with_live_window_enters_confirm_mode() {
     let mut task = make_task(5, TaskStatus::Review);
     task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
     task.tmux_window = Some("task-5".to_string());
@@ -389,9 +389,9 @@ fn move_forward_to_done_with_live_window_emits_cleanup() {
         direction: MoveDirection::Forward,
     });
 
-    assert_eq!(cmds.len(), 2);
-    assert!(matches!(&cmds[0], Command::Cleanup { tmux_window: Some(_), .. }));
-    assert!(matches!(&cmds[1], Command::PersistTask(_)));
+    // Should enter confirmation mode, not move immediately
+    assert!(cmds.is_empty());
+    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(5))));
 }
 
 #[test]
@@ -2166,14 +2166,20 @@ fn stress_rapid_status_transitions() {
     let tasks = vec![make_task(1, TaskStatus::Backlog)];
     let mut app = App::new(tasks, Duration::from_secs(300));
 
-    // Rapidly move task through all statuses and back
+    // Rapidly move task through all statuses and back.
+    // Moving forward will stop at Review because Done requires confirmation.
     for _ in 0..100 {
         app.update(Message::MoveTask {
             id: TaskId(1),
             direction: MoveDirection::Forward,
         });
     }
-    // Should be at Done (clamped)
+    // Should be at Review (blocked by Done confirmation)
+    assert_eq!(app.tasks()[0].status, TaskStatus::Review);
+    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(1))));
+
+    // Confirm the Done transition
+    app.update(Message::ConfirmDone);
     assert_eq!(app.tasks()[0].status, TaskStatus::Done);
 
     for _ in 0..100 {
@@ -3300,4 +3306,88 @@ fn confirm_delete_start_running_with_worktree_shows_warning() {
         app.status_message.as_deref(),
         Some("Delete \"Task 4\" [running] (has worktree)? (y/n)")
     );
+}
+
+// ---------------------------------------------------------------------------
+// Done confirmation tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn move_review_to_done_enters_confirm_mode() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Review),
+    ], Duration::from_secs(300));
+    app.selection_mut().set_column(3); // Review column
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('m')));
+    assert!(cmds.is_empty());
+    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(1))));
+    assert!(app.status_message.as_deref().unwrap().contains("Done"));
+}
+
+#[test]
+fn confirm_done_y_moves_task() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Review),
+    ], Duration::from_secs(300));
+    app.selection_mut().set_column(3);
+
+    app.input.mode = InputMode::ConfirmDone(TaskId(1));
+    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+}
+
+#[test]
+fn confirm_done_n_cancels() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Review),
+    ], Duration::from_secs(300));
+    app.selection_mut().set_column(3);
+
+    app.input.mode = InputMode::ConfirmDone(TaskId(1));
+    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Review);
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn move_ready_to_running_no_confirmation() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Ready),
+    ], Duration::from_secs(300));
+    app.selection_mut().set_column(1); // Ready column
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('m')));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+}
+
+#[test]
+fn confirm_done_does_not_cleanup_worktree() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some("/repo/.worktrees/1-test".to_string());
+        t.tmux_window = Some("task-1".to_string());
+        t
+    }], Duration::from_secs(300));
+    app.selection_mut().set_column(3);
+
+    // Enter confirm mode and confirm
+    app.update(Message::MoveTask { id: TaskId(1), direction: MoveDirection::Forward });
+    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(1))));
+
+    let cmds = app.update(Message::ConfirmDone);
+    // No Cleanup command — worktree stays for archive to clean up later
+    assert!(!cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
+    let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+    // Worktree is preserved (not taken)
+    assert!(task.worktree.is_some());
 }
