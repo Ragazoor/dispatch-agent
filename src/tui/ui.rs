@@ -811,8 +811,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(bar, area);
         }
         InputMode::ConfirmDelete => {
-            let bar = Paragraph::new("Delete? (y/n)")
-                .style(Style::default().fg(Color::Yellow));
+            let text = app.status_message.as_deref().unwrap_or("Delete? (y/n)");
+            let bar = Paragraph::new(text)
+                .style(Style::default().fg(Color::Red));
             frame.render_widget(bar, area);
         }
         InputMode::QuickDispatch => {
@@ -846,7 +847,8 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(bar, area);
         }
         InputMode::ConfirmDeleteEpic => {
-            let bar = Paragraph::new("Delete epic and subtasks? (y/n)")
+            let text = app.status_message.as_deref().unwrap_or("Delete epic and subtasks? (y/n)");
+            let bar = Paragraph::new(text)
                 .style(Style::default().fg(Color::Red));
             frame.render_widget(bar, area);
         }
