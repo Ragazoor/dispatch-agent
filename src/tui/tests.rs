@@ -2119,6 +2119,82 @@ fn render_v2_done_task_shows_checkmark() {
 }
 
 // ---------------------------------------------------------------------------
+// Rendering tests — layout correctness
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_columns_appear_left_to_right() {
+    let app = App::new(vec![], Duration::from_secs(300));
+    let buf = render_to_buffer(&app, 120, 30);
+
+    // Find the leftmost x-position where each header appears
+    let headers = ["backlog", "ready", "running", "review", "done"];
+    let mut positions: Vec<Option<u16>> = Vec::new();
+    for header in &headers {
+        let mut found = None;
+        for y in 0..2u16 {
+            for x in 0..120u16 {
+                let remaining = (120 - x) as usize;
+                if remaining < header.len() {
+                    continue;
+                }
+                let segment: String = (0..header.len() as u16)
+                    .map(|dx| buf[(x + dx, y)].symbol().to_string())
+                    .collect();
+                if segment == *header {
+                    found = Some(x);
+                    break;
+                }
+            }
+            if found.is_some() {
+                break;
+            }
+        }
+        positions.push(found);
+    }
+
+    // All headers must render
+    for (i, header) in headers.iter().enumerate() {
+        assert!(positions[i].is_some(), "column header '{header}' not found in rendered output");
+    }
+
+    // Verify strict left-to-right ordering
+    let xs: Vec<u16> = positions.into_iter().flatten().collect();
+    for pair in xs.windows(2) {
+        assert!(pair[0] < pair[1], "columns must be ordered left to right, got positions: {xs:?}");
+    }
+}
+
+#[test]
+fn render_help_overlay_shows_keybindings_help() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.update(Message::ToggleHelp);
+    let buf = render_to_buffer(&app, 100, 30);
+    assert!(buffer_contains(&buf, "Navigation"), "help overlay should show Navigation section");
+    assert!(buffer_contains(&buf, "Actions"), "help overlay should show Actions section");
+}
+
+#[test]
+fn render_1x1_terminal_does_not_panic() {
+    let app = App::new(
+        vec![make_task(1, TaskStatus::Running)],
+        Duration::from_secs(300),
+    );
+    let _ = render_to_buffer(&app, 1, 1);
+}
+
+#[test]
+fn render_archive_overlay_shows_archived_tasks() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.status = TaskStatus::Archived;
+    task.title = "Archived Item".to_string();
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.update(Message::ToggleArchive);
+    let buf = render_to_buffer(&app, 100, 30);
+    assert!(buffer_contains(&buf, "Archived Item"), "archive overlay should show archived task title");
+}
+
+// ---------------------------------------------------------------------------
 // Stress tests
 // ---------------------------------------------------------------------------
 

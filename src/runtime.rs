@@ -317,6 +317,39 @@ impl TuiRuntime {
         });
     }
 
+    /// Suspend the TUI, open content in $EDITOR, return edited text (or None).
+    fn run_editor(
+        &self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        prefix: &str,
+        content: &str,
+    ) -> Result<Option<String>> {
+        let mut tmp = TempfileBuilder::new()
+            .prefix(prefix)
+            .suffix(".md")
+            .tempfile()?;
+        std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
+
+        let _guard = InputPausedGuard::new(&self.input_paused, terminal)?;
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+        let status = std::process::Command::new(&editor)
+            .arg(tmp.path())
+            .status();
+        drop(_guard);
+
+        match status {
+            Ok(exit) if exit.success() => Ok(std::fs::read_to_string(tmp.path()).ok()),
+            Ok(exit) => {
+                tracing::warn!(?exit, "editor exited with non-zero status");
+                Ok(None)
+            }
+            Err(e) => {
+                tracing::warn!("failed to spawn editor: {e}");
+                Ok(None)
+            }
+        }
+    }
+
     fn exec_edit_in_editor(
         &self,
         app: &mut App,
@@ -324,78 +357,37 @@ impl TuiRuntime {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<()> {
         let task_id = task.id;
-        let mut tmp = TempfileBuilder::new()
-            .prefix(&format!("task-{task_id}-"))
-            .suffix(".md")
-            .tempfile()?;
-        let content = format_editor_content(
-            &task,
-        );
-        std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
+        let content = format_editor_content(&task);
+        let Some(edited) = self.run_editor(terminal, &format!("task-{task_id}-"), &content)? else {
+            return Ok(());
+        };
 
-        // Pause input + suspend TUI (RAII guard restores on drop)
-        let _guard = InputPausedGuard::new(&self.input_paused, terminal)?;
+        let fields = parse_editor_content(&edited);
+        let title = if fields.title.is_empty() { task.title.clone() } else { fields.title };
+        let description = if fields.description.is_empty() { task.description.clone() } else { fields.description };
+        let repo_path = if fields.repo_path.is_empty() { task.repo_path.clone() } else { fields.repo_path };
+        let new_status = models::TaskStatus::parse(&fields.status).unwrap_or(task.status);
+        let plan = if fields.plan.is_empty() { None } else { Some(fields.plan) };
 
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-        let status = std::process::Command::new(&editor)
-            .arg(tmp.path())
-            .status();
-
-        drop(_guard);
-
-        match status {
-            Ok(exit) if exit.success() => {
-                if let Ok(edited) = std::fs::read_to_string(tmp.path()) {
-                    let mut title = task.title.clone();
-                    let mut description = task.description.clone();
-                    let mut repo_path = task.repo_path.clone();
-                    let mut new_status = task.status;
-                    let fields = parse_editor_content(&edited);
-                    if !fields.title.is_empty() {
-                        title = fields.title;
-                    }
-                    if !fields.description.is_empty() {
-                        description = fields.description;
-                    }
-                    if !fields.repo_path.is_empty() {
-                        repo_path = fields.repo_path;
-                    }
-                    if let Some(s) = models::TaskStatus::parse(&fields.status) {
-                        new_status = s;
-                    }
-                    let plan = if fields.plan.is_empty() { None } else { Some(fields.plan) };
-
-                    if let Err(e) = self.database.patch_task(
-                        task_id,
-                        &db::TaskPatch::new()
-                            .status(new_status)
-                            .title(&title)
-                            .description(&description)
-                            .repo_path(&repo_path)
-                            .plan(plan.as_deref()),
-                    ) {
-                        app.update(Message::Error(Self::db_error("updating task", e)));
-                    }
-                    app.update(Message::TaskEdited(tui::TaskEdit {
-                        id: task_id,
-                        title,
-                        description,
-                        repo_path,
-                        status: new_status,
-                        plan,
-                    }));
-                } else {
-                    tracing::warn!(task_id = task_id.0, "failed to read edited temp file");
-                }
-            }
-            Ok(exit) => {
-                tracing::warn!(task_id = task_id.0, ?exit, "editor exited with non-zero status");
-            }
-            Err(e) => {
-                tracing::warn!(task_id = task_id.0, "failed to spawn editor: {e}");
-            }
+        if let Err(e) = self.database.patch_task(
+            task_id,
+            &db::TaskPatch::new()
+                .status(new_status)
+                .title(&title)
+                .description(&description)
+                .repo_path(&repo_path)
+                .plan(plan.as_deref()),
+        ) {
+            app.update(Message::Error(Self::db_error("updating task", e)));
         }
-
+        app.update(Message::TaskEdited(tui::TaskEdit {
+            id: task_id,
+            title,
+            description,
+            repo_path,
+            status: new_status,
+            plan,
+        }));
         Ok(())
     }
 
@@ -444,45 +436,28 @@ impl TuiRuntime {
     ) -> Result<()> {
         let epic_id = epic.id;
         let content = format_epic_for_editor(&epic);
-        let mut tmp = TempfileBuilder::new()
-            .prefix(&format!("epic-{}-", epic_id))
-            .suffix(".md")
-            .tempfile()?;
-        std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
+        let Some(edited) = self.run_editor(terminal, &format!("epic-{epic_id}-"), &content)? else {
+            return Ok(());
+        };
 
-        let _guard = InputPausedGuard::new(&self.input_paused, terminal)?;
+        let fields = parse_epic_editor_output(&edited);
+        let title = if fields.title.is_empty() { epic.title.clone() } else { fields.title };
+        let description = if fields.description.is_empty() { epic.description.clone() } else { fields.description };
+        let plan = fields.plan;
+        let repo_path = if fields.repo_path.is_empty() { epic.repo_path.clone() } else { fields.repo_path };
 
-        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
-        let status = std::process::Command::new(&editor)
-            .arg(tmp.path())
-            .status();
-        drop(_guard);
-
-        match status {
-            Ok(exit) if exit.success() => {
-                if let Ok(edited) = std::fs::read_to_string(tmp.path()) {
-                    let fields = parse_epic_editor_output(&edited);
-                    let title = if fields.title.is_empty() { epic.title.clone() } else { fields.title };
-                    let description = if fields.description.is_empty() { epic.description.clone() } else { fields.description };
-                    let plan = fields.plan;
-                    let repo_path = if fields.repo_path.is_empty() { epic.repo_path.clone() } else { fields.repo_path };
-
-                    if let Err(e) = self.database.patch_epic(
-                        epic_id,
-                        &EpicPatch::new().title(&title).description(&description).plan(&plan),
-                    ) {
-                        app.update(Message::Error(Self::db_error("updating epic", e)));
-                    }
-                    let mut updated = epic;
-                    updated.title = title;
-                    updated.description = description;
-                    updated.plan = plan;
-                    updated.repo_path = repo_path;
-                    app.update(Message::EpicEdited(updated));
-                }
-            }
-            _ => {}
+        if let Err(e) = self.database.patch_epic(
+            epic_id,
+            &EpicPatch::new().title(&title).description(&description).plan(&plan),
+        ) {
+            app.update(Message::Error(Self::db_error("updating epic", e)));
         }
+        let mut updated = epic;
+        updated.title = title;
+        updated.description = description;
+        updated.plan = plan;
+        updated.repo_path = repo_path;
+        app.update(Message::EpicEdited(updated));
         Ok(())
     }
 

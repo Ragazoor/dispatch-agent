@@ -412,56 +412,56 @@ impl TaskStore for Database {
     }
 
     fn patch_task(&self, id: TaskId, patch: &TaskPatch<'_>) -> Result<()> {
+        if !patch.has_changes() {
+            return Ok(());
+        }
         let conn = self.conn()?;
+        let mut sets: Vec<&str> = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        // Fetch current values for all patchable fields
-        let existing = conn.query_row(
-            "SELECT title, description, repo_path, status, plan, worktree, tmux_window
-             FROM tasks WHERE id = ?1",
-            params![id.0],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                ))
-            },
-        ).optional().context("Failed to fetch task for patch")?;
+        if let Some(s) = patch.status {
+            sets.push("status = ?");
+            values.push(Box::new(s.as_str().to_string()));
+        }
+        if let Some(t) = patch.title {
+            sets.push("title = ?");
+            values.push(Box::new(t.to_string()));
+        }
+        if let Some(d) = patch.description {
+            sets.push("description = ?");
+            values.push(Box::new(d.to_string()));
+        }
+        if let Some(r) = patch.repo_path {
+            sets.push("repo_path = ?");
+            values.push(Box::new(r.to_string()));
+        }
+        if let Some(p) = patch.plan {
+            sets.push("plan = ?");
+            values.push(Box::new(p.map(|s| s.to_string())));
+        }
+        if let Some(w) = patch.worktree {
+            sets.push("worktree = ?");
+            values.push(Box::new(w.map(|s| s.to_string())));
+        }
+        if let Some(t) = patch.tmux_window {
+            sets.push("tmux_window = ?");
+            values.push(Box::new(t.map(|s| s.to_string())));
+        }
 
-        let (cur_title, cur_desc, cur_repo, cur_status, cur_plan, cur_worktree, cur_tmux) =
-            match existing {
-                Some(row) => row,
-                None => anyhow::bail!("Task {id} not found"),
-            };
+        sets.push("updated_at = datetime('now')");
+        values.push(Box::new(id.0));
 
-        let final_status = patch.status.map(|s| s.as_str().to_string()).unwrap_or(cur_status);
-        let final_title = patch.title.unwrap_or(&cur_title);
-        let final_desc = patch.description.unwrap_or(&cur_desc);
-        let final_repo = patch.repo_path.unwrap_or(&cur_repo);
-        let final_plan: Option<&str> = match patch.plan {
-            Some(p) => p,
-            None => cur_plan.as_deref(),
-        };
-        let final_worktree: Option<&str> = match patch.worktree {
-            Some(w) => w,
-            None => cur_worktree.as_deref(),
-        };
-        let final_tmux: Option<&str> = match patch.tmux_window {
-            Some(t) => t,
-            None => cur_tmux.as_deref(),
-        };
-
-        conn.execute(
-            "UPDATE tasks SET title = ?1, description = ?2, repo_path = ?3, status = ?4,
-                    plan = ?5, worktree = ?6, tmux_window = ?7, updated_at = datetime('now')
-             WHERE id = ?8",
-            params![final_title, final_desc, final_repo, final_status, final_plan, final_worktree, final_tmux, id.0],
-        ).context("Failed to patch task")?;
-
+        let sql = format!(
+            "UPDATE tasks SET {} WHERE id = ?",
+            sets.join(", ")
+        );
+        let refs: Vec<&dyn rusqlite::types::ToSql> =
+            values.iter().map(|v| v.as_ref()).collect();
+        let rows = conn.execute(&sql, refs.as_slice())
+            .context("Failed to patch task")?;
+        if rows == 0 {
+            anyhow::bail!("Task {id} not found");
+        }
         Ok(())
     }
 
@@ -520,23 +520,44 @@ impl TaskStore for Database {
     }
 
     fn patch_epic(&self, id: EpicId, patch: &EpicPatch<'_>) -> Result<()> {
+        if !patch.has_changes() {
+            return Ok(());
+        }
         let conn = self.conn()?;
-        let (cur_title, cur_desc, cur_plan, cur_done): (String, String, String, i64) = conn.query_row(
-            "SELECT title, description, plan, done FROM epics WHERE id = ?1",
-            params![id.0],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).optional().context("Failed to fetch epic for patch")?
-            .ok_or_else(|| anyhow::anyhow!("Epic {id} not found"))?;
+        let mut sets: Vec<&str> = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
-        let final_title = patch.title.unwrap_or(&cur_title);
-        let final_desc = patch.description.unwrap_or(&cur_desc);
-        let final_plan = patch.plan.unwrap_or(&cur_plan);
-        let final_done = patch.done.map(|d| d as i64).unwrap_or(cur_done);
+        if let Some(t) = patch.title {
+            sets.push("title = ?");
+            values.push(Box::new(t.to_string()));
+        }
+        if let Some(d) = patch.description {
+            sets.push("description = ?");
+            values.push(Box::new(d.to_string()));
+        }
+        if let Some(p) = patch.plan {
+            sets.push("plan = ?");
+            values.push(Box::new(p.to_string()));
+        }
+        if let Some(d) = patch.done {
+            sets.push("done = ?");
+            values.push(Box::new(d as i64));
+        }
 
-        conn.execute(
-            "UPDATE epics SET title = ?1, description = ?2, plan = ?3, done = ?4, updated_at = datetime('now') WHERE id = ?5",
-            params![final_title, final_desc, final_plan, final_done, id.0],
-        ).context("Failed to patch epic")?;
+        sets.push("updated_at = datetime('now')");
+        values.push(Box::new(id.0));
+
+        let sql = format!(
+            "UPDATE epics SET {} WHERE id = ?",
+            sets.join(", ")
+        );
+        let refs: Vec<&dyn rusqlite::types::ToSql> =
+            values.iter().map(|v| v.as_ref()).collect();
+        let rows = conn.execute(&sql, refs.as_slice())
+            .context("Failed to patch epic")?;
+        if rows == 0 {
+            anyhow::bail!("Epic {id} not found");
+        }
         Ok(())
     }
 
