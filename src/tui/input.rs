@@ -128,10 +128,10 @@ impl App {
                         if !self.selected_tasks.is_empty() {
                             let count = self.selected_tasks.len();
                             self.input.mode = InputMode::ConfirmArchive;
-                            self.status_message = Some(format!("Archive {} tasks? (y/n)", count));
+                            self.set_status(format!("Archive {} tasks? (y/n)", count));
                         } else if self.selected_task().is_some() {
                             self.input.mode = InputMode::ConfirmArchive;
-                            self.status_message = Some("Archive task? (y/n)".to_string());
+                            self.set_status("Archive task? (y/n)".to_string());
                         }
                         vec![]
                     }
@@ -189,7 +189,7 @@ impl App {
                 if let Some(task) = archived.get(self.archive.selected_row) {
                     let title = super::truncate_title(&task.title, 30);
                     self.input.mode = InputMode::ConfirmDelete;
-                    self.status_message = Some(format!("Delete {title}? (y/n)"));
+                    self.set_status(format!("Delete {title}? (y/n)"));
                 }
                 vec![]
             }
@@ -280,7 +280,7 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 if self.archive.visible {
                     self.confirm_delete_archived()
                 } else {
@@ -289,7 +289,7 @@ impl App {
             }
             _ => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 vec![]
             }
         }
@@ -334,7 +334,7 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 if !self.selected_tasks.is_empty() {
                     let ids: Vec<_> = self.selected_tasks.iter().copied().collect();
                     self.update(Message::BatchArchiveTasks(ids))
@@ -347,7 +347,7 @@ impl App {
             }
             _ => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 vec![]
             }
         }
@@ -389,7 +389,7 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 if let Some(ColumnItem::Epic(epic)) = self.selected_column_item() {
                     let id = epic.id;
                     self.update(Message::DeleteEpic(id))
@@ -399,7 +399,7 @@ impl App {
             }
             _ => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 vec![]
             }
         }
@@ -409,7 +409,7 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 if let Some(ColumnItem::Epic(epic)) = self.selected_column_item() {
                     let id = epic.id;
                     self.update(Message::ArchiveEpic(id))
@@ -419,7 +419,7 @@ impl App {
             }
             _ => {
                 self.input.mode = InputMode::Normal;
-                self.status_message = None;
+                self.clear_status();
                 vec![]
             }
         }

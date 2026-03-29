@@ -19,6 +19,7 @@ pub struct App {
     pub(in crate::tui) view_mode: ViewMode,
     pub(in crate::tui) detail_visible: bool,
     pub(in crate::tui) status_message: Option<String>,
+    pub(in crate::tui) status_message_set_at: Option<Instant>,
     pub(in crate::tui) error_popup: Option<String>,
     pub(in crate::tui) repo_paths: Vec<String>,
     pub(in crate::tui) should_quit: bool,
@@ -48,6 +49,7 @@ impl App {
             view_mode: ViewMode::default(),
             detail_visible: false,
             status_message: None,
+            status_message_set_at: None,
             error_popup: None,
             repo_paths: Vec::new(),
             should_quit: false,
@@ -98,6 +100,18 @@ impl App {
     pub fn selected_archive_row(&self) -> usize { self.archive.selected_row }
     pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
     pub fn merge_conflict_tasks(&self) -> &HashSet<TaskId> { &self.merge_conflict_tasks }
+
+    /// Set a transient status message with auto-clear timestamp.
+    pub(in crate::tui) fn set_status(&mut self, msg: String) {
+        self.status_message = Some(msg);
+        self.status_message_set_at = Some(Instant::now());
+    }
+
+    /// Clear the status message and its timestamp.
+    pub(in crate::tui) fn clear_status(&mut self) {
+        self.status_message = None;
+        self.status_message_set_at = None;
+    }
 
     /// Return tasks visible in the current view.
     /// Board view: standalone tasks only (epic_id is None).
@@ -361,7 +375,7 @@ impl App {
             if new_status == TaskStatus::Done {
                 let title = truncate_title(&task.title, 30);
                 self.input.mode = InputMode::ConfirmDone(id);
-                self.status_message = Some(format!("Move {title} to Done? (y/n)"));
+                self.set_status(format!("Move {title} to Done? (y/n)"));
                 return vec![];
             }
 
@@ -398,7 +412,7 @@ impl App {
             }
         };
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
 
         let mut cmds = Vec::new();
         for id in ids {
@@ -416,7 +430,7 @@ impl App {
 
     fn handle_cancel_done(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         self.pending_done_tasks.clear();
         vec![]
     }
@@ -525,6 +539,15 @@ impl App {
     }
 
     fn handle_tick(&mut self) -> Vec<Command> {
+        // Auto-clear transient status messages after 5 seconds (only in Normal mode)
+        if self.input.mode == InputMode::Normal {
+            if let Some(set_at) = self.status_message_set_at {
+                if set_at.elapsed() > Duration::from_secs(5) {
+                    self.clear_status();
+                }
+            }
+        }
+
         let mut cmds: Vec<Command> = self
             .tasks
             .iter()
@@ -568,7 +591,7 @@ impl App {
                 .get(&id)
                 .map(|t| t.elapsed().as_secs() / 60)
                 .unwrap_or(0);
-            self.status_message = Some(format!(
+            self.set_status(format!(
                 "Task {} inactive for {}m - press d to retry",
                 task.id, elapsed
             ));
@@ -579,7 +602,7 @@ impl App {
     fn handle_agent_crashed(&mut self, id: TaskId) -> Vec<Command> {
         self.agents.crashed_tasks.insert(id);
         if let Some(task) = self.find_task(id) {
-            self.status_message = Some(format!(
+            self.set_status(format!(
                 "Task {} agent crashed - press d to retry", task.id
             ));
         }
@@ -652,7 +675,7 @@ impl App {
         } else {
             "stale"
         };
-        self.status_message = Some(format!(
+        self.set_status(format!(
             "Agent {} - [r] Resume  [f] Fresh start  [Esc] Cancel", label
         ));
         vec![]
@@ -660,7 +683,7 @@ impl App {
 
     fn handle_retry_resume(&mut self, id: TaskId) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         self.clear_agent_tracking(id);
 
         if let Some(task) = self.find_task_mut(id) {
@@ -680,7 +703,7 @@ impl App {
 
     fn handle_retry_fresh(&mut self, id: TaskId) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         self.clear_agent_tracking(id);
 
         if let Some(task) = self.find_task_mut(id) {
@@ -759,7 +782,7 @@ impl App {
                 self.pending_done_tasks = review_ids;
                 let count = self.pending_done_tasks.len();
                 self.input.mode = InputMode::ConfirmDone(self.pending_done_tasks[0]);
-                self.status_message = Some(format!(
+                self.set_status(format!(
                     "Move {} {} to Done? (y/n)",
                     count,
                     if count == 1 { "task" } else { "tasks" }
@@ -794,7 +817,7 @@ impl App {
         self.input.mode = InputMode::InputTitle;
         self.input.buffer.clear();
         self.input.task_draft = None;
-        self.status_message = Some("Enter title: ".to_string());
+        self.set_status("Enter title: ".to_string());
         vec![]
     }
 
@@ -802,7 +825,7 @@ impl App {
         self.input.mode = InputMode::Normal;
         self.input.buffer.clear();
         self.input.task_draft = None;
-        self.status_message = None;
+        self.clear_status();
         vec![]
     }
 
@@ -812,14 +835,14 @@ impl App {
             let status = task.status.as_str();
             let warning = if task.worktree.is_some() { " (has worktree)" } else { "" };
             self.input.mode = InputMode::ConfirmDelete;
-            self.status_message = Some(format!("Delete {title} [{status}]{warning}? (y/n)"));
+            self.set_status(format!("Delete {title} [{status}]{warning}? (y/n)"));
         }
         vec![]
     }
 
     fn handle_confirm_delete_yes(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         if let Some(task) = self.selected_task() {
             let id = task.id;
             self.handle_delete_task(id)
@@ -830,7 +853,7 @@ impl App {
 
     fn handle_cancel_delete(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         vec![]
     }
 
@@ -839,7 +862,7 @@ impl App {
         if value.is_empty() {
             self.input.mode = InputMode::Normal;
             self.input.task_draft = None;
-            self.status_message = None;
+            self.clear_status();
         } else {
             self.input.task_draft = Some(TaskDraft {
                 title: value,
@@ -847,7 +870,7 @@ impl App {
                 repo_path: String::new(),
             });
             self.input.mode = InputMode::InputDescription;
-            self.status_message = Some("Enter description: ".to_string());
+            self.set_status("Enter description: ".to_string());
         }
         vec![]
     }
@@ -858,7 +881,7 @@ impl App {
             draft.description = value;
         }
         self.input.mode = InputMode::InputRepoPath;
-        self.status_message = Some("Enter repo path: ".to_string());
+        self.set_status("Enter repo path: ".to_string());
         vec![]
     }
 
@@ -868,7 +891,7 @@ impl App {
             if let Some(first) = self.repo_paths.first() {
                 first.clone()
             } else {
-                self.status_message = Some("Repo path required (no saved paths available)".to_string());
+                self.set_status("Repo path required (no saved paths available)".to_string());
                 return vec![];
             }
         } else {
@@ -905,7 +928,7 @@ impl App {
 
     fn handle_start_quick_dispatch_selection(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::QuickDispatch;
-        self.status_message = Some("Select repo path (1-9) or Esc to cancel".to_string());
+        self.set_status("Select repo path (1-9) or Esc to cancel".to_string());
         vec![]
     }
 
@@ -913,7 +936,7 @@ impl App {
         if idx < self.repo_paths.len() {
             let repo_path = self.repo_paths[idx].clone();
             self.input.mode = InputMode::Normal;
-            self.status_message = None;
+            self.clear_status();
             self.handle_quick_dispatch(repo_path)
         } else {
             vec![]
@@ -922,12 +945,12 @@ impl App {
 
     fn handle_cancel_retry(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         vec![]
     }
 
     fn handle_status_info(&mut self, msg: String) -> Vec<Command> {
-        self.status_message = Some(msg);
+        self.set_status(msg);
         vec![]
     }
 
@@ -944,7 +967,7 @@ impl App {
         let mut draft = self.input.task_draft.take().unwrap_or_default();
         draft.repo_path = repo_path.clone();
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         let epic_id = match &self.view_mode {
             ViewMode::Epic { epic_id, .. } => Some(*epic_id),
             _ => None,
@@ -971,7 +994,7 @@ impl App {
         };
 
         self.input.mode = InputMode::ConfirmFinish(id);
-        self.status_message = Some(format!(
+        self.set_status(format!(
             "Finish: merge {} to main and clean up? (y/n)", branch
         ));
         vec![]
@@ -983,7 +1006,7 @@ impl App {
             _ => return vec![],
         };
         self.input.mode = InputMode::Normal;
-        self.status_message = Some("Merging...".to_string());
+        self.set_status("Merging...".to_string());
         self.merge_conflict_tasks.remove(&id);
 
         if let Some(task) = self.find_task(id) {
@@ -1009,7 +1032,7 @@ impl App {
 
     fn handle_cancel_finish(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         vec![]
     }
 
@@ -1022,7 +1045,7 @@ impl App {
             let task_clone = task.clone();
             self.clear_agent_tracking(id);
             self.clamp_selection();
-            self.status_message = Some(format!("Task {} finished", id));
+            self.set_status(format!("Task {} finished", id));
             vec![Command::PersistTask(task_clone)]
         } else {
             vec![]
@@ -1033,7 +1056,7 @@ impl App {
         if is_conflict {
             self.merge_conflict_tasks.insert(id);
         }
-        self.status_message = Some(error);
+        self.set_status(error);
         vec![]
     }
 
@@ -1106,7 +1129,7 @@ impl App {
         if let Some(ColumnItem::Epic(epic)) = self.selected_column_item() {
             let title = truncate_title(&epic.title, 30);
             self.input.mode = InputMode::ConfirmDeleteEpic;
-            self.status_message = Some(format!("Delete epic {title} and subtasks? (y/n)"));
+            self.set_status(format!("Delete epic {title} and subtasks? (y/n)"));
         }
         vec![]
     }
@@ -1140,7 +1163,7 @@ impl App {
     fn handle_confirm_archive_epic(&mut self) -> Vec<Command> {
         if matches!(self.selected_column_item(), Some(ColumnItem::Epic(_))) {
             self.input.mode = InputMode::ConfirmArchiveEpic;
-            self.status_message = Some("Archive epic and all subtasks? (y/n)".to_string());
+            self.set_status("Archive epic and all subtasks? (y/n)".to_string());
         }
         vec![]
     }
@@ -1149,7 +1172,7 @@ impl App {
         self.input.mode = InputMode::InputEpicTitle;
         self.input.buffer.clear();
         self.input.epic_draft = None;
-        self.status_message = Some("Epic title: ".to_string());
+        self.set_status("Epic title: ".to_string());
         vec![]
     }
 
@@ -1157,7 +1180,7 @@ impl App {
         self.input.buffer.clear();
         if value.is_empty() {
             self.input.mode = InputMode::Normal;
-            self.status_message = None;
+            self.clear_status();
         } else {
             self.input.epic_draft = Some(EpicDraft {
                 title: value,
@@ -1165,7 +1188,7 @@ impl App {
                 repo_path: String::new(),
             });
             self.input.mode = InputMode::InputEpicDescription;
-            self.status_message = Some("Epic description: ".to_string());
+            self.set_status("Epic description: ".to_string());
         }
         vec![]
     }
@@ -1176,7 +1199,7 @@ impl App {
             draft.description = value;
         }
         self.input.mode = InputMode::InputEpicRepoPath;
-        self.status_message = Some("Epic repo path: ".to_string());
+        self.set_status("Epic repo path: ".to_string());
         vec![]
     }
 
@@ -1186,7 +1209,7 @@ impl App {
             if let Some(first) = self.repo_paths.first() {
                 first.clone()
             } else {
-                self.status_message = Some("Repo path required".to_string());
+                self.set_status("Repo path required".to_string());
                 return vec![];
             }
         } else {
@@ -1200,7 +1223,7 @@ impl App {
         let mut draft = self.input.epic_draft.take().unwrap_or_default();
         draft.repo_path = repo_path.clone();
         self.input.mode = InputMode::Normal;
-        self.status_message = None;
+        self.clear_status();
         vec![
             Command::InsertEpic(draft),
             Command::SaveRepoPath(repo_path),

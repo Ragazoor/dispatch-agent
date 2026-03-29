@@ -3502,3 +3502,41 @@ fn batch_move_mixed_statuses_moves_non_review_immediately() {
     assert_eq!(t2.status, TaskStatus::Review); // not moved yet
     assert!(matches!(app.input.mode, InputMode::ConfirmDone(_)));
 }
+
+// --- Status message auto-clear ---
+
+#[test]
+fn status_message_clears_after_timeout_on_tick() {
+    let mut app = make_app();
+    // Simulate a status message that was set 6 seconds ago
+    app.status_message = Some("Task 1 finished".to_string());
+    app.status_message_set_at = Some(Instant::now() - Duration::from_secs(6));
+
+    // Tick should clear it since it's past the 5-second timeout
+    app.update(Message::Tick);
+    assert!(app.status_message.is_none(), "status_message should auto-clear after timeout");
+}
+
+#[test]
+fn status_message_persists_before_timeout() {
+    let mut app = make_app();
+    // Set a message just now
+    app.status_message = Some("Task 1 finished".to_string());
+    app.status_message_set_at = Some(Instant::now());
+
+    // Tick should NOT clear it since timeout hasn't elapsed
+    app.update(Message::Tick);
+    assert_eq!(app.status_message.as_deref(), Some("Task 1 finished"));
+}
+
+#[test]
+fn status_message_does_not_clear_during_interactive_mode() {
+    let mut app = make_app();
+    app.input.mode = InputMode::ConfirmDelete;
+    app.status_message = Some("Delete task? (y/n)".to_string());
+    app.status_message_set_at = Some(Instant::now() - Duration::from_secs(10));
+
+    // Tick should NOT clear it during an interactive mode
+    app.update(Message::Tick);
+    assert!(app.status_message.is_some(), "should not clear during interactive mode");
+}
