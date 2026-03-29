@@ -304,9 +304,13 @@ impl TuiRuntime {
                 return;
             }
 
+            // Activity timestamp for staleness detection (fall back to 0 on error
+            // so we never falsely mark an agent as stale).
+            let activity_ts = tmux::window_activity(&window, &*runner).unwrap_or(0);
+
             match tmux::capture_pane(&window, 5, &*runner) {
                 Ok(output) => {
-                    let _ = tx.send(Message::TmuxOutput { id, output });
+                    let _ = tx.send(Message::TmuxOutput { id, output, activity_ts });
                 }
                 Err(e) => {
                     let _ = tx.send(Message::Error(format!(
@@ -897,6 +901,8 @@ mod tests {
         let mock = Arc::new(MockProcessRunner::new(vec![
             // has_window: list-windows returns the window name
             MockProcessRunner::ok_with_stdout(b"test-window\n"),
+            // window_activity: display-message returns a timestamp
+            MockProcessRunner::ok_with_stdout(b"1711700000\n"),
             // capture-pane
             MockProcessRunner::ok_with_stdout(b"Hello from tmux\n"),
         ]));
@@ -912,9 +918,10 @@ mod tests {
 
         let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
         match msg {
-            Message::TmuxOutput { id, output } => {
+            Message::TmuxOutput { id, output, activity_ts } => {
                 assert_eq!(id, TaskId(1));
                 assert!(output.contains("Hello from tmux"));
+                assert_eq!(activity_ts, 1711700000);
             }
             other => panic!("Expected TmuxOutput, got: {other:?}"),
         }

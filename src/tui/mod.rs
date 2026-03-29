@@ -264,7 +264,7 @@ impl App {
             Message::TaskCreated { task } => self.handle_task_created(task),
             Message::DeleteTask(id) => self.handle_delete_task(id),
             Message::ToggleDetail => self.handle_toggle_detail(),
-            Message::TmuxOutput { id, output } => self.handle_tmux_output(id, output),
+            Message::TmuxOutput { id, output, activity_ts } => self.handle_tmux_output(id, output, activity_ts),
             Message::WindowGone(id) => self.handle_window_gone(id),
             Message::RefreshTasks(tasks) => self.handle_refresh_tasks(tasks),
             Message::ResumeTask(id) => self.handle_resume_task(id),
@@ -499,12 +499,14 @@ impl App {
         vec![]
     }
 
-    fn handle_tmux_output(&mut self, id: TaskId, output: String) -> Vec<Command> {
-        let changed = self.agents.tmux_outputs.get(&id) != Some(&output);
-        if changed {
+    fn handle_tmux_output(&mut self, id: TaskId, output: String, activity_ts: u64) -> Vec<Command> {
+        let activity_changed = self.agents.last_activity
+            .get(&id)
+            .is_none_or(|&prev| prev != activity_ts);
+        if activity_changed {
             self.agents.last_output_change.insert(id, Instant::now());
-            // If task was previously stale but output changed, clear stale flag
             self.agents.stale_tasks.remove(&id);
+            self.agents.last_activity.insert(id, activity_ts);
         }
         self.agents.tmux_outputs.insert(id, output);
         vec![]

@@ -30,7 +30,7 @@ pub enum Message {
     TaskCreated { task: Task },
     DeleteTask(TaskId),
     ToggleDetail,
-    TmuxOutput { id: TaskId, output: String },
+    TmuxOutput { id: TaskId, output: String, activity_ts: u64 },
     WindowGone(TaskId),
     RefreshTasks(Vec<Task>),
     ResumeTask(TaskId),
@@ -174,6 +174,7 @@ pub struct TaskDraft {
 pub struct AgentTracking {
     pub tmux_outputs: HashMap<TaskId, String>,
     pub last_output_change: HashMap<TaskId, Instant>,
+    pub last_activity: HashMap<TaskId, u64>,
     pub stale_tasks: HashSet<TaskId>,
     pub crashed_tasks: HashSet<TaskId>,
     pub inactivity_timeout: Duration,
@@ -184,6 +185,7 @@ impl AgentTracking {
         Self {
             tmux_outputs: HashMap::new(),
             last_output_change: HashMap::new(),
+            last_activity: HashMap::new(),
             stale_tasks: HashSet::new(),
             crashed_tasks: HashSet::new(),
             inactivity_timeout,
@@ -193,6 +195,7 @@ impl AgentTracking {
     /// Remove all tracking state for a task.
     pub fn clear(&mut self, id: TaskId) {
         self.last_output_change.remove(&id);
+        self.last_activity.remove(&id);
         self.stale_tasks.remove(&id);
         self.crashed_tasks.remove(&id);
         self.tmux_outputs.remove(&id);

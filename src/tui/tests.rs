@@ -933,26 +933,61 @@ fn tmux_output_change_resets_staleness_timer() {
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
     app.agents.last_output_change.insert(TaskId(4), Instant::now() - Duration::from_secs(301));
-    app.agents.tmux_outputs.insert(TaskId(4), "old output".to_string());
+    app.agents.last_activity.insert(TaskId(4), 1000);
 
-    app.update(Message::TmuxOutput { id: TaskId(4), output: "new output".to_string() });
+    app.update(Message::TmuxOutput { id: TaskId(4), output: "output".to_string(), activity_ts: 1001 });
     let elapsed = app.agents.last_output_change[&TaskId(4)].elapsed();
     assert!(elapsed < Duration::from_secs(1));
 }
 
 #[test]
-fn tmux_output_same_does_not_reset_timer() {
+fn tmux_output_same_activity_does_not_reset_timer() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
     app.tasks[0].tmux_window = Some("task-4".to_string());
     let old_instant = Instant::now() - Duration::from_secs(200);
     app.agents.last_output_change.insert(TaskId(4), old_instant);
-    app.agents.tmux_outputs.insert(TaskId(4), "same output".to_string());
+    app.agents.last_activity.insert(TaskId(4), 1000);
 
-    app.update(Message::TmuxOutput { id: TaskId(4), output: "same output".to_string() });
+    app.update(Message::TmuxOutput { id: TaskId(4), output: "output".to_string(), activity_ts: 1000 });
     let elapsed = app.agents.last_output_change[&TaskId(4)].elapsed();
     assert!(elapsed >= Duration::from_secs(199));
+}
+
+#[test]
+fn activity_ts_change_with_same_output_resets_timer() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.agents.last_output_change.insert(TaskId(4), Instant::now() - Duration::from_secs(301));
+    app.agents.last_activity.insert(TaskId(4), 1000);
+    app.agents.tmux_outputs.insert(TaskId(4), "same output".to_string());
+
+    // Same display text, but tmux reports new activity
+    app.update(Message::TmuxOutput { id: TaskId(4), output: "same output".to_string(), activity_ts: 1001 });
+    let elapsed = app.agents.last_output_change[&TaskId(4)].elapsed();
+    assert!(elapsed < Duration::from_secs(1));
+}
+
+#[test]
+fn activity_ts_same_with_different_output_no_reset() {
+    let mut app = App::new(vec![
+        make_task(4, TaskStatus::Running),
+    ], Duration::from_secs(300));
+    app.tasks[0].tmux_window = Some("task-4".to_string());
+    let old_instant = Instant::now() - Duration::from_secs(200);
+    app.agents.last_output_change.insert(TaskId(4), old_instant);
+    app.agents.last_activity.insert(TaskId(4), 1000);
+    app.agents.tmux_outputs.insert(TaskId(4), "old text".to_string());
+
+    // Different display text, but same activity timestamp
+    app.update(Message::TmuxOutput { id: TaskId(4), output: "new text".to_string(), activity_ts: 1000 });
+    let elapsed = app.agents.last_output_change[&TaskId(4)].elapsed();
+    assert!(elapsed >= Duration::from_secs(199));
+    // Display output is still updated for rendering
+    assert_eq!(app.agents.tmux_outputs.get(&TaskId(4)).unwrap(), "new text");
 }
 
 #[test]
@@ -1058,6 +1093,7 @@ fn tmux_output_stores_in_map() {
     let cmds = app.update(Message::TmuxOutput {
         id: TaskId(1),
         output: "hello".to_string(),
+        activity_ts: 1000,
     });
     assert_eq!(app.agents.tmux_outputs.get(&TaskId(1)).unwrap(), "hello");
     assert!(cmds.is_empty());
@@ -1066,8 +1102,8 @@ fn tmux_output_stores_in_map() {
 #[test]
 fn tmux_output_overwrites_previous() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Running)], Duration::from_secs(300));
-    app.update(Message::TmuxOutput { id: TaskId(1), output: "first".to_string() });
-    app.update(Message::TmuxOutput { id: TaskId(1), output: "second".to_string() });
+    app.update(Message::TmuxOutput { id: TaskId(1), output: "first".to_string(), activity_ts: 1000 });
+    app.update(Message::TmuxOutput { id: TaskId(1), output: "second".to_string(), activity_ts: 1001 });
     assert_eq!(app.agents.tmux_outputs.get(&TaskId(1)).unwrap(), "second");
 }
 
@@ -1302,6 +1338,7 @@ fn new_app_has_empty_agent_tracking() {
     let app = App::new(vec![], Duration::from_secs(300));
     assert!(app.agents.stale_tasks.is_empty());
     assert!(app.agents.crashed_tasks.is_empty());
+    assert!(app.agents.last_activity.is_empty());
 }
 
 #[test]
@@ -1628,12 +1665,14 @@ fn archive_clears_agent_tracking() {
     app.agents.stale_tasks.insert(TaskId(1));
     app.agents.crashed_tasks.insert(TaskId(1));
     app.agents.tmux_outputs.insert(TaskId(1), "output".to_string());
+    app.agents.last_activity.insert(TaskId(1), 1000);
 
     app.update(Message::ArchiveTask(TaskId(1)));
 
     assert!(!app.agents.stale_tasks.contains(&TaskId(1)));
     assert!(!app.agents.crashed_tasks.contains(&TaskId(1)));
     assert!(!app.agents.tmux_outputs.contains_key(&TaskId(1)));
+    assert!(!app.agents.last_activity.contains_key(&TaskId(1)));
 }
 
 // --- Archive panel key handling ---
