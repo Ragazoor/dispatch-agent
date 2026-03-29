@@ -3391,3 +3391,68 @@ fn confirm_done_does_not_cleanup_worktree() {
     // Worktree is preserved (not taken)
     assert!(task.worktree.is_some());
 }
+
+#[test]
+fn batch_move_with_review_tasks_enters_confirm_done() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Review),
+        make_task(2, TaskStatus::Review),
+    ], Duration::from_secs(300));
+    app.selection_mut().set_column(3);
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('m')));
+    assert!(cmds.is_empty());
+    assert!(app.status_message.as_deref().unwrap().contains("2 tasks"));
+    assert!(app.status_message.as_deref().unwrap().contains("Done"));
+}
+
+#[test]
+fn batch_confirm_done_moves_all_review_tasks() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Review),
+        make_task(2, TaskStatus::Review),
+    ], Duration::from_secs(300));
+    app.selection_mut().set_column(3);
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    // Trigger batch move
+    app.update(Message::BatchMoveTasks {
+        ids: vec![TaskId(1), TaskId(2)],
+        direction: MoveDirection::Forward,
+    });
+    // Confirm
+    let cmds = app.update(Message::ConfirmDone);
+    assert_eq!(app.input.mode, InputMode::Normal);
+    for id in [TaskId(1), TaskId(2)] {
+        let task = app.tasks.iter().find(|t| t.id == id).unwrap();
+        assert_eq!(task.status, TaskStatus::Done);
+    }
+    assert!(cmds.len() >= 2); // two PersistTask commands
+}
+
+#[test]
+fn batch_move_mixed_statuses_moves_non_review_immediately() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Running),
+        make_task(2, TaskStatus::Review),
+    ], Duration::from_secs(300));
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelect(TaskId(2)));
+
+    let cmds = app.update(Message::BatchMoveTasks {
+        ids: vec![TaskId(1), TaskId(2)],
+        direction: MoveDirection::Forward,
+    });
+    // Running→Review moved immediately
+    let t1 = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(t1.status, TaskStatus::Review);
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(t) if t.id == TaskId(1))));
+
+    // Review→Done waiting for confirmation
+    let t2 = app.tasks.iter().find(|t| t.id == TaskId(2)).unwrap();
+    assert_eq!(t2.status, TaskStatus::Review); // not moved yet
+    assert!(matches!(app.input.mode, InputMode::ConfirmDone(_)));
+}

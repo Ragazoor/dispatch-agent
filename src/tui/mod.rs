@@ -27,6 +27,7 @@ pub struct App {
     pub(in crate::tui) archive: ArchiveState,
     pub(in crate::tui) selected_tasks: HashSet<TaskId>,
     pub(in crate::tui) merge_conflict_tasks: HashSet<TaskId>,
+    pub(in crate::tui) pending_done_tasks: Vec<TaskId>,
 }
 
 /// Format a title for display in confirmation prompts, truncating if longer than `max_len` chars.
@@ -55,6 +56,7 @@ impl App {
             archive: ArchiveState::default(),
             selected_tasks: HashSet::new(),
             merge_conflict_tasks: HashSet::new(),
+            pending_done_tasks: Vec::new(),
         }
     }
 
@@ -381,27 +383,35 @@ impl App {
     }
 
     fn handle_confirm_done(&mut self) -> Vec<Command> {
-        let id = match self.input.mode {
-            InputMode::ConfirmDone(id) => id,
-            _ => return vec![],
+        let ids = if !self.pending_done_tasks.is_empty() {
+            std::mem::take(&mut self.pending_done_tasks)
+        } else {
+            match self.input.mode {
+                InputMode::ConfirmDone(id) => vec![id],
+                _ => return vec![],
+            }
         };
         self.input.mode = InputMode::Normal;
         self.status_message = None;
 
-        if let Some(task) = self.find_task_mut(id) {
-            task.status = TaskStatus::Done;
-            let task_clone = task.clone();
-            self.clear_agent_tracking(id);
-            self.clamp_selection();
-            vec![Command::PersistTask(task_clone)]
-        } else {
-            vec![]
+        let mut cmds = Vec::new();
+        for id in ids {
+            if let Some(task) = self.find_task_mut(id) {
+                task.status = TaskStatus::Done;
+                let task_clone = task.clone();
+                self.clear_agent_tracking(id);
+                cmds.push(Command::PersistTask(task_clone));
+            }
         }
+        self.selected_tasks.clear();
+        self.clamp_selection();
+        cmds
     }
 
     fn handle_cancel_done(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::Normal;
         self.status_message = None;
+        self.pending_done_tasks.clear();
         vec![]
     }
 
@@ -726,6 +736,32 @@ impl App {
     }
 
     fn handle_batch_move_tasks(&mut self, ids: Vec<TaskId>, direction: MoveDirection) -> Vec<Command> {
+        if matches!(direction, MoveDirection::Forward) {
+            let review_ids: Vec<TaskId> = ids.iter().copied().filter(|id| {
+                self.find_task(*id).is_some_and(|t| t.status == TaskStatus::Review)
+            }).collect();
+
+            if !review_ids.is_empty() {
+                // Move non-Review tasks immediately
+                let mut cmds = Vec::new();
+                for id in &ids {
+                    if !review_ids.contains(id) {
+                        cmds.extend(self.handle_move_task(*id, direction.clone()));
+                    }
+                }
+                // Enter confirmation for Review→Done tasks
+                self.pending_done_tasks = review_ids;
+                let count = self.pending_done_tasks.len();
+                self.input.mode = InputMode::ConfirmDone(self.pending_done_tasks[0]);
+                self.status_message = Some(format!(
+                    "Move {} {} to Done? (y/n)",
+                    count,
+                    if count == 1 { "task" } else { "tasks" }
+                ));
+                return cmds;
+            }
+        }
+
         let mut cmds = Vec::new();
         for id in ids {
             cmds.extend(self.handle_move_task(id, direction.clone()));
