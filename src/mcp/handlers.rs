@@ -228,8 +228,8 @@ fn tool_definitions() -> Value {
                         },
                         "status": {
                             "type": "string",
-                            "description": "New status: backlog, ready, running, review, or done",
-                            "enum": ["backlog", "ready", "running", "review", "done"]
+                            "description": "New status: backlog, ready, running, or review. Setting done is not allowed via MCP — ask the human operator to move the task to done from the TUI.",
+                            "enum": ["backlog", "ready", "running", "review"]
                         },
                         "plan": {
                             "type": "string",
@@ -1533,7 +1533,7 @@ mod tests {
                 "update_task",
                 BTreeSet::from(["task_id", "status", "plan", "title", "description"]),
                 BTreeSet::from(["task_id"]),
-                json!({"task_id": 1, "status": "done", "plan": "/p.md", "title": "t", "description": "d"}),
+                json!({"task_id": 1, "status": "review", "plan": "/p.md", "title": "t", "description": "d"}),
             ),
             (
                 "get_task",
