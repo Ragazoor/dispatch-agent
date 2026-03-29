@@ -699,7 +699,7 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
     true
 }
