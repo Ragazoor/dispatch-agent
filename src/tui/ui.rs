@@ -847,7 +847,8 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(bar, area);
         }
         InputMode::ConfirmDone(_) => {
-            let bar = Paragraph::new("Mark task as Done? (y/n)")
+            let text = app.status_message.as_deref().unwrap_or("Move to Done? (y/n)");
+            let bar = Paragraph::new(text)
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(bar, area);
         }
