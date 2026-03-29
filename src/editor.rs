@@ -1,3 +1,10 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorSection {
+    Title,
+    Description,
+    Plan,
+}
+
 pub struct EditorFields {
     pub title: String,
     pub description: String,
