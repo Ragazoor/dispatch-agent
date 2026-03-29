@@ -575,7 +575,6 @@ impl TuiRuntime {
             match dispatch::finish_task(
                 &repo_path,
                 &branch,
-                &worktree,
                 tmux_window.as_deref(),
                 &*runner,
             ) {

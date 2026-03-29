@@ -417,9 +417,13 @@ impl App {
         let mut cmds = Vec::new();
         for id in ids {
             if let Some(task) = self.find_task_mut(id) {
+                let detach = Self::take_detach(task);
                 task.status = TaskStatus::Done;
                 let task_clone = task.clone();
                 self.clear_agent_tracking(id);
+                if let Some(c) = detach {
+                    cmds.push(c);
+                }
                 cmds.push(Command::PersistTask(task_clone));
             }
         }
@@ -997,7 +1001,7 @@ impl App {
 
         self.input.mode = InputMode::ConfirmFinish(id);
         self.set_status(format!(
-            "Finish: merge {} to main and clean up? (y/n)", branch
+            "Finish: merge {} to main? (y/n)", branch
         ));
         vec![]
     }
@@ -1041,7 +1045,7 @@ impl App {
     fn handle_finish_complete(&mut self, id: TaskId) -> Vec<Command> {
         self.merge_conflict_tasks.remove(&id);
         if let Some(task) = self.find_task_mut(id) {
-            task.worktree = None;
+            // Worktree is preserved — will be cleaned up during archive
             task.tmux_window = None;
             task.status = TaskStatus::Done;
             let task_clone = task.clone();

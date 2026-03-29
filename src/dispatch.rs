@@ -166,11 +166,11 @@ impl std::fmt::Display for FinishError {
     }
 }
 
-/// Merge the task branch into main (from the repo root) and clean up.
+/// Merge the task branch into main (from the repo root) and kill the tmux window.
+/// The worktree is preserved — it will be cleaned up when the task is archived.
 pub fn finish_task(
     repo_path: &str,
     branch: &str,
-    worktree_path: &str,
     tmux_window: Option<&str>,
     runner: &dyn ProcessRunner,
 ) -> std::result::Result<(), FinishError> {
@@ -227,10 +227,19 @@ pub fn finish_task(
         )));
     }
 
-    // 4. Cleanup: tmux window, worktree, local branch
-    cleanup_task(repo_path, worktree_path, tmux_window, runner)
-        .map_err(|e| FinishError::Other(format!("Cleanup after merge failed: {e}")))?;
-
+    // 4. Kill tmux window (worktree is preserved for later archival)
+    if let Some(window) = tmux_window {
+        match tmux::has_window(window, runner) {
+            Ok(true) => {
+                tmux::kill_window(window, runner)
+                    .map_err(|e| FinishError::Other(format!("Failed to kill tmux window: {e}")))?;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("could not check tmux window during finish: {e}");
+            }
+        }
+    }
 
     Ok(())
 }
@@ -672,18 +681,18 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url origin
             MockProcessRunner::ok(),                             // git pull origin main
             MockProcessRunner::ok(),                             // git merge --no-ff
-            // cleanup_task internals (with tmux window):
+            // Only tmux kill (worktree preserved for archival):
             MockProcessRunner::ok_with_stdout(b"task-42\n"),     // tmux list-windows (has_window)
             MockProcessRunner::ok(),                             // tmux kill-window
-            MockProcessRunner::ok(),                             // git worktree remove
-            MockProcessRunner::ok(),                             // git branch -D (best-effort)
         ]);
 
-        finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", Some("task-42"), &mock).unwrap();
+        finish_task("/repo", "42-fix-bug", Some("task-42"), &mock).unwrap();
 
         let calls = mock.recorded_calls();
         assert!(calls.iter().any(|c| c.1.contains(&"merge".to_string())));
         assert!(calls.iter().any(|c| c.1.contains(&"--no-ff".to_string())));
+        // No worktree removal
+        assert!(!calls.iter().any(|c| c.1.contains(&"remove".to_string())));
     }
 
     #[test]
@@ -692,7 +701,7 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"feature-branch\n"),
         ]);
 
-        let result = finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", None, &mock);
+        let result = finish_task("/repo", "42-fix-bug", None, &mock);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, FinishError::NotOnMain(_)));
@@ -713,7 +722,7 @@ mod tests {
             MockProcessRunner::ok(),                             // git merge --abort
         ]);
 
-        let result = finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", None, &mock);
+        let result = finish_task("/repo", "42-fix-bug", None, &mock);
         assert!(matches!(result.unwrap_err(), FinishError::MergeConflict(_)));
         let calls = mock.recorded_calls();
         assert!(calls.last().unwrap().1.contains(&"--abort".to_string()));
@@ -727,7 +736,7 @@ mod tests {
             MockProcessRunner::fail("fatal: unable to access remote"),            // git pull fails
         ]);
 
-        let result = finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", None, &mock);
+        let result = finish_task("/repo", "42-fix-bug", None, &mock);
         assert!(matches!(result.unwrap_err(), FinishError::Other(_)));
     }
 
@@ -737,12 +746,10 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"main\n"),       // rev-parse HEAD
             MockProcessRunner::fail(""),                         // remote get-url (no remote)
             MockProcessRunner::ok(),                             // git merge --no-ff
-            // cleanup_task internals (no tmux window):
-            MockProcessRunner::ok(),                             // git worktree remove
-            MockProcessRunner::ok(),                             // git branch -D (best-effort)
+            // No tmux window, no cleanup
         ]);
 
-        finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", None, &mock).unwrap();
+        finish_task("/repo", "42-fix-bug", None, &mock).unwrap();
         let calls = mock.recorded_calls();
         // Should not have a "pull" call
         assert!(!calls.iter().any(|c| c.1.contains(&"pull".to_string())));

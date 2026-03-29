@@ -3184,7 +3184,8 @@ fn finish_complete_moves_to_done() {
     let cmds = app.update(Message::FinishComplete(TaskId(1)));
     let task = app.tasks().iter().find(|t| t.id == TaskId(1)).unwrap();
     assert_eq!(task.status, TaskStatus::Done);
-    assert!(task.worktree.is_none());
+    // Worktree is preserved — will be cleaned up during archive
+    assert!(task.worktree.is_some());
     assert!(task.tmux_window.is_none());
     assert!(cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
 }
@@ -3455,7 +3456,7 @@ fn move_ready_to_running_no_confirmation() {
 }
 
 #[test]
-fn confirm_done_does_not_cleanup_worktree() {
+fn confirm_done_kills_tmux_but_preserves_worktree() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
         t.worktree = Some("/repo/.worktrees/1-test".to_string());
@@ -3471,10 +3472,13 @@ fn confirm_done_does_not_cleanup_worktree() {
     let cmds = app.update(Message::ConfirmDone);
     // No Cleanup command — worktree stays for archive to clean up later
     assert!(!cmds.iter().any(|c| matches!(c, Command::Cleanup { .. })));
+    // Tmux window should be killed
+    assert!(cmds.iter().any(|c| matches!(c, Command::KillTmuxWindow { .. })));
     let task = app.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
     assert_eq!(task.status, TaskStatus::Done);
-    // Worktree is preserved (not taken)
+    // Worktree is preserved (not taken), tmux_window cleared
     assert!(task.worktree.is_some());
+    assert!(task.tmux_window.is_none());
 }
 
 #[test]
