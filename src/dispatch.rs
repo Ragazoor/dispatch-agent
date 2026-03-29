@@ -185,16 +185,23 @@ pub fn finish_task(
         return Err(FinishError::NotOnMain(current_branch));
     }
 
-    // 2. Pull latest main
-    let output = runner
-        .run("git", &["-C", repo_path, "pull"])
-        .map_err(|e| FinishError::Other(format!("Failed to pull: {e}")))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(FinishError::Other(format!(
-            "Failed to pull main: {}",
-            stderr.trim()
-        )));
+    // 2. Pull latest main (skip if no remote configured)
+    let has_remote = runner
+        .run("git", &["-C", repo_path, "remote", "get-url", "origin"])
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+
+    if has_remote {
+        let output = runner
+            .run("git", &["-C", repo_path, "pull", "origin", "main"])
+            .map_err(|e| FinishError::Other(format!("Failed to pull: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(FinishError::Other(format!(
+                "Failed to pull main: {}",
+                stderr.trim()
+            )));
+        }
     }
 
     // 3. Merge with --no-ff
@@ -224,11 +231,6 @@ pub fn finish_task(
     cleanup_task(repo_path, worktree_path, tmux_window, runner)
         .map_err(|e| FinishError::Other(format!("Cleanup after merge failed: {e}")))?;
 
-    // 5. Best-effort: delete remote branch
-    let _ = runner.run(
-        "git",
-        &["-C", repo_path, "push", "origin", "--delete", branch],
-    );
 
     Ok(())
 }
@@ -667,15 +669,14 @@ mod tests {
     fn finish_task_happy_path() {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"),       // rev-parse HEAD
-            MockProcessRunner::ok(),                             // git pull
+            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url origin
+            MockProcessRunner::ok(),                             // git pull origin main
             MockProcessRunner::ok(),                             // git merge --no-ff
             // cleanup_task internals (with tmux window):
             MockProcessRunner::ok_with_stdout(b"task-42\n"),     // tmux list-windows (has_window)
             MockProcessRunner::ok(),                             // tmux kill-window
             MockProcessRunner::ok(),                             // git worktree remove
             MockProcessRunner::ok(),                             // git branch -D (best-effort)
-            // finish_task best-effort remote delete:
-            MockProcessRunner::ok(),                             // git push origin --delete
         ]);
 
         finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", Some("task-42"), &mock).unwrap();
@@ -703,7 +704,7 @@ mod tests {
     fn finish_task_merge_conflict() {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"),
-            MockProcessRunner::ok(),                             // git pull
+            MockProcessRunner::fail(""),                         // remote get-url (no remote)
             Ok(Output {
                 status: exit_fail(),
                 stdout: b"CONFLICT (content): Merge conflict in src/main.rs\n".to_vec(),
@@ -722,7 +723,8 @@ mod tests {
     fn finish_task_pull_fails() {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"),
-            MockProcessRunner::fail("fatal: unable to access remote"),
+            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url origin
+            MockProcessRunner::fail("fatal: unable to access remote"),            // git pull fails
         ]);
 
         let result = finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", None, &mock);
@@ -730,19 +732,19 @@ mod tests {
     }
 
     #[test]
-    fn finish_task_remote_delete_fails_silently() {
+    fn finish_task_no_remote_skips_pull() {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"),       // rev-parse HEAD
-            MockProcessRunner::ok(),                             // git pull
+            MockProcessRunner::fail(""),                         // remote get-url (no remote)
             MockProcessRunner::ok(),                             // git merge --no-ff
             // cleanup_task internals (no tmux window):
             MockProcessRunner::ok(),                             // git worktree remove
             MockProcessRunner::ok(),                             // git branch -D (best-effort)
-            // finish_task best-effort remote delete (fails):
-            MockProcessRunner::fail("error: unable to delete remote ref"),
         ]);
 
-        // Should succeed despite remote delete failure
         finish_task("/repo", "42-fix-bug", "/repo/.worktrees/42-fix-bug", None, &mock).unwrap();
+        let calls = mock.recorded_calls();
+        // Should not have a "pull" call
+        assert!(!calls.iter().any(|c| c.1.contains(&"pull".to_string())));
     }
 }

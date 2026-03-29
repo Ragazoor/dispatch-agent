@@ -1020,13 +1020,11 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mock = Arc::new(MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok(),                       // git pull
+            MockProcessRunner::fail(""),                   // remote get-url (no remote)
             MockProcessRunner::ok(),                       // git merge --no-ff
             // cleanup_task internals (no tmux window):
             MockProcessRunner::ok(),                       // git worktree remove
             MockProcessRunner::ok(),                       // git branch -D (best-effort)
-            // finish_task best-effort remote delete:
-            MockProcessRunner::ok(),                       // git push origin --delete
         ]));
         let rt = TuiRuntime {
             database: db.clone(),
@@ -1068,7 +1066,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mock = Arc::new(MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok(),                       // git pull
+            MockProcessRunner::fail(""),                   // remote get-url (no remote)
             Ok(Output {
                 status: exit_fail(),
                 stdout: b"CONFLICT (content): Merge conflict\n".to_vec(),
