@@ -13,7 +13,56 @@ pub struct EditorFields {
     pub plan: String,
 }
 
-use crate::models::Task;
+use crate::models::{Epic, Task};
+
+pub struct EpicEditorFields {
+    pub title: String,
+    pub description: String,
+    pub plan: String,
+    pub repo_path: String,
+}
+
+pub fn format_epic_for_editor(epic: &Epic) -> String {
+    format!(
+        "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n--- PLAN ---\n{}\n",
+        epic.title, epic.description, epic.repo_path, epic.plan
+    )
+}
+
+pub fn parse_epic_editor_output(input: &str) -> EpicEditorFields {
+    let mut current_section: Option<&str> = None;
+    let mut title = String::new();
+    let mut description = String::new();
+    let mut repo_path = String::new();
+    let mut plan = String::new();
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--- ") && trimmed.ends_with(" ---") {
+            let section = trimmed.trim_start_matches("--- ").trim_end_matches(" ---");
+            current_section = Some(section);
+            continue;
+        }
+        let target = match current_section {
+            Some("TITLE") => &mut title,
+            Some("DESCRIPTION") => &mut description,
+            Some("REPO_PATH") => &mut repo_path,
+            Some("PLAN") => &mut plan,
+            _ => continue,
+        };
+        if !target.is_empty() {
+            target.push('\n');
+        }
+        target.push_str(line);
+    }
+
+    EpicEditorFields {
+        title: title.trim().to_string(),
+        description: description.trim().to_string(),
+        repo_path: repo_path.trim().to_string(),
+        plan: plan.trim().to_string(),
+    }
+}
 
 pub fn format_editor_content(task: &Task) -> String {
     let plan = task.plan.as_deref().unwrap_or("");
@@ -64,8 +113,85 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{TaskId, TaskStatus};
+    use crate::models::{EpicId, TaskId, TaskStatus};
     use chrono::Utc;
+
+    fn make_epic(title: &str, description: &str, plan: &str, repo_path: &str) -> Epic {
+        Epic {
+            id: EpicId(1),
+            title: title.to_string(),
+            description: description.to_string(),
+            plan: plan.to_string(),
+            repo_path: repo_path.to_string(),
+            done: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn epic_editor_roundtrip_basic() {
+        let epic = make_epic("My Epic", "A description", "docs/plan.md", "/repo");
+        let content = format_epic_for_editor(&epic);
+        let fields = parse_epic_editor_output(&content);
+        assert_eq!(fields.title, "My Epic");
+        assert_eq!(fields.description, "A description");
+        assert_eq!(fields.plan, "docs/plan.md");
+        assert_eq!(fields.repo_path, "/repo");
+    }
+
+    #[test]
+    fn epic_editor_roundtrip_empty_plan() {
+        let epic = make_epic("Title", "Desc", "", "/repo");
+        let content = format_epic_for_editor(&epic);
+        let fields = parse_epic_editor_output(&content);
+        assert_eq!(fields.title, "Title");
+        assert_eq!(fields.description, "Desc");
+        assert_eq!(fields.plan, "");
+        assert_eq!(fields.repo_path, "/repo");
+    }
+
+    #[test]
+    fn epic_editor_roundtrip_multiline_description() {
+        let epic = make_epic("Title", "Line 1\nLine 2\nLine 3", "", "/repo");
+        let content = format_epic_for_editor(&epic);
+        let fields = parse_epic_editor_output(&content);
+        assert_eq!(fields.description, "Line 1\nLine 2\nLine 3");
+    }
+
+    #[test]
+    fn epic_editor_roundtrip_multiline_plan() {
+        let epic = make_epic("Title", "Desc", "Step 1\nStep 2\nStep 3", "/repo");
+        let content = format_epic_for_editor(&epic);
+        let fields = parse_epic_editor_output(&content);
+        assert_eq!(fields.plan, "Step 1\nStep 2\nStep 3");
+    }
+
+    #[test]
+    fn epic_editor_roundtrip_colons_in_title() {
+        let epic = make_epic("Fix: auth system", "desc", "", "/repo");
+        let content = format_epic_for_editor(&epic);
+        let fields = parse_epic_editor_output(&content);
+        assert_eq!(fields.title, "Fix: auth system");
+    }
+
+    #[test]
+    fn epic_editor_unknown_section_ignored() {
+        let input = "--- TITLE ---\nHello\n--- UNKNOWN ---\nStuff\n--- PLAN ---\nmy plan\n";
+        let fields = parse_epic_editor_output(input);
+        assert_eq!(fields.title, "Hello");
+        assert_eq!(fields.plan, "my plan");
+        assert_eq!(fields.description, "");
+    }
+
+    #[test]
+    fn epic_editor_empty_input() {
+        let fields = parse_epic_editor_output("");
+        assert_eq!(fields.title, "");
+        assert_eq!(fields.description, "");
+        assert_eq!(fields.plan, "");
+        assert_eq!(fields.repo_path, "");
+    }
 
     fn make_task(title: &str, description: &str, repo_path: &str, status: TaskStatus, plan: Option<&str>) -> Task {
         Task {

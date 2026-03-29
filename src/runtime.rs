@@ -17,7 +17,7 @@ use tokio::time::interval;
 use tempfile::Builder as TempfileBuilder;
 
 use crate::db::{EpicPatch, TaskStore};
-use crate::editor::{format_editor_content, parse_editor_content, EditorSection};
+use crate::editor::{format_editor_content, parse_editor_content, format_epic_for_editor, parse_epic_editor_output};
 use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::tui::{self, App, Command, Message};
 use crate::models::TaskId;
@@ -443,10 +443,7 @@ impl TuiRuntime {
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<()> {
         let epic_id = epic.id;
-        let content = format!(
-            "# {}\n\n## Description\n{}\n\n## Plan\n{}",
-            epic.title, epic.description, epic.plan
-        );
+        let content = format_epic_for_editor(&epic);
         let mut tmp = TempfileBuilder::new()
             .prefix(&format!("epic-{}-", epic_id))
             .suffix(".md")
@@ -464,32 +461,11 @@ impl TuiRuntime {
         match status {
             Ok(exit) if exit.success() => {
                 if let Ok(edited) = std::fs::read_to_string(tmp.path()) {
-                    let mut title = epic.title.clone();
-                    let mut description = epic.description.clone();
-                    let mut plan = epic.plan.clone();
-                    let mut current_section: Option<EditorSection> = None;
-                    let mut section_lines: Vec<String> = Vec::new();
-                    for line in edited.lines() {
-                        if line.starts_with("# ") && !line.starts_with("## ") {
-                            title = line.trim_start_matches("# ").to_string();
-                        } else if line == "## Description" {
-                            current_section = Some(EditorSection::Description);
-                            section_lines.clear();
-                        } else if line == "## Plan" {
-                            if current_section == Some(EditorSection::Description) {
-                                description = section_lines.join("\n").trim().to_string();
-                            }
-                            current_section = Some(EditorSection::Plan);
-                            section_lines.clear();
-                        } else {
-                            section_lines.push(line.to_string());
-                        }
-                    }
-                    match current_section {
-                        Some(EditorSection::Description) => description = section_lines.join("\n").trim().to_string(),
-                        Some(EditorSection::Plan) => plan = section_lines.join("\n").trim().to_string(),
-                        _ => {}
-                    }
+                    let fields = parse_epic_editor_output(&edited);
+                    let title = if fields.title.is_empty() { epic.title.clone() } else { fields.title };
+                    let description = if fields.description.is_empty() { epic.description.clone() } else { fields.description };
+                    let plan = fields.plan;
+                    let repo_path = if fields.repo_path.is_empty() { epic.repo_path.clone() } else { fields.repo_path };
 
                     if let Err(e) = self.database.patch_epic(
                         epic_id,
@@ -501,6 +477,7 @@ impl TuiRuntime {
                     updated.title = title;
                     updated.description = description;
                     updated.plan = plan;
+                    updated.repo_path = repo_path;
                     app.update(Message::EpicEdited(updated));
                 }
             }
