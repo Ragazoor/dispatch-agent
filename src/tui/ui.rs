@@ -634,17 +634,75 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
                 Line::from(Span::styled("  [Esc] Cancel", hint)),
             ]
         }
+        InputMode::InputEpicTitle => {
+            vec![
+                Line::from(Span::styled(
+                    format!("  Title: {}_ ", app.input.buffer),
+                    active,
+                )),
+                Line::from(""),
+                Line::from(Span::styled("  Enter to confirm, Esc to cancel", hint)),
+            ]
+        }
+        InputMode::InputEpicDescription => {
+            let title = app.input.epic_draft.as_ref().map(|d| d.title.as_str()).unwrap_or("");
+            vec![
+                Line::from(Span::styled(format!("  Title: {title}"), completed)),
+                Line::from(Span::styled(
+                    format!("  Description: {}_ ", app.input.buffer),
+                    active,
+                )),
+                Line::from(""),
+                Line::from(Span::styled("  Enter to confirm, Esc to cancel", hint)),
+            ]
+        }
+        InputMode::InputEpicRepoPath => {
+            let title = app.input.epic_draft.as_ref().map(|d| d.title.as_str()).unwrap_or("");
+            let description = app.input.epic_draft.as_ref().map(|d| d.description.as_str()).unwrap_or("");
+            let mut lines = vec![
+                Line::from(Span::styled(format!("  Title: {title}"), completed)),
+                Line::from(Span::styled(
+                    format!("  Description: {description}"),
+                    completed,
+                )),
+                Line::from(Span::styled(
+                    format!("  Repo path: {}_ ", app.input.buffer),
+                    active,
+                )),
+            ];
+            if app.input.buffer.is_empty() {
+                for (i, path) in app.repo_paths.iter().enumerate() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    [{}] {path}", i + 1),
+                        hint,
+                    )));
+                }
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Type a path or press 1-9 to select, Enter to confirm, Esc to cancel",
+                hint,
+            )));
+            lines
+        }
         _ => return false,
     };
+
+    let is_epic_input = matches!(
+        app.input.mode,
+        InputMode::InputEpicTitle | InputMode::InputEpicDescription | InputMode::InputEpicRepoPath
+    );
 
     let block_title = match &app.input.mode {
         InputMode::QuickDispatch => " Quick Dispatch ",
         InputMode::ConfirmRetry(_) => " Retry Agent ",
+        _ if is_epic_input => " New Epic ",
         _ => " New Task ",
     };
 
     let border_color = match &app.input.mode {
         InputMode::ConfirmRetry(_) => Color::Red,
+        _ if is_epic_input => Color::Magenta,
         _ => Color::Yellow,
     };
 
@@ -935,6 +993,7 @@ pub(in crate::tui) fn action_hints(task: Option<&Task>, key_color: Color) -> Vec
     }
 
     push_hint("n", "new");
+    push_hint("E", "epic");
     push_hint("D", "quick");
     push_hint("H", "history");
     push_hint("q", "quit");
