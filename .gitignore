@@ -2,3 +2,4 @@
 /.worktrees
 docs/**
 .superpowers/
+.claude-prompt
