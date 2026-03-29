@@ -2655,6 +2655,30 @@ fn epic_text_input_unrecognized_key_is_noop() {
     assert_eq!(app.input.mode, InputMode::InputEpicTitle);
 }
 
+#[test]
+fn epic_repo_path_digit_quick_selects() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.repo_paths = vec!["/first".to_string(), "/second".to_string()];
+    app.input.mode = InputMode::InputEpicRepoPath;
+    app.input.epic_draft = Some(EpicDraft { title: "E".to_string(), description: "D".to_string(), ..Default::default() });
+    app.input.buffer.clear();
+    let cmds = app.handle_key(make_key(KeyCode::Char('2')));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertEpic(ref d) if d.repo_path == "/second")));
+}
+
+#[test]
+fn epic_repo_path_digit_with_nonempty_buffer_appends() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.repo_paths = vec!["/first".to_string()];
+    app.input.mode = InputMode::InputEpicRepoPath;
+    app.input.epic_draft = Some(EpicDraft { title: "E".to_string(), description: "D".to_string(), ..Default::default() });
+    app.input.buffer = "/my".to_string();
+    let cmds = app.handle_key(make_key(KeyCode::Char('1')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.buffer, "/my1");
+}
+
 // ---------------------------------------------------------------------------
 // input.rs — handle_key_confirm_delete_epic
 // ---------------------------------------------------------------------------

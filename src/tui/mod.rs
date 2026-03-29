@@ -873,7 +873,8 @@ impl App {
 
     fn handle_input_char(&mut self, c: char) -> Vec<Command> {
         // In repo path mode with empty buffer, 1-9 selects a saved path
-        if self.input.mode == InputMode::InputRepoPath
+        if (self.input.mode == InputMode::InputRepoPath
+            || self.input.mode == InputMode::InputEpicRepoPath)
             && self.input.buffer.is_empty()
             && c.is_ascii_digit()
             && c != '0'
@@ -881,6 +882,9 @@ impl App {
             let idx = (c as usize) - ('1' as usize);
             if idx < self.repo_paths.len() {
                 let repo_path = self.repo_paths[idx].clone();
+                if self.input.mode == InputMode::InputEpicRepoPath {
+                    return self.finish_epic_creation(repo_path);
+                }
                 return self.finish_task_creation(repo_path);
             }
         }
@@ -1183,6 +1187,10 @@ impl App {
             value
         };
 
+        self.finish_epic_creation(repo_path)
+    }
+
+    fn finish_epic_creation(&mut self, repo_path: String) -> Vec<Command> {
         let mut draft = self.input.epic_draft.take().unwrap_or_default();
         draft.repo_path = repo_path.clone();
         self.input.mode = InputMode::Normal;
