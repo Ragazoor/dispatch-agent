@@ -3321,7 +3321,7 @@ fn focused_column_has_tinted_background() {
     let buf = render_to_buffer(&app, 120, 20);
 
     // Focused column (Backlog, col 0) should have a tinted bg
-    let expected_bg = Color::Rgb(30, 33, 55);
+    let expected_bg = Color::Rgb(28, 30, 44);
     let col_width = 120 / 5;
     let cell = &buf[(1, 3)];
     let cell2 = &buf[(col_width + 1, 3)];
