@@ -120,6 +120,7 @@ mod tests {
             repo_path: repo_path.to_string(),
             done: false,
             plan: None,
+            sort_order: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
@@ -181,6 +182,7 @@ mod tests {
             needs_input: false,
             pr_url: None,
             pr_number: None,
+            sort_order: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

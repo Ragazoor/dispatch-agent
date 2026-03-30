@@ -26,6 +26,7 @@ pub struct TaskPatch<'a> {
     pub needs_input: Option<bool>,
     pub pr_url: Option<Option<&'a str>>,
     pub pr_number: Option<Option<i64>>,
+    pub sort_order: Option<Option<i64>>,
 }
 
 impl<'a> TaskPatch<'a> {
@@ -83,6 +84,11 @@ impl<'a> TaskPatch<'a> {
         self
     }
 
+    pub fn sort_order(mut self, sort_order: Option<i64>) -> Self {
+        self.sort_order = Some(sort_order);
+        self
+    }
+
     pub fn has_changes(&self) -> bool {
         self.status.is_some()
             || self.plan.is_some()
@@ -94,6 +100,7 @@ impl<'a> TaskPatch<'a> {
             || self.needs_input.is_some()
             || self.pr_url.is_some()
             || self.pr_number.is_some()
+            || self.sort_order.is_some()
     }
 }
 
@@ -111,6 +118,7 @@ pub struct EpicPatch<'a> {
     pub description: Option<&'a str>,
     pub done: Option<bool>,
     pub plan: Option<Option<&'a str>>,
+    pub sort_order: Option<Option<i64>>,
 }
 
 impl<'a> EpicPatch<'a> {
@@ -138,11 +146,17 @@ impl<'a> EpicPatch<'a> {
         self
     }
 
+    pub fn sort_order(mut self, sort_order: Option<i64>) -> Self {
+        self.sort_order = Some(sort_order);
+        self
+    }
+
     pub fn has_changes(&self) -> bool {
         self.title.is_some()
             || self.description.is_some()
             || self.done.is_some()
             || self.plan.is_some()
+            || self.sort_order.is_some()
     }
 }
 
@@ -356,6 +370,8 @@ impl Database {
 
         if current_version < 8 {
             let _ = conn.execute_batch("ALTER TABLE epics ADD COLUMN plan TEXT");
+            let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN sort_order INTEGER");
+            let _ = conn.execute_batch("ALTER TABLE epics ADD COLUMN sort_order INTEGER");
             conn.pragma_update(None, "user_version", 8i64)
                 .context("Failed to update schema version to 8")?;
         }
@@ -392,7 +408,7 @@ impl TaskStore for Database {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
-                    plan, epic_id, needs_input, pr_url, pr_number, created_at, updated_at
+                    plan, epic_id, needs_input, pr_url, pr_number, sort_order, created_at, updated_at
              FROM tasks WHERE id = ?1",
             params![id.0],
             row_to_task,
@@ -406,8 +422,8 @@ impl TaskStore for Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, repo_path, status, worktree, tmux_window,
-                        plan, epic_id, needs_input, pr_url, pr_number, created_at, updated_at
-                 FROM tasks ORDER BY id",
+                        plan, epic_id, needs_input, pr_url, pr_number, sort_order, created_at, updated_at
+                 FROM tasks ORDER BY COALESCE(sort_order, id) ASC, id ASC",
             )
             .context("Failed to prepare list_all")?;
         let tasks = stmt
@@ -423,8 +439,8 @@ impl TaskStore for Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, repo_path, status, worktree, tmux_window,
-                        plan, epic_id, needs_input, pr_url, pr_number, created_at, updated_at
-                 FROM tasks WHERE status = ?1 ORDER BY id",
+                        plan, epic_id, needs_input, pr_url, pr_number, sort_order, created_at, updated_at
+                 FROM tasks WHERE status = ?1 ORDER BY COALESCE(sort_order, id) ASC, id ASC",
             )
             .context("Failed to prepare list_by_status")?;
         let tasks = stmt
@@ -485,7 +501,7 @@ impl TaskStore for Database {
         let conn = self.conn()?;
         conn.query_row(
             "SELECT id, title, description, repo_path, status, worktree, tmux_window,
-                    plan, epic_id, needs_input, pr_url, pr_number, created_at, updated_at
+                    plan, epic_id, needs_input, pr_url, pr_number, sort_order, created_at, updated_at
              FROM tasks WHERE plan = ?1",
             params![plan],
             row_to_task,
@@ -555,6 +571,10 @@ impl TaskStore for Database {
             sets.push("pr_number = ?");
             values.push(Box::new(num));
         }
+        if let Some(so) = patch.sort_order {
+            sets.push("sort_order = ?");
+            values.push(Box::new(so));
+        }
 
         sets.push("updated_at = datetime('now')");
         values.push(Box::new(id.0));
@@ -602,7 +622,7 @@ impl TaskStore for Database {
     fn get_epic(&self, id: EpicId) -> Result<Option<Epic>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, title, description, repo_path, done, plan, created_at, updated_at
+            "SELECT id, title, description, repo_path, done, plan, sort_order, created_at, updated_at
              FROM epics WHERE id = ?1",
             params![id.0],
             row_to_epic,
@@ -615,8 +635,8 @@ impl TaskStore for Database {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, description, repo_path, done, plan, created_at, updated_at
-                 FROM epics ORDER BY id",
+                "SELECT id, title, description, repo_path, done, plan, sort_order, created_at, updated_at
+                 FROM epics ORDER BY COALESCE(sort_order, id) ASC, id ASC",
             )
             .context("Failed to prepare list_epics")?;
         let epics = stmt
@@ -650,6 +670,10 @@ impl TaskStore for Database {
         if let Some(p) = patch.plan {
             sets.push("plan = ?");
             values.push(Box::new(p.map(|s| s.to_string())));
+        }
+        if let Some(so) = patch.sort_order {
+            sets.push("sort_order = ?");
+            values.push(Box::new(so));
         }
 
         sets.push("updated_at = datetime('now')");
@@ -701,8 +725,8 @@ impl TaskStore for Database {
         let mut stmt = conn
             .prepare(
                 "SELECT id, title, description, repo_path, status, worktree, tmux_window,
-                        plan, epic_id, needs_input, pr_url, pr_number, created_at, updated_at
-                 FROM tasks WHERE epic_id = ?1 ORDER BY id",
+                        plan, epic_id, needs_input, pr_url, pr_number, sort_order, created_at, updated_at
+                 FROM tasks WHERE epic_id = ?1 ORDER BY COALESCE(sort_order, id) ASC, id ASC",
             )
             .context("Failed to prepare list_tasks_for_epic")?;
         let tasks = stmt
@@ -788,6 +812,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         needs_input: row.get::<_, i64>("needs_input").unwrap_or(0) != 0,
         pr_url: row.get::<_, Option<String>>("pr_url").unwrap_or(None),
         pr_number: row.get::<_, Option<i64>>("pr_number").unwrap_or(None),
+        sort_order: row.get::<_, Option<i64>>("sort_order").unwrap_or(None),
         created_at: parse_datetime(&created_str),
         updated_at: parse_datetime(&updated_str),
     })
@@ -805,6 +830,7 @@ fn row_to_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Epic> {
         repo_path: row.get("repo_path")?,
         done: done_int != 0,
         plan: row.get("plan")?,
+        sort_order: row.get::<_, Option<i64>>("sort_order").unwrap_or(None),
         created_at: parse_datetime(&created_str),
         updated_at: parse_datetime(&updated_str),
     })
@@ -1470,5 +1496,24 @@ mod tests {
         db.patch_epic(epic.id, &EpicPatch::new().plan(None)).unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert!(updated.plan.is_none());
+    }
+
+    #[test]
+    fn patch_task_sets_sort_order() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db.create_task("T", "d", "/r", None, TaskStatus::Backlog).unwrap();
+        db.patch_task(id, &TaskPatch::new().sort_order(Some(500))).unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.sort_order, Some(500));
+    }
+
+    #[test]
+    fn patch_task_clears_sort_order() {
+        let db = Database::open_in_memory().unwrap();
+        let id = db.create_task("T", "d", "/r", None, TaskStatus::Backlog).unwrap();
+        db.patch_task(id, &TaskPatch::new().sort_order(Some(100))).unwrap();
+        db.patch_task(id, &TaskPatch::new().sort_order(None)).unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.sort_order, None);
     }
 }

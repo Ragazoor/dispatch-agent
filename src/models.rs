@@ -140,6 +140,7 @@ pub struct Epic {
     pub repo_path: String,
     pub done: bool,
     pub plan: Option<String>,
+    pub sort_order: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -190,6 +191,7 @@ pub struct Task {
     pub needs_input: bool,
     pub pr_url: Option<String>,
     pub pr_number: Option<i64>,
+    pub sort_order: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -673,6 +675,7 @@ mod tests {
             needs_input: false,
             pr_url: None,
             pr_number: None,
+            sort_order: None,
             created_at: now,
             updated_at: now,
         };
@@ -695,6 +698,7 @@ mod tests {
             needs_input: false,
             pr_url: None,
             pr_number: None,
+            sort_order: None,
             created_at: now,
             updated_at: now,
         };
@@ -711,6 +715,7 @@ mod tests {
             repo_path: "/repo".to_string(),
             done: false,
             plan: None,
+            sort_order: None,
             created_at: now,
             updated_at: now,
         };
@@ -723,7 +728,7 @@ mod tests {
     fn make_epic_for_status(done: bool) -> Epic {
         Epic {
             id: EpicId(1), title: String::new(), description: String::new(),
-            repo_path: String::new(), done, plan: None,
+            repo_path: String::new(), done, plan: None, sort_order: None,
             created_at: Utc::now(), updated_at: Utc::now(),
         }
     }

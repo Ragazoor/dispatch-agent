@@ -47,6 +47,7 @@ fn make_task(id: i64, status: TaskStatus) -> Task {
         needs_input: false,
         pr_url: None,
         pr_number: None,
+        sort_order: None,
         created_at: now,
         updated_at: now,
     }
@@ -194,6 +195,7 @@ fn task_created_adds_to_list() {
         needs_input: false,
         pr_url: None,
         pr_number: None,
+        sort_order: None,
         created_at: now,
         updated_at: now,
     };
@@ -2436,6 +2438,7 @@ fn make_epic(id: i64) -> Epic {
         repo_path: "/repo".to_string(),
         done: false,
         plan: None,
+        sort_order: None,
         created_at: now,
         updated_at: now,
     }
