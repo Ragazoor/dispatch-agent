@@ -139,6 +139,7 @@ pub struct Epic {
     pub description: String,
     pub repo_path: String,
     pub done: bool,
+    pub plan: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -709,6 +710,7 @@ mod tests {
             description: "Rewrite auth system".to_string(),
             repo_path: "/repo".to_string(),
             done: false,
+            plan: None,
             created_at: now,
             updated_at: now,
         };
@@ -721,7 +723,7 @@ mod tests {
     fn make_epic_for_status(done: bool) -> Epic {
         Epic {
             id: EpicId(1), title: String::new(), description: String::new(),
-            repo_path: String::new(), done,
+            repo_path: String::new(), done, plan: None,
             created_at: Utc::now(), updated_at: Utc::now(),
         }
     }

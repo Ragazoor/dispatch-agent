@@ -2435,6 +2435,7 @@ fn make_epic(id: i64) -> Epic {
         description: String::new(),
         repo_path: "/repo".to_string(),
         done: false,
+        plan: None,
         created_at: now,
         updated_at: now,
     }

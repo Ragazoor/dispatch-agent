@@ -119,6 +119,7 @@ mod tests {
             description: description.to_string(),
             repo_path: repo_path.to_string(),
             done: false,
+            plan: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
