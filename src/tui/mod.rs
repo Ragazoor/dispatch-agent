@@ -1231,7 +1231,19 @@ impl App {
     }
 
     fn handle_confirm_archive_epic(&mut self) -> Vec<Command> {
-        if matches!(self.selected_column_item(), Some(ColumnItem::Epic(_))) {
+        if let Some(ColumnItem::Epic(epic)) = self.selected_column_item() {
+            let id = epic.id;
+            let not_done_count = self.subtask_statuses(id)
+                .iter()
+                .filter(|s| **s != TaskStatus::Done)
+                .count();
+            if not_done_count > 0 {
+                let noun = if not_done_count == 1 { "subtask" } else { "subtasks" };
+                self.set_status(format!(
+                    "Cannot archive epic: {} {} not done", not_done_count, noun
+                ));
+                return vec![];
+            }
             self.input.mode = InputMode::ConfirmArchiveEpic;
             self.set_status("Archive epic and all subtasks? (y/n)".to_string());
         }

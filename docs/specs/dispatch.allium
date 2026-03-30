@@ -424,12 +424,18 @@ rule MarkEpicDone {
     ensures: epic.updated_at = now
 }
 
-rule ArchiveEpic {
-    when: ArchiveEpic(epic)
+rule ConfirmArchiveEpic {
+    when: ConfirmArchiveEpic(epic)
 
     requires:
         epic.active_subtasks.count = 0
         or epic.active_subtasks.all(t => t.status = done)
+
+    ensures: ConfirmationShown(epic, "Archive epic and all subtasks?")
+}
+
+rule ArchiveEpic {
+    when: ArchiveEpic(epic)
 
     ensures:
         for task in epic.active_subtasks:

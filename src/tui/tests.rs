@@ -2597,6 +2597,93 @@ fn x_key_on_epic_enters_confirm_archive_epic() {
 }
 
 #[test]
+fn x_key_on_epic_with_non_done_subtasks_rejects_archive() {
+    let mut app = App::new(vec![
+        {
+            let mut t = make_task(1, TaskStatus::Backlog);
+            t.epic_id = Some(EpicId(10));
+            t
+        },
+        {
+            let mut t = make_task(2, TaskStatus::Running);
+            t.epic_id = Some(EpicId(10));
+            t
+        },
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    // Subtasks are hidden in board view. Epic has Running subtask → derived status Running (col 2).
+    // Epic is the only item in Running column → row 0.
+    app.selection_mut().set_column(2);
+    app.selection_mut().set_row(2, 0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(app.status_message.as_deref().unwrap().contains("Cannot archive epic"));
+    assert!(app.status_message.as_deref().unwrap().contains("2 subtasks not done"));
+}
+
+#[test]
+fn x_key_on_epic_with_mixed_subtasks_rejects_archive_with_count() {
+    let mut app = App::new(vec![
+        {
+            let mut t = make_task(1, TaskStatus::Done);
+            t.epic_id = Some(EpicId(10));
+            t
+        },
+        {
+            let mut t = make_task(2, TaskStatus::Done);
+            t.epic_id = Some(EpicId(10));
+            t
+        },
+        {
+            let mut t = make_task(3, TaskStatus::Running);
+            t.epic_id = Some(EpicId(10));
+            t
+        },
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    // 2 Done + 1 Running → derived status Running (col 2). Epic is only item → row 0.
+    app.selection_mut().set_column(2);
+    app.selection_mut().set_row(2, 0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(app.status_message.as_deref().unwrap().contains("1 subtask not done"));
+}
+
+#[test]
+fn x_key_on_epic_with_all_done_subtasks_allows_archive() {
+    let mut app = App::new(vec![
+        {
+            let mut t = make_task(1, TaskStatus::Done);
+            t.epic_id = Some(EpicId(10));
+            t
+        },
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    // All done → derived status Review (col 3). Epic is only item → row 0.
+    app.selection_mut().set_column(3);
+    app.selection_mut().set_row(3, 0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::ConfirmArchiveEpic);
+    assert!(app.status_message.as_deref().unwrap().contains("Archive epic"));
+}
+
+#[test]
+fn confirm_archive_epic_no_subtasks_allows_archive() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    // No subtasks → derived status Backlog (col 0). Epic is only item → row 0.
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+    let cmds = app.update(Message::ConfirmArchiveEpic);
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::ConfirmArchiveEpic);
+    assert!(app.status_message.as_deref().unwrap().contains("Archive epic"));
+}
+
+#[test]
 fn enter_key_on_epic_enters_epic_view() {
     let mut app = make_app_with_epic_selected();
     app.handle_key(make_key(KeyCode::Enter));
