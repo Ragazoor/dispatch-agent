@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::models::{Epic, ReviewDecision, ReviewPr, Task, TaskStatus, Staleness, format_age};
+use crate::models::{Epic, ReviewDecision, ReviewPr, Task, TaskStatus, TaskUsage, Staleness, format_age};
 use super::{App, ColumnItem, InputMode, ViewMode};
 
 /// Column color per status
@@ -562,6 +562,23 @@ fn render_archive_overlay(frame: &mut Frame, app: &App, area: Rect, now: DateTim
     frame.render_widget(list, overlay_area);
 }
 
+fn format_tokens(n: i64) -> String {
+    if n >= 1000 {
+        format!("{}k", n / 1000)
+    } else {
+        n.to_string()
+    }
+}
+
+fn format_usage(u: &TaskUsage) -> String {
+    format!(
+        "${:.2} \u{00b7} {} in / {} out",
+        u.cost_usd,
+        format_tokens(u.input_tokens),
+        format_tokens(u.output_tokens),
+    )
+}
+
 fn render_detail(frame: &mut Frame, app: &App, area: Rect, _now: DateTime<Utc>) {
     // When in input mode, show the input form instead of detail
     if render_input_form(frame, app, area) {
@@ -617,13 +634,20 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect, _now: DateTime<Utc>) 
             ));
         }
 
-        vec![
+        let mut lines = vec![
             Line::from(line1_spans),
             Line::from(Span::styled(
                 task.description.clone(),
                 Style::default().fg(Color::Rgb(120, 124, 153)),
             )),
-        ]
+        ];
+        if let Some(u) = app.usage.get(&task.id) {
+            lines.push(Line::from(Span::styled(
+                format_usage(u),
+                Style::default().fg(Color::Rgb(86, 95, 137)),
+            )));
+        }
+        lines
     } else if let Some(ColumnItem::Epic(epic)) = app.selected_column_item() {
         let line1 = Line::from(vec![
             Span::styled(
@@ -1491,4 +1515,39 @@ fn build_review_pr_item(pr: &ReviewPr, decision: ReviewDecision, is_cursor: bool
     };
 
     ListItem::new(vec![line1, line2]).style(Style::default().bg(bg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_tokens_below_1000() {
+        assert_eq!(format_tokens(500), "500");
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+    }
+
+    #[test]
+    fn format_tokens_at_and_above_1000() {
+        assert_eq!(format_tokens(1000), "1k");
+        assert_eq!(format_tokens(1999), "1k");
+        assert_eq!(format_tokens(12_345), "12k");
+    }
+
+    #[test]
+    fn format_usage_compact() {
+        use chrono::Utc;
+        use crate::models::TaskId;
+        let u = TaskUsage {
+            task_id: TaskId(1),
+            cost_usd: 0.45,
+            input_tokens: 12_345,
+            output_tokens: 2_000,
+            cache_read_tokens: 500,
+            cache_write_tokens: 100,
+            updated_at: Utc::now(),
+        };
+        assert_eq!(format_usage(&u), "$0.45 \u{00b7} 12k in / 2k out");
+    }
 }
