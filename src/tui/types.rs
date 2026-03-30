@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
+use ratatui::widgets::ListState;
+
 use crate::models::{Epic, EpicId, Task, TaskId, TaskStatus};
 
 // ---------------------------------------------------------------------------
@@ -261,6 +263,7 @@ pub struct BoardSelection {
     pub(in crate::tui) selected_column: usize,
     pub(in crate::tui) selected_row: [usize; TaskStatus::COLUMN_COUNT],
     pub(in crate::tui) on_select_all: bool,
+    pub(in crate::tui) list_states: [ListState; TaskStatus::COLUMN_COUNT],
 }
 
 impl BoardSelection {
@@ -269,6 +272,7 @@ impl BoardSelection {
             selected_column: 0,
             selected_row: [0; TaskStatus::COLUMN_COUNT],
             on_select_all: false,
+            list_states: std::array::from_fn(|_| ListState::default()),
         }
     }
 
@@ -286,6 +290,13 @@ impl BoardSelection {
 
     pub fn set_row(&mut self, col: usize, row: usize) {
         self.selected_row[col] = row;
+    }
+
+    /// List item index for `ListState` scrolling.
+    /// Returns `None` when the cursor is on the select-all toggle (header),
+    /// since no list item should be selected in that case.
+    pub fn list_state_index(&self, col: usize) -> Option<usize> {
+        if self.on_select_all { None } else { Some(self.selected_row[col]) }
     }
 }
 
