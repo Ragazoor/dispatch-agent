@@ -4030,3 +4030,13 @@ fn column_scrolls_back_up_when_cursor_moves_up() {
         "first task should be visible after scrolling back up"
     );
 }
+
+#[test]
+fn toggle_notifications_flips_state() {
+    let mut app = make_app();
+    assert!(app.notifications_enabled()); // default: true
+    app.update(Message::ToggleNotifications);
+    assert!(!app.notifications_enabled());
+    app.update(Message::ToggleNotifications);
+    assert!(app.notifications_enabled());
+}

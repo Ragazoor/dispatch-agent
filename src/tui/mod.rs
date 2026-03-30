@@ -29,6 +29,7 @@ pub struct App {
     pub(in crate::tui) selected_tasks: HashSet<TaskId>,
     pub(in crate::tui) merge_conflict_tasks: HashSet<TaskId>,
     pub(in crate::tui) pending_done_tasks: Vec<TaskId>,
+    pub(in crate::tui) notifications_enabled: bool,
 }
 
 /// Format a title for display in confirmation prompts, truncating if longer than `max_len` chars.
@@ -59,6 +60,7 @@ impl App {
             selected_tasks: HashSet::new(),
             merge_conflict_tasks: HashSet::new(),
             pending_done_tasks: Vec::new(),
+            notifications_enabled: true,
         }
     }
 
@@ -101,6 +103,7 @@ impl App {
     pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
     pub fn on_select_all(&self) -> bool { self.selection().on_select_all }
     pub fn merge_conflict_tasks(&self) -> &HashSet<TaskId> { &self.merge_conflict_tasks }
+    pub fn notifications_enabled(&self) -> bool { self.notifications_enabled }
 
     /// Set a transient status message with auto-clear timestamp.
     pub(in crate::tui) fn set_status(&mut self, msg: String) {
@@ -316,6 +319,7 @@ impl App {
             // Done confirmation (no cleanup, just status change)
             Message::ConfirmDone => self.handle_confirm_done(),
             Message::CancelDone => self.handle_cancel_done(),
+            Message::ToggleNotifications => self.handle_toggle_notifications(),
             // Epic messages
             Message::DispatchEpic(id) => self.handle_dispatch_epic(id),
             Message::EnterEpic(epic_id) => self.handle_enter_epic(epic_id),
@@ -463,6 +467,16 @@ impl App {
         self.clear_status();
         self.pending_done_tasks.clear();
         vec![]
+    }
+
+    fn handle_toggle_notifications(&mut self) -> Vec<Command> {
+        self.notifications_enabled = !self.notifications_enabled;
+        let label = if self.notifications_enabled { "Notifications enabled" } else { "Notifications disabled" };
+        self.set_status(label.to_string());
+        vec![Command::PersistSetting {
+            key: "notifications_enabled".to_string(),
+            value: self.notifications_enabled,
+        }]
     }
 
     fn handle_dispatch_task(&mut self, id: TaskId) -> Vec<Command> {

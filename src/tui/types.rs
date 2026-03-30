@@ -96,6 +96,7 @@ pub enum Message {
     // Done confirmation (no cleanup, just status change)
     ConfirmDone,
     CancelDone,
+    ToggleNotifications,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +133,8 @@ pub enum Command {
     DeleteEpic(EpicId),
     PersistEpic { id: EpicId, done: Option<bool> },
     RefreshEpicsFromDb,
+    SendNotification { title: String, body: String, urgent: bool },
+    PersistSetting { key: String, value: bool },
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +186,8 @@ pub struct AgentTracking {
     pub stale_tasks: HashSet<TaskId>,
     pub crashed_tasks: HashSet<TaskId>,
     pub inactivity_timeout: Duration,
+    pub notified_review: HashSet<TaskId>,
+    pub notified_needs_input: HashSet<TaskId>,
 }
 
 impl AgentTracking {
@@ -194,6 +199,8 @@ impl AgentTracking {
             stale_tasks: HashSet::new(),
             crashed_tasks: HashSet::new(),
             inactivity_timeout,
+            notified_review: HashSet::new(),
+            notified_needs_input: HashSet::new(),
         }
     }
 
@@ -204,6 +211,8 @@ impl AgentTracking {
         self.stale_tasks.remove(&id);
         self.crashed_tasks.remove(&id);
         self.tmux_outputs.remove(&id);
+        self.notified_review.remove(&id);
+        self.notified_needs_input.remove(&id);
     }
 }
 

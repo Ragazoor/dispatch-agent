@@ -753,6 +753,8 @@ async fn execute_commands(
             Command::PersistEpic { id, done } => rt.exec_persist_epic(app, id, done),
             Command::RefreshEpicsFromDb => rt.exec_refresh_epics_from_db(app),
             Command::DispatchEpic { epic } => rt.exec_dispatch_epic(app, epic),
+            Command::SendNotification { .. } => {}
+            Command::PersistSetting { .. } => {}
         }
     }
 
