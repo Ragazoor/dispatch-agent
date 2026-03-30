@@ -590,8 +590,9 @@ impl App {
                 let was_needs_input = old_task.is_some_and(|t| t.needs_input);
                 let was_review = old_task.is_some_and(|t| t.status == TaskStatus::Review);
 
-                // Detect needs_input transition: false → true
+                // Detect needs_input transition: false → true (running tasks only)
                 if new_task.needs_input && !was_needs_input
+                    && new_task.status == TaskStatus::Running
                     && !self.agents.notified_needs_input.contains(&new_task.id)
                 {
                     self.agents.notified_needs_input.insert(new_task.id);
