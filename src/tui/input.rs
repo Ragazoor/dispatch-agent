@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, ColumnItem, Command, InputMode, Message, MoveDirection, ViewMode};
-use crate::models::{TaskId, TaskStatus};
+use crate::models::{ReviewDecision, TaskId, TaskStatus};
 
 impl App {
     /// Translate a terminal key event into zero or more commands, depending on current mode.
@@ -37,7 +37,15 @@ impl App {
             return self.handle_key_archive(key);
         }
 
+        if matches!(self.view_mode, ViewMode::ReviewBoard { .. }) {
+            return self.handle_key_review_board(key);
+        }
+
         match key.code {
+            KeyCode::Tab => {
+                self.update(Message::SwitchToReviewBoard)
+            }
+
             KeyCode::Char('q') => {
                 if matches!(self.view_mode, ViewMode::Epic { .. }) {
                     self.update(Message::ExitEpic)
@@ -510,6 +518,51 @@ impl App {
             KeyCode::Char('r') => self.update(Message::WrapUpRebase),
             KeyCode::Char('p') => self.update(Message::WrapUpPr),
             KeyCode::Esc => self.update(Message::CancelWrapUp),
+            _ => vec![],
+        }
+    }
+
+    fn handle_key_review_board(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('q') => self.update(Message::Quit),
+            KeyCode::Tab | KeyCode::Esc => self.update(Message::SwitchToTaskBoard),
+
+            KeyCode::Char('h') | KeyCode::Left => {
+                if let Some(sel) = self.review_selection_mut() {
+                    let col = sel.selected_column;
+                    sel.selected_column = col.saturating_sub(1);
+                }
+                vec![]
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                if let Some(sel) = self.review_selection_mut() {
+                    let col = sel.selected_column;
+                    sel.selected_column = (col + 1).min(ReviewDecision::COLUMN_COUNT - 1);
+                }
+                vec![]
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.navigate_review_row(1);
+                vec![]
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.navigate_review_row(-1);
+                vec![]
+            }
+
+            KeyCode::Enter => {
+                if let Some(pr) = self.selected_review_pr() {
+                    let url = pr.url.clone();
+                    vec![Command::OpenInBrowser { url }]
+                } else {
+                    vec![]
+                }
+            }
+
+            KeyCode::Char('r') => self.update(Message::RefreshReviewPrs),
+
+            KeyCode::Char('?') => self.update(Message::ToggleHelp),
+
             _ => vec![],
         }
     }

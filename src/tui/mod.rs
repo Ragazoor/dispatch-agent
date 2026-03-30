@@ -836,6 +836,17 @@ impl App {
             cmds.push(Command::CheckPrStatus { id, pr_number, repo_path });
         }
 
+        // Refresh review board data if in review mode and stale (> 60s)
+        if matches!(self.view_mode, ViewMode::ReviewBoard { .. }) {
+            let needs_fetch = self.last_review_fetch
+                .map(|t| t.elapsed() > Duration::from_secs(60))
+                .unwrap_or(true);
+            if needs_fetch && !self.review_board_loading {
+                self.review_board_loading = true;
+                cmds.push(Command::FetchReviewPrs);
+            }
+        }
+
         cmds.push(Command::RefreshFromDb);
         cmds
     }
@@ -1514,6 +1525,46 @@ impl App {
         self.review_board_loading = false;
         self.set_status(format!("Failed to fetch review PRs: {error}"));
         vec![]
+    }
+
+    /// Get the currently selected ReviewPr, if in review board mode.
+    pub fn selected_review_pr(&self) -> Option<&crate::models::ReviewPr> {
+        let sel = self.review_selection()?;
+        let col = sel.column();
+        let row = sel.row(col);
+        let decision = crate::models::ReviewDecision::from_column_index(col)?;
+        self.review_prs
+            .iter()
+            .filter(|pr| pr.review_decision == decision)
+            .nth(row)
+    }
+
+    pub(in crate::tui) fn navigate_review_row(&mut self, delta: isize) {
+        let (col, count) = match self.review_selection() {
+            Some(sel) => {
+                let col = sel.selected_column;
+                let count = self.review_prs.iter()
+                    .filter(|pr| pr.review_decision.column_index() == col)
+                    .count();
+                (col, count)
+            }
+            None => return,
+        };
+        if count == 0 {
+            return;
+        }
+        if let Some(sel) = self.review_selection_mut() {
+            let current = sel.selected_row[col] as isize;
+            let new = (current + delta).clamp(0, (count - 1) as isize) as usize;
+            sel.selected_row[col] = new;
+        }
+    }
+
+    /// Get PRs for a specific review decision column.
+    pub fn review_prs_by_decision(&self, decision: crate::models::ReviewDecision) -> Vec<&crate::models::ReviewPr> {
+        self.review_prs.iter()
+            .filter(|pr| pr.review_decision == decision)
+            .collect()
     }
 
     // -----------------------------------------------------------------------

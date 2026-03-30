@@ -4958,3 +4958,83 @@ fn switch_to_review_board_sets_loading() {
     assert!(app.review_board_loading());
     assert!(cmds.iter().any(|c| matches!(c, Command::FetchReviewPrs)));
 }
+
+#[test]
+fn tab_switches_to_review_board() {
+    let mut app = make_app();
+    let cmds = app.handle_key(make_key(KeyCode::Tab));
+    assert!(matches!(app.view_mode(), ViewMode::ReviewBoard { .. }));
+    assert!(cmds.iter().any(|c| matches!(c, Command::FetchReviewPrs)));
+}
+
+#[test]
+fn tab_in_review_board_switches_back() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Tab)); // to review board
+    app.handle_key(make_key(KeyCode::Tab)); // back to task board
+    assert!(matches!(app.view_mode(), ViewMode::Board(_)));
+}
+
+#[test]
+fn esc_in_review_board_switches_back() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Tab)); // to review board
+    app.handle_key(make_key(KeyCode::Esc)); // back
+    assert!(matches!(app.view_mode(), ViewMode::Board(_)));
+}
+
+#[test]
+fn review_board_navigation() {
+    let mut app = make_app();
+    // Load some PRs
+    app.update(Message::ReviewPrsLoaded(vec![
+        make_review_pr(1, "alice", ReviewDecision::ReviewRequired),
+        make_review_pr(2, "bob", ReviewDecision::ReviewRequired),
+        make_review_pr(3, "carol", ReviewDecision::ChangesRequested),
+    ]));
+    app.handle_key(make_key(KeyCode::Tab)); // to review board
+    assert_eq!(app.review_selection().unwrap().column(), 0);
+
+    app.handle_key(make_key(KeyCode::Char('l'))); // move right
+    assert_eq!(app.review_selection().unwrap().column(), 1);
+
+    app.handle_key(make_key(KeyCode::Char('l'))); // move right
+    assert_eq!(app.review_selection().unwrap().column(), 2);
+
+    app.handle_key(make_key(KeyCode::Char('l'))); // clamp at 2
+    assert_eq!(app.review_selection().unwrap().column(), 2);
+}
+
+#[test]
+fn review_board_enter_opens_pr() {
+    let mut app = make_app();
+    app.update(Message::ReviewPrsLoaded(vec![
+        make_review_pr(42, "alice", ReviewDecision::ReviewRequired),
+    ]));
+    app.handle_key(make_key(KeyCode::Tab)); // to review board
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    assert!(cmds.iter().any(|c| matches!(c, Command::OpenInBrowser { .. })));
+}
+
+#[test]
+fn review_board_renders_pr_titles() {
+    let mut app = make_app();
+    app.update(Message::ReviewPrsLoaded(vec![
+        make_review_pr(42, "alice", ReviewDecision::ReviewRequired),
+        make_review_pr(50, "bob", ReviewDecision::Approved),
+    ]));
+    app.update(Message::SwitchToReviewBoard);
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "Needs Review"), "Should show column header");
+    assert!(buffer_contains(&buf, "PR 42"), "Should show PR title");
+}
+
+#[test]
+fn review_board_renders_empty_state() {
+    let mut app = make_app();
+    app.update(Message::SwitchToReviewBoard);
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "No PRs awaiting your review"));
+}
