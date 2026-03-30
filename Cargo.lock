@@ -362,7 +362,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dispatch"
+name = "dispatch-agent"
 version = "0.2.0"
 dependencies = [
  "anyhow",
