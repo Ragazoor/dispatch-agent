@@ -1321,3 +1321,127 @@ async fn claim_task_updates_status_to_running() {
     assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-claim"));
     assert_eq!(task.tmux_window.as_deref(), Some("task-1"));
 }
+
+// ---------------------------------------------------------------------------
+// wrap_up tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn wrap_up_task_not_found() {
+    let state = test_state();
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": 9999, "action": "rebase" }
+        })),
+    ).await;
+    assert_error(&resp, "not found");
+}
+
+#[tokio::test]
+async fn wrap_up_task_not_in_review() {
+    let state = test_state();
+    let task_id = state.db.create_task("T", "d", "/repo", None, TaskStatus::Running).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": task_id.0, "action": "rebase" }
+        })),
+    ).await;
+    assert_error(&resp, "not 'review'");
+}
+
+#[tokio::test]
+async fn wrap_up_task_no_worktree() {
+    let state = test_state();
+    let task_id = state.db.create_task("T", "d", "/repo", None, TaskStatus::Review).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": task_id.0, "action": "rebase" }
+        })),
+    ).await;
+    assert_error(&resp, "no worktree");
+}
+
+#[tokio::test]
+async fn wrap_up_invalid_action() {
+    let state = test_state();
+    let task_id = state.db.create_task("T", "d", "/repo", None, TaskStatus::Review).unwrap();
+    state.db.patch_task(task_id, &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-t"))).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": task_id.0, "action": "teleport" }
+        })),
+    ).await;
+    assert_error(&resp, "Unknown action");
+}
+
+#[tokio::test]
+async fn wrap_up_rebase_returns_started() {
+    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse HEAD
+        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
+        MockProcessRunner::ok(),                       // git rebase main
+        MockProcessRunner::ok(),                       // git merge --ff-only
+    ]));
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+
+    let task_id = db.create_task("My Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
+    db.patch_task(task_id, &db::TaskPatch::new()
+        .worktree(Some("/repo/.worktrees/1-my-task"))
+    ).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": task_id.0, "action": "rebase" }
+        })),
+    ).await;
+
+    let text = extract_response_text(&resp);
+    assert!(text.contains("wrap_up started"), "Expected 'wrap_up started', got: {text}");
+}
+
+#[tokio::test]
+async fn wrap_up_pr_returns_started() {
+    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),                                              // git push
+        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // git remote get-url
+        MockProcessRunner::ok_with_stdout(b"https://github.com/org/repo/pull/7\n"), // gh pr create
+    ]));
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+
+    let task_id = db.create_task("My Feature", "desc", "/repo", None, TaskStatus::Review).unwrap();
+    db.patch_task(task_id, &db::TaskPatch::new()
+        .worktree(Some("/repo/.worktrees/1-my-feature"))
+    ).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": task_id.0, "action": "pr" }
+        })),
+    ).await;
+
+    let text = extract_response_text(&resp);
+    assert!(text.contains("wrap_up started"), "Expected 'wrap_up started', got: {text}");
+}
