@@ -1007,7 +1007,8 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("k/\u{2191}", key), Span::styled(" previous task", desc),
         ]),
         Line::from(vec![
-            Span::styled("  Enter", key), Span::styled(" detail panel / enter epic", desc),
+            Span::styled("  Enter", key), Span::styled(" detail panel       ", desc),
+            Span::styled("e", key), Span::styled(" edit / enter epic", desc),
         ]),
         Line::from(vec![
             Span::styled("  q", key), Span::styled(" exit epic (in epic view)   ", desc),
@@ -1018,7 +1019,7 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  n", key), Span::styled(" new task   ", desc),
             Span::styled("E", key), Span::styled(" new epic   ", desc),
-            Span::styled("e", key), Span::styled(" edit/detail", desc),
+            Span::styled("N", key), Span::styled(" notifications", desc),
         ]),
         Line::from(vec![
             Span::styled("  d", key), Span::styled(" dispatch*  ", desc),
@@ -1039,7 +1040,7 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("  Space", key), Span::styled(" select  ", desc),
             Span::styled("f", key), Span::styled(" filter repos  ", desc),
             Span::styled("W", key), Span::styled(" wrap up    ", desc),
-            Span::styled("(Review: rebase or PR)", note),
+            Span::styled("(task: rebase/PR, epic: batch)", note),
         ]),
         Line::from(vec![
             Span::styled("  J/K", key), Span::styled(" reorder item up/down in column", desc),
@@ -1424,8 +1425,9 @@ pub(in crate::tui) fn epic_action_hints(epic: &Epic, key_color: Color) -> Vec<Sp
     } else {
         push_hint("d", "plan");
     }
-    push_hint("Enter", "open");
-    push_hint("e", "detail");
+    push_hint("Enter", "detail");
+    push_hint("e", "open");
+    push_hint("W", "wrap up");
     if epic.done {
         push_hint("M", "undone");
     } else {
