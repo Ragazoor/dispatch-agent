@@ -3068,9 +3068,9 @@ fn g_key_on_epic_jumps_to_review_subtask() {
     app.tasks = vec![subtask];
 
     // Epic is in Review column (due to subtask in Review)
-    // Place cursor on epic in the Review column (col 3)
-    app.selection_mut().set_column(3);
-    app.selection_mut().set_row(3, 0);
+    // Place cursor on epic in the Review column (col 2)
+    app.selection_mut().set_column(2);
+    app.selection_mut().set_row(2, 0);
 
     let cmds = app.handle_key(make_key(KeyCode::Char('g')));
     assert!(matches!(&cmds[0], Command::JumpToTmux { window } if window == "win-1"));
@@ -3087,8 +3087,8 @@ fn g_key_on_epic_no_review_session_shows_status() {
     subtask.epic_id = Some(EpicId(10));
     app.tasks = vec![subtask];
 
-    app.selection_mut().set_column(3);
-    app.selection_mut().set_row(3, 0);
+    app.selection_mut().set_column(2);
+    app.selection_mut().set_row(2, 0);
 
     let cmds = app.handle_key(make_key(KeyCode::Char('g')));
     assert!(cmds.is_empty());

@@ -1278,7 +1278,7 @@ async fn update_epic_no_fields_errors() {
 #[tokio::test]
 async fn claim_task_updates_status_to_running() {
     let state = test_state();
-    let task_id = state.db.create_task("Claim", "desc", "/repo", None, TaskStatus::Ready).unwrap();
+    let task_id = state.db.create_task("Claim", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
 
     let resp = call(
         &state,

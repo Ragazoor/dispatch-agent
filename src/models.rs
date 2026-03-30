@@ -772,7 +772,7 @@ mod tests {
     #[test]
     fn epic_status_some_review() {
         let epic = make_epic_for_status(false);
-        let statuses = [TaskStatus::Ready, TaskStatus::Review];
+        let statuses = [TaskStatus::Backlog, TaskStatus::Review];
         assert_eq!(epic_status(&epic, &statuses), TaskStatus::Review);
     }
 

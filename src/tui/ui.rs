@@ -387,7 +387,7 @@ fn render_epic_item(
     if pending_count > 0 {
         meta_spans.push(Span::styled(
             format!("\u{25cf} {pending_count} "),
-            Style::default().fg(column_color(TaskStatus::Ready)),
+            Style::default().fg(column_color(TaskStatus::Backlog)),
         ));
     }
     if running_count > 0 {
