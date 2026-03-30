@@ -116,6 +116,18 @@ pub(super) fn handle_update_epic(state: &McpState, id: Option<Value>, args: Valu
     };
     tracing::info!(epic_id = parsed.epic_id, "MCP update_epic");
 
+    let has_update = parsed.title.is_some()
+        || parsed.description.is_some()
+        || parsed.done.is_some();
+
+    if !has_update {
+        return JsonRpcResponse::err(
+            id,
+            -32602,
+            "At least one of title, description, or done must be provided",
+        );
+    }
+
     let mut patch = EpicPatch::new();
     if let Some(ref t) = parsed.title { patch = patch.title(t); }
     if let Some(ref d) = parsed.description { patch = patch.description(d); }

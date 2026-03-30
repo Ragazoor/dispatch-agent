@@ -352,6 +352,7 @@ pub(super) fn handle_claim_task(state: &McpState, id: Option<Value>, args: Value
         return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
     }
 
+    state.notify();
     JsonRpcResponse::ok(
         id,
         json!({"content": [{"type": "text", "text": format!("Task {} claimed: {}", parsed.task_id, task.title)}]}),

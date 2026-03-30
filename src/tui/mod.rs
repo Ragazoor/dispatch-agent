@@ -709,6 +709,9 @@ impl App {
 
     fn handle_resume_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task(id) {
+            if !matches!(task.status, TaskStatus::Running | TaskStatus::Review) {
+                return vec![];
+            }
             if task.worktree.is_some() && task.tmux_window.is_none() {
                 vec![Command::Resume { task: task.clone() }]
             } else {
@@ -785,6 +788,9 @@ impl App {
         self.clear_agent_tracking(id);
 
         if let Some(task) = self.find_task_mut(id) {
+            if task.status != TaskStatus::Running {
+                return vec![];
+            }
             if task.worktree.is_none() {
                 self.set_status("Cannot resume: task has no worktree".to_string());
                 return vec![];
@@ -809,6 +815,9 @@ impl App {
         self.clear_agent_tracking(id);
 
         if let Some(task) = self.find_task_mut(id) {
+            if task.status != TaskStatus::Running {
+                return vec![];
+            }
             let cleanup = Self::take_cleanup(task);
             task.status = TaskStatus::Ready;
             let task_clone = task.clone();
@@ -1255,6 +1264,22 @@ impl App {
     }
 
     fn handle_delete_epic(&mut self, id: EpicId) -> Vec<Command> {
+        let mut cmds = Vec::new();
+        // Clean up worktrees/tmux for subtasks before deleting
+        let subtask_ids: Vec<TaskId> = self.tasks
+            .iter()
+            .filter(|t| t.epic_id == Some(id))
+            .map(|t| t.id)
+            .collect();
+        for task_id in subtask_ids {
+            if let Some(task) = self.find_task_mut(task_id) {
+                let cleanup = Self::take_cleanup(task);
+                if let Some(c) = cleanup {
+                    cmds.push(c);
+                }
+                self.clear_agent_tracking(task_id);
+            }
+        }
         self.epics.retain(|e| e.id != id);
         self.tasks.retain(|t| t.epic_id != Some(id));
         // If we were viewing this epic, exit
@@ -1262,7 +1287,8 @@ impl App {
             self.handle_exit_epic();
         }
         self.clamp_selection();
-        vec![Command::DeleteEpic(id)]
+        cmds.push(Command::DeleteEpic(id));
+        cmds
     }
 
     fn handle_confirm_delete_epic(&mut self) -> Vec<Command> {

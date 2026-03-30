@@ -1281,3 +1281,44 @@ async fn tools_list_includes_epic_tools() {
     assert!(names.contains(&"list_epics"));
     assert!(names.contains(&"update_epic"));
 }
+
+#[tokio::test]
+async fn update_epic_no_fields_errors() {
+    let state = test_state();
+    let epic = state.db.create_epic("Test", "", "/repo").unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_epic",
+            "arguments": { "epic_id": epic.id.0 }
+        })),
+    ).await;
+    assert_error(&resp, "At least one");
+}
+
+#[tokio::test]
+async fn claim_task_updates_status_to_running() {
+    let state = test_state();
+    let task_id = state.db.create_task("Claim", "desc", "/repo", None, TaskStatus::Ready).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "claim_task",
+            "arguments": {
+                "task_id": task_id.0,
+                "worktree": "/repo/.worktrees/1-claim",
+                "tmux_window": "task-1"
+            }
+        })),
+    ).await;
+    assert!(resp.error.is_none(), "{:?}", resp.error);
+
+    let task = state.db.get_task(crate::models::TaskId(task_id.0)).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-claim"));
+    assert_eq!(task.tmux_window.as_deref(), Some("task-1"));
+}

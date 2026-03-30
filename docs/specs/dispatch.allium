@@ -201,6 +201,11 @@ rule MoveTaskForward {
 
     ensures: task.status = next
     ensures: task.updated_at = now
+
+    @guidance
+        -- Manual forward movement clears agent health tracking state
+        -- (tmux output, staleness timer, crash detection, notification
+        -- flags) for the task.
 }
 
 rule MoveTaskBackward {
@@ -225,6 +230,13 @@ rule ConfirmDone {
     ensures: task.status = done
     ensures: task.tmux_window = null
     ensures: task.updated_at = now
+
+    @guidance
+        -- Batch forward-move of a multi-select that includes Review tasks
+        -- splits the operation: non-Review tasks move immediately, while
+        -- Review tasks are collected and confirmed together via a single
+        -- prompt. Each confirmed task is individually guarded by review
+        -- status before transitioning to done.
 }
 
 -- == Finish (Merge) ==
@@ -247,6 +259,9 @@ rule FinishTaskSuccess {
     ensures: task.updated_at = now
 
     @guidance
+        -- The implementation pulls the latest main from origin (if a remote
+        -- is configured) before merging, ensuring the merge target is
+        -- up to date with the remote.
         -- Worktree is preserved after finish.
         -- It will be cleaned up when the task is archived.
         -- If another active task shares the same worktree, the worktree
@@ -303,6 +318,9 @@ rule DeleteTask {
     @guidance
         -- Permanent removal. Only accessible from the archive view.
         -- Worktree and branch are cleaned up best-effort.
+        -- The archived-status precondition is enforced by the TUI input
+        -- layer (archive view only shows archived tasks), not by the
+        -- handler itself.
 }
 
 -- == Agent Health ==
@@ -342,6 +360,12 @@ rule NotifyNeedsInput {
         urgency: urgent,
         about: needs_input
     )
+
+    @guidance
+        -- Notifications are deduplicated: each notification fires at most
+        -- once per state transition. The notified state is cleared when
+        -- needs_input becomes false, allowing re-notification on a
+        -- subsequent re-entry.
 }
 
 rule NotifyReview {
@@ -356,6 +380,9 @@ rule NotifyReview {
     @guidance
         -- Notifications are gated by a user-togglable notifications_enabled
         -- setting (N key in TUI). When disabled, no notifications are sent.
+        -- Notifications are deduplicated: each notification fires at most
+        -- once per transition to review. The notified state is cleared
+        -- when the task leaves review status.
 }
 
 rule ClearNeedsInput {
@@ -428,6 +455,12 @@ rule ClaimTaskViaMcp {
     ensures: task.worktree = worktree
     ensures: task.tmux_window = tmux_window
     ensures: task.updated_at = now
+
+    @guidance
+        -- The implementation derives the repo root from the worktree path
+        -- by stripping the /.worktrees/<slug> suffix. This is stricter than
+        -- a simple starts_with check: the repo root must exactly match
+        -- task.repo_path.
 }
 
 rule UpdateEpicViaMcp {
@@ -472,13 +505,19 @@ rule DispatchEpicPlanning {
             title: "Plan: " + epic.title,
             description: epic.description,
             repo_path: epic.repo_path,
-            status: running,
+            status: ready,
             epic: epic,
             needs_input: false,
             created_at: now,
             updated_at: now
         )
-        AgentLaunched(task: planning_task, mode: epic_planning)
+        DispatchTask(planning_task)
+
+    @guidance
+        -- The planning task is created as Ready and then dispatched
+        -- through the standard DispatchTask flow, which provisions
+        -- a worktree and tmux window and transitions it to Running.
+        -- The agent runs in epic_planning mode.
 }
 
 rule MarkEpicDone {
@@ -515,6 +554,10 @@ rule DeleteEpic {
         for task in epic.subtasks:
             not exists task
     ensures: not exists epic
+
+    @guidance
+        -- Worktrees and tmux windows are cleaned up best-effort for
+        -- subtasks that have them before deletion.
 }
 
 ------------------------------------------------------------
