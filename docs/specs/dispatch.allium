@@ -203,9 +203,9 @@ rule MoveTaskForward {
     ensures: task.updated_at = now
 
     @guidance
-        -- Manual forward movement clears agent health tracking state
-        -- (tmux output, staleness timer, crash detection, notification
-        -- flags) for the task.
+        -- Manual movement (forward or backward) clears agent health
+        -- tracking state (tmux output, staleness timer, crash detection,
+        -- notification flags) for the task.
 }
 
 rule MoveTaskBackward {
