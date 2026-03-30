@@ -4409,3 +4409,63 @@ fn detail_panel_shows_pr_url() {
     assert!(buffer_contains(&buf, "PR:"), "Detail panel should show PR label");
     assert!(buffer_contains(&buf, "pull/42"), "Detail panel should show PR URL");
 }
+
+// -----------------------------------------------------------------------
+// p key binding and ConfirmPr input mode tests
+// -----------------------------------------------------------------------
+
+#[test]
+fn p_key_on_review_task_enters_confirm_pr() {
+    let mut task = make_task(1, TaskStatus::Review);
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.update(Message::NavigateColumn(2)); // Review column
+
+    app.handle_key(make_key(KeyCode::Char('p')));
+    assert!(matches!(app.mode(), InputMode::ConfirmPr(TaskId(1))));
+}
+
+#[test]
+fn p_key_on_non_review_task_ignored() {
+    let task = make_task(1, TaskStatus::Backlog);
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+
+    app.handle_key(make_key(KeyCode::Char('p')));
+    assert!(matches!(app.mode(), InputMode::Normal));
+}
+
+#[test]
+fn confirm_pr_y_emits_command() {
+    let mut task = make_task(1, TaskStatus::Review);
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.update(Message::NavigateColumn(2));
+    app.handle_key(make_key(KeyCode::Char('p')));
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    assert!(cmds.iter().any(|c| matches!(c, Command::CreatePr { .. })));
+}
+
+#[test]
+fn confirm_pr_n_cancels() {
+    let mut task = make_task(1, TaskStatus::Review);
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.update(Message::NavigateColumn(2));
+    app.handle_key(make_key(KeyCode::Char('p')));
+
+    app.handle_key(make_key(KeyCode::Char('n')));
+    assert!(matches!(app.mode(), InputMode::Normal));
+}
+
+#[test]
+fn confirm_pr_esc_cancels() {
+    let mut task = make_task(1, TaskStatus::Review);
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.update(Message::NavigateColumn(2));
+    app.handle_key(make_key(KeyCode::Char('p')));
+
+    app.handle_key(make_key(KeyCode::Esc));
+    assert!(matches!(app.mode(), InputMode::Normal));
+}
