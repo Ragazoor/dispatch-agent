@@ -80,7 +80,7 @@ pub fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Top-level render function.
-pub fn render(frame: &mut Frame, app: &App) {
+pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let now = Utc::now();
 
@@ -285,7 +285,7 @@ fn build_task_list_item<'a>(
     item
 }
 
-fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
+fn render_columns(frame: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
     let column_areas = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(
@@ -313,16 +313,23 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
             })
             .collect();
 
+        // Update ListState selection for the focused column so the widget
+        // auto-scrolls to keep the cursor visible.
+        let sel = app.selection_mut();
+        if is_focused {
+            *sel.list_states[col_idx].selected_mut() = sel.list_state_index(col_idx);
+        }
+
         if is_focused {
             let block = Block::default()
                 .style(Style::default().bg(column_bg_color(status)));
             let inner = block.inner(col_area);
             frame.render_widget(block, col_area);
             let list = List::new(items);
-            frame.render_widget(list, inner);
+            frame.render_stateful_widget(list, inner, &mut sel.list_states[col_idx]);
         } else {
             let list = List::new(items);
-            frame.render_widget(list, col_area);
+            frame.render_stateful_widget(list, col_area, &mut sel.list_states[col_idx]);
         }
     }
 }

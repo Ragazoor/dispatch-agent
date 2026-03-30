@@ -21,7 +21,7 @@ fn buffer_contains(buf: &Buffer, text: &str) -> bool {
 }
 
 /// Helper: render the app into a test terminal and return the buffer.
-fn render_to_buffer(app: &App, width: u16, height: u16) -> Buffer {
+fn render_to_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|f| ui::render(f, app)).unwrap();
@@ -2002,8 +2002,8 @@ fn refresh_tasks_prunes_stale_selections() {
 
 #[test]
 fn render_empty_board_shows_all_column_headers() {
-    let app = App::new(vec![], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 100, 20);
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 100, 20);
     assert!(buffer_contains(&buf, "backlog"));
     assert!(buffer_contains(&buf, "ready"));
     assert!(buffer_contains(&buf, "running"));
@@ -2018,8 +2018,8 @@ fn render_shows_task_titles_in_columns() {
         make_task(2, TaskStatus::Ready),
         make_task(3, TaskStatus::Running),
     ];
-    let app = App::new(tasks, Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let mut app = App::new(tasks, Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "Task 1"));
     assert!(buffer_contains(&buf, "Task 2"));
     assert!(buffer_contains(&buf, "Task 3"));
@@ -2029,14 +2029,14 @@ fn render_shows_task_titles_in_columns() {
 fn render_error_popup_shows_message() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.update(Message::Error("Something went wrong".to_string()));
-    let buf = render_to_buffer(&app, 100, 20);
+    let buf = render_to_buffer(&mut app, 100, 20);
     assert!(buffer_contains(&buf, "Something went wrong"));
 }
 
 #[test]
 fn render_status_bar_shows_keybindings() {
-    let app = App::new(vec![], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 100, 20);
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 100, 20);
     assert!(buffer_contains(&buf, "uit"));
 }
 
@@ -2046,7 +2046,7 @@ fn render_crashed_task_shows_label() {
     task.tmux_window = Some("win-1".to_string());
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.agents.crashed_tasks.insert(TaskId(1));
-    let buf = render_to_buffer(&app, 120, 20);
+    let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "crashed"));
 }
 
@@ -2056,22 +2056,22 @@ fn render_stale_task_shows_label() {
     task.tmux_window = Some("win-1".to_string());
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.agents.stale_tasks.insert(TaskId(1));
-    let buf = render_to_buffer(&app, 120, 20);
+    let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "stale"));
 }
 
 #[test]
 fn render_does_not_panic_on_small_terminal() {
-    let app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
     // Very small terminal — should not panic
-    let _ = render_to_buffer(&app, 20, 5);
+    let _ = render_to_buffer(&mut app, 20, 5);
 }
 
 #[test]
 fn render_input_mode_shows_prompt() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.update(Message::StartNewTask);
-    let buf = render_to_buffer(&app, 100, 20);
+    let buf = render_to_buffer(&mut app, 100, 20);
     assert!(buffer_contains(&buf, "Title"));
 }
 
@@ -2088,8 +2088,8 @@ fn truncate_respects_max_length() {
 
 #[test]
 fn render_v2_task_card_shows_stripe() {
-    let app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 20);
     // Cursor card uses thicker stripe ▌ (U+258C), non-cursor uses ▎ (U+258E)
     assert!(
         buffer_contains(&buf, "\u{258c}") || buffer_contains(&buf, "\u{258e}"),
@@ -2099,8 +2099,8 @@ fn render_v2_task_card_shows_stripe() {
 
 #[test]
 fn render_v2_backlog_task_shows_status_icon() {
-    let app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "\u{25e6}"), "backlog task should show \u{25e6} icon");
 }
 
@@ -2108,23 +2108,23 @@ fn render_v2_backlog_task_shows_status_icon() {
 fn render_v2_running_task_shows_status_icon() {
     let mut task = make_task(1, TaskStatus::Running);
     task.tmux_window = Some("win-1".to_string());
-    let app = App::new(vec![task], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "\u{25c9}"), "running task should show \u{25c9} icon");
 }
 
 #[test]
 fn render_v2_focused_column_shows_arrow() {
-    let app = App::new(vec![], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 20);
     // Default focus is on first column (Backlog), should show \u{25b8}
     assert!(buffer_contains(&buf, "\u{25b8}"), "focused column should show \u{25b8} indicator");
 }
 
 #[test]
 fn render_v2_unfocused_columns_show_dot() {
-    let app = App::new(vec![], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 20);
     // Unfocused columns should show \u{25e6}
     assert!(buffer_contains(&buf, "\u{25e6}"), "unfocused columns should show \u{25e6} indicator");
 }
@@ -2133,7 +2133,7 @@ fn render_v2_unfocused_columns_show_dot() {
 fn render_v2_detail_panel_shows_inline_metadata() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
     app.update(Message::ToggleDetail);
-    let buf = render_to_buffer(&app, 120, 20);
+    let buf = render_to_buffer(&mut app, 120, 20);
     // The compact detail panel shows "title \u{00b7} #id \u{00b7} status \u{00b7} repo" on one line
     // Check for the middle-dot separator which is new in v2
     assert!(buffer_contains(&buf, "\u{00b7}"), "detail panel should use \u{00b7} separator");
@@ -2142,8 +2142,8 @@ fn render_v2_detail_panel_shows_inline_metadata() {
 
 #[test]
 fn render_v2_status_bar_no_brackets() {
-    let app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 20);
     let content: String = buf.content().iter().map(|cell| cell.symbol()).collect();
     // Old format had [n], [q] etc. New format should NOT have brackets
     assert!(!content.contains("[n]"), "status bar should not use bracket format");
@@ -2160,7 +2160,7 @@ fn render_v2_done_task_shows_checkmark() {
     for _ in 0..4 {
         app.update(Message::NavigateColumn(1));
     }
-    let buf = render_to_buffer(&app, 120, 20);
+    let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "\u{2713}"), "done task should show \u{2713} icon");
 }
 
@@ -2170,8 +2170,8 @@ fn render_v2_done_task_shows_checkmark() {
 
 #[test]
 fn render_columns_appear_left_to_right() {
-    let app = App::new(vec![], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 30);
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 30);
 
     // Find the leftmost x-position where each header appears
     let headers = ["backlog", "ready", "running", "review", "done"];
@@ -2215,18 +2215,18 @@ fn render_columns_appear_left_to_right() {
 fn render_help_overlay_shows_keybindings_help() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.update(Message::ToggleHelp);
-    let buf = render_to_buffer(&app, 100, 30);
+    let buf = render_to_buffer(&mut app, 100, 30);
     assert!(buffer_contains(&buf, "Navigation"), "help overlay should show Navigation section");
     assert!(buffer_contains(&buf, "Actions"), "help overlay should show Actions section");
 }
 
 #[test]
 fn render_1x1_terminal_does_not_panic() {
-    let app = App::new(
+    let mut app = App::new(
         vec![make_task(1, TaskStatus::Running)],
         Duration::from_secs(300),
     );
-    let _ = render_to_buffer(&app, 1, 1);
+    let _ = render_to_buffer(&mut app, 1, 1);
 }
 
 #[test]
@@ -2236,7 +2236,7 @@ fn render_archive_overlay_shows_archived_tasks() {
     task.title = "Archived Item".to_string();
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.update(Message::ToggleArchive);
-    let buf = render_to_buffer(&app, 100, 30);
+    let buf = render_to_buffer(&mut app, 100, 30);
     assert!(buffer_contains(&buf, "Archived Item"), "archive overlay should show archived task title");
 }
 
@@ -2277,12 +2277,12 @@ fn stress_large_task_list_rendering() {
             _ => TaskStatus::Done,
         };
     }
-    let app = App::new(tasks, Duration::from_secs(300));
+    let mut app = App::new(tasks, Duration::from_secs(300));
 
     // Render at various sizes — must not panic
     for width in [40, 80, 120, 200] {
         for height in [10, 24, 50] {
-            let _ = render_to_buffer(&app, width, height);
+            let _ = render_to_buffer(&mut app, width, height);
         }
     }
 }
@@ -3275,7 +3275,7 @@ fn help_overlay_renders_when_active() {
     let mut app = make_app();
     app.input.mode = InputMode::Help;
 
-    let buf = render_to_buffer(&app, 80, 30);
+    let buf = render_to_buffer(&mut app, 80, 30);
     assert!(buffer_contains(&buf, "Navigation"));
     assert!(buffer_contains(&buf, "Actions"));
     assert!(buffer_contains(&buf, "General"));
@@ -3283,8 +3283,8 @@ fn help_overlay_renders_when_active() {
 
 #[test]
 fn help_overlay_hidden_in_normal_mode() {
-    let app = make_app();
-    let buf = render_to_buffer(&app, 80, 30);
+    let mut app = make_app();
+    let buf = render_to_buffer(&mut app, 80, 30);
     assert!(!buffer_contains(&buf, "Navigation"));
 }
 
@@ -3584,11 +3584,11 @@ fn confirm_delete_start_running_with_worktree_shows_warning() {
 
 #[test]
 fn focused_column_has_tinted_background() {
-    let app = App::new(vec![
+    let mut app = App::new(vec![
         make_task(1, TaskStatus::Backlog),
         make_task(2, TaskStatus::Ready),
     ], Duration::from_secs(300));
-    let buf = render_to_buffer(&app, 120, 20);
+    let buf = render_to_buffer(&mut app, 120, 20);
 
     // Focused column (Backlog, col 0) should have a tinted bg.
     // Check a row below the cursor card to avoid cursor highlight.
@@ -3947,8 +3947,8 @@ fn dispatch_is_noop_when_on_select_all() {
 
 #[test]
 fn render_shows_select_all_toggle_in_focused_column() {
-    let app = make_app();
-    let buf = render_to_buffer(&app, 120, 30);
+    let mut app = make_app();
+    let buf = render_to_buffer(&mut app, 120, 30);
     assert!(buffer_contains(&buf, "[ ]"));
     assert!(!buffer_contains(&buf, "Select [a]ll"));
 }
@@ -3957,14 +3957,14 @@ fn render_shows_select_all_toggle_in_focused_column() {
 fn render_shows_checked_toggle_when_all_selected() {
     let mut app = make_app();
     app.update(Message::SelectAllColumn);
-    let buf = render_to_buffer(&app, 120, 30);
+    let buf = render_to_buffer(&mut app, 120, 30);
     assert!(buffer_contains(&buf, "[x]"));
 }
 
 #[test]
 fn render_shows_unchecked_toggle_when_not_all_selected() {
-    let app = make_app();
-    let buf = render_to_buffer(&app, 120, 30);
+    let mut app = make_app();
+    let buf = render_to_buffer(&mut app, 120, 30);
     assert!(buffer_contains(&buf, "[ ]"));
 }
 
@@ -3975,4 +3975,58 @@ fn action_hints_include_select_all() {
     let spans = ui::action_hints(task, Color::Blue);
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(text.contains("select all"), "action hints should include 'select all'");
+}
+
+// ---------------------------------------------------------------------------
+// Column scrolling tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn column_scrolls_to_keep_cursor_visible() {
+    // Create 20 backlog tasks — more than fit in a 20-row terminal
+    let tasks: Vec<Task> = (1..=20)
+        .map(|id| make_task(id, TaskStatus::Backlog))
+        .collect();
+    let mut app = App::new(tasks, Duration::from_secs(300));
+
+    // Navigate down to the last task (row 19, past visible area)
+    for _ in 0..19 {
+        app.update(Message::NavigateRow(1));
+    }
+
+    // Render in a small terminal (height 20 with header/detail/status ~10 lines
+    // leaves roughly 10 lines for the column, fitting ~4-5 two-line task cards)
+    let buf = render_to_buffer(&mut app, 120, 20);
+
+    // The cursor should be on "Task 20" and it should be visible in the buffer
+    assert!(
+        buffer_contains(&buf, "Task 20"),
+        "cursor task should be visible after scrolling down"
+    );
+}
+
+#[test]
+fn column_scrolls_back_up_when_cursor_moves_up() {
+    let tasks: Vec<Task> = (1..=20)
+        .map(|id| make_task(id, TaskStatus::Backlog))
+        .collect();
+    let mut app = App::new(tasks, Duration::from_secs(300));
+
+    // Navigate to the bottom
+    for _ in 0..19 {
+        app.update(Message::NavigateRow(1));
+    }
+    // Render once to establish scroll state
+    let _ = render_to_buffer(&mut app, 120, 20);
+
+    // Navigate back to the top
+    for _ in 0..19 {
+        app.update(Message::NavigateRow(-1));
+    }
+    let buf = render_to_buffer(&mut app, 120, 20);
+
+    assert!(
+        buffer_contains(&buf, "Task 1"),
+        "first task should be visible after scrolling back up"
+    );
 }
