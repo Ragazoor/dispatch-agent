@@ -221,9 +221,9 @@ mod tests {
 
     #[test]
     fn editor_unknown_section_ignored() {
-        let input = "--- TITLE ---\nHello\n--- UNKNOWN ---\nStuff\n--- STATUS ---\nready\n";
+        let input = "--- TITLE ---\nHello\n--- UNKNOWN ---\nStuff\n--- STATUS ---\nbacklog\n";
         let fields = parse_editor_content(input);
         assert_eq!(fields.title, "Hello");
-        assert_eq!(fields.status, "ready");
+        assert_eq!(fields.status, "backlog");
     }
 }

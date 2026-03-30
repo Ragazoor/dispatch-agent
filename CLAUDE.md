@@ -166,7 +166,7 @@ Error popup ──any key──▶ dismisses
 - All subprocess calls go through `src/tmux.rs` or `src/dispatch.rs`, injected with a `ProcessRunner` (`src/process.rs`). Use `MockProcessRunner` in tests.
 - Tests use in-memory SQLite databases
 - **App field visibility**: All `App` fields use `pub(in crate::tui)` — accessible from `input.rs`, `ui.rs`, `tests.rs` but not outside the `tui` module. External code uses public accessor methods.
-- **Column count**: `TaskStatus::COLUMN_COUNT` is the canonical source. Never hardcode `4`.
+- **Column count**: `TaskStatus::COLUMN_COUNT` is the canonical source. Never hardcode the column count.
 - **Database abstraction**: `db::TaskStore` trait abstracts persistence. `TuiRuntime` and `McpState` hold `Arc<dyn TaskStore>`. Tests can provide mock implementations.
 - **Task lookup**: Use `App::find_task(id)` / `find_task_mut(id)` instead of inline `.iter().find()`.
 - **Error handling**: Message handlers should return `Vec<Command>` with error messages displayed via the status bar, never panic.
