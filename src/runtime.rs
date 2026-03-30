@@ -406,12 +406,12 @@ impl TuiRuntime {
         app.update(Message::RepoPathsUpdated(paths));
     }
 
-    fn exec_refresh_from_db(&self, app: &mut App) {
+    fn exec_refresh_from_db(&self, app: &mut App) -> Vec<Command> {
+        let mut cmds = Vec::new();
         // Re-read all tasks from SQLite to pick up MCP/CLI updates
         match self.database.list_all() {
             Ok(tasks) => {
-                let cmds = app.update(Message::RefreshTasks(tasks));
-                let _ = cmds;
+                cmds = app.update(Message::RefreshTasks(tasks));
             }
             Err(e) => {
                 app.update(Message::Error(Self::db_error("refreshing tasks", e)));
@@ -419,6 +419,15 @@ impl TuiRuntime {
         }
         // Also refresh epics
         self.exec_refresh_epics_from_db(app);
+        cmds
+    }
+
+    fn exec_send_notification(&self, _title: &str, _body: &str, _urgent: bool) {
+        // Stub — will be replaced in Task 5
+    }
+
+    fn exec_persist_setting(&self, _key: &str, _value: bool) {
+        // Stub — will be replaced in Task 5
     }
 
     fn exec_insert_epic(&self, app: &mut App, title: String, description: String, repo_path: String) {
@@ -698,8 +707,7 @@ async fn run_loop(
 
             // MCP mutation notification — immediate refresh
             Some(()) = mcp_notify_rx.recv() => {
-                rt.exec_refresh_from_db(app);
-                vec![]
+                rt.exec_refresh_from_db(app)
             }
 
             // Periodic tick for tmux capture
@@ -735,7 +743,18 @@ async fn execute_commands(
             Command::CaptureTmux { id, window } => rt.exec_capture_tmux(id, window),
             Command::EditTaskInEditor(task) => rt.exec_edit_in_editor(app, task, terminal)?,
             Command::SaveRepoPath(path) => rt.exec_save_repo_path(app, path),
-            Command::RefreshFromDb => rt.exec_refresh_from_db(app),
+            Command::RefreshFromDb => {
+                let extra = rt.exec_refresh_from_db(app);
+                for cmd in extra {
+                    match cmd {
+                        Command::SendNotification { title, body, urgent } =>
+                            rt.exec_send_notification(&title, &body, urgent),
+                        Command::PersistSetting { key, value } =>
+                            rt.exec_persist_setting(&key, value),
+                        _ => {} // Only notification-related commands expected from refresh
+                    }
+                }
+            }
             Command::Cleanup { id, repo_path, worktree, tmux_window } =>
                 rt.exec_cleanup(id, repo_path, worktree, tmux_window),
             Command::Resume { task } => rt.exec_resume(task),
@@ -753,8 +772,10 @@ async fn execute_commands(
             Command::PersistEpic { id, done } => rt.exec_persist_epic(app, id, done),
             Command::RefreshEpicsFromDb => rt.exec_refresh_epics_from_db(app),
             Command::DispatchEpic { epic } => rt.exec_dispatch_epic(app, epic),
-            Command::SendNotification { .. } => {}
-            Command::PersistSetting { .. } => {}
+            Command::SendNotification { title, body, urgent } =>
+                rt.exec_send_notification(&title, &body, urgent),
+            Command::PersistSetting { key, value } =>
+                rt.exec_persist_setting(&key, value),
         }
     }
 
@@ -840,6 +861,26 @@ mod tests {
         rt.exec_refresh_from_db(&mut app);
         assert_eq!(app.tasks().len(), 1);
         assert_eq!(app.tasks()[0].title, "External");
+    }
+
+    #[test]
+    fn exec_refresh_from_db_returns_commands_from_refresh() {
+        let (rt, mut app) = test_runtime();
+        // Insert a task directly into DB as Running
+        rt.database
+            .create_task("Test", "Desc", "/repo", None, models::TaskStatus::Running)
+            .unwrap();
+        // Load it into app
+        let cmds = rt.exec_refresh_from_db(&mut app);
+        assert!(cmds.is_empty()); // First load — no transition
+
+        // Now update it to Review directly in DB
+        let task = rt.database.list_all().unwrap()[0].clone();
+        rt.database.patch_task(task.id, &db::TaskPatch::new().status(models::TaskStatus::Review)).unwrap();
+
+        // Refresh should detect the transition and return a SendNotification
+        let cmds = rt.exec_refresh_from_db(&mut app);
+        assert!(cmds.iter().any(|c| matches!(c, Command::SendNotification { .. })));
     }
 
     #[test]
