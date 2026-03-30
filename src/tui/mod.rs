@@ -401,6 +401,12 @@ impl App {
             Message::WrapUpRebase => self.handle_wrap_up_rebase(),
             Message::WrapUpPr => self.handle_wrap_up_pr(),
             Message::CancelWrapUp => self.handle_cancel_wrap_up(),
+            // Epic batch wrap-up (Task 5)
+            Message::StartEpicWrapUp(_) => vec![],
+            Message::EpicWrapUpRebase => vec![],
+            Message::EpicWrapUpPr => vec![],
+            Message::CancelEpicWrapUp => vec![],
+            Message::CancelMergeQueue => vec![],
             // Review board
             Message::SwitchToReviewBoard => self.handle_switch_to_review_board(),
             Message::SwitchToTaskBoard => self.handle_switch_to_task_board(),

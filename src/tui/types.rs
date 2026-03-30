@@ -128,6 +128,12 @@ pub enum Message {
     WrapUpRebase,
     WrapUpPr,
     CancelWrapUp,
+    // Epic batch wrap-up
+    StartEpicWrapUp(EpicId),
+    EpicWrapUpRebase,
+    EpicWrapUpPr,
+    CancelEpicWrapUp,
+    CancelMergeQueue,
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +214,7 @@ pub enum InputMode {
     ConfirmDeleteEpic,
     ConfirmArchiveEpic,
     ConfirmEpicDone(EpicId),
+    ConfirmEpicWrapUp(EpicId),
     // Overlay modes
     Help,
     RepoFilter,
@@ -461,4 +468,24 @@ pub struct EpicDraft {
     pub title: String,
     pub description: String,
     pub repo_path: String,
+}
+
+// ---------------------------------------------------------------------------
+// MergeQueue — state for batch epic wrap-up
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeAction {
+    Rebase,
+    Pr,
+}
+
+#[derive(Debug, Clone)]
+pub struct MergeQueue {
+    pub epic_id: EpicId,
+    pub action: MergeAction,
+    pub task_ids: Vec<TaskId>,
+    pub completed: usize,
+    pub current: Option<TaskId>,
+    pub failed: Option<TaskId>,
 }

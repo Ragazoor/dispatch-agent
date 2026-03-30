@@ -1272,6 +1272,13 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(Color::Cyan));
             frame.render_widget(bar, area);
         }
+        InputMode::ConfirmEpicWrapUp(_) => {
+            let text = app.status_message.as_deref()
+                .unwrap_or("Epic wrap up: (r) rebase all  (p) PR all  (Esc) cancel");
+            let bar = Paragraph::new(text)
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(bar, area);
+        }
     }
 }
 

@@ -27,6 +27,7 @@ impl App {
             InputMode::ConfirmEpicDone(_) => self.handle_key_confirm_epic_done(key),
             InputMode::ConfirmDone(_) => self.handle_key_confirm_done(key),
             InputMode::ConfirmWrapUp(_) => self.handle_key_confirm_wrap_up(key),
+            InputMode::ConfirmEpicWrapUp(_) => vec![], // TODO: Task 6
             InputMode::Help => self.handle_key_help(key),
             InputMode::RepoFilter => self.handle_key_repo_filter(key),
             InputMode::InputPresetName => self.handle_key_input_preset_name(key),
