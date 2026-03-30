@@ -143,8 +143,12 @@ fn navigate_row_clamps() {
     // Backlog has 2 tasks (id 1, 2). Selected row starts at 0.
     app.selection_mut().set_column(0);
     app.update(Message::NavigateRow(-1));
-    assert_eq!(app.selection().row(0), 0); // can't go below 0
+    // Navigating up from row 0 now moves to the select-all toggle
+    assert!(app.on_select_all());
 
+    // Navigate back down to tasks and then past the end
+    app.update(Message::NavigateRow(1));
+    assert!(!app.on_select_all());
     app.update(Message::NavigateRow(10));
     assert_eq!(app.selection().row(0), 1); // clamps to last item index
 }
@@ -3732,4 +3736,84 @@ fn select_all_deselect_only_affects_current_column() {
     app.update(Message::SelectAllColumn);
     assert_eq!(app.selected_tasks.len(), 1);
     assert!(app.selected_tasks.contains(&TaskId(3)));
+}
+
+#[test]
+fn key_a_selects_all_in_column() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('a')));
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+}
+
+#[test]
+fn key_a_toggles_off_when_all_selected() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('a')));
+    assert_eq!(app.selected_tasks.len(), 2);
+    app.handle_key(make_key(KeyCode::Char('a')));
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn navigate_up_from_row_zero_enters_select_all_toggle() {
+    let mut app = make_app();
+    assert!(!app.on_select_all());
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+}
+
+#[test]
+fn navigate_down_from_toggle_exits_to_row_zero() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert!(!app.on_select_all());
+    assert_eq!(app.selected_row()[0], 0);
+}
+
+#[test]
+fn column_switch_preserves_on_select_all() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+    app.handle_key(make_key(KeyCode::Char('l')));
+    assert!(app.on_select_all());
+}
+
+#[test]
+fn enter_on_toggle_triggers_select_all() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    app.handle_key(make_key(KeyCode::Enter));
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+}
+
+#[test]
+fn esc_clears_selection_and_exits_toggle() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('a')));
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+    app.handle_key(make_key(KeyCode::Esc));
+    assert!(app.selected_tasks.is_empty());
+    assert!(!app.on_select_all());
+}
+
+#[test]
+fn space_is_noop_on_toggle_row() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn dispatch_is_noop_on_toggle_row() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert!(cmds.is_empty());
 }

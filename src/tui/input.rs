@@ -79,6 +79,8 @@ impl App {
                 }
             }
 
+            KeyCode::Char('a') => self.update(Message::SelectAllColumn),
+
             KeyCode::Char(' ') => {
                 if let Some(task) = self.selected_task() {
                     let id = task.id;
@@ -89,6 +91,9 @@ impl App {
             }
 
             KeyCode::Enter => {
+                if self.selection().on_select_all {
+                    return self.update(Message::SelectAllColumn);
+                }
                 match self.selected_column_item() {
                     Some(ColumnItem::Epic(epic)) => {
                         let id = epic.id;
@@ -158,7 +163,7 @@ impl App {
             KeyCode::Esc => {
                 if matches!(self.view_mode, ViewMode::Epic { .. }) {
                     self.update(Message::ExitEpic)
-                } else if !self.selected_tasks.is_empty() {
+                } else if !self.selected_tasks.is_empty() || self.selection().on_select_all {
                     self.update(Message::ClearSelection)
                 } else {
                     vec![]
