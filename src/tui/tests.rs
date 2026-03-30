@@ -4108,6 +4108,18 @@ fn refresh_tasks_skips_notification_when_disabled() {
 }
 
 #[test]
+fn key_n_uppercase_toggles_notifications() {
+    let mut app = make_app();
+    assert!(app.notifications_enabled());
+    let cmds = app.handle_key(make_key(KeyCode::Char('N')));
+    assert!(!app.notifications_enabled());
+    // Should emit PersistSetting command
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistSetting { .. })));
+    // Should show status message
+    assert!(app.status_message().unwrap().contains("disabled"));
+}
+
+#[test]
 fn refresh_tasks_clears_notified_when_task_leaves_review() {
     let mut app = make_app();
 
