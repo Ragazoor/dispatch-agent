@@ -31,16 +31,13 @@ Break down an implementation plan into individual tasks under an epic.
 1. Determine the epic ID (see above)
 2. Fetch the epic via MCP: `get_epic(epic_id)` to confirm it exists and get context
 3. Read the plan file and parse it into ordered steps/tasks
-4. For each step, one at a time:
-   a. Present the user with a proposed task:
+4. For each step, create the task immediately — do not ask for permission:
+   a. Determine:
       - **Title**: concise summary of the work item
       - **Description**: what needs to be done. If this task depends on earlier tasks, note the dependency as plain text (e.g., "Depends on: the task that implements X")
       - **Plan**: detailed implementation plan for this specific subtask
-   b. Ask: "Create this task? [y]es / [e]dit / [s]kip / [q]uit"
-   c. On **yes**: call MCP `create_task` with the proposed fields, including `epic_id`
-   d. On **edit**: let the user modify title/description/plan, then create
-   e. On **skip**: move to next item
-   f. On **quit**: stop processing, summarize what was created
+   b. Call MCP `create_task` with the proposed fields, including `epic_id`
+   c. Log the created task (ID, title) for the final summary
 5. After all items: summarize the tasks created (count, titles)
 
 ## Important
