@@ -51,6 +51,19 @@ pub(super) struct ClaimTaskArgs {
 }
 
 #[derive(Deserialize)]
+pub(super) struct ReportUsageArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) task_id: i64,
+    pub(super) cost_usd: f64,
+    pub(super) input_tokens: i64,
+    pub(super) output_tokens: i64,
+    #[serde(default)]
+    pub(super) cache_read_tokens: i64,
+    #[serde(default)]
+    pub(super) cache_write_tokens: i64,
+}
+
+#[derive(Deserialize)]
 pub(super) struct CreateTaskWithEpicArgs {
     pub(super) title: String,
     pub(super) repo_path: String,
@@ -495,4 +508,30 @@ pub(super) fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Value) -
         id,
         json!({"content": [{"type": "text", "text": format!("wrap_up started (task {}, action: {})", parsed.task_id, parsed.action)}]}),
     )
+}
+
+pub(super) fn handle_report_usage(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
+    let parsed = match parse_args::<ReportUsageArgs>(id.clone(), args) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    tracing::info!(task_id = parsed.task_id, cost_usd = parsed.cost_usd, "MCP report_usage");
+
+    match state.db.report_usage(
+        TaskId(parsed.task_id),
+        parsed.cost_usd,
+        parsed.input_tokens,
+        parsed.output_tokens,
+        parsed.cache_read_tokens,
+        parsed.cache_write_tokens,
+    ) {
+        Ok(()) => {
+            state.notify();
+            JsonRpcResponse::ok(
+                id,
+                json!({"content": [{"type": "text", "text": format!("Usage recorded for task {}", parsed.task_id)}]}),
+            )
+        }
+        Err(e) => JsonRpcResponse::err(id, -32000, format!("Failed to record usage: {e}")),
+    }
 }

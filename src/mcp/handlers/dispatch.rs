@@ -205,6 +205,22 @@ pub(super) fn tool_definitions() -> Value {
                     },
                     "required": ["task_id", "action"]
                 }
+            },
+            {
+                "name": "report_usage",
+                "description": "Report token usage and cost for a task session. Accumulates across sessions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id":            { "type": "integer", "description": "The task ID" },
+                        "cost_usd":           { "type": "number",  "description": "Session cost in USD" },
+                        "input_tokens":       { "type": "integer", "description": "Input tokens used" },
+                        "output_tokens":      { "type": "integer", "description": "Output tokens used" },
+                        "cache_read_tokens":  { "type": "integer", "description": "Cache read tokens (optional)" },
+                        "cache_write_tokens": { "type": "integer", "description": "Cache write tokens (optional)" }
+                    },
+                    "required": ["task_id", "cost_usd", "input_tokens", "output_tokens"]
+                }
             }
         ]
     })
@@ -246,6 +262,7 @@ pub async fn handle_mcp(
                 "create_task" => tasks::handle_create_task(&state, id, args),
                 "list_tasks" => tasks::handle_list_tasks(&state, id, args),
                 "claim_task" => tasks::handle_claim_task(&state, id, args),
+                "report_usage" => tasks::handle_report_usage(&state, id, args),
                 "create_epic" => epics::handle_create_epic(&state, id, args),
                 "get_epic" => epics::handle_get_epic(&state, id, args),
                 "list_epics" => epics::handle_list_epics(&state, id, args),

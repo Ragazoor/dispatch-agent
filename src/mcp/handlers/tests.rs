@@ -9,7 +9,7 @@ use crate::mcp::McpState;
 use crate::process::{ProcessRunner, MockProcessRunner};
 
 use super::dispatch::{handle_mcp, tool_definitions};
-use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs, WrapUpArgs};
+use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs, WrapUpArgs, ReportUsageArgs};
 use super::epics::{CreateEpicArgs, GetEpicArgs, UpdateEpicArgs};
 use super::types::{JsonRpcRequest, JsonRpcResponse};
 
@@ -685,6 +685,58 @@ async fn claim_task_not_found() {
     assert!(resp.error.unwrap().message.contains("not found"));
 }
 
+#[tokio::test]
+async fn report_usage_stores_and_accumulates() {
+    let state = test_state();
+    let task_id = create_task_fixture(&state);
+
+    // First session
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "report_usage",
+            "arguments": {
+                "task_id": task_id.0,
+                "cost_usd": 0.10,
+                "input_tokens": 1000,
+                "output_tokens": 500
+            }
+        })),
+    )
+    .await;
+    assert!(resp.error.is_none(), "first call failed: {:?}", resp.error);
+
+    // Second session — should accumulate
+    let resp2 = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "report_usage",
+            "arguments": {
+                "task_id": task_id.0,
+                "cost_usd": 0.05,
+                "input_tokens": 500,
+                "output_tokens": 250,
+                "cache_read_tokens": 100,
+                "cache_write_tokens": 50
+            }
+        })),
+    )
+    .await;
+    assert!(resp2.error.is_none(), "second call failed: {:?}", resp2.error);
+
+    let all = state.db.get_all_usage().unwrap();
+    assert_eq!(all.len(), 1);
+    let u = &all[0];
+    assert_eq!(u.task_id, task_id);
+    assert!((u.cost_usd - 0.15).abs() < 1e-9);
+    assert_eq!(u.input_tokens, 1_500);
+    assert_eq!(u.output_tokens, 750);
+    assert_eq!(u.cache_read_tokens, 100);
+    assert_eq!(u.cache_write_tokens, 50);
+}
+
 /// Validates that JSON schemas in `tool_definitions()` match the argument structs.
 /// Catches drift when a field is added/removed from a struct but not the schema
 /// (or vice versa). The `expected_props` lists must be kept in sync with struct
@@ -780,6 +832,14 @@ fn tool_schemas_match_arg_structs() {
             BTreeSet::from(["task_id", "action"]),
             json!({"task_id": 1, "action": "rebase"}),
         ),
+        (
+            "report_usage",
+            BTreeSet::from(["task_id", "cost_usd", "input_tokens", "output_tokens",
+                             "cache_read_tokens", "cache_write_tokens"]),
+            BTreeSet::from(["task_id", "cost_usd", "input_tokens", "output_tokens"]),
+            json!({"task_id": 1, "cost_usd": 0.42, "input_tokens": 1000,
+                   "output_tokens": 500, "cache_read_tokens": 100, "cache_write_tokens": 50}),
+        ),
     ];
 
     // Verify we cover exactly the tools that exist
@@ -807,6 +867,7 @@ fn tool_schemas_match_arg_structs() {
             "create_task" => { serde_json::from_value::<CreateTaskWithEpicArgs>(payload.clone()).unwrap(); }
             "list_tasks" => { serde_json::from_value::<ListTasksArgs>(payload.clone()).unwrap(); }
             "claim_task" => { serde_json::from_value::<ClaimTaskArgs>(payload.clone()).unwrap(); }
+            "report_usage" => { serde_json::from_value::<ReportUsageArgs>(payload.clone()).unwrap(); }
             "create_epic" => { serde_json::from_value::<CreateEpicArgs>(payload.clone()).unwrap(); }
             "get_epic" => { serde_json::from_value::<GetEpicArgs>(payload.clone()).unwrap(); }
             "list_epics" => {} // no args
