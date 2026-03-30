@@ -144,8 +144,12 @@ fn navigate_row_clamps() {
     // Backlog has 2 tasks (id 1, 2). Selected row starts at 0.
     app.selection_mut().set_column(0);
     app.update(Message::NavigateRow(-1));
-    assert_eq!(app.selection().row(0), 0); // can't go below 0
+    // Navigating up from row 0 now moves to the select-all toggle
+    assert!(app.on_select_all());
 
+    // Navigate back down to tasks and then past the end
+    app.update(Message::NavigateRow(1));
+    assert!(!app.on_select_all());
     app.update(Message::NavigateRow(10));
     assert_eq!(app.selection().row(0), 1); // clamps to last item index
 }
@@ -3499,11 +3503,12 @@ fn focused_column_has_tinted_background() {
     ], Duration::from_secs(300));
     let buf = render_to_buffer(&app, 120, 20);
 
-    // Focused column (Backlog, col 0) should have a tinted bg
+    // Focused column (Backlog, col 0) should have a tinted bg.
+    // Check a row below the cursor card to avoid cursor highlight.
     let expected_bg = Color::Rgb(28, 30, 44);
     let col_width = 120 / 5;
-    let cell = &buf[(1, 3)];
-    let cell2 = &buf[(col_width + 1, 3)];
+    let cell = &buf[(1, 5)];
+    let cell2 = &buf[(col_width + 1, 5)];
 
     assert_eq!(cell.bg, expected_bg, "Focused column should have tinted background");
     assert_ne!(cell2.bg, expected_bg, "Unfocused column should NOT have tinted background");
@@ -3697,4 +3702,189 @@ fn status_message_does_not_clear_during_interactive_mode() {
     // Tick should NOT clear it during an interactive mode
     app.update(Message::Tick);
     assert!(app.status_message.is_some(), "should not clear during interactive mode");
+}
+
+// ---------------------------------------------------------------------------
+// Select-all toggle
+// ---------------------------------------------------------------------------
+
+#[test]
+fn on_select_all_defaults_to_false() {
+    let app = make_app();
+    assert!(!app.on_select_all());
+}
+
+#[test]
+fn select_all_column_selects_all_tasks_in_column() {
+    let mut app = make_app();
+    // Cursor is on Backlog (column 0) which has tasks 1, 2
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+    assert_eq!(app.selected_tasks.len(), 2);
+}
+
+#[test]
+fn select_all_column_deselects_when_all_selected() {
+    let mut app = make_app();
+    app.update(Message::SelectAllColumn);
+    assert_eq!(app.selected_tasks.len(), 2);
+
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn select_all_column_selects_remaining_when_partially_selected() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(1)));
+    assert_eq!(app.selected_tasks.len(), 1);
+
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+    assert_eq!(app.selected_tasks.len(), 2);
+}
+
+#[test]
+fn select_all_column_noop_on_empty_column() {
+    let mut app = make_app();
+    // Navigate to Review column (empty in make_app)
+    app.update(Message::NavigateColumn(3));
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn select_all_column_only_affects_current_column() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(3)));
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+    assert!(app.selected_tasks.contains(&TaskId(3)));
+    assert_eq!(app.selected_tasks.len(), 3);
+}
+
+#[test]
+fn select_all_deselect_only_affects_current_column() {
+    let mut app = make_app();
+    app.update(Message::ToggleSelect(TaskId(3)));
+    app.update(Message::SelectAllColumn);
+    assert_eq!(app.selected_tasks.len(), 3);
+
+    app.update(Message::SelectAllColumn);
+    assert_eq!(app.selected_tasks.len(), 1);
+    assert!(app.selected_tasks.contains(&TaskId(3)));
+}
+
+#[test]
+fn key_a_selects_all_in_column() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('a')));
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+}
+
+#[test]
+fn key_a_toggles_off_when_all_selected() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('a')));
+    assert_eq!(app.selected_tasks.len(), 2);
+    app.handle_key(make_key(KeyCode::Char('a')));
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn navigate_up_from_row_zero_enters_select_all_toggle() {
+    let mut app = make_app();
+    assert!(!app.on_select_all());
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+}
+
+#[test]
+fn navigate_down_from_toggle_exits_to_row_zero() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert!(!app.on_select_all());
+    assert_eq!(app.selected_row()[0], 0);
+}
+
+#[test]
+fn column_switch_preserves_on_select_all() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+    app.handle_key(make_key(KeyCode::Char('l')));
+    assert!(app.on_select_all());
+}
+
+#[test]
+fn enter_on_toggle_triggers_select_all() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    app.handle_key(make_key(KeyCode::Enter));
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_tasks.contains(&TaskId(2)));
+}
+
+#[test]
+fn esc_clears_selection_and_exits_toggle() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('a')));
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert!(app.on_select_all());
+    app.handle_key(make_key(KeyCode::Esc));
+    assert!(app.selected_tasks.is_empty());
+    assert!(!app.on_select_all());
+}
+
+#[test]
+fn space_is_noop_on_toggle_row() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn dispatch_is_noop_on_toggle_row() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('k')));
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn render_shows_select_all_toggle_in_focused_column() {
+    let app = make_app();
+    let buf = render_to_buffer(&app, 120, 30);
+    assert!(buffer_contains(&buf, "Select [a]ll"));
+}
+
+#[test]
+fn render_shows_checked_toggle_when_all_selected() {
+    let mut app = make_app();
+    app.update(Message::SelectAllColumn);
+    let buf = render_to_buffer(&app, 120, 30);
+    assert!(buffer_contains(&buf, "[x]"));
+}
+
+#[test]
+fn render_shows_unchecked_toggle_when_not_all_selected() {
+    let app = make_app();
+    let buf = render_to_buffer(&app, 120, 30);
+    assert!(buffer_contains(&buf, "[ ]"));
+}
+
+#[test]
+fn action_hints_include_select_all() {
+    let app = make_app();
+    let task = app.selected_task();
+    let spans = ui::action_hints(task, Color::Blue);
+    let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    assert!(text.contains("select all"), "action hints should include 'select all'");
 }

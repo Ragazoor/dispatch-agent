@@ -99,6 +99,7 @@ impl App {
     pub fn show_archived(&self) -> bool { self.archive.visible }
     pub fn selected_archive_row(&self) -> usize { self.archive.selected_row }
     pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
+    pub fn on_select_all(&self) -> bool { self.selection().on_select_all }
     pub fn merge_conflict_tasks(&self) -> &HashSet<TaskId> { &self.merge_conflict_tasks }
 
     /// Set a transient status message with auto-clear timestamp.
@@ -174,6 +175,9 @@ impl App {
 
     /// Return the item (task or epic) currently under the cursor.
     pub fn selected_column_item(&self) -> Option<ColumnItem<'_>> {
+        if self.selection().on_select_all {
+            return None;
+        }
         let col = self.selection().column();
         let status = TaskStatus::from_column_index(col)?;
         let items = self.column_items_for_status(status);
@@ -283,6 +287,7 @@ impl App {
             Message::ToggleArchive => self.handle_toggle_archive(),
             Message::ToggleSelect(id) => self.handle_toggle_select(id),
             Message::ClearSelection => self.handle_clear_selection(),
+            Message::SelectAllColumn => self.handle_select_all_column(),
             Message::BatchMoveTasks { ids, direction } => self.handle_batch_move_tasks(ids, direction),
             Message::BatchArchiveTasks(ids) => self.handle_batch_archive_tasks(ids),
             Message::DismissError => self.handle_dismiss_error(),
@@ -350,12 +355,32 @@ impl App {
 
     fn handle_navigate_row(&mut self, delta: isize) -> Vec<Command> {
         let col = self.selection().column();
-        if let Some(status) = TaskStatus::from_column_index(col) {
-            let count = self.column_items_for_status(status).len();
-            if count > 0 {
-                let current = self.selection().row(col);
+        let Some(status) = TaskStatus::from_column_index(col) else {
+            return vec![];
+        };
+        let count = self.column_items_for_status(status).len();
+
+        if self.selection().on_select_all {
+            // On the toggle row
+            if delta > 0 && count > 0 {
+                // Move down into task list
+                self.selection_mut().on_select_all = false;
+                self.selection_mut().set_row(col, 0);
+            }
+            // delta <= 0 or empty column: stay on toggle (already at top)
+        } else if count > 0 {
+            let current = self.selection().row(col);
+            if current == 0 && delta < 0 {
+                // Move up from first task to toggle row
+                self.selection_mut().on_select_all = true;
+            } else {
                 let new_row = (current as isize + delta).clamp(0, count as isize - 1) as usize;
                 self.selection_mut().set_row(col, new_row);
+            }
+        } else {
+            // Empty column: move to toggle
+            if delta < 0 {
+                self.selection_mut().on_select_all = true;
             }
         }
         vec![]
@@ -768,6 +793,33 @@ impl App {
 
     fn handle_clear_selection(&mut self) -> Vec<Command> {
         self.selected_tasks.clear();
+        self.selection_mut().on_select_all = false;
+        vec![]
+    }
+
+    fn handle_select_all_column(&mut self) -> Vec<Command> {
+        let col = self.selection().column();
+        let Some(status) = TaskStatus::from_column_index(col) else {
+            return vec![];
+        };
+        let column_task_ids: Vec<TaskId> = self
+            .tasks_by_status(status)
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        if column_task_ids.is_empty() {
+            return vec![];
+        }
+        let all_selected = column_task_ids.iter().all(|id| self.selected_tasks.contains(id));
+        if all_selected {
+            for id in &column_task_ids {
+                self.selected_tasks.remove(id);
+            }
+        } else {
+            for id in column_task_ids {
+                self.selected_tasks.insert(id);
+            }
+        }
         vec![]
     }
 

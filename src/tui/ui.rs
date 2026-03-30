@@ -262,6 +262,32 @@ fn build_task_list_item<'a>(
     item
 }
 
+fn build_select_all_toggle<'a>(
+    app: &App,
+    status: TaskStatus,
+    is_focused: bool,
+) -> ListItem<'a> {
+    let column_task_ids: Vec<_> = app.tasks_by_status(status).iter().map(|t| t.id).collect();
+    let all_selected = !column_task_ids.is_empty()
+        && column_task_ids.iter().all(|id| app.selected_tasks().contains(id));
+
+    let checkbox = if all_selected { "[x]" } else { "[ ]" };
+    let text = format!("  {} Select [a]ll", checkbox);
+
+    let is_cursor_on_toggle = is_focused && app.on_select_all();
+
+    let style = if is_cursor_on_toggle {
+        Style::default()
+            .bg(cursor_bg_color(status))
+            .fg(Color::Rgb(192, 202, 245))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Rgb(86, 95, 137))
+    };
+
+    ListItem::new(Line::from(Span::styled(text, style)))
+}
+
 fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
     let column_areas = Layout::default()
         .direction(Direction::Horizontal)
@@ -275,20 +301,25 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
         let is_focused = app.selected_column() == col_idx;
         let color = column_color(status);
 
+        let toggle_item = build_select_all_toggle(app, status, is_focused);
+
         let column_items = app.column_items_for_status(status);
         let selected_row = app.selected_row()[col_idx];
 
-        let items: Vec<ListItem> = column_items
+        let task_items: Vec<ListItem> = column_items
             .iter()
             .enumerate()
             .map(|(row_idx, item)| {
-                let is_cursor = is_focused && row_idx == selected_row;
+                let is_cursor = is_focused && !app.on_select_all() && row_idx == selected_row;
                 match item {
                     ColumnItem::Task(task) => build_task_list_item(task, status, app, now, is_cursor, color),
                     ColumnItem::Epic(epic) => render_epic_item(epic, is_cursor, app, status),
                 }
             })
             .collect();
+
+        let mut items = vec![toggle_item];
+        items.extend(task_items);
 
         if is_focused {
             let block = Block::default()
@@ -807,10 +838,11 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  H", key), Span::styled(" history    ", desc),
             Span::styled("V", key), Span::styled(" epic done  ", desc),
-            Span::styled("Space", key), Span::styled(" select", desc),
+            Span::styled("a", key), Span::styled(" select all", desc),
         ]),
         Line::from(vec![
-            Span::styled("  f", key), Span::styled(" finish     ", desc),
+            Span::styled("  Space", key), Span::styled(" select  ", desc),
+            Span::styled("f", key), Span::styled(" finish     ", desc),
             Span::styled("(Review: merge + clean up worktree)", note),
         ]),
         Line::from(""),
@@ -1011,6 +1043,7 @@ pub(in crate::tui) fn action_hints(task: Option<&Task>, key_color: Color) -> Vec
         }
     }
 
+    push_hint("a", "select all");
     push_hint("n", "new");
     push_hint("E", "epic");
     push_hint("D", "quick");
@@ -1036,6 +1069,7 @@ fn batch_action_hints(count: usize, key_color: Color) -> Vec<Span<'static>> {
     push_hint("m", "move");
     push_hint("M", "back");
     push_hint("x", "archive");
+    push_hint("a", "select all");
     push_hint("Space", "toggle");
     push_hint("Esc", "clear");
     spans
