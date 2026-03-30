@@ -548,7 +548,7 @@ impl TuiRuntime {
             .unwrap_or(false);
 
         if shared {
-            tracing::info!(task_id = id.0, "worktree shared, detaching only (no merge)");
+            tracing::info!(task_id = id.0, "worktree shared, detaching only (no rebase)");
             if let Err(e) = self
                 .database
                 .patch_task(id, &db::TaskPatch::new().worktree(None).tmux_window(None))
@@ -567,6 +567,7 @@ impl TuiRuntime {
         tokio::task::spawn_blocking(move || {
             match dispatch::finish_task(
                 &repo_path,
+                &worktree,
                 &branch,
                 tmux_window.as_deref(),
                 &*runner,
@@ -575,7 +576,7 @@ impl TuiRuntime {
                     let _ = tx.send(Message::FinishComplete(id));
                 }
                 Err(e) => {
-                    let is_conflict = matches!(e, dispatch::FinishError::MergeConflict(_));
+                    let is_conflict = matches!(e, dispatch::FinishError::RebaseConflict(_));
                     let _ = tx.send(Message::FinishFailed {
                         id,
                         error: e.to_string(),
@@ -1086,7 +1087,8 @@ mod tests {
         let mock = Arc::new(MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
             MockProcessRunner::fail(""),                   // remote get-url (no remote)
-            MockProcessRunner::ok(),                       // git merge --no-ff
+            MockProcessRunner::ok(),                       // git rebase main (from worktree)
+            MockProcessRunner::ok(),                       // git merge --ff-only (fast-forward)
             // cleanup_task internals (no tmux window):
             MockProcessRunner::ok(),                       // git worktree remove
             MockProcessRunner::ok(),                       // git branch -D (best-effort)
@@ -1134,10 +1136,10 @@ mod tests {
             MockProcessRunner::fail(""),                   // remote get-url (no remote)
             Ok(Output {
                 status: exit_fail(),
-                stdout: b"CONFLICT (content): Merge conflict\n".to_vec(),
-                stderr: b"Automatic merge failed\n".to_vec(),
+                stdout: b"".to_vec(),
+                stderr: b"CONFLICT (content): Merge conflict in file.rs\nerror: could not apply abc1234\n".to_vec(),
             }),
-            MockProcessRunner::ok(), // git merge --abort
+            MockProcessRunner::ok(), // git rebase --abort
         ]));
         let rt = TuiRuntime {
             database: db.clone(),

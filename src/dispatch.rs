@@ -148,11 +148,11 @@ pub fn cleanup_task(
 // finish_task
 // ---------------------------------------------------------------------------
 
-/// Errors from the finish (merge + cleanup) operation.
+/// Errors from the finish (rebase + cleanup) operation.
 #[derive(Debug)]
 pub enum FinishError {
     NotOnMain(String),
-    MergeConflict(String),
+    RebaseConflict(String),
     Other(String),
 }
 
@@ -163,23 +163,25 @@ impl std::fmt::Display for FinishError {
                 f,
                 "Repo root is not on main (currently on {branch}) — checkout main first"
             ),
-            FinishError::MergeConflict(branch) => {
-                write!(f, "Merge conflict on {branch} — resolve and try again")
+            FinishError::RebaseConflict(branch) => {
+                write!(f, "Rebase conflict on {branch} — resolve and try again")
             }
             FinishError::Other(msg) => write!(f, "{msg}"),
         }
     }
 }
 
-/// Merge the task branch into main (from the repo root) and kill the tmux window.
+/// Rebase the task branch onto main and fast-forward main, then kill the tmux window.
 /// The worktree is preserved — it will be cleaned up when the task is archived.
 pub fn finish_task(
     repo_path: &str,
+    worktree: &str,
     branch: &str,
     tmux_window: Option<&str>,
     runner: &dyn ProcessRunner,
 ) -> std::result::Result<(), FinishError> {
     let repo_path = &expand_tilde(repo_path);
+    let worktree = &expand_tilde(worktree);
 
     // 1. Verify we're on main
     let output = runner
@@ -209,30 +211,42 @@ pub fn finish_task(
         }
     }
 
-    // 3. Merge with --no-ff
+    // 3. Rebase branch onto main (from worktree, where branch is checked out)
     let output = runner
-        .run("git", &["-C", repo_path, "merge", "--no-ff", branch])
-        .map_err(|e| FinishError::Other(format!("Failed to run git merge: {e}")))?;
+        .run("git", &["-C", worktree, "rebase", "main"])
+        .map_err(|e| FinishError::Other(format!("Failed to run git rebase: {e}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
         let is_conflict = stderr.contains("CONFLICT")
             || stdout.contains("CONFLICT")
-            || stderr.contains("Automatic merge failed");
+            || stderr.contains("could not apply")
+            || stderr.contains("Merge conflict");
 
-        // Abort the merge
-        let _ = runner.run("git", &["-C", repo_path, "merge", "--abort"]);
+        let _ = runner.run("git", &["-C", worktree, "rebase", "--abort"]);
 
         if is_conflict {
-            return Err(FinishError::MergeConflict(branch.to_string()));
+            return Err(FinishError::RebaseConflict(branch.to_string()));
         }
         return Err(FinishError::Other(format!(
-            "Merge failed: {}",
+            "Rebase failed: {}",
             stderr.trim()
         )));
     }
 
-    // 4. Kill tmux window (worktree is preserved for later archival)
+    // 4. Fast-forward main to the rebased branch
+    let output = runner
+        .run("git", &["-C", repo_path, "merge", "--ff-only", branch])
+        .map_err(|e| FinishError::Other(format!("Failed to fast-forward main: {e}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(FinishError::Other(format!(
+            "Fast-forward failed after rebase: {}",
+            stderr.trim()
+        )));
+    }
+
+    // 5. Kill tmux window (worktree is preserved for later archival)
     if let Some(window) = tmux_window {
         match tmux::has_window(window, runner) {
             Ok(true) => {
@@ -876,17 +890,18 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"main\n"),       // rev-parse HEAD
             MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url origin
             MockProcessRunner::ok(),                             // git pull origin main
-            MockProcessRunner::ok(),                             // git merge --no-ff
+            MockProcessRunner::ok(),                             // git rebase main (from worktree)
+            MockProcessRunner::ok(),                             // git merge --ff-only (fast-forward main)
             // Only tmux kill (worktree preserved for archival):
             MockProcessRunner::ok_with_stdout(b"task-42\n"),     // tmux list-windows (has_window)
             MockProcessRunner::ok(),                             // tmux kill-window
         ]);
 
-        finish_task("/repo", "42-fix-bug", Some("task-42"), &mock).unwrap();
+        finish_task("/repo", "/repo/.worktrees/42-fix-bug", "42-fix-bug", Some("task-42"), &mock).unwrap();
 
         let calls = mock.recorded_calls();
-        assert!(calls.iter().any(|c| c.1.contains(&"merge".to_string())));
-        assert!(calls.iter().any(|c| c.1.contains(&"--no-ff".to_string())));
+        assert!(calls.iter().any(|c| c.1.contains(&"rebase".to_string())));
+        assert!(calls.iter().any(|c| c.1.contains(&"--ff-only".to_string())));
         // No worktree removal
         assert!(!calls.iter().any(|c| c.1.contains(&"remove".to_string())));
     }
@@ -897,7 +912,7 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"feature-branch\n"),
         ]);
 
-        let result = finish_task("/repo", "42-fix-bug", None, &mock);
+        let result = finish_task("/repo", "/repo/.worktrees/42-fix-bug", "42-fix-bug", None, &mock);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, FinishError::NotOnMain(_)));
@@ -906,20 +921,20 @@ mod tests {
     }
 
     #[test]
-    fn finish_task_merge_conflict() {
+    fn finish_task_rebase_conflict() {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"),
             MockProcessRunner::fail(""),                         // remote get-url (no remote)
             Ok(Output {
                 status: exit_fail(),
-                stdout: b"CONFLICT (content): Merge conflict in src/main.rs\n".to_vec(),
-                stderr: b"Automatic merge failed; fix conflicts and then commit the result.\n".to_vec(),
+                stdout: b"".to_vec(),
+                stderr: b"CONFLICT (content): Merge conflict in src/main.rs\nerror: could not apply abc1234\n".to_vec(),
             }),
-            MockProcessRunner::ok(),                             // git merge --abort
+            MockProcessRunner::ok(),                             // git rebase --abort
         ]);
 
-        let result = finish_task("/repo", "42-fix-bug", None, &mock);
-        assert!(matches!(result.unwrap_err(), FinishError::MergeConflict(_)));
+        let result = finish_task("/repo", "/repo/.worktrees/42-fix-bug", "42-fix-bug", None, &mock);
+        assert!(matches!(result.unwrap_err(), FinishError::RebaseConflict(_)));
         let calls = mock.recorded_calls();
         assert!(calls.last().unwrap().1.contains(&"--abort".to_string()));
     }
@@ -932,7 +947,7 @@ mod tests {
             MockProcessRunner::fail("fatal: unable to access remote"),            // git pull fails
         ]);
 
-        let result = finish_task("/repo", "42-fix-bug", None, &mock);
+        let result = finish_task("/repo", "/repo/.worktrees/42-fix-bug", "42-fix-bug", None, &mock);
         assert!(matches!(result.unwrap_err(), FinishError::Other(_)));
     }
 
@@ -1046,11 +1061,12 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"),       // rev-parse HEAD
             MockProcessRunner::fail(""),                         // remote get-url (no remote)
-            MockProcessRunner::ok(),                             // git merge --no-ff
+            MockProcessRunner::ok(),                             // git rebase main (from worktree)
+            MockProcessRunner::ok(),                             // git merge --ff-only (fast-forward)
             // No tmux window, no cleanup
         ]);
 
-        finish_task("/repo", "42-fix-bug", None, &mock).unwrap();
+        finish_task("/repo", "/repo/.worktrees/42-fix-bug", "42-fix-bug", None, &mock).unwrap();
         let calls = mock.recorded_calls();
         // Should not have a "pull" call
         assert!(!calls.iter().any(|c| c.1.contains(&"pull".to_string())));

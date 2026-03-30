@@ -3395,7 +3395,7 @@ fn finish_task_shows_confirmation() {
 
     app.update(Message::FinishTask(TaskId(1)));
     assert!(matches!(app.input.mode, InputMode::ConfirmFinish(TaskId(1))));
-    assert!(app.status_message.as_ref().unwrap().contains("merge"));
+    assert!(app.status_message.as_ref().unwrap().contains("rebase"));
 }
 
 #[test]
@@ -3455,11 +3455,11 @@ fn finish_failed_with_conflict_sets_flag() {
 
     app.update(Message::FinishFailed {
         id: TaskId(1),
-        error: "Merge conflict".to_string(),
+        error: "Rebase conflict".to_string(),
         is_conflict: true,
     });
-    assert!(app.merge_conflict_tasks().contains(&TaskId(1)));
-    assert!(app.status_message.as_ref().unwrap().contains("Merge conflict"));
+    assert!(app.rebase_conflict_tasks().contains(&TaskId(1)));
+    assert!(app.status_message.as_ref().unwrap().contains("Rebase conflict"));
 }
 
 #[test]
@@ -3475,7 +3475,7 @@ fn finish_failed_without_conflict_does_not_set_flag() {
         error: "Not on main".to_string(),
         is_conflict: false,
     });
-    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+    assert!(!app.rebase_conflict_tasks().contains(&TaskId(1)));
 }
 
 #[test]
@@ -3491,10 +3491,10 @@ fn conflict_flag_clears_on_dispatch() {
         error: "conflict".to_string(),
         is_conflict: true,
     });
-    assert!(app.merge_conflict_tasks().contains(&TaskId(1)));
+    assert!(app.rebase_conflict_tasks().contains(&TaskId(1)));
 
     app.update(Message::Resumed { id: TaskId(1), tmux_window: "task-1".to_string() });
-    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+    assert!(!app.rebase_conflict_tasks().contains(&TaskId(1)));
 }
 
 #[test]
@@ -3512,7 +3512,7 @@ fn conflict_flag_clears_on_move_backward() {
     });
 
     app.update(Message::MoveTask { id: TaskId(1), direction: MoveDirection::Backward });
-    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+    assert!(!app.rebase_conflict_tasks().contains(&TaskId(1)));
 }
 
 #[test]
@@ -3532,7 +3532,7 @@ fn confirm_finish_clears_conflict_flag() {
 
     app.update(Message::FinishTask(TaskId(1)));
     app.update(Message::ConfirmFinish);
-    assert!(!app.merge_conflict_tasks().contains(&TaskId(1)));
+    assert!(!app.rebase_conflict_tasks().contains(&TaskId(1)));
 }
 
 #[test]

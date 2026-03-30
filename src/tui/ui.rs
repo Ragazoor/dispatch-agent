@@ -228,14 +228,14 @@ fn build_task_list_item<'a>(
     ]);
 
     // Line 2: metadata
-    let is_conflict = app.merge_conflict_tasks().contains(&task.id);
+    let is_conflict = app.rebase_conflict_tasks().contains(&task.id);
     let is_crashed = app.crashed_tasks().contains(&task.id);
     let is_stale = app.stale_tasks().contains(&task.id);
 
     let line2 = if is_conflict {
         Line::from(vec![
             Span::raw("   "),
-            Span::styled("\u{26a0} merge conflict", Style::default().fg(Color::Red)),
+            Span::styled("\u{26a0} rebase conflict", Style::default().fg(Color::Red)),
         ])
     } else if is_crashed {
         Line::from(vec![
@@ -962,7 +962,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(bar, area);
         }
         InputMode::ConfirmFinish(_) => {
-            let bar = Paragraph::new("Finish: merge to main and clean up? (y/n)")
+            let bar = Paragraph::new("Finish: rebase onto main and clean up? (y/n)")
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(bar, area);
         }

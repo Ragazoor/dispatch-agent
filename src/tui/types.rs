@@ -87,7 +87,7 @@ pub enum Message {
     SubmitEpicTitle(String),
     SubmitEpicDescription(String),
     SubmitEpicRepoPath(String),
-    // Finish (merge + cleanup)
+    // Finish (rebase + cleanup)
     FinishTask(TaskId),
     ConfirmFinish,
     CancelFinish,

@@ -27,7 +27,7 @@ pub struct App {
     pub(in crate::tui) agents: AgentTracking,
     pub(in crate::tui) archive: ArchiveState,
     pub(in crate::tui) selected_tasks: HashSet<TaskId>,
-    pub(in crate::tui) merge_conflict_tasks: HashSet<TaskId>,
+    pub(in crate::tui) rebase_conflict_tasks: HashSet<TaskId>,
     pub(in crate::tui) pending_done_tasks: Vec<TaskId>,
     pub(in crate::tui) notifications_enabled: bool,
 }
@@ -58,7 +58,7 @@ impl App {
             agents: AgentTracking::new(inactivity_timeout),
             archive: ArchiveState::default(),
             selected_tasks: HashSet::new(),
-            merge_conflict_tasks: HashSet::new(),
+            rebase_conflict_tasks: HashSet::new(),
             pending_done_tasks: Vec::new(),
             notifications_enabled: true,
         }
@@ -102,7 +102,7 @@ impl App {
     pub fn selected_archive_row(&self) -> usize { self.archive.selected_row }
     pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
     pub fn on_select_all(&self) -> bool { self.selection().on_select_all }
-    pub fn merge_conflict_tasks(&self) -> &HashSet<TaskId> { &self.merge_conflict_tasks }
+    pub fn rebase_conflict_tasks(&self) -> &HashSet<TaskId> { &self.rebase_conflict_tasks }
     pub fn notifications_enabled(&self) -> bool { self.notifications_enabled }
 
     pub fn set_notifications_enabled(&mut self, enabled: bool) {
@@ -313,7 +313,7 @@ impl App {
             Message::CancelRetry => self.handle_cancel_retry(),
             Message::StatusInfo(msg) => self.handle_status_info(msg),
             Message::ToggleHelp => self.handle_toggle_help(),
-            // Finish (merge + cleanup)
+            // Finish (rebase + cleanup)
             Message::FinishTask(id) => self.handle_finish_task(id),
             Message::ConfirmFinish => self.handle_confirm_finish(),
             Message::CancelFinish => self.handle_cancel_finish(),
@@ -402,7 +402,7 @@ impl App {
     }
 
     fn handle_move_task(&mut self, id: TaskId, direction: MoveDirection) -> Vec<Command> {
-        self.merge_conflict_tasks.remove(&id);
+        self.rebase_conflict_tasks.remove(&id);
         if let Some(task) = self.find_task_mut(id) {
             let new_status = match direction {
                 MoveDirection::Forward => task.status.next(),
@@ -638,7 +638,7 @@ impl App {
         // Prune selections for tasks that no longer exist
         let valid_ids: HashSet<TaskId> = new_tasks.iter().map(|t| t.id).collect();
         self.selected_tasks.retain(|id| valid_ids.contains(id));
-        self.merge_conflict_tasks.retain(|id| valid_ids.contains(id));
+        self.rebase_conflict_tasks.retain(|id| valid_ids.contains(id));
         self.tasks = new_tasks;
         self.clamp_selection();
         cmds
@@ -731,7 +731,7 @@ impl App {
     }
 
     fn handle_resumed(&mut self, id: TaskId, tmux_window: String) -> Vec<Command> {
-        self.merge_conflict_tasks.remove(&id);
+        self.rebase_conflict_tasks.remove(&id);
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = Some(tmux_window);
             task.status = TaskStatus::Running;
@@ -1125,7 +1125,7 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
-    // Finish handlers (merge + cleanup)
+    // Finish handlers (rebase + cleanup)
     // -----------------------------------------------------------------------
 
     fn handle_finish_task(&mut self, id: TaskId) -> Vec<Command> {
@@ -1141,7 +1141,7 @@ impl App {
 
         self.input.mode = InputMode::ConfirmFinish(id);
         self.set_status(format!(
-            "Finish: merge {} to main? (y/n)", branch
+            "Finish: rebase {} onto main? (y/n)", branch
         ));
         vec![]
     }
@@ -1152,8 +1152,8 @@ impl App {
             _ => return vec![],
         };
         self.input.mode = InputMode::Normal;
-        self.set_status("Merging...".to_string());
-        self.merge_conflict_tasks.remove(&id);
+        self.set_status("Rebasing...".to_string());
+        self.rebase_conflict_tasks.remove(&id);
 
         if let Some(task) = self.find_task(id) {
             let worktree = match &task.worktree {
@@ -1183,7 +1183,7 @@ impl App {
     }
 
     fn handle_finish_complete(&mut self, id: TaskId) -> Vec<Command> {
-        self.merge_conflict_tasks.remove(&id);
+        self.rebase_conflict_tasks.remove(&id);
         if let Some(task) = self.find_task_mut(id) {
             // Worktree is preserved — will be cleaned up during archive
             task.tmux_window = None;
@@ -1200,7 +1200,7 @@ impl App {
 
     fn handle_finish_failed(&mut self, id: TaskId, error: String, is_conflict: bool) -> Vec<Command> {
         if is_conflict {
-            self.merge_conflict_tasks.insert(id);
+            self.rebase_conflict_tasks.insert(id);
         }
         self.set_status(error);
         vec![]
