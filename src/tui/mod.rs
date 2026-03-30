@@ -574,6 +574,48 @@ impl App {
     }
 
     fn handle_refresh_tasks(&mut self, new_tasks: Vec<Task>) -> Vec<Command> {
+        let mut cmds = Vec::new();
+
+        if self.notifications_enabled {
+            for new_task in &new_tasks {
+                // Extract old state before any mutable borrows
+                let was_needs_input = self.find_task(new_task.id).is_some_and(|t| t.needs_input);
+                let was_review = self.find_task(new_task.id).is_some_and(|t| t.status == TaskStatus::Review);
+
+                // Detect needs_input transition: false → true
+                if new_task.needs_input && !was_needs_input
+                    && !self.agents.notified_needs_input.contains(&new_task.id)
+                {
+                    self.agents.notified_needs_input.insert(new_task.id);
+                    cmds.push(Command::SendNotification {
+                        title: format!("Task #{}: {}", new_task.id.0, new_task.title),
+                        body: "Agent needs your input".to_string(),
+                        urgent: true,
+                    });
+                }
+
+                // Detect review transition
+                if new_task.status == TaskStatus::Review && !was_review
+                    && !self.agents.notified_review.contains(&new_task.id)
+                {
+                    self.agents.notified_review.insert(new_task.id);
+                    cmds.push(Command::SendNotification {
+                        title: format!("Task #{}: {}", new_task.id.0, new_task.title),
+                        body: "Ready for review".to_string(),
+                        urgent: false,
+                    });
+                }
+
+                // Clear notified state when task leaves the triggering state
+                if new_task.status != TaskStatus::Review {
+                    self.agents.notified_review.remove(&new_task.id);
+                }
+                if !new_task.needs_input {
+                    self.agents.notified_needs_input.remove(&new_task.id);
+                }
+            }
+        }
+
         // Merge DB state into in-memory state, preserving tmux_outputs
         // Prune selections for tasks that no longer exist
         let valid_ids: HashSet<TaskId> = new_tasks.iter().map(|t| t.id).collect();
@@ -581,7 +623,7 @@ impl App {
         self.merge_conflict_tasks.retain(|id| valid_ids.contains(id));
         self.tasks = new_tasks;
         self.clamp_selection();
-        vec![]
+        cmds
     }
 
     fn handle_tick(&mut self) -> Vec<Command> {
