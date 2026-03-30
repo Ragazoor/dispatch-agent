@@ -258,7 +258,7 @@ async fn create_task_minimal() {
 }
 
 #[tokio::test]
-async fn create_task_with_plan_sets_ready() {
+async fn create_task_with_plan_stays_backlog() {
     let dir = tempfile::tempdir().unwrap();
     let plan_file = dir.path().join("plan.md");
     std::fs::write(&plan_file, "# Plan").unwrap();
@@ -280,7 +280,7 @@ async fn create_task_with_plan_sets_ready() {
 
     let tasks = state.db.list_all().unwrap();
     assert_eq!(tasks.len(), 1);
-    assert_eq!(tasks[0].status, TaskStatus::Ready);
+    assert_eq!(tasks[0].status, TaskStatus::Backlog);
     let stored = tasks[0].plan.as_deref().unwrap();
     assert!(std::path::Path::new(stored).is_absolute(), "plan path should be absolute, got: {stored}");
     assert_eq!(stored, std::fs::canonicalize(&plan_file).unwrap().to_string_lossy());
@@ -377,7 +377,7 @@ async fn update_task_with_plan() {
     assert!(resp.error.is_none());
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, crate::models::TaskStatus::Ready);
+    assert_eq!(task.status, crate::models::TaskStatus::Backlog);
     assert_eq!(task.plan.as_deref(), Some("/path/to/plan.md"));
 }
 
@@ -497,7 +497,7 @@ async fn patch_task_sets_multiple_fields() {
     assert!(resp.error.is_none());
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Ready);
+    assert_eq!(task.status, TaskStatus::Backlog);
     assert_eq!(task.title, "Updated Title");
 }
 
@@ -526,7 +526,7 @@ async fn update_task_without_plan_preserves_existing() {
 async fn list_tasks_returns_all_when_no_filter() {
     let state = test_state();
     state.db.create_task("Task A", "desc a", "/repo", None, TaskStatus::Backlog).unwrap();
-    state.db.create_task("Task B", "desc b", "/repo", None, TaskStatus::Ready).unwrap();
+    state.db.create_task("Task B", "desc b", "/repo", None, TaskStatus::Running).unwrap();
 
     let resp = call(
         &state,
@@ -544,38 +544,38 @@ async fn list_tasks_returns_all_when_no_filter() {
 async fn list_tasks_filters_by_single_status() {
     let state = test_state();
     state.db.create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-    state.db.create_task("Ready Task", "desc", "/repo", None, TaskStatus::Ready).unwrap();
+    state.db.create_task("Running Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
 
     let resp = call(
         &state,
         "tools/call",
-        Some(json!({ "name": "list_tasks", "arguments": { "status": "ready" } })),
+        Some(json!({ "name": "list_tasks", "arguments": { "status": "backlog" } })),
     ).await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
-    assert!(!text.contains("Backlog Task"));
-    assert!(text.contains("Ready Task"));
+    assert!(text.contains("Backlog Task"));
+    assert!(!text.contains("Running Task"));
 }
 
 #[tokio::test]
 async fn list_tasks_filters_by_multiple_statuses() {
     let state = test_state();
     state.db.create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-    state.db.create_task("Ready Task", "desc", "/repo", None, TaskStatus::Ready).unwrap();
     state.db.create_task("Running Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    state.db.create_task("Review Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
 
     let resp = call(
         &state,
         "tools/call",
-        Some(json!({ "name": "list_tasks", "arguments": { "status": ["backlog", "ready"] } })),
+        Some(json!({ "name": "list_tasks", "arguments": { "status": ["backlog", "running"] } })),
     ).await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Backlog Task"));
-    assert!(text.contains("Ready Task"));
-    assert!(!text.contains("Running Task"));
+    assert!(text.contains("Running Task"));
+    assert!(!text.contains("Review Task"));
 }
 
 #[tokio::test]
@@ -585,7 +585,7 @@ async fn list_tasks_empty_result() {
     let resp = call(
         &state,
         "tools/call",
-        Some(json!({ "name": "list_tasks", "arguments": { "status": "ready" } })),
+        Some(json!({ "name": "list_tasks", "arguments": { "status": "running" } })),
     ).await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
@@ -598,7 +598,7 @@ async fn list_tasks_empty_result() {
 #[tokio::test]
 async fn claim_task_success() {
     let state = test_state();
-    let task_id = state.db.create_task("Claimable", "desc", "/repo", None, TaskStatus::Ready).unwrap();
+    let task_id = state.db.create_task("Claimable", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
 
     let resp = call(
         &state,
@@ -618,29 +618,6 @@ async fn claim_task_success() {
     assert_eq!(task.status, TaskStatus::Running);
     assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/5-other-task"));
     assert_eq!(task.tmux_window.as_deref(), Some("task-5"));
-}
-
-#[tokio::test]
-async fn claim_task_backlog_also_works() {
-    let state = test_state();
-    let task_id = state.db.create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "claim_task",
-            "arguments": {
-                "task_id": task_id.0,
-                "worktree": "/repo/.worktrees/5-other-task",
-                "tmux_window": "task-5"
-            }
-        })),
-    ).await;
-    assert!(resp.error.is_none());
-
-    let task = state.db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Running);
 }
 
 #[tokio::test]
@@ -667,7 +644,7 @@ async fn claim_task_rejects_running_task() {
 #[tokio::test]
 async fn claim_task_rejects_different_repo() {
     let state = test_state();
-    let task_id = state.db.create_task("Other Repo", "desc", "/other-repo", None, TaskStatus::Ready).unwrap();
+    let task_id = state.db.create_task("Other Repo", "desc", "/other-repo", None, TaskStatus::Backlog).unwrap();
 
     let resp = call(
         &state,
@@ -762,7 +739,7 @@ fn tool_schemas_match_arg_structs() {
             "list_tasks",
             BTreeSet::from(["status"]),
             BTreeSet::new(),
-            json!({"status": "ready"}),
+            json!({"status": "backlog"}),
         ),
         (
             "claim_task",
@@ -833,7 +810,7 @@ fn tool_schemas_match_arg_structs() {
 #[tokio::test]
 async fn claim_task_accepts_string_task_id() {
     let state = test_state();
-    let task_id = state.db.create_task("Claimable", "desc", "/repo", None, TaskStatus::Ready).unwrap();
+    let task_id = state.db.create_task("Claimable", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
 
     let resp = call(
         &state,
@@ -1205,7 +1182,7 @@ async fn claim_task_worktree_without_worktrees_dir() {
     let state = test_state();
     // Task repo is "/repo", worktree path has no /.worktrees/ segment
     // so the full path is used as the repo — should match when equal
-    let task_id = state.db.create_task("Direct", "desc", "/repo", None, TaskStatus::Ready).unwrap();
+    let task_id = state.db.create_task("Direct", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
 
     let resp = call(
         &state,

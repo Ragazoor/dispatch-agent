@@ -839,11 +839,11 @@ mod tests {
         let (rt, mut app) = test_runtime();
         rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None);
         let mut task = app.tasks()[0].clone();
-        task.status = models::TaskStatus::Ready;
+        task.status = models::TaskStatus::Running;
         task.worktree = Some("/repo/.worktrees/1-test".into());
         rt.exec_persist_task(&mut app, task);
         let db_task = rt.database.get_task(app.tasks()[0].id).unwrap().unwrap();
-        assert_eq!(db_task.status, models::TaskStatus::Ready);
+        assert_eq!(db_task.status, models::TaskStatus::Running);
         assert_eq!(db_task.worktree.as_deref(), Some("/repo/.worktrees/1-test"));
     }
 
@@ -943,7 +943,7 @@ mod tests {
             runner: mock,
         };
 
-        let task = db.create_task_returning("Test Task", "desc", repo, None, models::TaskStatus::Ready).unwrap();
+        let task = db.create_task_returning("Test Task", "desc", repo, None, models::TaskStatus::Backlog).unwrap();
         rt.exec_dispatch(task);
 
         let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
@@ -965,7 +965,7 @@ mod tests {
             runner: mock,
         };
 
-        let task = db.create_task_returning("Fail Task", "desc", "/nonexistent", None, models::TaskStatus::Ready).unwrap();
+        let task = db.create_task_returning("Fail Task", "desc", "/nonexistent", None, models::TaskStatus::Backlog).unwrap();
         rt.exec_dispatch(task);
 
         let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
@@ -1189,7 +1189,7 @@ mod tests {
         assert_eq!(task.title, "Plan: Auth redesign");
         assert_eq!(task.epic_id, Some(epic.id));
         assert_eq!(task.repo_path, "/repo");
-        assert_eq!(task.status, models::TaskStatus::Ready);
+        assert_eq!(task.status, models::TaskStatus::Backlog);
 
         // Verify description contains epic info
         assert!(task.description.contains("Auth redesign"));

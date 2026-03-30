@@ -92,8 +92,8 @@ fn create_from_plan() {
         "Expected title in output, got: {stdout}"
     );
     assert!(
-        stdout.contains("[ready]"),
-        "Expected [ready] status, got: {stdout}"
+        stdout.contains("[backlog]"),
+        "Expected [backlog] status, got: {stdout}"
     );
 }
 
@@ -132,8 +132,8 @@ fn create_then_list() {
         "Expected task title in list, got: {stdout}"
     );
     assert!(
-        stdout.contains("ready"),
-        "Expected ready status in list, got: {stdout}"
+        stdout.contains("backlog"),
+        "Expected backlog status in list, got: {stdout}"
     );
 }
 
@@ -156,19 +156,7 @@ fn list_filter_by_status() {
         .output()
         .unwrap();
 
-    // list --status ready -> shows the task
-    let out = binary()
-        .args(["--db", db_path, "list", "--status", "ready"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("Filter Test"),
-        "Expected task in ready list, got: {stdout}"
-    );
-
-    // list --status backlog -> empty
+    // list --status backlog -> shows the task
     let out = binary()
         .args(["--db", db_path, "list", "--status", "backlog"])
         .output()
@@ -176,8 +164,20 @@ fn list_filter_by_status() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
+        stdout.contains("Filter Test"),
+        "Expected task in backlog list, got: {stdout}"
+    );
+
+    // list --status running -> empty
+    let out = binary()
+        .args(["--db", db_path, "list", "--status", "running"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
         stdout.contains("No tasks found."),
-        "Expected no backlog tasks, got: {stdout}"
+        "Expected no running tasks, got: {stdout}"
     );
 }
 

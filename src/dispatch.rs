@@ -562,7 +562,7 @@ mod tests {
             title: "Fix bug".to_string(),
             description: "A nasty crash".to_string(),
             repo_path: repo_path.to_string(),
-            status: TaskStatus::Ready,
+            status: TaskStatus::Backlog,
             worktree: None,
             tmux_window: None,
             plan: None,

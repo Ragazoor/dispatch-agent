@@ -37,9 +37,9 @@ fn execute(db: &Database, cmds: &[Command]) {
 fn full_lifecycle() {
     let (mut app, db) = make_app();
 
-    // 1. Create task: simulate what exec_insert_task does (DB insert + TaskCreated message)
+    // 1. Create task with a plan: simulate what exec_insert_task does (DB insert + TaskCreated message)
     let task_id = db
-        .create_task("Fix auth bug", "Users can't log in", "/repo", None, TaskStatus::Backlog)
+        .create_task("Fix auth bug", "Users can't log in", "/repo", Some("plan.md"), TaskStatus::Backlog)
         .unwrap();
     let now = chrono::Utc::now();
     let cmds = app.update(Message::TaskCreated {
@@ -51,7 +51,7 @@ fn full_lifecycle() {
             status: TaskStatus::Backlog,
             worktree: None,
             tmux_window: None,
-            plan: None,
+            plan: Some("plan.md".into()),
             epic_id: None,
             needs_input: false,
             created_at: now,
@@ -67,19 +67,7 @@ fn full_lifecycle() {
     let db_task = db.get_task(task_id).unwrap().unwrap();
     assert_eq!(db_task.title, "Fix auth bug");
 
-    // 2. Move to Ready → PersistTask command issued
-    let cmds = app.update(Message::MoveTask {
-        id: task_id,
-        direction: MoveDirection::Forward,
-    });
-    assert!(matches!(cmds[0], Command::PersistTask(_)));
-    execute(&db, &cmds);
-    assert_eq!(app.tasks()[0].status, TaskStatus::Ready);
-
-    let db_task = db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(db_task.status, TaskStatus::Ready);
-
-    // 3. Dispatch → Dispatch command issued
+    // 2. Dispatch directly from Backlog (task has a plan) → Dispatch command issued
     let cmds = app.update(Message::DispatchTask(task_id));
     assert!(matches!(cmds[0], Command::Dispatch { .. }));
 

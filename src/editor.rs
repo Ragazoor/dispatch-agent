@@ -185,13 +185,13 @@ mod tests {
 
     #[test]
     fn editor_roundtrip_basic() {
-        let task = make_task("My Task", "A description", "/repo", TaskStatus::Ready, Some("docs/plan.md"));
+        let task = make_task("My Task", "A description", "/repo", TaskStatus::Backlog, Some("docs/plan.md"));
         let content = format_editor_content(&task);
         let fields = parse_editor_content(&content);
         assert_eq!(fields.title, "My Task");
         assert_eq!(fields.description, "A description");
         assert_eq!(fields.repo_path, "/repo");
-        assert_eq!(fields.status, "ready");
+        assert_eq!(fields.status, "backlog");
         assert_eq!(fields.plan, "docs/plan.md");
     }
 
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn editor_roundtrip_colons_in_description() {
-        let task = make_task("Title", "Step 1: do this\nStep 2: do that", "/repo", TaskStatus::Ready, None);
+        let task = make_task("Title", "Step 1: do this\nStep 2: do that", "/repo", TaskStatus::Backlog, None);
         let content = format_editor_content(&task);
         let fields = parse_editor_content(&content);
         assert_eq!(fields.description, "Step 1: do this\nStep 2: do that");
