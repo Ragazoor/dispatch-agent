@@ -5031,8 +5031,11 @@ fn review_board_navigation() {
     app.handle_key(make_key(KeyCode::Char('l'))); // move right
     assert_eq!(app.review_selection().unwrap().column(), 2);
 
-    app.handle_key(make_key(KeyCode::Char('l'))); // clamp at 2
-    assert_eq!(app.review_selection().unwrap().column(), 2);
+    app.handle_key(make_key(KeyCode::Char('l'))); // move right
+    assert_eq!(app.review_selection().unwrap().column(), 3);
+
+    app.handle_key(make_key(KeyCode::Char('l'))); // clamp at 3
+    assert_eq!(app.review_selection().unwrap().column(), 3);
 }
 
 #[test]

@@ -1306,6 +1306,7 @@ fn batch_action_hints(count: usize, key_color: Color) -> Vec<Span<'static>> {
 fn review_column_color(decision: ReviewDecision) -> Color {
     match decision {
         ReviewDecision::ReviewRequired => Color::Rgb(86, 182, 194),
+        ReviewDecision::WaitingForResponse => Color::Rgb(224, 175, 104),
         ReviewDecision::ChangesRequested => Color::Rgb(224, 130, 130),
         ReviewDecision::Approved => Color::Rgb(158, 206, 106),
     }
@@ -1314,6 +1315,7 @@ fn review_column_color(decision: ReviewDecision) -> Color {
 fn review_cursor_bg_color(decision: ReviewDecision) -> Color {
     match decision {
         ReviewDecision::ReviewRequired => Color::Rgb(24, 48, 52),
+        ReviewDecision::WaitingForResponse => Color::Rgb(52, 44, 20),
         ReviewDecision::ChangesRequested => Color::Rgb(56, 32, 32),
         ReviewDecision::Approved => Color::Rgb(32, 52, 36),
     }
@@ -1322,6 +1324,7 @@ fn review_cursor_bg_color(decision: ReviewDecision) -> Color {
 fn review_column_bg_color(decision: ReviewDecision) -> Color {
     match decision {
         ReviewDecision::ReviewRequired => Color::Rgb(26, 36, 38),
+        ReviewDecision::WaitingForResponse => Color::Rgb(36, 34, 26),
         ReviewDecision::ChangesRequested => Color::Rgb(36, 28, 28),
         ReviewDecision::Approved => Color::Rgb(27, 36, 30),
     }
@@ -1465,15 +1468,12 @@ fn build_review_pr_item(pr: &ReviewPr, decision: ReviewDecision, is_cursor: bool
         Span::styled(header_truncated, line1_style),
     ]);
 
-    // Line 2: author · age · +/-lines · draft
-    let mut meta_parts = vec![
+    // Line 2: author · age · +/-lines
+    let meta_parts = [
         format!("@{}", pr.author),
         age,
         format!("+{}/-{}", pr.additions, pr.deletions),
     ];
-    if pr.is_draft {
-        meta_parts.push("DRAFT".to_string());
-    }
     let meta = format!("  {} ", meta_parts.join(" \u{b7} "));
 
     let meta_style = if is_cursor {

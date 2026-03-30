@@ -180,13 +180,15 @@ pub fn epic_status(epic: &Epic, subtask_statuses: &[TaskStatus]) -> TaskStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewDecision {
     ReviewRequired,
+    WaitingForResponse,
     ChangesRequested,
     Approved,
 }
 
 impl ReviewDecision {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 4] = [
         Self::ReviewRequired,
+        Self::WaitingForResponse,
         Self::ChangesRequested,
         Self::Approved,
     ];
@@ -196,16 +198,18 @@ impl ReviewDecision {
     pub fn column_index(self) -> usize {
         match self {
             Self::ReviewRequired => 0,
-            Self::ChangesRequested => 1,
-            Self::Approved => 2,
+            Self::WaitingForResponse => 1,
+            Self::ChangesRequested => 2,
+            Self::Approved => 3,
         }
     }
 
     pub fn from_column_index(idx: usize) -> Option<Self> {
         match idx {
             0 => Some(Self::ReviewRequired),
-            1 => Some(Self::ChangesRequested),
-            2 => Some(Self::Approved),
+            1 => Some(Self::WaitingForResponse),
+            2 => Some(Self::ChangesRequested),
+            3 => Some(Self::Approved),
             _ => None,
         }
     }
@@ -213,12 +217,14 @@ impl ReviewDecision {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ReviewRequired => "Needs Review",
+            Self::WaitingForResponse => "Waiting for Response",
             Self::ChangesRequested => "Changes Requested",
             Self::Approved => "Approved",
         }
     }
 
     /// Parse from GitHub GraphQL `reviewDecision` field value.
+    /// Note: `WaitingForResponse` has no wire value — it is derived client-side.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "REVIEW_REQUIRED" => Some(Self::ReviewRequired),
@@ -881,8 +887,8 @@ mod tests {
 
     #[test]
     fn review_decision_column_count() {
-        assert_eq!(ReviewDecision::COLUMN_COUNT, 3);
-        assert_eq!(ReviewDecision::ALL.len(), 3);
+        assert_eq!(ReviewDecision::COLUMN_COUNT, 4);
+        assert_eq!(ReviewDecision::ALL.len(), 4);
     }
 
     #[test]
@@ -895,9 +901,10 @@ mod tests {
     #[test]
     fn review_decision_from_column_index() {
         assert_eq!(ReviewDecision::from_column_index(0), Some(ReviewDecision::ReviewRequired));
-        assert_eq!(ReviewDecision::from_column_index(1), Some(ReviewDecision::ChangesRequested));
-        assert_eq!(ReviewDecision::from_column_index(2), Some(ReviewDecision::Approved));
-        assert_eq!(ReviewDecision::from_column_index(3), None);
+        assert_eq!(ReviewDecision::from_column_index(1), Some(ReviewDecision::WaitingForResponse));
+        assert_eq!(ReviewDecision::from_column_index(2), Some(ReviewDecision::ChangesRequested));
+        assert_eq!(ReviewDecision::from_column_index(3), Some(ReviewDecision::Approved));
+        assert_eq!(ReviewDecision::from_column_index(4), None);
     }
 
     #[test]
