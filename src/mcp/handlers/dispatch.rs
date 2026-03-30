@@ -186,6 +186,25 @@ pub(super) fn tool_definitions() -> Value {
                     },
                     "required": ["epic_id"]
                 }
+            },
+            {
+                "name": "wrap_up",
+                "description": "Wrap up a review-status task: rebase the branch onto main or push and create a GitHub PR. Returns immediately; the operation runs in the background. For rebase, the tmux window is killed when done, ending your session.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "integer",
+                            "description": "The task ID to wrap up"
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["rebase", "pr"],
+                            "description": "rebase: rebase branch onto main and fast-forward. pr: push branch and create a GitHub PR."
+                        }
+                    },
+                    "required": ["task_id", "action"]
+                }
             }
         ]
     })
@@ -231,6 +250,7 @@ pub async fn handle_mcp(
                 "get_epic" => epics::handle_get_epic(&state, id, args),
                 "list_epics" => epics::handle_list_epics(&state, id, args),
                 "update_epic" => epics::handle_update_epic(&state, id, args),
+                "wrap_up" => tasks::handle_wrap_up(&state, id, args),
                 other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
             }
         }

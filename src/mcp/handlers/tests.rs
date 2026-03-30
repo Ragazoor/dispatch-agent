@@ -9,7 +9,7 @@ use crate::mcp::McpState;
 use crate::process::{ProcessRunner, MockProcessRunner};
 
 use super::dispatch::{handle_mcp, tool_definitions};
-use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs};
+use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs, WrapUpArgs};
 use super::epics::{CreateEpicArgs, GetEpicArgs, UpdateEpicArgs};
 use super::types::{JsonRpcRequest, JsonRpcResponse};
 
@@ -84,6 +84,7 @@ async fn tools_list_returns_tools() {
     assert!(names.contains(&"create_task"));
     assert!(names.contains(&"list_tasks"));
     assert!(names.contains(&"claim_task"));
+    assert!(names.contains(&"wrap_up"));
 }
 
 #[tokio::test]
@@ -773,6 +774,12 @@ fn tool_schemas_match_arg_structs() {
             BTreeSet::from(["epic_id"]),
             json!({"epic_id": 1, "plan": "docs/plan.md", "sort_order": 42}),
         ),
+        (
+            "wrap_up",
+            BTreeSet::from(["task_id", "action"]),
+            BTreeSet::from(["task_id", "action"]),
+            json!({"task_id": 1, "action": "rebase"}),
+        ),
     ];
 
     // Verify we cover exactly the tools that exist
@@ -804,6 +811,7 @@ fn tool_schemas_match_arg_structs() {
             "get_epic" => { serde_json::from_value::<GetEpicArgs>(payload.clone()).unwrap(); }
             "list_epics" => {} // no args
             "update_epic" => { serde_json::from_value::<UpdateEpicArgs>(payload.clone()).unwrap(); }
+            "wrap_up" => { serde_json::from_value::<WrapUpArgs>(payload.clone()).unwrap(); }
             other => panic!("No deserialization check for tool: {other}"),
         }
     }

@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::db;
+use crate::dispatch;
 use crate::models::{EpicId, TaskId, TaskStatus};
 use crate::mcp::McpState;
 
@@ -60,6 +61,13 @@ pub(super) struct CreateTaskWithEpicArgs {
     pub(super) epic_id: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
     pub(super) sort_order: Option<i64>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct WrapUpArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) task_id: i64,
+    pub(super) action: String, // "rebase" | "pr"
 }
 
 // ---------------------------------------------------------------------------
@@ -368,5 +376,123 @@ pub(super) fn handle_claim_task(state: &McpState, id: Option<Value>, args: Value
     JsonRpcResponse::ok(
         id,
         json!({"content": [{"type": "text", "text": format!("Task {} claimed: {}", parsed.task_id, task.title)}]}),
+    )
+}
+
+pub(super) fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Value) -> JsonRpcResponse {
+    let parsed = match parse_args::<WrapUpArgs>(id.clone(), args) {
+        Ok(a) => a,
+        Err(resp) => return resp,
+    };
+    tracing::info!(task_id = parsed.task_id, action = %parsed.action, "MCP wrap_up");
+
+    if parsed.action != "rebase" && parsed.action != "pr" {
+        return JsonRpcResponse::err(
+            id,
+            -32602,
+            format!("Unknown action: {}. Valid values: rebase, pr", parsed.action),
+        );
+    }
+
+    let task = match state.db.get_task(TaskId(parsed.task_id)) {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return JsonRpcResponse::err(id, -32602, format!("Task {} not found", parsed.task_id))
+        }
+        Err(e) => return JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+    };
+
+    if task.status != TaskStatus::Review {
+        return JsonRpcResponse::err(
+            id,
+            -32602,
+            format!(
+                "Task {} is '{}', not 'review'. Only review-status tasks can be wrapped up.",
+                parsed.task_id,
+                task.status.as_str()
+            ),
+        );
+    }
+
+    let worktree = match task.worktree.clone() {
+        Some(wt) => wt,
+        None => {
+            return JsonRpcResponse::err(
+                id,
+                -32602,
+                format!("Task {} has no worktree", parsed.task_id),
+            )
+        }
+    };
+
+    let branch = match dispatch::branch_from_worktree(&worktree) {
+        Some(b) => b,
+        None => {
+            return JsonRpcResponse::err(
+                id,
+                -32602,
+                format!("Cannot derive branch from worktree: {worktree}"),
+            )
+        }
+    };
+
+    let repo_path = task.repo_path.clone();
+    let tmux_window = task.tmux_window.clone();
+    let runner = state.runner.clone();
+    let notify_tx = state.notify_tx.clone();
+    let task_id = task.id;
+
+    match parsed.action.as_str() {
+        "rebase" => {
+            tokio::task::spawn_blocking(move || {
+                tracing::info!(task_id = task_id.0, %branch, "MCP wrap_up rebase starting");
+                let result = dispatch::finish_task(
+                    &repo_path,
+                    &worktree,
+                    &branch,
+                    tmux_window.as_deref(),
+                    &*runner,
+                );
+                if let Err(e) = result {
+                    tracing::warn!(task_id = task_id.0, "MCP wrap_up rebase failed: {e}");
+                }
+                if let Some(tx) = notify_tx {
+                    let _ = tx.send(());
+                }
+            });
+        }
+        "pr" => {
+            let db = state.db.clone();
+            let title = task.title.clone();
+            let description = task.description.clone();
+            tokio::task::spawn_blocking(move || {
+                tracing::info!(task_id = task_id.0, %branch, "MCP wrap_up pr starting");
+                match dispatch::create_pr(&repo_path, &branch, &title, &description, &*runner) {
+                    Ok(result) => {
+                        let patch = db::TaskPatch::new()
+                            .pr_url(Some(result.pr_url.as_str()))
+                            .pr_number(Some(result.pr_number));
+                        if let Err(e) = db.patch_task(task_id, &patch) {
+                            tracing::warn!(
+                                task_id = task_id.0,
+                                "MCP wrap_up: failed to save PR fields: {e}"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(task_id = task_id.0, "MCP wrap_up pr failed: {e}");
+                    }
+                }
+                if let Some(tx) = notify_tx {
+                    let _ = tx.send(());
+                }
+            });
+        }
+        _ => unreachable!(),
+    }
+
+    JsonRpcResponse::ok(
+        id,
+        json!({"content": [{"type": "text", "text": format!("wrap_up started (task {}, action: {})", parsed.task_id, parsed.action)}]}),
     )
 }
