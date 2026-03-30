@@ -3862,9 +3862,8 @@ fn dispatch_is_noop_on_toggle_row() {
 fn render_shows_select_all_toggle_in_focused_column() {
     let app = make_app();
     let buf = render_to_buffer(&app, 120, 30);
-    // Checkbox should appear in the summary header row
-    // (Note: "Select [a]ll" removal from the task list is deferred to Task 2)
     assert!(buffer_contains(&buf, "[ ]"));
+    assert!(!buffer_contains(&buf, "Select [a]ll"));
 }
 
 #[test]

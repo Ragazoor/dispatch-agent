@@ -285,32 +285,6 @@ fn build_task_list_item<'a>(
     item
 }
 
-fn build_select_all_toggle<'a>(
-    app: &App,
-    status: TaskStatus,
-    is_focused: bool,
-) -> ListItem<'a> {
-    let column_task_ids: Vec<_> = app.tasks_by_status(status).iter().map(|t| t.id).collect();
-    let all_selected = !column_task_ids.is_empty()
-        && column_task_ids.iter().all(|id| app.selected_tasks().contains(id));
-
-    let checkbox = if all_selected { "[x]" } else { "[ ]" };
-    let text = format!("  {} Select [a]ll", checkbox);
-
-    let is_cursor_on_toggle = is_focused && app.on_select_all();
-
-    let style = if is_cursor_on_toggle {
-        Style::default()
-            .bg(cursor_bg_color(status))
-            .fg(Color::Rgb(192, 202, 245))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::Rgb(86, 95, 137))
-    };
-
-    ListItem::new(Line::from(Span::styled(text, style)))
-}
-
 fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) {
     let column_areas = Layout::default()
         .direction(Direction::Horizontal)
@@ -324,12 +298,10 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
         let is_focused = app.selected_column() == col_idx;
         let color = column_color(status);
 
-        let toggle_item = build_select_all_toggle(app, status, is_focused);
-
         let column_items = app.column_items_for_status(status);
         let selected_row = app.selected_row()[col_idx];
 
-        let task_items: Vec<ListItem> = column_items
+        let items: Vec<ListItem> = column_items
             .iter()
             .enumerate()
             .map(|(row_idx, item)| {
@@ -340,9 +312,6 @@ fn render_columns(frame: &mut Frame, app: &App, area: Rect, now: DateTime<Utc>) 
                 }
             })
             .collect();
-
-        let mut items = vec![toggle_item];
-        items.extend(task_items);
 
         if is_focused {
             let block = Block::default()
