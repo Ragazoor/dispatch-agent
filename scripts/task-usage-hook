@@ -25,7 +25,7 @@ fi
 # Each relevant line has a `.usage` object and a `.model` string.
 # Pricing (per million tokens): input, output, cache_read, cache_write
 result=$(
-    grep '"usage"' "$transcript_path" 2>/dev/null \
+    { grep '"usage"' "$transcript_path" 2>/dev/null || true; } \
     | jq -sc '
         def pricing(model):
             if (model | startswith("claude-opus-4"))    then {i: 15.0,  o: 75.0, cr: 1.50,  cw: 18.75}
