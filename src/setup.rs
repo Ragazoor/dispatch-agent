@@ -356,6 +356,17 @@ mod tests {
         assert!(HOOK_SCRIPT.contains("Notification)"));
     }
 
+    #[test]
+    fn hook_script_skips_dispatch_mcp_in_pretooluse() {
+        // The PreToolUse handler must read tool_name from the JSON input
+        // and skip dispatch MCP tool calls to avoid clobbering review status
+        // during wrap-up (get_task and wrap_up would otherwise set running).
+        assert!(HOOK_SCRIPT.contains("tool_name"),
+            "hook must extract tool_name from PreToolUse input");
+        assert!(HOOK_SCRIPT.contains("mcp__dispatch__"),
+            "hook must skip mcp__dispatch__ tools in PreToolUse");
+    }
+
     // -- File I/O --
 
     #[test]

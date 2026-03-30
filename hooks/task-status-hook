@@ -16,7 +16,13 @@ ID=$(basename "${CWD:-}" | grep -oP '^\d+' || true)
 [ -z "$ID" ] && exit 0
 
 case "$EVENT" in
-    PreToolUse)   dispatch update "$ID" running ;;
+    PreToolUse)
+        TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
+        # Skip dispatch MCP calls — management operations, not implementation work.
+        # Without this, the wrap-up skill's get_task and wrap_up calls clobber review status.
+        [[ "$TOOL" == mcp__dispatch__* ]] && exit 0
+        dispatch update "$ID" running
+        ;;
     Stop)         dispatch update "$ID" review  --only-if running ;;
     Notification) dispatch update "$ID" review  --only-if running --needs-input ;;
     *)            exit 0 ;;

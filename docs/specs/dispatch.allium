@@ -595,6 +595,47 @@ rule UpdateEpicViaMcp {
     ensures: epic.updated_at = now
 }
 
+-- == Hook-Based Status Transitions ==
+-- Claude Code hooks (PreToolUse, Stop, Notification) bridge the agent
+-- session lifecycle to task status. These rules describe the CLI hook
+-- script installed by `dispatch setup`.
+
+rule HookPreToolUse {
+    when: PreToolUse(task, tool_name)
+
+    -- Skip dispatch MCP tool calls: these are management operations
+    -- (get_task, wrap_up, update_task, etc.), not implementation work.
+    -- Without this filter, wrap-up fails because get_task and wrap_up
+    -- calls clobber review status before the handler can check it.
+    requires: not tool_name starts_with "mcp__dispatch__"
+
+    ensures: task.status = running
+
+    @guidance
+        -- Fires on every non-dispatch tool use. The unconditional
+        -- transition is correct: backlog -> running on first dispatch,
+        -- review -> running on session resume, running -> running is
+        -- a no-op. Only done/archived tasks should not be modified,
+        -- but agents are never dispatched into done/archived worktrees.
+}
+
+rule HookStop {
+    when: Stop(task)
+
+    requires: task.status = running
+
+    ensures: task.status = review
+}
+
+rule HookNotification {
+    when: Notification(task)
+
+    requires: task.status = running
+
+    ensures: task.status = review
+    ensures: task.needs_input = true
+}
+
 -- == Epics ==
 
 rule CreateEpic {
@@ -734,6 +775,12 @@ rule DeleteEpic {
     -- merge on GitHub constitutes human confirmation via the code
     -- review process. WrapUpRebase is human-initiated (TUI W+r or
     -- MCP wrap_up tool) and transitions directly to done.
+
+@invariant DispatchMcpToolsAreTransparent
+    -- Dispatch MCP tool calls (get_task, wrap_up, update_task, etc.)
+    -- must not trigger automatic status transitions. They are management
+    -- operations, not implementation work. The PreToolUse hook filters
+    -- them out to prevent clobbering review status during wrap-up.
 
 @invariant EpicDerivedStatus
     -- Epic kanban status is derived from subtask statuses, never stored.
