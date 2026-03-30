@@ -65,6 +65,16 @@ Backlog → Running → Review → Done
 - Status transitions (running/review) are handled by hooks in `.claude/settings.json` that extract the task ID from the git branch name (`{id}-{slug}` pattern)
 - Press `g` to jump to an agent's tmux window
 
+## Review Board
+
+Press `Tab` to switch to the Review Board, which shows GitHub PRs where you are a requested reviewer (excluding bot PRs like Dependabot/Scala Steward). Data is fetched via `gh api graphql` and refreshed every 60 seconds.
+
+Three columns: **Needs Review** → **Changes Requested** → **Approved**
+
+Keys: `Enter` to open PR in browser, `r` to refresh, `Esc`/`Tab` to go back. Standard `h/l/j/k` navigation.
+
+Requires `gh` CLI authenticated (`gh auth login`).
+
 ## Hooks & Branch Naming
 
 Status update hooks in `.claude/settings.json` run when Claude Code starts or stops in a worktree. They parse the branch name, extract the task ID, and call `dispatch update <id> <status>`.
