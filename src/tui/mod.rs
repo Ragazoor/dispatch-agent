@@ -1353,10 +1353,32 @@ impl App {
         };
         let status = crate::models::epic_status(epic, &self.subtask_statuses(id));
         if status != TaskStatus::Backlog {
-            self.set_status("Epic must be in Backlog to dispatch planning".to_string());
+            self.set_status("Epic must be in Backlog to dispatch".to_string());
             return vec![];
         }
-        vec![Command::DispatchEpic { epic: epic.clone() }]
+
+        if epic.plan.is_some() {
+            // Epic has a plan — dispatch the next backlog subtask
+            let next_backlog = self
+                .tasks
+                .iter()
+                .find(|t| t.epic_id == Some(id) && t.status == TaskStatus::Backlog);
+            match next_backlog {
+                Some(task) if task.plan.is_some() => {
+                    vec![Command::Dispatch { task: task.clone() }]
+                }
+                Some(task) => {
+                    vec![Command::Brainstorm { task: task.clone() }]
+                }
+                None => {
+                    self.set_status("No backlog subtasks to dispatch".to_string());
+                    vec![]
+                }
+            }
+        } else {
+            // No plan — spawn planning subtask
+            vec![Command::DispatchEpic { epic: epic.clone() }]
+        }
     }
 
     fn handle_enter_epic(&mut self, epic_id: EpicId) -> Vec<Command> {

@@ -2961,6 +2961,73 @@ fn dispatch_epic_on_non_backlog_shows_status() {
     assert!(app.status_message.as_ref().unwrap().contains("Backlog"));
 }
 
+#[test]
+fn dispatch_epic_with_plan_dispatches_next_backlog_subtask() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    // Add two backlog subtasks for this epic
+    let mut task1 = make_task(1, TaskStatus::Backlog);
+    task1.epic_id = Some(EpicId(10));
+    task1.plan = Some("plan1.md".to_string());
+    let mut task2 = make_task(2, TaskStatus::Backlog);
+    task2.epic_id = Some(EpicId(10));
+
+    app.tasks = vec![task1.clone(), task2];
+
+    // Select the epic (only item in backlog column at row 0)
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+
+    let cmds = app.update(Message::DispatchEpic(EpicId(10)));
+    // Should dispatch task1 (first backlog subtask, has plan)
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(cmds[0], Command::Dispatch { ref task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn dispatch_epic_with_plan_brainstorms_subtask_without_plan() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    // Subtask without a plan
+    let mut task1 = make_task(1, TaskStatus::Backlog);
+    task1.epic_id = Some(EpicId(10));
+    app.tasks = vec![task1];
+
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+
+    let cmds = app.update(Message::DispatchEpic(EpicId(10)));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(cmds[0], Command::Brainstorm { ref task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn dispatch_epic_with_plan_no_backlog_subtasks_shows_status() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    // Only an archived subtask — archived tasks are excluded from epic_status
+    // so the epic stays Backlog, but there are no backlog subtasks to dispatch
+    let mut task1 = make_task(1, TaskStatus::Archived);
+    task1.epic_id = Some(EpicId(10));
+    app.tasks = vec![task1];
+
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+
+    let cmds = app.update(Message::DispatchEpic(EpicId(10)));
+    assert!(cmds.is_empty());
+    assert!(app.status_message.as_deref().unwrap().contains("No backlog subtasks"));
+}
+
 // ---------------------------------------------------------------------------
 // input.rs — Normal mode: Arrow key variants
 // ---------------------------------------------------------------------------
