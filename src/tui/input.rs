@@ -75,6 +75,15 @@ impl App {
                     } else {
                         self.update(Message::StatusInfo("No active session".to_string()))
                     }
+                } else if let Some(ColumnItem::Epic(epic)) = self.selected_column_item() {
+                    let review_window = self.tasks.iter()
+                        .filter(|t| t.epic_id == Some(epic.id) && t.status == TaskStatus::Review)
+                        .find_map(|t| t.tmux_window.clone());
+                    if let Some(window) = review_window {
+                        vec![Command::JumpToTmux { window }]
+                    } else {
+                        self.update(Message::StatusInfo("No active review session".to_string()))
+                    }
                 } else {
                     vec![]
                 }

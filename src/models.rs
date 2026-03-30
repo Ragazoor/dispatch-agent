@@ -166,10 +166,15 @@ pub fn epic_status(epic: &Epic, subtask_statuses: &[TaskStatus]) -> TaskStatus {
         return TaskStatus::Review;
     }
 
-    let any_advanced = subtask_statuses.iter().any(|s| {
-        matches!(s, TaskStatus::Running | TaskStatus::Review | TaskStatus::Done)
-    });
-    if any_advanced {
+    let any_review = subtask_statuses.contains(&TaskStatus::Review);
+    if any_review {
+        return TaskStatus::Review;
+    }
+
+    let any_active = subtask_statuses
+        .iter()
+        .any(|s| matches!(s, TaskStatus::Running | TaskStatus::Done));
+    if any_active {
         return TaskStatus::Running;
     }
 
@@ -771,6 +776,27 @@ mod tests {
     fn epic_status_all_done_is_review() {
         let epic = make_epic_for_status(false);
         let statuses = [TaskStatus::Done, TaskStatus::Done];
+        assert_eq!(epic_status(&epic, &statuses), TaskStatus::Review);
+    }
+
+    #[test]
+    fn epic_status_review_beats_running() {
+        let epic = make_epic_for_status(false);
+        let statuses = [TaskStatus::Running, TaskStatus::Review];
+        assert_eq!(epic_status(&epic, &statuses), TaskStatus::Review);
+    }
+
+    #[test]
+    fn epic_status_some_review() {
+        let epic = make_epic_for_status(false);
+        let statuses = [TaskStatus::Ready, TaskStatus::Review];
+        assert_eq!(epic_status(&epic, &statuses), TaskStatus::Review);
+    }
+
+    #[test]
+    fn epic_status_review_with_done() {
+        let epic = make_epic_for_status(false);
+        let statuses = [TaskStatus::Review, TaskStatus::Done];
         assert_eq!(epic_status(&epic, &statuses), TaskStatus::Review);
     }
 

@@ -3051,6 +3051,50 @@ fn confirm_archive_epic_no_epic_selected_is_noop() {
 }
 
 // ---------------------------------------------------------------------------
+// input.rs — g key on epic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn g_key_on_epic_jumps_to_review_subtask() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let epic = make_epic(10);
+    app.epics = vec![epic];
+
+    // Subtask in Review with a tmux window
+    let mut subtask = make_task(1, TaskStatus::Review);
+    subtask.epic_id = Some(EpicId(10));
+    subtask.tmux_window = Some("win-1".to_string());
+    app.tasks = vec![subtask];
+
+    // Epic is in Review column (due to subtask in Review)
+    // Place cursor on epic in the Review column (col 3)
+    app.selection_mut().set_column(3);
+    app.selection_mut().set_row(3, 0);
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('g')));
+    assert!(matches!(&cmds[0], Command::JumpToTmux { window } if window == "win-1"));
+}
+
+#[test]
+fn g_key_on_epic_no_review_session_shows_status() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let epic = make_epic(10);
+    app.epics = vec![epic];
+
+    // Subtask in Review but NO tmux window
+    let mut subtask = make_task(1, TaskStatus::Review);
+    subtask.epic_id = Some(EpicId(10));
+    app.tasks = vec![subtask];
+
+    app.selection_mut().set_column(3);
+    app.selection_mut().set_row(3, 0);
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('g')));
+    assert!(cmds.is_empty());
+    assert!(app.status_message.as_deref().unwrap().contains("No active review session"));
+}
+
+// ---------------------------------------------------------------------------
 // input.rs — Archive panel extras
 // ---------------------------------------------------------------------------
 
