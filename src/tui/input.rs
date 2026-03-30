@@ -29,8 +29,8 @@ impl App {
             InputMode::ConfirmWrapUp(_) => self.handle_key_confirm_wrap_up(key),
             InputMode::Help => self.handle_key_help(key),
             InputMode::RepoFilter => self.handle_key_repo_filter(key),
-            InputMode::InputPresetName => self.handle_key_text_input(key),
-            InputMode::ConfirmDeletePreset => vec![],
+            InputMode::InputPresetName => self.handle_key_input_preset_name(key),
+            InputMode::ConfirmDeletePreset => self.handle_key_confirm_delete_preset(key),
         }
     }
 
@@ -527,6 +527,46 @@ impl App {
                     vec![]
                 }
             }
+            KeyCode::Char('s') => self.update(Message::StartSavePreset),
+            KeyCode::Char('x') => self.update(Message::StartDeletePreset),
+            KeyCode::Char(c @ 'A'..='Z') => {
+                let idx = (c as usize) - ('A' as usize);
+                if idx < self.filter_presets.len() {
+                    let name = self.filter_presets[idx].0.clone();
+                    self.update(Message::LoadFilterPreset(name))
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![],
+        }
+    }
+
+    fn handle_key_input_preset_name(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Enter => {
+                let name = self.input.buffer.clone();
+                self.update(Message::SaveFilterPreset(name))
+            }
+            KeyCode::Esc => self.update(Message::CancelPresetInput),
+            KeyCode::Backspace => self.update(Message::InputBackspace),
+            KeyCode::Char(c) => self.update(Message::InputChar(c)),
+            _ => vec![],
+        }
+    }
+
+    fn handle_key_confirm_delete_preset(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char(c @ 'A'..='Z') => {
+                let idx = (c as usize) - ('A' as usize);
+                if idx < self.filter_presets.len() {
+                    let name = self.filter_presets[idx].0.clone();
+                    self.update(Message::DeleteFilterPreset(name))
+                } else {
+                    vec![]
+                }
+            }
+            KeyCode::Esc => self.update(Message::CancelPresetInput),
             _ => vec![],
         }
     }

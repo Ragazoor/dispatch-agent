@@ -5193,3 +5193,101 @@ fn start_delete_preset_with_no_presets_is_noop() {
     app.update(Message::StartDeletePreset);
     assert_eq!(app.input.mode, InputMode::RepoFilter);
 }
+
+#[test]
+fn repo_filter_s_key_starts_save_preset() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/repo".to_string()];
+    app.input.mode = InputMode::RepoFilter;
+    app.handle_key(make_key(KeyCode::Char('s')));
+    assert_eq!(app.input.mode, InputMode::InputPresetName);
+}
+
+#[test]
+fn repo_filter_x_key_starts_delete_preset() {
+    let mut app = make_app();
+    let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
+    app.filter_presets = vec![("test".to_string(), repos)];
+    app.input.mode = InputMode::RepoFilter;
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.input.mode, InputMode::ConfirmDeletePreset);
+}
+
+#[test]
+fn repo_filter_shift_a_loads_first_preset() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
+    let repos: HashSet<String> = ["/repo-b".to_string()].into_iter().collect();
+    app.filter_presets = vec![("backend".to_string(), repos)];
+    app.input.mode = InputMode::RepoFilter;
+    app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+    assert!(app.repo_filter.contains("/repo-b"));
+    assert!(!app.repo_filter.contains("/repo-a"));
+}
+
+#[test]
+fn input_preset_name_enter_saves() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/repo-a".to_string()];
+    app.repo_filter.insert("/repo-a".to_string());
+    app.input.mode = InputMode::InputPresetName;
+    app.input.buffer = "mypreset".to_string();
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    assert_eq!(app.input.mode, InputMode::RepoFilter);
+    assert_eq!(app.filter_presets.len(), 1);
+    assert!(cmds.iter().any(|c| matches!(c, Command::PersistFilterPreset { .. })));
+}
+
+#[test]
+fn input_preset_name_esc_cancels() {
+    let mut app = make_app();
+    app.input.mode = InputMode::InputPresetName;
+    app.input.buffer = "draft".to_string();
+    app.handle_key(make_key(KeyCode::Esc));
+    assert_eq!(app.input.mode, InputMode::RepoFilter);
+}
+
+#[test]
+fn input_preset_name_typing_works() {
+    let mut app = make_app();
+    app.input.mode = InputMode::InputPresetName;
+    app.handle_key(make_key(KeyCode::Char('a')));
+    app.handle_key(make_key(KeyCode::Char('b')));
+    assert_eq!(app.input.buffer, "ab");
+    app.handle_key(make_key(KeyCode::Backspace));
+    assert_eq!(app.input.buffer, "a");
+}
+
+#[test]
+fn confirm_delete_preset_letter_deletes() {
+    let mut app = make_app();
+    let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
+    app.filter_presets = vec![("alpha".to_string(), repos)];
+    app.input.mode = InputMode::ConfirmDeletePreset;
+    let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+    assert!(app.filter_presets.is_empty());
+    assert_eq!(app.input.mode, InputMode::RepoFilter);
+    assert!(cmds.iter().any(|c| matches!(c, Command::DeleteFilterPreset(_))));
+}
+
+#[test]
+fn confirm_delete_preset_esc_cancels() {
+    let mut app = make_app();
+    let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
+    app.filter_presets = vec![("alpha".to_string(), repos)];
+    app.input.mode = InputMode::ConfirmDeletePreset;
+    app.handle_key(make_key(KeyCode::Esc));
+    assert_eq!(app.input.mode, InputMode::RepoFilter);
+    assert_eq!(app.filter_presets.len(), 1);
+}
+
+#[test]
+fn confirm_delete_preset_out_of_range_ignored() {
+    let mut app = make_app();
+    let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
+    app.filter_presets = vec![("alpha".to_string(), repos)];
+    app.input.mode = InputMode::ConfirmDeletePreset;
+    app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
+    assert_eq!(app.input.mode, InputMode::ConfirmDeletePreset);
+    assert_eq!(app.filter_presets.len(), 1);
+}
