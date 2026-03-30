@@ -349,18 +349,12 @@ fn build_task_list_item<'a>(
 }
 
 fn render_columns(frame: &mut Frame, app: &mut App, area: Rect, now: DateTime<Utc>) {
-    // Reserve the same 34-char right sidebar as render_summary so columns align with headers
-    let top_split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(34)])
-        .split(area);
-
     let column_areas = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(
             [Constraint::Ratio(1, TaskStatus::COLUMN_COUNT as u32); TaskStatus::COLUMN_COUNT]
         )
-        .split(top_split[0]);
+        .split(area);
 
     for (col_idx, &status) in TaskStatus::ALL.iter().enumerate() {
         let col_area = column_areas[col_idx];
