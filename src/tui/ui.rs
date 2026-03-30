@@ -381,22 +381,28 @@ fn render_epic_item(
         ),
     ]);
 
-    // Line 2: EPIC + subtask counts
-    let mut meta = " EPIC".to_string();
-    if done_count > 0 {
-        meta.push_str(&format!(" +{done_count}"));
+    // Line 2: color-coded subtask counts (● pending ● running ● done)
+    let mut meta_spans = vec![Span::raw("   ")];
+    if pending_count > 0 {
+        meta_spans.push(Span::styled(
+            format!("\u{25cf} {pending_count} "),
+            Style::default().fg(column_color(TaskStatus::Ready)),
+        ));
     }
     if running_count > 0 {
-        meta.push_str(&format!(" ~{running_count}"));
+        meta_spans.push(Span::styled(
+            format!("\u{25cf} {running_count} "),
+            Style::default().fg(column_color(TaskStatus::Running)),
+        ));
     }
-    if pending_count > 0 {
-        meta.push_str(&format!(" .{pending_count}"));
+    if done_count > 0 {
+        meta_spans.push(Span::styled(
+            format!("\u{25cf} {done_count} "),
+            Style::default().fg(column_color(TaskStatus::Done)),
+        ));
     }
 
-    let line2 = Line::from(vec![
-        Span::raw("   "),
-        Span::styled(meta, Style::default().fg(Color::Rgb(86, 95, 137))),
-    ]);
+    let line2 = Line::from(meta_spans);
 
     let mut item = ListItem::new(vec![line1, line2]);
 
