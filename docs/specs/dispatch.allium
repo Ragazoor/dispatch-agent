@@ -31,7 +31,7 @@ external entity TmuxWindow {
 -- Enumerations
 ------------------------------------------------------------
 
-enum TaskStatus { backlog | ready | running | review | done | archived }
+enum TaskStatus { backlog | running | review | done | archived }
 
 ------------------------------------------------------------
 -- Entities and Variants
@@ -51,19 +51,15 @@ entity Task {
     updated_at: Timestamp
 
     transitions status {
-        backlog -> ready
         backlog -> running
-        ready -> running
-        ready -> backlog
         running -> review
-        running -> ready
+        running -> backlog
         review -> done
         review -> running
         done -> review
         done -> archived
         -- Archive is accepted from any non-archived status
         backlog -> archived
-        ready -> archived
         running -> archived
         review -> archived
         terminal: archived
@@ -113,13 +109,11 @@ config {
 rule CreateTask {
     when: CreateTask(title, description, repo_path, plan?, epic?)
 
-    let status = if plan != null: ready else: backlog
-
     ensures: Task.created(
         title: title,
         description: description,
         repo_path: repo_path,
-        status: status,
+        status: backlog,
         plan: plan,
         epic: epic,
         needs_input: false,
@@ -136,7 +130,7 @@ rule CreateQuickTask {
             title: "Quick task",
             description: "",
             repo_path: repo_path,
-            status: ready,
+            status: backlog,
             needs_input: false,
             created_at: now,
             updated_at: now
@@ -149,7 +143,8 @@ rule CreateQuickTask {
 rule DispatchTask {
     when: DispatchTask(task)
 
-    requires: task.status = ready
+    requires: task.status = backlog
+    requires: task.has_plan = true
 
     ensures: task.status = running
     ensures: task.worktree = Worktree.created(
@@ -164,6 +159,7 @@ rule BrainstormTask {
     when: BrainstormTask(task)
 
     requires: task.status = backlog
+    requires: task.has_plan = false
 
     ensures: task.status = running
     ensures: task.worktree = Worktree.created(
@@ -424,7 +420,7 @@ rule RetryFresh {
             not exists task.worktree
     ensures: task.worktree = null
     ensures: task.tmux_window = null
-    ensures: task.status = ready
+    ensures: task.status = backlog
     ensures: DispatchTask(task)
 }
 
@@ -456,7 +452,7 @@ rule UpdateTaskViaMcp {
 rule ClaimTaskViaMcp {
     when: McpClaimTask(task, worktree, tmux_window)
 
-    requires: task.status in {backlog, ready}
+    requires: task.status = backlog
     requires: worktree.path starts_with task.repo_path
 
     ensures: task.status = running
@@ -513,7 +509,7 @@ rule DispatchEpicPlanning {
             title: "Plan: " + epic.title,
             description: epic.description,
             repo_path: epic.repo_path,
-            status: ready,
+            status: backlog,
             epic: epic,
             needs_input: false,
             created_at: now,
@@ -522,9 +518,11 @@ rule DispatchEpicPlanning {
         DispatchTask(planning_task)
 
     @guidance
-        -- The planning task is created as Ready and then dispatched
-        -- through the standard DispatchTask flow, which provisions
-        -- a worktree and tmux window and transitions it to Running.
+        -- The planning task is created as Backlog (with a plan set
+        -- implicitly by dispatch) and then dispatched through the
+        -- standard DispatchTask flow, which provisions a worktree
+        -- and tmux window and transitions it to Running.
+        -- The agent runs in epic_planning mode.
 }
 
 rule MarkEpicDone {
@@ -591,7 +589,6 @@ rule DeleteEpic {
     --   all subtasks done             => review
     --   any subtask in review         => review
     --   any subtask running/done      => running
-    --   any subtask ready             => ready
     --   otherwise                     => backlog
     -- The done flag on Epic is the only persisted status.
     -- Everything else is computed at render time from subtask statuses.
@@ -601,5 +598,5 @@ rule DeleteEpic {
 ------------------------------------------------------------
 
 -- Q1: Should stale/crashed detection trigger automatic status changes
---     (e.g., moving back to Ready), or should it remain advisory-only
+--     (e.g., moving back to Backlog), or should it remain advisory-only
 --     as it is today?
