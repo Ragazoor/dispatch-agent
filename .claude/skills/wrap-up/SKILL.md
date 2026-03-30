@@ -59,4 +59,4 @@ Call the `dispatch` MCP tool `wrap_up` with:
 - `action`: `"pr"`
 
 Inform the user:
-> "PR creation started in the background. The TUI will update with the PR URL once it's ready."
+> "PR creation started in the background. A code review will be automatically triggered once the PR is ready."

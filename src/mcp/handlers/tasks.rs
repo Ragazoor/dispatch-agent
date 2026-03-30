@@ -478,6 +478,7 @@ pub(super) fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Value) -
             let db = state.db.clone();
             let title = task.title.clone();
             let description = task.description.clone();
+            let tmux_window = tmux_window.clone();
             tokio::task::spawn_blocking(move || {
                 tracing::info!(task_id = task_id.0, %branch, "MCP wrap_up pr starting");
                 match dispatch::create_pr(&repo_path, &branch, &title, &description, &*runner) {
@@ -490,6 +491,18 @@ pub(super) fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Value) -
                                 task_id = task_id.0,
                                 "MCP wrap_up: failed to save PR fields: {e}"
                             );
+                        }
+                        // Inject code review command into the agent's Claude session
+                        if let Some(window) = &tmux_window {
+                            let review_cmd = format!("/code-review {}", result.pr_url);
+                            if let Err(e) =
+                                crate::tmux::send_keys(window, &review_cmd, &*runner)
+                            {
+                                tracing::warn!(
+                                    task_id = task_id.0,
+                                    "Failed to inject review command: {e}"
+                                );
+                            }
                         }
                     }
                     Err(e) => {
