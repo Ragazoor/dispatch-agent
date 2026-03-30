@@ -888,6 +888,9 @@ impl App {
 
     fn handle_archive_task(&mut self, id: TaskId) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
+            if task.status == TaskStatus::Archived {
+                return vec![];
+            }
             let cleanup = Self::take_cleanup(task);
             task.status = TaskStatus::Archived;
             let task_clone = task.clone();
@@ -1221,6 +1224,10 @@ impl App {
         let mut cmds = Vec::new();
 
         if let Some(task) = self.find_task_mut(id) {
+            if task.status != TaskStatus::Review {
+                return cmds;
+            }
+
             let pr_number = task.pr_number.unwrap_or(0);
             let title = task.title.clone();
 

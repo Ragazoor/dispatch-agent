@@ -264,7 +264,9 @@ impl TuiRuntime {
             &db::TaskPatch::new()
                 .status(task.status)
                 .worktree(task.worktree.as_deref())
-                .tmux_window(task.tmux_window.as_deref()),
+                .tmux_window(task.tmux_window.as_deref())
+                .pr_url(task.pr_url.as_deref())
+                .pr_number(task.pr_number),
         ) {
             app.update(Message::Error(Self::db_error("persisting task", e)));
         }
