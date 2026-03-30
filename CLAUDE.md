@@ -165,6 +165,10 @@ Any input mode ──Esc──▶ Normal (cancels)
 Error popup ──any key──▶ dismisses
 ```
 
+## Allium Spec
+
+This project has an Allium specification (`allium/`) that describes entities, rules, and behaviour. **Keep the spec in sync with the implementation**: when adding or changing features, update the relevant spec files. Use the `allium:tend` skill to write or edit specs, and `allium:weed` to check for drift.
+
 ## Conventions
 
 - Rust edition 2021, SQLite with bundled `libsqlite3-sys`
