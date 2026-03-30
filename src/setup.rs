@@ -5,6 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 const HOOK_SCRIPT: &str = include_str!("../hooks/task-status-hook");
+const USAGE_HOOK_SCRIPT: &str = include_str!("../hooks/task-usage-hook");
 
 // ---------------------------------------------------------------------------
 // MCP config merging
@@ -54,6 +55,7 @@ const MCP_PERMISSIONS: &[&str] = &[
     "mcp__dispatch__update_task",
     "mcp__dispatch__get_task",
     "mcp__dispatch__create_task",
+    "mcp__dispatch__report_usage",
 ];
 
 pub struct PermissionsMergeResult {
@@ -111,21 +113,25 @@ pub fn install_hook_script() -> Result<bool> {
     fs::create_dir_all(&bin_dir)
         .with_context(|| format!("Failed to create {}", bin_dir.display()))?;
 
-    let hook_path = bin_dir.join("task-status-hook");
+    let mut changed = false;
+    changed |= install_single_hook(&bin_dir, "task-status-hook", HOOK_SCRIPT)?;
+    changed |= install_single_hook(&bin_dir, "task-usage-hook", USAGE_HOOK_SCRIPT)?;
+    Ok(changed)
+}
 
+fn install_single_hook(bin_dir: &std::path::Path, name: &str, content: &str) -> Result<bool> {
+    let hook_path = bin_dir.join(name);
     if hook_path.exists() {
         let existing = fs::read_to_string(&hook_path)
             .with_context(|| format!("Failed to read {}", hook_path.display()))?;
-        if existing == HOOK_SCRIPT {
+        if existing == content {
             return Ok(false);
         }
     }
-
-    fs::write(&hook_path, HOOK_SCRIPT)
+    fs::write(&hook_path, content)
         .with_context(|| format!("Failed to write {}", hook_path.display()))?;
     fs::set_permissions(&hook_path, fs::Permissions::from_mode(0o755))
         .with_context(|| format!("Failed to set permissions on {}", hook_path.display()))?;
-
     Ok(true)
 }
 
@@ -198,10 +204,10 @@ pub fn run_setup(port: u16) -> Result<()> {
 
     // 3. Hook script
     if install_hook_script()? {
-        println!("Hook script: installed task-status-hook to ~/.local/bin/");
+        println!("Hook scripts: installed task-status-hook and task-usage-hook to ~/.local/bin/");
         any_changes = true;
     } else {
-        println!("Hook script: task-status-hook already up to date in ~/.local/bin/");
+        println!("Hook scripts: task-status-hook and task-usage-hook already up to date in ~/.local/bin/");
     }
 
     if any_changes {
@@ -292,7 +298,8 @@ mod tests {
         assert!(allow.contains(&json!("mcp__dispatch__update_task")));
         assert!(allow.contains(&json!("mcp__dispatch__get_task")));
         assert!(allow.contains(&json!("mcp__dispatch__create_task")));
-        assert_eq!(result.added_count, 3);
+        assert!(allow.contains(&json!("mcp__dispatch__report_usage")));
+        assert_eq!(result.added_count, 4);
     }
 
     #[test]
@@ -309,7 +316,7 @@ mod tests {
         assert!(allow.contains(&json!("Bash(git:*)")));
         assert!(allow.contains(&json!("Read")));
         assert!(allow.contains(&json!("mcp__dispatch__update_task")));
-        assert_eq!(result.added_count, 3);
+        assert_eq!(result.added_count, 4);
         assert_eq!(result.value["permissions"]["defaultMode"], "acceptEdits");
         assert!(result.value["hooks"]["Stop"].is_array());
     }
@@ -321,7 +328,8 @@ mod tests {
                 "allow": [
                     "mcp__dispatch__update_task",
                     "mcp__dispatch__get_task",
-                    "mcp__dispatch__create_task"
+                    "mcp__dispatch__create_task",
+                    "mcp__dispatch__report_usage"
                 ]
             }
         }));
@@ -334,6 +342,11 @@ mod tests {
     #[test]
     fn hook_script_is_valid_bash() {
         assert!(HOOK_SCRIPT.starts_with("#!/usr/bin/env bash"));
+    }
+
+    #[test]
+    fn usage_hook_script_is_valid_bash() {
+        assert!(USAGE_HOOK_SCRIPT.starts_with("#!/usr/bin/env bash"));
     }
 
     #[test]
