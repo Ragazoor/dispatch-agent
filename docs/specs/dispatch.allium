@@ -657,7 +657,7 @@ rule DeleteEpic {
     --   no subtasks                   => backlog
     --   all subtasks done             => review
     --   any subtask in review         => review
-    --   any subtask running/done      => running
+    --   any subtask running            => running
     --   otherwise                     => backlog
     -- The done flag on Epic is the only persisted status.
     -- Everything else is computed at render time from subtask statuses.
