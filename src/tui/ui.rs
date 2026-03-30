@@ -138,7 +138,7 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
         let is_focused = app.selected_column() == col_idx;
         let color = column_color(status);
 
-        let (prefix, style) = if is_focused {
+        let (prefix, label_style) = if is_focused {
             ("\u{25b8} ", Style::default()
                 .fg(color)
                 .add_modifier(Modifier::BOLD)
@@ -147,9 +147,32 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
             ("\u{25e6} ", Style::default().fg(Color::Rgb(86, 95, 137)))
         };
 
-        let text = format!("{}{} {}", prefix, status.as_str(), count);
-        let paragraph = Paragraph::new(text)
-            .style(style)
+        let label = format!("{}{} {}", prefix, status.as_str(), count);
+
+        let spans = if is_focused {
+            let column_task_ids: Vec<_> = app.tasks_by_status(status).iter().map(|t| t.id).collect();
+            let all_selected = !column_task_ids.is_empty()
+                && column_task_ids.iter().all(|id| app.selected_tasks().contains(id));
+            let checkbox = if all_selected { " [x]" } else { " [ ]" };
+
+            let checkbox_style = if app.on_select_all() {
+                Style::default()
+                    .bg(cursor_bg_color(status))
+                    .fg(Color::Rgb(192, 202, 245))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Rgb(86, 95, 137))
+            };
+
+            vec![
+                Span::styled(label, label_style),
+                Span::styled(checkbox, checkbox_style),
+            ]
+        } else {
+            vec![Span::styled(label, label_style)]
+        };
+
+        let paragraph = Paragraph::new(Line::from(spans))
             .alignment(Alignment::Center);
         frame.render_widget(paragraph, segments[col_idx]);
     }
