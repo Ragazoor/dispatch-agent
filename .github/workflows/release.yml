@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: dispatch
+
+jobs:
+  build:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-gnu
+
+      - name: Strip binary
+        run: strip target/x86_64-unknown-linux-gnu/release/${{ env.BINARY_NAME }}
+
+      - name: Prepare release artifacts
+        run: |
+          cp target/x86_64-unknown-linux-gnu/release/${{ env.BINARY_NAME }} ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu
+          sha256sum ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu > ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu.sha256
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu
+            ${{ env.BINARY_NAME }}-x86_64-unknown-linux-gnu.sha256
