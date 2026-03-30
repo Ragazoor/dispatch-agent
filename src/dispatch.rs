@@ -374,15 +374,12 @@ Epic:\n\
   Description: {description}\n\
 \n\
 Your goal is to explore the codebase, brainstorm approaches, and write an \
-implementation plan for this epic. When done, save the plan and attach it to the epic:\n\
-\n\
-1. Write the plan to docs/plans/ (or docs/superpowers/specs/ if using the brainstorming skill)\n\
-2. Call update_epic via MCP to set the plan field to the plan file path\n\
+implementation plan for this epic. When done, save the plan to docs/plans/.\n\
 \n\
 After planning, ask whether to continue creating subtasks or stop.\n\
 \n\
 An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-attach the plan (tool: dispatch, tool name: update_epic — set the plan field).\n\
+query tasks and epics (tool: dispatch).\n\
 \n\
 IMPORTANT: Do NOT start implementing. Your job ends after planning.",
         epic_id = epic_id,
@@ -895,7 +892,6 @@ mod tests {
         assert!(prompt.contains("42"));
         assert!(prompt.contains("Redesign auth"));
         assert!(prompt.contains("Rework the login flow"));
-        assert!(prompt.contains("update_epic"));
         assert!(prompt.contains("Do NOT start implementing"));
         assert!(prompt.contains("3142"));
     }

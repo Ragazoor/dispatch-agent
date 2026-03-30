@@ -100,6 +100,7 @@ config {
     staleness_fresh_threshold: Duration = 3.days
     staleness_aging_threshold: Duration = 7.days
     notifications_enabled: Boolean = true
+    pr_poll_interval: Duration = 30.seconds
 }
 
 ------------------------------------------------------------
@@ -242,6 +243,54 @@ rule ConfirmDone {
         -- status before transitioning to done.
 }
 
+-- == PR Workflow ==
+
+rule CreatePr {
+    when: CreatePr(task)
+
+    requires: task.status = review
+    requires: task.worktree != null
+
+    ensures: task.pr_url != null
+    ensures: task.pr_number != null
+    ensures: task.updated_at = now
+
+    @guidance
+        -- Pushes the branch to origin and creates a GitHub PR using
+        -- `gh pr create`. The task remains in review.
+}
+
+rule PollPrStatus {
+    when: Tick
+
+    for task in Tasks where status = review and pr_number != null:
+
+        ensures: PrMerged(task: task)
+
+    @guidance
+        -- Runs during each tick for review tasks with a pr_number.
+        -- Polls GitHub every pr_poll_interval (30s) via `gh pr view`
+        -- to check merge status. Fires PrMerged when the PR is merged.
+}
+
+rule PrMerged {
+    when: PrMerged(task)
+
+    requires: task.status = review
+
+    ensures: task.status = done
+    ensures: task.tmux_window = null
+    ensures: task.updated_at = now
+    ensures:
+        if notifications_enabled:
+            DesktopNotification(task: task, urgency: normal, about: pr_merged)
+
+    @guidance
+        -- This is an automatic transition triggered by PR status polling.
+        -- It bypasses the ConfirmDone human confirmation because the PR
+        -- merge itself is the human confirmation (via GitHub review process).
+}
+
 -- == Finish (Merge) ==
 
 rule FinishTaskSuccess {
@@ -262,9 +311,9 @@ rule FinishTaskSuccess {
     ensures: task.updated_at = now
 
     @guidance
-        -- The implementation pulls the latest main from origin (if a remote
-        -- is configured) before merging, ensuring the merge target is
-        -- up to date with the remote.
+        -- The implementation rebases the task branch onto main (after
+        -- pulling latest from origin), then fast-forwards main to the
+        -- rebased branch.
         -- Worktree is preserved after finish.
         -- It will be cleaned up when the task is archived.
         -- If another active task shares the same worktree, the worktree
@@ -272,15 +321,15 @@ rule FinishTaskSuccess {
 }
 
 rule FinishTaskConflict {
-    when: MergeConflict(task)
+    when: RebaseConflict(task)
 
-    -- Fires when FinishTask's merge encounters a conflict.
-    -- The merge is aborted and the task stays in review.
+    -- Fires when FinishTask's rebase encounters a conflict.
+    -- The rebase is aborted and the task stays in review.
 
     requires: task.status = review
 
     ensures: task.status = review
-    ensures: UserInformed(about: merge_conflict, task: task)
+    ensures: UserInformed(about: rebase_conflict, task: task)
 }
 
 -- == Archive ==
@@ -588,6 +637,9 @@ rule DeleteEpic {
     -- via the TUI. MCP tools cannot set status to done or archived.
     -- This is enforced in the McpUpdateTask rule preconditions and
     -- the ConfirmDone rule requiring review status.
+    -- Exception: PrMerged transitions are automatic because the PR
+    -- merge on GitHub constitutes human confirmation via the code
+    -- review process.
 
 @invariant EpicDerivedStatus
     -- Epic kanban status is derived from subtask statuses, never stored.
