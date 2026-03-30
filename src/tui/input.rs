@@ -27,7 +27,7 @@ impl App {
             InputMode::ConfirmEpicDone(_) => self.handle_key_confirm_epic_done(key),
             InputMode::ConfirmDone(_) => self.handle_key_confirm_done(key),
             InputMode::ConfirmWrapUp(_) => self.handle_key_confirm_wrap_up(key),
-            InputMode::ConfirmEpicWrapUp(_) => vec![], // TODO: Task 6
+            InputMode::ConfirmEpicWrapUp(_) => self.handle_key_confirm_epic_wrap_up(key),
             InputMode::Help => self.handle_key_help(key),
             InputMode::RepoFilter => self.handle_key_repo_filter(key),
             InputMode::InputPresetName => self.handle_key_input_preset_name(key),
@@ -70,11 +70,16 @@ impl App {
             KeyCode::Char('d') => self.handle_key_dispatch(),
             KeyCode::Char('f') => self.update(Message::StartRepoFilter),
             KeyCode::Char('W') => {
-                if let Some(task) = self.selected_task() {
-                    let id = task.id;
-                    self.update(Message::StartWrapUp(id))
-                } else {
-                    vec![]
+                match self.selected_column_item() {
+                    Some(ColumnItem::Task(task)) => {
+                        let id = task.id;
+                        self.update(Message::StartWrapUp(id))
+                    }
+                    Some(ColumnItem::Epic(epic)) => {
+                        let id = epic.id;
+                        self.update(Message::StartEpicWrapUp(id))
+                    }
+                    None => vec![],
                 }
             }
             KeyCode::Char('m') => {
@@ -574,6 +579,15 @@ impl App {
             KeyCode::Char('r') => self.update(Message::WrapUpRebase),
             KeyCode::Char('p') => self.update(Message::WrapUpPr),
             KeyCode::Esc => self.update(Message::CancelWrapUp),
+            _ => vec![],
+        }
+    }
+
+    fn handle_key_confirm_epic_wrap_up(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('r') => self.update(Message::EpicWrapUpRebase),
+            KeyCode::Char('p') => self.update(Message::EpicWrapUpPr),
+            KeyCode::Esc => self.update(Message::CancelEpicWrapUp),
             _ => vec![],
         }
     }

@@ -5444,6 +5444,21 @@ fn make_review_subtask(id: i64, epic_id: i64, sort_order: i64) -> Task {
 }
 
 #[test]
+fn w_key_on_epic_starts_epic_wrap_up() {
+    let mut app = App::new(vec![
+        make_review_subtask(1, 10, 1),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    // Epic is in Review column (has a Review subtask)
+    app.selection_mut().set_column(2);
+    app.selection_mut().set_row(2, 0);
+
+    app.handle_key(make_key(KeyCode::Char('W')));
+
+    assert!(matches!(app.input.mode, InputMode::ConfirmEpicWrapUp(_)));
+}
+
+#[test]
 fn epic_wrap_up_with_review_tasks_enters_confirm() {
     let mut app = App::new(vec![
         make_review_subtask(1, 10, 1),
