@@ -262,7 +262,8 @@ fn build_task_list_item<'a>(
     let line1 = Line::from(vec![
         Span::styled(select_prefix.to_string(), title_style),
         Span::styled(stripe_char, stripe_style),
-        Span::styled(format!(" {title_text}"), title_style),
+        Span::styled(format!(" #{} ", task.id), Style::default().fg(Color::Rgb(86, 95, 137))),
+        Span::styled(title_text.to_string(), title_style),
     ]);
 
     // Line 2: metadata
@@ -434,8 +435,9 @@ fn render_epic_item(
     let line1 = Line::from(vec![
         Span::raw("  "),
         Span::styled(stripe_char, Style::default().fg(Color::Rgb(187, 154, 247))),
+        Span::styled(format!(" #{} ", epic.id), Style::default().fg(Color::Rgb(86, 95, 137))),
         Span::styled(
-            format!(" {title_text}{plan_indicator}"),
+            format!("{title_text}{plan_indicator}"),
             Style::default().fg(Color::Rgb(187, 154, 247)).add_modifier(Modifier::BOLD),
         ),
     ]);
