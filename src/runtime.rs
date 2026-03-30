@@ -70,6 +70,27 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
         }
     }
 
+    // Load saved filter presets
+    match database.list_filter_presets() {
+        Ok(raw) => {
+            let presets: Vec<(String, HashSet<String>)> = raw
+                .into_iter()
+                .map(|(name, paths_str)| {
+                    let set: HashSet<String> = paths_str
+                        .split('\n')
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string())
+                        .collect();
+                    (name, set)
+                })
+                .collect();
+            app.update(Message::FilterPresetsLoaded(presets));
+        }
+        Err(e) => {
+            tracing::warn!("Failed to load filter presets: {e}");
+        }
+    }
+
     // 4. Set up terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -473,6 +494,40 @@ impl TuiRuntime {
     fn exec_persist_string_setting(&self, app: &mut App, key: &str, value: &str) {
         if let Err(e) = self.database.set_setting_string(key, value) {
             app.update(Message::Error(Self::db_error("persisting setting", e)));
+        }
+    }
+
+    fn exec_persist_filter_preset(&self, app: &mut App, name: &str, repo_paths: &str) {
+        if let Err(e) = self.database.save_filter_preset(name, repo_paths) {
+            app.update(Message::Error(Self::db_error("saving filter preset", e)));
+        }
+    }
+
+    fn exec_delete_filter_preset(&self, app: &mut App, name: &str) {
+        if let Err(e) = self.database.delete_filter_preset(name) {
+            app.update(Message::Error(Self::db_error("deleting filter preset", e)));
+        }
+    }
+
+    fn exec_load_filter_presets(&self, app: &mut App) {
+        match self.database.list_filter_presets() {
+            Ok(raw) => {
+                let presets: Vec<(String, HashSet<String>)> = raw
+                    .into_iter()
+                    .map(|(name, paths_str)| {
+                        let set: HashSet<String> = paths_str
+                            .split('\n')
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.to_string())
+                            .collect();
+                        (name, set)
+                    })
+                    .collect();
+                app.update(Message::FilterPresetsLoaded(presets));
+            }
+            Err(e) => {
+                app.update(Message::Error(Self::db_error("loading filter presets", e)));
+            }
         }
     }
 
@@ -923,9 +978,12 @@ async fn execute_commands(
                 rt.exec_persist_string_setting(app, &key, &value),
             Command::FetchReviewPrs => rt.exec_fetch_review_prs(),
             Command::OpenInBrowser { url } => rt.exec_open_in_browser(url),
-            Command::PersistFilterPreset { .. } => todo!("PersistFilterPreset"),
-            Command::DeleteFilterPreset(_) => todo!("DeleteFilterPreset"),
-            Command::LoadFilterPresets => todo!("LoadFilterPresets"),
+            Command::PersistFilterPreset { name, repo_paths } =>
+                rt.exec_persist_filter_preset(app, &name, &repo_paths),
+            Command::DeleteFilterPreset(name) =>
+                rt.exec_delete_filter_preset(app, &name),
+            Command::LoadFilterPresets =>
+                rt.exec_load_filter_presets(app),
         }
     }
 
