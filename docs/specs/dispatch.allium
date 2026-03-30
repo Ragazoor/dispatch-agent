@@ -485,6 +485,20 @@ rule UpdateEpicViaMcp {
     ensures: epic.updated_at = now
 }
 
+rule UpdateEpicViaMcp {
+    when: McpUpdateEpic(epic, title?, description?, done?)
+
+    requires: title != null or description != null or done != null
+
+    ensures:
+        if title != null: epic.title = title
+    ensures:
+        if description != null: epic.description = description
+    ensures:
+        if done != null: epic.done = done
+    ensures: epic.updated_at = now
+}
+
 -- == Epics ==
 
 rule CreateEpic {
