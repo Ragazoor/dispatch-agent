@@ -97,7 +97,7 @@ entity Epic {
 
 config {
     tick_interval: Duration = 2.seconds
-    inactivity_timeout: Duration = 5.minutes
+    inactivity_timeout: Duration = 3.minutes
     status_message_expiry: Duration = 5.seconds
     staleness_fresh_threshold: Duration = 3.days
     staleness_aging_threshold: Duration = 7.days

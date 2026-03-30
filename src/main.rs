@@ -27,7 +27,7 @@ enum Commands {
         #[arg(long, env = "DISPATCH_PORT", default_value = "3142")]
         port: u16,
         /// Seconds of unchanged tmux output before marking agent stale
-        #[arg(long, env = "DISPATCH_INACTIVITY_TIMEOUT", default_value = "300")]
+        #[arg(long, env = "DISPATCH_INACTIVITY_TIMEOUT", default_value = "180")]
         inactivity_timeout: u64,
     },
     /// Update a task's status
