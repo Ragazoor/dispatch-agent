@@ -203,9 +203,9 @@ rule MoveTaskForward {
     ensures: task.updated_at = now
 
     @guidance
-        -- Manual forward movement clears agent health tracking state
-        -- (tmux output, staleness timer, crash detection, notification
-        -- flags) for the task.
+        -- Manual movement (forward or backward) clears agent health
+        -- tracking state (tmux output, staleness timer, crash detection,
+        -- notification flags) for the task.
 }
 
 rule MoveTaskBackward {
@@ -220,6 +220,11 @@ rule MoveTaskBackward {
     ensures: task.status = prev
     ensures: task.tmux_window = null
     ensures: task.updated_at = now
+
+    @guidance
+        -- Manual movement (forward or backward) clears agent health
+        -- tracking state (tmux output, staleness timer, crash detection,
+        -- notification flags) for the task.
 }
 
 rule ConfirmDone {
@@ -426,9 +431,10 @@ rule RetryFresh {
 -- == MCP Constraints ==
 
 rule UpdateTaskViaMcp {
-    when: McpUpdateTask(task, status?, plan?, title?, description?)
+    when: McpUpdateTask(task, status?, plan?, title?, description?, repo_path?)
 
-    requires: status != null or plan != null or title != null or description != null
+    requires: status != null or plan != null or title != null
+              or description != null or repo_path != null
 
     -- Cannot set status to done or archived via MCP
     requires: status != done
@@ -442,6 +448,8 @@ rule UpdateTaskViaMcp {
         if title != null: task.title = title
     ensures:
         if description != null: task.description = description
+    ensures:
+        if repo_path != null: task.repo_path = repo_path
     ensures: task.updated_at = now
 }
 
@@ -582,7 +590,8 @@ rule DeleteEpic {
     --   epic.done = true              => done
     --   no subtasks                   => backlog
     --   all subtasks done             => review
-    --   any subtask running/review/done => running
+    --   any subtask in review         => review
+    --   any subtask running/done      => running
     --   any subtask ready             => ready
     --   otherwise                     => backlog
     -- The done flag on Epic is the only persisted status.
