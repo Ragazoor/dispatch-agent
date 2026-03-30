@@ -345,6 +345,12 @@ impl Database {
                 .context("Failed to update schema version to 7")?;
         }
 
+        if current_version < 8 {
+            let _ = conn.execute_batch("ALTER TABLE epics ADD COLUMN plan TEXT");
+            conn.pragma_update(None, "user_version", 8i64)
+                .context("Failed to update schema version to 8")?;
+        }
+
         Ok(())
     }
 
@@ -587,7 +593,7 @@ impl TaskStore for Database {
     fn get_epic(&self, id: EpicId) -> Result<Option<Epic>> {
         let conn = self.conn()?;
         conn.query_row(
-            "SELECT id, title, description, repo_path, done, created_at, updated_at
+            "SELECT id, title, description, repo_path, done, plan, created_at, updated_at
              FROM epics WHERE id = ?1",
             params![id.0],
             row_to_epic,
@@ -600,7 +606,7 @@ impl TaskStore for Database {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT id, title, description, repo_path, done, created_at, updated_at
+                "SELECT id, title, description, repo_path, done, plan, created_at, updated_at
                  FROM epics ORDER BY id",
             )
             .context("Failed to prepare list_epics")?;
@@ -785,6 +791,7 @@ fn row_to_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Epic> {
         description: row.get("description")?,
         repo_path: row.get("repo_path")?,
         done: done_int != 0,
+        plan: row.get("plan")?,
         created_at: parse_datetime(&created_str),
         updated_at: parse_datetime(&updated_str),
     })
@@ -951,7 +958,7 @@ mod tests {
         let db = in_memory_db();
         let conn = db.conn.lock().unwrap();
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 7, "fresh DB should be at schema version 7");
+        assert_eq!(version, 8, "fresh DB should be at schema version 8");
     }
 
     #[test]
@@ -1002,7 +1009,7 @@ mod tests {
 
         // Version should be latest
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
 
         // Verify Migration 1 added the plan column
         let has_plan: bool = conn
@@ -1065,7 +1072,7 @@ mod tests {
         assert_eq!(status, "backlog");
 
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
     }
 
     #[test]
