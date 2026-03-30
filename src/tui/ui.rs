@@ -119,6 +119,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_error_popup(frame, app, area);
     render_help_overlay(frame, app, area);
+    render_repo_filter_overlay(frame, app, area);
 }
 
 fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
@@ -126,7 +127,7 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints({
             let mut c = vec![Constraint::Ratio(1, TaskStatus::COLUMN_COUNT as u32); TaskStatus::COLUMN_COUNT];
-            c.push(Constraint::Length(6));
+            c.push(Constraint::Length(16));
             c
         })
         .split(area);
@@ -187,6 +188,17 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
             .style(Style::default().fg(Color::Rgb(86, 95, 137)))
             .alignment(Alignment::Right);
         frame.render_widget(indicator, notif_area);
+    }
+
+    // Filter indicator
+    if !app.repo_filter().is_empty() {
+        let active = app.repo_filter().len();
+        let total = app.repo_paths().len();
+        let indicator = format!("[{active}/{total} repos]");
+        let p = Paragraph::new(indicator)
+            .style(Style::default().fg(Color::Rgb(86, 95, 137)))
+            .alignment(Alignment::Right);
+        frame.render_widget(p, segments[TaskStatus::COLUMN_COUNT]);
     }
 }
 
@@ -908,6 +920,57 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, popup_area);
 }
 
+fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
+    if app.input.mode != InputMode::RepoFilter {
+        return;
+    }
+
+    let repo_count = app.repo_paths().len();
+    let popup_height = (repo_count as u16 + 5).clamp(7, area.height.saturating_sub(4));
+    let popup_width = (area.width * 70 / 100).clamp(30, 60);
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .title(" Repo Filter ")
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .border_style(Style::default().fg(Color::Cyan))
+        .title_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+
+    let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(Color::Gray);
+    let note_style = Style::default().fg(Color::DarkGray);
+
+    let mut lines = vec![Line::from("")];
+
+    for (i, path) in app.repo_paths().iter().enumerate() {
+        let num = i + 1;
+        let checked = if app.repo_filter().contains(path) { "x" } else { " " };
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {num}"), key_style),
+            Span::styled(format!(". [{checked}] {path}"), desc_style),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+
+    let all_selected = app.repo_filter().len() == app.repo_paths().len();
+    let a_label = if all_selected { "clear all" } else { "select all" };
+    lines.push(Line::from(vec![
+        Span::styled("  a", key_style),
+        Span::styled(format!(": {a_label}  "), note_style),
+        Span::styled("Enter/Esc", key_style),
+        Span::styled(": close", note_style),
+    ]));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, popup_area);
+}
+
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(msg) = &app.status_message {
         let bar = Paragraph::new(msg.as_str())
@@ -1038,7 +1101,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(bar, area);
         }
         InputMode::RepoFilter => {
-            let bar = Paragraph::new("Repo filter — Esc to close")
+            let bar = Paragraph::new("Filter repos: 1-9 toggle, (a)ll, Enter/Esc close")
                 .style(Style::default().fg(Color::Cyan));
             frame.render_widget(bar, area);
         }

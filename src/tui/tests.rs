@@ -4818,3 +4818,14 @@ fn repo_filter_out_of_range_number_ignored() {
     app.handle_key(make_key(KeyCode::Char('5')));
     assert!(app.repo_filter.is_empty());
 }
+
+#[test]
+fn summary_row_shows_filter_indicator() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.repo_paths = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+    app.repo_filter.insert("/a".to_string());
+    app.repo_filter.insert("/b".to_string());
+
+    let buf = render_to_buffer(&mut app, 120, 20);
+    assert!(buffer_contains(&buf, "2/3 repos"), "Expected filter indicator in summary");
+}
