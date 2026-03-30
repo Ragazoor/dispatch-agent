@@ -3464,11 +3464,12 @@ fn focused_column_has_tinted_background() {
     ], Duration::from_secs(300));
     let buf = render_to_buffer(&app, 120, 20);
 
-    // Focused column (Backlog, col 0) should have a tinted bg
+    // Focused column (Backlog, col 0) should have a tinted bg.
+    // Check a row below the cursor card to avoid cursor highlight.
     let expected_bg = Color::Rgb(28, 30, 44);
     let col_width = 120 / 5;
-    let cell = &buf[(1, 3)];
-    let cell2 = &buf[(col_width + 1, 3)];
+    let cell = &buf[(1, 5)];
+    let cell2 = &buf[(col_width + 1, 5)];
 
     assert_eq!(cell.bg, expected_bg, "Focused column should have tinted background");
     assert_ne!(cell2.bg, expected_bg, "Unfocused column should NOT have tinted background");
@@ -3816,4 +3817,26 @@ fn dispatch_is_noop_on_toggle_row() {
     app.handle_key(make_key(KeyCode::Char('k')));
     let cmds = app.handle_key(make_key(KeyCode::Char('d')));
     assert!(cmds.is_empty());
+}
+
+#[test]
+fn render_shows_select_all_toggle_in_focused_column() {
+    let app = make_app();
+    let buf = render_to_buffer(&app, 120, 30);
+    assert!(buffer_contains(&buf, "Select [a]ll"));
+}
+
+#[test]
+fn render_shows_checked_toggle_when_all_selected() {
+    let mut app = make_app();
+    app.update(Message::SelectAllColumn);
+    let buf = render_to_buffer(&app, 120, 30);
+    assert!(buffer_contains(&buf, "[x]"));
+}
+
+#[test]
+fn render_shows_unchecked_toggle_when_not_all_selected() {
+    let app = make_app();
+    let buf = render_to_buffer(&app, 120, 30);
+    assert!(buffer_contains(&buf, "[ ]"));
 }
