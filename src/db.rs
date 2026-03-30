@@ -102,12 +102,15 @@ impl<'a> TaskPatch<'a> {
 // ---------------------------------------------------------------------------
 
 /// Builder for partial epic updates, mirroring `TaskPatch`. Each field is
-/// `None` by default (= don't change).
+/// `None` by default (= don't change). For nullable columns (`plan`) we use
+/// a double-Option: `None` = don't change, `Some(None)` = set NULL,
+/// `Some(Some(x))` = set value.
 #[derive(Debug, Default)]
 pub struct EpicPatch<'a> {
     pub title: Option<&'a str>,
     pub description: Option<&'a str>,
     pub done: Option<bool>,
+    pub plan: Option<Option<&'a str>>,
 }
 
 impl<'a> EpicPatch<'a> {
@@ -130,10 +133,16 @@ impl<'a> EpicPatch<'a> {
         self
     }
 
+    pub fn plan(mut self, plan: Option<&'a str>) -> Self {
+        self.plan = Some(plan);
+        self
+    }
+
     pub fn has_changes(&self) -> bool {
         self.title.is_some()
             || self.description.is_some()
             || self.done.is_some()
+            || self.plan.is_some()
     }
 }
 
@@ -637,6 +646,10 @@ impl TaskStore for Database {
         if let Some(d) = patch.done {
             sets.push("done = ?");
             values.push(Box::new(d as i64));
+        }
+        if let Some(p) = patch.plan {
+            sets.push("plan = ?");
+            values.push(Box::new(p.map(|s| s.to_string())));
         }
 
         sets.push("updated_at = datetime('now')");
@@ -1435,5 +1448,27 @@ mod tests {
         db.patch_task(id, &TaskPatch::new().pr_url(Some("https://example.com/pull/1"))).unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.pr_url.as_deref(), Some("https://example.com/pull/1"));
+    }
+
+    #[test]
+    fn patch_epic_plan() {
+        let db = in_memory_db();
+        let epic = db.create_epic("Epic", "desc", "/repo").unwrap();
+        assert!(epic.plan.is_none());
+
+        db.patch_epic(epic.id, &EpicPatch::new().plan(Some("docs/plan.md"))).unwrap();
+        let updated = db.get_epic(epic.id).unwrap().unwrap();
+        assert_eq!(updated.plan.as_deref(), Some("docs/plan.md"));
+    }
+
+    #[test]
+    fn patch_epic_clear_plan() {
+        let db = in_memory_db();
+        let epic = db.create_epic("Epic", "desc", "/repo").unwrap();
+
+        db.patch_epic(epic.id, &EpicPatch::new().plan(Some("docs/plan.md"))).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().plan(None)).unwrap();
+        let updated = db.get_epic(epic.id).unwrap().unwrap();
+        assert!(updated.plan.is_none());
     }
 }
