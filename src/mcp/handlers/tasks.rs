@@ -23,6 +23,8 @@ pub(super) struct UpdateTaskArgs {
     pub(super) title: Option<String>,
     #[serde(default)]
     pub(super) description: Option<String>,
+    #[serde(default)]
+    pub(super) repo_path: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -70,13 +72,14 @@ pub(super) fn handle_update_task(state: &McpState, id: Option<Value>, args: Valu
     let has_update = parsed.status.is_some()
         || parsed.plan.is_some()
         || parsed.title.is_some()
-        || parsed.description.is_some();
+        || parsed.description.is_some()
+        || parsed.repo_path.is_some();
 
     if !has_update {
         return JsonRpcResponse::err(
             id,
             -32602,
-            "At least one of status, plan, title, or description must be provided",
+            "At least one of status, plan, title, description, or repo_path must be provided",
         );
     }
 
@@ -118,6 +121,9 @@ pub(super) fn handle_update_task(state: &McpState, id: Option<Value>, args: Valu
     if let Some(ref d) = parsed.description {
         patch = patch.description(d);
     }
+    if let Some(ref r) = parsed.repo_path {
+        patch = patch.repo_path(r);
+    }
 
     if let Err(e) = state.db.patch_task(TaskId(parsed.task_id), &patch) {
         return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
@@ -130,6 +136,7 @@ pub(super) fn handle_update_task(state: &McpState, id: Option<Value>, args: Valu
     if parsed.plan.is_some() { updated.push("plan".to_string()); }
     if parsed.title.is_some() { updated.push("title".to_string()); }
     if parsed.description.is_some() { updated.push("description".to_string()); }
+    if parsed.repo_path.is_some() { updated.push("repo_path".to_string()); }
 
     JsonRpcResponse::ok(
         id,

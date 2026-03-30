@@ -18,7 +18,7 @@ pub(super) fn tool_definitions() -> Value {
         "tools": [
             {
                 "name": "update_task",
-                "description": "Update a task's status, title, description, and/or plan. At least one field besides task_id must be provided.",
+                "description": "Update a task's status, title, description, repo_path, and/or plan. At least one field besides task_id must be provided.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -42,6 +42,10 @@ pub(super) fn tool_definitions() -> Value {
                         "description": {
                             "type": "string",
                             "description": "New description for the task"
+                        },
+                        "repo_path": {
+                            "type": "string",
+                            "description": "New repository path for the task"
                         }
                     },
                     "required": ["task_id"]

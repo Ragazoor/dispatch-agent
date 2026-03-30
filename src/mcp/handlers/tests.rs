@@ -431,6 +431,26 @@ async fn update_task_title_and_description() {
 }
 
 #[tokio::test]
+async fn update_task_repo_path() {
+    let state = test_state();
+    let task_id = state.db.create_task("Test", "desc", "/old/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "repo_path": "/new/repo" }
+        })),
+    ).await;
+    assert!(resp.error.is_none(), "should succeed with repo_path only: {:?}", resp.error);
+
+    let task = state.db.get_task(task_id).unwrap().unwrap();
+    assert_eq!(task.repo_path, "/new/repo");
+    assert_eq!(task.status, crate::models::TaskStatus::Backlog); // unchanged
+}
+
+#[tokio::test]
 async fn update_task_no_fields_errors() {
     let state = test_state();
     let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
@@ -711,9 +731,9 @@ fn tool_schemas_match_arg_structs() {
     let cases: Vec<(&str, BTreeSet<&str>, BTreeSet<&str>, Value)> = vec![
         (
             "update_task",
-            BTreeSet::from(["task_id", "status", "plan", "title", "description"]),
+            BTreeSet::from(["task_id", "status", "plan", "title", "description", "repo_path"]),
             BTreeSet::from(["task_id"]),
-            json!({"task_id": 1, "status": "review", "plan": "/p.md", "title": "t", "description": "d"}),
+            json!({"task_id": 1, "status": "review", "plan": "/p.md", "title": "t", "description": "d", "repo_path": "/r"}),
         ),
         (
             "get_task",
