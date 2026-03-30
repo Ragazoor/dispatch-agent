@@ -1,11 +1,13 @@
 [package]
-name = "dispatch"
+name = "dispatch-agent"
 version = "0.2.0"
 edition = "2021"
 description = "A terminal kanban board for dispatching and managing AI agents"
 license = "MIT"
 repository = "https://github.com/Ragazoor/dispatch"
 readme = "README.md"
+keywords = ["tui", "kanban", "claude", "ai-agents", "tmux"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 ratatui = "0.29"
@@ -24,3 +26,7 @@ tempfile = "3"
 
 [dev-dependencies]
 proptest = "1"
+
+[[bin]]
+name = "dispatch"
+path = "src/main.rs"

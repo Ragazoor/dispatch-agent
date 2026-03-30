@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
-use dispatch::{db, models, plan, runtime};
-use dispatch::db::TaskStore;
+use dispatch_agent::{db, models, plan, runtime};
+use dispatch_agent::db::TaskStore;
 
 #[derive(Parser)]
 #[command(name = "dispatch")]
@@ -189,7 +189,7 @@ async fn main() -> Result<()> {
             println!("Created task #{}: \"{}\" [backlog]", id, title);
         }
         Commands::Setup { port } => {
-            dispatch::setup::run_setup(port)?;
+            dispatch_agent::setup::run_setup(port)?;
         }
         Commands::Plan { id, path } => {
             if !path.exists() {
