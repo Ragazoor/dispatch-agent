@@ -2196,7 +2196,7 @@ fn x_key_with_selection_shows_count_in_confirm() {
 
     app.handle_key(make_key(KeyCode::Char('x')));
     assert_eq!(app.input.mode, InputMode::ConfirmArchive);
-    assert_eq!(app.status_message.as_deref(), Some("Archive 2 tasks? (y/n)"));
+    assert_eq!(app.status_message.as_deref(), Some("Archive 2 items? (y/n)"));
 }
 
 #[test]
@@ -6192,4 +6192,252 @@ fn handle_key_confirm_delete_preset_esc_cancels() {
     app.input.mode = InputMode::ConfirmDeletePreset;
     app.handle_key(make_key(KeyCode::Esc));
     assert_eq!(*app.mode(), InputMode::RepoFilter);
+}
+
+// ---------------------------------------------------------------------------
+// Epic selection tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn space_toggles_epic_selection() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    // Epic is at row 0 in Backlog column (no standalone tasks)
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.selected_epics.contains(&EpicId(10)));
+}
+
+#[test]
+fn space_on_epic_toggle_off() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+
+    // Select
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.selected_epics.contains(&EpicId(10)));
+
+    // Deselect
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(!app.selected_epics.contains(&EpicId(10)));
+}
+
+#[test]
+fn space_on_empty_column_no_epics_is_noop() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    // Navigate to Review column (empty)
+    app.update(Message::NavigateColumn(2));
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.selected_epics.is_empty());
+    assert!(app.selected_tasks.is_empty());
+}
+
+#[test]
+fn select_all_column_includes_epics() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.contains(&TaskId(1)));
+    assert!(app.selected_epics.contains(&EpicId(10)));
+}
+
+#[test]
+fn select_all_deselects_all_including_epics() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+
+    // Select all
+    app.update(Message::SelectAllColumn);
+    assert_eq!(app.selected_tasks.len(), 1);
+    assert_eq!(app.selected_epics.len(), 1);
+
+    // Deselect all
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.is_empty());
+    assert!(app.selected_epics.is_empty());
+}
+
+#[test]
+fn select_all_column_with_only_epics() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10), make_epic(20)];
+
+    app.update(Message::SelectAllColumn);
+    assert!(app.selected_tasks.is_empty());
+    assert_eq!(app.selected_epics.len(), 2);
+    assert!(app.selected_epics.contains(&EpicId(10)));
+    assert!(app.selected_epics.contains(&EpicId(20)));
+}
+
+#[test]
+fn esc_clears_epic_selection() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+    assert_eq!(app.selected_epics.len(), 1);
+
+    app.handle_key(make_key(KeyCode::Esc));
+    assert!(app.selected_epics.is_empty());
+}
+
+#[test]
+fn esc_clears_mixed_selection() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+
+    app.handle_key(make_key(KeyCode::Esc));
+    assert!(app.selected_tasks.is_empty());
+    assert!(app.selected_epics.is_empty());
+}
+
+#[test]
+fn batch_archive_selected_epics() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10), make_epic(20)];
+
+    let cmds = app.update(Message::BatchArchiveEpics(vec![EpicId(10), EpicId(20)]));
+    assert!(app.epics.is_empty(), "Both epics should be removed");
+    assert!(!cmds.is_empty(), "Should emit commands");
+}
+
+#[test]
+fn x_key_with_epic_selection_shows_count_in_confirm() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10), make_epic(20)];
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+    app.update(Message::ToggleSelectEpic(EpicId(20)));
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.input.mode, InputMode::ConfirmArchive);
+    assert_eq!(app.status_message.as_deref(), Some("Archive 2 items? (y/n)"));
+}
+
+#[test]
+fn batch_archive_mixed_tasks_and_epics() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.input.mode, InputMode::ConfirmArchive);
+    assert_eq!(app.status_message.as_deref(), Some("Archive 2 items? (y/n)"));
+
+    // Confirm
+    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Archived);
+    assert!(app.epics.is_empty(), "Epic should be removed");
+    assert!(app.selected_tasks.is_empty());
+    assert!(app.selected_epics.is_empty());
+    assert!(!cmds.is_empty());
+}
+
+#[test]
+fn confirm_archive_y_archives_selected_epics() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+    app.input.mode = InputMode::ConfirmArchive;
+
+    app.handle_key(make_key(KeyCode::Char('y')));
+    assert!(app.epics.is_empty());
+    assert!(app.selected_epics.is_empty());
+}
+
+#[test]
+fn m_with_only_epics_selected_shows_info() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+
+    app.handle_key(make_key(KeyCode::Char('m')));
+    assert!(app.status_message.as_deref().unwrap().contains("derived from subtasks"));
+}
+
+#[test]
+fn m_with_mixed_selection_moves_tasks_only() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelect(TaskId(1)));
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+
+    app.handle_key(make_key(KeyCode::Char('m')));
+    // Task should move forward
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Running);
+}
+
+#[test]
+fn render_selected_epic_shows_star_prefix() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "* "), "Selected epic should show * prefix");
+    assert!(buffer_contains(&buf, "Epic 10"), "Epic title should be visible");
+}
+
+#[test]
+fn render_unselected_epic_no_star() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "Epic 10"), "Epic title should be visible");
+    // The epic renders with "  " prefix (2 spaces), not "* "
+    assert!(!buffer_contains(&buf, "* "), "Unselected epic should not show * prefix");
+}
+
+#[test]
+fn render_batch_hints_with_epic_selection() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "1 selected"), "Should show selection count");
+    assert!(buffer_contains(&buf, "archive"), "Should show archive hint");
+}
+
+#[test]
+fn render_column_header_checked_with_epics() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+    ], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+
+    // Select both the task and the epic
+    app.update(Message::SelectAllColumn);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "[x]"), "Checkbox should be checked when all items selected");
+}
+
+#[test]
+fn refresh_epics_prunes_stale_epic_selections() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    app.update(Message::ToggleSelectEpic(EpicId(10)));
+    app.update(Message::ToggleSelectEpic(EpicId(99))); // non-existent
+
+    // Refresh with only epic 10
+    app.update(Message::RefreshEpics(vec![make_epic(10)]));
+    assert!(app.selected_epics.contains(&EpicId(10)));
+    assert!(!app.selected_epics.contains(&EpicId(99)));
 }

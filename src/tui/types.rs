@@ -51,10 +51,12 @@ pub enum Message {
     ArchiveTask(TaskId),
     ToggleArchive,
     ToggleSelect(TaskId),
+    ToggleSelectEpic(EpicId),
     ClearSelection,
     SelectAllColumn,
     BatchMoveTasks { ids: Vec<TaskId>, direction: MoveDirection },
     BatchArchiveTasks(Vec<TaskId>),
+    BatchArchiveEpics(Vec<EpicId>),
     // Input routing messages
     DismissError,
     StartNewTask,

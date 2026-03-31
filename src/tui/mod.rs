@@ -28,6 +28,7 @@ pub struct App {
     pub(in crate::tui) agents: AgentTracking,
     pub(in crate::tui) archive: ArchiveState,
     pub(in crate::tui) selected_tasks: HashSet<TaskId>,
+    pub(in crate::tui) selected_epics: HashSet<EpicId>,
     pub(in crate::tui) rebase_conflict_tasks: HashSet<TaskId>,
     pub(in crate::tui) pending_done_tasks: Vec<TaskId>,
     pub(in crate::tui) notifications_enabled: bool,
@@ -66,6 +67,7 @@ impl App {
             agents: AgentTracking::new(inactivity_timeout),
             archive: ArchiveState::default(),
             selected_tasks: HashSet::new(),
+            selected_epics: HashSet::new(),
             rebase_conflict_tasks: HashSet::new(),
             pending_done_tasks: Vec::new(),
             notifications_enabled: true,
@@ -118,7 +120,9 @@ impl App {
     pub fn show_archived(&self) -> bool { self.archive.visible }
     pub fn selected_archive_row(&self) -> usize { self.archive.selected_row }
     pub fn selected_tasks(&self) -> &HashSet<TaskId> { &self.selected_tasks }
+    pub fn selected_epics(&self) -> &HashSet<EpicId> { &self.selected_epics }
     pub fn on_select_all(&self) -> bool { self.selection().on_select_all }
+    pub fn has_selection(&self) -> bool { !self.selected_tasks.is_empty() || !self.selected_epics.is_empty() }
     pub fn rebase_conflict_tasks(&self) -> &HashSet<TaskId> { &self.rebase_conflict_tasks }
     pub fn merge_queue(&self) -> Option<&MergeQueue> { self.merge_queue.as_ref() }
     pub fn notifications_enabled(&self) -> bool { self.notifications_enabled }
@@ -342,10 +346,12 @@ impl App {
             Message::ArchiveTask(id) => self.handle_archive_task(id),
             Message::ToggleArchive => self.handle_toggle_archive(),
             Message::ToggleSelect(id) => self.handle_toggle_select(id),
+            Message::ToggleSelectEpic(id) => self.handle_toggle_select_epic(id),
             Message::ClearSelection => self.handle_clear_selection(),
             Message::SelectAllColumn => self.handle_select_all_column(),
             Message::BatchMoveTasks { ids, direction } => self.handle_batch_move_tasks(ids, direction),
             Message::BatchArchiveTasks(ids) => self.handle_batch_archive_tasks(ids),
+            Message::BatchArchiveEpics(ids) => self.handle_batch_archive_epics(ids),
             Message::DismissError => self.handle_dismiss_error(),
             Message::StartNewTask => self.handle_start_new_task(),
             Message::CancelInput => self.handle_cancel_input(),
@@ -1076,8 +1082,18 @@ impl App {
         vec![]
     }
 
+    fn handle_toggle_select_epic(&mut self, id: EpicId) -> Vec<Command> {
+        if self.selected_epics.contains(&id) {
+            self.selected_epics.remove(&id);
+        } else {
+            self.selected_epics.insert(id);
+        }
+        vec![]
+    }
+
     fn handle_clear_selection(&mut self) -> Vec<Command> {
         self.selected_tasks.clear();
+        self.selected_epics.clear();
         self.selection_mut().on_select_all = false;
         vec![]
     }
@@ -1087,25 +1103,46 @@ impl App {
         let Some(status) = TaskStatus::from_column_index(col) else {
             return vec![];
         };
-        let column_task_ids: Vec<TaskId> = self
-            .tasks_by_status(status)
-            .iter()
-            .map(|t| t.id)
-            .collect();
-        if column_task_ids.is_empty() {
+        let items = self.column_items_for_status(status);
+        let mut task_ids = Vec::new();
+        let mut epic_ids = Vec::new();
+        for item in &items {
+            match item {
+                ColumnItem::Task(t) => task_ids.push(t.id),
+                ColumnItem::Epic(e) => epic_ids.push(e.id),
+            }
+        }
+        if task_ids.is_empty() && epic_ids.is_empty() {
             return vec![];
         }
-        let all_selected = column_task_ids.iter().all(|id| self.selected_tasks.contains(id));
-        if all_selected {
-            for id in &column_task_ids {
+        let all_tasks_selected = task_ids.iter().all(|id| self.selected_tasks.contains(id));
+        let all_epics_selected = epic_ids.iter().all(|id| self.selected_epics.contains(id));
+        if all_tasks_selected && all_epics_selected {
+            for id in &task_ids {
                 self.selected_tasks.remove(id);
             }
+            for id in &epic_ids {
+                self.selected_epics.remove(id);
+            }
         } else {
-            for id in column_task_ids {
+            for id in task_ids {
                 self.selected_tasks.insert(id);
+            }
+            for id in epic_ids {
+                self.selected_epics.insert(id);
             }
         }
         vec![]
+    }
+
+    fn handle_batch_archive_epics(&mut self, ids: Vec<EpicId>) -> Vec<Command> {
+        let mut cmds = Vec::new();
+        for id in ids {
+            cmds.extend(self.handle_archive_epic(id));
+        }
+        self.selected_epics.clear();
+        self.selected_tasks.clear();
+        cmds
     }
 
     fn handle_batch_move_tasks(&mut self, ids: Vec<TaskId>, direction: MoveDirection) -> Vec<Command> {
@@ -1891,6 +1928,8 @@ impl App {
 
     fn handle_refresh_epics(&mut self, epics: Vec<Epic>) -> Vec<Command> {
         self.epics = epics;
+        let valid_ids: HashSet<EpicId> = self.epics.iter().map(|e| e.id).collect();
+        self.selected_epics.retain(|id| valid_ids.contains(id));
         vec![]
     }
 

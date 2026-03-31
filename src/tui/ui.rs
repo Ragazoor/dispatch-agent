@@ -271,9 +271,12 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
         let label = format!("{}{} {}", prefix, status.as_str(), count);
 
         let spans = if is_focused {
-            let column_task_ids: Vec<_> = app.tasks_by_status(status).iter().map(|t| t.id).collect();
-            let all_selected = !column_task_ids.is_empty()
-                && column_task_ids.iter().all(|id| app.selected_tasks().contains(id));
+            let items = app.column_items_for_status(status);
+            let all_selected = !items.is_empty()
+                && items.iter().all(|item| match item {
+                    ColumnItem::Task(t) => app.selected_tasks().contains(&t.id),
+                    ColumnItem::Epic(e) => app.selected_epics().contains(&e.id),
+                });
             let checkbox = if all_selected { " [x]" } else { " [ ]" };
 
             let checkbox_style = if app.on_select_all() {
@@ -513,15 +516,19 @@ fn render_epic_item(
         ""
     };
 
+    let is_batch_selected = app.selected_epics().contains(&epic.id);
+    let select_prefix = if is_batch_selected { "* " } else { "  " };
+
     // Line 1: stripe + title (thicker stripe for cursor)
     let stripe_char = if is_cursor { "\u{258c}" } else { "\u{258e}" };
+    let title_style = Style::default().fg(PURPLE).add_modifier(Modifier::BOLD);
     let line1 = Line::from(vec![
-        Span::raw("  "),
+        Span::raw(select_prefix.to_string()),
         Span::styled(stripe_char, Style::default().fg(PURPLE)),
         Span::styled(format!(" #{} ", epic.id), Style::default().fg(MUTED)),
         Span::styled(
             format!("{title_text}{plan_indicator}"),
-            Style::default().fg(PURPLE).add_modifier(Modifier::BOLD),
+            title_style,
         ),
     ]);
 
@@ -1304,8 +1311,10 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     match &app.input.mode {
         InputMode::Normal => {
             let key_color = column_color(TaskStatus::ALL[app.selected_column()]);
-            let spans = if !app.selected_tasks.is_empty() {
-                batch_action_hints(app.selected_tasks.len(), key_color)
+            let spans = if app.has_selection() {
+                let count = app.selected_tasks().len() + app.selected_epics().len();
+                let has_tasks = !app.selected_tasks().is_empty();
+                batch_action_hints(count, key_color, has_tasks)
             } else if let Some(ColumnItem::Epic(epic)) = app.selected_column_item() {
                 epic_action_hints(epic, key_color)
             } else {
@@ -1537,7 +1546,7 @@ pub(in crate::tui) fn epic_action_hints(epic: &Epic, key_color: Color) -> Vec<Sp
 }
 
 /// Build status bar hints when tasks are batch-selected.
-fn batch_action_hints(count: usize, key_color: Color) -> Vec<Span<'static>> {
+fn batch_action_hints(count: usize, key_color: Color, has_tasks: bool) -> Vec<Span<'static>> {
     let label_style = Style::default().fg(MUTED);
     let count_style = Style::default().fg(YELLOW).add_modifier(Modifier::BOLD);
 
@@ -1549,8 +1558,10 @@ fn batch_action_hints(count: usize, key_color: Color) -> Vec<Span<'static>> {
         spans.push(Span::styled(format!(" {label}  "), label_style));
     };
 
-    push_hint("m", "move");
-    push_hint("M", "back");
+    if has_tasks {
+        push_hint("m", "move");
+        push_hint("M", "back");
+    }
     push_hint("x", "archive");
     push_hint("a", "select all");
     push_hint("Space", "toggle");

@@ -138,11 +138,16 @@ impl App {
             KeyCode::Char('a') => self.update(Message::SelectAllColumn),
 
             KeyCode::Char(' ') => {
-                if let Some(task) = self.selected_task() {
-                    let id = task.id;
-                    self.update(Message::ToggleSelect(id))
-                } else {
-                    vec![]
+                match self.selected_column_item() {
+                    Some(ColumnItem::Task(task)) => {
+                        let id = task.id;
+                        self.update(Message::ToggleSelect(id))
+                    }
+                    Some(ColumnItem::Epic(epic)) => {
+                        let id = epic.id;
+                        self.update(Message::ToggleSelectEpic(id))
+                    }
+                    None => vec![],
                 }
             }
 
@@ -178,20 +183,23 @@ impl App {
             }
 
             KeyCode::Char('x') => {
-                match self.selected_column_item() {
-                    Some(ColumnItem::Epic(_)) => {
-                        self.update(Message::ConfirmArchiveEpic)
-                    }
-                    _ => {
-                        if !self.selected_tasks.is_empty() {
-                            let count = self.selected_tasks.len();
-                            self.input.mode = InputMode::ConfirmArchive;
-                            self.set_status(format!("Archive {} tasks? (y/n)", count));
-                        } else if self.selected_task().is_some() {
-                            self.input.mode = InputMode::ConfirmArchive;
-                            self.set_status("Archive task? (y/n)".to_string());
+                if self.has_selection() {
+                    let count = self.selected_tasks.len() + self.selected_epics.len();
+                    self.input.mode = InputMode::ConfirmArchive;
+                    self.set_status(format!("Archive {} items? (y/n)", count));
+                    vec![]
+                } else {
+                    match self.selected_column_item() {
+                        Some(ColumnItem::Epic(_)) => {
+                            self.update(Message::ConfirmArchiveEpic)
                         }
-                        vec![]
+                        _ => {
+                            if self.selected_task().is_some() {
+                                self.input.mode = InputMode::ConfirmArchive;
+                                self.set_status("Archive task? (y/n)".to_string());
+                            }
+                            vec![]
+                        }
                     }
                 }
             }
@@ -224,7 +232,7 @@ impl App {
             KeyCode::Esc => {
                 if matches!(self.view_mode, ViewMode::Epic { .. }) {
                     self.update(Message::ExitEpic)
-                } else if !self.selected_tasks.is_empty() || self.selection().on_select_all {
+                } else if self.has_selection() || self.selection().on_select_all {
                     self.update(Message::ClearSelection)
                 } else {
                     vec![]
@@ -338,7 +346,13 @@ impl App {
 
     /// Handle 'm'/'M' key: move selected task(s) forward or backward.
     fn handle_key_move(&mut self, direction: MoveDirection) -> Vec<Command> {
-        if !self.selected_tasks.is_empty() {
+        if self.has_selection() {
+            if self.selected_tasks.is_empty() {
+                // Only epics selected — can't move since status is derived
+                return self.update(Message::StatusInfo(
+                    "Epic status is derived from subtasks".to_string(),
+                ));
+            }
             let ids: Vec<_> = self.selected_tasks.iter().copied().collect();
             self.update(Message::BatchMoveTasks { ids, direction })
         } else if let Some(task) = self.selected_task() {
@@ -438,9 +452,17 @@ impl App {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.input.mode = InputMode::Normal;
                 self.clear_status();
-                if !self.selected_tasks.is_empty() {
-                    let ids: Vec<_> = self.selected_tasks.iter().copied().collect();
-                    self.update(Message::BatchArchiveTasks(ids))
+                if self.has_selection() {
+                    let mut cmds = Vec::new();
+                    if !self.selected_tasks.is_empty() {
+                        let ids: Vec<_> = self.selected_tasks.iter().copied().collect();
+                        cmds.extend(self.update(Message::BatchArchiveTasks(ids)));
+                    }
+                    if !self.selected_epics.is_empty() {
+                        let ids: Vec<_> = self.selected_epics.iter().copied().collect();
+                        cmds.extend(self.update(Message::BatchArchiveEpics(ids)));
+                    }
+                    cmds
                 } else if let Some(task) = self.selected_task() {
                     let id = task.id;
                     self.update(Message::ArchiveTask(id))
