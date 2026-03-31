@@ -126,8 +126,8 @@ pub(super) fn tool_definitions() -> Value {
                         "status": {
                             "description": "Filter by status. Single string or array of strings.",
                             "oneOf": [
-                                { "type": "string", "enum": ["backlog", "running", "review", "done"] },
-                                { "type": "array", "items": { "type": "string", "enum": ["backlog", "running", "review", "done"] } }
+                                { "type": "string", "enum": ["backlog", "running", "review", "done", "archived"] },
+                                { "type": "array", "items": { "type": "string", "enum": ["backlog", "running", "review", "done", "archived"] } }
                             ]
                         }
                     }

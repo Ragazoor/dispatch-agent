@@ -90,6 +90,74 @@ pub(super) struct WrapUpArgs {
 }
 
 // ---------------------------------------------------------------------------
+// Response formatting
+// ---------------------------------------------------------------------------
+
+fn format_task_detail(task: &Task) -> String {
+    let mut text = format!(
+        "Task {id}: {title}\nStatus: {status}\nRepo: {repo}\nDescription: {desc}",
+        id = task.id,
+        title = task.title,
+        status = task.status.as_str(),
+        repo = task.repo_path,
+        desc = task.description,
+    );
+    if let Some(ref epic_id) = task.epic_id {
+        text.push_str(&format!("\nEpic: {epic_id}"));
+    }
+    if let Some(ref tag) = task.tag {
+        text.push_str(&format!("\nTag: {tag}"));
+    }
+    if let Some(ref plan) = task.plan {
+        text.push_str(&format!("\nPlan: {plan}"));
+    }
+    if let Some(ref pr_url) = task.pr_url {
+        text.push_str(&format!("\nPR: {pr_url}"));
+    }
+    if let Some(ref worktree) = task.worktree {
+        text.push_str(&format!("\nWorktree: {worktree}"));
+    }
+    if let Some(ref tmux_window) = task.tmux_window {
+        text.push_str(&format!("\nTmux window: {tmux_window}"));
+    }
+    if task.needs_input {
+        text.push_str("\nNeeds input: yes");
+    }
+    if let Some(sort_order) = task.sort_order {
+        text.push_str(&format!("\nSort order: {sort_order}"));
+    }
+    text.push_str(&format!("\nCreated: {}", task.created_at.format("%Y-%m-%d %H:%M:%S UTC")));
+    text.push_str(&format!("\nUpdated: {}", task.updated_at.format("%Y-%m-%d %H:%M:%S UTC")));
+    text
+}
+
+fn format_task_line(t: &Task) -> String {
+    let desc_preview = if t.description.len() > 200 {
+        let end = t.description.char_indices()
+            .take_while(|(i, _)| *i < 200)
+            .last()
+            .map(|(i, c)| i + c.len_utf8())
+            .unwrap_or(0);
+        format!("{}...", &t.description[..end])
+    } else {
+        t.description.clone()
+    };
+    let plan_indicator = if t.plan.is_some() { " [plan]" } else { "" };
+    let tag_indicator = match t.tag.as_deref() {
+        Some(tag) => format!(" [{tag}]"),
+        None => String::new(),
+    };
+    let epic_indicator = match t.epic_id {
+        Some(eid) => format!(" (epic:{eid})"),
+        None => String::new(),
+    };
+    format!(
+        "- [{}] {} ({}){}{}{}: {}",
+        t.id, t.title, t.status.as_str(), plan_indicator, tag_indicator, epic_indicator, desc_preview
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Task tool handlers
 // ---------------------------------------------------------------------------
 
@@ -242,26 +310,7 @@ pub(super) fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) 
     tracing::info!(task_id = parsed.task_id, "MCP get_task");
     match state.db.get_task(TaskId(parsed.task_id)) {
         Ok(Some(task)) => {
-            let mut text = format!(
-                "Task {id}: {title}\nStatus: {status}\nRepo: {repo}\nDescription: {desc}",
-                id = task.id,
-                title = task.title,
-                status = task.status.as_str(),
-                repo = task.repo_path,
-                desc = task.description,
-            );
-            if task.needs_input {
-                text.push_str("\nNeeds input: yes");
-            }
-            if let Some(ref plan) = task.plan {
-                text.push_str(&format!("\nPlan: {plan}"));
-            }
-            if let Some(ref pr_url) = task.pr_url {
-                text.push_str(&format!("\nPR: {pr_url}"));
-            }
-            if let Some(ref tag) = task.tag {
-                text.push_str(&format!("\nTag: {tag}"));
-            }
+            let text = format_task_detail(&task);
             JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
         }
         Ok(None) => JsonRpcResponse::err(id, -32602, format!("Task {} not found", parsed.task_id)),
@@ -326,30 +375,7 @@ pub(super) fn handle_list_tasks(state: &McpState, id: Option<Value>, args: Value
         );
     }
 
-    let lines: Vec<String> = filtered
-        .iter()
-        .map(|t| {
-            let desc_preview = if t.description.len() > 200 {
-                let end = t.description.char_indices()
-                    .take_while(|(i, _)| *i < 200)
-                    .last()
-                    .map(|(i, c)| i + c.len_utf8())
-                    .unwrap_or(0);
-                format!("{}...", &t.description[..end])
-            } else {
-                t.description.clone()
-            };
-            let plan_indicator = if t.plan.is_some() { " [plan]" } else { "" };
-            let tag_indicator = match t.tag.as_deref() {
-                Some(tag) => format!(" [{tag}]"),
-                None => String::new(),
-            };
-            format!(
-                "- [{}] {} ({}){}{}: {}",
-                t.id, t.title, t.status.as_str(), plan_indicator, tag_indicator, desc_preview
-            )
-        })
-        .collect();
+    let lines: Vec<String> = filtered.iter().map(format_task_line).collect();
 
     let text = lines.join("\n");
     JsonRpcResponse::ok(
