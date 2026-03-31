@@ -30,6 +30,8 @@ pub(super) struct UpdateTaskArgs {
     pub(super) sort_order: Option<i64>,
     #[serde(default)]
     pub(super) pr_url: Option<String>,
+    #[serde(default)]
+    pub(super) tag: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +78,8 @@ pub(super) struct CreateTaskWithEpicArgs {
     pub(super) epic_id: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
     pub(super) sort_order: Option<i64>,
+    #[serde(default)]
+    pub(super) tag: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,13 +106,14 @@ pub(super) fn handle_update_task(state: &McpState, id: Option<Value>, args: Valu
         || parsed.description.is_some()
         || parsed.repo_path.is_some()
         || parsed.sort_order.is_some()
-        || parsed.pr_url.is_some();
+        || parsed.pr_url.is_some()
+        || parsed.tag.is_some();
 
     if !has_update {
         return JsonRpcResponse::err(
             id,
             -32602,
-            "At least one of status, plan, title, description, repo_path, sort_order, or pr_url must be provided",
+            "At least one of status, plan, title, description, repo_path, sort_order, pr_url, or tag must be provided",
         );
     }
 
@@ -159,6 +164,9 @@ pub(super) fn handle_update_task(state: &McpState, id: Option<Value>, args: Valu
     if let Some(ref url) = parsed.pr_url {
         patch = patch.pr_url(Some(url.as_str()));
     }
+    if let Some(ref t) = parsed.tag {
+        patch = patch.tag(Some(t.as_str()));
+    }
 
     if let Err(e) = state.db.patch_task(TaskId(parsed.task_id), &patch) {
         return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
@@ -174,6 +182,7 @@ pub(super) fn handle_update_task(state: &McpState, id: Option<Value>, args: Valu
     if parsed.repo_path.is_some() { updated.push("repo_path".to_string()); }
     if parsed.sort_order.is_some() { updated.push("sort_order".to_string()); }
     if parsed.pr_url.is_some() { updated.push("pr_url".to_string()); }
+    if parsed.tag.is_some() { updated.push("tag".to_string()); }
 
     JsonRpcResponse::ok(
         id,
@@ -212,6 +221,9 @@ pub(super) fn handle_create_task(state: &McpState, id: Option<Value>, args: Valu
             if let Some(so) = parsed.sort_order {
                 let _ = state.db.patch_task(task_id, &db::TaskPatch::new().sort_order(Some(so)));
             }
+            if let Some(ref t) = parsed.tag {
+                let _ = state.db.patch_task(task_id, &db::TaskPatch::new().tag(Some(t)));
+            }
             state.notify();
             JsonRpcResponse::ok(
                 id,
@@ -246,6 +258,9 @@ pub(super) fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) 
             }
             if let Some(ref pr_url) = task.pr_url {
                 text.push_str(&format!("\nPR: {pr_url}"));
+            }
+            if let Some(ref tag) = task.tag {
+                text.push_str(&format!("\nTag: {tag}"));
             }
             JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
         }
@@ -325,9 +340,13 @@ pub(super) fn handle_list_tasks(state: &McpState, id: Option<Value>, args: Value
                 t.description.clone()
             };
             let plan_indicator = if t.plan.is_some() { " [plan]" } else { "" };
+            let tag_indicator = match t.tag.as_deref() {
+                Some(tag) => format!(" [{tag}]"),
+                None => String::new(),
+            };
             format!(
-                "- [{}] {} ({}){}: {}",
-                t.id, t.title, t.status.as_str(), plan_indicator, desc_preview
+                "- [{}] {} ({}){}{}: {}",
+                t.id, t.title, t.status.as_str(), plan_indicator, tag_indicator, desc_preview
             )
         })
         .collect();
@@ -620,7 +639,11 @@ fn auto_dispatch_next(
     let result = if next_task.plan.is_some() {
         dispatch::dispatch_chained_agent(&next_task, base_branch, runner)
     } else {
-        dispatch::brainstorm_chained_agent(&next_task, base_branch, mcp_port, runner)
+        match next_task.tag.as_deref() {
+            Some("epic") => dispatch::brainstorm_chained_agent(&next_task, base_branch, mcp_port, runner),
+            Some("feature") => dispatch::plan_chained_agent(&next_task, base_branch, mcp_port, runner),
+            _ => dispatch::dispatch_chained_agent(&next_task, base_branch, runner),
+        }
     };
 
     match result {

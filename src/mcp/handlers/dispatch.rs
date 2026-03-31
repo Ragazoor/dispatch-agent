@@ -54,6 +54,11 @@ pub(super) fn tool_definitions() -> Value {
                         "pr_url": {
                             "type": "string",
                             "description": "URL of the pull request associated with this task"
+                        },
+                        "tag": {
+                            "type": "string",
+                            "description": "Task tag: bug, feature, chore, or epic. Controls dispatch behavior.",
+                            "enum": ["bug", "feature", "chore", "epic"]
                         }
                     },
                     "required": ["task_id"]
@@ -102,6 +107,11 @@ pub(super) fn tool_definitions() -> Value {
                         "sort_order": {
                             "type": "integer",
                             "description": "Display order within column (lower values appear first)"
+                        },
+                        "tag": {
+                            "type": "string",
+                            "description": "Task tag: bug, feature, chore, or epic. Controls dispatch behavior.",
+                            "enum": ["bug", "feature", "chore", "epic"]
                         }
                     },
                     "required": ["title", "repo_path"]

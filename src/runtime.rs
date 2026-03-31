@@ -232,7 +232,7 @@ impl TuiRuntime {
         format!("DB error {action}: {e}")
     }
 
-    fn exec_insert_task(&self, app: &mut App, title: String, description: String, repo_path: String, epic_id: Option<models::EpicId>) {
+    fn exec_insert_task(&self, app: &mut App, title: String, description: String, repo_path: String, tag: Option<String>, epic_id: Option<models::EpicId>) {
         match self.database.create_task_returning(&title, &description, &repo_path, None, models::TaskStatus::Backlog) {
             Ok(mut task) => {
                 if let Some(eid) = epic_id {
@@ -241,6 +241,14 @@ impl TuiRuntime {
                         return;
                     }
                     task.epic_id = Some(eid);
+                }
+                if let Some(ref t) = tag {
+                    let patch = db::TaskPatch::new().tag(Some(t));
+                    if let Err(e) = self.database.patch_task(task.id, &patch) {
+                        app.update(Message::Error(Self::db_error("setting task tag", e)));
+                        return;
+                    }
+                    task.tag = Some(t.clone());
                 }
                 app.update(Message::TaskCreated { task });
             }
@@ -348,6 +356,10 @@ impl TuiRuntime {
         self.spawn_dispatch(task, dispatch::brainstorm_agent, "Brainstorm");
     }
 
+    fn exec_plan(&self, task: models::Task) {
+        self.spawn_dispatch(task, dispatch::plan_agent, "Plan");
+    }
+
     fn exec_capture_tmux(&self, id: TaskId, window: String) {
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
@@ -426,6 +438,7 @@ impl TuiRuntime {
         let repo_path = if fields.repo_path.is_empty() { task.repo_path.clone() } else { fields.repo_path };
         let new_status = models::TaskStatus::parse(&fields.status).unwrap_or(task.status);
         let plan = if fields.plan.is_empty() { None } else { Some(fields.plan) };
+        let tag = if fields.tag.is_empty() { None } else { Some(fields.tag) };
 
         if let Err(e) = self.database.patch_task(
             task_id,
@@ -434,7 +447,8 @@ impl TuiRuntime {
                 .title(&title)
                 .description(&description)
                 .repo_path(&repo_path)
-                .plan(plan.as_deref()),
+                .plan(plan.as_deref())
+                .tag(tag.as_deref()),
         ) {
             app.update(Message::Error(Self::db_error("updating task", e)));
         }
@@ -445,6 +459,7 @@ impl TuiRuntime {
             repo_path,
             status: new_status,
             plan,
+            tag,
         }));
         Ok(())
     }
@@ -910,10 +925,11 @@ async fn execute_commands(
         match command {
             Command::PersistTask(task) => rt.exec_persist_task(app, task),
             Command::InsertTask { draft, epic_id } =>
-                rt.exec_insert_task(app, draft.title, draft.description, draft.repo_path, epic_id),
+                rt.exec_insert_task(app, draft.title, draft.description, draft.repo_path, draft.tag, epic_id),
             Command::DeleteTask(id) => rt.exec_delete_task(app, id),
             Command::Dispatch { task } => rt.exec_dispatch(task),
             Command::Brainstorm { task } => rt.exec_brainstorm(task),
+            Command::Plan { task } => rt.exec_plan(task),
             Command::CaptureTmux { id, window } => rt.exec_capture_tmux(id, window),
             Command::EditTaskInEditor(task) => rt.exec_edit_in_editor(app, task, terminal)?,
             Command::SaveRepoPath(path) => rt.exec_save_repo_path(app, path),
@@ -993,7 +1009,7 @@ mod tests {
     #[test]
     fn exec_insert_task_adds_to_db_and_app() {
         let (rt, mut app) = test_runtime();
-        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None);
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None, None);
         assert_eq!(app.tasks().len(), 1);
         assert_eq!(app.tasks()[0].title, "Test");
         assert_eq!(rt.database.list_all().unwrap().len(), 1);
@@ -1002,7 +1018,7 @@ mod tests {
     #[test]
     fn exec_delete_task_removes_from_db() {
         let (rt, mut app) = test_runtime();
-        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None);
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None, None);
         let id = app.tasks()[0].id;
         rt.exec_delete_task(&mut app, id);
         assert!(rt.database.list_all().unwrap().is_empty());
@@ -1011,7 +1027,7 @@ mod tests {
     #[test]
     fn exec_persist_task_saves_status_to_db() {
         let (rt, mut app) = test_runtime();
-        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None);
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None, None);
         let mut task = app.tasks()[0].clone();
         task.status = models::TaskStatus::Running;
         task.worktree = Some("/repo/.worktrees/1-test".into());
@@ -1230,8 +1246,8 @@ mod tests {
         let (rt, mut app) = test_runtime();
 
         // Create two tasks sharing the same worktree
-        rt.exec_insert_task(&mut app, "Task A".into(), "desc".into(), "/repo".into(), None);
-        rt.exec_insert_task(&mut app, "Task B".into(), "desc".into(), "/repo".into(), None);
+        rt.exec_insert_task(&mut app, "Task A".into(), "desc".into(), "/repo".into(), None, None);
+        rt.exec_insert_task(&mut app, "Task B".into(), "desc".into(), "/repo".into(), None, None);
 
         let id_a = app.tasks()[0].id;
         let id_b = app.tasks()[1].id;

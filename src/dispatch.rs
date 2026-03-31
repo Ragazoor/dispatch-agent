@@ -119,6 +119,11 @@ pub fn brainstorm_agent(task: &Task, mcp_port: u16, runner: &dyn ProcessRunner) 
     dispatch_with_prompt(task, &prompt, runner, None)
 }
 
+pub fn plan_agent(task: &Task, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_plan_prompt(task.id, &task.title, &task.description, mcp_port);
+    dispatch_with_prompt(task, &prompt, runner, None)
+}
+
 pub fn quick_dispatch_agent(task: &Task, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
     let prompt = build_quick_dispatch_prompt(task.id, &task.title, &task.description, mcp_port);
     dispatch_with_prompt(task, &prompt, runner, None)
@@ -132,6 +137,12 @@ pub fn epic_planning_agent(task: &Task, epic_id: EpicId, epic_title: &str, epic_
 /// Dispatch a task that chains off a previous task's branch (epic auto-dispatch).
 pub fn dispatch_chained_agent(task: &Task, base_branch: &str, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
     let prompt = build_prompt(task.id, &task.title, &task.description, task.plan.as_deref());
+    dispatch_with_prompt(task, &prompt, runner, Some(base_branch))
+}
+
+/// Plan a task that chains off a previous task's branch (epic auto-dispatch).
+pub fn plan_chained_agent(task: &Task, base_branch: &str, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_plan_prompt(task.id, &task.title, &task.description, mcp_port);
     dispatch_with_prompt(task, &prompt, runner, Some(base_branch))
 }
 
@@ -436,6 +447,29 @@ attach the plan (tool: dispatch, tool name: update_task — set the plan field).
     )
 }
 
+fn build_plan_prompt(task_id: TaskId, title: &str, description: &str, mcp_port: u16) -> String {
+    format!(
+        "You are an autonomous coding agent starting a planning session.\n\
+\n\
+Task:\n\
+  ID: {task_id}\n\
+  Title: {title}\n\
+  Description: {description}\n\
+\n\
+Your goal is to explore the codebase and write a focused implementation plan. \
+Use /plan mode for a structured planning session. When done, save the plan \
+and attach it to the task:\n\
+\n\
+1. Write the plan to docs/plans/\n\
+2. Call update_task via MCP to set the plan field to the plan file path\n\
+\n\
+After planning, ask whether to continue implementing or stop.\n\
+\n\
+An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
+attach the plan (tool: dispatch, tool name: update_task — set the plan field)."
+    )
+}
+
 fn build_epic_planning_prompt(epic_id: EpicId, title: &str, description: &str, mcp_port: u16) -> String {
     format!(
         "You are an autonomous coding agent starting a brainstorming session.\n\
@@ -635,6 +669,7 @@ mod tests {
             epic_id: None,
             needs_input: false,
             pr_url: None,
+            tag: None,
             sort_order: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -736,6 +771,26 @@ mod tests {
         assert!(prompt.contains("3142"));
         assert!(prompt.contains("brainstorm"));
         assert!(prompt.contains("update_task"));
+    }
+
+    #[test]
+    fn build_plan_prompt_contains_task_info() {
+        let prompt = build_plan_prompt(TaskId(8), "Add feature", "Small improvement", 3142);
+        assert!(prompt.contains("8"));
+        assert!(prompt.contains("Add feature"));
+        assert!(prompt.contains("Small improvement"));
+        assert!(prompt.contains("3142"));
+        assert!(prompt.contains("/plan"));
+        assert!(prompt.contains("update_task"));
+    }
+
+    #[test]
+    fn build_plan_prompt_differs_from_brainstorm() {
+        let plan = build_plan_prompt(TaskId(1), "T", "D", 3142);
+        let brainstorm = build_brainstorm_prompt(TaskId(1), "T", "D", 3142);
+        assert_ne!(plan, brainstorm);
+        assert!(plan.contains("planning"));
+        assert!(brainstorm.contains("brainstorm"));
     }
 
     // --- ProcessRunner-based tests ---

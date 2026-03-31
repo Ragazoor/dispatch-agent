@@ -11,6 +11,7 @@ pub struct EditorFields {
     pub repo_path: String,
     pub status: String,
     pub plan: String,
+    pub tag: String,
 }
 
 use crate::models::{Epic, Task};
@@ -62,9 +63,10 @@ pub fn parse_epic_editor_output(input: &str) -> EpicEditorFields {
 
 pub fn format_editor_content(task: &Task) -> String {
     let plan = task.plan.as_deref().unwrap_or("");
+    let tag = task.tag.as_deref().unwrap_or("");
     format!(
-        "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n--- STATUS ---\n{}\n--- PLAN ---\n{}\n",
-        task.title, task.description, task.repo_path, task.status.as_str(), plan
+        "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n--- STATUS ---\n{}\n--- PLAN ---\n{}\n--- TAG ---\n{}\n",
+        task.title, task.description, task.repo_path, task.status.as_str(), plan, tag
     )
 }
 
@@ -75,6 +77,7 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
     let mut repo_path = String::new();
     let mut status = String::new();
     let mut plan = String::new();
+    let mut tag = String::new();
 
     for line in input.lines() {
         let trimmed = line.trim();
@@ -89,6 +92,7 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
             Some("REPO_PATH") => &mut repo_path,
             Some("STATUS") => &mut status,
             Some("PLAN") => &mut plan,
+            Some("TAG") => &mut tag,
             _ => continue,
         };
         if !target.is_empty() {
@@ -103,6 +107,7 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
         repo_path: repo_path.trim().to_string(),
         status: status.trim().to_string(),
         plan: plan.trim().to_string(),
+        tag: tag.trim().to_string(),
     }
 }
 
@@ -181,6 +186,7 @@ mod tests {
             epic_id: None,
             needs_input: false,
             pr_url: None,
+            tag: None,
             sort_order: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),

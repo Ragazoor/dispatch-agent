@@ -67,6 +67,10 @@ enum Commands {
         /// Override the description extracted from the plan
         #[arg(long)]
         description: Option<String>,
+
+        /// Task tag: bug, feature, chore, epic
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Attach a plan file to an existing task
     Plan {
@@ -160,7 +164,7 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Create { from_plan, repo_path, title, description } => {
+        Commands::Create { from_plan, repo_path, title, description, tag } => {
             let content = std::fs::read_to_string(&from_plan)
                 .map_err(|e| anyhow::anyhow!("Failed to read plan file {}: {}", from_plan.display(), e))?;
 
@@ -186,6 +190,9 @@ async fn main() -> Result<()> {
             }
 
             let id = db.create_task(&title, &description, &repo_path_str, Some(&plan_str), models::TaskStatus::Backlog)?;
+            if let Some(ref t) = tag {
+                db.patch_task(id, &db::TaskPatch::new().tag(Some(t)))?;
+            }
             println!("Created task #{}: \"{}\" [backlog]", id, title);
         }
         Commands::Setup { port } => {

@@ -29,6 +29,7 @@ pub enum Message {
     ReorderItem(isize),  // +1 = down, -1 = up
     DispatchTask(TaskId),
     BrainstormTask(TaskId),
+    PlanTask(TaskId),
     Dispatched { id: TaskId, worktree: String, tmux_window: String, switch_focus: bool },
     TaskCreated { task: Task },
     DeleteTask(TaskId),
@@ -64,6 +65,7 @@ pub enum Message {
     SubmitTitle(String),
     SubmitDescription(String),
     SubmitRepoPath(String),
+    SubmitTag(Option<String>),
     InputChar(char),
     InputBackspace,
     StartQuickDispatchSelection,
@@ -147,6 +149,7 @@ pub enum Command {
     DeleteTask(TaskId),
     Dispatch { task: Task },
     Brainstorm { task: Task },
+    Plan { task: Task },
     Cleanup { id: TaskId, repo_path: String, worktree: String, tmux_window: Option<String> },
     Finish {
         id: TaskId,
@@ -200,6 +203,7 @@ pub enum InputMode {
     InputTitle,
     InputDescription,
     InputRepoPath,
+    InputTag,
     ConfirmDelete,
     QuickDispatch,
     ConfirmRetry(TaskId),
@@ -230,6 +234,7 @@ pub struct TaskDraft {
     pub title: String,
     pub description: String,
     pub repo_path: String,
+    pub tag: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +328,7 @@ pub struct TaskEdit {
     pub repo_path: String,
     pub status: TaskStatus,
     pub plan: Option<String>,
+    pub tag: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

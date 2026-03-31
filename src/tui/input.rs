@@ -16,6 +16,7 @@ impl App {
             | InputMode::InputDescription
             | InputMode::InputRepoPath => self.handle_key_text_input(key),
             InputMode::ConfirmDelete => self.handle_key_confirm_delete(key),
+            InputMode::InputTag => self.handle_key_tag(key),
             InputMode::QuickDispatch => self.handle_key_quick_dispatch(key),
             InputMode::ConfirmRetry(id) => self.handle_key_confirm_retry(key, id),
             InputMode::ConfirmArchive => self.handle_key_confirm_archive(key),
@@ -286,6 +287,7 @@ impl App {
                 let has_window = task.tmux_window.is_some();
                 let has_worktree = task.worktree.is_some();
                 let has_plan = task.plan.is_some();
+                let tag = task.tag.as_deref();
                 let is_problematic = self.agents.stale_tasks.contains(&id)
                     || self.agents.crashed_tasks.contains(&id);
 
@@ -294,7 +296,11 @@ impl App {
                         if has_plan {
                             self.update(Message::DispatchTask(id))
                         } else {
-                            self.update(Message::BrainstormTask(id))
+                            match tag {
+                                Some("epic") => self.update(Message::BrainstormTask(id)),
+                                Some("feature") => self.update(Message::PlanTask(id)),
+                                _ => self.update(Message::DispatchTask(id)),
+                            }
                         }
                     }
                     TaskStatus::Running | TaskStatus::Review => {
@@ -357,6 +363,18 @@ impl App {
             }
             KeyCode::Backspace => self.update(Message::InputBackspace),
             KeyCode::Char(c) => self.update(Message::InputChar(c)),
+            _ => vec![],
+        }
+    }
+
+    fn handle_key_tag(&mut self, key: KeyEvent) -> Vec<Command> {
+        match key.code {
+            KeyCode::Char('b') => self.update(Message::SubmitTag(Some("bug".to_string()))),
+            KeyCode::Char('f') => self.update(Message::SubmitTag(Some("feature".to_string()))),
+            KeyCode::Char('c') => self.update(Message::SubmitTag(Some("chore".to_string()))),
+            KeyCode::Char('e') => self.update(Message::SubmitTag(Some("epic".to_string()))),
+            KeyCode::Enter => self.update(Message::SubmitTag(None)),
+            KeyCode::Esc => self.update(Message::CancelInput),
             _ => vec![],
         }
     }

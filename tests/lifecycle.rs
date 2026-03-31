@@ -55,6 +55,7 @@ fn full_lifecycle() {
             epic_id: None,
             needs_input: false,
             pr_url: None,
+            tag: None,
             sort_order: None,
             created_at: now,
             updated_at: now,

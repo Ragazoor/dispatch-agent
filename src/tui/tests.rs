@@ -46,6 +46,7 @@ fn make_task(id: i64, status: TaskStatus) -> Task {
         epic_id: None,
         needs_input: false,
         pr_url: None,
+        tag: None,
         sort_order: None,
         created_at: now,
         updated_at: now,
@@ -193,6 +194,7 @@ fn task_created_adds_to_list() {
         epic_id: None,
         needs_input: false,
         pr_url: None,
+        tag: None,
         sort_order: None,
         created_at: now,
         updated_at: now,
@@ -300,6 +302,13 @@ fn repo_path_empty_uses_saved_path() {
     let key = make_key(KeyCode::Enter);
     let cmds = app.handle_key(key);
 
+    // After repo path, transitions to InputTag
+    assert_eq!(app.input.mode, InputMode::InputTag);
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.task_draft.as_ref().unwrap().repo_path, "/saved/repo");
+
+    // Submit tag to finish
+    let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/saved/repo")));
 }
@@ -335,6 +344,12 @@ fn repo_path_nonempty_used_as_is() {
     let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
     let cmds = app.handle_key(key);
 
+    // After repo path, transitions to InputTag
+    assert_eq!(app.input.mode, InputMode::InputTag);
+    assert!(cmds.is_empty());
+
+    // Submit tag to finish
+    let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/custom/path")));
     assert_eq!(app.tasks.len(), 0); // task not added until TaskCreated
@@ -350,6 +365,7 @@ fn task_edited_updates_fields() {
         repo_path: "/new".into(),
         status: TaskStatus::Running,
         plan: Some("docs/plan.md".into()),
+        tag: None,
     }));
     assert_eq!(app.tasks[0].title, "New");
     assert_eq!(app.tasks[0].description, "Desc");
@@ -440,11 +456,124 @@ fn d_key_on_running_no_window_resumes() {
 
 #[test]
 fn d_key_on_backlog_brainstorms() {
+    // No tag = direct dispatch (not brainstorm)
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
     app.selection_mut().set_column(0); // Backlog column
     let cmds = app.handle_key(make_key(KeyCode::Char('d')));
     assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::Dispatch { task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn d_key_on_backlog_with_epic_tag_brainstorms() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.tag = Some("epic".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.selection_mut().set_column(0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], Command::Brainstorm { task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn d_key_on_backlog_with_feature_tag_plans() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.tag = Some("feature".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.selection_mut().set_column(0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::Plan { task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn d_key_on_backlog_with_bug_tag_dispatches() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.tag = Some("bug".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.selection_mut().set_column(0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::Dispatch { task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn d_key_on_backlog_with_chore_tag_dispatches() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.tag = Some("chore".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.selection_mut().set_column(0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::Dispatch { task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn d_key_with_plan_dispatches_regardless_of_tag() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.tag = Some("epic".to_string());
+    task.plan = Some("docs/plan.md".to_string());
+    let mut app = App::new(vec![task], Duration::from_secs(300));
+    app.selection_mut().set_column(0);
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::Dispatch { task } if task.id == TaskId(1)));
+}
+
+#[test]
+fn tag_selection_flow() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.repo_paths = vec!["/repo".to_string()];
+
+    // Start new task flow
+    app.update(Message::StartNewTask);
+    assert_eq!(app.input.mode, InputMode::InputTitle);
+
+    app.update(Message::SubmitTitle("Test task".to_string()));
+    assert_eq!(app.input.mode, InputMode::InputDescription);
+
+    app.update(Message::SubmitDescription("A description".to_string()));
+    assert_eq!(app.input.mode, InputMode::InputRepoPath);
+
+    app.update(Message::SubmitRepoPath("/repo".to_string()));
+    assert_eq!(app.input.mode, InputMode::InputTag);
+
+    let cmds = app.update(Message::SubmitTag(Some("bug".to_string())));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.tag.as_deref() == Some("bug"))));
+}
+
+#[test]
+fn tag_key_handler() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.input.mode = InputMode::InputTag;
+    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: "/r".to_string(), ..Default::default() });
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('b')));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.tag.as_deref() == Some("bug"))));
+}
+
+#[test]
+fn tag_key_enter_skips_tag() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.input.mode = InputMode::InputTag;
+    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: "/r".to_string(), ..Default::default() });
+
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.tag.is_none())));
+}
+
+#[test]
+fn tag_key_esc_cancels() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.input.mode = InputMode::InputTag;
+    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: "/r".to_string(), ..Default::default() });
+
+    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(cmds.is_empty());
 }
 
 #[test]
@@ -608,6 +737,13 @@ fn number_key_in_repo_path_selects_saved_path() {
     app.input.buffer.clear();
     app.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string()];
     let cmds = app.handle_key(make_key(KeyCode::Char('2')));
+    // Goes to InputTag, not directly to Normal
+    assert_eq!(app.input.mode, InputMode::InputTag);
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.task_draft.as_ref().unwrap().repo_path, "/repo2");
+
+    // Submit tag to finish
+    let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/repo2")));
 }
@@ -1593,6 +1729,12 @@ fn submit_repo_path_creates_task() {
     app.input.mode = InputMode::InputRepoPath;
     app.input.task_draft = Some(TaskDraft { title: "T".to_string(), description: "D".to_string(), ..Default::default() });
     let cmds = app.update(Message::SubmitRepoPath("/my/repo".to_string()));
+    // Now goes to InputTag first
+    assert_eq!(app.input.mode, InputMode::InputTag);
+    assert!(cmds.is_empty());
+
+    // Submit tag to finish
+    let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/my/repo")));
 }
@@ -3124,7 +3266,8 @@ fn dispatch_epic_with_plan_brainstorms_subtask_without_plan() {
 
     let cmds = app.update(Message::DispatchEpic(EpicId(10)));
     assert_eq!(cmds.len(), 1);
-    assert!(matches!(cmds[0], Command::Brainstorm { ref task } if task.id == TaskId(1)));
+    // No tag = direct dispatch (not brainstorm)
+    assert!(matches!(cmds[0], Command::Dispatch { ref task } if task.id == TaskId(1)));
 }
 
 #[test]

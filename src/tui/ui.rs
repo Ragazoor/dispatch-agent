@@ -342,10 +342,17 @@ fn build_task_list_item<'a>(
         } else {
             ""
         };
+        let tag_suffix = match task.tag.as_deref() {
+            Some("bug") => " [bug]",
+            Some("feature") => " [feat]",
+            Some("chore") => " [chore]",
+            Some("epic") => " [epic]",
+            _ => "",
+        };
         Line::from(vec![
             Span::raw("   "),
             Span::styled(
-                format!("{}{} {}", plan_indicator, status_icon(status), age),
+                format!("{}{} {}{}", plan_indicator, status_icon(status), age, tag_suffix),
                 Style::default().fg(staleness_color(staleness)),
             ),
         ])
@@ -647,6 +654,13 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect, _now: DateTime<Utc>) 
             line1_spans.push(Span::styled(
                 format!(" (stale \u{00b7} {}m)", mins),
                 Style::default().fg(Color::Yellow),
+            ));
+        }
+
+        if let Some(tag) = &task.tag {
+            line1_spans.push(Span::styled(
+                format!(" \u{00b7} [{tag}]"),
+                Style::default().fg(Color::Cyan),
             ));
         }
 
@@ -1246,6 +1260,13 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         }
         InputMode::InputRepoPath => {
             let bar = Paragraph::new("Creating task: enter repo path")
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(bar, area);
+        }
+        InputMode::InputTag => {
+            let text = app.status_message.as_deref()
+                .unwrap_or("Tag: (b)ug (f)eature (c)hore (e)pic (Enter=none)");
+            let bar = Paragraph::new(text)
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(bar, area);
         }

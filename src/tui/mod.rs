@@ -318,6 +318,7 @@ impl App {
             Message::ReorderItem(dir) => self.handle_reorder_item(dir),
             Message::DispatchTask(id) => self.handle_dispatch_task(id),
             Message::BrainstormTask(id) => self.handle_brainstorm_task(id),
+            Message::PlanTask(id) => self.handle_plan_task(id),
             Message::Dispatched { id, worktree, tmux_window, switch_focus } =>
                 self.handle_dispatched(id, worktree, tmux_window, switch_focus),
             Message::TaskCreated { task } => self.handle_task_created(task),
@@ -354,6 +355,7 @@ impl App {
             Message::SubmitTitle(value) => self.handle_submit_title(value),
             Message::SubmitDescription(value) => self.handle_submit_description(value),
             Message::SubmitRepoPath(value) => self.handle_submit_repo_path(value),
+            Message::SubmitTag(tag) => self.handle_submit_tag(tag),
             Message::InputChar(c) => self.handle_input_char(c),
             Message::InputBackspace => self.handle_input_backspace(),
             Message::StartQuickDispatchSelection => self.handle_start_quick_dispatch_selection(),
@@ -657,6 +659,15 @@ impl App {
         vec![]
     }
 
+    fn handle_plan_task(&mut self, id: TaskId) -> Vec<Command> {
+        if let Some(task) = self.find_task(id) {
+            if task.status == TaskStatus::Backlog {
+                return vec![Command::Plan { task: task.clone() }];
+            }
+        }
+        vec![]
+    }
+
     fn handle_dispatched(&mut self, id: TaskId, worktree: String, tmux_window: String, switch_focus: bool) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.worktree = Some(worktree);
@@ -936,6 +947,7 @@ impl App {
             t.repo_path = edit.repo_path;
             t.status = edit.status;
             t.plan = edit.plan;
+            t.tag = edit.tag;
             t.updated_at = chrono::Utc::now();
         }
         self.clamp_selection();
@@ -953,6 +965,7 @@ impl App {
                 title: "Quick task".to_string(),
                 description: String::new(),
                 repo_path,
+                tag: None,
             },
             epic_id,
         }]
@@ -1199,6 +1212,7 @@ impl App {
                 title: value,
                 description: String::new(),
                 repo_path: String::new(),
+                tag: None,
             });
             self.input.mode = InputMode::InputDescription;
             self.set_status("Enter description: ".to_string());
@@ -1228,6 +1242,21 @@ impl App {
         } else {
             value
         };
+        if let Some(ref mut draft) = self.input.task_draft {
+            draft.repo_path = repo_path;
+        }
+        self.input.mode = InputMode::InputTag;
+        self.set_status("Tag: (b)ug (f)eature (c)hore (e)pic (Enter=none)".to_string());
+        vec![]
+    }
+
+    fn handle_submit_tag(&mut self, tag: Option<String>) -> Vec<Command> {
+        if let Some(ref mut draft) = self.input.task_draft {
+            draft.tag = tag;
+        }
+        let repo_path = self.input.task_draft.as_ref()
+            .map(|d| d.repo_path.clone())
+            .unwrap_or_default();
         self.finish_task_creation(repo_path)
     }
 
@@ -1245,7 +1274,13 @@ impl App {
                 if self.input.mode == InputMode::InputEpicRepoPath {
                     return self.finish_epic_creation(repo_path);
                 }
-                return self.finish_task_creation(repo_path);
+                // For tasks, go through the tag selection step
+                if let Some(ref mut draft) = self.input.task_draft {
+                    draft.repo_path = repo_path;
+                }
+                self.input.mode = InputMode::InputTag;
+                self.set_status("Tag: (b)ug (f)eature (c)hore (e)pic (Enter=none)".to_string());
+                return vec![];
             }
         }
         self.input.buffer.push(c);
@@ -1815,7 +1850,11 @@ impl App {
                     vec![Command::Dispatch { task: (*task).clone() }]
                 }
                 Some(task) => {
-                    vec![Command::Brainstorm { task: (*task).clone() }]
+                    match task.tag.as_deref() {
+                        Some("epic") => vec![Command::Brainstorm { task: (*task).clone() }],
+                        Some("feature") => vec![Command::Plan { task: (*task).clone() }],
+                        _ => vec![Command::Dispatch { task: (*task).clone() }],
+                    }
                 }
                 None => {
                     vec![Command::DispatchEpic { epic: epic.clone() }]

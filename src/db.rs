@@ -25,6 +25,7 @@ pub struct TaskPatch<'a> {
     pub tmux_window: Option<Option<&'a str>>,
     pub needs_input: Option<bool>,
     pub pr_url: Option<Option<&'a str>>,
+    pub tag: Option<Option<&'a str>>,
     pub sort_order: Option<Option<i64>>,
 }
 
@@ -78,6 +79,11 @@ impl<'a> TaskPatch<'a> {
         self
     }
 
+    pub fn tag(mut self, tag: Option<&'a str>) -> Self {
+        self.tag = Some(tag);
+        self
+    }
+
     pub fn sort_order(mut self, sort_order: Option<i64>) -> Self {
         self.sort_order = Some(sort_order);
         self
@@ -93,6 +99,7 @@ impl<'a> TaskPatch<'a> {
             || self.tmux_window.is_some()
             || self.needs_input.is_some()
             || self.pr_url.is_some()
+            || self.tag.is_some()
             || self.sort_order.is_some()
     }
 }
@@ -257,6 +264,7 @@ impl Database {
                 worktree    TEXT,
                 tmux_window TEXT,
                 plan        TEXT,
+                tag         TEXT,
                 created_at  TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -421,6 +429,13 @@ impl Database {
                 .context("Failed to update schema version to 12")?;
         }
 
+        if current_version < 13 {
+            // Add optional tag column for dispatch behavior (bug, feature, chore, epic).
+            let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN tag TEXT");
+            conn.pragma_update(None, "user_version", 13i64)
+                .context("Failed to update schema version to 13")?;
+        }
+
         Ok(())
     }
 
@@ -434,7 +449,7 @@ impl Database {
 /// Column list shared by all task SELECT queries. Pair with `row_to_task`.
 const TASK_COLUMNS: &str =
     "id, title, description, repo_path, status, worktree, tmux_window, \
-     plan, epic_id, needs_input, pr_url, sort_order, created_at, updated_at";
+     plan, epic_id, needs_input, pr_url, tag, sort_order, created_at, updated_at";
 
 impl TaskStore for Database {
     fn create_task(
@@ -608,6 +623,10 @@ impl TaskStore for Database {
         if let Some(url) = &patch.pr_url {
             sets.push("pr_url = ?");
             values.push(Box::new(url.map(|s| s.to_string())));
+        }
+        if let Some(tag) = &patch.tag {
+            sets.push("tag = ?");
+            values.push(Box::new(tag.map(|s| s.to_string())));
         }
         if let Some(so) = patch.sort_order {
             sets.push("sort_order = ?");
@@ -934,6 +953,7 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
             .map(EpicId),
         needs_input: row.get::<_, i64>("needs_input").unwrap_or(0) != 0,
         pr_url: row.get::<_, Option<String>>("pr_url").unwrap_or(None),
+        tag: row.get::<_, Option<String>>("tag").unwrap_or(None),
         sort_order: row.get::<_, Option<i64>>("sort_order").unwrap_or(None),
         created_at: parse_datetime(&created_str),
         updated_at: parse_datetime(&updated_str),
@@ -1119,7 +1139,7 @@ mod tests {
         let db = in_memory_db();
         let conn = db.conn.lock().unwrap();
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 12, "fresh DB should be at schema version 12");
+        assert_eq!(version, 13, "fresh DB should be at schema version 13");
     }
 
     #[test]
@@ -1170,7 +1190,7 @@ mod tests {
 
         // Version should be latest
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
 
         // Verify Migration 1 added the plan column
         let has_plan: bool = conn
@@ -1233,7 +1253,7 @@ mod tests {
         assert_eq!(status, "backlog");
 
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 12);
+        assert_eq!(version, 13);
     }
 
     #[test]
@@ -1313,6 +1333,25 @@ mod tests {
         assert_eq!(task.title, "title");
         assert_eq!(task.plan.as_deref(), Some("plan.md"));
         assert_eq!(task.status, TaskStatus::Running);
+    }
+
+    #[test]
+    fn patch_task_sets_tag() {
+        let db = in_memory_db();
+        let id = db.create_task("title", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.patch_task(id, &TaskPatch::new().tag(Some("bug"))).unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert_eq!(task.tag.as_deref(), Some("bug"));
+    }
+
+    #[test]
+    fn patch_task_clears_tag() {
+        let db = in_memory_db();
+        let id = db.create_task("title", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.patch_task(id, &TaskPatch::new().tag(Some("feature"))).unwrap();
+        db.patch_task(id, &TaskPatch::new().tag(None)).unwrap();
+        let task = db.get_task(id).unwrap().unwrap();
+        assert!(task.tag.is_none());
     }
 
     #[test]
