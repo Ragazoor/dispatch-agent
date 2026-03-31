@@ -9,7 +9,6 @@ use crate::mcp::McpState;
 use crate::process::{ProcessRunner, MockProcessRunner};
 
 use super::dispatch::{handle_mcp, tool_definitions};
-use super::tasks;
 use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs, WrapUpArgs, ReportUsageArgs};
 use super::epics::{CreateEpicArgs, GetEpicArgs, UpdateEpicArgs};
 use super::types::{JsonRpcRequest, JsonRpcResponse};
@@ -529,16 +528,18 @@ async fn update_task_sets_pr_fields() {
     let state = test_state();
     let task_id = state.db.create_task("PR test", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
 
-    let resp = tasks::handle_update_task(
+    let resp = call(
         &state,
-        Some(json!(1)),
-        json!({
-            "task_id": task_id.0,
-            "pr_url": "https://github.com/org/repo/pull/99",
-            "pr_number": 99
-        }),
-    );
-
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": {
+                "task_id": task_id.0,
+                "pr_url": "https://github.com/org/repo/pull/99",
+                "pr_number": 99
+            }
+        })),
+    ).await;
     assert!(resp.error.is_none(), "Expected success, got: {:?}", resp.error);
 
     let updated = state.db.get_task(task_id).unwrap().unwrap();
