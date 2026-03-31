@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::models::{Epic, EpicId, Task, TaskId, TaskStatus, TaskUsage, UsageReport};
+use crate::models::{Epic, EpicId, ReviewDecision, ReviewPr, Task, TaskId, TaskStatus, TaskUsage, UsageReport};
 
 // ---------------------------------------------------------------------------
 // TaskPatch — builder for selective field updates
@@ -210,6 +210,10 @@ pub trait TaskStore: Send + Sync {
     fn save_filter_preset(&self, name: &str, repo_paths: &str) -> Result<()>;
     fn delete_filter_preset(&self, name: &str) -> Result<()>;
     fn list_filter_presets(&self) -> Result<Vec<(String, String)>>;
+
+    // Review PRs
+    fn save_review_prs(&self, prs: &[crate::models::ReviewPr]) -> Result<()>;
+    fn load_review_prs(&self) -> Result<Vec<crate::models::ReviewPr>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +438,29 @@ impl Database {
             let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN tag TEXT");
             conn.pragma_update(None, "user_version", 13i64)
                 .context("Failed to update schema version to 13")?;
+        }
+
+        if current_version < 14 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS review_prs (
+                    repo            TEXT    NOT NULL,
+                    number          INTEGER NOT NULL,
+                    title           TEXT    NOT NULL,
+                    author          TEXT    NOT NULL,
+                    url             TEXT    NOT NULL,
+                    is_draft        INTEGER NOT NULL,
+                    created_at      TEXT    NOT NULL,
+                    updated_at      TEXT    NOT NULL,
+                    additions       INTEGER NOT NULL,
+                    deletions       INTEGER NOT NULL,
+                    review_decision TEXT    NOT NULL,
+                    labels          TEXT    NOT NULL,
+                    PRIMARY KEY (repo, number)
+                )",
+            )
+            .context("Failed to create review_prs table")?;
+            conn.pragma_update(None, "user_version", 14i64)
+                .context("Failed to update schema version to 14")?;
         }
 
         Ok(())
@@ -923,6 +950,121 @@ impl TaskStore for Database {
         })?;
         rows.collect::<Result<Vec<_>, _>>().context("Failed to list filter presets")
     }
+
+    fn save_review_prs(&self, prs: &[ReviewPr]) -> Result<()> {
+        let conn = self.conn()?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM review_prs", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO review_prs (repo, number, title, author, url, is_draft,
+                 created_at, updated_at, additions, deletions, review_decision, labels)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            )?;
+            for pr in prs {
+                let labels_json =
+                    serde_json::to_string(&pr.labels).context("Failed to serialize labels")?;
+                stmt.execute(params![
+                    pr.repo,
+                    pr.number,
+                    pr.title,
+                    pr.author,
+                    pr.url,
+                    pr.is_draft,
+                    pr.created_at.to_rfc3339(),
+                    pr.updated_at.to_rfc3339(),
+                    pr.additions,
+                    pr.deletions,
+                    pr.review_decision.as_db_str(),
+                    labels_json,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn load_review_prs(&self) -> Result<Vec<ReviewPr>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT repo, number, title, author, url, is_draft,
+                    created_at, updated_at, additions, deletions,
+                    review_decision, labels
+             FROM review_prs",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let repo: String = row.get(0)?;
+            let number: i64 = row.get(1)?;
+            let title: String = row.get(2)?;
+            let author: String = row.get(3)?;
+            let url: String = row.get(4)?;
+            let is_draft: bool = row.get(5)?;
+            let created_at_str: String = row.get(6)?;
+            let updated_at_str: String = row.get(7)?;
+            let additions: i64 = row.get(8)?;
+            let deletions: i64 = row.get(9)?;
+            let decision_str: String = row.get(10)?;
+            let labels_json: String = row.get(11)?;
+            Ok((
+                repo,
+                number,
+                title,
+                author,
+                url,
+                is_draft,
+                created_at_str,
+                updated_at_str,
+                additions,
+                deletions,
+                decision_str,
+                labels_json,
+            ))
+        })?;
+
+        let mut prs = Vec::new();
+        for row in rows {
+            let (
+                repo,
+                number,
+                title,
+                author,
+                url,
+                is_draft,
+                created_at_str,
+                updated_at_str,
+                additions,
+                deletions,
+                decision_str,
+                labels_json,
+            ) = row?;
+
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let review_decision = ReviewDecision::from_db_str(&decision_str)
+                .unwrap_or(ReviewDecision::ReviewRequired);
+            let labels: Vec<String> = serde_json::from_str(&labels_json).unwrap_or_default();
+
+            prs.push(ReviewPr {
+                number,
+                title,
+                author,
+                repo,
+                url,
+                is_draft,
+                created_at,
+                updated_at,
+                additions,
+                deletions,
+                review_decision,
+                labels,
+            });
+        }
+        Ok(prs)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,7 +1281,7 @@ mod tests {
         let db = in_memory_db();
         let conn = db.conn.lock().unwrap();
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 13, "fresh DB should be at schema version 13");
+        assert_eq!(version, 14, "fresh DB should be at schema version 14");
     }
 
     #[test]
@@ -1190,7 +1332,7 @@ mod tests {
 
         // Version should be latest
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
 
         // Verify Migration 1 added the plan column
         let has_plan: bool = conn
@@ -1253,7 +1395,7 @@ mod tests {
         assert_eq!(status, "backlog");
 
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
     }
 
     #[test]
@@ -1738,5 +1880,113 @@ mod tests {
         db.delete_filter_preset("frontend").unwrap();
         let presets = db.list_filter_presets().unwrap();
         assert!(presets.is_empty());
+    }
+
+    #[test]
+    fn save_and_load_review_prs() {
+        use crate::models::{ReviewDecision, ReviewPr};
+        use chrono::Utc;
+
+        let db = Database::open_in_memory().unwrap();
+
+        // Initially empty
+        let prs = db.load_review_prs().unwrap();
+        assert!(prs.is_empty());
+
+        // Save some PRs
+        let pr1 = ReviewPr {
+            number: 42,
+            title: "Fix bug".to_string(),
+            author: "alice".to_string(),
+            repo: "acme/app".to_string(),
+            url: "https://github.com/acme/app/pull/42".to_string(),
+            is_draft: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            additions: 10,
+            deletions: 5,
+            review_decision: ReviewDecision::ReviewRequired,
+            labels: vec!["bug".to_string()],
+        };
+        let pr2 = ReviewPr {
+            number: 99,
+            title: "Add feature".to_string(),
+            author: "bob".to_string(),
+            repo: "acme/app".to_string(),
+            url: "https://github.com/acme/app/pull/99".to_string(),
+            is_draft: true,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            additions: 200,
+            deletions: 80,
+            review_decision: ReviewDecision::Approved,
+            labels: vec![],
+        };
+
+        db.save_review_prs(&[pr1, pr2]).unwrap();
+
+        let loaded = db.load_review_prs().unwrap();
+        assert_eq!(loaded.len(), 2);
+
+        let p1 = loaded.iter().find(|p| p.number == 42).unwrap();
+        assert_eq!(p1.title, "Fix bug");
+        assert_eq!(p1.author, "alice");
+        assert_eq!(p1.repo, "acme/app");
+        assert!(!p1.is_draft);
+        assert_eq!(p1.additions, 10);
+        assert_eq!(p1.review_decision, ReviewDecision::ReviewRequired);
+        assert_eq!(p1.labels, vec!["bug".to_string()]);
+
+        let p2 = loaded.iter().find(|p| p.number == 99).unwrap();
+        assert_eq!(p2.review_decision, ReviewDecision::Approved);
+        assert!(p2.is_draft);
+        assert!(p2.labels.is_empty());
+    }
+
+    #[test]
+    fn save_review_prs_replaces_all() {
+        use crate::models::{ReviewDecision, ReviewPr};
+        use chrono::Utc;
+
+        let db = Database::open_in_memory().unwrap();
+
+        let pr1 = ReviewPr {
+            number: 1,
+            title: "Old PR".to_string(),
+            author: "alice".to_string(),
+            repo: "acme/app".to_string(),
+            url: "https://github.com/acme/app/pull/1".to_string(),
+            is_draft: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            additions: 0,
+            deletions: 0,
+            review_decision: ReviewDecision::ReviewRequired,
+            labels: vec![],
+        };
+        db.save_review_prs(&[pr1]).unwrap();
+        assert_eq!(db.load_review_prs().unwrap().len(), 1);
+
+        // Save new set — old ones should be gone
+        let pr2 = ReviewPr {
+            number: 2,
+            title: "New PR".to_string(),
+            author: "bob".to_string(),
+            repo: "acme/other".to_string(),
+            url: "https://github.com/acme/other/pull/2".to_string(),
+            is_draft: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            additions: 5,
+            deletions: 3,
+            review_decision: ReviewDecision::ChangesRequested,
+            labels: vec!["urgent".to_string()],
+        };
+        db.save_review_prs(&[pr2]).unwrap();
+
+        let loaded = db.load_review_prs().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].number, 2);
+        assert_eq!(loaded[0].repo, "acme/other");
     }
 }
