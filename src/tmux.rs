@@ -119,6 +119,15 @@ pub fn current_window_name(runner: &dyn ProcessRunner) -> Result<String> {
     Ok(text)
 }
 
+/// Rename a tmux window. Pass `""` as `target` to rename the current window.
+pub fn rename_window(target: &str, new_name: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let output = runner.run("tmux", &["rename-window", "-t", target, new_name])?;
+    if !output.status.success() {
+        bail!("tmux rename-window failed with status {}", output.status);
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Internal helpers (kept for arg-shape unit tests)
 // ---------------------------------------------------------------------------
@@ -178,6 +187,16 @@ fn set_after_split_hook_args(window: &str, working_dir: &str) -> Vec<String> {
 #[cfg(test)]
 fn current_window_name_args() -> Vec<String> {
     vec!["display-message".to_string(), "-p".to_string(), "#W".to_string()]
+}
+
+#[cfg(test)]
+fn rename_window_args(target: &str, new_name: &str) -> Vec<String> {
+    vec![
+        "rename-window".to_string(),
+        "-t".to_string(),
+        target.to_string(),
+        new_name.to_string(),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -359,5 +378,27 @@ mod tests {
     fn current_window_name_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no session")]);
         assert!(current_window_name(&mock).is_err());
+    }
+
+    #[test]
+    fn rename_window_args_correct() {
+        let args = rename_window_args("dispatch", "my-old-name");
+        assert_eq!(args, vec!["rename-window", "-t", "dispatch", "my-old-name"]);
+    }
+
+    #[test]
+    fn rename_window_issues_correct_tmux_args() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        rename_window("dispatch", "my-old-name", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tmux");
+        assert_eq!(calls[0].1, vec!["rename-window", "-t", "dispatch", "my-old-name"]);
+    }
+
+    #[test]
+    fn rename_window_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")]);
+        assert!(rename_window("dispatch", "other", &mock).is_err());
     }
 }
