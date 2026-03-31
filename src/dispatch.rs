@@ -472,22 +472,33 @@ attach the plan (tool: dispatch, tool name: update_task — set the plan field).
 
 fn build_epic_planning_prompt(epic_id: EpicId, title: &str, description: &str, mcp_port: u16) -> String {
     format!(
-        "You are an autonomous coding agent starting a brainstorming session.\n\
+        "You are an autonomous coding agent starting a planning session.\n\
 \n\
 Epic:\n\
   ID: {epic_id}\n\
   Title: {title}\n\
   Description: {description}\n\
 \n\
-Your goal is to explore the codebase, brainstorm approaches, and write an \
-implementation plan for this epic. When done, save the plan to docs/plans/.\n\
+Your goal is to explore the codebase, write an implementation plan, and break \
+it into work packages (subtasks) on the kanban board.\n\
 \n\
-After planning, ask whether to continue creating subtasks or stop.\n\
+Steps:\n\
+1. Explore the codebase to understand what needs to change.\n\
+2. Write the plan to docs/plans/ and attach it to the epic:\n\
+   Call update_epic with epic_id={epic_id} and plan=<absolute path to plan file>\n\
+3. Create subtasks from the plan using create_task. Group them as work packages:\n\
+   - Set epic_id={epic_id} on every task\n\
+   - Use sort_order to control execution order (1, 2, 3, \u{2026})\n\
+   - Tasks at the same sort_order in different repositories run in parallel\n\
+   - Tasks in the same repository must have different sort_order values\n\
+   - Set repo_path to the absolute path of the repository each task targets\n\
+\n\
+After creating the subtasks, ask whether to continue implementing or stop.\n\
 \n\
 An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-query tasks and epics (tool: dispatch).\n\
+query tasks and epics (tool: dispatch). Relevant tools: create_task, update_epic, list_tasks.\n\
 \n\
-IMPORTANT: Do NOT start implementing. Your job ends after planning.",
+IMPORTANT: Do NOT start implementing. Your job ends after creating the subtasks.",
         epic_id = epic_id,
         title = title,
         description = description,
@@ -1149,6 +1160,11 @@ mod tests {
         assert!(prompt.contains("Rework the login flow"));
         assert!(prompt.contains("Do NOT start implementing"));
         assert!(prompt.contains(&DEFAULT_PORT.to_string()));
+        // New: work package instructions
+        assert!(prompt.contains("create_task"), "prompt should instruct using create_task");
+        assert!(prompt.contains("sort_order"), "prompt should explain sort_order for ordering");
+        assert!(prompt.contains("update_epic"), "prompt should instruct attaching plan to epic");
+        assert!(prompt.contains("repo_path"), "prompt should explain repo_path for parallelization");
     }
 
     #[test]
