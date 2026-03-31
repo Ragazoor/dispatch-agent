@@ -69,6 +69,7 @@ fn rebase_preamble(base_branch: Option<&str>) -> String {
 }
 
 /// Provision worktree, write prompt file, launch Claude via tmux.
+/// The prompt file is deleted after Claude reads it.
 /// Shared by all dispatch variants.
 fn dispatch_with_prompt(
     task: &Task,
@@ -84,7 +85,7 @@ fn dispatch_with_prompt(
         .with_context(|| format!("failed to write {prompt_file}"))?;
     tmux::send_keys(
         &provision.tmux_window,
-        "claude \"$(cat .claude-prompt)\"",
+        "claude \"$(cat .claude-prompt)\"; rm -f .claude-prompt",
         runner,
     )
     .context("failed to send keys to tmux window")?;
