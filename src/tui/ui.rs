@@ -1496,6 +1496,7 @@ pub(in crate::tui) fn action_hints(task: Option<&Task>, key_color: Color) -> Vec
         }
     }
 
+    push_hint("^g", "back");
     push_hint("a", "select all");
     push_hint("n", "new");
     push_hint("E", "epic");
