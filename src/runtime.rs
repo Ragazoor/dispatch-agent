@@ -91,6 +91,12 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
         }
     }
 
+    // Load cached review PRs from database
+    match database.load_review_prs() {
+        Ok(prs) => app.set_review_prs(prs),
+        Err(e) => tracing::warn!("Failed to load cached review PRs: {e}"),
+    }
+
     // 4. Set up terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -1627,5 +1633,37 @@ mod tests {
             rt.database.get_setting_string("repo_filter").unwrap(),
             Some("/repo1\n/repo2".to_string())
         );
+    }
+
+    #[test]
+    fn startup_loads_cached_review_prs() {
+        use crate::models::{ReviewDecision, ReviewPr};
+        use chrono::Utc;
+
+        let (rt, mut app) = test_runtime();
+
+        // Pre-populate the database with a cached review PR
+        let pr = ReviewPr {
+            number: 42,
+            title: "Fix bug".to_string(),
+            author: "alice".to_string(),
+            repo: "acme/app".to_string(),
+            url: "https://github.com/acme/app/pull/42".to_string(),
+            is_draft: false,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            additions: 10,
+            deletions: 5,
+            review_decision: ReviewDecision::ReviewRequired,
+            labels: vec![],
+        };
+        rt.database.save_review_prs(&[pr]).unwrap();
+
+        // Simulate what run_tui does: load cached reviews
+        let cached = rt.database.load_review_prs().unwrap();
+        app.set_review_prs(cached);
+
+        assert_eq!(app.review_prs().len(), 1);
+        assert_eq!(app.review_prs()[0].number, 42);
     }
 }

@@ -150,6 +150,10 @@ impl App {
         self.notifications_enabled = enabled;
     }
 
+    pub fn set_review_prs(&mut self, prs: Vec<crate::models::ReviewPr>) {
+        self.review_prs = prs;
+    }
+
     pub fn set_repo_filter(&mut self, filter: HashSet<String>) {
         self.repo_filter = filter;
         self.clamp_selection();
