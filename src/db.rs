@@ -969,6 +969,15 @@ impl TaskStore for Database {
         rows.collect::<Result<Vec<_>, _>>().context("Failed to list filter presets")
     }
 
+    /// Saves (upserts) a batch of review PRs from a GitHub refresh.
+    ///
+    /// On conflict with `(repo, number)`, GitHub-sourced fields are updated but
+    /// `tmux_window` and `review_notes` are preserved via `COALESCE` — meaning
+    /// agent fields can only be modified through [`Self::patch_review_pr`].
+    ///
+    /// Note: rows for PRs no longer in the GitHub response are NOT deleted.
+    /// PRs may have active review agents, so pruning is handled separately
+    /// if needed.
     fn save_review_prs(&self, prs: &[ReviewPr]) -> Result<()> {
         let conn = self.conn()?;
         let tx = conn.unchecked_transaction()?;
@@ -1130,13 +1139,22 @@ impl TaskStore for Database {
         // Build params dynamically
         match (review_notes, tmux_window) {
             (Some(notes), Some(window)) => {
-                stmt.execute(rusqlite::params![notes, window, url])?;
+                let n = stmt.execute(rusqlite::params![notes, window, url])?;
+                if n == 0 {
+                    anyhow::bail!("patch_review_pr: no review PR found with url={url}");
+                }
             }
             (Some(notes), None) => {
-                stmt.execute(rusqlite::params![notes, url])?;
+                let n = stmt.execute(rusqlite::params![notes, url])?;
+                if n == 0 {
+                    anyhow::bail!("patch_review_pr: no review PR found with url={url}");
+                }
             }
             (None, Some(window)) => {
-                stmt.execute(rusqlite::params![window, url])?;
+                let n = stmt.execute(rusqlite::params![window, url])?;
+                if n == 0 {
+                    anyhow::bail!("patch_review_pr: no review PR found with url={url}");
+                }
             }
             (None, None) => unreachable!(),
         }
@@ -2188,5 +2206,13 @@ mod tests {
         let loaded = db.load_review_prs().unwrap();
         assert_eq!(loaded[0].tmux_window.as_deref(), Some("review-app-7"));
         assert_eq!(loaded[0].review_notes, None);
+    }
+
+    #[test]
+    fn patch_review_pr_errors_on_missing_url() {
+        let db = Database::open_in_memory().unwrap();
+        let result = db.patch_review_pr("https://github.com/x/y/pull/999", Some(Some("notes")), None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no review PR found"));
     }
 }
