@@ -4,7 +4,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::models::{Epic, EpicId, ReviewDecision, ReviewPr, Task, TaskId, TaskStatus, TaskUsage, UsageReport};
+use crate::models::{Epic, EpicId, ReviewDecision, ReviewPr, RepoPath, Task, TaskId, TaskStatus, TaskUsage, TmuxWindow, WorktreePath, UsageReport};
 
 // ---------------------------------------------------------------------------
 // TaskPatch — builder for selective field updates
@@ -1085,10 +1085,10 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         id: TaskId(row.get("id")?),
         title: row.get("title")?,
         description: row.get("description")?,
-        repo_path: row.get("repo_path")?,
+        repo_path: RepoPath(row.get::<_, String>("repo_path")?),
         status,
-        worktree: row.get("worktree")?,
-        tmux_window: row.get("tmux_window")?,
+        worktree: row.get::<_, Option<String>>("worktree")?.map(WorktreePath),
+        tmux_window: row.get::<_, Option<String>>("tmux_window")?.map(TmuxWindow),
         plan: row.get("plan")?,
         epic_id: row.get::<_, Option<i64>>("epic_id")
             .unwrap_or(None)
@@ -1111,7 +1111,7 @@ fn row_to_epic(row: &rusqlite::Row<'_>) -> rusqlite::Result<Epic> {
         id: EpicId(row.get("id")?),
         title: row.get("title")?,
         description: row.get("description")?,
-        repo_path: row.get("repo_path")?,
+        repo_path: RepoPath(row.get::<_, String>("repo_path")?),
         done: done_int != 0,
         plan: row.get("plan")?,
         sort_order: row.get::<_, Option<i64>>("sort_order").unwrap_or(None),
@@ -1148,7 +1148,7 @@ mod tests {
         assert_eq!(task.id, id);
         assert_eq!(task.title, "My Task");
         assert_eq!(task.description, "A description");
-        assert_eq!(task.repo_path, "/repo/path");
+        assert_eq!(task.repo_path, RepoPath("/repo/path".into()));
         assert_eq!(task.status, TaskStatus::Backlog);
         assert!(task.worktree.is_none());
         assert!(task.tmux_window.is_none());
@@ -1430,7 +1430,7 @@ mod tests {
         let task = db.create_task_returning("Title", "Desc", "/repo", None, TaskStatus::Backlog).unwrap();
         assert_eq!(task.title, "Title");
         assert_eq!(task.description, "Desc");
-        assert_eq!(task.repo_path, "/repo");
+        assert_eq!(task.repo_path, RepoPath("/repo".into()));
         assert_eq!(task.status, TaskStatus::Backlog);
         assert!(task.worktree.is_none());
         assert!(task.tmux_window.is_none());
@@ -1566,8 +1566,8 @@ mod tests {
             .tmux_window(Some("session:1-my-task"));
         db.patch_task(id, &patch).unwrap();
         let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-my-task"));
-        assert_eq!(task.tmux_window.as_deref(), Some("session:1-my-task"));
+        assert_eq!(task.worktree.as_ref().map(|w| w.as_ref()), Some("/repo/.worktrees/1-my-task"));
+        assert_eq!(task.tmux_window, Some(TmuxWindow("session:1-my-task".into())));
     }
 
     #[test]
@@ -1608,8 +1608,8 @@ mod tests {
         db.patch_task(id, &patch).unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.status, TaskStatus::Running);
-        assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-my-task"));
-        assert_eq!(task.tmux_window.as_deref(), Some("session:1-my-task"));
+        assert_eq!(task.worktree.as_ref().map(|w| w.as_ref()), Some("/repo/.worktrees/1-my-task"));
+        assert_eq!(task.tmux_window, Some(TmuxWindow("session:1-my-task".into())));
     }
 
     #[test]
@@ -1651,7 +1651,7 @@ mod tests {
         let epic = db.create_epic("Auth Rewrite", "Rewrite auth", "/repo").unwrap();
         assert_eq!(epic.title, "Auth Rewrite");
         assert_eq!(epic.description, "Rewrite auth");
-        assert_eq!(epic.repo_path, "/repo");
+        assert_eq!(epic.repo_path, RepoPath("/repo".into()));
         assert!(!epic.done);
 
         let fetched = db.get_epic(epic.id).unwrap().unwrap();

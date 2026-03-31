@@ -1628,7 +1628,12 @@ pub fn render_review_board(frame: &mut Frame, app: &mut App, area: Rect) {
     render_tab_bar(frame, app, chunks[0]);
     render_review_summary_row(frame, app, chunks[1]);
 
-    if app.review_prs().is_empty() {
+    if app.review_board_loading() && app.review_prs().is_empty() {
+        let p = Paragraph::new("Loading...")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(p, chunks[1]);
+    } else if app.review_prs().is_empty() {
         let p = Paragraph::new("No PRs awaiting your review")
             .alignment(Alignment::Center)
             .style(Style::default().fg(Color::DarkGray));

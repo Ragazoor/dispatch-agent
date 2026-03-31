@@ -92,7 +92,7 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{EpicId, TaskId, TaskStatus};
+    use crate::models::{EpicId, RepoPath, TaskId, TaskStatus};
     use chrono::Utc;
 
     fn make_epic(title: &str, description: &str, repo_path: &str) -> Epic {
@@ -100,7 +100,7 @@ mod tests {
             id: EpicId(1),
             title: title.to_string(),
             description: description.to_string(),
-            repo_path: repo_path.to_string(),
+            repo_path: RepoPath(repo_path.to_string()),
             done: false,
             plan: None,
             sort_order: None,
@@ -156,7 +156,7 @@ mod tests {
             id: TaskId(1),
             title: title.to_string(),
             description: description.to_string(),
-            repo_path: repo_path.to_string(),
+            repo_path: RepoPath(repo_path.to_string()),
             status,
             worktree: None,
             tmux_window: None,

@@ -461,7 +461,7 @@ async fn update_task_repo_path() {
     assert!(resp.error.is_none(), "should succeed with repo_path only: {:?}", resp.error);
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.repo_path, "/new/repo");
+    assert_eq!(task.repo_path.as_ref(), "/new/repo");
     assert_eq!(task.status, crate::models::TaskStatus::Backlog); // unchanged
 }
 
@@ -642,8 +642,8 @@ async fn claim_task_success() {
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/5-other-task"));
-    assert_eq!(task.tmux_window.as_deref(), Some("task-5"));
+    assert_eq!(task.worktree.as_ref().map(|w| w.as_ref()), Some("/repo/.worktrees/5-other-task"));
+    assert_eq!(task.tmux_window.as_ref().map(|w| w.as_ref()), Some("task-5"));
 }
 
 #[tokio::test]
@@ -964,7 +964,7 @@ async fn create_epic_minimal() {
     let epics = state.db.list_epics().unwrap();
     assert_eq!(epics.len(), 1);
     assert_eq!(epics[0].title, "My Epic");
-    assert_eq!(epics[0].repo_path, "/repo");
+    assert_eq!(epics[0].repo_path.as_ref(), "/repo");
 }
 
 #[tokio::test]
@@ -1431,8 +1431,8 @@ async fn claim_task_updates_status_to_running() {
 
     let task = state.db.get_task(crate::models::TaskId(task_id.0)).unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-claim"));
-    assert_eq!(task.tmux_window.as_deref(), Some("task-1"));
+    assert_eq!(task.worktree.as_ref().map(|w| w.as_ref()), Some("/repo/.worktrees/1-claim"));
+    assert_eq!(task.tmux_window.as_ref().map(|w| w.as_ref()), Some("task-1"));
 }
 
 // ---------------------------------------------------------------------------

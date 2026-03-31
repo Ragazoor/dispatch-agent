@@ -129,6 +129,64 @@ impl std::fmt::Display for EpicId {
 }
 
 // ---------------------------------------------------------------------------
+// TmuxWindow
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct TmuxWindow(pub String);
+
+impl std::fmt::Display for TmuxWindow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for TmuxWindow {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WorktreePath
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct WorktreePath(pub String);
+
+impl std::fmt::Display for WorktreePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for WorktreePath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// RepoPath
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct RepoPath(pub String);
+
+impl std::fmt::Display for RepoPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl AsRef<str> for RepoPath {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Epic
 // ---------------------------------------------------------------------------
 
@@ -137,7 +195,7 @@ pub struct Epic {
     pub id: EpicId,
     pub title: String,
     pub description: String,
-    pub repo_path: String,
+    pub repo_path: RepoPath,
     pub done: bool,
     pub plan: Option<String>,
     pub sort_order: Option<i64>,
@@ -286,10 +344,10 @@ pub struct Task {
     pub id: TaskId,
     pub title: String,
     pub description: String,
-    pub repo_path: String,
+    pub repo_path: RepoPath,
     pub status: TaskStatus,
-    pub worktree: Option<String>,
-    pub tmux_window: Option<String>,
+    pub worktree: Option<WorktreePath>,
+    pub tmux_window: Option<TmuxWindow>,
     pub plan: Option<String>,
     pub epic_id: Option<EpicId>,
     pub needs_input: bool,
@@ -306,8 +364,8 @@ pub struct Task {
 
 #[derive(Debug, Clone)]
 pub struct DispatchResult {
-    pub worktree_path: String,
-    pub tmux_window: String,
+    pub worktree_path: WorktreePath,
+    pub tmux_window: TmuxWindow,
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +374,7 @@ pub struct DispatchResult {
 
 #[derive(Debug, Clone)]
 pub struct ResumeResult {
-    pub tmux_window: String,
+    pub tmux_window: TmuxWindow,
 }
 
 // ---------------------------------------------------------------------------
@@ -809,7 +867,7 @@ mod tests {
             id: TaskId(1),
             title: "Test".to_string(),
             description: "Desc".to_string(),
-            repo_path: "/repo".to_string(),
+            repo_path: RepoPath("/repo".into()),
             status: TaskStatus::Backlog,
             worktree: None,
             tmux_window: None,
@@ -832,7 +890,7 @@ mod tests {
             id: TaskId(1),
             title: "Test".to_string(),
             description: "Desc".to_string(),
-            repo_path: "/repo".to_string(),
+            repo_path: RepoPath("/repo".into()),
             status: TaskStatus::Backlog,
             worktree: None,
             tmux_window: None,
@@ -855,7 +913,7 @@ mod tests {
             id: EpicId(1),
             title: "Auth Rewrite".to_string(),
             description: "Rewrite auth system".to_string(),
-            repo_path: "/repo".to_string(),
+            repo_path: RepoPath("/repo".into()),
             done: false,
             plan: None,
             sort_order: None,
@@ -871,7 +929,7 @@ mod tests {
     fn make_epic_for_status(done: bool) -> Epic {
         Epic {
             id: EpicId(1), title: String::new(), description: String::new(),
-            repo_path: String::new(), done, plan: None, sort_order: None,
+            repo_path: RepoPath::default(), done, plan: None, sort_order: None,
             created_at: Utc::now(), updated_at: Utc::now(),
         }
     }

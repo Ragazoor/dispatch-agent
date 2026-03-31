@@ -251,8 +251,8 @@ impl TuiRuntime {
         format!("DB error {action}: {e}")
     }
 
-    fn exec_insert_task(&self, app: &mut App, title: String, description: String, repo_path: String, tag: Option<String>, epic_id: Option<models::EpicId>) {
-        match self.database.create_task_returning(&title, &description, &repo_path, None, models::TaskStatus::Backlog) {
+    fn exec_insert_task(&self, app: &mut App, title: String, description: String, repo_path: models::RepoPath, tag: Option<String>, epic_id: Option<models::EpicId>) {
+        match self.database.create_task_returning(&title, &description, repo_path.as_ref(), None, models::TaskStatus::Backlog) {
             Ok(mut task) => {
                 if let Some(eid) = epic_id {
                     if let Err(e) = self.database.set_task_epic_id(task.id, Some(eid)) {
@@ -277,8 +277,8 @@ impl TuiRuntime {
         }
     }
 
-    fn exec_quick_dispatch(&self, app: &mut App, title: String, description: String, repo_path: String, epic_id: Option<models::EpicId>) {
-        match self.database.create_task_returning(&title, &description, &repo_path, None, models::TaskStatus::Backlog) {
+    fn exec_quick_dispatch(&self, app: &mut App, title: String, description: String, repo_path: models::RepoPath, epic_id: Option<models::EpicId>) {
+        match self.database.create_task_returning(&title, &description, repo_path.as_ref(), None, models::TaskStatus::Backlog) {
             Ok(mut task) => {
                 if let Some(eid) = epic_id {
                     if let Err(e) = self.database.set_task_epic_id(task.id, Some(eid)) {
@@ -288,7 +288,7 @@ impl TuiRuntime {
                     task.epic_id = Some(eid);
                 }
                 app.update(Message::TaskCreated { task: task.clone() });
-                let _ = self.database.save_repo_path(&repo_path);
+                let _ = self.database.save_repo_path(repo_path.as_ref());
                 let paths = self.database.list_repo_paths().unwrap_or_default();
                 app.update(Message::RepoPathsUpdated(paths));
                 let tx = self.msg_tx.clone();
@@ -322,8 +322,8 @@ impl TuiRuntime {
             task.id,
             &db::TaskPatch::new()
                 .status(task.status)
-                .worktree(task.worktree.as_deref())
-                .tmux_window(task.tmux_window.as_deref())
+                .worktree(task.worktree.as_ref().map(|w| w.as_ref()))
+                .tmux_window(task.tmux_window.as_ref().map(|w| w.as_ref()))
                 .pr_url(task.pr_url.as_deref())
                 .sort_order(task.sort_order),
         ) {
@@ -379,7 +379,7 @@ impl TuiRuntime {
         self.spawn_dispatch(task, dispatch::plan_agent, "Plan");
     }
 
-    fn exec_capture_tmux(&self, id: TaskId, window: String) {
+    fn exec_capture_tmux(&self, id: TaskId, window: models::TmuxWindow) {
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
 
@@ -454,7 +454,7 @@ impl TuiRuntime {
         let fields = parse_editor_content(&edited);
         let title = if fields.title.is_empty() { task.title.clone() } else { fields.title };
         let description = if fields.description.is_empty() { task.description.clone() } else { fields.description };
-        let repo_path = if fields.repo_path.is_empty() { task.repo_path.clone() } else { fields.repo_path };
+        let repo_path = if fields.repo_path.is_empty() { task.repo_path.clone() } else { models::RepoPath(fields.repo_path) };
         let new_status = models::TaskStatus::parse(&fields.status).unwrap_or(task.status);
         let plan = if fields.plan.is_empty() { None } else { Some(fields.plan) };
         let tag = if fields.tag.is_empty() { None } else { Some(fields.tag) };
@@ -465,7 +465,7 @@ impl TuiRuntime {
                 .status(new_status)
                 .title(&title)
                 .description(&description)
-                .repo_path(&repo_path)
+                .repo_path(repo_path.as_ref())
                 .plan(plan.as_deref())
                 .tag(tag.as_deref()),
         ) {
@@ -542,8 +542,8 @@ impl TuiRuntime {
         }
     }
 
-    fn exec_insert_epic(&self, app: &mut App, title: String, description: String, repo_path: String) {
-        match self.database.create_epic(&title, &description, &repo_path) {
+    fn exec_insert_epic(&self, app: &mut App, title: String, description: String, repo_path: models::RepoPath) {
+        match self.database.create_epic(&title, &description, repo_path.as_ref()) {
             Ok(epic) => {
                 app.update(Message::EpicCreated(epic));
             }
@@ -568,7 +568,7 @@ impl TuiRuntime {
         let fields = parse_epic_editor_output(&edited);
         let title = if fields.title.is_empty() { epic.title.clone() } else { fields.title };
         let description = if fields.description.is_empty() { epic.description.clone() } else { fields.description };
-        let repo_path = if fields.repo_path.is_empty() { epic.repo_path.clone() } else { fields.repo_path };
+        let repo_path = if fields.repo_path.is_empty() { epic.repo_path.clone() } else { models::RepoPath(fields.repo_path) };
 
         if let Err(e) = self.database.patch_epic(
             epic_id,
@@ -627,10 +627,10 @@ impl TuiRuntime {
         }
     }
 
-    fn exec_cleanup(&self, id: TaskId, repo_path: String, worktree: String, tmux_window: Option<String>) {
+    fn exec_cleanup(&self, id: TaskId, repo_path: models::RepoPath, worktree: models::WorktreePath, tmux_window: Option<models::TmuxWindow>) {
         let shared = self
             .database
-            .has_other_tasks_with_worktree(&worktree, id)
+            .has_other_tasks_with_worktree(worktree.as_ref(), id)
             .unwrap_or(false);
 
         if shared {
@@ -647,7 +647,7 @@ impl TuiRuntime {
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            if let Err(e) = dispatch::cleanup_task(&repo_path, &worktree, tmux_window.as_deref(), &*runner) {
+            if let Err(e) = dispatch::cleanup_task(repo_path.as_ref(), &worktree, tmux_window.as_ref(), &*runner) {
                 let _ = tx.send(Message::Error(format!("Cleanup failed: {e:#}")));
             }
         });
@@ -656,14 +656,14 @@ impl TuiRuntime {
     fn exec_finish(
         &self,
         id: TaskId,
-        repo_path: String,
+        repo_path: models::RepoPath,
         branch: String,
-        worktree: String,
-        tmux_window: Option<String>,
+        worktree: models::WorktreePath,
+        tmux_window: Option<models::TmuxWindow>,
     ) {
         let shared = self
             .database
-            .has_other_tasks_with_worktree(&worktree, id)
+            .has_other_tasks_with_worktree(worktree.as_ref(), id)
             .unwrap_or(false);
 
         if shared {
@@ -685,10 +685,10 @@ impl TuiRuntime {
 
         tokio::task::spawn_blocking(move || {
             match dispatch::finish_task(
-                &repo_path,
+                repo_path.as_ref(),
                 &worktree,
                 &branch,
-                tmux_window.as_deref(),
+                tmux_window.as_ref(),
                 &*runner,
             ) {
                 Ok(()) => {
@@ -728,7 +728,7 @@ impl TuiRuntime {
         });
     }
 
-    fn exec_jump_to_tmux(&self, app: &mut App, window: String) {
+    fn exec_jump_to_tmux(&self, app: &mut App, window: models::TmuxWindow) {
         if let Err(e) = tmux::select_window(&window, &*self.runner) {
             app.update(Message::Error(format!("Jump failed: {e:#}")));
         }
@@ -745,7 +745,7 @@ impl TuiRuntime {
         let task = match self.database.create_task_returning(
             &title,
             &description,
-            &epic.repo_path,
+            epic.repo_path.as_ref(),
             None,
             models::TaskStatus::Backlog,
         ) {
@@ -792,7 +792,7 @@ impl TuiRuntime {
         });
     }
 
-    fn exec_kill_tmux_window(&self, window: String) {
+    fn exec_kill_tmux_window(&self, window: models::TmuxWindow) {
         let runner = self.runner.clone();
         let tx = self.msg_tx.clone();
 
@@ -806,7 +806,7 @@ impl TuiRuntime {
     fn exec_create_pr(
         &self,
         id: TaskId,
-        repo_path: String,
+        repo_path: models::RepoPath,
         branch: String,
         title: String,
         description: String,
@@ -815,7 +815,7 @@ impl TuiRuntime {
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            match dispatch::create_pr(&repo_path, &branch, &title, &description, &*runner) {
+            match dispatch::create_pr(repo_path.as_ref(), &branch, &title, &description, &*runner) {
                 Ok(result) => {
                     let _ = tx.send(Message::PrCreated {
                         id,
@@ -1007,6 +1007,7 @@ mod tests {
     use super::*;
     use crate::DEFAULT_PORT;
     use crate::db::Database;
+    use crate::models::RepoPath;
     use crate::process::MockProcessRunner;
 
     #[test]
@@ -1036,7 +1037,7 @@ mod tests {
     #[test]
     fn exec_insert_task_adds_to_db_and_app() {
         let (rt, mut app) = test_runtime();
-        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None, None);
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), RepoPath("/repo".into()), None, None);
         assert_eq!(app.tasks().len(), 1);
         assert_eq!(app.tasks()[0].title, "Test");
         assert_eq!(rt.database.list_all().unwrap().len(), 1);
@@ -1045,7 +1046,7 @@ mod tests {
     #[test]
     fn exec_delete_task_removes_from_db() {
         let (rt, mut app) = test_runtime();
-        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None, None);
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), RepoPath("/repo".into()), None, None);
         let id = app.tasks()[0].id;
         rt.exec_delete_task(&mut app, id);
         assert!(rt.database.list_all().unwrap().is_empty());
@@ -1054,14 +1055,14 @@ mod tests {
     #[test]
     fn exec_persist_task_saves_status_to_db() {
         let (rt, mut app) = test_runtime();
-        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), "/repo".into(), None, None);
+        rt.exec_insert_task(&mut app, "Test".into(), "Desc".into(), RepoPath("/repo".into()), None, None);
         let mut task = app.tasks()[0].clone();
         task.status = models::TaskStatus::Running;
-        task.worktree = Some("/repo/.worktrees/1-test".into());
+        task.worktree = Some(models::WorktreePath("/repo/.worktrees/1-test".to_string()));
         rt.exec_persist_task(&mut app, task);
         let db_task = rt.database.get_task(app.tasks()[0].id).unwrap().unwrap();
         assert_eq!(db_task.status, models::TaskStatus::Running);
-        assert_eq!(db_task.worktree.as_deref(), Some("/repo/.worktrees/1-test"));
+        assert_eq!(db_task.worktree.as_ref().map(|w| w.as_ref()), Some("/repo/.worktrees/1-test"));
     }
 
     #[test]
@@ -1128,7 +1129,7 @@ mod tests {
         let tasks = db.list_all().unwrap();
         let mut app = App::new(tasks, Duration::from_secs(300));
 
-        rt.exec_jump_to_tmux(&mut app, "my-window".to_string());
+        rt.exec_jump_to_tmux(&mut app, models::TmuxWindow("my-window".into()));
 
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
@@ -1211,7 +1212,7 @@ mod tests {
             runner: mock,
         };
 
-        rt.exec_capture_tmux(TaskId(1), "test-window".to_string());
+        rt.exec_capture_tmux(TaskId(1), models::TmuxWindow("test-window".into()));
 
         let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
         let Message::TmuxOutput { id, output, activity_ts } = msg else {
@@ -1238,7 +1239,7 @@ mod tests {
             runner: mock,
         };
 
-        rt.exec_capture_tmux(TaskId(1), "gone-window".to_string());
+        rt.exec_capture_tmux(TaskId(1), models::TmuxWindow("gone-window".into()));
 
         let msg = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
         assert!(matches!(msg, Message::WindowGone(TaskId(1))), "Expected WindowGone, got: {msg:?}");
@@ -1261,7 +1262,7 @@ mod tests {
         let tasks = db.list_all().unwrap();
         let mut app = App::new(tasks, Duration::from_secs(300));
 
-        rt.exec_jump_to_tmux(&mut app, "nonexistent-window".to_string());
+        rt.exec_jump_to_tmux(&mut app, models::TmuxWindow("nonexistent-window".into()));
 
         assert!(app.error_popup().is_some());
     }
@@ -1271,8 +1272,8 @@ mod tests {
         let (rt, mut app) = test_runtime();
 
         // Create two tasks sharing the same worktree
-        rt.exec_insert_task(&mut app, "Task A".into(), "desc".into(), "/repo".into(), None, None);
-        rt.exec_insert_task(&mut app, "Task B".into(), "desc".into(), "/repo".into(), None, None);
+        rt.exec_insert_task(&mut app, "Task A".into(), "desc".into(), RepoPath("/repo".into()), None, None);
+        rt.exec_insert_task(&mut app, "Task B".into(), "desc".into(), RepoPath("/repo".into()), None, None);
 
         let id_a = app.tasks()[0].id;
         let id_b = app.tasks()[1].id;
@@ -1282,7 +1283,7 @@ mod tests {
         rt.database.patch_task(id_b, &db::TaskPatch::new().status(models::TaskStatus::Running).worktree(Some(worktree)).tmux_window(Some("task-1"))).unwrap();
 
         // Cleanup task A — should detach only (worktree is shared)
-        rt.exec_cleanup(id_a, "/repo".into(), worktree.into(), Some("task-1".into()));
+        rt.exec_cleanup(id_a, RepoPath("/repo".into()), models::WorktreePath(worktree.to_string()), Some(models::TmuxWindow("task-1".into())));
 
         let task_a = rt.database.get_task(id_a).unwrap().unwrap();
         assert!(task_a.worktree.is_none(), "task A should be detached");
@@ -1290,7 +1291,7 @@ mod tests {
 
         // Task B should still have the worktree
         let task_b = rt.database.get_task(id_b).unwrap().unwrap();
-        assert_eq!(task_b.worktree.as_deref(), Some(worktree));
+        assert_eq!(task_b.worktree.as_ref().map(|w| w.as_ref()), Some(worktree));
     }
 
     #[tokio::test]
@@ -1322,9 +1323,9 @@ mod tests {
 
         rt.exec_finish(
             id,
-            "/repo".into(),
+            RepoPath("/repo".into()),
             "1-test".into(),
-            "/repo/.worktrees/1-test".into(),
+            models::WorktreePath("/repo/.worktrees/1-test".to_string()),
             None,
         );
 
@@ -1371,9 +1372,9 @@ mod tests {
 
         rt.exec_finish(
             id,
-            "/repo".into(),
+            RepoPath("/repo".into()),
             "1-test".into(),
-            "/repo/.worktrees/1-test".into(),
+            models::WorktreePath("/repo/.worktrees/1-test".to_string()),
             None,
         );
 
@@ -1402,7 +1403,7 @@ mod tests {
         let task = &app.tasks()[0];
         assert_eq!(task.title, "Plan: Auth redesign");
         assert_eq!(task.epic_id, Some(epic.id));
-        assert_eq!(task.repo_path, "/repo");
+        assert_eq!(task.repo_path, RepoPath("/repo".into()));
         assert_eq!(task.status, models::TaskStatus::Backlog);
 
         // Verify description contains epic info
@@ -1438,9 +1439,9 @@ mod tests {
 
         rt.exec_finish(
             id,
-            "/repo".into(),
+            RepoPath("/repo".into()),
             "1-test".into(),
-            "/repo/.worktrees/1-test".into(),
+            models::WorktreePath("/repo/.worktrees/1-test".to_string()),
             None,
         );
 
@@ -1544,7 +1545,7 @@ mod tests {
 
         rt.exec_create_pr(
             TaskId(1),
-            "/repo".to_string(),
+            RepoPath("/repo".into()),
             "1-task".to_string(),
             "Fix bug".to_string(),
             "Description".to_string(),
@@ -1572,7 +1573,7 @@ mod tests {
 
         rt.exec_create_pr(
             TaskId(1),
-            "/repo".to_string(),
+            RepoPath("/repo".into()),
             "1-task".to_string(),
             "Fix bug".to_string(),
             "Description".to_string(),

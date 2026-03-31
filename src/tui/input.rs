@@ -219,7 +219,7 @@ impl App {
                         "No saved repo paths — create a task first".to_string(),
                     )),
                     1 => {
-                        let repo_path = self.repo_paths[0].clone();
+                        let repo_path = crate::models::RepoPath(self.repo_paths[0].clone());
                         self.update(Message::QuickDispatch { repo_path, epic_id: None })
                     }
                     _ => self.update(Message::StartQuickDispatchSelection),

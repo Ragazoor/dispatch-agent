@@ -3,7 +3,7 @@ use ratatui::{Terminal, backend::TestBackend, buffer::Buffer, style::{Color, Mod
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::models::{Epic, EpicId, TaskId, TaskStatus};
+use crate::models::{Epic, EpicId, RepoPath, TaskId, TaskStatus, TmuxWindow, WorktreePath};
 
 /// Check whether a rendered buffer contains the given text anywhere.
 fn buffer_contains(buf: &Buffer, text: &str) -> bool {
@@ -38,7 +38,7 @@ fn make_task(id: i64, status: TaskStatus) -> Task {
         id: TaskId(id),
         title: format!("Task {id}"),
         description: String::new(),
-        repo_path: String::from("/repo"),
+        repo_path: RepoPath("/repo".into()),
         status,
         worktree: None,
         tmux_window: None,
@@ -159,18 +159,18 @@ fn navigate_row_clamps() {
 #[test]
 fn tick_produces_capture_for_running_tasks_with_window() {
     let mut task4 = make_task(4, TaskStatus::Running);
-    task4.tmux_window = Some("main:task-4".to_string());
+    task4.tmux_window = Some(TmuxWindow("main:task-4".into()));
     let mut app = App::new(vec![task4], Duration::from_secs(300));
     let cmds = app.update(Message::Tick);
     // Should include CaptureTmux and RefreshFromDb (and FetchReviewPrs since data is stale)
-    assert!(cmds.iter().any(|c| matches!(c, Command::CaptureTmux { id: TaskId(4), window } if window == "main:task-4")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::CaptureTmux { id: TaskId(4), window } if window.as_ref() == "main:task-4")));
     assert!(cmds.iter().any(|c| matches!(c, Command::RefreshFromDb)));
 }
 
 #[test]
 fn tick_captures_review_task_with_live_window() {
     let mut task = make_task(5, TaskStatus::Review);
-    task.tmux_window = Some("task-5".to_string());
+    task.tmux_window = Some(TmuxWindow("task-5".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
     let cmds = app.update(Message::Tick);
@@ -185,7 +185,7 @@ fn task_created_adds_to_list() {
         id: TaskId(42),
         title: "New Task".to_string(),
         description: "desc".to_string(),
-        repo_path: "/repo".to_string(),
+        repo_path: RepoPath("/repo".into()),
         status: TaskStatus::Backlog,
         worktree: None,
         tmux_window: None,
@@ -210,8 +210,8 @@ fn task_created_adds_to_list() {
 fn delete_task_with_worktree_emits_cleanup() {
     let mut app = make_app();
     let task = app.find_task_mut(TaskId(4)).unwrap();
-    task.worktree = Some("/repo/.worktrees/4-task".to_string());
-    task.tmux_window = Some("task-4".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/4-task".into()));
+    task.tmux_window = Some(TmuxWindow("task-4".into()));
 
     let cmds = app.update(Message::DeleteTask(TaskId(4)));
     assert!(app.tasks.iter().all(|t| t.id != TaskId(4)));
@@ -236,8 +236,8 @@ fn error_sets_error_popup() {
 #[test]
 fn dispatch_from_running_is_noop() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    task.tmux_window = Some("task-4".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
+    task.tmux_window = Some(TmuxWindow("task-4".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     let cmds = app.update(Message::DispatchTask(TaskId(4)));
     assert!(cmds.is_empty());
@@ -246,8 +246,8 @@ fn dispatch_from_running_is_noop() {
 #[test]
 fn dispatch_from_review_is_noop() {
     let mut task = make_task(5, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
-    task.tmux_window = Some("task-5".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/5-task-5".into()));
+    task.tmux_window = Some(TmuxWindow("task-5".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     let cmds = app.update(Message::DispatchTask(TaskId(5)));
     assert!(cmds.is_empty());
@@ -256,8 +256,8 @@ fn dispatch_from_review_is_noop() {
 #[test]
 fn move_backward_from_running_detaches_but_keeps_worktree() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    task.tmux_window = Some("task-4".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
+    task.tmux_window = Some(TmuxWindow("task-4".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
     let cmds = app.update(Message::MoveTask {
@@ -267,13 +267,13 @@ fn move_backward_from_running_detaches_but_keeps_worktree() {
 
     // Should emit KillTmuxWindow then PersistTask (no Cleanup)
     assert_eq!(cmds.len(), 2);
-    assert!(matches!(&cmds[0], Command::KillTmuxWindow { window } if window == "task-4"));
+    assert!(matches!(&cmds[0], Command::KillTmuxWindow { window } if window.as_ref() == "task-4"));
     assert!(matches!(&cmds[1], Command::PersistTask(_)));
 
     // Worktree preserved, tmux_window cleared
     let task = app.tasks.iter().find(|t| t.id == TaskId(4)).unwrap();
     assert_eq!(task.status, TaskStatus::Backlog);
-    assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/4-task-4"));
+    assert_eq!(task.worktree.as_ref().map(|w| w.as_ref()), Some("/repo/.worktrees/4-task-4"));
     assert!(task.tmux_window.is_none());
 }
 
@@ -304,12 +304,12 @@ fn repo_path_empty_uses_saved_path() {
     // After repo path, transitions to InputTag
     assert_eq!(app.input.mode, InputMode::InputTag);
     assert!(cmds.is_empty());
-    assert_eq!(app.input.task_draft.as_ref().unwrap().repo_path, "/saved/repo");
+    assert_eq!(app.input.task_draft.as_ref().unwrap().repo_path, RepoPath("/saved/repo".into()));
 
     // Submit tag to finish
     let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/saved/repo")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == RepoPath("/saved/repo".into()))));
 }
 
 #[test]
@@ -350,7 +350,7 @@ fn repo_path_nonempty_used_as_is() {
     // Submit tag to finish
     let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/custom/path")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == RepoPath("/custom/path".into()))));
     assert_eq!(app.tasks.len(), 0); // task not added until TaskCreated
 }
 
@@ -361,14 +361,14 @@ fn task_edited_updates_fields() {
         id: TaskId(1),
         title: "New".into(),
         description: "Desc".into(),
-        repo_path: "/new".into(),
+        repo_path: RepoPath("/new".into()),
         status: TaskStatus::Running,
         plan: Some("docs/plan.md".into()),
         tag: None,
     }));
     assert_eq!(app.tasks[0].title, "New");
     assert_eq!(app.tasks[0].description, "Desc");
-    assert_eq!(app.tasks[0].repo_path, "/new");
+    assert_eq!(app.tasks[0].repo_path, RepoPath("/new".into()));
     assert_eq!(app.tasks[0].status, TaskStatus::Running);
     assert_eq!(app.tasks[0].plan.as_deref(), Some("docs/plan.md"));
 }
@@ -383,7 +383,7 @@ fn repo_paths_updated_replaces_paths() {
 #[test]
 fn move_forward_to_done_enters_confirm_mode() {
     let mut task = make_task(5, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/5-task-5".into()));
     task.tmux_window = None; // session closed, but worktree remains
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
@@ -404,8 +404,8 @@ fn move_forward_to_done_enters_confirm_mode() {
 #[test]
 fn move_forward_to_done_with_live_window_enters_confirm_mode() {
     let mut task = make_task(5, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
-    task.tmux_window = Some("task-5".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/5-task-5".into()));
+    task.tmux_window = Some(TmuxWindow("task-5".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
     let cmds = app.update(Message::MoveTask {
@@ -432,8 +432,8 @@ fn d_key_on_backlog_with_plan_dispatches() {
 fn d_key_on_running_with_window_shows_warning() {
 
     let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("task-4".to_string());
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    task.tmux_window = Some(TmuxWindow("task-4".into()));
+    task.worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.selection_mut().set_column(1); // Running column
     let cmds = app.handle_key(make_key(KeyCode::Char('d')));
@@ -445,7 +445,7 @@ fn d_key_on_running_with_window_shows_warning() {
 fn d_key_on_running_no_window_resumes() {
 
     let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
     task.tmux_window = None;
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.selection_mut().set_column(1); // Running column
@@ -546,7 +546,7 @@ fn tag_selection_flow() {
 fn tag_key_handler() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.input.mode = InputMode::InputTag;
-    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: "/r".to_string(), ..Default::default() });
+    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: RepoPath("/r".into()), ..Default::default() });
 
     let cmds = app.handle_key(make_key(KeyCode::Char('b')));
     assert_eq!(app.input.mode, InputMode::Normal);
@@ -557,7 +557,7 @@ fn tag_key_handler() {
 fn tag_key_enter_skips_tag() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.input.mode = InputMode::InputTag;
-    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: "/r".to_string(), ..Default::default() });
+    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: RepoPath("/r".into()), ..Default::default() });
 
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::Normal);
@@ -568,7 +568,7 @@ fn tag_key_enter_skips_tag() {
 fn tag_key_esc_cancels() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.input.mode = InputMode::InputTag;
-    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: "/r".to_string(), ..Default::default() });
+    app.input.task_draft = Some(TaskDraft { title: "T".to_string(), repo_path: RepoPath("/r".into()), ..Default::default() });
 
     let cmds = app.handle_key(make_key(KeyCode::Esc));
     assert_eq!(app.input.mode, InputMode::Normal);
@@ -606,11 +606,11 @@ fn d_key_on_running_no_worktree_no_window_shows_warning() {
 fn g_key_with_live_window_jumps() {
 
     let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("task-4".to_string());
+    task.tmux_window = Some(TmuxWindow("task-4".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.selection_mut().set_column(1); // Running column
     let cmds = app.handle_key(make_key(KeyCode::Char('g')));
-    assert!(matches!(&cmds[0], Command::JumpToTmux { window } if window == "task-4"));
+    assert!(matches!(&cmds[0], Command::JumpToTmux { window } if window.as_ref() == "task-4"));
 }
 
 #[test]
@@ -739,12 +739,12 @@ fn number_key_in_repo_path_selects_saved_path() {
     // Goes to InputTag, not directly to Normal
     assert_eq!(app.input.mode, InputMode::InputTag);
     assert!(cmds.is_empty());
-    assert_eq!(app.input.task_draft.as_ref().unwrap().repo_path, "/repo2");
+    assert_eq!(app.input.task_draft.as_ref().unwrap().repo_path, RepoPath("/repo2".into()));
 
     // Submit tag to finish
     let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/repo2")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == RepoPath("/repo2".into()))));
 }
 
 #[test]
@@ -946,7 +946,7 @@ fn shift_d_with_one_repo_emits_quick_dispatch() {
     app.repo_paths = vec!["/repo".to_string()];
     let cmds = app.handle_key(make_shift_key(KeyCode::Char('D')));
     assert_eq!(cmds.len(), 1);
-    assert!(matches!(&cmds[0], Command::QuickDispatch { ref draft, epic_id: None } if draft.repo_path == "/repo"));
+    assert!(matches!(&cmds[0], Command::QuickDispatch { ref draft, epic_id: None } if draft.repo_path == RepoPath("/repo".into())));
     assert_eq!(app.input.mode, InputMode::Normal);
 }
 
@@ -976,7 +976,7 @@ fn quick_dispatch_mode_number_selects_repo() {
     app.input.mode = InputMode::QuickDispatch;
     let cmds = app.handle_key(make_key(KeyCode::Char('2')));
     assert_eq!(cmds.len(), 1);
-    assert!(matches!(&cmds[0], Command::QuickDispatch { ref draft, epic_id: None } if draft.repo_path == "/repo2"));
+    assert!(matches!(&cmds[0], Command::QuickDispatch { ref draft, epic_id: None } if draft.repo_path == RepoPath("/repo2".into())));
     assert_eq!(app.input.mode, InputMode::Normal);
 }
 
@@ -1003,17 +1003,17 @@ fn quick_dispatch_mode_invalid_number_is_noop() {
 #[test]
 fn quick_dispatch_message_emits_command() {
     let mut app = App::new(vec![], Duration::from_secs(300));
-    let cmds = app.update(Message::QuickDispatch { repo_path: "/my/repo".to_string(), epic_id: None });
+    let cmds = app.update(Message::QuickDispatch { repo_path: RepoPath("/my/repo".into()), epic_id: None });
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], Command::QuickDispatch { ref draft, epic_id: None }
-        if draft.title == "Quick task" && draft.repo_path == "/my/repo"));
+        if draft.title == "Quick task" && draft.repo_path == RepoPath("/my/repo".into())));
 }
 
 #[test]
 fn shift_d_in_epic_view_quick_dispatches_subtask() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     let mut epic = make_epic(10);
-    epic.repo_path = "/epic/repo".to_string();
+    epic.repo_path = RepoPath("/epic/repo".into());
     app.epics = vec![epic];
     app.view_mode = ViewMode::Epic {
         epic_id: EpicId(10),
@@ -1024,7 +1024,7 @@ fn shift_d_in_epic_view_quick_dispatches_subtask() {
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0],
         Command::QuickDispatch { ref draft, epic_id: Some(EpicId(10)) }
-        if draft.repo_path == "/epic/repo"
+        if draft.repo_path == RepoPath("/epic/repo".into())
     ));
 }
 
@@ -1054,7 +1054,7 @@ fn stale_agent_detected_after_timeout() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     app.agents.last_output_change.insert(TaskId(4), Instant::now() - Duration::from_secs(301));
 
     let cmds = app.update(Message::Tick);
@@ -1067,7 +1067,7 @@ fn window_gone_on_running_task_marks_crashed() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
 
     let cmds = app.update(Message::WindowGone(TaskId(4)));
     assert!(app.agents.crashed_tasks.contains(&TaskId(4)));
@@ -1082,7 +1082,7 @@ fn window_gone_on_review_task_clears_window() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Review),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
 
     let cmds = app.update(Message::WindowGone(TaskId(4)));
     assert!(!app.agents.crashed_tasks.contains(&TaskId(4)));
@@ -1095,7 +1095,7 @@ fn tmux_output_change_resets_staleness_timer() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     app.agents.last_output_change.insert(TaskId(4), Instant::now() - Duration::from_secs(301));
     app.agents.last_activity.insert(TaskId(4), 1000);
 
@@ -1109,7 +1109,7 @@ fn tmux_output_same_activity_does_not_reset_timer() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     let old_instant = Instant::now() - Duration::from_secs(200);
     app.agents.last_output_change.insert(TaskId(4), old_instant);
     app.agents.last_activity.insert(TaskId(4), 1000);
@@ -1124,7 +1124,7 @@ fn activity_ts_change_with_same_output_resets_timer() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     app.agents.last_output_change.insert(TaskId(4), Instant::now() - Duration::from_secs(301));
     app.agents.last_activity.insert(TaskId(4), 1000);
     app.agents.tmux_outputs.insert(TaskId(4), "same output".to_string());
@@ -1140,7 +1140,7 @@ fn activity_ts_same_with_different_output_no_reset() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     let old_instant = Instant::now() - Duration::from_secs(200);
     app.agents.last_output_change.insert(TaskId(4), old_instant);
     app.agents.last_activity.insert(TaskId(4), 1000);
@@ -1171,14 +1171,14 @@ fn dispatched_sets_fields_and_transitions_to_running() {
     let mut app = App::new(vec![task], Duration::from_secs(300));
     let cmds = app.update(Message::Dispatched {
         id: TaskId(3),
-        worktree: "/wt".to_string(),
-        tmux_window: "win".to_string(),
+        worktree: WorktreePath("/wt".into()),
+        tmux_window: TmuxWindow("win".into()),
         switch_focus: false,
     });
     let task = app.tasks.iter().find(|t| t.id == TaskId(3)).unwrap();
     assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.worktree.as_deref(), Some("/wt"));
-    assert_eq!(task.tmux_window.as_deref(), Some("win"));
+    assert_eq!(task.worktree.as_ref().map(|w| w.as_ref()), Some("/wt"));
+    assert_eq!(task.tmux_window.as_ref().map(|w| w.as_ref()), Some("win"));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], Command::PersistTask(_)));
 }
@@ -1190,13 +1190,13 @@ fn dispatched_with_switch_focus_emits_jump() {
     let mut app = App::new(vec![task], Duration::from_secs(300));
     let cmds = app.update(Message::Dispatched {
         id: TaskId(3),
-        worktree: "/wt".to_string(),
-        tmux_window: "win".to_string(),
+        worktree: WorktreePath("/wt".into()),
+        tmux_window: TmuxWindow("win".into()),
         switch_focus: true,
     });
     assert_eq!(cmds.len(), 2);
     assert!(matches!(&cmds[0], Command::PersistTask(_)));
-    assert!(matches!(&cmds[1], Command::JumpToTmux { window } if window == "win"));
+    assert!(matches!(&cmds[1], Command::JumpToTmux { window } if window.as_ref() == "win"));
 }
 
 #[test]
@@ -1204,8 +1204,8 @@ fn dispatched_unknown_id_is_noop() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
     let cmds = app.update(Message::Dispatched {
         id: TaskId(999),
-        worktree: "/wt".to_string(),
-        tmux_window: "win".to_string(),
+        worktree: WorktreePath("/wt".into()),
+        tmux_window: TmuxWindow("win".into()),
         switch_focus: false,
     });
     assert!(cmds.is_empty());
@@ -1215,13 +1215,13 @@ fn dispatched_unknown_id_is_noop() {
 #[test]
 fn resumed_sets_tmux_window() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/wt".to_string());
+    task.worktree = Some(WorktreePath("/wt".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     let cmds = app.update(Message::Resumed {
         id: TaskId(4),
-        tmux_window: "win-4".to_string(),
+        tmux_window: TmuxWindow("win-4".into()),
     });
-    assert_eq!(app.tasks[0].tmux_window.as_deref(), Some("win-4"));
+    assert_eq!(app.tasks[0].tmux_window.as_ref().map(|w| w.as_ref()), Some("win-4"));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], Command::PersistTask(_)));
 }
@@ -1231,7 +1231,7 @@ fn resumed_unknown_id_is_noop() {
     let mut app = App::new(vec![make_task(4, TaskStatus::Running)], Duration::from_secs(300));
     let cmds = app.update(Message::Resumed {
         id: TaskId(999),
-        tmux_window: "win".to_string(),
+        tmux_window: TmuxWindow("win".into()),
     });
     assert!(cmds.is_empty());
 }
@@ -1239,18 +1239,18 @@ fn resumed_unknown_id_is_noop() {
 #[test]
 fn resumed_sets_status_to_running() {
     let mut task = make_task(4, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
     task.tmux_window = None;
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
     let cmds = app.update(Message::Resumed {
         id: TaskId(4),
-        tmux_window: "task-4".to_string(),
+        tmux_window: TmuxWindow("task-4".into()),
     });
 
     let task = app.tasks.iter().find(|t| t.id == TaskId(4)).unwrap();
     assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.tmux_window.as_deref(), Some("task-4"));
+    assert_eq!(task.tmux_window.as_ref().map(|w| w.as_ref()), Some("task-4"));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0], Command::PersistTask(t) if t.status == TaskStatus::Running));
 }
@@ -1300,8 +1300,8 @@ fn refresh_tasks_empty_clamps_all_rows_to_zero() {
 #[test]
 fn d_key_on_review_with_window_shows_warning() {
     let mut task = make_task(5, TaskStatus::Review);
-    task.tmux_window = Some("task-5".to_string());
-    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+    task.tmux_window = Some(TmuxWindow("task-5".into()));
+    task.worktree = Some(WorktreePath("/repo/.worktrees/5-task-5".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.selection_mut().set_column(2); // Review column
     let cmds = app.handle_key(make_key(KeyCode::Char('d')));
@@ -1312,7 +1312,7 @@ fn d_key_on_review_with_window_shows_warning() {
 #[test]
 fn d_key_on_review_no_window_with_worktree_resumes() {
     let mut task = make_task(5, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/5-task-5".into()));
     task.tmux_window = None;
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.selection_mut().set_column(2); // Review column
@@ -1412,7 +1412,7 @@ fn action_hints_backlog_task_with_plan() {
 #[test]
 fn action_hints_running_with_window() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("win-4".to_string());
+    task.tmux_window = Some(TmuxWindow("win-4".into()));
     let hints = ui::action_hints(Some(&task), Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints.iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -1425,7 +1425,7 @@ fn action_hints_running_with_window() {
 #[test]
 fn action_hints_running_with_worktree_no_window() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/tmp/wt".to_string());
+    task.worktree = Some(WorktreePath("/tmp/wt".into()));
     let hints = ui::action_hints(Some(&task), Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints.iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -1453,7 +1453,7 @@ fn action_hints_running_no_worktree_no_window() {
 #[test]
 fn action_hints_review_with_window() {
     let mut task = make_task(6, TaskStatus::Review);
-    task.tmux_window = Some("win-6".to_string());
+    task.tmux_window = Some(TmuxWindow("win-6".into()));
     let hints = ui::action_hints(Some(&task), Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints.iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -1544,7 +1544,7 @@ fn kill_and_retry_enters_confirm_mode() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     app.agents.stale_tasks.insert(TaskId(4));
 
     app.update(Message::KillAndRetry(TaskId(4)));
@@ -1556,8 +1556,8 @@ fn retry_resume_emits_kill_and_resume() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
+    app.tasks[0].worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
     app.agents.stale_tasks.insert(TaskId(4));
     app.agents.crashed_tasks.insert(TaskId(4));
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
@@ -1576,8 +1576,8 @@ fn retry_fresh_emits_cleanup_and_dispatch() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
+    app.tasks[0].worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
     app.agents.stale_tasks.insert(TaskId(4));
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
 
@@ -1595,7 +1595,7 @@ fn d_key_on_stale_running_task_enters_retry_mode() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     app.agents.stale_tasks.insert(TaskId(4));
     // Navigate to Running column (index 1)
     app.selection_mut().set_column(1);
@@ -1610,7 +1610,7 @@ fn d_key_on_crashed_running_task_enters_retry_mode() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
     app.agents.crashed_tasks.insert(TaskId(4));
     app.selection_mut().set_column(1);
     app.selection_mut().set_row(1, 0);
@@ -1624,8 +1624,8 @@ fn confirm_retry_r_key_emits_resume() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
+    app.tasks[0].worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
 
     let cmds = app.handle_key(make_key(KeyCode::Char('r')));
@@ -1638,8 +1638,8 @@ fn confirm_retry_f_key_emits_fresh() {
     let mut app = App::new(vec![
         make_task(4, TaskStatus::Running),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-4".to_string());
-    app.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-4".into()));
+    app.tasks[0].worktree = Some(WorktreePath("/repo/.worktrees/4-task-4".into()));
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
 
     let cmds = app.handle_key(make_key(KeyCode::Char('f')));
@@ -1735,7 +1735,7 @@ fn submit_repo_path_creates_task() {
     // Submit tag to finish
     let cmds = app.update(Message::SubmitTag(None));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == "/my/repo")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertTask { ref draft, .. } if draft.repo_path == RepoPath("/my/repo".into()))));
 }
 
 #[test]
@@ -1845,7 +1845,7 @@ fn select_quick_dispatch_repo_dispatches() {
     app.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string()];
     let cmds = app.update(Message::SelectQuickDispatchRepo(1));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::QuickDispatch { ref draft, .. } if draft.repo_path == "/repo2")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::QuickDispatch { ref draft, .. } if draft.repo_path == RepoPath("/repo2".into()))));
 }
 
 #[test]
@@ -1884,8 +1884,8 @@ fn archive_task_sets_status_and_emits_persist() {
 #[test]
 fn archive_task_with_worktree_emits_cleanup() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.worktree = Some("/wt/1-test".to_string());
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.worktree = Some(WorktreePath("/wt/1-test".into()));
+    task.tmux_window = Some(TmuxWindow("dev:1-test".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
     let cmds = app.update(Message::ArchiveTask(TaskId(1)));
@@ -1911,7 +1911,7 @@ fn archive_task_without_worktree_no_cleanup() {
 #[test]
 fn archive_clears_agent_tracking() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(TmuxWindow("dev:1-test".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.agents.stale_tasks.insert(TaskId(1));
     app.agents.crashed_tasks.insert(TaskId(1));
@@ -2017,8 +2017,8 @@ fn archived_tasks_not_in_kanban_columns() {
 fn full_archive_flow() {
     // Create a running task with worktree
     let mut task = make_task(1, TaskStatus::Running);
-    task.worktree = Some("/wt/1-test".to_string());
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.worktree = Some(WorktreePath("/wt/1-test".into()));
+    task.tmux_window = Some(TmuxWindow("dev:1-test".into()));
     let mut app = App::new(vec![task, make_task(2, TaskStatus::Backlog)], Duration::from_secs(300));
 
     // Navigate to Running column (column 1)
@@ -2286,7 +2286,7 @@ fn render_status_bar_shows_keybindings() {
 #[test]
 fn render_crashed_task_shows_label() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
+    task.tmux_window = Some(TmuxWindow("win-1".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.agents.crashed_tasks.insert(TaskId(1));
     let buf = render_to_buffer(&mut app, 120, 20);
@@ -2296,7 +2296,7 @@ fn render_crashed_task_shows_label() {
 #[test]
 fn render_stale_task_shows_label() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
+    task.tmux_window = Some(TmuxWindow("win-1".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     app.agents.stale_tasks.insert(TaskId(1));
     let buf = render_to_buffer(&mut app, 120, 20);
@@ -2350,7 +2350,7 @@ fn render_v2_backlog_task_shows_status_icon() {
 #[test]
 fn render_v2_running_task_shows_status_icon() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
+    task.tmux_window = Some(TmuxWindow("win-1".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "\u{25c9}"), "running task should show \u{25c9} icon");
@@ -2637,7 +2637,7 @@ fn make_epic(id: i64) -> Epic {
         id: EpicId(id),
         title: format!("Epic {id}"),
         description: String::new(),
-        repo_path: "/repo".to_string(),
+        repo_path: RepoPath("/repo".into()),
         done: false,
         plan: None,
         sort_order: None,
@@ -3381,7 +3381,7 @@ fn epic_repo_path_enter_with_text_completes() {
     app.input.buffer = "/my/repo".to_string();
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::InsertEpic(ref d) if d.repo_path == "/my/repo")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertEpic(ref d) if d.repo_path == RepoPath("/my/repo".into()))));
 }
 
 #[test]
@@ -3393,7 +3393,7 @@ fn epic_repo_path_enter_empty_uses_saved_path() {
     app.input.buffer.clear();
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::InsertEpic(ref d) if d.repo_path == "/saved")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertEpic(ref d) if d.repo_path == RepoPath("/saved".into()))));
 }
 
 #[test]
@@ -3446,7 +3446,7 @@ fn epic_repo_path_digit_quick_selects() {
     app.input.buffer.clear();
     let cmds = app.handle_key(make_key(KeyCode::Char('2')));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds.iter().any(|c| matches!(c, Command::InsertEpic(ref d) if d.repo_path == "/second")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::InsertEpic(ref d) if d.repo_path == RepoPath("/second".into()))));
 }
 
 #[test]
@@ -3600,7 +3600,7 @@ fn g_key_on_epic_jumps_to_review_subtask() {
     // Subtask in Review with a tmux window
     let mut subtask = make_task(1, TaskStatus::Review);
     subtask.epic_id = Some(EpicId(10));
-    subtask.tmux_window = Some("win-1".to_string());
+    subtask.tmux_window = Some(TmuxWindow("win-1".into()));
     app.tasks = vec![subtask];
 
     // Epic is in Review column (due to subtask in Review)
@@ -3609,7 +3609,7 @@ fn g_key_on_epic_jumps_to_review_subtask() {
     app.selection_mut().set_row(2, 0);
 
     let cmds = app.handle_key(make_key(KeyCode::Char('g')));
-    assert!(matches!(&cmds[0], Command::JumpToTmux { window } if window == "win-1"));
+    assert!(matches!(&cmds[0], Command::JumpToTmux { window } if window.as_ref() == "win-1"));
 }
 
 #[test]
@@ -3877,8 +3877,8 @@ fn help_overlay_hidden_in_normal_mode() {
 fn finish_complete_moves_to_done() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
+        t.tmux_window = Some(TmuxWindow("task-1".into()));
         t
     }], Duration::from_secs(300));
 
@@ -3895,7 +3895,7 @@ fn finish_complete_moves_to_done() {
 fn finish_failed_with_conflict_sets_flag() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
         t
     }], Duration::from_secs(300));
 
@@ -3912,7 +3912,7 @@ fn finish_failed_with_conflict_sets_flag() {
 fn finish_failed_without_conflict_does_not_set_flag() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
         t
     }], Duration::from_secs(300));
 
@@ -3928,7 +3928,7 @@ fn finish_failed_without_conflict_does_not_set_flag() {
 fn conflict_flag_clears_on_dispatch() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
         t
     }], Duration::from_secs(300));
 
@@ -3939,7 +3939,7 @@ fn conflict_flag_clears_on_dispatch() {
     });
     assert!(app.rebase_conflict_tasks().contains(&TaskId(1)));
 
-    app.update(Message::Resumed { id: TaskId(1), tmux_window: "task-1".to_string() });
+    app.update(Message::Resumed { id: TaskId(1), tmux_window: TmuxWindow("task-1".into()) });
     assert!(!app.rebase_conflict_tasks().contains(&TaskId(1)));
 }
 
@@ -3947,7 +3947,7 @@ fn conflict_flag_clears_on_dispatch() {
 fn conflict_flag_clears_on_move_backward() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
         t
     }], Duration::from_secs(300));
 
@@ -3991,7 +3991,7 @@ fn truncate_title_multibyte_chars() {
 #[test]
 fn confirm_delete_start_running_with_worktree_shows_warning() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/wt/4-test".to_string());
+    task.worktree = Some(WorktreePath("/wt/4-test".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     // Task is in Running column (column 1), navigate there
     app.selection_mut().set_column(1);
@@ -4087,8 +4087,8 @@ fn move_backlog_to_running_no_confirmation() {
 fn confirm_done_kills_tmux_but_preserves_worktree() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-test".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-test".into()));
+        t.tmux_window = Some(TmuxWindow("task-1".into()));
         t
     }], Duration::from_secs(300));
     app.selection_mut().set_column(2);
@@ -4644,8 +4644,8 @@ fn pr_failed_shows_error() {
 #[test]
 fn pr_merged_moves_to_done_and_detaches() {
     let mut task = make_task(1, TaskStatus::Review);
-    task.tmux_window = Some("task-1".to_string());
-    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.tmux_window = Some(TmuxWindow("task-1".into()));
+    task.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
     task.pr_url = Some("https://github.com/org/repo/pull/42".to_string());
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
@@ -4663,7 +4663,7 @@ fn pr_merged_moves_to_done_and_detaches() {
 #[test]
 fn pr_merged_preserves_worktree() {
     let mut task = make_task(1, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
     task.pr_url = Some("https://github.com/org/repo/pull/42".to_string());
     let mut app = App::new(vec![task], Duration::from_secs(300));
 
@@ -4704,7 +4704,7 @@ fn card_shows_merged_pr_badge() {
 #[test]
 fn status_bar_shows_wrap_up_hint_for_review_task() {
     let mut task = make_task(1, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
     let mut app = App::new(vec![task], Duration::from_secs(300));
     // Navigate to Review column (index 2)
     for _ in 0..2 {
@@ -4766,9 +4766,9 @@ fn repo_filter_empty_shows_all_tasks() {
 fn repo_filter_hides_non_matching_tasks() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     let mut t1 = make_task(1, TaskStatus::Backlog);
-    t1.repo_path = "/repo-a".to_string();
+    t1.repo_path = RepoPath("/repo-a".into());
     let mut t2 = make_task(2, TaskStatus::Backlog);
-    t2.repo_path = "/repo-b".to_string();
+    t2.repo_path = RepoPath("/repo-b".into());
     app.tasks = vec![t1, t2];
     app.repo_filter.insert("/repo-a".to_string());
 
@@ -4784,11 +4784,11 @@ fn repo_filter_applies_to_epics_in_column_items() {
     app.epics = vec![
         Epic {
             id: EpicId(1), title: "A".into(), description: "".into(),
-            repo_path: "/repo-a".into(), done: false, plan: None, sort_order: None, created_at: now, updated_at: now,
+            repo_path: RepoPath("/repo-a".into()), done: false, plan: None, sort_order: None, created_at: now, updated_at: now,
         },
         Epic {
             id: EpicId(2), title: "B".into(), description: "".into(),
-            repo_path: "/repo-b".into(), done: false, plan: None, sort_order: None, created_at: now, updated_at: now,
+            repo_path: RepoPath("/repo-b".into()), done: false, plan: None, sort_order: None, created_at: now, updated_at: now,
         },
     ];
     app.repo_filter.insert("/repo-a".to_string());
@@ -4801,9 +4801,9 @@ fn repo_filter_applies_to_epics_in_column_items() {
 fn repo_filter_applies_to_archived_tasks() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     let mut t1 = make_task(1, TaskStatus::Archived);
-    t1.repo_path = "/repo-a".to_string();
+    t1.repo_path = RepoPath("/repo-a".into());
     let mut t2 = make_task(2, TaskStatus::Archived);
-    t2.repo_path = "/repo-b".to_string();
+    t2.repo_path = RepoPath("/repo-b".into());
     app.tasks = vec![t1, t2];
     app.repo_filter.insert("/repo-a".to_string());
 
@@ -4889,7 +4889,7 @@ fn summary_row_shows_filter_indicator() {
 fn w_key_on_review_task_with_worktree_enters_wrap_up() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
         t
     }], Duration::from_secs(300));
     // Navigate to Review column (column index 2)
@@ -4913,8 +4913,8 @@ fn w_key_on_non_review_task_is_noop() {
 fn wrap_up_r_emits_finish_command() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
+        t.tmux_window = Some(TmuxWindow("task-1".into()));
         t
     }], Duration::from_secs(300));
     app.update(Message::NavigateColumn(2));
@@ -4929,8 +4929,8 @@ fn wrap_up_r_emits_finish_command() {
 fn wrap_up_p_emits_create_pr_command() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
+        t.tmux_window = Some(TmuxWindow("task-1".into()));
         t
     }], Duration::from_secs(300));
     app.update(Message::NavigateColumn(2));
@@ -4945,7 +4945,7 @@ fn wrap_up_p_emits_create_pr_command() {
 fn wrap_up_esc_cancels() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
         t
     }], Duration::from_secs(300));
     app.update(Message::NavigateColumn(2));
@@ -4959,8 +4959,8 @@ fn wrap_up_esc_cancels() {
 fn wrap_up_rebase_clears_conflict_flag() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
-        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task-1".into()));
+        t.tmux_window = Some(TmuxWindow("task-1".into()));
         t
     }], Duration::from_secs(300));
 
@@ -5288,6 +5288,7 @@ fn review_board_renders_pr_titles() {
 fn review_board_renders_empty_state() {
     let mut app = make_app();
     app.update(Message::SwitchToReviewBoard);
+    app.update(Message::ReviewPrsLoaded(vec![]));
 
     let buf = render_to_buffer(&mut app, 120, 30);
     assert!(buffer_contains(&buf, "No PRs awaiting your review"));
@@ -5539,6 +5540,138 @@ fn confirm_delete_preset_out_of_range_ignored() {
     assert_eq!(app.filter_presets.len(), 1);
 }
 
+// ---------------------------------------------------------------------------
+// Rendering tests — detail panel
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_detail_shows_task_fields() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Backlog);
+        t.title = "My Important Task".into();
+        t.description = "A detailed description".into();
+        t
+    }], Duration::from_secs(300));
+    app.update(Message::ToggleDetail);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "My Important Task"));
+    assert!(buffer_contains(&buf, "A detailed description"));
+}
+
+#[test]
+fn render_detail_shows_plan_indicator() {
+    // When a task has a plan, the task card shows the ▸ indicator.
+    // The detail panel shows title and description.
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Backlog);
+        t.title = "Planned Task".into();
+        t.plan = Some("docs/plans/task-1.md".to_string());
+        t
+    }], Duration::from_secs(300));
+    app.update(Message::ToggleDetail);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    // Detail panel shows the task title
+    assert!(buffer_contains(&buf, "Planned Task"));
+    // Plan indicator ▸ should appear on the task card
+    assert!(buffer_contains(&buf, "\u{25b8}") || buffer_contains(&buf, "docs/plans"));
+}
+
+#[test]
+fn render_detail_shows_usage() {
+    use crate::models::TaskUsage;
+    let mut app = App::new(vec![make_task(1, TaskStatus::Running)], Duration::from_secs(300));
+    // Navigate to Running column (column 1) so task 1 is selected
+    app.update(Message::NavigateColumn(1));
+    app.update(Message::RefreshUsage(vec![
+        TaskUsage {
+            task_id: TaskId(1),
+            cost_usd: 1.23,
+            input_tokens: 50000,
+            output_tokens: 10000,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            updated_at: chrono::Utc::now(),
+        },
+    ]));
+    app.update(Message::ToggleDetail);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "$1.23") || buffer_contains(&buf, "1.23"));
+}
+
+#[test]
+fn render_detail_for_epic() {
+    let mut app = make_app();
+    let now = chrono::Utc::now();
+    app.update(Message::RefreshEpics(vec![Epic {
+        id: EpicId(1),
+        title: "My Epic".to_string(),
+        description: "Epic description".to_string(),
+        repo_path: RepoPath("/repo".into()),
+        done: false,
+        plan: None,
+        sort_order: None,
+        created_at: now,
+        updated_at: now,
+    }]));
+    app.update(Message::ToggleDetail);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buf.area().width > 0);
+}
+
+// ---------------------------------------------------------------------------
+// Rendering tests — epic banner
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_epic_banner_shows_epic_title() {
+    let now = chrono::Utc::now();
+    let mut app = make_app();
+    app.update(Message::RefreshEpics(vec![Epic {
+        id: EpicId(1),
+        title: "My Test Epic".to_string(),
+        description: String::new(),
+        repo_path: RepoPath("/repo".into()),
+        done: false,
+        plan: None,
+        sort_order: None,
+        created_at: now,
+        updated_at: now,
+    }]));
+    app.update(Message::EnterEpic(EpicId(1)));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "My Test Epic"));
+}
+
+// ---------------------------------------------------------------------------
+// Rendering tests — confirmation dialogs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_wrap_up_confirmation_shows_options() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.worktree = Some(WorktreePath("/repo/.worktrees/1-task".into()));
+        t
+    }], Duration::from_secs(300));
+    app.update(Message::StartWrapUp(TaskId(1)));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "rebase") || buffer_contains(&buf, "Rebase"));
+    assert!(buffer_contains(&buf, "PR") || buffer_contains(&buf, "pr"));
+}
+
+#[test]
+fn render_confirm_done_shows_task_title() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Review);
+        t.title = "Finish this task".to_string();
+        t
+    }], Duration::from_secs(300));
+    app.update(Message::NavigateColumn(2));
+    app.update(Message::MoveTask { id: TaskId(1), direction: MoveDirection::Forward });
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "Finish this") || buffer_contains(&buf, "Done"));
+}
+
 // --- Overlay rendering tests ---
 
 #[test]
@@ -5583,7 +5716,7 @@ fn repo_filter_overlay_shows_delete_help() {
 fn make_review_subtask(id: i64, epic_id: i64, sort_order: i64) -> Task {
     let mut task = make_task(id, TaskStatus::Review);
     task.epic_id = Some(EpicId(epic_id));
-    task.worktree = Some(format!("/repo/.worktrees/{id}-task-{id}"));
+    task.worktree = Some(WorktreePath(format!("/repo/.worktrees/{id}-task-{id}")));
     task.sort_order = Some(sort_order);
     task
 }
@@ -5891,8 +6024,8 @@ fn handle_key_confirm_archive_cancel() {
 fn handle_key_confirm_retry_resume() {
     let mut app = make_app();
     let mut task = make_task(10, TaskStatus::Running);
-    task.worktree = Some("/repo/.worktrees/10-test".to_string());
-    task.tmux_window = Some("main:10-test".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/10-test".into()));
+    task.tmux_window = Some(TmuxWindow("main:10-test".into()));
     app.tasks.push(task);
     app.input.mode = InputMode::ConfirmRetry(TaskId(10));
 
@@ -5907,8 +6040,8 @@ fn handle_key_confirm_retry_resume() {
 fn handle_key_confirm_retry_fresh() {
     let mut app = make_app();
     let mut task = make_task(10, TaskStatus::Running);
-    task.worktree = Some("/repo/.worktrees/10-test".to_string());
-    task.tmux_window = Some("main:10-test".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/10-test".into()));
+    task.tmux_window = Some(TmuxWindow("main:10-test".into()));
     app.tasks.push(task);
     app.input.mode = InputMode::ConfirmRetry(TaskId(10));
 
@@ -5972,8 +6105,8 @@ fn handle_key_confirm_done_cancel() {
 fn handle_key_confirm_wrap_up_rebase() {
     let mut app = make_app();
     let mut task = make_task(10, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/10-test".to_string());
-    task.tmux_window = Some("main:10-test".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/10-test".into()));
+    task.tmux_window = Some(TmuxWindow("main:10-test".into()));
     app.tasks.push(task);
     app.input.mode = InputMode::ConfirmWrapUp(TaskId(10));
 
@@ -5986,8 +6119,8 @@ fn handle_key_confirm_wrap_up_rebase() {
 fn handle_key_confirm_wrap_up_pr() {
     let mut app = make_app();
     let mut task = make_task(10, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/10-test".to_string());
-    task.tmux_window = Some("main:10-test".to_string());
+    task.worktree = Some(WorktreePath("/repo/.worktrees/10-test".into()));
+    task.tmux_window = Some(TmuxWindow("main:10-test".into()));
     app.tasks.push(task);
     app.input.mode = InputMode::ConfirmWrapUp(TaskId(10));
 
@@ -6012,7 +6145,7 @@ fn handle_key_tag_selects_bug() {
     app.input.task_draft = Some(TaskDraft {
         title: "Test".to_string(),
         description: "desc".to_string(),
-        repo_path: "/repo".to_string(),
+        repo_path: RepoPath("/repo".into()),
         tag: None,
     });
 
@@ -6029,7 +6162,7 @@ fn handle_key_tag_skip_with_enter() {
     app.input.task_draft = Some(TaskDraft {
         title: "Test".to_string(),
         description: "desc".to_string(),
-        repo_path: "/repo".to_string(),
+        repo_path: RepoPath("/repo".into()),
         tag: None,
     });
 
@@ -6091,7 +6224,7 @@ fn handle_key_normal_dispatch_running_task_with_window_shows_info() {
     app.selection_mut().set_row(1, 0);
     // Give running task a window
     let task_3 = app.tasks.iter_mut().find(|t| t.id == TaskId(3)).unwrap();
-    task_3.tmux_window = Some("main:task-3".to_string());
+    task_3.tmux_window = Some(TmuxWindow("main:task-3".into()));
 
     let cmds = app.handle_key(make_key(KeyCode::Char('d')));
     // Should just show status info, no dispatch
@@ -6123,13 +6256,13 @@ fn handle_key_normal_jump_to_tmux() {
     let mut app = make_app();
     // Give task 3 (running) a tmux window
     let task = app.tasks.iter_mut().find(|t| t.id == TaskId(3)).unwrap();
-    task.tmux_window = Some("main:task-3".to_string());
+    task.tmux_window = Some(TmuxWindow("main:task-3".into()));
     // Select running column
     app.selection_mut().set_column(1);
     app.selection_mut().set_row(1, 0);
 
     let cmds = app.handle_key(make_key(KeyCode::Char('g')));
-    assert!(cmds.iter().any(|c| matches!(c, Command::JumpToTmux { window } if window == "main:task-3")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::JumpToTmux { window } if window.as_ref() == "main:task-3")));
 }
 
 #[test]
@@ -6457,7 +6590,7 @@ fn refresh_epics_prunes_stale_epic_selections() {
 #[test]
 fn detach_tmux_single_sets_confirm_mode() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Review)], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-1".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-1".into()));
 
     app.update(Message::DetachTmux(TaskId(1)));
 
@@ -6471,7 +6604,7 @@ fn detach_tmux_single_sets_confirm_mode() {
 #[test]
 fn confirm_detach_tmux_clears_window() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Review)], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-1".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-1".into()));
     app.agents.stale_tasks.insert(TaskId(1));
     app.agents.tmux_outputs.insert(TaskId(1), "some output".to_string());
 
@@ -6483,7 +6616,7 @@ fn confirm_detach_tmux_clears_window() {
     assert!(!app.agents.stale_tasks.contains(&TaskId(1)), "stale tracking should be cleared");
     assert!(!app.agents.tmux_outputs.contains_key(&TaskId(1)), "tmux output should be cleared");
     assert!(
-        cmds.iter().any(|c| matches!(c, Command::KillTmuxWindow { window } if window == "task-1")),
+        cmds.iter().any(|c| matches!(c, Command::KillTmuxWindow { window } if window.as_ref() == "task-1")),
         "should emit KillTmuxWindow for task-1"
     );
     assert!(
@@ -6509,8 +6642,8 @@ fn batch_detach_tmux() {
         make_task(1, TaskStatus::Review),
         make_task(2, TaskStatus::Review),
     ], Duration::from_secs(300));
-    app.tasks[0].tmux_window = Some("task-1".to_string());
-    app.tasks[1].tmux_window = Some("task-2".to_string());
+    app.tasks[0].tmux_window = Some(TmuxWindow("task-1".into()));
+    app.tasks[1].tmux_window = Some(TmuxWindow("task-2".into()));
 
     app.update(Message::BatchDetachTmux(vec![TaskId(1), TaskId(2)]));
     let cmds = app.update(Message::ConfirmDetachTmux);
@@ -6527,4 +6660,182 @@ fn batch_detach_tmux() {
         .filter(|c| matches!(c, Command::PersistTask(_)))
         .count();
     assert_eq!(persist_count, 2, "should persist 2 tasks");
+}
+// ---------------------------------------------------------------------------
+// Rendering tests: review board and repo filter overlay
+// ---------------------------------------------------------------------------
+
+fn make_review_pr_titled(number: i64, title: &str, decision: ReviewDecision) -> crate::models::ReviewPr {
+    let now = chrono::Utc::now();
+    crate::models::ReviewPr {
+        number,
+        title: title.to_string(),
+        author: "author".to_string(),
+        repo: "org/repo".to_string(),
+        url: format!("https://github.com/org/repo/pull/{number}"),
+        is_draft: false,
+        created_at: now,
+        updated_at: now,
+        additions: 10,
+        deletions: 5,
+        review_decision: decision,
+        labels: vec![],
+    }
+}
+
+#[test]
+fn render_review_board_shows_column_headers() {
+    let mut app = make_app();
+    app.update(Message::SwitchToReviewBoard);
+    app.update(Message::ReviewPrsLoaded(vec![]));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "Needs Review"));
+    assert!(buffer_contains(&buf, "Changes Requested"));
+    assert!(buffer_contains(&buf, "Approved"));
+}
+
+#[test]
+fn render_review_board_shows_pr_titles() {
+    let mut app = make_app();
+    app.update(Message::SwitchToReviewBoard);
+    app.update(Message::ReviewPrsLoaded(vec![
+        make_review_pr_titled(1, "Fix login bug", ReviewDecision::ReviewRequired),
+        make_review_pr_titled(2, "Add caching", ReviewDecision::Approved),
+    ]));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "Fix login bug"));
+    assert!(buffer_contains(&buf, "Add caching"));
+}
+
+#[test]
+fn render_review_board_loading_indicator() {
+    let mut app = make_app();
+    app.update(Message::SwitchToReviewBoard);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "Loading..."));
+}
+
+#[test]
+fn render_review_board_empty_state() {
+    let mut app = make_app();
+    app.update(Message::SwitchToReviewBoard);
+    app.update(Message::ReviewPrsLoaded(vec![]));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "No PRs awaiting your review"));
+}
+
+#[test]
+fn render_repo_filter_shows_paths() {
+    let mut app = make_app();
+    app.update(Message::RepoPathsUpdated(vec![
+        "/home/user/project-a".to_string(),
+        "/home/user/project-b".to_string(),
+    ]));
+    app.update(Message::StartRepoFilter);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "project-a"));
+    assert!(buffer_contains(&buf, "project-b"));
+}
+
+#[test]
+fn render_repo_filter_shows_presets() {
+    let mut app = make_app();
+    app.update(Message::RepoPathsUpdated(vec!["/repo".to_string()]));
+    app.update(Message::FilterPresetsLoaded(vec![
+        ("my-preset".to_string(), std::collections::HashSet::from(["/repo".to_string()])),
+    ]));
+    app.update(Message::StartRepoFilter);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "my-preset"));
+}
+
+// ---------------------------------------------------------------------------
+// Rendering tests — input forms and edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn render_input_title_shows_prompt() {
+    let mut app = make_app();
+    app.update(Message::StartNewTask);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "title") || buffer_contains(&buf, "Title"));
+}
+
+#[test]
+fn render_input_description_shows_draft_title() {
+    let mut app = make_app();
+    app.update(Message::StartNewTask);
+    app.update(Message::SubmitTitle("Hi".to_string()));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "description") || buffer_contains(&buf, "Description"));
+}
+
+#[test]
+fn render_tag_selection_shows_options() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.update(Message::RepoPathsUpdated(vec!["/repo".to_string()]));
+    app.update(Message::StartNewTask);
+    app.update(Message::SubmitTitle("Test".to_string()));
+    app.update(Message::SubmitDescription("Desc".to_string()));
+    app.update(Message::SubmitRepoPath("/repo".to_string()));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "bug") || buffer_contains(&buf, "feature") || buffer_contains(&buf, "Tag"));
+}
+
+#[test]
+fn render_empty_board_no_panic() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "backlog"));
+}
+
+#[test]
+fn render_narrow_terminal_no_panic() {
+    let mut app = make_app();
+    let _ = render_to_buffer(&mut app, 20, 5);
+}
+
+#[test]
+fn render_long_task_title_truncated() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Backlog);
+        t.title = "A".repeat(200);
+        t
+    }], Duration::from_secs(300));
+    let buf = render_to_buffer(&mut app, 80, 20);
+    assert!(buffer_contains(&buf, "AAAA"));
+}
+
+#[test]
+fn render_epic_wrap_up_shows_subtask_count() {
+    let now = chrono::Utc::now();
+    let mut app = App::new(vec![
+        {
+            let mut t = make_task(1, TaskStatus::Review);
+            t.epic_id = Some(EpicId(1));
+            t.worktree = Some(WorktreePath("/repo/.worktrees/1-task".into()));
+            t
+        },
+        {
+            let mut t = make_task(2, TaskStatus::Review);
+            t.epic_id = Some(EpicId(1));
+            t.worktree = Some(WorktreePath("/repo/.worktrees/2-task".into()));
+            t
+        },
+    ], Duration::from_secs(300));
+    app.update(Message::RefreshEpics(vec![Epic {
+        id: EpicId(1),
+        title: "Test Epic".to_string(),
+        description: String::new(),
+        repo_path: RepoPath("/repo".into()),
+        done: false,
+        plan: None,
+        sort_order: None,
+        created_at: now,
+        updated_at: now,
+    }]));
+    app.update(Message::EnterEpic(EpicId(1)));
+    app.update(Message::StartEpicWrapUp(EpicId(1)));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(buffer_contains(&buf, "2") && (buffer_contains(&buf, "review") || buffer_contains(&buf, "task")));
 }

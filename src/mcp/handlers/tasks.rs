@@ -418,7 +418,7 @@ pub(super) fn handle_claim_task(state: &McpState, id: Option<Value>, args: Value
         .map(|idx| &parsed.worktree[..idx])
         .unwrap_or(&parsed.worktree);
 
-    if repo_from_worktree != task.repo_path {
+    if repo_from_worktree != task.repo_path.as_ref() {
         return JsonRpcResponse::err(
             id,
             -32602,
@@ -536,7 +536,7 @@ pub(super) async fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Va
             let rebase_result = match tokio::task::spawn_blocking(move || {
                 tracing::info!(task_id = task_id.0, %branch, "MCP wrap_up rebase starting");
                 dispatch::finish_task(
-                    &repo_path,
+                    repo_path.as_ref(),
                     &worktree,
                     &branch,
                     None, // Don't kill tmux yet -- need to return response first
@@ -588,7 +588,7 @@ pub(super) async fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Va
             let description = task.description.clone();
             let pr_result = match tokio::task::spawn_blocking(move || {
                 tracing::info!(task_id = task_id.0, %branch, "MCP wrap_up pr starting");
-                dispatch::create_pr(&repo_path, &branch, &title, &description, &*pr_runner)
+                dispatch::create_pr(repo_path.as_ref(), &branch, &title, &description, &*pr_runner)
             }).await {
                 Ok(r) => r,
                 Err(e) => return JsonRpcResponse::err(id, -32603, format!("internal error: {e}")),
@@ -676,8 +676,8 @@ fn auto_dispatch_next(
         Ok(dispatch_result) => {
             let patch = db::TaskPatch::new()
                 .status(TaskStatus::Running)
-                .worktree(Some(&dispatch_result.worktree_path))
-                .tmux_window(Some(&dispatch_result.tmux_window));
+                .worktree(Some(dispatch_result.worktree_path.as_ref()))
+                .tmux_window(Some(dispatch_result.tmux_window.as_ref()));
             if let Err(e) = db.patch_task(next_id, &patch) {
                 tracing::warn!(
                     task_id = next_id.0,

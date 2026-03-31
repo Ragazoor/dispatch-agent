@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::widgets::ListState;
 
-use crate::models::{Epic, EpicId, ReviewDecision, Task, TaskId, TaskStatus, TaskUsage};
+use crate::models::{Epic, EpicId, ReviewDecision, RepoPath, Task, TaskId, TaskStatus, TaskUsage, TmuxWindow, WorktreePath};
 
 // ---------------------------------------------------------------------------
 // MoveDirection
@@ -30,7 +30,7 @@ pub enum Message {
     DispatchTask(TaskId),
     BrainstormTask(TaskId),
     PlanTask(TaskId),
-    Dispatched { id: TaskId, worktree: String, tmux_window: String, switch_focus: bool },
+    Dispatched { id: TaskId, worktree: WorktreePath, tmux_window: TmuxWindow, switch_focus: bool },
     TaskCreated { task: Task },
     DeleteTask(TaskId),
     ToggleDetail,
@@ -38,11 +38,11 @@ pub enum Message {
     WindowGone(TaskId),
     RefreshTasks(Vec<Task>),
     ResumeTask(TaskId),
-    Resumed { id: TaskId, tmux_window: String },
+    Resumed { id: TaskId, tmux_window: TmuxWindow },
     Error(String),
     TaskEdited(TaskEdit),
     RepoPathsUpdated(Vec<String>),
-    QuickDispatch { repo_path: String, epic_id: Option<EpicId> },
+    QuickDispatch { repo_path: RepoPath, epic_id: Option<EpicId> },
     StaleAgent(TaskId),
     AgentCrashed(TaskId),
     KillAndRetry(TaskId),
@@ -156,18 +156,18 @@ pub enum Command {
     Dispatch { task: Task },
     Brainstorm { task: Task },
     Plan { task: Task },
-    Cleanup { id: TaskId, repo_path: String, worktree: String, tmux_window: Option<String> },
+    Cleanup { id: TaskId, repo_path: RepoPath, worktree: WorktreePath, tmux_window: Option<TmuxWindow> },
     Finish {
         id: TaskId,
-        repo_path: String,
+        repo_path: RepoPath,
         branch: String,
-        worktree: String,
-        tmux_window: Option<String>,
+        worktree: WorktreePath,
+        tmux_window: Option<TmuxWindow>,
     },
-    CaptureTmux { id: TaskId, window: String },
+    CaptureTmux { id: TaskId, window: TmuxWindow },
     Resume { task: Task },
-    JumpToTmux { window: String },
-    KillTmuxWindow { window: String },
+    JumpToTmux { window: TmuxWindow },
+    KillTmuxWindow { window: TmuxWindow },
     EditTaskInEditor(Task),
     SaveRepoPath(String),
     RefreshFromDb,
@@ -186,7 +186,7 @@ pub enum Command {
     DeleteFilterPreset(String),
     CreatePr {
         id: TaskId,
-        repo_path: String,
+        repo_path: RepoPath,
         branch: String,
         title: String,
         description: String,
@@ -241,7 +241,7 @@ pub enum InputMode {
 pub struct TaskDraft {
     pub title: String,
     pub description: String,
-    pub repo_path: String,
+    pub repo_path: RepoPath,
     pub tag: Option<String>,
 }
 
@@ -333,7 +333,7 @@ pub struct TaskEdit {
     pub id: TaskId,
     pub title: String,
     pub description: String,
-    pub repo_path: String,
+    pub repo_path: RepoPath,
     pub status: TaskStatus,
     pub plan: Option<String>,
     pub tag: Option<String>,
@@ -480,7 +480,7 @@ pub enum ColumnItem<'a> {
 pub struct EpicDraft {
     pub title: String,
     pub description: String,
-    pub repo_path: String,
+    pub repo_path: RepoPath,
 }
 
 // ---------------------------------------------------------------------------
