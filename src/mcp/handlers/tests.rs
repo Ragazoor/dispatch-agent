@@ -1118,9 +1118,10 @@ fn tool_schemas_match_arg_structs() {
                 "done",
                 "plan",
                 "sort_order",
+                "repo_path",
             ]),
             BTreeSet::from(["epic_id"]),
-            json!({"epic_id": 1, "plan": "docs/plan.md", "sort_order": 42}),
+            json!({"epic_id": 1, "plan": "docs/plan.md", "sort_order": 42, "repo_path": "/new/path"}),
         ),
         (
             "wrap_up",

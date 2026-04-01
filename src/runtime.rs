@@ -655,7 +655,7 @@ impl TuiRuntime {
 
         if let Err(e) = self.database.patch_epic(
             epic_id,
-            &EpicPatch::new().title(&title).description(&description),
+            &EpicPatch::new().title(&title).description(&description).repo_path(&repo_path),
         ) {
             app.update(Message::Error(Self::db_error("updating epic", e)));
         }

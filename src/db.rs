@@ -123,6 +123,7 @@ pub struct EpicPatch<'a> {
     pub done: Option<bool>,
     pub plan: Option<Option<&'a str>>,
     pub sort_order: Option<Option<i64>>,
+    pub repo_path: Option<&'a str>,
 }
 
 impl<'a> EpicPatch<'a> {
@@ -155,12 +156,18 @@ impl<'a> EpicPatch<'a> {
         self
     }
 
+    pub fn repo_path(mut self, repo_path: &'a str) -> Self {
+        self.repo_path = Some(repo_path);
+        self
+    }
+
     pub fn has_changes(&self) -> bool {
         self.title.is_some()
             || self.description.is_some()
             || self.done.is_some()
             || self.plan.is_some()
             || self.sort_order.is_some()
+            || self.repo_path.is_some()
     }
 }
 
@@ -969,6 +976,10 @@ impl TaskStore for Database {
         if let Some(so) = patch.sort_order {
             sets.push("sort_order = ?");
             values.push(Box::new(so));
+        }
+        if let Some(rp) = patch.repo_path {
+            sets.push("repo_path = ?");
+            values.push(Box::new(rp.to_string()));
         }
 
         sets.push("updated_at = datetime('now')");
@@ -2234,6 +2245,17 @@ mod tests {
             .unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert!(updated.plan.is_none());
+    }
+
+    #[test]
+    fn patch_epic_repo_path() {
+        let db = in_memory_db();
+        let epic = db.create_epic("Epic", "desc", "/old").unwrap();
+
+        db.patch_epic(epic.id, &EpicPatch::new().repo_path("/new")).unwrap();
+        let updated = db.get_epic(epic.id).unwrap().unwrap();
+        assert_eq!(updated.repo_path, "/new");
+        assert_eq!(updated.title, "Epic"); // unchanged
     }
 
     #[test]

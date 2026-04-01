@@ -43,6 +43,8 @@ pub(super) struct UpdateEpicArgs {
     pub(super) plan: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
     pub(super) sort_order: Option<i64>,
+    #[serde(default)]
+    pub(super) repo_path: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -188,16 +190,18 @@ pub(super) fn handle_update_epic(
         || parsed.description.is_some()
         || parsed.done.is_some()
         || parsed.plan.is_some()
-        || parsed.sort_order.is_some();
+        || parsed.sort_order.is_some()
+        || parsed.repo_path.is_some();
 
     if !has_update {
         return JsonRpcResponse::err(
             id,
             -32602,
-            "At least one of title, description, done, plan, or sort_order must be provided",
+            "At least one of title, description, done, plan, sort_order, or repo_path must be provided",
         );
     }
 
+    let repo_path = parsed.repo_path.as_deref().map(crate::models::expand_tilde);
     let mut patch = EpicPatch::new();
     if let Some(ref t) = parsed.title {
         patch = patch.title(t);
@@ -213,6 +217,9 @@ pub(super) fn handle_update_epic(
     }
     if let Some(so) = parsed.sort_order {
         patch = patch.sort_order(Some(so));
+    }
+    if let Some(ref rp) = repo_path {
+        patch = patch.repo_path(rp);
     }
 
     if let Err(e) = state.db.patch_epic(EpicId(parsed.epic_id), &patch) {
@@ -235,6 +242,9 @@ pub(super) fn handle_update_epic(
     }
     if parsed.sort_order.is_some() {
         updated.push("sort_order");
+    }
+    if parsed.repo_path.is_some() {
+        updated.push("repo_path");
     }
 
     JsonRpcResponse::ok(
