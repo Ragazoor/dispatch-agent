@@ -540,8 +540,6 @@ pub(super) async fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Va
         format!("; next epic task #{} '{}' will be dispatched", t.id, t.title)
     }).unwrap_or_default();
 
-    let mcp_port = state.mcp_port;
-
     match parsed.action.as_str() {
         "rebase" => {
             let db = state.db.clone();
@@ -576,7 +574,7 @@ pub(super) async fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Va
                         if let Some(window) = &tmux_window {
                             let _ = crate::tmux::kill_window(window, &*ad_runner);
                         }
-                        auto_dispatch_next(next_epic_task, &branch_clone, mcp_port, &*db, &*ad_runner);
+                        auto_dispatch_next(next_epic_task, &branch_clone, &*db, &*ad_runner);
                         if let Some(tx) = notify_tx {
                             let _ = tx.send(());
                         }
@@ -635,7 +633,7 @@ pub(super) async fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Va
                                 );
                             }
                         }
-                        auto_dispatch_next(next_epic_task, &branch_clone, mcp_port, &*db, &*ad_runner);
+                        auto_dispatch_next(next_epic_task, &branch_clone, &*db, &*ad_runner);
                         if let Some(tx) = notify_tx {
                             let _ = tx.send(());
                         }
@@ -662,7 +660,6 @@ pub(super) async fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Va
 fn auto_dispatch_next(
     next_task: Option<Task>,
     base_branch: &str,
-    mcp_port: u16,
     db: &dyn db::TaskStore,
     runner: &dyn crate::process::ProcessRunner,
 ) {
@@ -680,8 +677,8 @@ fn auto_dispatch_next(
         dispatch::dispatch_chained_agent(&next_task, base_branch, runner)
     } else {
         match next_task.tag.as_deref() {
-            Some("epic") => dispatch::brainstorm_chained_agent(&next_task, base_branch, mcp_port, runner),
-            Some("feature") => dispatch::plan_chained_agent(&next_task, base_branch, mcp_port, runner),
+            Some("epic") => dispatch::brainstorm_chained_agent(&next_task, base_branch, runner),
+            Some("feature") => dispatch::plan_chained_agent(&next_task, base_branch, runner),
             _ => dispatch::dispatch_chained_agent(&next_task, base_branch, runner),
         }
     };

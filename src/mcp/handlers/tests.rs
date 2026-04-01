@@ -16,7 +16,7 @@ use super::types::{JsonRpcRequest, JsonRpcResponse};
 fn test_state() -> Arc<McpState> {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    Arc::new(McpState { db, notify_tx: None, runner, mcp_port: 3142 })
+    Arc::new(McpState { db, notify_tx: None, runner })
 }
 
 async fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> JsonRpcResponse {
@@ -1478,7 +1478,7 @@ async fn wrap_up_accepts_running_blocked_task() {
         MockProcessRunner::ok(),                       // git rebase main
         MockProcessRunner::ok(),                       // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     let task_id = db.create_task("My Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
     db.patch_task(task_id, &db::TaskPatch::new()
@@ -1571,7 +1571,7 @@ async fn wrap_up_rebase_returns_started() {
         MockProcessRunner::ok(),                       // git rebase main
         MockProcessRunner::ok(),                       // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     let task_id = db.create_task("My Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
     db.patch_task(task_id, &db::TaskPatch::new()
@@ -1600,7 +1600,7 @@ async fn wrap_up_pr_returns_started() {
         MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // git remote get-url
         MockProcessRunner::ok_with_stdout(b"https://github.com/org/repo/pull/7\n"), // gh pr create
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     let task_id = db.create_task("My Feature", "desc", "/repo", None, TaskStatus::Review).unwrap();
     db.patch_task(task_id, &db::TaskPatch::new()
@@ -1635,7 +1635,7 @@ async fn wrap_up_rebase_no_epic_skips_auto_dispatch() {
         MockProcessRunner::ok(),                       // git merge --ff-only
         // No auto-dispatch calls expected
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     let task_id = db.create_task("Solo Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
     db.patch_task(task_id, &db::TaskPatch::new()
@@ -1676,7 +1676,7 @@ async fn wrap_up_rebase_auto_dispatches_next_epic_task() {
         MockProcessRunner::ok(), // tmux send-keys -l (literal text)
         MockProcessRunner::ok(), // tmux send-keys Enter
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     // Create epic and two subtasks
     let epic = db.create_epic("Test Epic", "desc", &repo_path).unwrap();
@@ -1723,7 +1723,7 @@ async fn wrap_up_rebase_no_backlog_tasks_skips_dispatch() {
         MockProcessRunner::ok(),                       // git rebase main
         MockProcessRunner::ok(),                       // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     // Create epic with only one task (already in review — no backlog subtasks)
     let epic = db.create_epic("Test Epic", "desc", "/repo").unwrap();
@@ -1882,7 +1882,7 @@ async fn wrap_up_rebase_conflict_returns_error() {
         MockProcessRunner::fail("CONFLICT (content): Merge conflict in foo.rs"), // git rebase
         MockProcessRunner::ok(),                       // git rebase --abort
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     let task_id = db.create_task("Conflict Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
     db.patch_task(task_id, &db::TaskPatch::new()
@@ -1910,7 +1910,7 @@ async fn wrap_up_rebase_not_on_main_returns_error() {
         MockProcessRunner::fail(""),                       // detect_default_branch
         MockProcessRunner::ok_with_stdout(b"feature\n"),   // git rev-parse HEAD (not on main)
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     let task_id = db.create_task("Wrong Branch", "desc", "/repo", None, TaskStatus::Review).unwrap();
     db.patch_task(task_id, &db::TaskPatch::new()
@@ -1938,7 +1938,7 @@ async fn wrap_up_pr_push_fails_returns_error() {
         MockProcessRunner::fail(""),                        // detect_default_branch
         MockProcessRunner::fail("remote: Permission denied"), // git push fails
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
 
     let task_id = db.create_task("Push Fail", "desc", "/repo", None, TaskStatus::Review).unwrap();
     db.patch_task(task_id, &db::TaskPatch::new()

@@ -131,23 +131,23 @@ pub fn dispatch_agent(task: &Task, runner: &dyn ProcessRunner) -> Result<Dispatc
     dispatch_with_prompt(task, &prompt, ClaudeMode::AcceptEdits, runner, None)
 }
 
-pub fn brainstorm_agent(task: &Task, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
-    let prompt = build_brainstorm_prompt(task.id, &task.title, &task.description, mcp_port);
+pub fn brainstorm_agent(task: &Task, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_brainstorm_prompt(task.id, &task.title, &task.description);
     dispatch_with_prompt(task, &prompt, ClaudeMode::Plan, runner, None)
 }
 
-pub fn plan_agent(task: &Task, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
-    let prompt = build_plan_prompt(task.id, &task.title, &task.description, mcp_port);
+pub fn plan_agent(task: &Task, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_plan_prompt(task.id, &task.title, &task.description);
     dispatch_with_prompt(task, &prompt, ClaudeMode::Plan, runner, None)
 }
 
-pub fn quick_dispatch_agent(task: &Task, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
-    let prompt = build_quick_dispatch_prompt(task.id, &task.title, &task.description, mcp_port);
+pub fn quick_dispatch_agent(task: &Task, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_quick_dispatch_prompt(task.id, &task.title, &task.description);
     dispatch_with_prompt(task, &prompt, ClaudeMode::AcceptEdits, runner, None)
 }
 
-pub fn epic_planning_agent(task: &Task, epic_id: EpicId, epic_title: &str, epic_description: &str, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
-    let prompt = build_epic_planning_prompt(epic_id, epic_title, epic_description, mcp_port);
+pub fn epic_planning_agent(task: &Task, epic_id: EpicId, epic_title: &str, epic_description: &str, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_epic_planning_prompt(epic_id, epic_title, epic_description);
     dispatch_with_prompt(task, &prompt, ClaudeMode::Plan, runner, None)
 }
 
@@ -158,14 +158,14 @@ pub fn dispatch_chained_agent(task: &Task, base_branch: &str, runner: &dyn Proce
 }
 
 /// Plan a task that chains off a previous task's branch (epic auto-dispatch).
-pub fn plan_chained_agent(task: &Task, base_branch: &str, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
-    let prompt = build_plan_prompt(task.id, &task.title, &task.description, mcp_port);
+pub fn plan_chained_agent(task: &Task, base_branch: &str, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_plan_prompt(task.id, &task.title, &task.description);
     dispatch_with_prompt(task, &prompt, ClaudeMode::Plan, runner, Some(base_branch))
 }
 
 /// Brainstorm a task that chains off a previous task's branch (epic auto-dispatch).
-pub fn brainstorm_chained_agent(task: &Task, base_branch: &str, mcp_port: u16, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
-    let prompt = build_brainstorm_prompt(task.id, &task.title, &task.description, mcp_port);
+pub fn brainstorm_chained_agent(task: &Task, base_branch: &str, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+    let prompt = build_brainstorm_prompt(task.id, &task.title, &task.description);
     dispatch_with_prompt(task, &prompt, ClaudeMode::Plan, runner, Some(base_branch))
 }
 
@@ -416,12 +416,15 @@ Your task is:\n\
 Task status transitions (running/review) are managed automatically via hooks. \
 Do not call update_task for status changes.\n\
 \n\
+The dispatch MCP tools are available — use them to query and update this task \
+(get_task, update_task).\n\
+\n\
 When implementation is complete, use the /wrap-up skill to commit remaining \
 changes and ask the user whether to rebase onto main or create a PR."
     )
 }
 
-fn build_quick_dispatch_prompt(task_id: TaskId, title: &str, description: &str, mcp_port: u16) -> String {
+fn build_quick_dispatch_prompt(task_id: TaskId, title: &str, description: &str) -> String {
     format!(
         "You are an autonomous coding agent working interactively with the user.\n\
 \n\
@@ -436,13 +439,12 @@ the user wants, call `update_task` with a descriptive `title` (and optionally \
 \n\
 Task status transitions (running/review) are managed automatically via hooks. \
 Do not call update_task for status changes.\n\
-An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-query and update tasks (tool: dispatch). Use update_task to rename \
-this task with a descriptive title, and get_task to check current state."
+The dispatch MCP tools are available — use them to query and update tasks. \
+Use update_task to rename this task with a descriptive title, and get_task to check current state."
     )
 }
 
-fn build_brainstorm_prompt(task_id: TaskId, title: &str, description: &str, mcp_port: u16) -> String {
+fn build_brainstorm_prompt(task_id: TaskId, title: &str, description: &str) -> String {
     format!(
         "You are an autonomous coding agent starting a brainstorming session.\n\
 \n\
@@ -451,20 +453,22 @@ Task:\n\
   Title: {title}\n\
   Description: {description}\n\
 \n\
+Before diving in, ask the user any clarifying questions needed to ensure you \
+fully understand the requirements and intended behaviour.\n\
+\n\
 Your goal is to explore the codebase, brainstorm approaches, and write an \
 implementation plan. When done, save the plan and attach it to the task:\n\
 \n\
 1. Write the plan to docs/plans/ (or docs/superpowers/specs/ if using the brainstorming skill)\n\
-2. Call update_task via MCP to set the plan field to the plan file path\n\
+2. Call update_task via the dispatch MCP tools to set the plan field to the plan file path\n\
 \n\
 After planning, ask whether to continue implementing or stop.\n\
 \n\
-An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-attach the plan (tool: dispatch, tool name: update_task — set the plan field)."
+Use the dispatch MCP tools to attach the plan (update_task — set the plan field)."
     )
 }
 
-fn build_plan_prompt(task_id: TaskId, title: &str, description: &str, mcp_port: u16) -> String {
+fn build_plan_prompt(task_id: TaskId, title: &str, description: &str) -> String {
     format!(
         "You are an autonomous coding agent starting a planning session.\n\
 \n\
@@ -478,16 +482,15 @@ Use /plan mode for a structured planning session. When done, save the plan \
 and attach it to the task:\n\
 \n\
 1. Write the plan to docs/plans/\n\
-2. Call update_task via MCP to set the plan field to the plan file path\n\
+2. Call update_task via the dispatch MCP tools to set the plan field to the plan file path\n\
 \n\
 After planning, ask whether to continue implementing or stop.\n\
 \n\
-An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-attach the plan (tool: dispatch, tool name: update_task — set the plan field)."
+Use the dispatch MCP tools to attach the plan (update_task — set the plan field)."
     )
 }
 
-fn build_epic_planning_prompt(epic_id: EpicId, title: &str, description: &str, mcp_port: u16) -> String {
+fn build_epic_planning_prompt(epic_id: EpicId, title: &str, description: &str) -> String {
     format!(
         "You are an autonomous coding agent starting a planning session.\n\
 \n\
@@ -513,14 +516,12 @@ tasks — do not confuse them with subtasks inside the plan document itself:\n\
 \n\
 After creating the work packages, confirm with the user before doing anything further.\n\
 \n\
-An MCP server is available at http://localhost:{mcp_port}/mcp — use it to \
-query tasks and epics (tool: dispatch). Relevant tools: create_task, update_epic, list_tasks.\n\
+Use the dispatch MCP tools to query tasks and epics. Relevant tools: create_task, update_epic, list_tasks.\n\
 \n\
 IMPORTANT: Do NOT start implementing. Your job ends after creating the work packages.",
         epic_id = epic_id,
         title = title,
         description = description,
-        mcp_port = mcp_port,
     )
 }
 
@@ -719,7 +720,7 @@ fn expand_tilde(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DEFAULT_PORT;
+
     use crate::process::{MockProcessRunner, exit_fail};
     use crate::models::{EpicId, Task, TaskId, TaskStatus};
     use chrono::Utc;
@@ -769,6 +770,12 @@ mod tests {
     }
 
     #[test]
+    fn build_prompt_mentions_mcp_tools() {
+        let prompt = build_prompt(TaskId(1), "Task", "Desc", None);
+        assert!(prompt.contains("dispatch MCP tools"), "standard dispatch prompt should mention MCP tools");
+    }
+
+    #[test]
     fn expand_tilde_with_path() {
         let home = std::env::var("HOME").unwrap();
         assert_eq!(expand_tilde("~/projects/foo"), format!("{home}/projects/foo"));
@@ -805,7 +812,7 @@ mod tests {
 
     #[test]
     fn build_quick_dispatch_prompt_contains_rename_instruction() {
-        let prompt = build_quick_dispatch_prompt(TaskId(42), "Quick task", "", DEFAULT_PORT);
+        let prompt = build_quick_dispatch_prompt(TaskId(42), "Quick task", "");
         assert!(prompt.contains("42"));
         assert!(prompt.contains("Quick task"));
         assert!(prompt.contains("update_task"));
@@ -815,8 +822,8 @@ mod tests {
 
     #[test]
     fn build_quick_dispatch_prompt_mentions_mcp() {
-        let prompt = build_quick_dispatch_prompt(TaskId(1), "Quick task", "", DEFAULT_PORT);
-        assert!(prompt.contains(&DEFAULT_PORT.to_string()));
+        let prompt = build_quick_dispatch_prompt(TaskId(1), "Quick task", "");
+        assert!(prompt.contains("dispatch MCP tools"));
         assert!(prompt.contains("update_task"));
         assert!(!prompt.contains("add_note"));
     }
@@ -824,7 +831,7 @@ mod tests {
     #[test]
     fn build_quick_dispatch_prompt_differs_from_regular() {
         let regular = build_prompt(TaskId(1), "Task", "Desc", None);
-        let quick = build_quick_dispatch_prompt(TaskId(1), "Task", "Desc", DEFAULT_PORT);
+        let quick = build_quick_dispatch_prompt(TaskId(1), "Task", "Desc");
         assert!(quick.contains("placeholder"));
         assert!(!regular.contains("placeholder"));
     }
@@ -839,30 +846,29 @@ mod tests {
 
     #[test]
     fn build_brainstorm_prompt_contains_task_info() {
-        let prompt = build_brainstorm_prompt(TaskId(7), "Design auth", "Rework the auth flow", DEFAULT_PORT);
+        let prompt = build_brainstorm_prompt(TaskId(7), "Design auth", "Rework the auth flow");
         assert!(prompt.contains("7"));
         assert!(prompt.contains("Design auth"));
         assert!(prompt.contains("Rework the auth flow"));
-        assert!(prompt.contains(&DEFAULT_PORT.to_string()));
+        assert!(prompt.contains("clarifying questions"), "brainstorm prompt should ask for clarifying questions");
         assert!(prompt.contains("brainstorm"));
         assert!(prompt.contains("update_task"));
     }
 
     #[test]
     fn build_plan_prompt_contains_task_info() {
-        let prompt = build_plan_prompt(TaskId(8), "Add feature", "Small improvement", DEFAULT_PORT);
+        let prompt = build_plan_prompt(TaskId(8), "Add feature", "Small improvement");
         assert!(prompt.contains("8"));
         assert!(prompt.contains("Add feature"));
         assert!(prompt.contains("Small improvement"));
-        assert!(prompt.contains(&DEFAULT_PORT.to_string()));
         assert!(prompt.contains("/plan"));
         assert!(prompt.contains("update_task"));
     }
 
     #[test]
     fn build_plan_prompt_differs_from_brainstorm() {
-        let plan = build_plan_prompt(TaskId(1), "T", "D", DEFAULT_PORT);
-        let brainstorm = build_brainstorm_prompt(TaskId(1), "T", "D", DEFAULT_PORT);
+        let plan = build_plan_prompt(TaskId(1), "T", "D");
+        let brainstorm = build_brainstorm_prompt(TaskId(1), "T", "D");
         assert_ne!(plan, brainstorm);
         assert!(plan.contains("planning"));
         assert!(brainstorm.contains("brainstorm"));
@@ -971,7 +977,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        plan_agent(&task, DEFAULT_PORT, &mock).unwrap();
+        plan_agent(&task, &mock).unwrap();
 
         let calls = mock.recorded_calls();
         let send_keys_arg = calls[3].1.iter().find(|a| a.contains("claude")).unwrap();
@@ -1174,7 +1180,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        brainstorm_agent(&task, DEFAULT_PORT, &mock).unwrap();
+        brainstorm_agent(&task, &mock).unwrap();
 
         let calls = mock.recorded_calls();
         assert!(calls.iter().all(|(prog, args)| !(prog == "git" && args.iter().any(|a| a == "worktree"))), "git worktree add should be skipped for existing worktree");
@@ -1198,7 +1204,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        brainstorm_agent(&task, DEFAULT_PORT, &mock).unwrap();
+        brainstorm_agent(&task, &mock).unwrap();
 
         // Verify the prompt file was written with brainstorm content
         let prompt_file = worktree_dir.join(".claude-prompt");
@@ -1224,7 +1230,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        quick_dispatch_agent(&task, DEFAULT_PORT, &mock).unwrap();
+        quick_dispatch_agent(&task, &mock).unwrap();
 
         let calls = mock.recorded_calls();
         assert!(calls.iter().all(|(prog, args)| !(prog == "git" && args.iter().any(|a| a == "worktree"))), "git worktree add should be skipped for existing worktree");
@@ -1248,7 +1254,7 @@ mod tests {
         ]);
 
         let task = make_task(&repo_path);
-        quick_dispatch_agent(&task, DEFAULT_PORT, &mock).unwrap();
+        quick_dispatch_agent(&task, &mock).unwrap();
 
         let prompt_file = worktree_dir.join(".claude-prompt");
         let prompt = std::fs::read_to_string(prompt_file).unwrap();
@@ -1260,12 +1266,11 @@ mod tests {
 
     #[test]
     fn epic_planning_prompt_contains_epic_context() {
-        let prompt = build_epic_planning_prompt(EpicId(42), "Redesign auth", "Rework the login flow", DEFAULT_PORT);
+        let prompt = build_epic_planning_prompt(EpicId(42), "Redesign auth", "Rework the login flow");
         assert!(prompt.contains("42"));
         assert!(prompt.contains("Redesign auth"));
         assert!(prompt.contains("Rework the login flow"));
         assert!(prompt.contains("Do NOT start implementing"));
-        assert!(prompt.contains(&DEFAULT_PORT.to_string()));
         // Work package instructions
         assert!(prompt.contains("create_task"), "prompt should instruct using create_task");
         assert!(prompt.contains("sort_order"), "prompt should explain sort_order for ordering");

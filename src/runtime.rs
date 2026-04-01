@@ -147,7 +147,6 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
     let runtime = TuiRuntime {
         database,
         msg_tx,
-        port,
         input_paused,
         runner,
     };
@@ -241,7 +240,6 @@ impl Drop for InputPausedGuard<'_> {
 struct TuiRuntime {
     database: Arc<dyn db::TaskStore>,
     msg_tx: mpsc::UnboundedSender<Message>,
-    port: u16,
     input_paused: Arc<AtomicBool>,
     runner: Arc<dyn ProcessRunner>,
 }
@@ -292,11 +290,10 @@ impl TuiRuntime {
                 let paths = self.database.list_repo_paths().unwrap_or_default();
                 app.update(Message::RepoPathsUpdated(paths));
                 let tx = self.msg_tx.clone();
-                let port = self.port;
                 let runner = self.runner.clone();
                 tokio::task::spawn_blocking(move || {
                     let id = task.id;
-                    match dispatch::quick_dispatch_agent(&task, port, &*runner) {
+                    match dispatch::quick_dispatch_agent(&task, &*runner) {
                         Ok(result) => {
                             let _ = tx.send(Message::Dispatched {
                                 id,
@@ -349,18 +346,17 @@ impl TuiRuntime {
 
     fn spawn_dispatch<F>(&self, task: models::Task, dispatch_fn: F, label: &'static str)
     where
-        F: FnOnce(&models::Task, u16, &dyn ProcessRunner) -> Result<models::DispatchResult>
+        F: FnOnce(&models::Task, &dyn ProcessRunner) -> Result<models::DispatchResult>
             + Send
             + 'static,
     {
         let tx = self.msg_tx.clone();
-        let port = self.port;
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
             let id = task.id;
             tracing::info!(task_id = id.0, label, "dispatching");
-            match dispatch_fn(&task, port, &*runner) {
+            match dispatch_fn(&task, &*runner) {
                 Ok(result) => {
                     // receiver dropped = app shutting down; nothing to log
                     let _ = tx.send(Message::Dispatched {
@@ -378,7 +374,7 @@ impl TuiRuntime {
     }
 
     fn exec_dispatch(&self, task: models::Task) {
-        self.spawn_dispatch(task, |t, _port, r| dispatch::dispatch_agent(t, r), "Dispatch");
+        self.spawn_dispatch(task, dispatch::dispatch_agent, "Dispatch");
     }
 
     fn exec_brainstorm(&self, task: models::Task) {
@@ -777,7 +773,6 @@ impl TuiRuntime {
 
         // Dispatch the planning subtask asynchronously
         let tx = self.msg_tx.clone();
-        let port = self.port;
         let runner = self.runner.clone();
         let epic_id = epic.id;
         let epic_title = epic.title.clone();
@@ -786,7 +781,7 @@ impl TuiRuntime {
         tokio::task::spawn_blocking(move || {
             let id = task.id;
             tracing::info!(task_id = id.0, epic_id = epic_id.0, "dispatching epic planning agent");
-            match dispatch::epic_planning_agent(&task, epic_id, &epic_title, &epic_description, port, &*runner) {
+            match dispatch::epic_planning_agent(&task, epic_id, &epic_title, &epic_description, &*runner) {
                 Ok(result) => {
                     let _ = tx.send(Message::Dispatched {
                         id,
@@ -1022,7 +1017,7 @@ async fn execute_commands(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::DEFAULT_PORT;
+
     use crate::db::Database;
     use crate::process::MockProcessRunner;
 
@@ -1041,7 +1036,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner,
         };
@@ -1162,7 +1157,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
         };
@@ -1198,7 +1193,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1220,7 +1215,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1247,7 +1242,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1274,7 +1269,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1295,7 +1290,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
         };
@@ -1351,7 +1346,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1400,7 +1395,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1467,7 +1462,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db.clone(),
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1506,7 +1501,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db,
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
         };
@@ -1528,7 +1523,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db,
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
         };
@@ -1547,7 +1542,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db,
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
         };
@@ -1578,7 +1573,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db,
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1606,7 +1601,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db,
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1633,7 +1628,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db,
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
@@ -1654,7 +1649,7 @@ mod tests {
         let rt = TuiRuntime {
             database: db,
             msg_tx: tx,
-            port: DEFAULT_PORT,
+
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
         };
