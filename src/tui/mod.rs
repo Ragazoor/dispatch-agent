@@ -481,6 +481,7 @@ impl App {
             Message::ToggleNotifications => self.handle_toggle_notifications(),
             // Epic messages
             Message::DispatchEpic(id) => self.handle_dispatch_epic(id),
+            Message::AutoDispatchEpic(id) => self.handle_auto_dispatch_epic(id),
             Message::EnterEpic(epic_id) => self.handle_enter_epic(epic_id),
             Message::ExitEpic => self.handle_exit_epic(),
             Message::RefreshEpics(epics) => self.handle_refresh_epics(epics),
@@ -962,13 +963,17 @@ impl App {
     fn handle_refresh_tasks(&mut self, new_tasks: Vec<Task>) -> Vec<Command> {
         let mut cmds = Vec::new();
 
-        for new_task in &new_tasks {
-            if self.notifications_enabled {
-                // Extract old state before any mutable borrows
-                let old_task = self.find_task(new_task.id);
-                let was_needs_input = old_task.is_some_and(|t| t.sub_status == SubStatus::NeedsInput);
-                let was_review = old_task.is_some_and(|t| t.status == TaskStatus::Review);
+        // Clear per-refresh dedup so each refresh cycle can trigger one auto-dispatch per epic
+        self.agents.auto_dispatched_epics.clear();
 
+        for new_task in &new_tasks {
+            // Extract old state before any mutable borrows
+            let old_task = self.find_task(new_task.id);
+            let was_needs_input =
+                old_task.is_some_and(|t| t.sub_status == SubStatus::NeedsInput);
+            let was_review = old_task.is_some_and(|t| t.status == TaskStatus::Review);
+
+            if self.notifications_enabled {
                 // Detect NeedsInput transition (running tasks only)
                 if new_task.sub_status == SubStatus::NeedsInput
                     && !was_needs_input
@@ -983,8 +988,9 @@ impl App {
                     });
                 }
 
-                // Detect review transition
-                if new_task.status == TaskStatus::Review && !was_review
+                // Detect review transition (notification)
+                if new_task.status == TaskStatus::Review
+                    && !was_review
                     && !self.agents.notified_review.contains(&new_task.id)
                 {
                     self.agents.notified_review.insert(new_task.id);
@@ -993,6 +999,16 @@ impl App {
                         body: "Ready for review".to_string(),
                         urgent: false,
                     });
+                }
+            }
+
+            // Auto-dispatch next epic task on review transition (unconditional)
+            if new_task.status == TaskStatus::Review && !was_review {
+                if let Some(epic_id) = new_task.epic_id {
+                    if !self.agents.auto_dispatched_epics.contains(&epic_id) {
+                        self.agents.auto_dispatched_epics.insert(epic_id);
+                        cmds.extend(self.handle_auto_dispatch_epic(epic_id));
+                    }
                 }
             }
 
@@ -2332,6 +2348,43 @@ impl App {
             // No plan — spawn planning subtask
             vec![Command::DispatchEpic { epic: epic.clone() }]
         }
+    }
+
+    fn handle_auto_dispatch_epic(&mut self, epic_id: EpicId) -> Vec<Command> {
+        let Some(epic) = self.epics.iter().find(|e| e.id == epic_id) else {
+            return vec![];
+        };
+
+        // Only auto-dispatch for epics with a plan
+        if epic.plan.is_none() {
+            return vec![];
+        }
+
+        // Find next backlog subtask by sort_order
+        let mut backlog: Vec<&Task> = self
+            .tasks
+            .iter()
+            .filter(|t| t.epic_id == Some(epic_id) && t.status == TaskStatus::Backlog)
+            .collect();
+        backlog.sort_by_key(|t| (t.sort_order.unwrap_or(t.id.0), t.id.0));
+
+        let Some(task) = backlog.first().cloned() else {
+            return vec![];
+        };
+        let task = task.clone();
+
+        self.set_status(format!(
+            "Auto-dispatching #{}: {}",
+            task.id.0, task.title
+        ));
+
+        // Same dispatch routing as handle_dispatch_epic
+        let cmd = match DispatchMode::for_task(&task) {
+            DispatchMode::Dispatch => Command::Dispatch { task },
+            DispatchMode::Brainstorm => Command::Brainstorm { task },
+            DispatchMode::Plan => Command::Plan { task },
+        };
+        vec![cmd]
     }
 
     fn handle_enter_epic(&mut self, epic_id: EpicId) -> Vec<Command> {

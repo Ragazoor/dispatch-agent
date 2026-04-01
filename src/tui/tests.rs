@@ -7420,3 +7420,223 @@ fn active_review_prs_returns_my_prs_in_author_mode() {
     assert_eq!(app.active_review_prs().len(), 1);
     assert_eq!(app.active_review_prs()[0].number, 2);
 }
+
+// --- auto-dispatch epic on review ---
+
+#[test]
+fn auto_dispatch_epic_triggers_on_review_transition() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    let mut task1 = make_task(1, TaskStatus::Running);
+    task1.epic_id = Some(EpicId(10));
+    let mut task2 = make_task(2, TaskStatus::Backlog);
+    task2.epic_id = Some(EpicId(10));
+
+    app.tasks = vec![task1, task2];
+
+    // Simulate task1 transitioning to Review
+    let mut updated = app.tasks().to_vec();
+    updated[0].status = TaskStatus::Review;
+    let cmds = app.update(Message::RefreshTasks(updated));
+
+    let dispatch_cmds: Vec<_> = cmds
+        .iter()
+        .filter(|c| matches!(c, Command::Dispatch { .. }))
+        .collect();
+    assert_eq!(dispatch_cmds.len(), 1);
+    assert!(matches!(&dispatch_cmds[0], Command::Dispatch { task } if task.id == TaskId(2)));
+}
+
+#[test]
+fn auto_dispatch_epic_skips_planless_epic() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let epic = make_epic(10); // no plan
+    app.epics = vec![epic];
+
+    let mut task1 = make_task(1, TaskStatus::Running);
+    task1.epic_id = Some(EpicId(10));
+    let mut task2 = make_task(2, TaskStatus::Backlog);
+    task2.epic_id = Some(EpicId(10));
+
+    app.tasks = vec![task1, task2];
+
+    let mut updated = app.tasks().to_vec();
+    updated[0].status = TaskStatus::Review;
+    let cmds = app.update(Message::RefreshTasks(updated));
+
+    let dispatch_cmds: Vec<_> = cmds
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                Command::Dispatch { .. } | Command::Brainstorm { .. } | Command::Plan { .. }
+            )
+        })
+        .collect();
+    assert_eq!(dispatch_cmds.len(), 0);
+}
+
+#[test]
+fn auto_dispatch_epic_dedup_prevents_double_dispatch() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    let mut task1 = make_task(1, TaskStatus::Running);
+    task1.epic_id = Some(EpicId(10));
+    let mut task2 = make_task(2, TaskStatus::Running);
+    task2.epic_id = Some(EpicId(10));
+    let mut task3 = make_task(3, TaskStatus::Backlog);
+    task3.epic_id = Some(EpicId(10));
+
+    app.tasks = vec![task1, task2, task3];
+
+    // Both task1 and task2 transition to Review simultaneously
+    let mut updated = app.tasks().to_vec();
+    updated[0].status = TaskStatus::Review;
+    updated[1].status = TaskStatus::Review;
+    let cmds = app.update(Message::RefreshTasks(updated));
+
+    let dispatch_cmds: Vec<_> = cmds
+        .iter()
+        .filter(|c| matches!(c, Command::Dispatch { .. }))
+        .collect();
+    // Should only dispatch once despite two tasks entering Review
+    assert_eq!(dispatch_cmds.len(), 1);
+}
+
+#[test]
+fn auto_dispatch_epic_re_triggers_after_fresh_review() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    let mut task1 = make_task(1, TaskStatus::Running);
+    task1.epic_id = Some(EpicId(10));
+    let mut task2 = make_task(2, TaskStatus::Backlog);
+    task2.epic_id = Some(EpicId(10));
+    let mut task3 = make_task(3, TaskStatus::Backlog);
+    task3.epic_id = Some(EpicId(10));
+
+    app.tasks = vec![task1, task2, task3];
+
+    // First review transition dispatches task2
+    let mut updated = app.tasks().to_vec();
+    updated[0].status = TaskStatus::Review;
+    let cmds = app.update(Message::RefreshTasks(updated));
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::Dispatch { task } if task.id == TaskId(2))));
+
+    // Simulate task2 is now Running (was dispatched), task1 still in Review
+    let mut updated2 = app.tasks().to_vec();
+    updated2[0].status = TaskStatus::Review;
+    updated2[1].status = TaskStatus::Running;
+
+    // A second refresh where task2 moves to Review should dispatch task3
+    let mut updated3 = updated2.clone();
+    updated3[1].status = TaskStatus::Review;
+    // First, make app aware of task2 being Running
+    app.update(Message::RefreshTasks(updated2));
+    // Now task2 transitions to Review
+    let cmds = app.update(Message::RefreshTasks(updated3));
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::Dispatch { task } if task.id == TaskId(3))));
+}
+
+#[test]
+fn auto_dispatch_epic_no_backlog_subtasks_noop() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    let mut task1 = make_task(1, TaskStatus::Running);
+    task1.epic_id = Some(EpicId(10));
+    let mut task2 = make_task(2, TaskStatus::Running);
+    task2.epic_id = Some(EpicId(10));
+
+    app.tasks = vec![task1, task2];
+
+    // task1 transitions to Review, but task2 is Running (no backlog tasks)
+    let mut updated = app.tasks().to_vec();
+    updated[0].status = TaskStatus::Review;
+    let cmds = app.update(Message::RefreshTasks(updated));
+
+    let dispatch_cmds: Vec<_> = cmds
+        .iter()
+        .filter(|c| {
+            matches!(
+                c,
+                Command::Dispatch { .. } | Command::Brainstorm { .. } | Command::Plan { .. }
+            )
+        })
+        .collect();
+    assert_eq!(dispatch_cmds.len(), 0);
+}
+
+#[test]
+fn auto_dispatch_epic_respects_tag_routing() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    let mut task1 = make_task(1, TaskStatus::Running);
+    task1.epic_id = Some(EpicId(10));
+    let mut task2 = make_task(2, TaskStatus::Backlog);
+    task2.epic_id = Some(EpicId(10));
+    task2.tag = Some("feature".to_string());
+
+    app.tasks = vec![task1, task2];
+
+    let mut updated = app.tasks().to_vec();
+    updated[0].status = TaskStatus::Review;
+    let cmds = app.update(Message::RefreshTasks(updated));
+
+    // Feature-tagged task without plan should trigger Plan command
+    assert!(cmds
+        .iter()
+        .any(|c| matches!(c, Command::Plan { task } if task.id == TaskId(2))));
+}
+
+#[test]
+fn auto_dispatch_fires_even_when_notifications_disabled() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    app.update(Message::ToggleNotifications); // disable notifications
+
+    let mut epic = make_epic(10);
+    epic.plan = Some("docs/plan.md".to_string());
+    app.epics = vec![epic];
+
+    let mut task1 = make_task(1, TaskStatus::Running);
+    task1.epic_id = Some(EpicId(10));
+    let mut task2 = make_task(2, TaskStatus::Backlog);
+    task2.epic_id = Some(EpicId(10));
+
+    app.tasks = vec![task1, task2];
+
+    let mut updated = app.tasks().to_vec();
+    updated[0].status = TaskStatus::Review;
+    let cmds = app.update(Message::RefreshTasks(updated));
+
+    // No notifications should be sent
+    let notif_cmds: Vec<_> = cmds
+        .iter()
+        .filter(|c| matches!(c, Command::SendNotification { .. }))
+        .collect();
+    assert_eq!(notif_cmds.len(), 0);
+
+    // But dispatch should still fire
+    let dispatch_cmds: Vec<_> = cmds
+        .iter()
+        .filter(|c| matches!(c, Command::Dispatch { .. }))
+        .collect();
+    assert_eq!(dispatch_cmds.len(), 1);
+}

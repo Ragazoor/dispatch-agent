@@ -87,6 +87,7 @@ pub enum Message {
     ToggleHelp,
     // Epic messages
     DispatchEpic(EpicId),
+    AutoDispatchEpic(EpicId),
     EnterEpic(EpicId),
     ExitEpic,
     RefreshEpics(Vec<Epic>),
@@ -295,6 +296,7 @@ pub struct AgentTracking {
     pub inactivity_timeout: Duration,
     pub notified_review: HashSet<TaskId>,
     pub notified_needs_input: HashSet<TaskId>,
+    pub auto_dispatched_epics: HashSet<EpicId>,
     pub last_pr_poll: HashMap<TaskId, Instant>,
 }
 
@@ -307,6 +309,7 @@ impl AgentTracking {
             inactivity_timeout,
             notified_review: HashSet::new(),
             notified_needs_input: HashSet::new(),
+            auto_dispatched_epics: HashSet::new(),
             last_pr_poll: HashMap::new(),
         }
     }
