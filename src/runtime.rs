@@ -215,9 +215,10 @@ impl<'a> InputPausedGuard<'a> {
     fn new(
         input_paused: &Arc<AtomicBool>,
         terminal: &'a mut Terminal<CrosstermBackend<io::Stdout>>,
+        key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
     ) -> Result<Self> {
         input_paused.store(true, Ordering::Relaxed);
-        std::thread::sleep(Duration::from_millis(150));
+        while key_rx.try_recv().is_ok() {}
         let terminal_guard = TerminalSuspend::new(terminal)?;
         Ok(InputPausedGuard {
             input_paused: Arc::clone(input_paused),
@@ -453,6 +454,7 @@ impl TuiRuntime {
     fn run_editor(
         &self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
         prefix: &str,
         content: &str,
     ) -> Result<Option<String>> {
@@ -462,7 +464,7 @@ impl TuiRuntime {
             .tempfile()?;
         std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes())?;
 
-        let _guard = InputPausedGuard::new(&self.input_paused, terminal)?;
+        let _guard = InputPausedGuard::new(&self.input_paused, terminal, key_rx)?;
         let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
         let status = std::process::Command::new(&editor).arg(tmp.path()).status();
         drop(_guard);
@@ -485,10 +487,11 @@ impl TuiRuntime {
         app: &mut App,
         task: models::Task,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
     ) -> Result<()> {
         let task_id = task.id;
         let content = format_editor_content(&task);
-        let Some(edited) = self.run_editor(terminal, &format!("task-{task_id}-"), &content)? else {
+        let Some(edited) = self.run_editor(terminal, key_rx, &format!("task-{task_id}-"), &content)? else {
             return Ok(());
         };
 
@@ -628,10 +631,11 @@ impl TuiRuntime {
         app: &mut App,
         epic: models::Epic,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
     ) -> Result<()> {
         let epic_id = epic.id;
         let content = format_epic_for_editor(&epic);
-        let Some(edited) = self.run_editor(terminal, &format!("epic-{epic_id}-"), &content)? else {
+        let Some(edited) = self.run_editor(terminal, key_rx, &format!("epic-{epic_id}-"), &content)? else {
             return Ok(());
         };
 
@@ -1081,7 +1085,7 @@ async fn run_loop(
             }
         };
 
-        execute_commands(app, commands, rt, terminal).await?;
+        execute_commands(app, commands, rt, terminal, key_rx).await?;
     }
 
     Ok(())
@@ -1096,6 +1100,7 @@ async fn execute_commands(
     commands: Vec<Command>,
     rt: &TuiRuntime,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
 ) -> Result<()> {
     let mut queue = std::collections::VecDeque::from(commands);
     while let Some(command) = queue.pop_front() {
@@ -1114,7 +1119,7 @@ async fn execute_commands(
             Command::Brainstorm { task } => rt.exec_brainstorm(task),
             Command::Plan { task } => rt.exec_plan(task),
             Command::CaptureTmux { id, window } => rt.exec_capture_tmux(id, window),
-            Command::EditTaskInEditor(task) => rt.exec_edit_in_editor(app, task, terminal)?,
+            Command::EditTaskInEditor(task) => rt.exec_edit_in_editor(app, task, terminal, key_rx)?,
             Command::SaveRepoPath(path) => rt.exec_save_repo_path(app, path),
             Command::RefreshFromDb => {
                 let extra = rt.exec_refresh_from_db(app);
@@ -1147,7 +1152,7 @@ async fn execute_commands(
             Command::InsertEpic(draft) => {
                 rt.exec_insert_epic(app, draft.title, draft.description, draft.repo_path)
             }
-            Command::EditEpicInEditor(epic) => rt.exec_edit_epic_in_editor(app, epic, terminal)?,
+            Command::EditEpicInEditor(epic) => rt.exec_edit_epic_in_editor(app, epic, terminal, key_rx)?,
             Command::DeleteEpic(id) => rt.exec_delete_epic(app, id),
             Command::PersistEpic {
                 id,
