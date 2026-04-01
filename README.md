@@ -16,13 +16,13 @@ A terminal kanban board for managing development tasks and dispatching Claude Co
 ### One-line install (Linux x86_64)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Ragazoor/dispatch/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Ragazoor/dispatch-agent/main/install.sh | bash
 ```
 
 Or clone and run locally:
 
 ```bash
-git clone https://github.com/Ragazoor/dispatch
+git clone https://github.com/Ragazoor/dispatch-agent
 cd dispatch
 bash install.sh
 ```
