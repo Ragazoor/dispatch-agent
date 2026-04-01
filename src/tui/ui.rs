@@ -1648,6 +1648,12 @@ pub fn render_review_board(frame: &mut Frame, app: &mut App, area: Rect) {
             .style(Style::default().fg(Color::Yellow));
         frame.render_widget(status, chunks[3]);
     }
+
+    if app.review_detail_visible() {
+        if let Some(pr) = app.selected_review_pr() {
+            render_review_detail_overlay(frame, pr, area);
+        }
+    }
 }
 
 fn render_review_summary_row(frame: &mut Frame, app: &App, area: Rect) {
@@ -1734,7 +1740,16 @@ fn build_review_pr_item(pr: &ReviewPr, decision: ReviewDecision, is_cursor: bool
     let stripe = if is_cursor { "\u{258c} " } else { "\u{258e} " };
     let repo_short = pr.repo.split('/').next_back().unwrap_or(&pr.repo);
     let header = format!("{repo_short}#{} {}", pr.number, pr.title);
-    let header_truncated = truncate(&header, 60);
+    let header_truncated = truncate(&header, 56); // slightly shorter to fit badge
+
+    // Badge: ⟳ running, ✓ reviewed
+    let badge = if pr.tmux_window.is_some() {
+        " \u{27f3}" // ⟳
+    } else if pr.review_notes.is_some() {
+        " \u{2713}" // ✓
+    } else {
+        ""
+    };
 
     let line1_style = if is_cursor {
         Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
@@ -1745,6 +1760,7 @@ fn build_review_pr_item(pr: &ReviewPr, decision: ReviewDecision, is_cursor: bool
     let line1 = Line::from(vec![
         Span::styled(stripe, Style::default().fg(color)),
         Span::styled(header_truncated, line1_style),
+        Span::styled(badge.to_string(), Style::default().fg(CYAN)),
     ]);
 
     // Line 2: author · age · +/-lines
@@ -1770,6 +1786,39 @@ fn build_review_pr_item(pr: &ReviewPr, decision: ReviewDecision, is_cursor: bool
     };
 
     ListItem::new(vec![line1, line2]).style(Style::default().bg(bg))
+}
+
+fn render_review_detail_overlay(frame: &mut Frame, pr: &ReviewPr, area: Rect) {
+    // Centered box: 80% width, 70% height
+    let width = (area.width * 4 / 5).max(40);
+    let height = (area.height * 7 / 10).max(10);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect::new(x, y, width, height);
+
+    let notes = pr.review_notes.as_deref().unwrap_or("No review notes.");
+    let title = format!(" {} #{} — Review Notes ", pr.repo, pr.number);
+
+    let paragraph = Paragraph::new(notes)
+        .block(
+            Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .style(Style::default().fg(FG).bg(Color::Rgb(26, 27, 38))),
+        )
+        .wrap(Wrap { trim: false })
+        .style(Style::default().fg(FG));
+
+    frame.render_widget(Clear, popup_area);
+    frame.render_widget(paragraph, popup_area);
+
+    // Hint bar at bottom
+    let hint_area = Rect::new(popup_area.x, popup_area.y + popup_area.height.saturating_sub(1), popup_area.width, 1);
+    let hint = Paragraph::new(" any key to close ")
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(MUTED));
+    frame.render_widget(hint, hint_area);
 }
 
 #[cfg(test)]
