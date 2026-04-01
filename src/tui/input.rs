@@ -14,15 +14,15 @@ impl App {
             InputMode::Normal => self.handle_key_normal(key),
             InputMode::InputTitle
             | InputMode::InputDescription
-            | InputMode::InputRepoPath => self.handle_key_text_input(key),
+            | InputMode::InputRepoPath
+            | InputMode::InputEpicTitle
+            | InputMode::InputEpicDescription
+            | InputMode::InputEpicRepoPath => self.handle_key_text_input(key),
             InputMode::ConfirmDelete => self.handle_key_confirm_delete(key),
             InputMode::InputTag => self.handle_key_tag(key),
             InputMode::QuickDispatch => self.handle_key_quick_dispatch(key),
             InputMode::ConfirmRetry(id) => self.handle_key_confirm_retry(key, id),
             InputMode::ConfirmArchive => self.handle_key_confirm_archive(key),
-            InputMode::InputEpicTitle
-            | InputMode::InputEpicDescription
-            | InputMode::InputEpicRepoPath => self.handle_key_epic_text_input(key),
             InputMode::ConfirmDeleteEpic => self.handle_key_confirm_delete_epic(key),
             InputMode::ConfirmArchiveEpic => self.handle_key_confirm_archive_epic(key),
 
@@ -387,7 +387,10 @@ impl App {
 
     fn handle_key_text_input(&mut self, key: KeyEvent) -> Vec<Command> {
         // In repo path modes, j/k navigate saved repo paths when the buffer is empty
-        let is_repo_mode = matches!(self.input.mode, InputMode::InputRepoPath);
+        let is_repo_mode = matches!(
+            self.input.mode,
+            InputMode::InputRepoPath | InputMode::InputEpicRepoPath
+        );
         if is_repo_mode && self.input.buffer.is_empty() {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => return self.update(Message::MoveRepoCursor(1)),
@@ -402,7 +405,11 @@ impl App {
                 if is_repo_mode && self.input.buffer.is_empty() {
                     let idx = self.input.repo_cursor;
                     if let Some(path) = self.repo_paths.get(idx) {
-                        return self.update(Message::SubmitRepoPath(path.clone()));
+                        let msg = match self.input.mode {
+                            InputMode::InputEpicRepoPath => Message::SubmitEpicRepoPath(path.clone()),
+                            _ => Message::SubmitRepoPath(path.clone()),
+                        };
+                        return self.update(msg);
                     }
                 }
                 let value = self.input.buffer.trim().to_string();
@@ -410,6 +417,9 @@ impl App {
                     InputMode::InputTitle => self.update(Message::SubmitTitle(value)),
                     InputMode::InputDescription => self.update(Message::SubmitDescription(value)),
                     InputMode::InputRepoPath => self.update(Message::SubmitRepoPath(value)),
+                    InputMode::InputEpicTitle => self.update(Message::SubmitEpicTitle(value)),
+                    InputMode::InputEpicDescription => self.update(Message::SubmitEpicDescription(value)),
+                    InputMode::InputEpicRepoPath => self.update(Message::SubmitEpicRepoPath(value)),
                     _ => vec![],
                 }
             }
@@ -526,39 +536,6 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => self.update(Message::ConfirmDone),
             _ => self.update(Message::CancelDone),
-        }
-    }
-
-    fn handle_key_epic_text_input(&mut self, key: KeyEvent) -> Vec<Command> {
-        // In epic repo path mode, j/k navigate saved repo paths when the buffer is empty
-        if matches!(self.input.mode, InputMode::InputEpicRepoPath) && self.input.buffer.is_empty() {
-            match key.code {
-                KeyCode::Char('j') | KeyCode::Down => return self.update(Message::MoveRepoCursor(1)),
-                KeyCode::Char('k') | KeyCode::Up => return self.update(Message::MoveRepoCursor(-1)),
-                _ => {}
-            }
-        }
-        match key.code {
-            KeyCode::Esc => self.update(Message::CancelInput),
-            KeyCode::Enter => {
-                // In epic repo path mode with empty buffer, Enter selects the cursor repo
-                if matches!(self.input.mode, InputMode::InputEpicRepoPath) && self.input.buffer.is_empty() {
-                    let idx = self.input.repo_cursor;
-                    if let Some(path) = self.repo_paths.get(idx) {
-                        return self.update(Message::SubmitEpicRepoPath(path.clone()));
-                    }
-                }
-                let value = self.input.buffer.trim().to_string();
-                match self.input.mode.clone() {
-                    InputMode::InputEpicTitle => self.update(Message::SubmitEpicTitle(value)),
-                    InputMode::InputEpicDescription => self.update(Message::SubmitEpicDescription(value)),
-                    InputMode::InputEpicRepoPath => self.update(Message::SubmitEpicRepoPath(value)),
-                    _ => vec![],
-                }
-            }
-            KeyCode::Backspace => self.update(Message::InputBackspace),
-            KeyCode::Char(c) => self.update(Message::InputChar(c)),
-            _ => vec![],
         }
     }
 
