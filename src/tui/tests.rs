@@ -7316,3 +7316,15 @@ fn review_repo_filter_selected_pr_uses_filter() {
     let selected = app.selected_review_pr().unwrap();
     assert_eq!(selected.number, 2);
 }
+
+#[test]
+fn review_board_default_mode_is_reviewer() {
+    let mut app = make_app();
+    app.update(Message::SwitchToReviewBoard);
+    match app.view_mode() {
+        ViewMode::ReviewBoard { mode, .. } => {
+            assert_eq!(*mode, ReviewBoardMode::Reviewer);
+        }
+        _ => panic!("expected ReviewBoard"),
+    }
+}

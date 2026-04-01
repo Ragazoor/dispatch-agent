@@ -1999,6 +1999,7 @@ impl App {
             ViewMode::ReviewBoard { saved_board, .. } => saved_board.clone(),
         };
         self.view_mode = ViewMode::ReviewBoard {
+            mode: ReviewBoardMode::Reviewer,
             selection: ReviewBoardSelection::new(),
             saved_board,
         };

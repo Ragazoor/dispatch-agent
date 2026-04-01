@@ -16,6 +16,16 @@ pub enum MoveDirection {
 }
 
 // ---------------------------------------------------------------------------
+// ReviewBoardMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewBoardMode {
+    Reviewer,
+    Author,
+}
+
+// ---------------------------------------------------------------------------
 // Message
 // ---------------------------------------------------------------------------
 
@@ -470,6 +480,7 @@ pub enum ViewMode {
         saved_board: BoardSelection,
     },
     ReviewBoard {
+        mode: ReviewBoardMode,
         selection: ReviewBoardSelection,
         saved_board: BoardSelection,
     },
