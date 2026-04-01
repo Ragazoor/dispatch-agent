@@ -1738,7 +1738,7 @@ fn start_quick_dispatch_selection_enters_mode() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.update(Message::StartQuickDispatchSelection);
     assert_eq!(app.input.mode, InputMode::QuickDispatch);
-    assert!(app.status_message.as_deref().unwrap().contains("Select repo"));
+    assert!(app.status_message.is_some());
 }
 
 #[test]
@@ -6768,4 +6768,78 @@ fn batch_detach_tmux() {
         .filter(|c| matches!(c, Command::PersistTask(_)))
         .count();
     assert_eq!(persist_count, 2, "should persist 2 tasks");
+}
+
+// --- Repo cursor navigation ---
+
+#[test]
+fn quick_dispatch_j_moves_cursor_down() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.repo_paths = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+    app.input.mode = InputMode::QuickDispatch;
+    app.input.repo_cursor = 0;
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert_eq!(app.input.repo_cursor, 1);
+}
+
+#[test]
+fn move_repo_cursor_down_wraps() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.repo_paths = vec!["/a".to_string(), "/b".to_string()];
+    app.input.mode = InputMode::QuickDispatch;
+    app.input.repo_cursor = 1; // last
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert_eq!(app.input.repo_cursor, 0, "should wrap to first");
+}
+
+#[test]
+fn move_repo_cursor_up_wraps() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.repo_paths = vec!["/a".to_string(), "/b".to_string()];
+    app.input.mode = InputMode::QuickDispatch;
+    app.input.repo_cursor = 0; // first
+    app.handle_key(make_key(KeyCode::Char('k')));
+    assert_eq!(app.input.repo_cursor, 1, "should wrap to last");
+}
+
+#[test]
+fn quick_dispatch_enter_selects_cursor_repo() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
+    app.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string(), "/repo3".to_string()];
+    app.input.mode = InputMode::QuickDispatch;
+    app.input.repo_cursor = 2; // third repo
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0], Command::QuickDispatch { ref draft, epic_id: None } if draft.repo_path == "/repo3"));
+    assert_eq!(app.input.mode, InputMode::Normal);
+}
+
+#[test]
+fn repo_cursor_resets_on_quick_dispatch_entry() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)], Duration::from_secs(300));
+    app.repo_paths = vec!["/a".to_string(), "/b".to_string()];
+    app.input.repo_cursor = 1;
+    app.update(Message::StartQuickDispatchSelection);
+    assert_eq!(app.input.repo_cursor, 0, "cursor should reset to 0 on mode entry");
+}
+
+#[test]
+fn repo_filter_j_moves_cursor_down() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+    app.input.mode = InputMode::RepoFilter;
+    app.input.repo_cursor = 0;
+    app.handle_key(make_key(KeyCode::Char('j')));
+    assert_eq!(app.input.repo_cursor, 1);
+}
+
+#[test]
+fn repo_filter_space_toggles_cursor_repo() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
+    app.input.mode = InputMode::RepoFilter;
+    app.input.repo_cursor = 1; // pointing at /repo-b
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(app.repo_filter.contains("/repo-b"), "cursor repo should be toggled");
+    assert!(!app.repo_filter.contains("/repo-a"));
 }

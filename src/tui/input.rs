@@ -384,9 +384,25 @@ impl App {
     }
 
     fn handle_key_text_input(&mut self, key: KeyEvent) -> Vec<Command> {
+        // In repo path modes, j/k navigate saved repo paths when the buffer is empty
+        let is_repo_mode = matches!(self.input.mode, InputMode::InputRepoPath);
+        if is_repo_mode && self.input.buffer.is_empty() {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => return self.update(Message::MoveRepoCursor(1)),
+                KeyCode::Char('k') | KeyCode::Up => return self.update(Message::MoveRepoCursor(-1)),
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Esc => self.update(Message::CancelInput),
             KeyCode::Enter => {
+                // In repo path modes with empty buffer, Enter selects the cursor repo
+                if is_repo_mode && self.input.buffer.is_empty() {
+                    let idx = self.input.repo_cursor;
+                    if let Some(path) = self.repo_paths.get(idx) {
+                        return self.update(Message::SubmitRepoPath(path.clone()));
+                    }
+                }
                 let value = self.input.buffer.trim().to_string();
                 match self.input.mode.clone() {
                     InputMode::InputTitle => self.update(Message::SubmitTitle(value)),
@@ -450,6 +466,12 @@ impl App {
     fn handle_key_quick_dispatch(&mut self, key: KeyEvent) -> Vec<Command> {
         match key.code {
             KeyCode::Esc => self.update(Message::CancelInput),
+            KeyCode::Char('j') | KeyCode::Down => self.update(Message::MoveRepoCursor(1)),
+            KeyCode::Char('k') | KeyCode::Up => self.update(Message::MoveRepoCursor(-1)),
+            KeyCode::Enter => {
+                let idx = self.input.repo_cursor;
+                self.update(Message::SelectQuickDispatchRepo(idx))
+            }
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
                 let idx = (c as usize) - ('1' as usize);
                 self.update(Message::SelectQuickDispatchRepo(idx))
@@ -513,9 +535,24 @@ impl App {
     }
 
     fn handle_key_epic_text_input(&mut self, key: KeyEvent) -> Vec<Command> {
+        // In epic repo path mode, j/k navigate saved repo paths when the buffer is empty
+        if matches!(self.input.mode, InputMode::InputEpicRepoPath) && self.input.buffer.is_empty() {
+            match key.code {
+                KeyCode::Char('j') | KeyCode::Down => return self.update(Message::MoveRepoCursor(1)),
+                KeyCode::Char('k') | KeyCode::Up => return self.update(Message::MoveRepoCursor(-1)),
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Esc => self.update(Message::CancelInput),
             KeyCode::Enter => {
+                // In epic repo path mode with empty buffer, Enter selects the cursor repo
+                if matches!(self.input.mode, InputMode::InputEpicRepoPath) && self.input.buffer.is_empty() {
+                    let idx = self.input.repo_cursor;
+                    if let Some(path) = self.repo_paths.get(idx) {
+                        return self.update(Message::SubmitEpicRepoPath(path.clone()));
+                    }
+                }
                 let value = self.input.buffer.trim().to_string();
                 match self.input.mode.clone() {
                     InputMode::InputEpicTitle => self.update(Message::SubmitEpicTitle(value)),
@@ -581,6 +618,17 @@ impl App {
         match key.code {
             KeyCode::Enter | KeyCode::Esc => self.update(Message::CloseRepoFilter),
             KeyCode::Char('a') => self.update(Message::ToggleAllRepoFilter),
+            KeyCode::Char('j') | KeyCode::Down => self.update(Message::MoveRepoCursor(1)),
+            KeyCode::Char('k') | KeyCode::Up => self.update(Message::MoveRepoCursor(-1)),
+            KeyCode::Char(' ') => {
+                let idx = self.input.repo_cursor;
+                if idx < self.repo_paths.len() {
+                    let path = self.repo_paths[idx].clone();
+                    self.update(Message::ToggleRepoFilter(path))
+                } else {
+                    vec![]
+                }
+            }
             KeyCode::Char(c @ '1'..='9') => {
                 let idx = (c as usize) - ('1' as usize);
                 if idx < self.repo_paths.len() {

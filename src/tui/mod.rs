@@ -445,6 +445,7 @@ impl App {
             Message::CloseRepoFilter => self.handle_close_repo_filter(),
             Message::ToggleRepoFilter(path) => self.handle_toggle_repo_filter(path),
             Message::ToggleAllRepoFilter => self.handle_toggle_all_repo_filter(),
+            Message::MoveRepoCursor(delta) => self.handle_move_repo_cursor(delta),
             // Wrap up
             Message::StartWrapUp(id) => self.handle_start_wrap_up(id),
             Message::WrapUpRebase => self.handle_wrap_up_rebase(),
@@ -1480,7 +1481,8 @@ impl App {
 
     fn handle_start_quick_dispatch_selection(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::QuickDispatch;
-        self.set_status("Select repo path (1-9) or Esc to cancel".to_string());
+        self.input.repo_cursor = 0;
+        self.set_status("j/k navigate · Enter select · 1-9 shortcut · Esc cancel".to_string());
         vec![]
     }
 
@@ -2296,6 +2298,17 @@ impl App {
 
     fn handle_start_repo_filter(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::RepoFilter;
+        self.input.repo_cursor = 0;
+        vec![]
+    }
+
+    fn handle_move_repo_cursor(&mut self, delta: isize) -> Vec<Command> {
+        let count = self.repo_paths.len();
+        if count == 0 {
+            return vec![];
+        }
+        self.input.repo_cursor = (self.input.repo_cursor as isize + delta)
+            .rem_euclid(count as isize) as usize;
         vec![]
     }
 

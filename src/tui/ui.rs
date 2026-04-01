@@ -100,6 +100,28 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Compute how tall the detail/input panel should be based on the current input mode.
+/// Expands when a repo list is being shown so all repos (plus cursor) are visible.
+fn input_panel_height(app: &App, area_height: u16, has_banner: bool) -> u16 {
+    // Fixed overhead: tab_bar(1) + summary(1) + kanban_min(6) + status_bar(1) = 9,
+    // plus epic banner(4) when present.
+    let overhead: u16 = if has_banner { 13 } else { 9 };
+    let max_height = area_height.saturating_sub(overhead).max(8);
+    match &app.input.mode {
+        InputMode::QuickDispatch => {
+            // header(1) + blank(1) + repos(N) + blank(1) + hint(1) + borders(2) = N + 6
+            let rows = app.repo_paths.len() as u16 + 6;
+            rows.clamp(8, max_height)
+        }
+        InputMode::InputRepoPath | InputMode::InputEpicRepoPath if app.input.buffer.is_empty() => {
+            // title(1) + desc(1) + path_input(1) + repos(N) + blank(1) + hint(1) + borders(2) = N + 7
+            let rows = app.repo_paths.len() as u16 + 7;
+            rows.clamp(8, max_height)
+        }
+        _ => 8,
+    }
+}
+
 /// Top-level render function.
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -116,24 +138,25 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     let has_banner = matches!(app.view_mode(), ViewMode::Epic { .. });
 
+    let panel_h = input_panel_height(app, area.height, has_banner);
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints(if has_banner {
             vec![
-                Constraint::Length(1),   // tab bar
-                Constraint::Length(1),   // summary row
-                Constraint::Length(4),   // epic banner
-                Constraint::Min(6),      // kanban board
-                Constraint::Length(8),   // detail panel
-                Constraint::Length(1),   // status bar
+                Constraint::Length(1),        // tab bar
+                Constraint::Length(1),        // summary row
+                Constraint::Length(4),        // epic banner
+                Constraint::Min(6),           // kanban board
+                Constraint::Length(panel_h),  // detail panel
+                Constraint::Length(1),        // status bar
             ]
         } else {
             vec![
-                Constraint::Length(1),   // tab bar
-                Constraint::Length(1),   // summary row
-                Constraint::Min(6),      // kanban board
-                Constraint::Length(8),   // detail panel
-                Constraint::Length(1),   // status bar
+                Constraint::Length(1),        // tab bar
+                Constraint::Length(1),        // summary row
+                Constraint::Min(6),           // kanban board
+                Constraint::Length(panel_h),  // detail panel
+                Constraint::Length(1),        // status bar
             ]
         })
         .split(area);
@@ -919,34 +942,65 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
             ];
             // Show saved repo paths if available and user hasn't started typing
             if app.input.buffer.is_empty() {
-                for (i, path) in app.repo_paths.iter().enumerate() {
-                    lines.push(Line::from(Span::styled(
-                        format!("    [{}] {path}", i + 1),
-                        hint,
-                    )));
+                let cursor = app.input.repo_cursor;
+                let repo_count = app.repo_paths.len();
+                // Content rows: height - borders(2) - 3 header rows - blank(1) - hint(1)
+                let visible_repos = (area.height.saturating_sub(7)) as usize;
+                let visible_repos = visible_repos.max(1);
+                let scroll = if repo_count <= visible_repos {
+                    0
+                } else {
+                    cursor.saturating_sub(visible_repos - 1).min(repo_count - visible_repos)
+                };
+                let cursor_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                for (i, path) in app.repo_paths.iter().enumerate().skip(scroll).take(visible_repos) {
+                    if i == cursor {
+                        lines.push(Line::from(vec![
+                            Span::styled("  ► ", cursor_style),
+                            Span::styled(path.as_str(), cursor_style),
+                        ]));
+                    } else {
+                        lines.push(Line::from(Span::styled(format!("    {path}"), hint)));
+                    }
                 }
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "  Type a path or press 1-9 to select, Enter to confirm, Esc to cancel",
+                "  Type a path · j/k navigate · Enter select · Esc cancel",
                 hint,
             )));
             lines
         }
         InputMode::QuickDispatch => {
+            let cursor = app.input.repo_cursor;
+            let repo_count = app.repo_paths.len();
+            // Content rows available for the repo list: height - borders(2) - header(1) - blank(1) - blank(1) - hint(1)
+            let visible_repos = (area.height.saturating_sub(6)) as usize;
+            let visible_repos = visible_repos.max(1);
+            let scroll = if repo_count <= visible_repos {
+                0
+            } else {
+                cursor.saturating_sub(visible_repos - 1).min(repo_count - visible_repos)
+            };
+
+            let cursor_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
             let mut lines = vec![
                 Line::from(Span::styled("  Quick Dispatch — select repo:", active)),
                 Line::from(""),
             ];
-            for (i, path) in app.repo_paths.iter().enumerate() {
-                lines.push(Line::from(Span::styled(
-                    format!("    [{}] {path}", i + 1),
-                    hint,
-                )));
+            for (i, path) in app.repo_paths.iter().enumerate().skip(scroll).take(visible_repos) {
+                if i == cursor {
+                    lines.push(Line::from(vec![
+                        Span::styled("  ► ", cursor_style),
+                        Span::styled(path.as_str(), cursor_style),
+                    ]));
+                } else {
+                    lines.push(Line::from(Span::styled(format!("    {path}"), hint)));
+                }
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "  Press 1-9 to select, Esc to cancel",
+                "  j/k navigate · Enter select · 1-9 shortcut · Esc cancel",
                 hint,
             )));
             lines
@@ -1007,16 +1061,30 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
                 )),
             ];
             if app.input.buffer.is_empty() {
-                for (i, path) in app.repo_paths.iter().enumerate() {
-                    lines.push(Line::from(Span::styled(
-                        format!("    [{}] {path}", i + 1),
-                        hint,
-                    )));
+                let cursor = app.input.repo_cursor;
+                let repo_count = app.repo_paths.len();
+                let visible_repos = (area.height.saturating_sub(7)) as usize;
+                let visible_repos = visible_repos.max(1);
+                let scroll = if repo_count <= visible_repos {
+                    0
+                } else {
+                    cursor.saturating_sub(visible_repos - 1).min(repo_count - visible_repos)
+                };
+                let cursor_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+                for (i, path) in app.repo_paths.iter().enumerate().skip(scroll).take(visible_repos) {
+                    if i == cursor {
+                        lines.push(Line::from(vec![
+                            Span::styled("  ► ", cursor_style),
+                            Span::styled(path.as_str(), cursor_style),
+                        ]));
+                    } else {
+                        lines.push(Line::from(Span::styled(format!("    {path}"), hint)));
+                    }
                 }
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "  Type a path or press 1-9 to select, Enter to confirm, Esc to cancel",
+                "  Type a path · j/k navigate · Enter select · Esc cancel",
                 hint,
             )));
             lines
@@ -1221,12 +1289,27 @@ fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let preset_count = app.filter_presets().len();
     let preset_lines = if preset_count > 0 { preset_count + 2 } else { 0 }; // header + presets + blank line
     let input_line = if matches!(app.mode(), InputMode::InputPresetName) { 1 } else { 0 };
-    let popup_height = (repo_count as u16 + preset_lines as u16 + input_line as u16 + 5)
+    // Cap popup height to screen minus 4; repos may scroll if they don't fit
+    // +6: blank(1) + preset_lines + blank(1) + 2_help_lines(2) + borders(2)
+    let popup_height = (repo_count as u16 + preset_lines as u16 + input_line as u16 + 6)
         .clamp(7, area.height.saturating_sub(4));
     let popup_width = (area.width * 70 / 100).clamp(30, 60);
     let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
     let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
     let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+    // How many repo rows fit: content height minus non-repo fixed lines
+    // non_repo = blank(1) + preset_lines + blank(1) + 2_help_lines(2) = 4 + preset_lines
+    let content_height = popup_height.saturating_sub(2) as usize; // minus borders
+    let non_repo_lines = preset_lines + input_line + 4; // blank + presets + blank + 2 help lines
+    let visible_repos = content_height.saturating_sub(non_repo_lines).max(1);
+
+    let cursor = app.input.repo_cursor;
+    let scroll = if repo_count <= visible_repos {
+        0
+    } else {
+        cursor.saturating_sub(visible_repos - 1).min(repo_count - visible_repos)
+    };
 
     frame.render_widget(Clear, popup_area);
 
@@ -1240,6 +1323,7 @@ fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let key_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let desc_style = Style::default().fg(Color::Gray);
     let note_style = Style::default().fg(Color::DarkGray);
+    let cursor_style = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 
     let mut lines = vec![Line::from("")];
 
@@ -1258,14 +1342,28 @@ fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(""));
     }
 
-    // Repo list
-    for (i, path) in app.repo_paths().iter().enumerate() {
-        let num = i + 1;
+    // Repo list (scrollable)
+    if scroll > 0 {
+        lines.push(Line::from(Span::styled(format!("  ↑ {} more", scroll), note_style)));
+    }
+    for (i, path) in app.repo_paths().iter().enumerate().skip(scroll).take(visible_repos) {
         let checked = if app.repo_filter().contains(path) { "x" } else { " " };
-        lines.push(Line::from(vec![
-            Span::styled(format!("  {num}"), key_style),
-            Span::styled(format!(". [{checked}] {path}"), desc_style),
-        ]));
+        if i == cursor {
+            lines.push(Line::from(vec![
+                Span::styled("  ►", cursor_style),
+                Span::styled(format!(" [{checked}] {path}"), cursor_style),
+            ]));
+        } else {
+            let num = i + 1;
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {num}"), key_style),
+                Span::styled(format!(". [{checked}] {path}"), desc_style),
+            ]));
+        }
+    }
+    let remaining = repo_count.saturating_sub(scroll + visible_repos);
+    if remaining > 0 {
+        lines.push(Line::from(Span::styled(format!("  ↓ {} more", remaining), note_style)));
     }
 
     lines.push(Line::from(""));
@@ -1301,12 +1399,18 @@ fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
         }
         _ => {
             lines.push(Line::from(vec![
-                Span::styled("  a", key_style),
-                Span::styled(format!(": {a_label}  "), note_style),
-                Span::styled("s", key_style),
-                Span::styled(": save  ", note_style),
+                Span::styled("  j/k", key_style),
+                Span::styled(": navigate  ", note_style),
+                Span::styled("Space", key_style),
+                Span::styled(": toggle  ", note_style),
+                Span::styled("a", key_style),
+                Span::styled(format!(": {a_label}"), note_style),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  s", key_style),
+                Span::styled(": save preset  ", note_style),
                 Span::styled("x", key_style),
-                Span::styled(": del  ", note_style),
+                Span::styled(": del preset  ", note_style),
                 Span::styled("Enter/Esc", key_style),
                 Span::styled(": close", note_style),
             ]));

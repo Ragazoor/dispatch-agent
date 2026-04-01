@@ -120,6 +120,7 @@ pub enum Message {
     CloseRepoFilter,
     ToggleRepoFilter(String),
     ToggleAllRepoFilter,
+    MoveRepoCursor(isize),
     // Filter presets
     StartSavePreset,
     SaveFilterPreset(String),
@@ -293,6 +294,7 @@ pub struct InputState {
     pub buffer: String,
     pub task_draft: Option<TaskDraft>,
     pub epic_draft: Option<EpicDraft>,
+    pub repo_cursor: usize,
 }
 
 impl Default for InputState {
@@ -302,6 +304,7 @@ impl Default for InputState {
             buffer: String::new(),
             task_draft: None,
             epic_draft: None,
+            repo_cursor: 0,
         }
     }
 }
