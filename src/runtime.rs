@@ -144,12 +144,17 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
     // 7. Main loop
     tracing::info!(port, db = %db_path.display(), "TUI started, MCP server on port {port}");
 
+    let dispatch_repo = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+
     let runtime = TuiRuntime {
         database,
         msg_tx,
         port,
         input_paused,
         runner,
+        dispatch_repo,
     };
     let result = run_loop(
         &mut app,
@@ -244,6 +249,7 @@ struct TuiRuntime {
     port: u16,
     input_paused: Arc<AtomicBool>,
     runner: Arc<dyn ProcessRunner>,
+    dispatch_repo: String,
 }
 
 impl TuiRuntime {
@@ -884,6 +890,64 @@ impl TuiRuntime {
             }
         });
     }
+
+    fn exec_dispatch_review_agent(&self, pr: crate::models::ReviewPr) {
+        let url = pr.url.clone();
+        let dispatch_repo = self.dispatch_repo.clone();
+        let tx = self.msg_tx.clone();
+        let runner = self.runner.clone();
+
+        // Check if worktree exists → resume instead of fresh dispatch
+        let repo_short = pr.repo.split('/').next_back().unwrap_or(&pr.repo).to_string();
+        let worktree_name = format!("review-{}-{}", repo_short, pr.number);
+        let worktree_path = format!("{dispatch_repo}/.worktrees/{worktree_name}");
+        let worktree_exists = std::path::Path::new(&worktree_path).exists();
+
+        if worktree_exists {
+            let repo = pr.repo.clone();
+            let number = pr.number;
+            tokio::task::spawn_blocking(move || {
+                match dispatch::resume_review_agent(&repo, number, &worktree_path, &*runner) {
+                    Ok(result) => {
+                        let _ = tx.send(Message::ReviewAgentResumed {
+                            url,
+                            tmux_window: result.tmux_window,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Message::Error(format!("Review resume failed: {e:#}")));
+                    }
+                }
+            });
+        } else {
+            tokio::task::spawn_blocking(move || {
+                match dispatch::dispatch_review_agent(&pr, &dispatch_repo, &*runner) {
+                    Ok(result) => {
+                        let _ = tx.send(Message::ReviewAgentDispatched {
+                            url,
+                            tmux_window: result.tmux_window,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Message::Error(format!("Review dispatch failed: {e:#}")));
+                    }
+                }
+            });
+        }
+    }
+
+    fn exec_patch_review_pr(
+        &self,
+        url: &str,
+        review_notes: Option<String>,
+        tmux_window: Option<Option<String>>,
+    ) {
+        let notes: Option<Option<&str>> = review_notes.as_ref().map(|s| Some(s.as_str()));
+        let window: Option<Option<&str>> = tmux_window.as_ref().map(|o| o.as_deref());
+        if let Err(e) = self.database.patch_review_pr(url, notes, window) {
+            tracing::warn!("Failed to patch review PR {url}: {e}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -996,8 +1060,9 @@ async fn execute_commands(
                 rt.exec_persist_filter_preset(app, &name, &repo_paths),
             Command::DeleteFilterPreset(name) =>
                 rt.exec_delete_filter_preset(app, &name),
-            Command::DispatchReviewAgent(_) => {},
-            Command::PatchReviewPr { .. } => {},
+            Command::DispatchReviewAgent(pr) => rt.exec_dispatch_review_agent(pr),
+            Command::PatchReviewPr { url, review_notes, tmux_window } =>
+                rt.exec_patch_review_pr(&url, review_notes, tmux_window),
         }
     }
 
@@ -1030,6 +1095,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner,
+            dispatch_repo: String::new(),
         };
         let tasks = db.list_all().unwrap();
         let app = App::new(tasks, Duration::from_secs(300));
@@ -1127,6 +1193,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
+            dispatch_repo: String::new(),
         };
         let tasks = db.list_all().unwrap();
         let mut app = App::new(tasks, Duration::from_secs(300));
@@ -1163,6 +1230,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         let task = db.create_task_returning("Test Task", "desc", repo, None, models::TaskStatus::Backlog).unwrap();
@@ -1185,6 +1253,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         let task = db.create_task_returning("Fail Task", "desc", "/nonexistent", None, models::TaskStatus::Backlog).unwrap();
@@ -1212,6 +1281,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         rt.exec_capture_tmux(TaskId(1), models::TmuxWindow("test-window".into()));
@@ -1239,6 +1309,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         rt.exec_capture_tmux(TaskId(1), models::TmuxWindow("gone-window".into()));
@@ -1260,6 +1331,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
+            dispatch_repo: String::new(),
         };
         let tasks = db.list_all().unwrap();
         let mut app = App::new(tasks, Duration::from_secs(300));
@@ -1316,6 +1388,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         let task = db
@@ -1365,6 +1438,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         let task = db
@@ -1432,6 +1506,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         let task = db
@@ -1471,6 +1546,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
+            dispatch_repo: String::new(),
         };
         rt.exec_send_notification("Task #1: Fix bug", "Ready for review", false);
         let calls = mock.recorded_calls();
@@ -1493,6 +1569,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
+            dispatch_repo: String::new(),
         };
         rt.exec_send_notification("Task #1: Fix bug", "Agent needs your input", true);
         let calls = mock.recorded_calls();
@@ -1512,6 +1589,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock.clone(),
+            dispatch_repo: String::new(),
         };
         // Should not panic — just logs a warning
         rt.exec_send_notification("Task #1: Fix bug", "Ready for review", false);
@@ -1543,6 +1621,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         rt.exec_create_pr(
@@ -1571,6 +1650,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         rt.exec_create_pr(
@@ -1598,6 +1678,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
@@ -1619,6 +1700,7 @@ mod tests {
             port: DEFAULT_PORT,
             input_paused: Arc::new(AtomicBool::new(false)),
             runner: mock,
+            dispatch_repo: String::new(),
         };
 
         rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
