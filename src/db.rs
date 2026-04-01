@@ -38,7 +38,6 @@ impl<'a> TaskPatch<'a> {
     }
 
     pub fn status(mut self, status: TaskStatus) -> Self {
-        self.sub_status = Some(SubStatus::default_for(status)); // auto-reset: valid pair guaranteed
         self.status = Some(status);
         self
     }
@@ -2035,27 +2034,26 @@ mod tests {
     }
 
     #[test]
-    fn task_patch_status_auto_resets_sub_status() {
-        // Calling .status() without .sub_status() should still produce a valid pair
+    fn task_patch_status_does_not_set_sub_status() {
+        // status() no longer auto-sets sub_status; patch_task handles the default
         let patch = TaskPatch::new().status(TaskStatus::Review);
         assert_eq!(patch.status, Some(TaskStatus::Review));
-        assert_eq!(patch.sub_status, Some(SubStatus::AwaitingReview));
+        assert_eq!(patch.sub_status, None);
     }
 
     #[test]
-    fn task_patch_status_running_defaults_to_active() {
-        let patch = TaskPatch::new().status(TaskStatus::Running);
-        assert_eq!(patch.sub_status, Some(SubStatus::Active));
-    }
-
-    #[test]
-    fn task_patch_status_sub_status_can_override_default() {
-        // Explicitly chaining .sub_status() after .status() overrides the auto-reset
-        let patch = TaskPatch::new()
-            .status(TaskStatus::Review)
-            .sub_status(SubStatus::Approved);
-        assert_eq!(patch.status, Some(TaskStatus::Review));
-        assert_eq!(patch.sub_status, Some(SubStatus::Approved));
+    fn task_patch_status_and_sub_status_independent() {
+        // Order of builder calls doesn't matter — both fields are set independently
+        let patch_a = TaskPatch::new()
+            .status(TaskStatus::Running)
+            .sub_status(SubStatus::NeedsInput);
+        let patch_b = TaskPatch::new()
+            .sub_status(SubStatus::NeedsInput)
+            .status(TaskStatus::Running);
+        assert_eq!(patch_a.status, Some(TaskStatus::Running));
+        assert_eq!(patch_a.sub_status, Some(SubStatus::NeedsInput));
+        assert_eq!(patch_b.status, Some(TaskStatus::Running));
+        assert_eq!(patch_b.sub_status, Some(SubStatus::NeedsInput));
     }
 
     #[test]

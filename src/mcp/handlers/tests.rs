@@ -2348,6 +2348,33 @@ async fn update_task_sub_status_with_status_change() {
 }
 
 #[tokio::test]
+async fn update_task_status_running_with_needs_input() {
+    let state = test_state();
+    let task_id = state
+        .db
+        .create_task("T", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
+
+    // Set status=running and sub_status=needs_input in one call.
+    // Before the fix, status() auto-reset sub_status to Active, which could
+    // overwrite the explicit needs_input depending on builder call order.
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "status": "running", "sub_status": "needs_input" }
+        })),
+    )
+    .await;
+    assert!(resp.error.is_none(), "expected success: {:?}", resp.error);
+
+    let task = state.db.get_task(task_id).unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert_eq!(task.sub_status, crate::models::SubStatus::NeedsInput);
+}
+
+#[tokio::test]
 async fn update_task_sub_status_invalid_for_new_status() {
     let state = test_state();
     let task_id = state
