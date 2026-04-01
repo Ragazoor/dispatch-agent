@@ -661,6 +661,12 @@ impl App {
     }
 
     fn handle_key_review_board(&mut self, key: KeyEvent) -> Vec<Command> {
+        // Close detail overlay on any key if visible
+        if self.review_detail_visible {
+            self.review_detail_visible = false;
+            return vec![];
+        }
+
         match key.code {
             KeyCode::Char('q') => self.update(Message::Quit),
             KeyCode::Tab | KeyCode::Esc => self.update(Message::SwitchToTaskBoard),
@@ -692,6 +698,43 @@ impl App {
                 if let Some(pr) = self.selected_review_pr() {
                     let url = pr.url.clone();
                     vec![Command::OpenInBrowser { url }]
+                } else {
+                    vec![]
+                }
+            }
+
+            KeyCode::Char('d') => {
+                if let Some(pr) = self.selected_review_pr().cloned() {
+                    if pr.tmux_window.is_some() {
+                        return self.update(Message::StatusInfo(
+                            "Agent running, press g to jump".to_string(),
+                        ));
+                    }
+                    vec![Command::DispatchReviewAgent(pr)]
+                } else {
+                    vec![]
+                }
+            }
+
+            KeyCode::Char('g') => {
+                if let Some(pr) = self.selected_review_pr() {
+                    if let Some(window) = pr.tmux_window.clone() {
+                        vec![Command::JumpToTmux { window }]
+                    } else {
+                        self.update(Message::StatusInfo("No active session".to_string()))
+                    }
+                } else {
+                    vec![]
+                }
+            }
+
+            KeyCode::Char('e') => {
+                if let Some(pr) = self.selected_review_pr() {
+                    if pr.review_notes.is_some() {
+                        self.update(Message::ShowReviewDetail)
+                    } else {
+                        self.update(Message::StatusInfo("No review notes yet".to_string()))
+                    }
                 } else {
                     vec![]
                 }
