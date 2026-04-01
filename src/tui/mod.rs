@@ -44,6 +44,10 @@ pub struct App {
     pub(in crate::tui) merge_queue: Option<MergeQueue>,
     pub(in crate::tui) review_detail_visible: bool,
     pub(in crate::tui) review_repo_filter: HashSet<String>,
+    pub(in crate::tui) my_prs: Vec<crate::models::ReviewPr>,
+    pub(in crate::tui) my_prs_loading: bool,
+    pub(in crate::tui) last_my_prs_fetch: Option<Instant>,
+    pub(in crate::tui) my_prs_repo_filter: HashSet<String>,
 }
 
 /// Format a title for display in confirmation prompts, truncating if longer than `max_len` chars.
@@ -85,6 +89,10 @@ impl App {
             merge_queue: None,
             review_detail_visible: false,
             review_repo_filter: HashSet::new(),
+            my_prs: Vec::new(),
+            my_prs_loading: false,
+            last_my_prs_fetch: None,
+            my_prs_repo_filter: HashSet::new(),
         }
     }
 
@@ -157,6 +165,12 @@ impl App {
     }
     pub fn review_repo_filter(&self) -> &HashSet<String> {
         &self.review_repo_filter
+    }
+    pub fn my_prs(&self) -> &[crate::models::ReviewPr] {
+        &self.my_prs
+    }
+    pub fn my_prs_loading(&self) -> bool {
+        self.my_prs_loading
     }
 
     /// Get the review board selection state, if currently in review board mode.
@@ -506,6 +520,8 @@ impl App {
             Message::SwitchToTaskBoard => self.handle_switch_to_task_board(),
             Message::ReviewPrsLoaded(prs) => self.handle_review_prs_loaded(prs),
             Message::ReviewPrsFetchFailed(err) => self.handle_review_prs_fetch_failed(err),
+            Message::MyPrsLoaded(prs) => self.handle_my_prs_loaded(prs),
+            Message::MyPrsFetchFailed(err) => self.handle_my_prs_fetch_failed(err),
             Message::ToggleReviewDetail => self.handle_toggle_review_detail(),
             Message::DispatchReviewAgent { repo, number, title, body, head_ref } => {
                 self.handle_dispatch_review_agent(repo, number, title, body, head_ref)
@@ -2059,6 +2075,22 @@ impl App {
         vec![]
     }
 
+    fn handle_my_prs_loaded(&mut self, prs: Vec<crate::models::ReviewPr>) -> Vec<Command> {
+        let cmds = vec![Command::PersistMyPrs(prs.clone())];
+        self.my_prs = prs;
+        self.my_prs_loading = false;
+        self.last_my_prs_fetch = Some(Instant::now());
+        self.clamp_review_selection();
+        cmds
+    }
+
+    fn handle_my_prs_fetch_failed(&mut self, error: String) -> Vec<Command> {
+        tracing::warn!(error = %error, "my PRs fetch failed");
+        self.my_prs_loading = false;
+        self.set_status(format!("Failed to fetch my PRs: {error}"));
+        vec![]
+    }
+
     fn handle_dispatch_review_agent(
         &mut self,
         repo: String,
@@ -2100,6 +2132,14 @@ impl App {
         self.review_prs.iter()
             .filter(|pr| {
                 self.review_repo_filter.is_empty() || self.review_repo_filter.contains(&pr.repo)
+            })
+            .collect()
+    }
+
+    pub fn filtered_my_prs(&self) -> Vec<&crate::models::ReviewPr> {
+        self.my_prs.iter()
+            .filter(|pr| {
+                self.my_prs_repo_filter.is_empty() || self.my_prs_repo_filter.contains(&pr.repo)
             })
             .collect()
     }

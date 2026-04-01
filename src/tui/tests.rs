@@ -7328,3 +7328,13 @@ fn review_board_default_mode_is_reviewer() {
         _ => panic!("expected ReviewBoard"),
     }
 }
+
+#[test]
+fn my_prs_loaded_updates_state() {
+    let mut app = make_app();
+    let prs = vec![make_review_pr(101, "me", ReviewDecision::ReviewRequired)];
+    app.update(Message::MyPrsLoaded(prs));
+    assert_eq!(app.my_prs().len(), 1);
+    assert_eq!(app.my_prs()[0].number, 101);
+    assert!(!app.my_prs_loading());
+}

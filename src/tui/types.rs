@@ -120,6 +120,8 @@ pub enum Message {
     SwitchToTaskBoard,
     ReviewPrsLoaded(Vec<crate::models::ReviewPr>),
     ReviewPrsFetchFailed(String),
+    MyPrsLoaded(Vec<crate::models::ReviewPr>),
+    MyPrsFetchFailed(String),
     OpenInBrowser {
         url: String,
     },
@@ -217,6 +219,8 @@ pub enum Command {
     },
     FetchReviewPrs,
     PersistReviewPrs(Vec<crate::models::ReviewPr>),
+    FetchMyPrs,
+    PersistMyPrs(Vec<crate::models::ReviewPr>),
     OpenInBrowser {
         url: String,
     },

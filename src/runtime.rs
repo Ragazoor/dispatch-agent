@@ -1070,6 +1070,8 @@ async fn execute_commands(
                 rt.exec_persist_string_setting(app, &key, &value),
             Command::FetchReviewPrs => rt.exec_fetch_review_prs(),
             Command::PersistReviewPrs(prs) => rt.exec_persist_review_prs(prs),
+            Command::FetchMyPrs => { /* TODO: wire in Task 5 */ }
+            Command::PersistMyPrs(_prs) => { /* TODO: wire in Task 5 */ }
             Command::OpenInBrowser { url } => rt.exec_open_in_browser(url),
             Command::PersistFilterPreset { name, repo_paths } => {
                 rt.exec_persist_filter_preset(app, &name, &repo_paths)
