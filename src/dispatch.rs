@@ -431,7 +431,7 @@ pub fn dispatch_review_agent(
         .context("failed to send keys to review tmux window")?;
 
     Ok(DispatchResult {
-        worktree_path,
+        worktree_path: WorktreePath(worktree_path),
         tmux_window,
     })
 }
@@ -466,9 +466,9 @@ fn build_tmux_window_name(task_id: TaskId) -> TmuxWindow {
     TmuxWindow(format!("task-{task_id}"))
 }
 
-fn build_review_tmux_window_name(repo: &str, number: i64) -> String {
+fn build_review_tmux_window_name(repo: &str, number: i64) -> TmuxWindow {
     let repo_short = repo.split('/').next_back().unwrap_or(repo);
-    format!("review-{repo_short}-{number}")
+    TmuxWindow(format!("review-{repo_short}-{number}"))
 }
 
 fn build_review_prompt(pr: &crate::models::ReviewPr) -> String {
@@ -1598,8 +1598,8 @@ mod tests {
         };
 
         let result = dispatch_review_agent(&pr, repo_path, &mock).unwrap();
-        assert!(result.tmux_window.contains("review-app-42"));
-        assert!(result.worktree_path.contains("review-app-42"));
+        assert!(result.tmux_window.0.contains("review-app-42"));
+        assert!(result.worktree_path.0.contains("review-app-42"));
 
         let calls = mock.recorded_calls();
         // Verify prompt contains the PR URL and complete_review instruction
@@ -1620,7 +1620,7 @@ mod tests {
         ]);
 
         let result = resume_review_agent("acme/app", 42, worktree_path, &mock).unwrap();
-        assert_eq!(result.tmux_window, "review-app-42");
+        assert_eq!(result.tmux_window, TmuxWindow("review-app-42".to_string()));
 
         let calls = mock.recorded_calls();
         assert!(calls.iter().any(|(p, a)| *p == "tmux" && a.iter().any(|s| s.contains("--continue"))));

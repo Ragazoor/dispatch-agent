@@ -911,7 +911,7 @@ impl TuiRuntime {
                     Ok(result) => {
                         let _ = tx.send(Message::ReviewAgentResumed {
                             url,
-                            tmux_window: result.tmux_window,
+                            tmux_window: result.tmux_window.0,
                         });
                     }
                     Err(e) => {
@@ -925,7 +925,7 @@ impl TuiRuntime {
                     Ok(result) => {
                         let _ = tx.send(Message::ReviewAgentDispatched {
                             url,
-                            tmux_window: result.tmux_window,
+                            tmux_window: result.tmux_window.0,
                         });
                     }
                     Err(e) => {

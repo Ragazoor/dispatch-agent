@@ -1,7 +1,7 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::{App, ColumnItem, Command, InputMode, Message, MoveDirection, ViewMode};
-use crate::models::{ReviewDecision, TaskId, TaskStatus};
+use crate::models::{ReviewDecision, TaskId, TaskStatus, TmuxWindow};
 
 impl App {
     /// Translate a terminal key event into zero or more commands, depending on current mode.
@@ -724,7 +724,7 @@ impl App {
             KeyCode::Char('g') => {
                 if let Some(pr) = self.selected_review_pr() {
                     if let Some(window) = pr.tmux_window.clone() {
-                        vec![Command::JumpToTmux { window }]
+                        vec![Command::JumpToTmux { window: TmuxWindow(window) }]
                     } else {
                         self.update(Message::StatusInfo("No active session".to_string()))
                     }

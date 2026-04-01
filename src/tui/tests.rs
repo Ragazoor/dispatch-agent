@@ -6682,6 +6682,8 @@ fn make_review_pr_titled(number: i64, title: &str, decision: ReviewDecision) -> 
         deletions: 5,
         review_decision: decision,
         labels: vec![],
+        tmux_window: None,
+        review_notes: None,
     }
 }
 
@@ -6840,6 +6842,7 @@ fn render_epic_wrap_up_shows_subtask_count() {
     app.update(Message::StartEpicWrapUp(EpicId(1)));
     let buf = render_to_buffer(&mut app, 120, 30);
     assert!(buffer_contains(&buf, "2") && (buffer_contains(&buf, "review") || buffer_contains(&buf, "task")));
+}
 
 #[test]
 fn review_agent_dispatched_updates_pr_tmux_window() {
@@ -6959,7 +6962,7 @@ fn review_board_g_jumps_to_window() {
     app.update(Message::ReviewPrsLoaded(vec![pr]));
 
     let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
-    assert!(cmds.iter().any(|c| matches!(c, Command::JumpToTmux { window } if window == "review-app-2")));
+    assert!(cmds.iter().any(|c| matches!(c, Command::JumpToTmux { window } if window.0 == "review-app-2")));
 }
 
 #[test]
