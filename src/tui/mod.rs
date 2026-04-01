@@ -2023,67 +2023,70 @@ impl App {
     }
 
     fn advance_merge_queue(&mut self) -> Vec<Command> {
-        let (total, next_idx, action) = match &self.merge_queue {
-            Some(q) => (q.task_ids.len(), q.completed, q.action.clone()),
-            None => return vec![],
-        };
+        loop {
+            let (total, next_idx, action) = match &self.merge_queue {
+                Some(q) => (q.task_ids.len(), q.completed, q.action.clone()),
+                None => return vec![],
+            };
 
-        if next_idx >= total {
-            self.merge_queue = None;
-            self.set_status(format!("Epic merge complete: {total}/{total} done"));
-            return vec![];
-        }
-
-        let next_id = self.merge_queue.as_ref().unwrap().task_ids[next_idx];
-
-        // Validate the task is still eligible
-        let task_data = match self.find_task(next_id) {
-            Some(t) if t.status == TaskStatus::Review && t.worktree.is_some() => {
-                let worktree = t.worktree.clone().unwrap();
-                let branch = dispatch::branch_from_worktree(&worktree);
-                let repo_path = t.repo_path.clone();
-                let title = t.title.clone();
-                let description = t.description.clone();
-                let tmux_window = t.tmux_window.clone();
-                branch.map(|b| (worktree, b, repo_path, title, description, tmux_window))
+            if next_idx >= total {
+                self.merge_queue = None;
+                self.set_status(format!("Epic merge complete: {total}/{total} done"));
+                return vec![];
             }
-            _ => None,
-        };
 
-        let Some((worktree, branch, repo_path, title, description, tmux_window)) = task_data else {
-            // Skip this task — no longer eligible
+            let next_id = self.merge_queue.as_ref().unwrap().task_ids[next_idx];
+
+            // Validate the task is still eligible
+            let task_data = match self.find_task(next_id) {
+                Some(t) if t.status == TaskStatus::Review && t.worktree.is_some() => {
+                    let worktree = t.worktree.clone().unwrap();
+                    let branch = dispatch::branch_from_worktree(&worktree);
+                    let repo_path = t.repo_path.clone();
+                    let title = t.title.clone();
+                    let description = t.description.clone();
+                    let tmux_window = t.tmux_window.clone();
+                    branch.map(|b| (worktree, b, repo_path, title, description, tmux_window))
+                }
+                _ => None,
+            };
+
+            let Some((worktree, branch, repo_path, title, description, tmux_window)) = task_data
+            else {
+                // Skip this task — no longer eligible
+                if let Some(q) = &mut self.merge_queue {
+                    q.completed += 1;
+                }
+                continue;
+            };
+
             if let Some(q) = &mut self.merge_queue {
-                q.completed += 1;
+                q.current = Some(next_id);
             }
-            return self.advance_merge_queue();
-        };
 
-        if let Some(q) = &mut self.merge_queue {
-            q.current = Some(next_id);
-        }
+            self.set_status(format!(
+                "Epic merge: {next_idx}/{total} done \u{2014} processing #{}",
+                next_id
+            ));
 
-        self.set_status(format!(
-            "Epic merge: {next_idx}/{total} done \u{2014} processing #{}",
-            next_id
-        ));
-
-        match action {
-            MergeAction::Rebase => {
-                vec![Command::Finish {
+            return match action {
+                MergeAction::Rebase => {
+                    vec![Command::Finish {
+                        id: next_id,
+                        repo_path,
+                        branch,
+                        worktree,
+                        tmux_window,
+                    }]
+                }
+                MergeAction::Pr => vec![Command::CreatePr {
                     id: next_id,
                     repo_path,
                     branch,
-                    worktree,
-                    tmux_window,
-                }]
-            }
-            MergeAction::Pr => vec![Command::CreatePr {
-                id: next_id,
-                repo_path,
-                branch,
-                title,
-                description,
-            }],
+                    title,
+                    description,
+                }],
+            };
         }
     }
 
