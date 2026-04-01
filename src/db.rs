@@ -764,11 +764,12 @@ impl TaskStore for Database {
         if !patch.has_changes() {
             return Ok(());
         }
-        debug_assert!(
-            !matches!((patch.status, patch.sub_status), (Some(s), Some(ss)) if !ss.is_valid_for(s)),
-            "invalid (status, sub_status) pair in patch: {:?}/{:?}",
-            patch.status, patch.sub_status
-        );
+        if matches!((patch.status, patch.sub_status), (Some(s), Some(ss)) if !ss.is_valid_for(s)) {
+            anyhow::bail!(
+                "invalid (status, sub_status) pair in patch: {:?}/{:?}",
+                patch.status, patch.sub_status
+            );
+        }
         let conn = self.conn()?;
         let mut sets: Vec<&str> = Vec::new();
         let mut values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();

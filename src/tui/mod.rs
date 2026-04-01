@@ -713,6 +713,7 @@ impl App {
                 }
                 let detach = Self::take_detach(task);
                 task.status = TaskStatus::Done;
+                task.sub_status = SubStatus::default_for(TaskStatus::Done);
                 let task_clone = task.clone();
                 self.clear_agent_tracking(id);
                 if let Some(c) = detach {
@@ -1196,6 +1197,7 @@ impl App {
             }
             let cleanup = Self::take_cleanup(task);
             task.status = TaskStatus::Archived;
+            task.sub_status = SubStatus::default_for(TaskStatus::Archived);
             let task_clone = task.clone();
             self.clear_agent_tracking(id);
             self.clamp_selection();
@@ -1598,6 +1600,7 @@ impl App {
         let mut cmds = if let Some(task) = self.find_task_mut(id) {
             task.pr_url = Some(pr_url.clone());
             task.status = TaskStatus::Review;
+            task.sub_status = SubStatus::default_for(TaskStatus::Review);
             let task_clone = task.clone();
             if !in_queue {
                 let pr_num = crate::models::pr_number_from_url(&pr_url);
@@ -1656,6 +1659,7 @@ impl App {
                 cmds.push(Command::KillTmuxWindow { window });
             }
             task.status = TaskStatus::Done;
+            task.sub_status = SubStatus::default_for(TaskStatus::Done);
             let task_clone = task.clone();
 
             self.clear_agent_tracking(id);
