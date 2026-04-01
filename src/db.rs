@@ -227,6 +227,10 @@ pub trait TaskStore: Send + Sync {
     // Review PRs
     fn save_review_prs(&self, prs: &[crate::models::ReviewPr]) -> Result<()>;
     fn load_review_prs(&self) -> Result<Vec<crate::models::ReviewPr>>;
+
+    // My PRs (authored)
+    fn save_my_prs(&self, prs: &[crate::models::ReviewPr]) -> Result<()>;
+    fn load_my_prs(&self) -> Result<Vec<crate::models::ReviewPr>>;
 }
 
 // ---------------------------------------------------------------------------
@@ -739,6 +743,33 @@ impl Database {
 
             conn.pragma_update(None, "user_version", 20i64)
                 .context("Failed to update schema version to 20")?;
+        }
+
+        if current_version < 21 {
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS my_prs (
+                    repo            TEXT    NOT NULL,
+                    number          INTEGER NOT NULL,
+                    title           TEXT    NOT NULL,
+                    author          TEXT    NOT NULL,
+                    url             TEXT    NOT NULL,
+                    is_draft        INTEGER NOT NULL DEFAULT 0,
+                    created_at      TEXT    NOT NULL,
+                    updated_at      TEXT    NOT NULL,
+                    additions       INTEGER NOT NULL DEFAULT 0,
+                    deletions       INTEGER NOT NULL DEFAULT 0,
+                    review_decision TEXT    NOT NULL DEFAULT 'ReviewRequired',
+                    labels          TEXT    NOT NULL DEFAULT '[]',
+                    body            TEXT    NOT NULL DEFAULT '',
+                    head_ref        TEXT    NOT NULL DEFAULT '',
+                    ci_status       TEXT    NOT NULL DEFAULT 'None',
+                    reviewers       TEXT    NOT NULL DEFAULT '[]',
+                    PRIMARY KEY (repo, number)
+                )",
+            )
+            .context("Failed to create my_prs table")?;
+            conn.pragma_update(None, "user_version", 21i64)
+                .context("Failed to update schema version to 21")?;
         }
 
         Ok(())
@@ -1429,6 +1460,157 @@ impl TaskStore for Database {
         }
         Ok(prs)
     }
+
+    fn save_my_prs(&self, prs: &[ReviewPr]) -> Result<()> {
+        let conn = self.conn()?;
+        let tx = conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM my_prs", [])?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO my_prs (repo, number, title, author, url, is_draft,
+                 created_at, updated_at, additions, deletions, review_decision, labels,
+                 body, head_ref, ci_status, reviewers)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            )?;
+            for pr in prs {
+                let labels_json =
+                    serde_json::to_string(&pr.labels).context("Failed to serialize labels")?;
+                let reviewers_json = serde_json::to_string(&pr.reviewers.iter().map(|r| {
+                    serde_json::json!({
+                        "login": r.login,
+                        "decision": r.decision.map(|d| d.as_db_str())
+                    })
+                }).collect::<Vec<_>>()).unwrap_or_default();
+                stmt.execute(params![
+                    pr.repo,
+                    pr.number,
+                    pr.title,
+                    pr.author,
+                    pr.url,
+                    pr.is_draft,
+                    pr.created_at.to_rfc3339(),
+                    pr.updated_at.to_rfc3339(),
+                    pr.additions,
+                    pr.deletions,
+                    pr.review_decision.as_db_str(),
+                    labels_json,
+                    pr.body,
+                    pr.head_ref,
+                    pr.ci_status.as_db_str(),
+                    reviewers_json,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn load_my_prs(&self) -> Result<Vec<ReviewPr>> {
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare(
+            "SELECT repo, number, title, author, url, is_draft,
+                    created_at, updated_at, additions, deletions,
+                    review_decision, labels, body, head_ref, ci_status, reviewers
+             FROM my_prs",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let repo: String = row.get(0)?;
+            let number: i64 = row.get(1)?;
+            let title: String = row.get(2)?;
+            let author: String = row.get(3)?;
+            let url: String = row.get(4)?;
+            let is_draft: bool = row.get(5)?;
+            let created_at_str: String = row.get(6)?;
+            let updated_at_str: String = row.get(7)?;
+            let additions: i64 = row.get(8)?;
+            let deletions: i64 = row.get(9)?;
+            let decision_str: String = row.get(10)?;
+            let labels_json: String = row.get(11)?;
+            let body: String = row.get(12)?;
+            let head_ref: String = row.get(13)?;
+            let ci_status_str: String = row.get(14)?;
+            let reviewers_json: String = row.get(15)?;
+            Ok((
+                repo,
+                number,
+                title,
+                author,
+                url,
+                is_draft,
+                created_at_str,
+                updated_at_str,
+                additions,
+                deletions,
+                decision_str,
+                labels_json,
+                body,
+                head_ref,
+                ci_status_str,
+                reviewers_json,
+            ))
+        })?;
+
+        let mut prs = Vec::new();
+        for row in rows {
+            let (
+                repo,
+                number,
+                title,
+                author,
+                url,
+                is_draft,
+                created_at_str,
+                updated_at_str,
+                additions,
+                deletions,
+                decision_str,
+                labels_json,
+                body,
+                head_ref,
+                ci_status_str,
+                reviewers_json,
+            ) = row?;
+
+            let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let updated_at = DateTime::parse_from_rfc3339(&updated_at_str)
+                .map(|dt| dt.with_timezone(&Utc))
+                .unwrap_or_else(|_| Utc::now());
+            let review_decision = ReviewDecision::from_db_str(&decision_str)
+                .unwrap_or(ReviewDecision::ReviewRequired);
+            let labels: Vec<String> = serde_json::from_str(&labels_json).unwrap_or_default();
+            let ci_status = CiStatus::from_db_str(&ci_status_str);
+            let reviewers: Vec<Reviewer> = serde_json::from_str::<Vec<serde_json::Value>>(&reviewers_json)
+                .unwrap_or_default()
+                .iter()
+                .map(|v| Reviewer {
+                    login: v["login"].as_str().unwrap_or("").to_string(),
+                    decision: v["decision"].as_str().and_then(ReviewDecision::from_db_str),
+                })
+                .collect();
+
+            prs.push(ReviewPr {
+                number,
+                title,
+                author,
+                repo,
+                url,
+                is_draft,
+                created_at,
+                updated_at,
+                additions,
+                deletions,
+                review_decision,
+                labels,
+                body,
+                head_ref,
+                ci_status,
+                reviewers,
+            });
+        }
+        Ok(prs)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1650,7 +1832,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20, "fresh DB should be at schema version 20");
+        assert_eq!(version, 21, "fresh DB should be at schema version 21");
     }
 
     #[test]
@@ -2614,13 +2796,13 @@ mod tests {
     }
 
     #[test]
-    fn schema_version_is_20() {
+    fn schema_version_is_21() {
         let db = Database::open_in_memory().unwrap();
         let conn = db.conn.lock().unwrap();
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 20, "fresh DB should be at schema version 20");
+        assert_eq!(version, 21, "fresh DB should be at schema version 21");
     }
 
     #[test]

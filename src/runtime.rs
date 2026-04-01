@@ -923,6 +923,30 @@ impl TuiRuntime {
         }
     }
 
+    fn exec_fetch_my_prs(&self) {
+        let tx = self.msg_tx.clone();
+        let runner = self.runner.clone();
+        tokio::task::spawn_blocking(move || {
+            tracing::info!("fetching my PRs via gh");
+            match crate::github::fetch_my_prs(&*runner) {
+                Ok(prs) => {
+                    tracing::info!(count = prs.len(), "my PRs fetched successfully");
+                    let _ = tx.send(Message::MyPrsLoaded(prs));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "my PR fetch failed");
+                    let _ = tx.send(Message::MyPrsFetchFailed(e));
+                }
+            }
+        });
+    }
+
+    fn exec_persist_my_prs(&self, prs: Vec<crate::models::ReviewPr>) {
+        if let Err(e) = self.database.save_my_prs(&prs) {
+            tracing::warn!("Failed to persist my PRs: {e}");
+        }
+    }
+
     fn exec_open_in_browser(&self, url: String) {
         let runner = self.runner.clone();
         tokio::task::spawn_blocking(move || {
@@ -1070,8 +1094,8 @@ async fn execute_commands(
                 rt.exec_persist_string_setting(app, &key, &value),
             Command::FetchReviewPrs => rt.exec_fetch_review_prs(),
             Command::PersistReviewPrs(prs) => rt.exec_persist_review_prs(prs),
-            Command::FetchMyPrs => { /* TODO: wire in Task 5 */ }
-            Command::PersistMyPrs(_prs) => { /* TODO: wire in Task 5 */ }
+            Command::FetchMyPrs => rt.exec_fetch_my_prs(),
+            Command::PersistMyPrs(prs) => rt.exec_persist_my_prs(prs),
             Command::OpenInBrowser { url } => rt.exec_open_in_browser(url),
             Command::PersistFilterPreset { name, repo_paths } => {
                 rt.exec_persist_filter_preset(app, &name, &repo_paths)
