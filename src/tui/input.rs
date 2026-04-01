@@ -160,17 +160,20 @@ impl App {
             }
 
             KeyCode::Char('e') => {
-                if let ViewMode::Epic { epic_id, .. } = &self.view_mode {
-                    let id = *epic_id;
-                    return self.update(Message::EditEpic(id));
-                }
                 match self.selected_column_item() {
+                    Some(ColumnItem::Task(task)) => vec![Command::EditTaskInEditor(task.clone())],
                     Some(ColumnItem::Epic(epic)) => {
                         let id = epic.id;
                         self.update(Message::EnterEpic(id))
                     }
-                    Some(ColumnItem::Task(task)) => vec![Command::EditTaskInEditor(task.clone())],
-                    None => vec![],
+                    None => {
+                        if let ViewMode::Epic { epic_id, .. } = &self.view_mode {
+                            let id = *epic_id;
+                            self.update(Message::EditEpic(id))
+                        } else {
+                            vec![]
+                        }
+                    }
                 }
             }
 

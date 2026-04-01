@@ -3064,6 +3064,28 @@ fn e_key_in_epic_view_edits_epic() {
 }
 
 #[test]
+fn e_key_on_task_in_epic_view_edits_task_not_epic() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.epics = vec![make_epic(10)];
+    let mut subtask = make_task(1, TaskStatus::Backlog);
+    subtask.epic_id = Some(EpicId(10));
+    app.tasks = vec![subtask];
+    app.update(Message::EnterEpic(EpicId(10)));
+
+    // Cursor on the subtask in the Backlog column (col 0, row 0)
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('e')));
+    assert_eq!(cmds.len(), 1, "expected exactly one command");
+    assert!(
+        matches!(&cmds[0], Command::EditTaskInEditor(t) if t.id == TaskId(1)),
+        "expected EditTaskInEditor(task 1), got {:?}",
+        cmds
+    );
+}
+
+#[test]
 fn esc_in_epic_view_exits_to_board() {
     let mut app = App::new(vec![], Duration::from_secs(300));
     app.view_mode = ViewMode::Epic {
