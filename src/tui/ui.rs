@@ -389,20 +389,20 @@ fn build_task_list_item<'a>(
                 Style::default().fg(Color::Yellow),
             ),
         ])
+    } else if status == TaskStatus::Running && task.sub_status == SubStatus::NeedsInput {
+        Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                "\u{25c9} blocked",
+                Style::default().fg(Color::Yellow),
+            ),
+        ])
     } else if status == TaskStatus::Running {
         Line::from(vec![
             Span::raw("   "),
             Span::styled(
                 format!("{} running", status_icon(status)),
                 Style::default().fg(MUTED),
-            ),
-        ])
-    } else if status == TaskStatus::Review && task.sub_status == SubStatus::NeedsInput {
-        Line::from(vec![
-            Span::raw("   "),
-            Span::styled(
-                "\u{25c9} needs input",
-                Style::default().fg(Color::Yellow),
             ),
         ])
     } else if let (TaskStatus::Review, Some(pr_url)) = (status, task.pr_url.as_deref()) {
