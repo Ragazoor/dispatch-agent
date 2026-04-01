@@ -17,6 +17,9 @@ use tokio::time::interval;
 
 use tempfile::Builder as TempfileBuilder;
 
+/// Interval between TUI tick events (captures tmux output, checks staleness, etc.).
+const TICK_INTERVAL: Duration = Duration::from_secs(2);
+
 use crate::db::{EpicPatch, TaskStore};
 use crate::editor::{format_editor_content, parse_editor_content, format_epic_for_editor, parse_epic_editor_output};
 use crate::process::{ProcessRunner, RealProcessRunner};
@@ -139,7 +142,7 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
     });
 
     // 6. Tick interval (2 seconds)
-    let mut tick_interval = interval(Duration::from_secs(2));
+    let mut tick_interval = interval(TICK_INTERVAL);
 
     // 7. Main loop
     tracing::info!(port, db = %db_path.display(), "TUI started, MCP server on port {port}");

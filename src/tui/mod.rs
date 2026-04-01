@@ -14,6 +14,19 @@ use crate::models::{
 };
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// How long a transient status message stays visible before auto-clearing.
+const STATUS_MESSAGE_TTL: Duration = Duration::from_secs(5);
+
+/// Interval between PR status polls for tasks in review.
+const PR_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Interval between review board data refreshes.
+const REVIEW_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
@@ -1007,7 +1020,7 @@ impl App {
         // Auto-clear transient status messages after 5 seconds (only in Normal mode)
         if self.input.mode == InputMode::Normal {
             if let Some(set_at) = self.status_message_set_at {
-                if set_at.elapsed() > Duration::from_secs(5) {
+                if set_at.elapsed() > STATUS_MESSAGE_TTL {
                     self.clear_status();
                 }
             }
@@ -1046,7 +1059,6 @@ impl App {
         }
 
         // Poll PR status for review tasks with open PRs
-        let pr_poll_interval = Duration::from_secs(30);
         let pr_tasks: Vec<(TaskId, String)> = self
             .tasks
             .iter()
@@ -1055,7 +1067,7 @@ impl App {
                 self.agents
                     .last_pr_poll
                     .get(&t.id)
-                    .is_none_or(|last| last.elapsed() > pr_poll_interval)
+                    .is_none_or(|last| last.elapsed() > PR_POLL_INTERVAL)
             })
             .map(|t| (t.id, t.pr_url.clone().unwrap()))
             .collect();
@@ -1068,7 +1080,7 @@ impl App {
         // Refresh review board data if stale (> 30s), regardless of active tab
         let needs_fetch = self
             .last_review_fetch
-            .map(|t| t.elapsed() > Duration::from_secs(30))
+            .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
             .unwrap_or(true);
         if needs_fetch && !self.review_board_loading {
             self.review_board_loading = true;
@@ -1078,7 +1090,7 @@ impl App {
         // Also refresh my PRs data if stale (> 30s)
         let needs_my_prs_fetch = self
             .last_my_prs_fetch
-            .map(|t| t.elapsed() > Duration::from_secs(30))
+            .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
             .unwrap_or(true);
         if needs_my_prs_fetch && !self.my_prs_loading {
             self.my_prs_loading = true;
@@ -2042,7 +2054,7 @@ impl App {
         };
         let needs_fetch = self
             .last_review_fetch
-            .map(|t| t.elapsed() > Duration::from_secs(30))
+            .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
             .unwrap_or(true);
         if needs_fetch && !self.review_board_loading {
             self.review_board_loading = true;
@@ -2074,7 +2086,7 @@ impl App {
                 ReviewBoardMode::Author => {
                     let needs_fetch = self
                         .last_my_prs_fetch
-                        .map(|t| t.elapsed() > Duration::from_secs(30))
+                        .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
                         .unwrap_or(true);
                     if needs_fetch && !self.my_prs_loading {
                         self.my_prs_loading = true;
@@ -2084,7 +2096,7 @@ impl App {
                 ReviewBoardMode::Reviewer => {
                     let needs_fetch = self
                         .last_review_fetch
-                        .map(|t| t.elapsed() > Duration::from_secs(30))
+                        .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
                         .unwrap_or(true);
                     if needs_fetch && !self.review_board_loading {
                         self.review_board_loading = true;
