@@ -23,7 +23,7 @@ const TICK_INTERVAL: Duration = Duration::from_secs(2);
 use crate::db::{EpicPatch, TaskStore};
 use crate::editor::{format_editor_content, parse_editor_content, format_epic_for_editor, parse_epic_editor_output};
 use crate::process::{ProcessRunner, RealProcessRunner};
-use crate::tui::{self, App, Command, Message, ReviewAgentRequest};
+use crate::tui::{self, App, Command, Message, RepoFilterMode, ReviewAgentRequest};
 use crate::models::TaskId;
 use crate::{db, dispatch, models, mcp, tmux};
 
@@ -73,18 +73,31 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
         }
     }
 
+    // Load repo filter mode
+    if let Some(mode_str) = database.get_setting_string("repo_filter_mode").unwrap_or(None) {
+        let mode = match mode_str.as_str() {
+            "exclude" => RepoFilterMode::Exclude,
+            _ => RepoFilterMode::Include,
+        };
+        app.set_repo_filter_mode(mode);
+    }
+
     // Load saved filter presets
     match database.list_filter_presets() {
         Ok(raw) => {
-            let presets: Vec<(String, HashSet<String>)> = raw
+            let presets: Vec<(String, HashSet<String>, RepoFilterMode)> = raw
                 .into_iter()
-                .map(|(name, paths_str)| {
+                .map(|(name, paths_str, mode_str)| {
                     let set: HashSet<String> = paths_str
                         .split('\n')
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string())
                         .collect();
-                    (name, set)
+                    let mode = match mode_str.as_str() {
+                        "exclude" => RepoFilterMode::Exclude,
+                        _ => RepoFilterMode::Include,
+                    };
+                    (name, set, mode)
                 })
                 .collect();
             app.update(Message::FilterPresetsLoaded(presets));
@@ -572,8 +585,8 @@ impl TuiRuntime {
         }
     }
 
-    fn exec_persist_filter_preset(&self, app: &mut App, name: &str, repo_paths: &str) {
-        if let Err(e) = self.database.save_filter_preset(name, repo_paths) {
+    fn exec_persist_filter_preset(&self, app: &mut App, name: &str, repo_paths: &str, mode: &str) {
+        if let Err(e) = self.database.save_filter_preset(name, repo_paths, mode) {
             app.update(Message::Error(Self::db_error("saving filter preset", e)));
         }
     }
@@ -1093,8 +1106,12 @@ async fn execute_commands(
             Command::FetchMyPrs => rt.exec_fetch_my_prs(),
             Command::PersistMyPrs(prs) => rt.exec_persist_my_prs(prs),
             Command::OpenInBrowser { url } => rt.exec_open_in_browser(url),
-            Command::PersistFilterPreset { name, repo_paths } => {
-                rt.exec_persist_filter_preset(app, &name, &repo_paths)
+            Command::PersistFilterPreset { name, repo_paths, mode } => {
+                let mode_str = match mode {
+                    RepoFilterMode::Include => "include",
+                    RepoFilterMode::Exclude => "exclude",
+                };
+                rt.exec_persist_filter_preset(app, &name, &repo_paths, mode_str)
             }
             Command::DeleteFilterPreset(name) => rt.exec_delete_filter_preset(app, &name),
             Command::PatchSubStatus { id, sub_status } => {

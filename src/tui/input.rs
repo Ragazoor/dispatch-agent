@@ -576,6 +576,7 @@ impl App {
             KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q') => {
                 self.update(Message::CloseRepoFilter)
             }
+            KeyCode::Tab => self.update(Message::ToggleRepoFilterMode),
             KeyCode::Char('a') => self.update(Message::ToggleAllRepoFilter),
             KeyCode::Char('j') | KeyCode::Down => self.update(Message::MoveRepoCursor(1)),
             KeyCode::Char('k') | KeyCode::Up => self.update(Message::MoveRepoCursor(-1)),
@@ -615,6 +616,7 @@ impl App {
     fn handle_key_review_repo_filter(&mut self, key: KeyEvent) -> Vec<Command> {
         match key.code {
             KeyCode::Enter | KeyCode::Esc => self.update(Message::CloseReviewRepoFilter),
+            KeyCode::Tab => self.update(Message::ToggleReviewRepoFilterMode),
             KeyCode::Char('a') => self.update(Message::ToggleAllReviewRepoFilter),
             KeyCode::Char(c) if c.is_ascii_digit() && c != '0' => {
                 let idx = (c as usize) - ('1' as usize);

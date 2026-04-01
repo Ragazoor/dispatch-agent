@@ -39,6 +39,17 @@ pub struct ReviewAgentRequest {
 }
 
 // ---------------------------------------------------------------------------
+// RepoFilterMode
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RepoFilterMode {
+    #[default]
+    Include,
+    Exclude,
+}
+
+// ---------------------------------------------------------------------------
 // Message
 // ---------------------------------------------------------------------------
 
@@ -151,11 +162,13 @@ pub enum Message {
     ToggleRepoFilter(String),
     ToggleAllRepoFilter,
     MoveRepoCursor(isize),
+    ToggleRepoFilterMode,
     // Review repo filter
     StartReviewRepoFilter,
     CloseReviewRepoFilter,
     ToggleReviewRepoFilter(String),
     ToggleAllReviewRepoFilter,
+    ToggleReviewRepoFilterMode,
     // Filter presets
     StartSavePreset,
     SaveFilterPreset(String),
@@ -163,7 +176,7 @@ pub enum Message {
     StartDeletePreset,
     DeleteFilterPreset(String),
     CancelPresetInput,
-    FilterPresetsLoaded(Vec<(String, HashSet<String>)>),
+    FilterPresetsLoaded(Vec<(String, HashSet<String>, RepoFilterMode)>),
     // Wrap up (replaces finish + PR)
     StartWrapUp(TaskId),
     WrapUpRebase,
@@ -219,7 +232,7 @@ pub enum Command {
     SendNotification { title: String, body: String, urgent: bool },
     PersistSetting { key: String, value: bool },
     PersistStringSetting { key: String, value: String },
-    PersistFilterPreset { name: String, repo_paths: String },
+    PersistFilterPreset { name: String, repo_paths: String, mode: RepoFilterMode },
     DeleteFilterPreset(String),
     CreatePr {
         id: TaskId,

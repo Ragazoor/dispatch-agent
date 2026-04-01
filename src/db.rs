@@ -220,9 +220,9 @@ pub trait TaskStore: Send + Sync {
     fn get_all_usage(&self) -> Result<Vec<TaskUsage>>;
 
     // Filter presets
-    fn save_filter_preset(&self, name: &str, repo_paths: &str) -> Result<()>;
+    fn save_filter_preset(&self, name: &str, repo_paths: &str, mode: &str) -> Result<()>;
     fn delete_filter_preset(&self, name: &str) -> Result<()>;
-    fn list_filter_presets(&self) -> Result<Vec<(String, String)>>;
+    fn list_filter_presets(&self) -> Result<Vec<(String, String, String)>>;
 
     // Review PRs
     fn save_review_prs(&self, prs: &[crate::models::ReviewPr]) -> Result<()>;
@@ -772,6 +772,15 @@ impl Database {
                 .context("Failed to update schema version to 21")?;
         }
 
+        if current_version < 22 {
+            conn.execute_batch(
+                "ALTER TABLE filter_presets ADD COLUMN mode TEXT NOT NULL DEFAULT 'include'",
+            )
+            .context("Failed to add mode column to filter_presets")?;
+            conn.pragma_update(None, "user_version", 22i64)
+                .context("Failed to update schema version to 22")?;
+        }
+
         Ok(())
     }
 
@@ -1285,12 +1294,12 @@ impl TaskStore for Database {
         Ok(out)
     }
 
-    fn save_filter_preset(&self, name: &str, repo_paths: &str) -> Result<()> {
+    fn save_filter_preset(&self, name: &str, repo_paths: &str, mode: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
-            "INSERT INTO filter_presets (name, repo_paths) VALUES (?1, ?2)
-             ON CONFLICT(name) DO UPDATE SET repo_paths = ?2",
-            params![name, repo_paths],
+            "INSERT INTO filter_presets (name, repo_paths, mode) VALUES (?1, ?2, ?3)
+             ON CONFLICT(name) DO UPDATE SET repo_paths = ?2, mode = ?3",
+            params![name, repo_paths, mode],
         )?;
         Ok(())
     }
@@ -1301,11 +1310,11 @@ impl TaskStore for Database {
         Ok(())
     }
 
-    fn list_filter_presets(&self) -> Result<Vec<(String, String)>> {
+    fn list_filter_presets(&self) -> Result<Vec<(String, String, String)>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT name, repo_paths FROM filter_presets ORDER BY name")?;
+        let mut stmt = conn.prepare("SELECT name, repo_paths, mode FROM filter_presets ORDER BY name")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         })?;
         rows.collect::<Result<Vec<_>, _>>().context("Failed to list filter presets")
     }
@@ -1835,7 +1844,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21, "fresh DB should be at schema version 21");
+        assert_eq!(version, 22, "fresh DB should be at schema version 22");
     }
 
     #[test]
@@ -1888,7 +1897,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
 
         // Verify Migration 1 added the plan column
         let has_plan: bool = conn
@@ -1953,7 +1962,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
     }
 
     #[test]
@@ -2468,25 +2477,28 @@ mod tests {
     #[test]
     fn filter_presets_save_and_list() {
         let db = Database::open_in_memory().unwrap();
-        db.save_filter_preset("frontend", "/repo-a\n/repo-b").unwrap();
-        db.save_filter_preset("backend", "/repo-c").unwrap();
+        db.save_filter_preset("frontend", "/repo-a\n/repo-b", "include").unwrap();
+        db.save_filter_preset("backend", "/repo-c", "exclude").unwrap();
 
         let presets = db.list_filter_presets().unwrap();
         assert_eq!(presets.len(), 2);
         assert_eq!(presets[0].0, "backend"); // sorted by name
+        assert_eq!(presets[0].2, "exclude");
         assert_eq!(presets[1].0, "frontend");
         assert_eq!(presets[1].1, "/repo-a\n/repo-b");
+        assert_eq!(presets[1].2, "include");
     }
 
     #[test]
     fn filter_presets_overwrite_and_delete() {
         let db = Database::open_in_memory().unwrap();
-        db.save_filter_preset("frontend", "/repo-a").unwrap();
-        db.save_filter_preset("frontend", "/repo-x\n/repo-y").unwrap();
+        db.save_filter_preset("frontend", "/repo-a", "include").unwrap();
+        db.save_filter_preset("frontend", "/repo-x\n/repo-y", "exclude").unwrap();
 
         let presets = db.list_filter_presets().unwrap();
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].1, "/repo-x\n/repo-y");
+        assert_eq!(presets[0].2, "exclude");
 
         db.delete_filter_preset("frontend").unwrap();
         let presets = db.list_filter_presets().unwrap();
@@ -2729,7 +2741,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
 
         // Verify needs_input=1 became sub_status='needs_input'
         let ss: String = conn.query_row(
@@ -2805,7 +2817,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21, "fresh DB should be at schema version 21");
+        assert_eq!(version, 22, "fresh DB should be at schema version 22");
     }
 
     #[test]
@@ -2923,7 +2935,7 @@ mod tests {
         let version: i64 = conn
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 21);
+        assert_eq!(version, 22);
 
         // (review, needs_input) must be converted to (review, awaiting_review)
         let ss: String = conn.query_row(

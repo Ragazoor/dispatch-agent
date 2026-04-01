@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use super::{App, ColumnItem, InputMode, ReviewBoardMode, ViewMode};
+use super::{App, ColumnItem, InputMode, RepoFilterMode, ReviewBoardMode, ViewMode};
 use crate::dispatch;
 use crate::models::{
     epic_substatus, format_age, CiStatus, Epic, ReviewDecision, ReviewPr, Staleness, SubStatus,
@@ -280,10 +280,11 @@ fn render_tab_bar(frame: &mut Frame, app: &App, area: Rect) {
     if !app.repo_filter().is_empty() {
         let active = app.repo_filter().len();
         let total = app.repo_paths().len();
-        right_parts.push(Span::styled(
-            format!("[{active}/{total} repos]  "),
-            Style::default().fg(MUTED),
-        ));
+        let label = match app.repo_filter_mode() {
+            RepoFilterMode::Include => format!("[{active}/{total} repos]  "),
+            RepoFilterMode::Exclude => format!("[excl {active}/{total} repos]  "),
+        };
+        right_parts.push(Span::styled(label, Style::default().fg(MUTED)));
     }
     if app.notifications_enabled() {
         right_parts.push(Span::styled("\u{1F514}", Style::default().fg(Color::Yellow)));
@@ -1467,8 +1468,12 @@ fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, popup_area);
 
+    let mode_label = match app.repo_filter_mode() {
+        RepoFilterMode::Include => "include",
+        RepoFilterMode::Exclude => "exclude",
+    };
     let block = Block::default()
-        .title(" Repo Filter ")
+        .title(format!(" Repo Filter ({mode_label}) "))
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::Cyan))
@@ -1486,11 +1491,15 @@ fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(vec![
             Span::styled("  Presets:", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         ]));
-        for (i, (name, _)) in app.filter_presets().iter().enumerate() {
+        for (i, (name, _, mode)) in app.filter_presets().iter().enumerate() {
             let letter = (b'A' + i as u8) as char;
+            let mode_tag = match mode {
+                RepoFilterMode::Include => "",
+                RepoFilterMode::Exclude => " (excl)",
+            };
             lines.push(Line::from(vec![
                 Span::styled(format!("  {letter}"), key_style),
-                Span::styled(format!(". {name}"), desc_style),
+                Span::styled(format!(". {name}{mode_tag}"), desc_style),
             ]));
         }
         lines.push(Line::from(""));
@@ -1558,7 +1567,9 @@ fn render_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled("Space", key_style),
                 Span::styled(": toggle  ", note_style),
                 Span::styled("a", key_style),
-                Span::styled(format!(": {a_label}"), note_style),
+                Span::styled(format!(": {a_label}  "), note_style),
+                Span::styled("Tab", key_style),
+                Span::styled(": incl/excl", note_style),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("  s", key_style),
@@ -1592,8 +1603,12 @@ fn render_review_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, popup_area);
 
+    let review_mode_label = match app.review_repo_filter_mode() {
+        RepoFilterMode::Include => "include",
+        RepoFilterMode::Exclude => "exclude",
+    };
     let block = Block::default()
-        .title(" Review Repo Filter ")
+        .title(format!(" Review Repo Filter ({review_mode_label}) "))
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
         .border_style(Style::default().fg(Color::Cyan))
@@ -1621,6 +1636,8 @@ fn render_review_repo_filter_overlay(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(vec![
         Span::styled("  a", key_style),
         Span::styled(format!(": {a_label}  "), note_style),
+        Span::styled("Tab", key_style),
+        Span::styled(": incl/excl  ", note_style),
         Span::styled("Enter/Esc", key_style),
         Span::styled(": close", note_style),
     ]));

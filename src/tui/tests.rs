@@ -4984,6 +4984,158 @@ fn summary_row_shows_filter_indicator() {
     assert!(buffer_contains(&buf, "2/3 repos"), "Expected filter indicator in summary");
 }
 
+// --- repo filter exclude mode ---
+
+#[test]
+fn repo_filter_exclude_hides_matching_tasks() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut t1 = make_task(1, TaskStatus::Backlog);
+    t1.repo_path = "/repo-a".to_string();
+    let mut t2 = make_task(2, TaskStatus::Backlog);
+    t2.repo_path = "/repo-b".to_string();
+    app.tasks = vec![t1, t2];
+    app.repo_filter.insert("/repo-a".to_string());
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+
+    let visible = app.tasks_for_current_view();
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, TaskId(2));
+}
+
+#[test]
+fn repo_filter_exclude_empty_shows_all() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut t1 = make_task(1, TaskStatus::Backlog);
+    t1.repo_path = "/repo-a".to_string();
+    let mut t2 = make_task(2, TaskStatus::Backlog);
+    t2.repo_path = "/repo-b".to_string();
+    app.tasks = vec![t1, t2];
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+
+    let visible = app.tasks_for_current_view();
+    assert_eq!(visible.len(), 2);
+}
+
+#[test]
+fn repo_filter_exclude_applies_to_epics() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let now = chrono::Utc::now();
+    app.epics = vec![
+        Epic {
+            id: EpicId(1), title: "A".into(), description: "".into(),
+            repo_path: "/repo-a".into(), status: TaskStatus::Backlog, plan: None, sort_order: None, created_at: now, updated_at: now,
+        },
+        Epic {
+            id: EpicId(2), title: "B".into(), description: "".into(),
+            repo_path: "/repo-b".into(), status: TaskStatus::Backlog, plan: None, sort_order: None, created_at: now, updated_at: now,
+        },
+    ];
+    app.repo_filter.insert("/repo-a".to_string());
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+
+    let items = app.column_items_for_status(TaskStatus::Backlog);
+    assert_eq!(items.len(), 1);
+    match &items[0] {
+        ColumnItem::Epic(e) => assert_eq!(e.id, EpicId(2)),
+        _ => panic!("Expected epic"),
+    }
+}
+
+#[test]
+fn repo_filter_exclude_applies_to_archived() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let mut t1 = make_task(1, TaskStatus::Archived);
+    t1.repo_path = "/repo-a".to_string();
+    let mut t2 = make_task(2, TaskStatus::Archived);
+    t2.repo_path = "/repo-b".to_string();
+    app.tasks = vec![t1, t2];
+    app.repo_filter.insert("/repo-a".to_string());
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+
+    let archived = app.archived_tasks();
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0].id, TaskId(2));
+}
+
+#[test]
+fn toggle_repo_filter_mode_switches() {
+    let mut app = make_app();
+    assert_eq!(app.repo_filter_mode, RepoFilterMode::Include);
+    app.update(Message::ToggleRepoFilterMode);
+    assert_eq!(app.repo_filter_mode, RepoFilterMode::Exclude);
+    app.update(Message::ToggleRepoFilterMode);
+    assert_eq!(app.repo_filter_mode, RepoFilterMode::Include);
+}
+
+#[test]
+fn tab_key_toggles_repo_filter_mode() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/repo".to_string()];
+    app.input.mode = InputMode::RepoFilter;
+    app.handle_key(make_key(KeyCode::Tab));
+    assert_eq!(app.repo_filter_mode, RepoFilterMode::Exclude);
+}
+
+#[test]
+fn close_repo_filter_persists_mode() {
+    let mut app = make_app();
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+    app.input.mode = InputMode::RepoFilter;
+    let cmds = app.update(Message::CloseRepoFilter);
+    assert!(cmds.iter().any(|c| matches!(c,
+        Command::PersistStringSetting { key, value } if key == "repo_filter_mode" && value == "exclude"
+    )));
+}
+
+#[test]
+fn save_filter_preset_stores_mode() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/repo-a".to_string()];
+    app.repo_filter.insert("/repo-a".to_string());
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+    app.input.mode = InputMode::InputPresetName;
+
+    let cmds = app.update(Message::SaveFilterPreset("excl-preset".to_string()));
+    assert_eq!(app.filter_presets[0].2, RepoFilterMode::Exclude);
+    assert!(cmds.iter().any(|c| matches!(c,
+        Command::PersistFilterPreset { mode: RepoFilterMode::Exclude, .. }
+    )));
+}
+
+#[test]
+fn load_filter_preset_restores_mode() {
+    let mut app = make_app();
+    app.repo_paths = vec!["/repo-a".to_string()];
+    let repos: HashSet<String> = ["/repo-a".to_string()].into_iter().collect();
+    app.filter_presets = vec![("excl".to_string(), repos, RepoFilterMode::Exclude)];
+
+    app.update(Message::LoadFilterPreset("excl".to_string()));
+    assert_eq!(app.repo_filter_mode, RepoFilterMode::Exclude);
+    assert!(app.repo_filter.contains("/repo-a"));
+}
+
+#[test]
+fn summary_row_shows_excl_prefix_in_exclude_mode() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    app.repo_paths = vec!["/a".to_string(), "/b".to_string(), "/c".to_string()];
+    app.repo_filter.insert("/a".to_string());
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+
+    let buf = render_to_buffer(&mut app, 120, 20);
+    assert!(buffer_contains(&buf, "excl 1/3 repos"), "Expected excl prefix in filter indicator");
+}
+
+#[test]
+fn repo_filter_overlay_shows_mode_in_title() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    app.repo_paths = vec!["/repo-a".to_string()];
+    app.repo_filter_mode = RepoFilterMode::Exclude;
+    app.input.mode = InputMode::RepoFilter;
+
+    let buf = render_to_buffer(&mut app, 80, 25);
+    assert!(buffer_contains(&buf, "exclude"), "Expected 'exclude' in overlay title");
+}
+
 // --- wrap up ---
 
 #[test]
@@ -5551,7 +5703,7 @@ fn load_filter_preset_replaces_repo_filter() {
     app.repo_filter.insert("/repo-a".to_string());
 
     let preset_repos: HashSet<String> = ["/repo-b".to_string()].into_iter().collect();
-    app.filter_presets = vec![("backend".to_string(), preset_repos)];
+    app.filter_presets = vec![("backend".to_string(), preset_repos, RepoFilterMode::Include)];
 
     app.update(Message::LoadFilterPreset("backend".to_string()));
     assert!(app.repo_filter.contains("/repo-b"));
@@ -5590,7 +5742,7 @@ fn save_filter_preset_overwrites_existing() {
     let mut app = make_app();
     app.repo_paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
     let old: HashSet<String> = ["/repo-a".to_string()].into_iter().collect();
-    app.filter_presets = vec![("frontend".to_string(), old)];
+    app.filter_presets = vec![("frontend".to_string(), old, RepoFilterMode::Include)];
 
     app.repo_filter.insert("/repo-b".to_string());
     app.update(Message::SaveFilterPreset("frontend".to_string()));
@@ -5602,7 +5754,7 @@ fn save_filter_preset_overwrites_existing() {
 fn delete_filter_preset_removes_and_returns_command() {
     let mut app = make_app();
     let repos: HashSet<String> = ["/repo-a".to_string()].into_iter().collect();
-    app.filter_presets = vec![("frontend".to_string(), repos)];
+    app.filter_presets = vec![("frontend".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::ConfirmDeletePreset;
 
     let cmds = app.update(Message::DeleteFilterPreset("frontend".to_string()));
@@ -5625,7 +5777,7 @@ fn cancel_preset_input_returns_to_repo_filter() {
 fn filter_presets_loaded_sets_state() {
     let mut app = make_app();
     let repos: HashSet<String> = ["/repo-a".to_string()].into_iter().collect();
-    app.update(Message::FilterPresetsLoaded(vec![("frontend".to_string(), repos.clone())]));
+    app.update(Message::FilterPresetsLoaded(vec![("frontend".to_string(), repos.clone(), RepoFilterMode::Include)]));
     assert_eq!(app.filter_presets.len(), 1);
     assert_eq!(app.filter_presets[0].0, "frontend");
 }
@@ -5644,7 +5796,7 @@ fn load_filter_preset_skips_stale_paths() {
     app.repo_paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
     // Preset contains a path that no longer exists in repo_paths
     let preset_repos: HashSet<String> = ["/repo-a".to_string(), "/gone".to_string()].into_iter().collect();
-    app.filter_presets = vec![("stale".to_string(), preset_repos)];
+    app.filter_presets = vec![("stale".to_string(), preset_repos, RepoFilterMode::Include)];
 
     app.update(Message::LoadFilterPreset("stale".to_string()));
     assert!(app.repo_filter.contains("/repo-a"));
@@ -5672,7 +5824,7 @@ fn repo_filter_s_key_starts_save_preset() {
 fn repo_filter_x_key_starts_delete_preset() {
     let mut app = make_app();
     let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
-    app.filter_presets = vec![("test".to_string(), repos)];
+    app.filter_presets = vec![("test".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::RepoFilter;
     app.handle_key(make_key(KeyCode::Char('x')));
     assert_eq!(app.input.mode, InputMode::ConfirmDeletePreset);
@@ -5683,7 +5835,7 @@ fn repo_filter_shift_a_loads_first_preset() {
     let mut app = make_app();
     app.repo_paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
     let repos: HashSet<String> = ["/repo-b".to_string()].into_iter().collect();
-    app.filter_presets = vec![("backend".to_string(), repos)];
+    app.filter_presets = vec![("backend".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::RepoFilter;
     app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
     assert!(app.repo_filter.contains("/repo-b"));
@@ -5727,7 +5879,7 @@ fn input_preset_name_typing_works() {
 fn confirm_delete_preset_letter_deletes() {
     let mut app = make_app();
     let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
-    app.filter_presets = vec![("alpha".to_string(), repos)];
+    app.filter_presets = vec![("alpha".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::ConfirmDeletePreset;
     let cmds = app.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
     assert!(app.filter_presets.is_empty());
@@ -5739,7 +5891,7 @@ fn confirm_delete_preset_letter_deletes() {
 fn confirm_delete_preset_esc_cancels() {
     let mut app = make_app();
     let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
-    app.filter_presets = vec![("alpha".to_string(), repos)];
+    app.filter_presets = vec![("alpha".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::ConfirmDeletePreset;
     app.handle_key(make_key(KeyCode::Esc));
     assert_eq!(app.input.mode, InputMode::RepoFilter);
@@ -5750,7 +5902,7 @@ fn confirm_delete_preset_esc_cancels() {
 fn confirm_delete_preset_out_of_range_ignored() {
     let mut app = make_app();
     let repos: HashSet<String> = ["/repo".to_string()].into_iter().collect();
-    app.filter_presets = vec![("alpha".to_string(), repos)];
+    app.filter_presets = vec![("alpha".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::ConfirmDeletePreset;
     app.handle_key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT));
     assert_eq!(app.input.mode, InputMode::ConfirmDeletePreset);
@@ -5764,7 +5916,7 @@ fn repo_filter_overlay_shows_presets() {
     let mut app = App::new(vec![], TEST_TIMEOUT);
     app.repo_paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
     let repos: HashSet<String> = ["/repo-a".to_string()].into_iter().collect();
-    app.filter_presets = vec![("frontend".to_string(), repos)];
+    app.filter_presets = vec![("frontend".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::RepoFilter;
 
     let buf = render_to_buffer(&mut app, 80, 25);
@@ -5789,7 +5941,7 @@ fn repo_filter_overlay_shows_delete_help() {
     let mut app = App::new(vec![], TEST_TIMEOUT);
     app.repo_paths = vec!["/repo-a".to_string()];
     let repos: HashSet<String> = ["/repo-a".to_string()].into_iter().collect();
-    app.filter_presets = vec![("test".to_string(), repos)];
+    app.filter_presets = vec![("test".to_string(), repos, RepoFilterMode::Include)];
     app.input.mode = InputMode::ConfirmDeletePreset;
 
     let buf = render_to_buffer(&mut app, 80, 25);
@@ -6767,7 +6919,7 @@ fn handle_key_input_preset_name_esc_cancels() {
 #[test]
 fn handle_key_confirm_delete_preset_selects() {
     let mut app = make_app();
-    app.filter_presets = vec![("preset-a".to_string(), std::collections::HashSet::new())];
+    app.filter_presets = vec![("preset-a".to_string(), std::collections::HashSet::new(), RepoFilterMode::Include)];
     app.input.mode = InputMode::ConfirmDeletePreset;
 
     let cmds = app.handle_key(make_key(KeyCode::Char('A')));

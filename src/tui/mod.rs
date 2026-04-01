@@ -48,7 +48,8 @@ pub struct App {
     pub(in crate::tui) pending_done_tasks: Vec<TaskId>,
     pub(in crate::tui) notifications_enabled: bool,
     pub(in crate::tui) repo_filter: HashSet<String>,
-    pub(in crate::tui) filter_presets: Vec<(String, HashSet<String>)>,
+    pub(in crate::tui) repo_filter_mode: RepoFilterMode,
+    pub(in crate::tui) filter_presets: Vec<(String, HashSet<String>, RepoFilterMode)>,
     pub(in crate::tui) review_prs: Vec<crate::models::ReviewPr>,
     pub(in crate::tui) review_board_loading: bool,
     pub(in crate::tui) last_review_fetch: Option<Instant>,
@@ -57,10 +58,12 @@ pub struct App {
     pub(in crate::tui) merge_queue: Option<MergeQueue>,
     pub(in crate::tui) review_detail_visible: bool,
     pub(in crate::tui) review_repo_filter: HashSet<String>,
+    pub(in crate::tui) review_repo_filter_mode: RepoFilterMode,
     pub(in crate::tui) my_prs: Vec<crate::models::ReviewPr>,
     pub(in crate::tui) my_prs_loading: bool,
     pub(in crate::tui) last_my_prs_fetch: Option<Instant>,
     pub(in crate::tui) my_prs_repo_filter: HashSet<String>,
+    pub(in crate::tui) my_prs_repo_filter_mode: RepoFilterMode,
 }
 
 /// Format a title for display in confirmation prompts, truncating if longer than `max_len` chars.
@@ -93,6 +96,7 @@ impl App {
             pending_done_tasks: Vec::new(),
             notifications_enabled: true,
             repo_filter: HashSet::new(),
+            repo_filter_mode: RepoFilterMode::default(),
             filter_presets: Vec::new(),
             review_prs: Vec::new(),
             review_board_loading: false,
@@ -102,10 +106,12 @@ impl App {
             merge_queue: None,
             review_detail_visible: false,
             review_repo_filter: HashSet::new(),
+            review_repo_filter_mode: RepoFilterMode::default(),
             my_prs: Vec::new(),
             my_prs_loading: false,
             last_my_prs_fetch: None,
             my_prs_repo_filter: HashSet::new(),
+            my_prs_repo_filter_mode: RepoFilterMode::default(),
         }
     }
 
@@ -161,7 +167,10 @@ impl App {
     pub fn repo_filter(&self) -> &HashSet<String> {
         &self.repo_filter
     }
-    pub fn filter_presets(&self) -> &[(String, HashSet<String>)] {
+    pub fn repo_filter_mode(&self) -> RepoFilterMode {
+        self.repo_filter_mode
+    }
+    pub fn filter_presets(&self) -> &[(String, HashSet<String>, RepoFilterMode)] {
         &self.filter_presets
     }
     pub fn review_prs(&self) -> &[crate::models::ReviewPr] {
@@ -178,6 +187,9 @@ impl App {
     }
     pub fn review_repo_filter(&self) -> &HashSet<String> {
         &self.review_repo_filter
+    }
+    pub fn review_repo_filter_mode(&self) -> RepoFilterMode {
+        self.review_repo_filter_mode
     }
     pub fn my_prs(&self) -> &[crate::models::ReviewPr] {
         &self.my_prs
@@ -214,6 +226,11 @@ impl App {
         self.clamp_selection();
     }
 
+    pub fn set_repo_filter_mode(&mut self, mode: RepoFilterMode) {
+        self.repo_filter_mode = mode;
+        self.clamp_selection();
+    }
+
     /// Set a transient status message with auto-clear timestamp.
     pub(in crate::tui) fn set_status(&mut self, msg: String) {
         self.status_message = Some(msg);
@@ -226,13 +243,41 @@ impl App {
         self.status_message_set_at = None;
     }
 
+    fn repo_matches(&self, repo_path: &str) -> bool {
+        if self.repo_filter.is_empty() {
+            return true;
+        }
+        match self.repo_filter_mode {
+            RepoFilterMode::Include => self.repo_filter.contains(repo_path),
+            RepoFilterMode::Exclude => !self.repo_filter.contains(repo_path),
+        }
+    }
+
+    fn review_repo_matches(&self, repo: &str) -> bool {
+        if self.review_repo_filter.is_empty() {
+            return true;
+        }
+        match self.review_repo_filter_mode {
+            RepoFilterMode::Include => self.review_repo_filter.contains(repo),
+            RepoFilterMode::Exclude => !self.review_repo_filter.contains(repo),
+        }
+    }
+
+    fn my_prs_repo_matches(&self, repo: &str) -> bool {
+        if self.my_prs_repo_filter.is_empty() {
+            return true;
+        }
+        match self.my_prs_repo_filter_mode {
+            RepoFilterMode::Include => self.my_prs_repo_filter.contains(repo),
+            RepoFilterMode::Exclude => !self.my_prs_repo_filter.contains(repo),
+        }
+    }
+
     /// Return tasks visible in the current view.
     /// Board view: standalone tasks only (epic_id is None).
     /// Epic view: only subtasks of the active epic.
     pub fn tasks_for_current_view(&self) -> Vec<&Task> {
-        let repo_match = |t: &&Task| {
-            self.repo_filter.is_empty() || self.repo_filter.contains(&t.repo_path)
-        };
+        let repo_match = |t: &&Task| self.repo_matches(&t.repo_path);
         match &self.view_mode {
             ViewMode::Board(_) => {
                 self.tasks.iter().filter(|t| t.epic_id.is_none() && t.status != TaskStatus::Archived).filter(repo_match).collect()
@@ -256,7 +301,7 @@ impl App {
     pub fn archived_tasks(&self) -> Vec<&Task> {
         self.tasks.iter()
             .filter(|t| t.status == TaskStatus::Archived)
-            .filter(|t| self.repo_filter.is_empty() || self.repo_filter.contains(&t.repo_path))
+            .filter(|t| self.repo_matches(&t.repo_path))
             .collect()
     }
 
@@ -269,7 +314,7 @@ impl App {
 
         if matches!(self.view_mode, ViewMode::Board(_)) {
             for epic in &self.epics {
-                if !self.repo_filter.is_empty() && !self.repo_filter.contains(&epic.repo_path) {
+                if !self.repo_matches(&epic.repo_path) {
                     continue;
                 }
                 if epic_status(epic) == status {
@@ -314,7 +359,7 @@ impl App {
         if matches!(self.view_mode, ViewMode::Board(_)) {
             let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
             for epic in &self.epics {
-                if !self.repo_filter.is_empty() && !self.repo_filter.contains(&epic.repo_path) {
+                if !self.repo_matches(&epic.repo_path) {
                     continue;
                 }
                 let epic_parent = epic_status(epic);
@@ -521,12 +566,14 @@ impl App {
             Message::CloseRepoFilter => self.handle_close_repo_filter(),
             Message::ToggleRepoFilter(path) => self.handle_toggle_repo_filter(path),
             Message::ToggleAllRepoFilter => self.handle_toggle_all_repo_filter(),
+            Message::ToggleRepoFilterMode => self.handle_toggle_repo_filter_mode(),
             Message::MoveRepoCursor(delta) => self.handle_move_repo_cursor(delta),
             // Review repo filter
             Message::StartReviewRepoFilter => self.handle_start_review_repo_filter(),
             Message::CloseReviewRepoFilter => self.handle_close_review_repo_filter(),
             Message::ToggleReviewRepoFilter(repo) => self.handle_toggle_review_repo_filter(repo),
             Message::ToggleAllReviewRepoFilter => self.handle_toggle_all_review_repo_filter(),
+            Message::ToggleReviewRepoFilterMode => self.handle_toggle_review_repo_filter_mode(),
             // Wrap up
             Message::StartWrapUp(id) => self.handle_start_wrap_up(id),
             Message::WrapUpRebase => self.handle_wrap_up_rebase(),
@@ -2226,17 +2273,13 @@ impl App {
     /// When the filter is empty, all PRs are returned.
     pub fn filtered_review_prs(&self) -> Vec<&crate::models::ReviewPr> {
         self.review_prs.iter()
-            .filter(|pr| {
-                self.review_repo_filter.is_empty() || self.review_repo_filter.contains(&pr.repo)
-            })
+            .filter(|pr| self.review_repo_matches(&pr.repo))
             .collect()
     }
 
     pub fn filtered_my_prs(&self) -> Vec<&crate::models::ReviewPr> {
         self.my_prs.iter()
-            .filter(|pr| {
-                self.my_prs_repo_filter.is_empty() || self.my_prs_repo_filter.contains(&pr.repo)
-            })
+            .filter(|pr| self.my_prs_repo_matches(&pr.repo))
             .collect()
     }
 
@@ -2629,10 +2672,20 @@ impl App {
         let mut paths: Vec<_> = self.repo_filter.iter().cloned().collect();
         paths.sort();
         let value = paths.join("\n");
-        vec![Command::PersistStringSetting {
-            key: "repo_filter".to_string(),
-            value,
-        }]
+        let mode_value = match self.repo_filter_mode {
+            RepoFilterMode::Include => "include",
+            RepoFilterMode::Exclude => "exclude",
+        };
+        vec![
+            Command::PersistStringSetting {
+                key: "repo_filter".to_string(),
+                value,
+            },
+            Command::PersistStringSetting {
+                key: "repo_filter_mode".to_string(),
+                value: mode_value.to_string(),
+            },
+        ]
     }
 
     fn handle_toggle_repo_filter(&mut self, path: String) -> Vec<Command> {
@@ -2651,6 +2704,15 @@ impl App {
         } else {
             self.repo_filter = self.repo_paths.iter().cloned().collect();
         }
+        self.clamp_selection();
+        vec![]
+    }
+
+    fn handle_toggle_repo_filter_mode(&mut self) -> Vec<Command> {
+        self.repo_filter_mode = match self.repo_filter_mode {
+            RepoFilterMode::Include => RepoFilterMode::Exclude,
+            RepoFilterMode::Exclude => RepoFilterMode::Include,
+        };
         self.clamp_selection();
         vec![]
     }
@@ -2687,6 +2749,15 @@ impl App {
         vec![]
     }
 
+    fn handle_toggle_review_repo_filter_mode(&mut self) -> Vec<Command> {
+        self.review_repo_filter_mode = match self.review_repo_filter_mode {
+            RepoFilterMode::Include => RepoFilterMode::Exclude,
+            RepoFilterMode::Exclude => RepoFilterMode::Include,
+        };
+        self.clamp_review_selection();
+        vec![]
+    }
+
     fn handle_start_save_preset(&mut self) -> Vec<Command> {
         self.input.buffer.clear();
         self.input.mode = InputMode::InputPresetName;
@@ -2700,11 +2771,13 @@ impl App {
             return vec![];
         }
         let repos: HashSet<String> = self.repo_filter.clone();
+        let mode = self.repo_filter_mode;
         // Update or insert in the presets list
-        if let Some(existing) = self.filter_presets.iter_mut().find(|(n, _)| *n == name) {
+        if let Some(existing) = self.filter_presets.iter_mut().find(|(n, _, _)| *n == name) {
             existing.1.clone_from(&repos);
+            existing.2 = mode;
         } else {
-            self.filter_presets.push((name.clone(), repos));
+            self.filter_presets.push((name.clone(), repos, mode));
             self.filter_presets.sort_by(|a, b| a.0.cmp(&b.0));
         }
         self.input.buffer.clear();
@@ -2715,14 +2788,16 @@ impl App {
         vec![Command::PersistFilterPreset {
             name,
             repo_paths: paths.join("\n"),
+            mode,
         }]
     }
 
     fn handle_load_filter_preset(&mut self, name: String) -> Vec<Command> {
-        if let Some((_, repos)) = self.filter_presets.iter().find(|(n, _)| *n == name) {
+        if let Some((_, repos, mode)) = self.filter_presets.iter().find(|(n, _, _)| *n == name) {
             // Intersect with known repo_paths to skip stale entries
             let known: HashSet<&String> = self.repo_paths.iter().collect();
             self.repo_filter = repos.iter().filter(|p| known.contains(p)).cloned().collect();
+            self.repo_filter_mode = *mode;
             self.clamp_selection();
             self.set_status(format!("Loaded preset \"{name}\""));
         }
@@ -2738,7 +2813,7 @@ impl App {
     }
 
     fn handle_delete_filter_preset(&mut self, name: String) -> Vec<Command> {
-        self.filter_presets.retain(|(n, _)| *n != name);
+        self.filter_presets.retain(|(n, _, _)| *n != name);
         self.input.mode = InputMode::RepoFilter;
         self.set_status(format!("Deleted preset \"{name}\""));
         vec![Command::DeleteFilterPreset(name)]
@@ -2750,7 +2825,7 @@ impl App {
         vec![]
     }
 
-    fn handle_filter_presets_loaded(&mut self, presets: Vec<(String, HashSet<String>)>) -> Vec<Command> {
+    fn handle_filter_presets_loaded(&mut self, presets: Vec<(String, HashSet<String>, RepoFilterMode)>) -> Vec<Command> {
         self.filter_presets = presets;
         vec![]
     }
