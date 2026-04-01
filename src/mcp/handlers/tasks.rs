@@ -501,7 +501,7 @@ pub(super) async fn handle_wrap_up(state: &McpState, id: Option<Value>, args: Va
         return JsonRpcResponse::err(
             id,
             -32602,
-            format!("Task {} cannot be wrapped up. Requires Review status or Running/Blocked with a worktree.", parsed.task_id),
+            format!("Task {} cannot be wrapped up. Requires Running or Review status with a worktree.", parsed.task_id),
         );
     }
 

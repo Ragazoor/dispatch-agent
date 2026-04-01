@@ -678,13 +678,10 @@ pub fn check_pr_status(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// A task can be wrapped up if it has a worktree and is either:
-/// - In Review (any sub-status), or
-/// - In Running with sub_status NeedsInput (Blocked)
+/// A task can be wrapped up if it has a worktree and is either Running or Review.
 pub fn is_wrappable(task: &Task) -> bool {
     task.worktree.is_some()
-        && (task.status == TaskStatus::Review
-            || (task.status == TaskStatus::Running && task.sub_status == SubStatus::NeedsInput))
+        && (task.status == TaskStatus::Review || task.status == TaskStatus::Running)
 }
 
 /// Extract the branch name from a worktree path (its last path component).

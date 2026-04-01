@@ -1500,10 +1500,19 @@ async fn wrap_up_accepts_running_blocked_task() {
 }
 
 #[tokio::test]
-async fn wrap_up_rejects_running_active_task() {
-    let state = test_state();
-    let task_id = state.db.create_task("T", "d", "/repo", None, TaskStatus::Running).unwrap();
-    state.db.patch_task(task_id, &db::TaskPatch::new()
+async fn wrap_up_accepts_running_active_task() {
+    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
+        MockProcessRunner::ok(),                       // git rebase main
+        MockProcessRunner::ok(),                       // git merge --ff-only
+    ]));
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner, mcp_port: crate::DEFAULT_PORT });
+
+    let task_id = db.create_task("T", "d", "/repo", None, TaskStatus::Running).unwrap();
+    db.patch_task(task_id, &db::TaskPatch::new()
         .worktree(Some("/repo/.worktrees/1-t"))
     ).unwrap();
 
@@ -1515,7 +1524,8 @@ async fn wrap_up_rejects_running_active_task() {
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
     ).await;
-    assert_error(&resp, "cannot be wrapped up");
+    let text = extract_response_text(&resp);
+    assert!(text.contains("wrap_up complete"), "Expected 'wrap_up complete', got: {text}");
 }
 
 #[tokio::test]

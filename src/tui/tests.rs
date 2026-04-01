@@ -4963,12 +4963,12 @@ fn wrap_up_available_on_running_blocked() {
 }
 
 #[test]
-fn wrap_up_not_available_on_running_active() {
+fn wrap_up_available_on_running_active() {
     let mut app = make_app();
     let id = TaskId(3); // Running, Active by default
     app.find_task_mut(id).unwrap().worktree = Some("/tmp/wt".to_string());
     app.update(Message::StartWrapUp(id));
-    assert_eq!(app.mode(), &InputMode::Normal); // not in wrap-up mode
+    assert!(matches!(app.mode(), InputMode::ConfirmWrapUp(_)));
 }
 
 // --- sort_order ---
