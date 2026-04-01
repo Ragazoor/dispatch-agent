@@ -140,7 +140,7 @@ fn parse_review_prs(json: &str) -> Result<Vec<ReviewPr>, String> {
 pub fn fetch_review_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, String> {
     let query = r#"{
   viewer { login }
-  search(query: "is:pr is:open review-requested:@me -is:draft -author:app/dependabot -author:app/renovate", type: ISSUE, first: 100) {
+  search(query: "is:pr is:open (review-requested:@me OR reviewed-by:@me) -is:draft -author:app/dependabot -author:app/renovate", type: ISSUE, first: 100) {
     nodes {
       ... on PullRequest {
         number
@@ -334,6 +334,8 @@ mod tests {
         assert!(query_arg.contains("-is:draft"));
         assert!(query_arg.contains("-author:app/dependabot"));
         assert!(query_arg.contains("-author:app/renovate"));
+        assert!(query_arg.contains("review-requested:@me"));
+        assert!(query_arg.contains("reviewed-by:@me"));
     }
 
     // -----------------------------------------------------------------------
