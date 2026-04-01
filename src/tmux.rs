@@ -104,7 +104,14 @@ pub fn set_after_split_hook(window: &str, working_dir: &str, runner: &dyn Proces
         "after-split-window", &hook_cmd,
     ])?;
     if !output.status.success() {
-        bail!("tmux set-hook failed with status {}", output.status);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("ambiguous") {
+            bail!(
+                "multiple tmux windows named '{}' exist — close the duplicate windows before dispatching",
+                window
+            );
+        }
+        bail!("tmux set-hook failed with status {}: {}", output.status, stderr.trim());
     }
     Ok(())
 }
