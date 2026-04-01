@@ -250,6 +250,46 @@ impl TuiRuntime {
         format!("DB error {action}: {e}")
     }
 
+    fn create_task(
+        &self,
+        app: &mut App,
+        title: &str,
+        description: &str,
+        repo_path: &str,
+        tag: Option<&str>,
+        epic_id: Option<models::EpicId>,
+    ) -> Option<models::Task> {
+        let mut task = match self.database.create_task_returning(
+            title,
+            description,
+            repo_path,
+            None,
+            models::TaskStatus::Backlog,
+        ) {
+            Ok(task) => task,
+            Err(e) => {
+                app.update(Message::Error(Self::db_error("creating task", e)));
+                return None;
+            }
+        };
+        if let Some(eid) = epic_id {
+            if let Err(e) = self.database.set_task_epic_id(task.id, Some(eid)) {
+                app.update(Message::Error(Self::db_error("linking task to epic", e)));
+                return None;
+            }
+            task.epic_id = Some(eid);
+        }
+        if let Some(t) = tag {
+            let patch = db::TaskPatch::new().tag(Some(t));
+            if let Err(e) = self.database.patch_task(task.id, &patch) {
+                app.update(Message::Error(Self::db_error("setting task tag", e)));
+                return None;
+            }
+            task.tag = Some(t.to_string());
+        }
+        Some(task)
+    }
+
     fn exec_insert_task(
         &self,
         app: &mut App,
@@ -259,34 +299,10 @@ impl TuiRuntime {
         tag: Option<String>,
         epic_id: Option<models::EpicId>,
     ) {
-        match self.database.create_task_returning(
-            &title,
-            &description,
-            &repo_path,
-            None,
-            models::TaskStatus::Backlog,
-        ) {
-            Ok(mut task) => {
-                if let Some(eid) = epic_id {
-                    if let Err(e) = self.database.set_task_epic_id(task.id, Some(eid)) {
-                        app.update(Message::Error(Self::db_error("linking task to epic", e)));
-                        return;
-                    }
-                    task.epic_id = Some(eid);
-                }
-                if let Some(ref t) = tag {
-                    let patch = db::TaskPatch::new().tag(Some(t));
-                    if let Err(e) = self.database.patch_task(task.id, &patch) {
-                        app.update(Message::Error(Self::db_error("setting task tag", e)));
-                        return;
-                    }
-                    task.tag = Some(t.clone());
-                }
-                app.update(Message::TaskCreated { task });
-            }
-            Err(e) => {
-                app.update(Message::Error(Self::db_error("creating task", e)));
-            }
+        if let Some(task) =
+            self.create_task(app, &title, &description, &repo_path, tag.as_deref(), epic_id)
+        {
+            app.update(Message::TaskCreated { task });
         }
     }
 
@@ -298,49 +314,32 @@ impl TuiRuntime {
         repo_path: String,
         epic_id: Option<models::EpicId>,
     ) {
-        match self.database.create_task_returning(
-            &title,
-            &description,
-            &repo_path,
-            None,
-            models::TaskStatus::Backlog,
-        ) {
-            Ok(mut task) => {
-                if let Some(eid) = epic_id {
-                    if let Err(e) = self.database.set_task_epic_id(task.id, Some(eid)) {
-                        app.update(Message::Error(Self::db_error("linking task to epic", e)));
-                        return;
-                    }
-                    task.epic_id = Some(eid);
+        let Some(task) = self.create_task(app, &title, &description, &repo_path, None, epic_id)
+        else {
+            return;
+        };
+        app.update(Message::TaskCreated { task: task.clone() });
+        let _ = self.database.save_repo_path(&repo_path);
+        let paths = self.database.list_repo_paths().unwrap_or_default();
+        app.update(Message::RepoPathsUpdated(paths));
+        let tx = self.msg_tx.clone();
+        let runner = self.runner.clone();
+        tokio::task::spawn_blocking(move || {
+            let id = task.id;
+            match dispatch::quick_dispatch_agent(&task, &*runner) {
+                Ok(result) => {
+                    let _ = tx.send(Message::Dispatched {
+                        id,
+                        worktree: result.worktree_path,
+                        tmux_window: result.tmux_window,
+                        switch_focus: true,
+                    });
                 }
-                app.update(Message::TaskCreated { task: task.clone() });
-                let _ = self.database.save_repo_path(&repo_path);
-                let paths = self.database.list_repo_paths().unwrap_or_default();
-                app.update(Message::RepoPathsUpdated(paths));
-                let tx = self.msg_tx.clone();
-                let runner = self.runner.clone();
-                tokio::task::spawn_blocking(move || {
-                    let id = task.id;
-                    match dispatch::quick_dispatch_agent(&task, &*runner) {
-                        Ok(result) => {
-                            let _ = tx.send(Message::Dispatched {
-                                id,
-                                worktree: result.worktree_path,
-                                tmux_window: result.tmux_window,
-                                switch_focus: true,
-                            });
-                        }
-                        Err(e) => {
-                            let _ =
-                                tx.send(Message::Error(format!("Quick dispatch failed: {e:#}")));
-                        }
-                    }
-                });
+                Err(e) => {
+                    let _ = tx.send(Message::Error(format!("Quick dispatch failed: {e:#}")));
+                }
             }
-            Err(e) => {
-                app.update(Message::Error(Self::db_error("creating task", e)));
-            }
-        }
+        });
     }
 
     fn exec_persist_task(&self, app: &mut App, task: models::Task) {
