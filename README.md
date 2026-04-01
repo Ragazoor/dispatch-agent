@@ -2,6 +2,15 @@
 
 A terminal kanban board for managing development tasks and dispatching Claude Code agents. Create tasks, dispatch agents into isolated git worktrees and tmux windows, and monitor their progress — all from a single TUI.
 
+## Prerequisites
+
+| Dependency | Required | Install |
+|---|---|---|
+| `tmux` | Yes | `sudo apt install tmux` / `brew install tmux` |
+| `git` | Yes | Already installed on most systems |
+| `claude` | Yes | [Claude Code CLI](https://claude.ai/code) |
+| `gh` | Optional | [GitHub CLI](https://cli.github.com) — needed for the Review Board |
+
 ## Installation
 
 ### One-line install (Linux x86_64)
@@ -18,7 +27,19 @@ cd dispatch
 bash install.sh
 ```
 
-The script downloads the latest release binary to `~/.local/bin/dispatch` and runs `dispatch setup` to configure Claude Code.
+The script downloads the latest release binary to `~/.local/bin/dispatch`, runs `dispatch setup` to register the MCP server and hook scripts with Claude Code, and prints a prerequisites checklist.
+
+If `~/.local/bin` is not in your PATH, add it to your shell profile:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Verify the install:
+
+```bash
+dispatch --version
+```
 
 ### Build from source
 
@@ -28,112 +49,67 @@ cp target/release/dispatch ~/.local/bin/
 dispatch setup
 ```
 
-## Prerequisites
+## Getting Started
 
-| Dependency | Required | Purpose |
-|---|---|---|
-| `tmux` | Yes | Dispatch must run inside a tmux session; agents run in tmux windows |
-| `git` | Yes | Agent workspaces are git worktrees |
-| `claude` | Yes | Claude Code CLI — dispatched for each agent |
-| `gh` | Optional | Review Board fetches open PRs via `gh api` |
-
-After installing, run `dispatch setup` once to register the MCP server and hook scripts with Claude Code.
-
-## Usage
+**1. Open a tmux session** (Dispatch must run inside tmux):
 
 ```bash
-# Start the TUI (must be inside a tmux session)
-dispatch tui
-
-# CLI — used by agents and hooks
-dispatch update <task-id> <status>
-dispatch list [--status <status>]
-dispatch create --from-plan plan.md
+tmux new-session -s dev
 ```
 
-If you see `not running inside a tmux session`, run `tmux new-session -d -s dev` first.
+**2. Start the TUI:**
 
-## Key Bindings
+```bash
+dispatch tui
+```
 
-### Navigation
+### Create a task (`n`)
 
-| Key | Action |
-|-----|--------|
-| `h` / `l` / `←` / `→` | Move between columns |
-| `j` / `k` / `↓` / `↑` | Move between tasks |
-| `Enter` | Toggle detail panel / enter epic |
-| `Tab` | Switch to Review Board |
-| `?` | Toggle help overlay |
-| `q` | Quit (or exit epic view) |
+| Step | Key | What happens |
+|------|-----|--------------|
+| Create task | `n` | Enter title, description, and repo path |
+| Dispatch | `d` | Agent explores your codebase, writes a plan, and implements it |
+| Agent needs input *(optional)* | `g` | Desktop notification — jump to agent and interact |
+| Review the work | `g` | Task is in Review — check the result in the tmux window |
+| Wrap up | `W` | Commit, rebase, and open a PR. Or use `/wrap-up` from the agent's session |
 
-### Tasks
+### Quick dispatch (`D`)
 
-| Key | Action |
-|-----|--------|
-| `n` | New task |
-| `e` | Edit task in editor |
-| `d` | Dispatch agent (Backlog task with plan) / brainstorm (without plan) / resume (Running task whose window is gone) |
-| `D` | Quick dispatch — pick repo and dispatch immediately |
-| `m` / `M` | Move task forward / backward |
-| `W` | Wrap up — commit, rebase, open PR |
-| `g` | Jump to the agent's tmux window |
-| `x` | Archive task (with confirmation) |
-| `H` | Toggle archive panel |
-| `Space` | Toggle select |
-| `a` | Select all in column |
-| `J` / `K` | Reorder task up / down |
-| `f` | Filter by repo path |
-| `N` | Toggle notification panel |
+| Step | Key | What happens |
+|------|-----|--------------|
+| Quick dispatch | `D` | Pick a repo from the numbered list |
+| | | Task created and dispatched — agent sets its own title and description |
+| Check on the agent | `g` | Jump to the agent's tmux window |
+| Wrap up | `W` | Commit, rebase, and open a PR. Or use `/wrap-up` from the agent's session |
 
-### Epics
+### Work with an epic (`E`)
 
-| Key | Action |
-|-----|--------|
-| `E` | New epic |
-| `d` | Dispatch next backlog subtask |
-| `D` | Quick dispatch subtask for this epic |
-| `m` | Mark epic done (when all subtasks are done) |
-| `J` / `K` | Reorder subtasks (determines dispatch order) |
-| `q` | Exit epic view |
+| Step | Key | What happens |
+|------|-----|--------------|
+| Create epic | `E` | Enter title, description, and repo path |
+| Dispatch planning | `d` | Creates a planning subtask; agent writes an implementation plan with subtasks |
+| Dispatch subtasks | `d` | Each press dispatches the next Backlog subtask in order |
+| Reorder subtasks | `J` / `K` | Change dispatch order within the epic |
+| Wrap up each subtask | `W` | Commit, rebase, and open a PR. Or use `/wrap-up` from the agent's session |
 
-### Review Board (`Tab`)
+## Key Concepts
 
-| Key | Action |
-|-----|--------|
-| `h` / `l` / `j` / `k` | Navigate PRs |
-| `Enter` | Open PR in browser |
-| `r` | Refresh |
-| `Tab` / `Esc` | Return to kanban |
+**Tasks** — the unit of work. Each task has a title, description, status, and optionally a plan and a linked git repo.
 
-## How Dispatch Works
+**Plans** — markdown files describing what an agent should build. Tasks without a plan trigger "brainstorm" mode when dispatched — the agent explores and writes a plan, then implements it.
 
-Press `d` on a Backlog task that has a plan attached:
+**Kanban columns:** Backlog → Running → Review → Done
 
-1. Creates a git worktree at `<repo>/.worktrees/<id>-<slug>`
-2. Opens a new tmux window in your current session
-3. Writes `.mcp.json` so Claude discovers the MCP server
-4. Launches `claude` with the task description and completion instructions
+- **Backlog** — tasks ready to be dispatched (`▸` = has a plan)
+- **Running** — agent is active in a tmux window
+- **Review** — agent finished; awaiting your review
+- **Done** — merged and wrapped up
 
-The agent reports progress via the MCP server. When it finishes, it moves the task to Review. Closing a tmux window does **not** delete the worktree — press `d` again on a Running task to resume.
+**Worktrees** — each dispatched agent gets its own git worktree at `<repo>/.worktrees/<id>-<slug>`, isolating agent work from your main branch. Closing the tmux window does **not** delete the worktree — press `d` again to resume.
 
-## Architecture
+**Epics** — a group of related tasks. Press `Enter` on an epic to see its subtasks. Press `d` on the epic to dispatch the next Backlog subtask automatically.
 
-- **Elm architecture** — events produce `Message`s, `App::update()` returns `Vec<Command>`, commands are executed by the main loop
-- **Ratatui** TUI with Crossterm for terminal input
-- **SQLite** via `rusqlite` with `Mutex<Connection>` for thread-safe synchronous access
-- **MCP server** on `localhost:3142` (Axum, Streamable HTTP) — agents call `update_task`, `get_task`, `create_task`, and more
-- **Hooks** in `~/.local/bin/` parse the branch name to update task status when Claude Code starts or stops
+## Learn More
 
-## Configuration
-
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--db` | `DISPATCH_DB` | `~/.local/share/dispatch/tasks.db` |
-| `--port` | `DISPATCH_PORT` | `3142` |
-
-## Releasing
-
-1. Add a `CARGO_REGISTRY_TOKEN` secret to the GitHub repo (Settings → Secrets → Actions).
-   Get the token from https://crates.io/settings/tokens — scope: `publish-new` and `publish-update`.
-2. Push a version tag: `git tag v0.2.0 && git push origin v0.2.0`
-3. GitHub Actions builds the binary, creates a GitHub Release, and publishes to crates.io.
+- **[Reference](docs/reference.md)** — key bindings, configuration, CLI usage, troubleshooting
+- **[CLAUDE.md](CLAUDE.md)** — architecture, testing patterns, contribution guidelines
