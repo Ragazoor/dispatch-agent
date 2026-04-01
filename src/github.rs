@@ -212,6 +212,88 @@ fn parse_review_prs(json: &str) -> Result<Vec<ReviewPr>, String> {
     Ok(prs)
 }
 
+/// Parse the JSON response from `gh api graphql` into a list of the viewer's own PRs.
+///
+/// The response is expected to contain `data.viewer.login` and `data.myPrs.nodes`.
+/// Drafts are filtered out.
+fn parse_my_prs(json: &str) -> Result<Vec<ReviewPr>, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("Failed to parse JSON: {e}"))?;
+
+    let viewer_login = root
+        .pointer("/data/viewer/login")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let nodes = root
+        .pointer("/data/myPrs/nodes")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut prs = Vec::with_capacity(nodes.len());
+    for node in &nodes {
+        if node["isDraft"].as_bool() == Some(true) {
+            continue;
+        }
+
+        let review_decision = classify_review_decision(node, viewer_login);
+
+        let labels = node["labels"]["nodes"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let created_at = node["createdAt"]
+            .as_str()
+            .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+            .unwrap_or_else(Utc::now);
+        let updated_at = node["updatedAt"]
+            .as_str()
+            .and_then(|s| s.parse::<DateTime<Utc>>().ok())
+            .unwrap_or_else(Utc::now);
+
+        let body = node["body"].as_str().unwrap_or("").to_string();
+        let head_ref = node["headRefName"].as_str().unwrap_or("").to_string();
+
+        let ci_state = node["commits"]["nodes"]
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|n| n["commit"]["statusCheckRollup"]["state"].as_str());
+        let ci_status = CiStatus::from_github(ci_state);
+
+        let reviewers = parse_reviewers(node);
+
+        prs.push(ReviewPr {
+            number: node["number"].as_i64().unwrap_or(0),
+            title: node["title"].as_str().unwrap_or("").to_string(),
+            author: node["author"]["login"].as_str().unwrap_or("").to_string(),
+            repo: node["repository"]["nameWithOwner"]
+                .as_str()
+                .unwrap_or("")
+                .to_string(),
+            url: node["url"].as_str().unwrap_or("").to_string(),
+            is_draft: node["isDraft"].as_bool().unwrap_or(false),
+            created_at,
+            updated_at,
+            additions: node["additions"].as_i64().unwrap_or(0),
+            deletions: node["deletions"].as_i64().unwrap_or(0),
+            review_decision,
+            labels,
+            body,
+            head_ref,
+            ci_status,
+            reviewers,
+        });
+    }
+
+    Ok(prs)
+}
+
 /// The PR fields fragment used in both search aliases.
 const PR_FIELDS: &str = r#"... on PullRequest {
         number
@@ -271,6 +353,35 @@ pub fn fetch_review_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, Str
 
     let json = String::from_utf8_lossy(&output.stdout);
     parse_review_prs(&json)
+}
+
+/// Fetch the current user's own open PRs (non-draft).
+///
+/// Uses `author:@me` in a single GraphQL search alias (`myPrs`).
+/// Uses `gh api graphql` via the provided ProcessRunner.
+pub fn fetch_my_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, String> {
+    let query = format!(
+        r#"{{
+  viewer {{ login }}
+  myPrs: search(query: "is:pr is:open author:@me -is:draft", type: ISSUE, first: 100) {{
+    nodes {{
+      {PR_FIELDS}
+    }}
+  }}
+}}"#
+    );
+
+    let output = runner
+        .run("gh", &["api", "graphql", "-f", &format!("query={query}")])
+        .map_err(|e| format!("Failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh api graphql failed: {stderr}"));
+    }
+
+    let json = String::from_utf8_lossy(&output.stdout);
+    parse_my_prs(&json)
 }
 
 #[cfg(test)]
@@ -756,5 +867,87 @@ mod tests {
         for pr in &prs {
             eprintln!("  #{} {} [{:?}]", pr.number, pr.title, pr.review_decision);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_my_prs / fetch_my_prs tests
+    // -----------------------------------------------------------------------
+
+    const MY_PRS_RESPONSE: &str = r#"{
+    "data": {
+        "viewer": {"login": "me"},
+        "myPrs": {
+            "nodes": [
+                {
+                    "number": 101,
+                    "title": "My feature PR",
+                    "url": "https://github.com/acme/app/pull/101",
+                    "isDraft": false,
+                    "createdAt": "2026-03-28T10:00:00Z",
+                    "updatedAt": "2026-03-29T14:00:00Z",
+                    "additions": 50,
+                    "deletions": 10,
+                    "reviewDecision": "REVIEW_REQUIRED",
+                    "author": {"login": "me"},
+                    "repository": {"nameWithOwner": "acme/app"},
+                    "labels": {"nodes": [{"name": "feature"}]},
+                    "comments": {"nodes": []},
+                    "reviews": {"nodes": []},
+                    "body": "Adds a new feature",
+                    "headRefName": "my-feature",
+                    "commits": {"nodes": [{"commit": {"committedDate": "2026-03-28T10:00:00Z", "statusCheckRollup": {"state": "SUCCESS"}}}]},
+                    "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "alice"}}]}
+                }
+            ]
+        }
+    }
+}"#;
+
+    #[test]
+    fn parse_my_prs_extracts_fields() {
+        let prs = parse_my_prs(MY_PRS_RESPONSE).unwrap();
+        assert_eq!(prs.len(), 1);
+        let pr = &prs[0];
+        assert_eq!(pr.number, 101);
+        assert_eq!(pr.title, "My feature PR");
+        assert_eq!(pr.author, "me");
+        assert_eq!(pr.review_decision, ReviewDecision::ReviewRequired);
+        assert_eq!(pr.ci_status, CiStatus::Success);
+        assert_eq!(pr.reviewers.len(), 1);
+        assert_eq!(pr.reviewers[0].login, "alice");
+    }
+
+    #[test]
+    fn parse_my_prs_filters_drafts() {
+        let json = r#"{"data":{"viewer":{"login":"me"},"myPrs":{"nodes":[{
+            "number": 1, "title": "T", "url": "https://github.com/o/r/pull/1", "isDraft": true,
+            "createdAt": "2026-03-28T10:00:00Z", "updatedAt": "2026-03-28T10:00:00Z",
+            "additions": 0, "deletions": 0,
+            "reviewDecision": "REVIEW_REQUIRED",
+            "author": {"login": "me"}, "repository": {"nameWithOwner": "o/r"},
+            "labels": {"nodes": []}, "comments": {"nodes": []},
+            "reviews": {"nodes": []}, "body": "", "headRefName": "x",
+            "commits": {"nodes": []}, "reviewRequests": {"nodes": []}
+        }]}}}"#;
+        let prs = parse_my_prs(json).unwrap();
+        assert!(prs.is_empty());
+    }
+
+    #[test]
+    fn fetch_my_prs_calls_gh_with_author_query() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            MY_PRS_RESPONSE.as_bytes(),
+        )]);
+        let prs = fetch_my_prs(&runner).unwrap();
+        assert_eq!(prs.len(), 1);
+
+        let calls = runner.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        let query_arg = calls[0].1.iter().find(|a| a.contains("query=")).unwrap();
+        assert!(
+            query_arg.contains("author:@me"),
+            "missing author:@me qualifier"
+        );
+        assert!(query_arg.contains("-is:draft"));
     }
 }
