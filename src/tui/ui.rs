@@ -596,7 +596,7 @@ fn render_columns(frame: &mut Frame, app: &mut App, area: Rect, now: DateTime<Ut
                 if Some(priority) != current_priority {
                     current_priority = Some(priority);
                     let label = match item {
-                        ColumnItem::Task(t) => t.sub_status.header_label(),
+                        ColumnItem::Task(t) => t.sub_status.header_label().to_string(),
                         ColumnItem::Epic(e) => {
                             let subtasks: Vec<Task> = app.tasks().iter()
                                 .filter(|t| t.epic_id == Some(e.id) && t.status != TaskStatus::Archived)
@@ -606,7 +606,7 @@ fn render_columns(frame: &mut Frame, app: &mut App, area: Rect, now: DateTime<Ut
                             epic_substatus(e, &subtasks, active_merge).label()
                         }
                     };
-                    list_items.push(render_substatus_header(label, color));
+                    list_items.push(render_substatus_header(&label, color));
                 }
             }
 
@@ -679,18 +679,11 @@ fn render_epic_item(
         ),
     ]);
 
-    // Line 2: two-tone progress bar + substatus
+    // Line 2: colored status indicators + substatus label
+    let backlog_count = subtask_statuses.iter().filter(|s| **s == TaskStatus::Backlog).count();
     let total = subtask_statuses.len();
-    let bar_width: usize = 14;
 
     let line2 = if total > 0 {
-        let done_frac = done_count as f64 / total as f64;
-        let active_frac = (running_count + review_count) as f64 / total as f64;
-
-        let done_chars = (done_frac * bar_width as f64).round() as usize;
-        let active_chars = (active_frac * bar_width as f64).round() as usize;
-        let backlog_chars = bar_width.saturating_sub(done_chars + active_chars);
-
         let subtasks: Vec<Task> = app.tasks()
             .iter()
             .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
@@ -700,26 +693,22 @@ fn render_epic_item(
         let substatus = crate::models::epic_substatus(epic, &subtasks, active_merge);
 
         let mut spans = vec![Span::raw("    ".to_string())];
-        if done_chars > 0 {
-            spans.push(Span::styled(
-                "\u{2588}".repeat(done_chars),
-                Style::default().fg(column_color(TaskStatus::Done)),
-            ));
-        }
-        if active_chars > 0 {
-            spans.push(Span::styled(
-                "\u{2592}".repeat(active_chars),
-                Style::default().fg(column_color(TaskStatus::Running)),
-            ));
-        }
-        if backlog_chars > 0 {
-            spans.push(Span::styled(
-                "\u{2591}".repeat(backlog_chars),
-                Style::default().fg(MUTED),
-            ));
+        let indicators: &[(usize, Color)] = &[
+            (backlog_count, column_color(TaskStatus::Backlog)),
+            (running_count, column_color(TaskStatus::Running)),
+            (review_count, column_color(TaskStatus::Review)),
+            (done_count, column_color(TaskStatus::Done)),
+        ];
+        for (count, color) in indicators {
+            if *count > 0 {
+                spans.push(Span::styled(
+                    format!("\u{25cf}{count} "),
+                    Style::default().fg(*color),
+                ));
+            }
         }
         spans.push(Span::styled(
-            format!(" {}", substatus.label()),
+            substatus.label(),
             Style::default().fg(MUTED),
         ));
         Line::from(spans)

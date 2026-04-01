@@ -1008,6 +1008,19 @@ rule DeleteEpic {
     --   otherwise                     => backlog
     -- The done flag on Epic is the only persisted status.
     -- Everything else is computed at render time from subtask statuses.
+    --
+    -- Epic substatus (display label for epic cards):
+    --   backlog + no plan             => unplanned
+    --   backlog + has plan            => planned
+    --   running + any subtask blocked => "N blocked" (N = count of subtasks
+    --     with sub_status in {needs_input, stale, crashed, conflict})
+    --   running + no blocked          => active
+    --   review + active merge         => wrapping up
+    --   review + no active merge      => in review
+    --   done/archived                 => done
+    --
+    -- Epic cards show colored status indicators (●N) for each non-zero
+    -- subtask count by parent status, using the column palette colors.
 
 @invariant SubStatusConsistency
     -- A task's sub_status must always be valid for its parent status:

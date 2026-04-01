@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::dispatch;
 use crate::models::{
-    epic_status, epic_substatus, DispatchMode, Epic, EpicId, ReviewDecision, SubStatus, Task,
+    epic_status, epic_substatus, DispatchMode, Epic, EpicId, EpicSubstatus, ReviewDecision, SubStatus, Task,
     TaskId, TaskStatus, TaskUsage, VisualColumn, DEFAULT_QUICK_TASK_TITLE,
 };
 
@@ -300,7 +300,8 @@ impl App {
 
     /// Build a list of items (tasks + epics) for a visual column.
     /// Tasks are filtered by parent_status and sub_status matching the visual column.
-    /// Epics appear in the first visual column of their parent status group.
+    /// Running epics are placed in Active or Blocked based on their substatus;
+    /// other epics appear in the first visual column of their parent status group.
     pub fn column_items_for_visual_column(&self, vcol_idx: usize) -> Vec<ColumnItem<'_>> {
         let vcol = &VisualColumn::ALL[vcol_idx];
         let tasks: Vec<&Task> = self.tasks_for_current_view()
@@ -310,15 +311,27 @@ impl App {
 
         let mut items: Vec<ColumnItem<'_>> = tasks.into_iter().map(ColumnItem::Task).collect();
 
-        // Include epics in board view — place them in the first visual column of their parent status
-        if matches!(self.view_mode, ViewMode::Board(_))
-            && vcol_idx == VisualColumn::parent_group_start(vcol.parent_status)
-        {
+        if matches!(self.view_mode, ViewMode::Board(_)) {
+            let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
             for epic in &self.epics {
                 if !self.repo_filter.is_empty() && !self.repo_filter.contains(&epic.repo_path) {
                     continue;
                 }
-                if epic_status(epic) == vcol.parent_status {
+                let epic_parent = epic_status(epic);
+                if epic_parent != vcol.parent_status {
+                    continue;
+                }
+                if epic_parent == TaskStatus::Running {
+                    let subtasks: Vec<Task> = self.tasks.iter()
+                        .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
+                        .cloned()
+                        .collect();
+                    let substatus = epic_substatus(epic, &subtasks, active_merge);
+                    let target_col = if matches!(substatus, EpicSubstatus::Blocked(_)) { 2 } else { 1 };
+                    if vcol_idx == target_col {
+                        items.push(ColumnItem::Epic(epic));
+                    }
+                } else if vcol_idx == VisualColumn::parent_group_start(epic_parent) {
                     items.push(ColumnItem::Epic(epic));
                 }
             }

@@ -353,9 +353,8 @@ pub enum EpicSubstatus {
     Unplanned,
     Planned,
     // Running
-    Dispatching,
-    Blocked,
-    Partial,
+    Active,
+    Blocked(usize),
     // Review
     InReview,
     WrappingUp,
@@ -364,25 +363,23 @@ pub enum EpicSubstatus {
 }
 
 impl EpicSubstatus {
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            Self::Unplanned => "unplanned",
-            Self::Planned => "planned",
-            Self::Dispatching => "dispatching",
-            Self::Blocked => "blocked",
-            Self::Partial => "partial",
-            Self::InReview => "in review",
-            Self::WrappingUp => "wrapping up",
-            Self::Done => "done",
+            Self::Unplanned => "unplanned".into(),
+            Self::Planned => "planned".into(),
+            Self::Active => "active".into(),
+            Self::Blocked(n) => format!("{n} blocked"),
+            Self::InReview => "in review".into(),
+            Self::WrappingUp => "wrapping up".into(),
+            Self::Done => "done".into(),
         }
     }
 
     /// Priority for sorting within a column (lower = higher in list).
     pub fn column_priority(&self) -> u8 {
         match self {
-            Self::Blocked => 0,
-            Self::Dispatching => 1,
-            Self::Partial => 2,
+            Self::Blocked(_) => 0,
+            Self::Active => 1,
             Self::WrappingUp => 0,
             Self::InReview => 1,
             Self::Unplanned => 0,
@@ -409,21 +406,17 @@ pub fn epic_substatus(
             }
         }
         TaskStatus::Running => {
-            let has_blocked = subtasks.iter().any(|t| {
+            let blocked_count = subtasks.iter().filter(|t| {
                 t.status == TaskStatus::Running
                     && matches!(
                         t.sub_status,
-                        SubStatus::Stale | SubStatus::Crashed | SubStatus::Conflict
+                        SubStatus::NeedsInput | SubStatus::Stale | SubStatus::Crashed | SubStatus::Conflict
                     )
-            });
-            if has_blocked {
-                return EpicSubstatus::Blocked;
-            }
-            let has_backlog = subtasks.iter().any(|t| t.status == TaskStatus::Backlog);
-            if has_backlog {
-                EpicSubstatus::Dispatching
+            }).count();
+            if blocked_count > 0 {
+                EpicSubstatus::Blocked(blocked_count)
             } else {
-                EpicSubstatus::Partial
+                EpicSubstatus::Active
             }
         }
         TaskStatus::Backlog => {
@@ -1542,33 +1535,54 @@ mod tests {
     }
 
     #[test]
-    fn epic_substatus_dispatching() {
+    fn epic_substatus_active_with_backlog() {
         let epic = Epic { status: TaskStatus::Running, ..test_epic() };
         let subtasks = vec![
             Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
             Task { status: TaskStatus::Backlog, ..test_task() },
         ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Dispatching);
+        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Active);
     }
 
     #[test]
-    fn epic_substatus_blocked() {
-        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
-        let subtasks = vec![
-            Task { status: TaskStatus::Running, sub_status: SubStatus::Stale, ..test_task() },
-            Task { status: TaskStatus::Backlog, ..test_task() },
-        ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Blocked);
-    }
-
-    #[test]
-    fn epic_substatus_partial() {
+    fn epic_substatus_active_all_running() {
         let epic = Epic { status: TaskStatus::Running, ..test_epic() };
         let subtasks = vec![
             Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
             Task { status: TaskStatus::Done, sub_status: SubStatus::None, ..test_task() },
         ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Partial);
+        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Active);
+    }
+
+    #[test]
+    fn epic_substatus_blocked_stale() {
+        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let subtasks = vec![
+            Task { status: TaskStatus::Running, sub_status: SubStatus::Stale, ..test_task() },
+            Task { status: TaskStatus::Backlog, ..test_task() },
+        ];
+        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Blocked(1));
+    }
+
+    #[test]
+    fn epic_substatus_blocked_needs_input() {
+        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let subtasks = vec![
+            Task { status: TaskStatus::Running, sub_status: SubStatus::NeedsInput, ..test_task() },
+            Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
+        ];
+        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Blocked(1));
+    }
+
+    #[test]
+    fn epic_substatus_blocked_count() {
+        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let subtasks = vec![
+            Task { status: TaskStatus::Running, sub_status: SubStatus::NeedsInput, ..test_task() },
+            Task { status: TaskStatus::Running, sub_status: SubStatus::Stale, ..test_task() },
+            Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
+        ];
+        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Blocked(2));
     }
 
     #[test]
