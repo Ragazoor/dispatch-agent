@@ -775,6 +775,7 @@ impl App {
             task.worktree = Some(worktree);
             task.tmux_window = Some(tmux_window.clone());
             task.status = TaskStatus::Running;
+            task.sub_status = SubStatus::default_for(TaskStatus::Running);
             let task_clone = task.clone();
             self.agents.last_output_change.insert(id, Instant::now());
             self.clamp_selection();

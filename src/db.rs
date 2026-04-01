@@ -777,6 +777,9 @@ impl TaskStore for Database {
             sets.push("status = ?");
             values.push(Box::new(s.as_str().to_string()));
         }
+        // When status changes without an explicit sub_status, reset to the new column's default.
+        let effective_sub_status = patch.sub_status
+            .or_else(|| patch.status.map(SubStatus::default_for));
         if let Some(t) = patch.title {
             sets.push("title = ?");
             values.push(Box::new(t.to_string()));
@@ -801,7 +804,7 @@ impl TaskStore for Database {
             sets.push("tmux_window = ?");
             values.push(Box::new(t.map(|s| s.to_string())));
         }
-        if let Some(ss) = patch.sub_status {
+        if let Some(ss) = effective_sub_status {
             sets.push("sub_status = ?");
             values.push(Box::new(ss.as_str().to_string()));
         }
