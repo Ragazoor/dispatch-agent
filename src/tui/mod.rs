@@ -1065,6 +1065,16 @@ impl App {
             cmds.push(Command::FetchReviewPrs);
         }
 
+        // Also refresh my PRs data if stale (> 30s)
+        let needs_my_prs_fetch = self
+            .last_my_prs_fetch
+            .map(|t| t.elapsed() > Duration::from_secs(30))
+            .unwrap_or(true);
+        if needs_my_prs_fetch && !self.my_prs_loading {
+            self.my_prs_loading = true;
+            cmds.push(Command::FetchMyPrs);
+        }
+
         cmds.push(Command::RefreshFromDb);
         cmds
     }

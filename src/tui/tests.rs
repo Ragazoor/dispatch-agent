@@ -185,11 +185,14 @@ fn tick_produces_capture_for_running_tasks_with_window() {
     task4.tmux_window = Some("main:task-4".to_string());
     let mut app = App::new(vec![task4], TEST_TIMEOUT);
     let cmds = app.update(Message::Tick);
-    // Should have CaptureTmux + FetchReviewPrs + RefreshFromDb
-    assert_eq!(cmds.len(), 3);
-    assert!(matches!(&cmds[0], Command::CaptureTmux { id: TaskId(4), window } if window == "main:task-4"));
+    // Should have CaptureTmux + FetchReviewPrs + FetchMyPrs + RefreshFromDb
+    assert_eq!(cmds.len(), 4);
+    assert!(
+        matches!(&cmds[0], Command::CaptureTmux { id: TaskId(4), window } if window == "main:task-4")
+    );
     assert!(matches!(&cmds[1], Command::FetchReviewPrs));
-    assert!(matches!(&cmds[2], Command::RefreshFromDb));
+    assert!(matches!(&cmds[2], Command::FetchMyPrs));
+    assert!(matches!(&cmds[3], Command::RefreshFromDb));
 }
 
 #[test]
@@ -201,6 +204,14 @@ fn tick_captures_review_task_with_live_window() {
     let cmds = app.update(Message::Tick);
 
     assert!(cmds.iter().any(|c| matches!(c, Command::CaptureTmux { id: TaskId(5), .. })));
+}
+
+#[test]
+fn tick_fetches_my_prs_when_stale() {
+    let mut app = make_app();
+    assert!(app.last_my_prs_fetch.is_none());
+    let cmds = app.update(Message::Tick);
+    assert!(cmds.iter().any(|c| matches!(c, Command::FetchMyPrs)));
 }
 
 #[test]
