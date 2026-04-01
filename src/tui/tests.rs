@@ -2464,6 +2464,17 @@ fn render_help_overlay_shows_keybindings_help() {
 }
 
 #[test]
+fn render_help_overlay_in_review_board_shows_review_shortcuts() {
+    let mut app = App::new(vec![], Duration::from_secs(300));
+    app.update(Message::SwitchToReviewBoard);
+    app.update(Message::ToggleHelp);
+    let buf = render_to_buffer(&mut app, 100, 30);
+    assert!(buffer_contains(&buf, "Review Board"), "review help should have Review Board section");
+    assert!(buffer_contains(&buf, "open PR"), "review help should mention open PR");
+    assert!(!buffer_contains(&buf, "dispatch"), "review help should not show task board dispatch key");
+}
+
+#[test]
 fn render_1x1_terminal_does_not_panic() {
     let mut app = App::new(
         vec![make_task(1, TaskStatus::Running)],

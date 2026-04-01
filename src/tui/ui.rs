@@ -1214,92 +1214,113 @@ fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
     let desc = Style::default().fg(Color::Gray);
     let note = Style::default().fg(Color::DarkGray);
 
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled("  Navigation", header)),
-        Line::from(vec![
-            Span::styled("  h/\u{2190}", key), Span::styled(" previous column   ", desc),
-            Span::styled("j/\u{2193}", key), Span::styled(" next task", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  l/\u{2192}", key), Span::styled(" next column       ", desc),
-            Span::styled("k/\u{2191}", key), Span::styled(" previous task", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter", key), Span::styled(" detail panel       ", desc),
-            Span::styled("e", key), Span::styled(" edit / enter epic", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  q", key), Span::styled(" exit epic (in epic view)   ", desc),
-            Span::styled("Esc", key), Span::styled(" clear selection", desc),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  Actions", header)),
-        Line::from(vec![
-            Span::styled("  n", key), Span::styled(" new task   ", desc),
-            Span::styled("E", key), Span::styled(" new epic   ", desc),
-            Span::styled("N", key), Span::styled(" notifications", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  d", key), Span::styled(" dispatch*  ", desc),
-            Span::styled("m", key), Span::styled(" move fwd   ", desc),
-            Span::styled("M", key), Span::styled(" move back", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  x", key), Span::styled(" archive    ", desc),
-            Span::styled("D", key), Span::styled(" quick dsp  ", desc),
-            Span::styled("g", key), Span::styled(" go to tmux  ", desc),
-            Span::styled("p", key), Span::styled(" open PR", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  H", key), Span::styled(" history    ", desc),
-            Span::styled("V", key), Span::styled(" epic done  ", desc),
-            Span::styled("a", key), Span::styled(" select all", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  Space", key), Span::styled(" select  ", desc),
-            Span::styled("f", key), Span::styled(" filter repos  ", desc),
-            Span::styled("W", key), Span::styled(" wrap up    ", desc),
-            Span::styled("(task: rebase/PR, epic: batch)", note),
-        ]),
-        Line::from(vec![
-            Span::styled("  T", key), Span::styled(" detach tmux panel  ", desc),
-            Span::styled("(Review tasks, supports batch)", note),
-        ]),
-        Line::from(vec![
-            Span::styled("  J/K", key), Span::styled(" reorder item up/down in column", desc),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  * d is context-dependent:", note)),
-        Line::from(Span::styled("    Backlog (no plan) \u{2192} brainstorm", note)),
-        Line::from(Span::styled("    Backlog (has plan) \u{2192} dispatch", note)),
-        Line::from(Span::styled("    Running \u{2192} resume (if window gone)", note)),
-        Line::from(Span::styled("    Epic \u{2192} dispatch next backlog subtask", note)),
-        Line::from(""),
-        Line::from(Span::styled("  General", header)),
-        Line::from(vec![
-            Span::styled("  ?", key), Span::styled(" this help  ", desc),
-            Span::styled("N", key), Span::styled(" notify on/off  ", desc),
-            Span::styled("q", key), Span::styled(" quit (or exit epic)", desc),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  Review Board", header)),
-        Line::from(vec![
-            Span::styled("  Tab", key), Span::styled(" switch Task/Review board  ", desc),
-            Span::styled("r", key), Span::styled(" refresh from GitHub", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  h/\u{2190}", key), Span::styled(" prev column  ", desc),
-            Span::styled("l/\u{2192}", key), Span::styled(" next column  ", desc),
-            Span::styled("j/k", key), Span::styled(" navigate rows", desc),
-        ]),
-        Line::from(vec![
-            Span::styled("  Enter", key), Span::styled(" open PR in browser  ", desc),
-            Span::styled("Esc", key), Span::styled(" back to task board", desc),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  Press ? or Esc to close", note)),
-    ];
+    let lines = if matches!(app.view_mode(), ViewMode::ReviewBoard { .. }) {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled("  Review Board", header)),
+            Line::from(vec![
+                Span::styled("  h/\u{2190}", key), Span::styled(" previous column   ", desc),
+                Span::styled("l/\u{2192}", key), Span::styled(" next column", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  j/\u{2193}", key), Span::styled(" next PR           ", desc),
+                Span::styled("k/\u{2191}", key), Span::styled(" previous PR", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  Enter", key), Span::styled(" open PR in browser", desc),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("  Actions", header)),
+            Line::from(vec![
+                Span::styled("  r", key), Span::styled(" refresh from GitHub", desc),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("  General", header)),
+            Line::from(vec![
+                Span::styled("  Tab/Esc", key), Span::styled(" back to Task Board  ", desc),
+                Span::styled("q", key), Span::styled(" quit", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  ?", key), Span::styled(" close this help", desc),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("  Press ? or Esc to close", note)),
+        ]
+    } else {
+        vec![
+            Line::from(""),
+            Line::from(Span::styled("  Navigation", header)),
+            Line::from(vec![
+                Span::styled("  h/\u{2190}", key), Span::styled(" previous column   ", desc),
+                Span::styled("j/\u{2193}", key), Span::styled(" next task", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  l/\u{2192}", key), Span::styled(" next column       ", desc),
+                Span::styled("k/\u{2191}", key), Span::styled(" previous task", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  Enter", key), Span::styled(" detail panel       ", desc),
+                Span::styled("e", key), Span::styled(" edit / enter epic", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  q", key), Span::styled(" exit epic (in epic view)   ", desc),
+                Span::styled("Esc", key), Span::styled(" clear selection", desc),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("  Actions", header)),
+            Line::from(vec![
+                Span::styled("  n", key), Span::styled(" new task   ", desc),
+                Span::styled("E", key), Span::styled(" new epic   ", desc),
+                Span::styled("N", key), Span::styled(" notifications", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  d", key), Span::styled(" dispatch*  ", desc),
+                Span::styled("m", key), Span::styled(" move fwd   ", desc),
+                Span::styled("M", key), Span::styled(" move back", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  x", key), Span::styled(" archive    ", desc),
+                Span::styled("D", key), Span::styled(" quick dsp  ", desc),
+                Span::styled("g", key), Span::styled(" go to tmux", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  H", key), Span::styled(" history    ", desc),
+                Span::styled("V", key), Span::styled(" epic done  ", desc),
+                Span::styled("a", key), Span::styled(" select all", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  Space", key), Span::styled(" select  ", desc),
+                Span::styled("f", key), Span::styled(" filter repos  ", desc),
+                Span::styled("W", key), Span::styled(" wrap up    ", desc),
+                Span::styled("(task: rebase/PR, epic: batch)", note),
+            ]),
+            Line::from(vec![
+                Span::styled("  T", key), Span::styled(" detach tmux panel  ", desc),
+                Span::styled("(Review tasks, supports batch)", note),
+            ]),
+            Line::from(vec![
+                Span::styled("  J/K", key), Span::styled(" reorder item up/down in column", desc),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("  * d is context-dependent:", note)),
+            Line::from(Span::styled("    Backlog (no plan) \u{2192} brainstorm", note)),
+            Line::from(Span::styled("    Backlog (has plan) \u{2192} dispatch", note)),
+            Line::from(Span::styled("    Running \u{2192} resume (if window gone)", note)),
+            Line::from(Span::styled("    Epic \u{2192} dispatch next backlog subtask", note)),
+            Line::from(""),
+            Line::from(Span::styled("  General", header)),
+            Line::from(vec![
+                Span::styled("  ?", key), Span::styled(" this help  ", desc),
+                Span::styled("N", key), Span::styled(" notify on/off  ", desc),
+                Span::styled("q", key), Span::styled(" quit (or exit epic)", desc),
+            ]),
+            Line::from(vec![
+                Span::styled("  Tab", key), Span::styled(" switch to Review Board", desc),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled("  Press ? or Esc to close", note)),
+        ]
+    };
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, popup_area);
@@ -1756,6 +1777,24 @@ fn batch_action_hints(count: usize, key_color: Color, has_tasks: bool) -> Vec<Sp
 // Review board rendering
 // ---------------------------------------------------------------------------
 
+fn review_action_hints(has_pr: bool) -> Vec<Span<'static>> {
+    let key_color = Color::Cyan;
+    let label_style = Style::default().fg(MUTED);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut push_hint = |key: &'static str, label: &'static str| {
+        spans.push(Span::styled(key, Style::default().fg(key_color).add_modifier(Modifier::BOLD)));
+        spans.push(Span::styled(format!(" {label}  "), label_style));
+    };
+    if has_pr {
+        push_hint("Enter", "open PR");
+    }
+    push_hint("r", "refresh");
+    push_hint("Tab", "task board");
+    push_hint("?", "help");
+    push_hint("q", "quit");
+    spans
+}
+
 fn review_column_color(decision: ReviewDecision) -> Color {
     match decision {
         ReviewDecision::ReviewRequired => CYAN,
@@ -1821,6 +1860,10 @@ pub fn render_review_board(frame: &mut Frame, app: &mut App, area: Rect) {
         let status = Paragraph::new(format!("Error: {err}"))
             .style(Style::default().fg(Color::Red));
         frame.render_widget(status, chunks[3]);
+    } else {
+        let has_pr = app.selected_review_pr().is_some();
+        let hints = Paragraph::new(Line::from(review_action_hints(has_pr)));
+        frame.render_widget(hints, chunks[3]);
     }
 }
 
