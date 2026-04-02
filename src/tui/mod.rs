@@ -1533,6 +1533,7 @@ impl App {
         self.input.mode = InputMode::Normal;
         self.input.buffer.clear();
         self.input.task_draft = None;
+        self.input.pending_epic_id = None;
         self.clear_status();
         vec![]
     }
@@ -1655,9 +1656,10 @@ impl App {
     fn handle_select_quick_dispatch_repo(&mut self, idx: usize) -> Vec<Command> {
         if idx < self.repo_paths.len() {
             let repo_path = self.repo_paths[idx].clone();
+            let epic_id = self.input.pending_epic_id.take();
             self.input.mode = InputMode::Normal;
             self.clear_status();
-            self.handle_quick_dispatch(repo_path, None)
+            self.handle_quick_dispatch(repo_path, epic_id)
         } else {
             vec![]
         }

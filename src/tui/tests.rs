@@ -913,11 +913,11 @@ fn quick_dispatch_message_emits_command() {
 }
 
 #[test]
-fn shift_d_in_epic_view_quick_dispatches_subtask() {
+fn shift_d_in_epic_view_quick_dispatches_subtask_single_repo() {
     let mut app = App::new(vec![], TEST_TIMEOUT);
-    let mut epic = make_epic(10);
-    epic.repo_path = "/epic/repo".to_string();
+    let epic = make_epic(10);
     app.epics = vec![epic];
+    app.repo_paths = vec!["/my/repo".to_string()];
     app.view_mode = ViewMode::Epic {
         epic_id: EpicId(10),
         selection: BoardSelection::new(),
@@ -927,7 +927,46 @@ fn shift_d_in_epic_view_quick_dispatches_subtask() {
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0],
         Command::QuickDispatch { ref draft, epic_id: Some(EpicId(10)) }
-        if draft.repo_path == "/epic/repo"
+        if draft.repo_path == "/my/repo"
+    ));
+}
+
+#[test]
+fn shift_d_in_epic_view_shows_repo_selection_with_multiple_repos() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let epic = make_epic(10);
+    app.epics = vec![epic];
+    app.repo_paths = vec!["/repo/a".to_string(), "/repo/b".to_string()];
+    app.view_mode = ViewMode::Epic {
+        epic_id: EpicId(10),
+        selection: BoardSelection::new(),
+        saved_board: BoardSelection::new(),
+    };
+    let cmds = app.handle_key(make_shift_key(KeyCode::Char('D')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::QuickDispatch);
+    assert_eq!(app.input.pending_epic_id, Some(EpicId(10)));
+}
+
+#[test]
+fn shift_d_in_epic_view_repo_selection_dispatches_with_epic_id() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    let epic = make_epic(10);
+    app.epics = vec![epic];
+    app.repo_paths = vec!["/repo/a".to_string(), "/repo/b".to_string()];
+    app.view_mode = ViewMode::Epic {
+        epic_id: EpicId(10),
+        selection: BoardSelection::new(),
+        saved_board: BoardSelection::new(),
+    };
+    // Enter selection mode
+    app.handle_key(make_shift_key(KeyCode::Char('D')));
+    // Select second repo
+    let cmds = app.handle_key(make_key(KeyCode::Char('2')));
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(&cmds[0],
+        Command::QuickDispatch { ref draft, epic_id: Some(EpicId(10)) }
+        if draft.repo_path == "/repo/b"
     ));
 }
 

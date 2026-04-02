@@ -215,21 +215,19 @@ impl App {
             }
 
             KeyCode::Char('D') => {
-                // In epic view, quick-dispatch a subtask for the current epic
-                if let ViewMode::Epic { epic_id, .. } = &self.view_mode {
-                    let eid = *epic_id;
-                    if let Some(epic) = self.epics.iter().find(|e| e.id == eid) {
-                        let repo_path = epic.repo_path.clone();
-                        return self.update(Message::QuickDispatch { repo_path, epic_id: Some(eid) });
-                    }
-                }
+                let epic_id = if let ViewMode::Epic { epic_id, .. } = &self.view_mode {
+                    Some(*epic_id)
+                } else {
+                    None
+                };
+                self.input.pending_epic_id = epic_id;
                 match self.repo_paths.len() {
                     0 => self.update(Message::StatusInfo(
                         "No saved repo paths — create a task first".to_string(),
                     )),
                     1 => {
                         let repo_path = self.repo_paths[0].clone();
-                        self.update(Message::QuickDispatch { repo_path, epic_id: None })
+                        self.update(Message::QuickDispatch { repo_path, epic_id })
                     }
                     _ => self.update(Message::StartQuickDispatchSelection),
                 }

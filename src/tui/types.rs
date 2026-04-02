@@ -363,6 +363,8 @@ pub struct InputState {
     pub task_draft: Option<TaskDraft>,
     pub epic_draft: Option<EpicDraft>,
     pub repo_cursor: usize,
+    /// Tracks epic_id during quick-dispatch repo selection in epic view.
+    pub pending_epic_id: Option<EpicId>,
 }
 
 impl Default for InputState {
@@ -373,6 +375,7 @@ impl Default for InputState {
             task_draft: None,
             epic_draft: None,
             repo_cursor: 0,
+            pending_epic_id: None,
         }
     }
 }
