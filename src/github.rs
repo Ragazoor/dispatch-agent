@@ -321,22 +321,22 @@ const PR_FIELDS: &str = r#"... on PullRequest {
 /// - `commented`: PRs where `commenter:@me` (left comments but no formal review)
 ///
 /// The three result sets are merged and deduplicated by URL client-side.
-/// Own PRs (`-author:@me`) and bot authors are excluded server-side.
+/// Own PRs (`-author:@me`), bot authors, and archived repos are excluded server-side.
 pub fn fetch_review_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, String> {
     let query = format!(
         r#"{{
   viewer {{ login }}
-  requestedReview: search(query: "is:pr is:open review-requested:@me -is:draft -author:app/dependabot -author:app/renovate", type: ISSUE, first: 100) {{
+  requestedReview: search(query: "is:pr is:open review-requested:@me -is:draft -author:app/dependabot -author:app/renovate archived:false", type: ISSUE, first: 100) {{
     nodes {{
       {PR_FIELDS}
     }}
   }}
-  alreadyReviewed: search(query: "is:pr is:open reviewed-by:@me -author:@me -is:draft -author:app/dependabot -author:app/renovate", type: ISSUE, first: 100) {{
+  alreadyReviewed: search(query: "is:pr is:open reviewed-by:@me -author:@me -is:draft -author:app/dependabot -author:app/renovate archived:false", type: ISSUE, first: 100) {{
     nodes {{
       {PR_FIELDS}
     }}
   }}
-  commented: search(query: "is:pr is:open commenter:@me -author:@me -is:draft -author:app/dependabot -author:app/renovate", type: ISSUE, first: 100) {{
+  commented: search(query: "is:pr is:open commenter:@me -author:@me -is:draft -author:app/dependabot -author:app/renovate archived:false", type: ISSUE, first: 100) {{
     nodes {{
       {PR_FIELDS}
     }}
@@ -365,7 +365,7 @@ pub fn fetch_my_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, String>
     let query = format!(
         r#"{{
   viewer {{ login }}
-  myPrs: search(query: "is:pr is:open author:@me -is:draft", type: ISSUE, first: 100) {{
+  myPrs: search(query: "is:pr is:open author:@me -is:draft archived:false", type: ISSUE, first: 100) {{
     nodes {{
       {PR_FIELDS}
     }}
