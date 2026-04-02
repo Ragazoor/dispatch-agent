@@ -6306,6 +6306,20 @@ fn tick_skips_already_crashed_tasks() {
 }
 
 #[test]
+fn tick_skips_conflict_tasks_for_stale_detection() {
+    let mut app = App::new(vec![
+        make_task(3, TaskStatus::Running),
+    ], TEST_TIMEOUT);
+    app.tasks[0].tmux_window = Some("win-3".to_string());
+    app.tasks[0].sub_status = SubStatus::Conflict;
+    app.agents.last_output_change.insert(TaskId(3), Instant::now() - Duration::from_secs(301));
+
+    let cmds = app.update(Message::Tick);
+    assert!(!cmds.iter().any(|c| matches!(c, Command::PersistTask(_))));
+    assert_eq!(app.tasks[0].sub_status, SubStatus::Conflict);
+}
+
+#[test]
 fn move_task_forward_resets_substatus() {
     let mut app = make_app();
     let id = TaskId(3); // Running
@@ -6425,6 +6439,20 @@ fn pr_review_state_ignores_non_review_task() {
     assert!(cmds.is_empty());
     // sub_status should not have changed
     assert_ne!(app.find_task(id).unwrap().sub_status, SubStatus::Approved);
+}
+
+#[test]
+fn pr_review_state_preserves_conflict_substatus() {
+    let mut app = make_app();
+    let id = TaskId(3);
+    app.find_task_mut(id).unwrap().status = TaskStatus::Review;
+    app.find_task_mut(id).unwrap().sub_status = SubStatus::Conflict;
+    let cmds = app.update(Message::PrReviewState {
+        id,
+        review_decision: Some(dispatch::PrReviewDecision::Approved),
+    });
+    assert!(cmds.is_empty());
+    assert_eq!(app.find_task(id).unwrap().sub_status, SubStatus::Conflict);
 }
 
 // =====================================================================

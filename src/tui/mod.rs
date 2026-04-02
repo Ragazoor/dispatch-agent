@@ -1095,7 +1095,7 @@ impl App {
             .tasks
             .iter()
             .filter(|t| t.status == TaskStatus::Running && t.tmux_window.is_some())
-            .filter(|t| t.sub_status != SubStatus::Stale && t.sub_status != SubStatus::Crashed)
+            .filter(|t| !matches!(t.sub_status, SubStatus::Stale | SubStatus::Crashed | SubStatus::Conflict))
             .filter(|t| {
                 self.agents.last_output_change
                     .get(&t.id)
@@ -1830,6 +1830,10 @@ impl App {
     fn handle_pr_review_state(&mut self, id: TaskId, review_decision: Option<dispatch::PrReviewDecision>) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             if task.status != TaskStatus::Review {
+                return vec![];
+            }
+            // Don't overwrite attention-requiring substatuses
+            if task.sub_status == SubStatus::Conflict {
                 return vec![];
             }
             let new_sub = match review_decision {
