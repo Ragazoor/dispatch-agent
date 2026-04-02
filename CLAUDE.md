@@ -61,7 +61,10 @@ A task with a plan always dispatches directly regardless of tag. Tags are select
 | `src/tui/tests.rs` | TUI unit tests |
 | `src/models.rs` | Domain types (`Task`, `Epic`, `TaskStatus`, `SubStatus`, `TaskTag`), `DispatchMode::for_task()` tag routing |
 | `src/service.rs` | Domain service layer (`TaskService`, `EpicService`): business logic (validation, patch building, epic recalculation) decoupled from MCP/HTTP |
-| `src/db.rs` | SQLite storage (`TaskStore` trait, `Database` impl), `TaskPatch` builder, versioned migrations |
+| `src/db/mod.rs` | `Database` struct, constructor, `TaskStore` trait, `TaskPatch`/`EpicPatch` builders |
+| `src/db/migrations.rs` | Versioned schema migrations (`MIGRATIONS` array, `migrate_vN_*` functions) |
+| `src/db/queries.rs` | `impl TaskStore for Database` — all CRUD operations, row helpers |
+| `src/db/tests.rs` | Database unit tests |
 | `src/dispatch.rs` | Worktree creation, tmux session management, agent lifecycle (dispatch/brainstorm/plan/resume/review) |
 | `src/process.rs` | `ProcessRunner` trait + `RealProcessRunner` / `MockProcessRunner` for testable shell execution |
 | `src/tmux.rs` | Tmux API: create windows, send keys, capture pane output, kill windows |
@@ -125,12 +128,12 @@ The `MessageSent` variant additionally triggers `Message::MessageReceived(task_i
 
 ### Adding a Database Migration
 
-Migrations live at the bottom of `src/db.rs` as standalone functions:
+Migrations live in `src/db/migrations.rs` as standalone functions:
 
-1. **Write the migration function**: `fn migrate_vN_description(conn: &Connection) -> Result<()>`. Use `ALTER TABLE` for additive changes; for destructive changes (column removal, constraint changes), create a new table, copy data, drop old, rename.
-2. **Register it** in `Database::open()`: add `(N, migrate_vN_description)` to the `migrations` array. The loop applies any migration where `current_version < N` and bumps `PRAGMA user_version` after each.
-3. **Update the schema test**: `fresh_db_has_latest_schema_version` asserts the final version number — bump it to match your new N.
-4. **Write a migration test** that creates a DB at the pre-migration schema, inserts test data, runs the migration, and verifies the result.
+1. **Write the migration function**: `fn migrate_vN_description(conn: &Connection) -> Result<()>` in `src/db/migrations.rs`. Use `ALTER TABLE` for additive changes; for destructive changes (column removal, constraint changes), create a new table, copy data, drop old, rename.
+2. **Register it** in the `MIGRATIONS` array in `src/db/migrations.rs`: add `(N, migrate_vN_description)`. The loop in `Database::init_schema()` applies any migration where `current_version < N` and bumps `PRAGMA user_version` after each.
+3. **Update the schema test**: `fresh_db_has_latest_schema_version` in `src/db/tests.rs` asserts the final version number — bump it to match your new N.
+4. **Write a migration test** in `src/db/tests.rs` that creates a DB at the pre-migration schema, inserts test data, runs the migration, and verifies the result.
 
 ## Documentation
 
