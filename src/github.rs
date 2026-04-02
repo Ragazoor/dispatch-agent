@@ -388,21 +388,61 @@ pub fn fetch_my_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, String>
 
 /// Fetch open dependency-bot PRs (dependabot + renovate), non-draft.
 ///
-/// Uses two aliased GraphQL searches in one request:
-/// - `dependabot`: PRs authored by `app/dependabot`
-/// - `renovate`: PRs authored by `app/renovate`
+/// Uses two GraphQL calls:
+/// 1. Fetch the viewer's login and organization memberships.
+/// 2. Run two aliased searches scoped with `user:` and `org:` qualifiers,
+///    so only PRs from the viewer's own repos and org repos are returned.
 ///
 /// The two result sets are merged and deduplicated by URL client-side.
 pub fn fetch_bot_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, String> {
+    // Call 1: fetch viewer login + org logins to build owner scope.
+    let identity_query = r#"{ viewer { login organizations(first: 100) { nodes { login } } } }"#;
+    let output = runner
+        .run(
+            "gh",
+            &["api", "graphql", "-f", &format!("query={identity_query}")],
+        )
+        .map_err(|e| format!("Failed to run gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh api graphql failed: {stderr}"));
+    }
+
+    let identity_json = String::from_utf8_lossy(&output.stdout);
+    let identity: serde_json::Value =
+        serde_json::from_str(&identity_json).map_err(|e| format!("Failed to parse JSON: {e}"))?;
+
+    let viewer_login = identity
+        .pointer("/data/viewer/login")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let mut owner_scope = String::new();
+    if !viewer_login.is_empty() {
+        owner_scope.push_str(&format!("user:{viewer_login}"));
+    }
+    if let Some(org_nodes) = identity
+        .pointer("/data/viewer/organizations/nodes")
+        .and_then(|v| v.as_array())
+    {
+        for org in org_nodes {
+            if let Some(login) = org["login"].as_str() {
+                owner_scope.push_str(&format!(" org:{login}"));
+            }
+        }
+    }
+
+    // Call 2: search with owner scope injected into the query.
     let query = format!(
         r#"{{
   viewer {{ login }}
-  dependabot: search(query: "is:pr is:open author:app/dependabot -is:draft", type: ISSUE, first: 10) {{
+  dependabot: search(query: "is:pr is:open author:app/dependabot -is:draft {owner_scope}", type: ISSUE, first: 10) {{
     nodes {{
       {PR_FIELDS}
     }}
   }}
-  renovate: search(query: "is:pr is:open author:app/renovate -is:draft", type: ISSUE, first: 10) {{
+  renovate: search(query: "is:pr is:open author:app/renovate -is:draft {owner_scope}", type: ISSUE, first: 10) {{
     nodes {{
       {PR_FIELDS}
     }}
@@ -1136,5 +1176,67 @@ mod tests {
             "missing author:@me qualifier"
         );
         assert!(query_arg.contains("-is:draft"));
+    }
+
+    #[test]
+    fn fetch_bot_prs_query_includes_owner_qualifiers() {
+        let identity_response = r#"{"data":{"viewer":{"login":"testuser","organizations":{"nodes":[{"login":"myorg"},{"login":"otherorg"}]}}}}"#;
+        let search_response = r#"{"data":{"viewer":{"login":"testuser"},"dependabot":{"nodes":[]},"renovate":{"nodes":[]}}}"#;
+
+        let runner = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(identity_response.as_bytes()),
+            MockProcessRunner::ok_with_stdout(search_response.as_bytes()),
+        ]);
+
+        let _ = fetch_bot_prs(&runner);
+        let calls = runner.recorded_calls();
+        assert_eq!(calls.len(), 2);
+
+        // First call: identity query fetches orgs
+        let identity_query = calls[0].1.iter().find(|a| a.contains("query=")).unwrap();
+        assert!(
+            identity_query.contains("organizations"),
+            "first call should fetch orgs"
+        );
+
+        // Second call: search includes owner qualifiers
+        let search_query = calls[1].1.iter().find(|a| a.contains("query=")).unwrap();
+        assert!(
+            search_query.contains("user:testuser"),
+            "missing user: qualifier"
+        );
+        assert!(
+            search_query.contains("org:myorg"),
+            "missing org:myorg qualifier"
+        );
+        assert!(
+            search_query.contains("org:otherorg"),
+            "missing org:otherorg qualifier"
+        );
+        assert!(search_query.contains("author:app/dependabot"));
+        assert!(search_query.contains("author:app/renovate"));
+    }
+
+    #[test]
+    fn fetch_bot_prs_no_orgs_only_user_qualifier() {
+        let identity_response =
+            r#"{"data":{"viewer":{"login":"solo","organizations":{"nodes":[]}}}}"#;
+        let search_response = r#"{"data":{"viewer":{"login":"solo"},"dependabot":{"nodes":[]},"renovate":{"nodes":[]}}}"#;
+
+        let runner = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(identity_response.as_bytes()),
+            MockProcessRunner::ok_with_stdout(search_response.as_bytes()),
+        ]);
+
+        let _ = fetch_bot_prs(&runner);
+        let calls = runner.recorded_calls();
+        assert_eq!(calls.len(), 2);
+
+        let search_query = calls[1].1.iter().find(|a| a.contains("query=")).unwrap();
+        assert!(
+            search_query.contains("user:solo"),
+            "missing user: qualifier"
+        );
+        assert!(!search_query.contains("org:"), "should have no org: qualifiers");
     }
 }
