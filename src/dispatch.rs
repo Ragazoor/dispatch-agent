@@ -690,6 +690,19 @@ pub fn check_pr_status(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Resolve a GitHub repo name (e.g. `"org/repo"`) to a local filesystem path
+/// by matching against known repo paths.  Returns the first path whose
+/// directory name equals the short repo name.
+pub fn resolve_repo_path(github_repo: &str, known_paths: &[String]) -> Option<String> {
+    let repo_short = github_repo.split('/').next_back().unwrap_or(github_repo);
+    known_paths.iter().find(|p| {
+        std::path::Path::new(p)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|dir| dir == repo_short)
+    }).cloned()
+}
+
 /// Dispatch a Claude agent to review a PR in an isolated worktree.
 pub fn dispatch_review_agent(
     repo_path: &str,
@@ -839,6 +852,29 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn resolve_repo_path_matches_directory_name() {
+        let paths = vec![
+            "/home/user/projects/frontend".to_string(),
+            "/home/user/projects/backend".to_string(),
+        ];
+        assert_eq!(
+            resolve_repo_path("org/backend", &paths),
+            Some("/home/user/projects/backend".to_string()),
+        );
+    }
+
+    #[test]
+    fn resolve_repo_path_returns_none_when_no_match() {
+        let paths = vec!["/home/user/projects/frontend".to_string()];
+        assert_eq!(resolve_repo_path("org/backend", &paths), None);
+    }
+
+    #[test]
+    fn resolve_repo_path_handles_empty_paths() {
+        assert_eq!(resolve_repo_path("org/repo", &[]), None);
     }
 
     #[test]

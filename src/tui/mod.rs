@@ -2203,28 +2203,8 @@ impl App {
         &mut self,
         req: ReviewAgentRequest,
     ) -> Vec<Command> {
-        // Find a local repo path from existing tasks
-        let repo_path = self.tasks.iter()
-            .find(|t| {
-                let dir_name = std::path::Path::new(&t.repo_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                let repo_short = req.repo.split('/').next_back().unwrap_or(&req.repo);
-                dir_name == repo_short
-            })
-            .map(|t| t.repo_path.clone());
-
-        let Some(repo_path) = repo_path else {
-            self.set_status(format!("No local repo found for {}", req.repo));
-            return vec![];
-        };
-
         self.set_status(format!("Dispatching review agent for #{}...", req.number));
-        vec![Command::DispatchReviewAgent(ReviewAgentRequest {
-            repo: repo_path,
-            ..req
-        })]
+        vec![Command::DispatchReviewAgent(req)]
     }
 
     /// Return review PRs filtered by the review repo filter.

@@ -7310,8 +7310,6 @@ fn quick_dispatch_enter_selects_cursor_repo() {
 #[test]
 fn review_board_d_dispatches_review_agent() {
     let mut app = make_app();
-    // The default make_task uses repo_path "/repo"
-    // Create a PR where repo matches the task's repo_path directory name
     let mut pr = make_review_pr(42, "alice", ReviewDecision::ReviewRequired);
     pr.repo = "org/repo".to_string();
     pr.head_ref = "fix-bug".to_string();
@@ -7319,19 +7317,19 @@ fn review_board_d_dispatches_review_agent() {
     app.update(Message::SwitchToReviewBoard);
 
     let cmds = app.handle_key(KeyEvent::from(KeyCode::Char('d')));
-    assert!(cmds.iter().any(|c| matches!(c, Command::DispatchReviewAgent { .. })));
+    assert!(cmds.iter().any(|c| matches!(c, Command::DispatchReviewAgent(req) if req.repo == "org/repo")));
 }
 
 #[test]
-fn review_board_d_no_repo_shows_error() {
+fn review_board_d_emits_command_even_without_tasks() {
     let mut app = App::new(vec![], TEST_TIMEOUT);
     let pr = make_review_pr(42, "alice", ReviewDecision::ReviewRequired);
     app.review.prs = vec![pr];
     app.update(Message::SwitchToReviewBoard);
 
     let cmds = app.handle_key(KeyEvent::from(KeyCode::Char('d')));
-    assert!(cmds.is_empty()); // no command, just status message
-    assert!(app.status_message.as_deref().unwrap().contains("No local repo"));
+    // App no longer resolves repo paths — it always emits the command
+    assert!(cmds.iter().any(|c| matches!(c, Command::DispatchReviewAgent(_))));
 }
 
 #[test]

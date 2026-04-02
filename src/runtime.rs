@@ -972,7 +972,18 @@ impl TuiRuntime {
         });
     }
 
-    fn exec_dispatch_review_agent(&self, req: ReviewAgentRequest) {
+    fn exec_dispatch_review_agent(&self, mut req: ReviewAgentRequest) {
+        let known_paths = self.database.list_repo_paths().unwrap_or_default();
+        match crate::dispatch::resolve_repo_path(&req.repo, &known_paths) {
+            Some(p) => req.repo = p,
+            None => {
+                let _ = self.msg_tx.send(Message::ReviewAgentFailed {
+                    error: format!("No local repo found for {}", req.repo),
+                });
+                return;
+            }
+        }
+
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
         tokio::task::spawn_blocking(move || {
