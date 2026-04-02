@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use super::{App, ColumnItem, InputMode, RepoFilterMode, ReviewBoardMode, ViewMode};
+use super::{App, ColumnItem, ColumnLayout, InputMode, RepoFilterMode, ReviewBoardMode, ViewMode};
 use crate::dispatch;
 use crate::models::{
     epic_substatus, format_age, CiStatus, Epic, ReviewDecision, ReviewPr, Staleness, SubStatus,
@@ -306,8 +306,11 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
         )
         .split(area);
 
+    let layout = ColumnLayout::build(app);
+
     for (col_idx, &status) in TaskStatus::ALL.iter().enumerate() {
-        let count = app.column_items_for_status(status).len();
+        let items = layout.get(status);
+        let count = items.len();
         let is_focused = app.selected_column() == col_idx;
         let color = column_color(status);
 
@@ -323,7 +326,6 @@ fn render_summary(frame: &mut Frame, app: &App, area: Rect) {
         let label = format!("{}{} {}", prefix, status.as_str(), count);
 
         let spans = if is_focused {
-            let items = app.column_items_for_status(status);
             let all_selected = !items.is_empty()
                 && items.iter().all(|item| match item {
                     ColumnItem::Task(t) => app.selected_tasks().contains(&t.id),

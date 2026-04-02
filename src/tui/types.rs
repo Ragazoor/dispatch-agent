@@ -531,6 +531,34 @@ pub enum ColumnItem<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// ColumnLayout — pre-computed column items for one render frame
+// ---------------------------------------------------------------------------
+
+/// Pre-computed column items for one render frame.
+/// Built once at the top of `render()` to avoid recomputing per widget.
+pub struct ColumnLayout<'a> {
+    columns: [Vec<ColumnItem<'a>>; TaskStatus::COLUMN_COUNT],
+}
+
+impl<'a> ColumnLayout<'a> {
+    pub fn build(app: &'a super::App) -> Self {
+        let columns = std::array::from_fn(|i| {
+            let status = TaskStatus::ALL[i];
+            app.column_items_for_status(status)
+        });
+        ColumnLayout { columns }
+    }
+
+    pub fn get(&self, status: TaskStatus) -> &[ColumnItem<'a>] {
+        &self.columns[status.column_index()]
+    }
+
+    pub fn count(&self, status: TaskStatus) -> usize {
+        self.columns[status.column_index()].len()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // EpicDraft — fields collected during epic creation
 // ---------------------------------------------------------------------------
 

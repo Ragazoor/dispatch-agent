@@ -343,6 +343,22 @@ impl App {
         items
     }
 
+    /// Count column items for a status without sorting or allocating the full list.
+    /// Used by `clamp_selection()` which only needs counts, not the sorted items.
+    fn column_item_count(&self, status: TaskStatus) -> usize {
+        let task_count = self.tasks_by_status(status).len();
+        if !matches!(self.view_mode, ViewMode::Board(_)) {
+            return task_count;
+        }
+        let epic_count = self.epics.iter()
+            .filter(|e| {
+                (self.repo_filter.is_empty() || self.repo_filter.contains(&e.repo_path))
+                    && epic_status(e) == status
+            })
+            .count();
+        task_count + epic_count
+    }
+
     /// Build a list of items (tasks + epics) for a visual column.
     /// Tasks are filtered by parent_status and sub_status matching the visual column.
     /// Running epics are placed in Active or Blocked based on their substatus;
@@ -425,7 +441,7 @@ impl App {
     /// Clamp all selected_row values to be within bounds for each column.
     pub fn clamp_selection(&mut self) {
         for (col, &status) in TaskStatus::ALL.iter().enumerate() {
-            let count = self.column_items_for_status(status).len();
+            let count = self.column_item_count(status);
             let sel = self.selection_mut();
             if count == 0 {
                 sel.set_row(col, 0);
