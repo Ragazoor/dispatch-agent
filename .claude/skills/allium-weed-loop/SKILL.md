@@ -9,7 +9,7 @@ This skill starts a ralph loop that iteratively aligns the allium spec with the 
 
 ## Instructions
 
-1. **Read the prompt file** at `.claude/allium-weed-prompt.md` to get the full loop prompt.
+1. **Read the prompt file** at `.claude/skills/allium-weed-loop/prompt.md` to get the full loop prompt.
 
 2. **Start the ralph loop** by invoking the `ralph-loop:ralph-loop` skill with the prompt content from the file, plus these options:
    - `--completion-promise 'SPEC ALIGNED'`
