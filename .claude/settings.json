@@ -8,13 +8,7 @@
       "Bash(printf '%s' '— Implementation Plan')",
       "Bash(git:*)",
       "Bash(find . -name *.sh -o -name *.bash)",
-      "mcp__dispatch__get_task",
-      "mcp__dispatch__update_task",
-      "mcp__dispatch__create_task",
-      "mcp__dispatch__list_tasks",
-      "mcp__dispatch__claim_task",
-      "mcp__dispatch__report_usage",
-      "mcp__dispatch__wrap_up"
+      "mcp__dispatch__*"
     ]
   },
   "enabledMcpjsonServers": [
