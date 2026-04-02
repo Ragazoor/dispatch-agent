@@ -604,7 +604,7 @@ fn render_columns(frame: &mut Frame, app: &mut App, area: Rect, now: DateTime<Ut
                                 .cloned()
                                 .collect();
                             let active_merge = app.merge_queue().map(|q| q.epic_id);
-                            epic_substatus(e, &subtasks, active_merge).label()
+                            epic_substatus(e, &subtasks, active_merge).header_label().to_string()
                         }
                     };
                     list_items.push(render_substatus_header(&label, color));

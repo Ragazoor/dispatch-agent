@@ -998,16 +998,17 @@ rule DeleteEpic {
     -- therefore accepts both review and running status.
 
 @invariant EpicDerivedStatus
-    -- Epic kanban status is derived from subtask statuses, never stored.
-    -- Derivation logic:
-    --   epic.done = true              => done
+    -- Epic kanban status is derived from subtask statuses and persisted.
+    -- It only advances forward (never moves to a lower-priority status).
+    -- Derivation logic (checked in priority order):
     --   no subtasks                   => backlog
-    --   all subtasks done             => review
+    --   all subtasks done             => done
     --   any subtask in review         => review
-    --   any subtask running            => running
+    --   any subtask running           => running
     --   otherwise                     => backlog
-    -- The done flag on Epic is the only persisted status.
-    -- Everything else is computed at render time from subtask statuses.
+    -- Review takes precedence over running: once any subtask reaches
+    -- review, the epic is considered in-review even if other subtasks
+    -- are still running.
     --
     -- Epic substatus (display label for epic cards):
     --   backlog + no plan             => unplanned

@@ -1169,10 +1169,7 @@ impl TaskStore for Database {
             TaskStatus::Backlog
         } else if statuses.iter().all(|s| *s == TaskStatus::Done) {
             TaskStatus::Done
-        } else if statuses
-            .iter()
-            .all(|s| matches!(s, TaskStatus::Done | TaskStatus::Review))
-        {
+        } else if statuses.iter().any(|s| *s == TaskStatus::Review) {
             TaskStatus::Review
         } else if statuses.contains(&TaskStatus::Running) {
             TaskStatus::Running
@@ -3010,6 +3007,26 @@ mod tests {
         db.set_task_epic_id(t2.id, Some(epic.id)).unwrap();
         db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Review)).unwrap();
         db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Done)).unwrap();
+
+        db.recalculate_epic_status(epic.id).unwrap();
+        let epic = db.get_epic(epic.id).unwrap().unwrap();
+        assert_eq!(epic.status, TaskStatus::Review);
+    }
+
+    #[test]
+    fn recalculate_epic_status_review_beats_running() {
+        let db = in_memory_db();
+        let epic = db.create_epic("E", "", "/repo").unwrap();
+
+        let t1 = db.create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        let t2 = db.create_task_returning("T2", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        let t3 = db.create_task_returning("T3", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.set_task_epic_id(t1.id, Some(epic.id)).unwrap();
+        db.set_task_epic_id(t2.id, Some(epic.id)).unwrap();
+        db.set_task_epic_id(t3.id, Some(epic.id)).unwrap();
+        db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Review)).unwrap();
+        db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Review)).unwrap();
+        db.patch_task(t3.id, &TaskPatch::new().status(TaskStatus::Running)).unwrap();
 
         db.recalculate_epic_status(epic.id).unwrap();
         let epic = db.get_epic(epic.id).unwrap().unwrap();

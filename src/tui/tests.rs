@@ -2774,9 +2774,9 @@ fn column_items_board_view_includes_epics() {
 
     let items = app.column_items_for_status(TaskStatus::Backlog);
     assert_eq!(items.len(), 2); // 1 task + 1 epic
-    // Epic sorts first: Unplanned priority 0 < task SubStatus::None priority 5
-    assert!(matches!(items[0], ColumnItem::Epic(_)));
-    assert!(matches!(items[1], ColumnItem::Task(_)));
+    // Same priority (5), so task (id=1) sorts before epic (id=10)
+    assert!(matches!(items[0], ColumnItem::Task(_)));
+    assert!(matches!(items[1], ColumnItem::Epic(_)));
 }
 
 #[test]
@@ -2800,9 +2800,9 @@ fn selected_column_item_returns_epic() {
     ], TEST_TIMEOUT);
     app.epics = vec![make_epic(10)];
 
-    // Epic at row 0 (Unplanned priority 0), Task at row 1 (SubStatus::None priority 5)
+    // Same priority (5), task (id=1) at row 0, epic (id=10) at row 1
     app.selection_mut().set_column(0);
-    app.selection_mut().set_row(0, 0);
+    app.selection_mut().set_row(0, 1);
 
     match app.selected_column_item() {
         Some(ColumnItem::Epic(e)) => assert_eq!(e.id, EpicId(10)),
@@ -2872,9 +2872,9 @@ fn make_app_with_epic_selected() -> App {
         make_task(1, TaskStatus::Backlog),
     ], TEST_TIMEOUT);
     app.epics = vec![make_epic(10)];
-    // Epic at row 0 (Unplanned priority 0), Task at row 1 (SubStatus::None priority 5)
+    // Same priority (5), task (id=1) at row 0, epic (id=10) at row 1
     app.selection_mut().set_column(0);
-    app.selection_mut().set_row(0, 0);
+    app.selection_mut().set_row(0, 1);
     app
 }
 
@@ -3396,7 +3396,7 @@ fn make_app_confirm_delete_epic() -> App {
     ], TEST_TIMEOUT);
     app.epics = vec![make_epic(10)];
     app.selection_mut().set_column(0);
-    app.selection_mut().set_row(0, 0); // cursor on epic (sorts first with Unplanned priority 0)
+    app.selection_mut().set_row(0, 1); // cursor on epic (same priority as task, sorts after by id)
     app.input.mode = InputMode::ConfirmDeleteEpic;
     app.status_message = Some("Delete epic \"Epic 10\" and subtasks? (y/n)".to_string());
     app
@@ -3409,7 +3409,7 @@ fn confirm_delete_epic_enters_mode_with_title() {
     ], TEST_TIMEOUT);
     app.epics = vec![make_epic(10)];
     app.selection_mut().set_column(0);
-    app.selection_mut().set_row(0, 0); // cursor on epic (sorts first with Unplanned priority 0)
+    app.selection_mut().set_row(0, 1); // cursor on epic (same priority as task, sorts after by id)
     app.update(Message::ConfirmDeleteEpic);
     assert_eq!(app.input.mode, InputMode::ConfirmDeleteEpic);
     assert_eq!(
@@ -3467,7 +3467,7 @@ fn make_app_confirm_archive_epic() -> App {
     ], TEST_TIMEOUT);
     app.epics = vec![make_epic(10)];
     app.selection_mut().set_column(0);
-    app.selection_mut().set_row(0, 0); // cursor on epic (sorts first with Unplanned priority 0)
+    app.selection_mut().set_row(0, 1); // cursor on epic (same priority as task, sorts after by id)
     app.input.mode = InputMode::ConfirmArchiveEpic;
     app.status_message = Some("Archive epic and all subtasks? (y/n)".to_string());
     app
@@ -7120,9 +7120,9 @@ fn m_with_mixed_selection_moves_tasks_only() {
     app.epics = vec![make_epic(10)];
     app.update(Message::ToggleSelect(TaskId(1)));
     app.update(Message::ToggleSelectEpic(EpicId(10)));
-    // Cursor on the task (row 1) so 'm' triggers batch move, not epic move
+    // Cursor on the task (row 0) so 'm' triggers batch move, not epic move
     app.selection_mut().set_column(0);
-    app.selection_mut().set_row(0, 1);
+    app.selection_mut().set_row(0, 0);
 
     app.handle_key(make_key(KeyCode::Char('m')));
     // Task should move forward

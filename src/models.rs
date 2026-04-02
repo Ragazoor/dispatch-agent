@@ -375,16 +375,28 @@ impl EpicSubstatus {
         }
     }
 
-    /// Priority for sorting within a column (lower = higher in list).
+    /// Priority for sorting within a column, unified with SubStatus priorities
+    /// so that epics and tasks share the same section headers.
     pub fn column_priority(&self) -> u8 {
         match self {
-            Self::Blocked(_) => 0,
-            Self::Active => 1,
-            Self::WrappingUp => 0,
-            Self::InReview => 1,
-            Self::Unplanned => 0,
-            Self::Planned => 1,
-            Self::Done => 0,
+            Self::Blocked(_) => 3,  // NeedsInput equivalent
+            Self::Active => 5,     // Active equivalent
+            Self::WrappingUp => 6, // Approved equivalent
+            Self::InReview => 5,   // AwaitingReview equivalent
+            Self::Unplanned => 5,
+            Self::Planned => 5,
+            Self::Done => 5,
+        }
+    }
+
+    /// Header label for section grouping in the UI, unified with SubStatus header labels.
+    pub fn header_label(&self) -> &'static str {
+        match self {
+            Self::Blocked(_) => "needs input",
+            Self::Active => "active",
+            Self::InReview => "awaiting review",
+            Self::WrappingUp => "approved",
+            Self::Unplanned | Self::Planned | Self::Done => "",
         }
     }
 }
