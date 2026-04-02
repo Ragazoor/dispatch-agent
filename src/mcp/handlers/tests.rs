@@ -1,22 +1,29 @@
 use std::sync::Arc;
 
-use axum::{Json, extract::State};
-use serde_json::{Value, json};
+use axum::{extract::State, Json};
+use serde_json::{json, Value};
 
 use crate::db::{self, Database};
-use crate::models::TaskStatus;
 use crate::mcp::McpState;
-use crate::process::{ProcessRunner, MockProcessRunner};
+use crate::models::TaskStatus;
+use crate::process::{MockProcessRunner, ProcessRunner};
 
 use super::dispatch::{handle_mcp, tool_definitions};
-use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs, WrapUpArgs, ReportUsageArgs, SendMessageArgs};
 use super::epics::{CreateEpicArgs, GetEpicArgs, UpdateEpicArgs};
+use super::tasks::{
+    ClaimTaskArgs, CreateTaskWithEpicArgs, GetTaskArgs, ListTasksArgs, ReportUsageArgs,
+    SendMessageArgs, UpdateTaskArgs, WrapUpArgs,
+};
 use super::types::{JsonRpcRequest, JsonRpcResponse};
 
 fn test_state() -> Arc<McpState> {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    Arc::new(McpState { db, notify_tx: None, runner })
+    Arc::new(McpState {
+        db,
+        notify_tx: None,
+        runner,
+    })
 }
 
 async fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> JsonRpcResponse {
@@ -36,14 +43,23 @@ async fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> Jso
 fn create_task_fixture(state: &Arc<McpState>) -> crate::models::TaskId {
     state
         .db
-        .create_task("Test Task", "test description", "/repo", None, TaskStatus::Backlog)
+        .create_task(
+            "Test Task",
+            "test description",
+            "/repo",
+            None,
+            TaskStatus::Backlog,
+        )
         .unwrap()
 }
 
 /// Assert response is an error whose message contains `substr`.
 fn assert_error(resp: &JsonRpcResponse, substr: &str) {
     let err = resp.error.as_ref().unwrap_or_else(|| {
-        panic!("expected error containing {substr:?}, got success: {:?}", resp.result)
+        panic!(
+            "expected error containing {substr:?}, got success: {:?}",
+            resp.result
+        )
     });
     assert!(
         err.message.contains(substr),
@@ -54,9 +70,10 @@ fn assert_error(resp: &JsonRpcResponse, substr: &str) {
 
 /// Extract the text content from a successful MCP response.
 fn extract_response_text(resp: &JsonRpcResponse) -> String {
-    let result = resp.result.as_ref().unwrap_or_else(|| {
-        panic!("expected success, got error: {:?}", resp.error)
-    });
+    let result = resp
+        .result
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected success, got error: {:?}", resp.error));
     result["content"][0]["text"]
         .as_str()
         .expect("missing text in response content")
@@ -100,7 +117,8 @@ async fn update_task_valid() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "running" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.result.is_some());
     assert!(resp.error.is_none());
 
@@ -120,7 +138,8 @@ async fn update_task_invalid_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "bogus" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Unknown status");
 }
 
@@ -136,7 +155,8 @@ async fn update_task_rejects_done_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "done" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Cannot set status to done or archived via MCP");
 
     // Verify task status unchanged
@@ -151,7 +171,8 @@ async fn update_task_rejects_done_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "archived" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Cannot set status to done or archived via MCP");
 }
 
@@ -168,8 +189,13 @@ async fn update_task_still_allows_other_statuses() {
                 "name": "update_task",
                 "arguments": { "task_id": task_id.0, "status": status }
             })),
-        ).await;
-        assert!(resp.error.is_none(), "status={status} should be allowed, got: {:?}", resp.error);
+        )
+        .await;
+        assert!(
+            resp.error.is_none(),
+            "status={status} should be allowed, got: {:?}",
+            resp.error
+        );
     }
 }
 
@@ -180,14 +206,24 @@ async fn update_task_missing_args() {
         &state,
         "tools/call",
         Some(json!({ "name": "update_task", "arguments": {} })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
 }
 
 #[tokio::test]
 async fn get_task_found() {
     let state = test_state();
-    let task_id = state.db.create_task("My Task", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "My Task",
+            "desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -196,7 +232,8 @@ async fn get_task_found() {
             "name": "get_task",
             "arguments": { "task_id": task_id.0 }
         })),
-    ).await;
+    )
+    .await;
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("My Task"));
@@ -212,7 +249,8 @@ async fn get_task_not_found() {
             "name": "get_task",
             "arguments": { "task_id": 9999 }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
     assert!(resp.error.unwrap().message.contains("not found"));
 }
@@ -224,7 +262,8 @@ async fn unknown_tool() {
         &state,
         "tools/call",
         Some(json!({ "name": "bogus_tool", "arguments": {} })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
     assert!(resp.error.unwrap().message.contains("Unknown tool"));
 }
@@ -247,7 +286,8 @@ async fn create_task_minimal() {
             "name": "create_task",
             "arguments": { "title": "New Task", "repo_path": "/my/repo" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
@@ -279,15 +319,22 @@ async fn create_task_with_plan_stays_backlog() {
                 "plan": plan_file.to_string_lossy()
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let tasks = state.db.list_all().unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].status, TaskStatus::Backlog);
     let stored = tasks[0].plan.as_deref().unwrap();
-    assert!(std::path::Path::new(stored).is_absolute(), "plan path should be absolute, got: {stored}");
-    assert_eq!(stored, std::fs::canonicalize(&plan_file).unwrap().to_string_lossy());
+    assert!(
+        std::path::Path::new(stored).is_absolute(),
+        "plan path should be absolute, got: {stored}"
+    );
+    assert_eq!(
+        stored,
+        std::fs::canonicalize(&plan_file).unwrap().to_string_lossy()
+    );
 }
 
 #[tokio::test]
@@ -304,7 +351,8 @@ async fn create_task_with_description() {
                 "description": "Some details"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let tasks = state.db.list_all().unwrap();
@@ -321,7 +369,8 @@ async fn create_task_missing_title() {
             "name": "create_task",
             "arguments": { "repo_path": "/repo" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
 }
 
@@ -330,7 +379,16 @@ async fn create_task_missing_title() {
 #[tokio::test]
 async fn update_task_accepts_string_task_id() {
     let state = test_state();
-    let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Test",
+            "desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -339,8 +397,13 @@ async fn update_task_accepts_string_task_id() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0.to_string(), "status": "running" }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "update_task should accept string task_id, got: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "update_task should accept string task_id, got: {:?}",
+        resp.error
+    );
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
     assert_eq!(task.status, crate::models::TaskStatus::Running);
@@ -349,7 +412,16 @@ async fn update_task_accepts_string_task_id() {
 #[tokio::test]
 async fn get_task_accepts_string_task_id() {
     let state = test_state();
-    let task_id = state.db.create_task("My Task", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "My Task",
+            "desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -358,8 +430,13 @@ async fn get_task_accepts_string_task_id() {
             "name": "get_task",
             "arguments": { "task_id": task_id.0.to_string() }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "get_task should accept string task_id, got: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "get_task should accept string task_id, got: {:?}",
+        resp.error
+    );
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("My Task"));
@@ -368,7 +445,16 @@ async fn get_task_accepts_string_task_id() {
 #[tokio::test]
 async fn update_task_with_plan() {
     let state = test_state();
-    let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Test",
+            "desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -377,7 +463,8 @@ async fn update_task_with_plan() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "ready", "plan": "/path/to/plan.md" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
@@ -388,7 +475,16 @@ async fn update_task_with_plan() {
 #[tokio::test]
 async fn update_task_title_only() {
     let state = test_state();
-    let task_id = state.db.create_task("Old", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Old",
+            "desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -397,8 +493,13 @@ async fn update_task_title_only() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "title": "New Title" }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "should succeed with title only: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "should succeed with title only: {:?}",
+        resp.error
+    );
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
     assert_eq!(task.title, "New Title");
@@ -408,7 +509,16 @@ async fn update_task_title_only() {
 #[tokio::test]
 async fn update_task_status_optional() {
     let state = test_state();
-    let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Test",
+            "desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -417,7 +527,8 @@ async fn update_task_status_optional() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "title": "Renamed" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
@@ -428,7 +539,16 @@ async fn update_task_status_optional() {
 #[tokio::test]
 async fn update_task_title_and_description() {
     let state = test_state();
-    let task_id = state.db.create_task("Old", "old desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Old",
+            "old desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -437,7 +557,8 @@ async fn update_task_title_and_description() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "title": "New", "description": "new desc" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
@@ -448,7 +569,16 @@ async fn update_task_title_and_description() {
 #[tokio::test]
 async fn update_task_repo_path() {
     let state = test_state();
-    let task_id = state.db.create_task("Test", "desc", "/old/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Test",
+            "desc",
+            "/old/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -457,8 +587,13 @@ async fn update_task_repo_path() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "repo_path": "/new/repo" }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "should succeed with repo_path only: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "should succeed with repo_path only: {:?}",
+        resp.error
+    );
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
     assert_eq!(task.repo_path, "/new/repo");
@@ -468,7 +603,16 @@ async fn update_task_repo_path() {
 #[tokio::test]
 async fn update_task_no_fields_errors() {
     let state = test_state();
-    let task_id = state.db.create_task("Test", "desc", "/repo", None, crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Test",
+            "desc",
+            "/repo",
+            None,
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -477,14 +621,21 @@ async fn update_task_no_fields_errors() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0 }
         })),
-    ).await;
-    assert!(resp.error.is_some(), "should error with no fields to update");
+    )
+    .await;
+    assert!(
+        resp.error.is_some(),
+        "should error with no fields to update"
+    );
 }
 
 #[tokio::test]
 async fn patch_task_sets_multiple_fields() {
     let state = test_state();
-    let task_id = state.db.create_task("Test", "Desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("Test", "Desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -497,7 +648,8 @@ async fn patch_task_sets_multiple_fields() {
                 "title": "Updated Title"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
@@ -508,7 +660,16 @@ async fn patch_task_sets_multiple_fields() {
 #[tokio::test]
 async fn update_task_without_plan_preserves_existing() {
     let state = test_state();
-    let task_id = state.db.create_task("Test", "desc", "/repo", Some("/existing.md"), crate::models::TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Test",
+            "desc",
+            "/repo",
+            Some("/existing.md"),
+            crate::models::TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -517,17 +678,25 @@ async fn update_task_without_plan_preserves_existing() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "ready" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.plan.as_deref(), Some("/existing.md"), "plan should be preserved when not provided");
+    assert_eq!(
+        task.plan.as_deref(),
+        Some("/existing.md"),
+        "plan should be preserved when not provided"
+    );
 }
 
 #[tokio::test]
 async fn update_task_sets_pr_fields() {
     let state = test_state();
-    let task_id = state.db.create_task("PR test", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("PR test", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -539,11 +708,19 @@ async fn update_task_sets_pr_fields() {
                 "pr_url": "https://github.com/org/repo/pull/99"
             }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "Expected success, got: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "Expected success, got: {:?}",
+        resp.error
+    );
 
     let updated = state.db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(updated.pr_url.as_deref(), Some("https://github.com/org/repo/pull/99"));
+    assert_eq!(
+        updated.pr_url.as_deref(),
+        Some("https://github.com/org/repo/pull/99")
+    );
 }
 
 // -- list_tasks tests -------------------------------------------------------
@@ -551,14 +728,21 @@ async fn update_task_sets_pr_fields() {
 #[tokio::test]
 async fn list_tasks_returns_all_when_no_filter() {
     let state = test_state();
-    state.db.create_task("Task A", "desc a", "/repo", None, TaskStatus::Backlog).unwrap();
-    state.db.create_task("Task B", "desc b", "/repo", None, TaskStatus::Running).unwrap();
+    state
+        .db
+        .create_task("Task A", "desc a", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
+    state
+        .db
+        .create_task("Task B", "desc b", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": {} })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
@@ -569,14 +753,21 @@ async fn list_tasks_returns_all_when_no_filter() {
 #[tokio::test]
 async fn list_tasks_filters_by_single_status() {
     let state = test_state();
-    state.db.create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-    state.db.create_task("Running Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    state
+        .db
+        .create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
+    state
+        .db
+        .create_task("Running Task", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "status": "backlog" } })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
@@ -587,15 +778,25 @@ async fn list_tasks_filters_by_single_status() {
 #[tokio::test]
 async fn list_tasks_filters_by_multiple_statuses() {
     let state = test_state();
-    state.db.create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-    state.db.create_task("Running Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    state.db.create_task("Review Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
+    state
+        .db
+        .create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
+    state
+        .db
+        .create_task("Running Task", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    state
+        .db
+        .create_task("Review Task", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "status": ["backlog", "running"] } })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
@@ -612,7 +813,8 @@ async fn list_tasks_empty_result() {
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "status": "running" } })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let result = resp.result.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
@@ -624,7 +826,10 @@ async fn list_tasks_empty_result() {
 #[tokio::test]
 async fn claim_task_success() {
     let state = test_state();
-    let task_id = state.db.create_task("Claimable", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("Claimable", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -637,19 +842,30 @@ async fn claim_task_success() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "claim should succeed: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "claim should succeed: {:?}",
+        resp.error
+    );
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/5-other-task"));
+    assert_eq!(
+        task.worktree.as_deref(),
+        Some("/repo/.worktrees/5-other-task")
+    );
     assert_eq!(task.tmux_window.as_deref(), Some("task-5"));
 }
 
 #[tokio::test]
 async fn claim_task_rejects_running_task() {
     let state = test_state();
-    let task_id = state.db.create_task("Running", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let task_id = state
+        .db
+        .create_task("Running", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -662,7 +878,8 @@ async fn claim_task_rejects_running_task() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
     assert!(resp.error.unwrap().message.contains("already"));
 }
@@ -670,7 +887,16 @@ async fn claim_task_rejects_running_task() {
 #[tokio::test]
 async fn claim_task_rejects_different_repo() {
     let state = test_state();
-    let task_id = state.db.create_task("Other Repo", "desc", "/other-repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Other Repo",
+            "desc",
+            "/other-repo",
+            None,
+            TaskStatus::Backlog,
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -683,7 +909,8 @@ async fn claim_task_rejects_different_repo() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
     assert!(resp.error.unwrap().message.contains("repo"));
 }
@@ -703,7 +930,8 @@ async fn claim_task_not_found() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
     assert!(resp.error.unwrap().message.contains("not found"));
 }
@@ -747,7 +975,11 @@ async fn report_usage_stores_and_accumulates() {
         })),
     )
     .await;
-    assert!(resp2.error.is_none(), "second call failed: {:?}", resp2.error);
+    assert!(
+        resp2.error.is_none(),
+        "second call failed: {:?}",
+        resp2.error
+    );
 
     let all = state.db.get_all_usage().unwrap();
     assert_eq!(all.len(), 1);
@@ -818,7 +1050,19 @@ fn tool_schemas_match_arg_structs() {
     let cases: Vec<(&str, BTreeSet<&str>, BTreeSet<&str>, Value)> = vec![
         (
             "update_task",
-            BTreeSet::from(["task_id", "status", "plan", "title", "description", "repo_path", "sort_order", "pr_url", "tag", "sub_status", "epic_id"]),
+            BTreeSet::from([
+                "task_id",
+                "status",
+                "plan",
+                "title",
+                "description",
+                "repo_path",
+                "sort_order",
+                "pr_url",
+                "tag",
+                "sub_status",
+                "epic_id",
+            ]),
             BTreeSet::from(["task_id"]),
             json!({"task_id": 1, "status": "review", "plan": "/p.md", "title": "t", "description": "d", "repo_path": "/r", "sort_order": 100, "pr_url": "https://github.com/org/repo/pull/1", "tag": "bug", "sub_status": "awaiting_review", "epic_id": 5}),
         ),
@@ -830,7 +1074,15 @@ fn tool_schemas_match_arg_structs() {
         ),
         (
             "create_task",
-            BTreeSet::from(["title", "repo_path", "description", "plan", "epic_id", "sort_order", "tag"]),
+            BTreeSet::from([
+                "title",
+                "repo_path",
+                "description",
+                "plan",
+                "epic_id",
+                "sort_order",
+                "tag",
+            ]),
             BTreeSet::from(["title", "repo_path"]),
             json!({"title": "t", "repo_path": "/r", "description": "d", "plan": "/p.md", "sort_order": 10, "tag": "feature"}),
         ),
@@ -858,12 +1110,7 @@ fn tool_schemas_match_arg_structs() {
             BTreeSet::from(["epic_id"]),
             json!({"epic_id": 1}),
         ),
-        (
-            "list_epics",
-            BTreeSet::new(),
-            BTreeSet::new(),
-            json!({}),
-        ),
+        ("list_epics", BTreeSet::new(), BTreeSet::new(), json!({})),
         (
             "update_epic",
             BTreeSet::from([
@@ -886,8 +1133,14 @@ fn tool_schemas_match_arg_structs() {
         ),
         (
             "report_usage",
-            BTreeSet::from(["task_id", "cost_usd", "input_tokens", "output_tokens",
-                             "cache_read_tokens", "cache_write_tokens"]),
+            BTreeSet::from([
+                "task_id",
+                "cost_usd",
+                "input_tokens",
+                "output_tokens",
+                "cache_read_tokens",
+                "cache_write_tokens",
+            ]),
             BTreeSet::from(["task_id", "cost_usd", "input_tokens", "output_tokens"]),
             json!({"task_id": 1, "cost_usd": 0.42, "input_tokens": 1000,
                    "output_tokens": 500, "cache_read_tokens": 100, "cache_write_tokens": 50}),
@@ -903,16 +1156,16 @@ fn tool_schemas_match_arg_structs() {
     // Verify we cover exactly the tools that exist
     let expected_names: BTreeSet<&str> = cases.iter().map(|(name, _, _, _)| *name).collect();
     let actual_names: BTreeSet<&str> = tools.keys().copied().collect();
-    assert_eq!(actual_names, expected_names, "Tool list mismatch — update this test when adding/removing tools");
+    assert_eq!(
+        actual_names, expected_names,
+        "Tool list mismatch — update this test when adding/removing tools"
+    );
 
     for (name, exp_props, exp_required, payload) in &cases {
         let tool = tools[name];
         let (actual_props, actual_required) = schema_props(tool);
 
-        assert_eq!(
-            &actual_props, exp_props,
-            "Property mismatch for '{name}'"
-        );
+        assert_eq!(&actual_props, exp_props, "Property mismatch for '{name}'");
         assert_eq!(
             &actual_required, exp_required,
             "Required field mismatch for '{name}'"
@@ -920,18 +1173,40 @@ fn tool_schemas_match_arg_structs() {
 
         // Verify the full payload deserializes into the struct
         match *name {
-            "update_task" => { serde_json::from_value::<UpdateTaskArgs>(payload.clone()).unwrap(); }
-            "get_task" => { serde_json::from_value::<GetTaskArgs>(payload.clone()).unwrap(); }
-            "create_task" => { serde_json::from_value::<CreateTaskWithEpicArgs>(payload.clone()).unwrap(); }
-            "list_tasks" => { serde_json::from_value::<ListTasksArgs>(payload.clone()).unwrap(); }
-            "claim_task" => { serde_json::from_value::<ClaimTaskArgs>(payload.clone()).unwrap(); }
-            "report_usage" => { serde_json::from_value::<ReportUsageArgs>(payload.clone()).unwrap(); }
-            "create_epic" => { serde_json::from_value::<CreateEpicArgs>(payload.clone()).unwrap(); }
-            "get_epic" => { serde_json::from_value::<GetEpicArgs>(payload.clone()).unwrap(); }
+            "update_task" => {
+                serde_json::from_value::<UpdateTaskArgs>(payload.clone()).unwrap();
+            }
+            "get_task" => {
+                serde_json::from_value::<GetTaskArgs>(payload.clone()).unwrap();
+            }
+            "create_task" => {
+                serde_json::from_value::<CreateTaskWithEpicArgs>(payload.clone()).unwrap();
+            }
+            "list_tasks" => {
+                serde_json::from_value::<ListTasksArgs>(payload.clone()).unwrap();
+            }
+            "claim_task" => {
+                serde_json::from_value::<ClaimTaskArgs>(payload.clone()).unwrap();
+            }
+            "report_usage" => {
+                serde_json::from_value::<ReportUsageArgs>(payload.clone()).unwrap();
+            }
+            "create_epic" => {
+                serde_json::from_value::<CreateEpicArgs>(payload.clone()).unwrap();
+            }
+            "get_epic" => {
+                serde_json::from_value::<GetEpicArgs>(payload.clone()).unwrap();
+            }
             "list_epics" => {} // no args
-            "update_epic" => { serde_json::from_value::<UpdateEpicArgs>(payload.clone()).unwrap(); }
-            "wrap_up" => { serde_json::from_value::<WrapUpArgs>(payload.clone()).unwrap(); }
-            "send_message" => { serde_json::from_value::<SendMessageArgs>(payload.clone()).unwrap(); }
+            "update_epic" => {
+                serde_json::from_value::<UpdateEpicArgs>(payload.clone()).unwrap();
+            }
+            "wrap_up" => {
+                serde_json::from_value::<WrapUpArgs>(payload.clone()).unwrap();
+            }
+            "send_message" => {
+                serde_json::from_value::<SendMessageArgs>(payload.clone()).unwrap();
+            }
             other => panic!("No deserialization check for tool: {other}"),
         }
     }
@@ -940,7 +1215,10 @@ fn tool_schemas_match_arg_structs() {
 #[tokio::test]
 async fn claim_task_accepts_string_task_id() {
     let state = test_state();
-    let task_id = state.db.create_task("Claimable", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("Claimable", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -953,8 +1231,13 @@ async fn claim_task_accepts_string_task_id() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "should accept string task_id: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "should accept string task_id: {:?}",
+        resp.error
+    );
 }
 
 // =======================================================================
@@ -971,7 +1254,8 @@ async fn create_epic_minimal() {
             "name": "create_epic",
             "arguments": { "title": "My Epic", "repo_path": "/repo" }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("Epic"));
     assert!(text.contains("created"));
@@ -996,7 +1280,8 @@ async fn create_epic_with_all_fields() {
                 "description": "Epic desc"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     let epics = state.db.list_epics().unwrap();
@@ -1013,7 +1298,8 @@ async fn create_epic_missing_title() {
             "name": "create_epic",
             "arguments": { "repo_path": "/repo" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Invalid arguments");
 }
 
@@ -1027,7 +1313,8 @@ async fn create_epic_missing_repo_path() {
             "name": "create_epic",
             "arguments": { "title": "No Repo" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Invalid arguments");
 }
 
@@ -1043,7 +1330,8 @@ async fn get_epic_found() {
             "name": "get_epic",
             "arguments": { "epic_id": epic.id.0 }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("Get Me"));
     assert!(text.contains("desc"));
@@ -1060,7 +1348,8 @@ async fn get_epic_not_found() {
             "name": "get_epic",
             "arguments": { "epic_id": 9999 }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "not found");
 }
 
@@ -1068,8 +1357,14 @@ async fn get_epic_not_found() {
 async fn get_epic_shows_subtask_summary() {
     let state = test_state();
     let epic = state.db.create_epic("With Tasks", "", "/repo").unwrap();
-    let t1 = state.db.create_task("Sub 1", "", "/repo", None, TaskStatus::Done).unwrap();
-    let t2 = state.db.create_task("Sub 2", "", "/repo", None, TaskStatus::Backlog).unwrap();
+    let t1 = state
+        .db
+        .create_task("Sub 1", "", "/repo", None, TaskStatus::Done)
+        .unwrap();
+    let t2 = state
+        .db
+        .create_task("Sub 2", "", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
     state.db.set_task_epic_id(t1, Some(epic.id)).unwrap();
     state.db.set_task_epic_id(t2, Some(epic.id)).unwrap();
 
@@ -1080,9 +1375,13 @@ async fn get_epic_shows_subtask_summary() {
             "name": "get_epic",
             "arguments": { "epic_id": epic.id.0 }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("1/2 done"), "expected subtask summary, got: {text}");
+    assert!(
+        text.contains("1/2 done"),
+        "expected subtask summary, got: {text}"
+    );
 }
 
 #[tokio::test]
@@ -1097,8 +1396,13 @@ async fn get_epic_accepts_string_id() {
             "name": "get_epic",
             "arguments": { "epic_id": epic.id.0.to_string() }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "should accept string epic_id: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "should accept string epic_id: {:?}",
+        resp.error
+    );
     let text = extract_response_text(&resp);
     assert!(text.contains("String ID"));
 }
@@ -1110,7 +1414,8 @@ async fn list_epics_empty() {
         &state,
         "tools/call",
         Some(json!({ "name": "list_epics", "arguments": {} })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("No epics found"));
 }
@@ -1125,7 +1430,8 @@ async fn list_epics_with_items() {
         &state,
         "tools/call",
         Some(json!({ "name": "list_epics", "arguments": {} })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("Epic A"));
     assert!(text.contains("Epic B"));
@@ -1135,8 +1441,14 @@ async fn list_epics_with_items() {
 async fn list_epics_shows_subtask_counts() {
     let state = test_state();
     let epic = state.db.create_epic("Tracked", "", "/repo").unwrap();
-    let t1 = state.db.create_task("Done", "", "/repo", None, TaskStatus::Done).unwrap();
-    let t2 = state.db.create_task("Pending", "", "/repo", None, TaskStatus::Backlog).unwrap();
+    let t1 = state
+        .db
+        .create_task("Done", "", "/repo", None, TaskStatus::Done)
+        .unwrap();
+    let t2 = state
+        .db
+        .create_task("Pending", "", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
     state.db.set_task_epic_id(t1, Some(epic.id)).unwrap();
     state.db.set_task_epic_id(t2, Some(epic.id)).unwrap();
 
@@ -1144,9 +1456,13 @@ async fn list_epics_shows_subtask_counts() {
         &state,
         "tools/call",
         Some(json!({ "name": "list_epics", "arguments": {} })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("1/2 done"), "expected subtask counts, got: {text}");
+    assert!(
+        text.contains("1/2 done"),
+        "expected subtask counts, got: {text}"
+    );
 }
 
 #[tokio::test]
@@ -1161,7 +1477,8 @@ async fn update_epic_title() {
             "name": "update_epic",
             "arguments": { "epic_id": epic.id.0, "title": "New Title" }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("updated"));
     assert!(text.contains("title"));
@@ -1182,9 +1499,13 @@ async fn update_epic_mark_done() {
             "name": "update_epic",
             "arguments": { "epic_id": epic.id.0, "status": "done" }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("status"), "response should mention status field: {text}");
+    assert!(
+        text.contains("status"),
+        "response should mention status field: {text}"
+    );
 
     let updated = state.db.get_epic(epic.id).unwrap().unwrap();
     assert_eq!(updated.status, crate::models::TaskStatus::Done);
@@ -1206,7 +1527,8 @@ async fn update_epic_multiple_fields() {
                 "description": "new desc"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     let updated = state.db.get_epic(epic.id).unwrap().unwrap();
@@ -1226,8 +1548,13 @@ async fn update_epic_accepts_string_id() {
             "name": "update_epic",
             "arguments": { "epic_id": epic.id.0.to_string(), "title": "Updated" }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "should accept string epic_id: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "should accept string epic_id: {:?}",
+        resp.error
+    );
 }
 
 #[tokio::test]
@@ -1242,9 +1569,13 @@ async fn update_epic_plan() {
             "name": "update_epic",
             "arguments": { "epic_id": epic.id.0, "plan": "docs/plans/epic-plan.md" }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("plan"), "response should mention plan: {text}");
+    assert!(
+        text.contains("plan"),
+        "response should mention plan: {text}"
+    );
 
     let updated = state.db.get_epic(epic.id).unwrap().unwrap();
     assert_eq!(updated.plan.as_deref(), Some("docs/plans/epic-plan.md"));
@@ -1261,7 +1592,8 @@ async fn list_tasks_invalid_status_string() {
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "status": "bogus" } })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Unknown status");
 }
 
@@ -1272,7 +1604,8 @@ async fn list_tasks_invalid_status_in_array() {
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "status": ["backlog", "bogus"] } })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Invalid status in array");
 }
 
@@ -1283,14 +1616,18 @@ async fn list_tasks_status_as_number_errors() {
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "status": 42 } })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "string or array");
 }
 
 #[tokio::test]
 async fn claim_task_rejects_done_task() {
     let state = test_state();
-    let task_id = state.db.create_task("Done", "desc", "/repo", None, TaskStatus::Done).unwrap();
+    let task_id = state
+        .db
+        .create_task("Done", "desc", "/repo", None, TaskStatus::Done)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1303,14 +1640,18 @@ async fn claim_task_rejects_done_task() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "already");
 }
 
 #[tokio::test]
 async fn claim_task_rejects_review_task() {
     let state = test_state();
-    let task_id = state.db.create_task("Review", "desc", "/repo", None, TaskStatus::Review).unwrap();
+    let task_id = state
+        .db
+        .create_task("Review", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1323,7 +1664,8 @@ async fn claim_task_rejects_review_task() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "already");
 }
 
@@ -1332,7 +1674,10 @@ async fn claim_task_worktree_without_worktrees_dir() {
     let state = test_state();
     // Task repo is "/repo", worktree path has no /.worktrees/ segment
     // so the full path is used as the repo — should match when equal
-    let task_id = state.db.create_task("Direct", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("Direct", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1345,8 +1690,13 @@ async fn claim_task_worktree_without_worktrees_dir() {
                 "tmux_window": "task-5"
             }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "should match when worktree equals repo: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "should match when worktree equals repo: {:?}",
+        resp.error
+    );
 }
 
 #[tokio::test]
@@ -1365,7 +1715,8 @@ async fn create_task_with_epic_id() {
                 "epic_id": epic.id.0
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     let subtasks = state.db.list_tasks_for_epic(epic.id).unwrap();
@@ -1389,13 +1740,17 @@ async fn create_task_with_string_epic_id() {
                 "epic_id": epic.id.0.to_string()
             }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "should accept string epic_id: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "should accept string epic_id: {:?}",
+        resp.error
+    );
 
     let subtasks = state.db.list_tasks_for_epic(epic.id).unwrap();
     assert_eq!(subtasks.len(), 1);
 }
-
 
 #[tokio::test]
 async fn update_epic_no_fields_errors() {
@@ -1409,14 +1764,18 @@ async fn update_epic_no_fields_errors() {
             "name": "update_epic",
             "arguments": { "epic_id": epic.id.0 }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "At least one");
 }
 
 #[tokio::test]
 async fn claim_task_updates_status_to_running() {
     let state = test_state();
-    let task_id = state.db.create_task("Claim", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("Claim", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1429,10 +1788,15 @@ async fn claim_task_updates_status_to_running() {
                 "tmux_window": "task-1"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
-    let task = state.db.get_task(crate::models::TaskId(task_id.0)).unwrap().unwrap();
+    let task = state
+        .db
+        .get_task(crate::models::TaskId(task_id.0))
+        .unwrap()
+        .unwrap();
     assert_eq!(task.status, TaskStatus::Running);
     assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-claim"));
     assert_eq!(task.tmux_window.as_deref(), Some("task-1"));
@@ -1452,14 +1816,18 @@ async fn wrap_up_task_not_found() {
             "name": "wrap_up",
             "arguments": { "task_id": 9999, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "not found");
 }
 
 #[tokio::test]
 async fn wrap_up_rejects_backlog_task() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "d", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "d", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1468,7 +1836,8 @@ async fn wrap_up_rejects_backlog_task() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "cannot be wrapped up");
 }
 
@@ -1476,19 +1845,28 @@ async fn wrap_up_rejects_backlog_task() {
 async fn wrap_up_accepts_running_blocked_task() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("My Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-my-task"))
-        .sub_status(crate::models::SubStatus::NeedsInput)
-    ).unwrap();
+    let task_id = db
+        .create_task("My Task", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new()
+            .worktree(Some("/repo/.worktrees/1-my-task"))
+            .sub_status(crate::models::SubStatus::NeedsInput),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1497,28 +1875,40 @@ async fn wrap_up_accepts_running_blocked_task() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
 
     let text = extract_response_text(&resp);
-    assert!(text.contains("wrap_up complete"), "Expected 'wrap_up complete', got: {text}");
+    assert!(
+        text.contains("wrap_up complete"),
+        "Expected 'wrap_up complete', got: {text}"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_accepts_running_active_task() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("T", "d", "/repo", None, TaskStatus::Running).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-t"))
-    ).unwrap();
+    let task_id = db
+        .create_task("T", "d", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-t")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1527,15 +1917,22 @@ async fn wrap_up_accepts_running_active_task() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("wrap_up complete"), "Expected 'wrap_up complete', got: {text}");
+    assert!(
+        text.contains("wrap_up complete"),
+        "Expected 'wrap_up complete', got: {text}"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_task_no_worktree() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "d", "/repo", None, TaskStatus::Review).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "d", "/repo", None, TaskStatus::Review)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1544,15 +1941,25 @@ async fn wrap_up_task_no_worktree() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "cannot be wrapped up");
 }
 
 #[tokio::test]
 async fn wrap_up_invalid_action() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "d", "/repo", None, TaskStatus::Review).unwrap();
-    state.db.patch_task(task_id, &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-t"))).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "d", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    state
+        .db
+        .patch_task(
+            task_id,
+            &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-t")),
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1561,7 +1968,8 @@ async fn wrap_up_invalid_action() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "teleport" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Unknown action");
 }
 
@@ -1569,18 +1977,26 @@ async fn wrap_up_invalid_action() {
 async fn wrap_up_rebase_returns_started() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("My Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-my-task"))
-    ).unwrap();
+    let task_id = db
+        .create_task("My Task", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-my-task")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1589,27 +2005,39 @@ async fn wrap_up_rebase_returns_started() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
 
     let text = extract_response_text(&resp);
-    assert!(text.contains("wrap_up complete"), "Expected 'wrap_up complete', got: {text}");
+    assert!(
+        text.contains("wrap_up complete"),
+        "Expected 'wrap_up complete', got: {text}"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_pr_returns_started() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                                          // detect_default_branch (symbolic-ref)
-        MockProcessRunner::ok(),                                              // git push
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
+        MockProcessRunner::ok(),     // git push
         MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // git remote get-url
         MockProcessRunner::ok_with_stdout(b"https://github.com/org/repo/pull/7\n"), // gh pr create
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("My Feature", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-my-feature"))
-    ).unwrap();
+    let task_id = db
+        .create_task("My Feature", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-my-feature")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1618,10 +2046,14 @@ async fn wrap_up_pr_returns_started() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "pr" }
         })),
-    ).await;
+    )
+    .await;
 
     let text = extract_response_text(&resp);
-    assert!(text.contains("wrap_up complete"), "Expected 'wrap_up complete', got: {text}");
+    assert!(
+        text.contains("wrap_up complete"),
+        "Expected 'wrap_up complete', got: {text}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,19 +2064,27 @@ async fn wrap_up_pr_returns_started() {
 async fn wrap_up_rebase_no_epic_skips_auto_dispatch() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
-        // No auto-dispatch calls expected
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
+                                     // No auto-dispatch calls expected
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("Solo Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-solo-task"))
-    ).unwrap();
+    let task_id = db
+        .create_task("Solo Task", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-solo-task")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1653,10 +2093,14 @@ async fn wrap_up_rebase_no_epic_skips_auto_dispatch() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
 
     let text = extract_response_text(&resp);
-    assert!(!text.contains("next epic task"), "Non-epic task should not mention auto-dispatch");
+    assert!(
+        !text.contains("next epic task"),
+        "Non-epic task should not mention auto-dispatch"
+    );
 }
 
 #[tokio::test]
@@ -1669,32 +2113,62 @@ async fn wrap_up_rebase_auto_dispatches_next_epic_task() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         // Rebase calls for current task
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
         // Auto-dispatch calls for next task (worktree dir pre-created, so git add is skipped)
-        MockProcessRunner::fail(""),  // detect_default_branch (symbolic-ref) for auto-dispatch
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(), // tmux set-hook
-        MockProcessRunner::ok(), // tmux send-keys -l (literal text)
-        MockProcessRunner::ok(), // tmux send-keys Enter
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref) for auto-dispatch
+        MockProcessRunner::ok(),     // tmux new-window
+        MockProcessRunner::ok(),     // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),     // tmux set-hook
+        MockProcessRunner::ok(),     // tmux send-keys -l (literal text)
+        MockProcessRunner::ok(),     // tmux send-keys Enter
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
     // Create epic and two subtasks
     let epic = db.create_epic("Test Epic", "desc", &repo_path).unwrap();
-    let task1_id = db.create_task("Task 1", "first", &repo_path, Some("docs/plan.md"), TaskStatus::Review).unwrap();
-    let task2_id = db.create_task("Task 2", "second", &repo_path, Some("docs/plan2.md"), TaskStatus::Backlog).unwrap();
+    let task1_id = db
+        .create_task(
+            "Task 1",
+            "first",
+            &repo_path,
+            Some("docs/plan.md"),
+            TaskStatus::Review,
+        )
+        .unwrap();
+    let task2_id = db
+        .create_task(
+            "Task 2",
+            "second",
+            &repo_path,
+            Some("docs/plan2.md"),
+            TaskStatus::Backlog,
+        )
+        .unwrap();
     db.set_task_epic_id(task1_id, Some(epic.id)).unwrap();
     db.set_task_epic_id(task2_id, Some(epic.id)).unwrap();
-    db.patch_task(task1_id, &db::TaskPatch::new()
-        .worktree(Some(&format!("{repo_path}/.worktrees/{}-task-1", task1_id.0)))
-    ).unwrap();
+    db.patch_task(
+        task1_id,
+        &db::TaskPatch::new().worktree(Some(&format!(
+            "{repo_path}/.worktrees/{}-task-1",
+            task1_id.0
+        ))),
+    )
+    .unwrap();
     // Pre-create the worktree directory for the next task (mocked git won't create it)
-    std::fs::create_dir_all(dir.path().join(".worktrees").join(format!("{}-task-2", task2_id.0))).unwrap();
+    std::fs::create_dir_all(
+        dir.path()
+            .join(".worktrees")
+            .join(format!("{}-task-2", task2_id.0)),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1703,41 +2177,63 @@ async fn wrap_up_rebase_auto_dispatches_next_epic_task() {
             "name": "wrap_up",
             "arguments": { "task_id": task1_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
 
     let text = extract_response_text(&resp);
-    assert!(text.contains("next epic task"), "Expected auto-dispatch mention, got: {text}");
-    assert!(text.contains(&format!("#{}", task2_id.0)), "Expected next task ID in message, got: {text}");
+    assert!(
+        text.contains("next epic task"),
+        "Expected auto-dispatch mention, got: {text}"
+    );
+    assert!(
+        text.contains(&format!("#{}", task2_id.0)),
+        "Expected next task ID in message, got: {text}"
+    );
 
     // Wait for spawn_blocking to complete
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Verify the next task was dispatched
     let task2 = db.get_task(task2_id).unwrap().unwrap();
-    assert_eq!(task2.status, TaskStatus::Running, "Next task should be Running after auto-dispatch");
+    assert_eq!(
+        task2.status,
+        TaskStatus::Running,
+        "Next task should be Running after auto-dispatch"
+    );
     assert!(task2.worktree.is_some(), "Next task should have a worktree");
-    assert!(task2.tmux_window.is_some(), "Next task should have a tmux_window");
+    assert!(
+        task2.tmux_window.is_some(),
+        "Next task should have a tmux_window"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_rebase_no_backlog_tasks_skips_dispatch() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
     // Create epic with only one task (already in review — no backlog subtasks)
     let epic = db.create_epic("Test Epic", "desc", "/repo").unwrap();
-    let task1_id = db.create_task("Task 1", "first", "/repo", None, TaskStatus::Review).unwrap();
+    let task1_id = db
+        .create_task("Task 1", "first", "/repo", None, TaskStatus::Review)
+        .unwrap();
     db.set_task_epic_id(task1_id, Some(epic.id)).unwrap();
-    db.patch_task(task1_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-task-1"))
-    ).unwrap();
+    db.patch_task(
+        task1_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-task-1")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1746,10 +2242,14 @@ async fn wrap_up_rebase_no_backlog_tasks_skips_dispatch() {
             "name": "wrap_up",
             "arguments": { "task_id": task1_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
 
     let text = extract_response_text(&resp);
-    assert!(!text.contains("next epic task"), "No backlog tasks — should not mention auto-dispatch");
+    assert!(
+        !text.contains("next epic task"),
+        "No backlog tasks — should not mention auto-dispatch"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1759,7 +2259,10 @@ async fn wrap_up_rebase_no_backlog_tasks_skips_dispatch() {
 #[tokio::test]
 async fn update_task_sets_sub_status() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1768,10 +2271,14 @@ async fn update_task_sets_sub_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "sub_status": "needs_input" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "expected success: {:?}", resp.error);
     let text = extract_response_text(&resp);
-    assert!(text.contains("sub_status"), "response should mention sub_status: {text}");
+    assert!(
+        text.contains("sub_status"),
+        "response should mention sub_status: {text}"
+    );
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
     assert_eq!(task.sub_status, crate::models::SubStatus::NeedsInput);
@@ -1780,7 +2287,10 @@ async fn update_task_sets_sub_status() {
 #[tokio::test]
 async fn update_task_rejects_invalid_sub_status_for_status() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1789,14 +2299,18 @@ async fn update_task_rejects_invalid_sub_status_for_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "sub_status": "approved" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "not valid for status");
 }
 
 #[tokio::test]
 async fn update_task_rejects_bogus_sub_status() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1805,14 +2319,18 @@ async fn update_task_rejects_bogus_sub_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "sub_status": "bogus" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Invalid sub_status");
 }
 
 #[tokio::test]
 async fn update_task_sub_status_with_status_change() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     // Change status to review and set sub_status to approved in one call
     let resp = call(
@@ -1822,7 +2340,8 @@ async fn update_task_sub_status_with_status_change() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "review", "sub_status": "approved" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "expected success: {:?}", resp.error);
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
@@ -1860,7 +2379,10 @@ async fn update_task_status_running_with_needs_input() {
 #[tokio::test]
 async fn update_task_sub_status_invalid_for_new_status() {
     let state = test_state();
-    let task_id = state.db.create_task("T", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     // Change status to review but set sub_status to active (valid for running, not review)
     let resp = call(
@@ -1870,30 +2392,53 @@ async fn update_task_sub_status_invalid_for_new_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "review", "sub_status": "active" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "not valid for status");
 }
 
 #[tokio::test]
 async fn list_tasks_shows_sub_status() {
     let state = test_state();
-    let task_id = state.db.create_task("Listed Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    state.db.patch_task(task_id, &db::TaskPatch::new().sub_status(crate::models::SubStatus::NeedsInput)).unwrap();
+    let task_id = state
+        .db
+        .create_task("Listed Task", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    state
+        .db
+        .patch_task(
+            task_id,
+            &db::TaskPatch::new().sub_status(crate::models::SubStatus::NeedsInput),
+        )
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": {} })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("running/needs_input"), "expected running/needs_input in list output, got: {text}");
+    assert!(
+        text.contains("running/needs_input"),
+        "expected running/needs_input in list output, got: {text}"
+    );
 }
 
 #[tokio::test]
 async fn get_task_shows_sub_status() {
     let state = test_state();
-    let task_id = state.db.create_task("Detail Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    state.db.patch_task(task_id, &db::TaskPatch::new().sub_status(crate::models::SubStatus::ChangesRequested)).unwrap();
+    let task_id = state
+        .db
+        .create_task("Detail Task", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    state
+        .db
+        .patch_task(
+            task_id,
+            &db::TaskPatch::new().sub_status(crate::models::SubStatus::ChangesRequested),
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -1902,27 +2447,39 @@ async fn get_task_shows_sub_status() {
             "name": "get_task",
             "arguments": { "task_id": task_id.0 }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("Sub-status: changes_requested"), "expected sub-status in detail, got: {text}");
+    assert!(
+        text.contains("Sub-status: changes_requested"),
+        "expected sub-status in detail, got: {text}"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_rebase_conflict_returns_error() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch
+        MockProcessRunner::fail(""),                  // detect_default_branch
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
+        MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::fail("CONFLICT (content): Merge conflict in foo.rs"), // git rebase
-        MockProcessRunner::ok(),                       // git rebase --abort
+        MockProcessRunner::ok(),                      // git rebase --abort
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("Conflict Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-conflict-task"))
-    ).unwrap();
+    let task_id = db
+        .create_task("Conflict Task", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-conflict-task")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1931,26 +2488,39 @@ async fn wrap_up_rebase_conflict_returns_error() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
 
     assert_error(&resp, "conflict");
     let task = db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Review, "Task should remain Review on rebase conflict");
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "Task should remain Review on rebase conflict"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_rebase_not_on_main_returns_error() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                       // detect_default_branch
-        MockProcessRunner::ok_with_stdout(b"feature\n"),   // git rev-parse HEAD (not on main)
+        MockProcessRunner::fail(""),                     // detect_default_branch
+        MockProcessRunner::ok_with_stdout(b"feature\n"), // git rev-parse HEAD (not on main)
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("Wrong Branch", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-wrong-branch"))
-    ).unwrap();
+    let task_id = db
+        .create_task("Wrong Branch", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-wrong-branch")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1959,26 +2529,39 @@ async fn wrap_up_rebase_not_on_main_returns_error() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
 
     assert_error(&resp, "not on main");
     let task = db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Review, "Task should remain Review on error");
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "Task should remain Review on error"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_pr_push_fails_returns_error() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                        // detect_default_branch
+        MockProcessRunner::fail(""), // detect_default_branch
         MockProcessRunner::fail("remote: Permission denied"), // git push fails
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("Push Fail", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-push-fail"))
-    ).unwrap();
+    let task_id = db
+        .create_task("Push Fail", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-push-fail")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -1987,11 +2570,16 @@ async fn wrap_up_pr_push_fails_returns_error() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "pr" }
         })),
-    ).await;
+    )
+    .await;
 
     assert_error(&resp, "wrap_up failed");
     let task = db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Review, "Task should remain Review on push failure");
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "Task should remain Review on push failure"
+    );
     assert!(task.pr_url.is_none(), "No PR URL should be set on failure");
 }
 
@@ -1999,7 +2587,10 @@ async fn wrap_up_pr_push_fails_returns_error() {
 async fn update_task_status_recalculates_epic_status() {
     let state = test_state();
     let epic = state.db.create_epic("E", "", "/repo").unwrap();
-    let task_id = state.db.create_task("T", "", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("T", "", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
     state.db.set_task_epic_id(task_id, Some(epic.id)).unwrap();
 
     // Move subtask to Running
@@ -2010,8 +2601,13 @@ async fn update_task_status_recalculates_epic_status() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "running" }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "update_task should succeed: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "update_task should succeed: {:?}",
+        resp.error
+    );
 
     // Epic should auto-advance to Running
     let epic = state.db.get_epic(epic.id).unwrap().unwrap();
@@ -2032,15 +2628,26 @@ async fn send_message_writes_file_and_sends_keys() {
         MockProcessRunner::ok(), // tmux send-keys -l (notification text)
         MockProcessRunner::ok(), // tmux send-keys Enter
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
     // Create sender and receiver tasks
-    let sender_id = db.create_task("Fix auth bug", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    let receiver_id = db.create_task("Review PR", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    db.patch_task(receiver_id, &db::TaskPatch::new()
-        .worktree(Some(&worktree_path))
-        .tmux_window(Some("task-2"))
-    ).unwrap();
+    let sender_id = db
+        .create_task("Fix auth bug", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    let receiver_id = db
+        .create_task("Review PR", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    db.patch_task(
+        receiver_id,
+        &db::TaskPatch::new()
+            .worktree(Some(&worktree_path))
+            .tmux_window(Some("task-2")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -2053,24 +2660,37 @@ async fn send_message_writes_file_and_sends_keys() {
                 "body": "Can you review path/to/file.rs?"
             }
         })),
-    ).await;
+    )
+    .await;
 
     let text = extract_response_text(&resp);
-    assert!(text.contains("Message sent to task"), "Expected success message, got: {text}");
+    assert!(
+        text.contains("Message sent to task"),
+        "Expected success message, got: {text}"
+    );
 
     // Verify message file was written
     let message_path = tmp.path().join(".claude-message");
     assert!(message_path.exists(), "Message file should exist");
     let content = std::fs::read_to_string(&message_path).unwrap();
-    assert!(content.contains("Fix auth bug"), "Message should contain sender title");
-    assert!(content.contains("Can you review path/to/file.rs?"), "Message should contain body");
+    assert!(
+        content.contains("Fix auth bug"),
+        "Message should contain sender title"
+    );
+    assert!(
+        content.contains("Can you review path/to/file.rs?"),
+        "Message should contain body"
+    );
 }
 
 #[tokio::test]
 async fn send_message_target_not_found() {
     let state = test_state();
 
-    let sender_id = state.db.create_task("Sender", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let sender_id = state
+        .db
+        .create_task("Sender", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -2083,19 +2703,33 @@ async fn send_message_target_not_found() {
                 "body": "hello"
             }
         })),
-    ).await;
+    )
+    .await;
 
-    assert!(resp.error.is_some(), "Should return error for missing target");
+    assert!(
+        resp.error.is_some(),
+        "Should return error for missing target"
+    );
     let err = resp.error.unwrap();
-    assert!(err.message.contains("not found"), "Error should mention not found: {}", err.message);
+    assert!(
+        err.message.contains("not found"),
+        "Error should mention not found: {}",
+        err.message
+    );
 }
 
 #[tokio::test]
 async fn send_message_target_no_worktree() {
     let state = test_state();
 
-    let sender_id = state.db.create_task("Sender", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    let receiver_id = state.db.create_task("Receiver", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let sender_id = state
+        .db
+        .create_task("Sender", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    let receiver_id = state
+        .db
+        .create_task("Receiver", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -2108,22 +2742,40 @@ async fn send_message_target_no_worktree() {
                 "body": "hello"
             }
         })),
-    ).await;
+    )
+    .await;
 
-    assert!(resp.error.is_some(), "Should return error for target without worktree");
+    assert!(
+        resp.error.is_some(),
+        "Should return error for target without worktree"
+    );
     let err = resp.error.unwrap();
-    assert!(err.message.contains("no worktree"), "Error should mention no worktree: {}", err.message);
+    assert!(
+        err.message.contains("no worktree"),
+        "Error should mention no worktree: {}",
+        err.message
+    );
 }
 
 #[tokio::test]
 async fn send_message_target_no_tmux_window() {
     let state = test_state();
 
-    let sender_id = state.db.create_task("Sender", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    let receiver_id = state.db.create_task("Receiver", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    state.db.patch_task(receiver_id, &db::TaskPatch::new()
-        .worktree(Some("/some/worktree"))
-    ).unwrap();
+    let sender_id = state
+        .db
+        .create_task("Sender", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    let receiver_id = state
+        .db
+        .create_task("Receiver", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    state
+        .db
+        .patch_task(
+            receiver_id,
+            &db::TaskPatch::new().worktree(Some("/some/worktree")),
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -2136,90 +2788,72 @@ async fn send_message_target_no_tmux_window() {
                 "body": "hello"
             }
         })),
-    ).await;
+    )
+    .await;
 
-    assert!(resp.error.is_some(), "Should return error for target without tmux window");
+    assert!(
+        resp.error.is_some(),
+        "Should return error for target without tmux window"
+    );
     let err = resp.error.unwrap();
-    assert!(err.message.contains("no tmux window"), "Error should mention no tmux window: {}", err.message);
+    assert!(
+        err.message.contains("no tmux window"),
+        "Error should mention no tmux window: {}",
+        err.message
+    );
 }
 
-// -- Validation helper tests ------------------------------------------------
+// -- Validation tests (service layer) -----------------------------------------
+// These tests verify parsing helpers via the service module. The corresponding
+// service::tests module has comprehensive coverage; these are kept as a sanity
+// check that the MCP error mapping works correctly end-to-end.
 
 mod validation_tests {
-    use crate::mcp::handlers::validation::{parse_status_or_error, parse_tag_or_error, parse_substatus_or_error};
-    use crate::models::{TaskStatus, TaskTag, SubStatus};
+    use crate::models::{SubStatus, TaskStatus, TaskTag};
+    use crate::service::{parse_status, parse_substatus, parse_tag, ServiceError};
 
     #[test]
     fn parse_status_valid() {
-        let id = Some(serde_json::json!(1));
-        assert_eq!(parse_status_or_error("backlog", &id).unwrap(), TaskStatus::Backlog);
-        assert_eq!(parse_status_or_error("running", &id).unwrap(), TaskStatus::Running);
-        assert_eq!(parse_status_or_error("review", &id).unwrap(), TaskStatus::Review);
-        assert_eq!(parse_status_or_error("done", &id).unwrap(), TaskStatus::Done);
+        assert_eq!(parse_status("backlog").unwrap(), TaskStatus::Backlog);
+        assert_eq!(parse_status("running").unwrap(), TaskStatus::Running);
+        assert_eq!(parse_status("review").unwrap(), TaskStatus::Review);
+        assert_eq!(parse_status("done").unwrap(), TaskStatus::Done);
     }
 
     #[test]
     fn parse_status_invalid() {
-        let id = Some(serde_json::json!(1));
-        let resp = parse_status_or_error("nope", &id).unwrap_err();
-        let err = resp.error.as_ref().unwrap();
-        assert!(err.message.contains("Unknown status: nope"));
-        assert!(err.message.contains("backlog"));
+        let err = parse_status("nope").unwrap_err();
+        assert!(
+            matches!(err, ServiceError::Validation(ref msg) if msg.contains("Unknown status: nope"))
+        );
     }
 
     #[test]
     fn parse_tag_valid() {
-        let id = Some(serde_json::json!(1));
-        assert_eq!(parse_tag_or_error("bug", &id).unwrap(), TaskTag::Bug);
-        assert_eq!(parse_tag_or_error("feature", &id).unwrap(), TaskTag::Feature);
+        assert_eq!(parse_tag("bug").unwrap(), TaskTag::Bug);
+        assert_eq!(parse_tag("feature").unwrap(), TaskTag::Feature);
     }
 
     #[test]
     fn parse_tag_invalid() {
-        let id = Some(serde_json::json!(1));
-        let resp = parse_tag_or_error("nope", &id).unwrap_err();
-        let err = resp.error.as_ref().unwrap();
-        assert!(err.message.contains("Invalid tag: nope"));
+        let err = parse_tag("nope").unwrap_err();
+        assert!(
+            matches!(err, ServiceError::Validation(ref msg) if msg.contains("Invalid tag: nope"))
+        );
     }
 
     #[test]
     fn parse_substatus_valid() {
-        let id = Some(serde_json::json!(1));
-        assert_eq!(parse_substatus_or_error("active", &id).unwrap(), SubStatus::Active);
-        assert_eq!(parse_substatus_or_error("none", &id).unwrap(), SubStatus::None);
+        assert_eq!(parse_substatus("active").unwrap(), SubStatus::Active);
+        assert_eq!(parse_substatus("none").unwrap(), SubStatus::None);
     }
 
     #[test]
     fn parse_substatus_invalid() {
-        let id = Some(serde_json::json!(1));
-        let resp = parse_substatus_or_error("nope", &id).unwrap_err();
-        let err = resp.error.as_ref().unwrap();
-        assert!(err.message.contains("Invalid sub_status: nope"));
-    }
-
-    #[test]
-    fn require_some_update_with_no_fields() {
-        let id = Some(serde_json::json!(1));
-        let fields: &[(&str, bool)] = &[
-            ("status", false),
-            ("title", false),
-        ];
-        let resp = crate::mcp::handlers::validation::require_some_update(fields, &id);
-        assert!(resp.is_err());
-        let err_resp = resp.unwrap_err();
-        let err = err_resp.error.as_ref().unwrap();
-        assert!(err.message.contains("status"));
-        assert!(err.message.contains("title"));
-    }
-
-    #[test]
-    fn require_some_update_with_some_field() {
-        let id = Some(serde_json::json!(1));
-        let fields: &[(&str, bool)] = &[
-            ("status", false),
-            ("title", true),
-        ];
-        assert!(crate::mcp::handlers::validation::require_some_update(fields, &id).is_ok());
+        let err = parse_substatus("nope").unwrap_err();
+        assert!(
+            matches!(err, ServiceError::Validation(ref msg) if msg.contains("Invalid sub_status: nope"))
+        );
     }
 }
 
@@ -2228,11 +2862,18 @@ mod validation_tests {
 // =======================================================================
 
 /// Helper: creates a test state with a real notification channel.
-fn test_state_with_notify() -> (Arc<McpState>, tokio::sync::mpsc::UnboundedReceiver<crate::mcp::McpEvent>) {
+fn test_state_with_notify() -> (
+    Arc<McpState>,
+    tokio::sync::mpsc::UnboundedReceiver<crate::mcp::McpEvent>,
+) {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let state = Arc::new(McpState { db, notify_tx: Some(tx), runner });
+    let state = Arc::new(McpState {
+        db,
+        notify_tx: Some(tx),
+        runner,
+    });
     (state, rx)
 }
 
@@ -2248,11 +2889,14 @@ async fn update_task_sends_refresh_notification() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "running" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
     // Should have received a Refresh event
-    let event = rx.try_recv().expect("expected notification after update_task");
+    let event = rx
+        .try_recv()
+        .expect("expected notification after update_task");
     assert!(matches!(event, crate::mcp::McpEvent::Refresh));
 }
 
@@ -2267,10 +2911,13 @@ async fn create_task_sends_refresh_notification() {
             "name": "create_task",
             "arguments": { "title": "Notified Task", "repo_path": "/repo" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
 
-    let event = rx.try_recv().expect("expected notification after create_task");
+    let event = rx
+        .try_recv()
+        .expect("expected notification after create_task");
     assert!(matches!(event, crate::mcp::McpEvent::Refresh));
 }
 
@@ -2290,10 +2937,13 @@ async fn claim_task_sends_refresh_notification() {
                 "tmux_window": "task-1"
             }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
-    let event = rx.try_recv().expect("expected notification after claim_task");
+    let event = rx
+        .try_recv()
+        .expect("expected notification after claim_task");
     assert!(matches!(event, crate::mcp::McpEvent::Refresh));
 }
 
@@ -2310,10 +2960,14 @@ async fn failed_update_does_not_send_notification() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "status": "bogus" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_some());
 
-    assert!(rx.try_recv().is_err(), "no notification should be sent on validation error");
+    assert!(
+        rx.try_recv().is_err(),
+        "no notification should be sent on validation error"
+    );
 }
 
 // =======================================================================
@@ -2330,7 +2984,8 @@ async fn update_task_nonexistent_task_returns_error() {
             "name": "update_task",
             "arguments": { "task_id": 9999, "status": "running" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Database error");
 }
 
@@ -2346,7 +3001,8 @@ async fn update_task_invalid_tag() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "tag": "invalid_tag" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Invalid tag");
 }
 
@@ -2363,8 +3019,13 @@ async fn update_task_valid_tag() {
                 "name": "update_task",
                 "arguments": { "task_id": task_id.0, "tag": tag }
             })),
-        ).await;
-        assert!(resp.error.is_none(), "tag={tag} should be valid, got: {:?}", resp.error);
+        )
+        .await;
+        assert!(
+            resp.error.is_none(),
+            "tag={tag} should be valid, got: {:?}",
+            resp.error
+        );
     }
 
     // Verify last tag persisted
@@ -2385,10 +3046,14 @@ async fn update_task_sets_epic_id() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "epic_id": epic.id.0 }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
     let text = extract_response_text(&resp);
-    assert!(text.contains("epic_id"), "response should list epic_id: {text}");
+    assert!(
+        text.contains("epic_id"),
+        "response should list epic_id: {text}"
+    );
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
     assert_eq!(task.epic_id, Some(epic.id));
@@ -2406,7 +3071,8 @@ async fn update_task_sort_order() {
             "name": "update_task",
             "arguments": { "task_id": task_id.0, "sort_order": 42 }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     let task = state.db.get_task(task_id).unwrap().unwrap();
@@ -2427,7 +3093,8 @@ async fn create_task_invalid_tag() {
             "name": "create_task",
             "arguments": { "title": "Tagged", "repo_path": "/repo", "tag": "bogus" }
         })),
-    ).await;
+    )
+    .await;
     assert_error(&resp, "Invalid tag");
 }
 
@@ -2441,7 +3108,8 @@ async fn create_task_valid_tag() {
             "name": "create_task",
             "arguments": { "title": "Bug Task", "repo_path": "/repo", "tag": "bug" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     let tasks = state.db.list_all().unwrap();
@@ -2458,7 +3126,8 @@ async fn create_task_with_sort_order() {
             "name": "create_task",
             "arguments": { "title": "Ordered Task", "repo_path": "/repo", "sort_order": 99 }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     let tasks = state.db.list_all().unwrap();
@@ -2475,7 +3144,8 @@ async fn create_task_with_nonexistent_epic() {
             "name": "create_task",
             "arguments": { "title": "Orphan", "repo_path": "/repo", "epic_id": 9999 }
         })),
-    ).await;
+    )
+    .await;
     // Should fail because the epic FK doesn't exist
     assert!(resp.error.is_some(), "should error with invalid epic_id");
 }
@@ -2488,27 +3158,55 @@ async fn create_task_with_nonexistent_epic() {
 async fn list_tasks_filters_by_epic_id() {
     let state = test_state();
     let epic = state.db.create_epic("My Epic", "", "/repo").unwrap();
-    let t1 = state.db.create_task("Epic Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-    state.db.create_task("Standalone Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let t1 = state
+        .db
+        .create_task("Epic Task", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
+    state
+        .db
+        .create_task(
+            "Standalone Task",
+            "desc",
+            "/repo",
+            None,
+            TaskStatus::Backlog,
+        )
+        .unwrap();
     state.db.set_task_epic_id(t1, Some(epic.id)).unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "epic_id": epic.id.0 } })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let text = extract_response_text(&resp);
-    assert!(text.contains("Epic Task"), "should include task linked to epic");
-    assert!(!text.contains("Standalone Task"), "should exclude task not linked to epic");
+    assert!(
+        text.contains("Epic Task"),
+        "should include task linked to epic"
+    );
+    assert!(
+        !text.contains("Standalone Task"),
+        "should exclude task not linked to epic"
+    );
 }
 
 #[tokio::test]
 async fn list_tasks_filters_by_status_and_epic_id() {
     let state = test_state();
-    let epic = state.db.create_epic("Combined Filter", "", "/repo").unwrap();
-    let t1 = state.db.create_task("Backlog Epic", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-    let t2 = state.db.create_task("Running Epic", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let epic = state
+        .db
+        .create_epic("Combined Filter", "", "/repo")
+        .unwrap();
+    let t1 = state
+        .db
+        .create_task("Backlog Epic", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
+    let t2 = state
+        .db
+        .create_task("Running Epic", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
     state.db.set_task_epic_id(t1, Some(epic.id)).unwrap();
     state.db.set_task_epic_id(t2, Some(epic.id)).unwrap();
 
@@ -2519,23 +3217,34 @@ async fn list_tasks_filters_by_status_and_epic_id() {
             "name": "list_tasks",
             "arguments": { "status": "backlog", "epic_id": epic.id.0 }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let text = extract_response_text(&resp);
-    assert!(text.contains("Backlog Epic"), "should include backlog task in epic");
-    assert!(!text.contains("Running Epic"), "should exclude running task when filtering by backlog");
+    assert!(
+        text.contains("Backlog Epic"),
+        "should include backlog task in epic"
+    );
+    assert!(
+        !text.contains("Running Epic"),
+        "should exclude running task when filtering by backlog"
+    );
 }
 
 #[tokio::test]
 async fn list_tasks_epic_filter_no_match() {
     let state = test_state();
-    state.db.create_task("No Epic", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    state
+        .db
+        .create_task("No Epic", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "epic_id": 9999 } })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let text = extract_response_text(&resp);
     assert!(text.contains("No tasks found"));
@@ -2544,14 +3253,21 @@ async fn list_tasks_epic_filter_no_match() {
 #[tokio::test]
 async fn list_tasks_done_status_filter() {
     let state = test_state();
-    state.db.create_task("Done Task", "desc", "/repo", None, TaskStatus::Done).unwrap();
-    state.db.create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    state
+        .db
+        .create_task("Done Task", "desc", "/repo", None, TaskStatus::Done)
+        .unwrap();
+    state
+        .db
+        .create_task("Backlog Task", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": { "status": "done" } })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none());
     let text = extract_response_text(&resp);
     assert!(text.contains("Done Task"));
@@ -2566,18 +3282,26 @@ async fn list_tasks_done_status_filter() {
 async fn wrap_up_rebase_sets_task_to_done() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("Rebase Done", "desc", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-rebase-done"))
-    ).unwrap();
+    let task_id = db
+        .create_task("Rebase Done", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-rebase-done")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -2586,29 +3310,42 @@ async fn wrap_up_rebase_sets_task_to_done() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("wrap_up complete"));
 
     let task = db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Done, "Task should be Done after successful rebase");
+    assert_eq!(
+        task.status,
+        TaskStatus::Done,
+        "Task should be Done after successful rebase"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_pr_sets_review_and_pr_url() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                                          // detect_default_branch (symbolic-ref)
-        MockProcessRunner::ok(),                                              // git push
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
+        MockProcessRunner::ok(),     // git push
         MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // git remote get-url
         MockProcessRunner::ok_with_stdout(b"https://github.com/org/repo/pull/42\n"), // gh pr create
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("PR Review", "desc", "/repo", None, TaskStatus::Running).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-pr-review"))
-    ).unwrap();
+    let task_id = db
+        .create_task("PR Review", "desc", "/repo", None, TaskStatus::Running)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-pr-review")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -2617,34 +3354,54 @@ async fn wrap_up_pr_sets_review_and_pr_url() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "pr" }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("wrap_up complete"));
-    assert!(text.contains("https://github.com/org/repo/pull/42"), "response should include PR URL");
+    assert!(
+        text.contains("https://github.com/org/repo/pull/42"),
+        "response should include PR URL"
+    );
 
     let task = db.get_task(task_id).unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Review, "Task should be Review after PR creation");
-    assert_eq!(task.pr_url.as_deref(), Some("https://github.com/org/repo/pull/42"), "PR URL should be stored");
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "Task should be Review after PR creation"
+    );
+    assert_eq!(
+        task.pr_url.as_deref(),
+        Some("https://github.com/org/repo/pull/42"),
+        "PR URL should be stored"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_rebase_recalculates_epic_status() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch (symbolic-ref)
+        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""),                   // git remote get-url (no remote)
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""), // git remote get-url (no remote)
+        MockProcessRunner::ok(),     // git rebase main
+        MockProcessRunner::ok(),     // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
     let epic = db.create_epic("E", "", "/repo").unwrap();
-    let task_id = db.create_task("Only Task", "desc", "/repo", None, TaskStatus::Review).unwrap();
+    let task_id = db
+        .create_task("Only Task", "desc", "/repo", None, TaskStatus::Review)
+        .unwrap();
     db.set_task_epic_id(task_id, Some(epic.id)).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-only-task"))
-    ).unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-only-task")),
+    )
+    .unwrap();
     // Move epic to Running to simulate in-progress state
     db.recalculate_epic_status(epic.id).unwrap();
 
@@ -2655,29 +3412,42 @@ async fn wrap_up_rebase_recalculates_epic_status() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0, "action": "rebase" }
         })),
-    ).await;
+    )
+    .await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     let epic = db.get_epic(epic.id).unwrap().unwrap();
-    assert_eq!(epic.status, TaskStatus::Done, "Epic should auto-advance to Done when all subtasks complete");
+    assert_eq!(
+        epic.status,
+        TaskStatus::Done,
+        "Epic should auto-advance to Done when all subtasks complete"
+    );
 }
 
 #[tokio::test]
 async fn wrap_up_accepts_string_task_id() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""),                   // detect_default_branch
+        MockProcessRunner::fail(""),                  // detect_default_branch
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse
-        MockProcessRunner::fail(""),                   // git remote get-url
-        MockProcessRunner::ok(),                       // git rebase main
-        MockProcessRunner::ok(),                       // git merge --ff-only
+        MockProcessRunner::fail(""),                  // git remote get-url
+        MockProcessRunner::ok(),                      // git rebase main
+        MockProcessRunner::ok(),                      // git merge --ff-only
     ]));
-    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+    let state = Arc::new(McpState {
+        db: db.clone(),
+        notify_tx: None,
+        runner,
+    });
 
-    let task_id = db.create_task("T", "d", "/repo", None, TaskStatus::Review).unwrap();
-    db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-t"))
-    ).unwrap();
+    let task_id = db
+        .create_task("T", "d", "/repo", None, TaskStatus::Review)
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-t")),
+    )
+    .unwrap();
 
     let resp = call(
         &state,
@@ -2686,8 +3456,13 @@ async fn wrap_up_accepts_string_task_id() {
             "name": "wrap_up",
             "arguments": { "task_id": task_id.0.to_string(), "action": "rebase" }
         })),
-    ).await;
-    assert!(resp.error.is_none(), "wrap_up should accept string task_id: {:?}", resp.error);
+    )
+    .await;
+    assert!(
+        resp.error.is_none(),
+        "wrap_up should accept string task_id: {:?}",
+        resp.error
+    );
 }
 
 // =======================================================================
@@ -2698,15 +3473,29 @@ async fn wrap_up_accepts_string_task_id() {
 async fn get_task_shows_all_fields() {
     let state = test_state();
     let epic = state.db.create_epic("Parent Epic", "", "/repo").unwrap();
-    let task_id = state.db.create_task("Full Task", "detailed desc", "/repo", Some("/plan.md"), TaskStatus::Running).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Full Task",
+            "detailed desc",
+            "/repo",
+            Some("/plan.md"),
+            TaskStatus::Running,
+        )
+        .unwrap();
     state.db.set_task_epic_id(task_id, Some(epic.id)).unwrap();
-    state.db.patch_task(task_id, &db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/1-full"))
-        .tmux_window(Some("task-1"))
-        .pr_url(Some("https://github.com/org/repo/pull/5"))
-        .tag(Some(crate::models::TaskTag::Feature))
-        .sort_order(Some(10))
-    ).unwrap();
+    state
+        .db
+        .patch_task(
+            task_id,
+            &db::TaskPatch::new()
+                .worktree(Some("/repo/.worktrees/1-full"))
+                .tmux_window(Some("task-1"))
+                .pr_url(Some("https://github.com/org/repo/pull/5"))
+                .tag(Some(crate::models::TaskTag::Feature))
+                .sort_order(Some(10)),
+        )
+        .unwrap();
 
     let resp = call(
         &state,
@@ -2715,14 +3504,18 @@ async fn get_task_shows_all_fields() {
             "name": "get_task",
             "arguments": { "task_id": task_id.0 }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
     assert!(text.contains("Full Task"), "should show title");
     assert!(text.contains("detailed desc"), "should show description");
     assert!(text.contains("/repo"), "should show repo path");
     assert!(text.contains("/plan.md"), "should show plan");
     assert!(text.contains("Parent Epic"), "should show epic title");
-    assert!(text.contains("/repo/.worktrees/1-full"), "should show worktree");
+    assert!(
+        text.contains("/repo/.worktrees/1-full"),
+        "should show worktree"
+    );
     assert!(text.contains("task-1"), "should show tmux window");
     assert!(text.contains("pull/5"), "should show PR URL");
     assert!(text.contains("feature"), "should show tag");
@@ -2732,7 +3525,10 @@ async fn get_task_shows_all_fields() {
 #[tokio::test]
 async fn get_task_without_epic_omits_epic_line() {
     let state = test_state();
-    let task_id = state.db.create_task("Solo Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("Solo Task", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
@@ -2741,9 +3537,13 @@ async fn get_task_without_epic_omits_epic_line() {
             "name": "get_task",
             "arguments": { "task_id": task_id.0 }
         })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(!text.contains("Epic:"), "should not show Epic line for task without epic: {text}");
+    assert!(
+        !text.contains("Epic:"),
+        "should not show Epic line for task without epic: {text}"
+    );
 }
 
 // =======================================================================
@@ -2753,18 +3553,35 @@ async fn get_task_without_epic_omits_epic_line() {
 #[tokio::test]
 async fn list_tasks_shows_tag_and_plan_indicators() {
     let state = test_state();
-    let task_id = state.db.create_task("Tagged Planned", "desc", "/repo", Some("/plan.md"), TaskStatus::Backlog).unwrap();
-    state.db.patch_task(task_id, &db::TaskPatch::new()
-        .tag(Some(crate::models::TaskTag::Bug))
-    ).unwrap();
+    let task_id = state
+        .db
+        .create_task(
+            "Tagged Planned",
+            "desc",
+            "/repo",
+            Some("/plan.md"),
+            TaskStatus::Backlog,
+        )
+        .unwrap();
+    state
+        .db
+        .patch_task(
+            task_id,
+            &db::TaskPatch::new().tag(Some(crate::models::TaskTag::Bug)),
+        )
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": {} })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("[plan]"), "should show plan indicator: {text}");
+    assert!(
+        text.contains("[plan]"),
+        "should show plan indicator: {text}"
+    );
     assert!(text.contains("[bug]"), "should show tag indicator: {text}");
 }
 
@@ -2772,30 +3589,47 @@ async fn list_tasks_shows_tag_and_plan_indicators() {
 async fn list_tasks_shows_epic_indicator() {
     let state = test_state();
     let epic = state.db.create_epic("Sprint 1", "", "/repo").unwrap();
-    let task_id = state.db.create_task("Epic Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+    let task_id = state
+        .db
+        .create_task("Epic Task", "desc", "/repo", None, TaskStatus::Backlog)
+        .unwrap();
     state.db.set_task_epic_id(task_id, Some(epic.id)).unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": {} })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("Sprint 1"), "should show epic title in list: {text}");
+    assert!(
+        text.contains("Sprint 1"),
+        "should show epic title in list: {text}"
+    );
 }
 
 #[tokio::test]
 async fn list_tasks_truncates_long_descriptions() {
     let state = test_state();
     let long_desc = "x".repeat(300);
-    state.db.create_task("Long Desc", &long_desc, "/repo", None, TaskStatus::Backlog).unwrap();
+    state
+        .db
+        .create_task("Long Desc", &long_desc, "/repo", None, TaskStatus::Backlog)
+        .unwrap();
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({ "name": "list_tasks", "arguments": {} })),
-    ).await;
+    )
+    .await;
     let text = extract_response_text(&resp);
-    assert!(text.contains("..."), "should truncate long description: {text}");
-    assert!(text.len() < long_desc.len() + 100, "truncated output should be shorter than full description");
+    assert!(
+        text.contains("..."),
+        "should truncate long description: {text}"
+    );
+    assert!(
+        text.len() < long_desc.len() + 100,
+        "truncated output should be shorter than full description"
+    );
 }

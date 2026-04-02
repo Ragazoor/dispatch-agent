@@ -6,16 +6,18 @@ use serde_json::{json, Value};
 use crate::db;
 use crate::dispatch;
 use crate::mcp::McpState;
-use crate::models::{DispatchMode, EpicId, Task, TaskId, TaskStatus, UsageReport};
-
-use super::validation;
+use crate::models::{DispatchMode, EpicId, Task, TaskStatus};
+use crate::service::{
+    ClaimTaskParams, CreateTaskParams, ListTasksFilter, TaskService, UpdateTaskParams,
+};
 
 use super::types::{
-    deserialize_flexible_i64, deserialize_optional_flexible_i64, parse_args, JsonRpcResponse,
+    deserialize_flexible_i64, deserialize_optional_flexible_i64, parse_args,
+    service_err_to_response, JsonRpcResponse,
 };
 
 // ---------------------------------------------------------------------------
-// Typed argument structs
+// Typed argument structs (JSON-RPC layer)
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -111,17 +113,17 @@ pub(super) struct SendMessageArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Response formatting
+// Response formatting (presentation layer)
 // ---------------------------------------------------------------------------
 
 fn build_epic_titles(state: &McpState) -> HashMap<EpicId, String> {
-    match state.db.list_epics() {
-        Ok(epics) => epics.into_iter().map(|e| (e.id, e.title)).collect(),
-        Err(e) => {
-            tracing::warn!("failed to load epic titles for response formatting: {e}");
-            HashMap::new()
-        }
-    }
+    state
+        .db
+        .list_epics()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|e| (e.id, e.title))
+        .collect()
 }
 
 fn format_task_detail(task: &Task, epic_titles: &HashMap<EpicId, String>) -> String {
@@ -209,7 +211,7 @@ fn format_task_line(t: &Task, epic_titles: &HashMap<EpicId, String>) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Task tool handlers
+// Task tool handlers (thin wrappers over TaskService)
 // ---------------------------------------------------------------------------
 
 pub(super) fn handle_update_task(
@@ -223,196 +225,32 @@ pub(super) fn handle_update_task(
     };
     tracing::info!(task_id = parsed.task_id, status = ?parsed.status, "MCP update_task");
 
-    if let Err(resp) = validation::require_some_update(
-        &[
-            ("status", parsed.status.is_some()),
-            ("plan", parsed.plan.is_some()),
-            ("title", parsed.title.is_some()),
-            ("description", parsed.description.is_some()),
-            ("repo_path", parsed.repo_path.is_some()),
-            ("sort_order", parsed.sort_order.is_some()),
-            ("pr_url", parsed.pr_url.is_some()),
-            ("tag", parsed.tag.is_some()),
-            ("sub_status", parsed.sub_status.is_some()),
-            ("epic_id", parsed.epic_id.is_some()),
-        ],
-        &id,
-    ) {
-        return resp;
-    }
-
-    let status = if let Some(ref status_str) = parsed.status {
-        match validation::parse_status_or_error(status_str, &id) {
-            Ok(s) => Some(s),
-            Err(resp) => return resp,
-        }
-    } else {
-        None
+    let params = UpdateTaskParams {
+        task_id: parsed.task_id,
+        status: parsed.status.clone(),
+        plan: parsed.plan,
+        title: parsed.title,
+        description: parsed.description,
+        repo_path: parsed.repo_path,
+        sort_order: parsed.sort_order,
+        pr_url: parsed.pr_url,
+        tag: parsed.tag,
+        sub_status: parsed.sub_status,
+        epic_id: parsed.epic_id,
     };
+    let field_names = params.updated_field_names();
 
-    if matches!(status, Some(TaskStatus::Done | TaskStatus::Archived)) {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            "Cannot set status to done or archived via MCP. Please ask the human operator to manage this from the TUI.",
-        );
-    }
-
-    let expanded_repo_path = parsed.repo_path.as_deref().map(crate::models::expand_tilde);
-
-    let mut patch = db::TaskPatch::new();
-    if let Some(s) = status {
-        patch = patch.status(s);
-    }
-    if let Some(ref p) = parsed.plan {
-        patch = patch.plan(Some(p.as_str()));
-    }
-    if let Some(ref t) = parsed.title {
-        patch = patch.title(t);
-    }
-    if let Some(ref d) = parsed.description {
-        patch = patch.description(d);
-    }
-    if let Some(ref r) = expanded_repo_path {
-        patch = patch.repo_path(r);
-    }
-    if let Some(so) = parsed.sort_order {
-        patch = patch.sort_order(Some(so));
-    }
-    if let Some(ref url) = parsed.pr_url {
-        patch = patch.pr_url(Some(url.as_str()));
-    }
-    if let Some(ref t) = parsed.tag {
-        match validation::parse_tag_or_error(t, &id) {
-            Ok(tag) => { patch = patch.tag(Some(tag)); }
-            Err(resp) => return resp,
-        }
-    }
-
-    if let Some(ref ss_str) = parsed.sub_status {
-        let ss = match validation::parse_substatus_or_error(ss_str, &id) {
-            Ok(ss) => ss,
-            Err(resp) => return resp,
-        };
-        // Validate against current (or new) status
-        let effective_status = if let Some(ref s) = parsed.status {
-            TaskStatus::parse(s)
-        } else {
-            match state.db.get_task(TaskId(parsed.task_id)) {
-                Ok(Some(t)) => Some(t.status),
-                Ok(None) => None,
-                Err(e) => {
-                    return JsonRpcResponse::err(
-                        id,
-                        -32603,
-                        format!("Database error looking up task for sub_status validation: {e}"),
-                    );
-                }
-            }
-        };
-        if let Some(eff) = effective_status {
-            if !ss.is_valid_for(eff) {
-                return JsonRpcResponse::err(
-                    id,
-                    -32602,
-                    format!(
-                        "sub_status '{}' is not valid for status '{}'",
-                        ss_str,
-                        eff.as_str()
-                    ),
-                );
-            }
-        }
-        patch = patch.sub_status(ss);
-    }
-
-    if let Err(e) = state.db.patch_task(TaskId(parsed.task_id), &patch) {
-        return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
-    }
-
-    // Update epic linkage if requested
-    if let Some(new_epic_id) = parsed.epic_id {
-        // Recalculate old epic before reassignment
-        if let Ok(Some(task)) = state.db.get_task(TaskId(parsed.task_id)) {
-            if let Some(old_epic_id) = task.epic_id {
-                // Best-effort: epic status is derived data, failure doesn't affect the update
-                if let Err(e) = state.db.recalculate_epic_status(old_epic_id) {
-                    tracing::warn!(epic_id = old_epic_id.0, "failed to recalculate epic status: {e}");
-                }
-            }
-        }
-        if let Err(e) = state
-            .db
-            .set_task_epic_id(TaskId(parsed.task_id), Some(EpicId(new_epic_id)))
-        {
-            return JsonRpcResponse::err(
+    let svc = TaskService::new(state.db.clone());
+    match svc.update_task(params) {
+        Ok(task_id) => {
+            state.notify();
+            JsonRpcResponse::ok(
                 id,
-                -32603,
-                format!("Failed to link task to epic: {e}"),
-            );
+                json!({"content": [{"type": "text", "text": format!("Task {} updated ({})", task_id, field_names.join(", "))}]}),
+            )
         }
-        // Best-effort: epic status is derived data, failure doesn't affect the update
-        if let Err(e) = state.db.recalculate_epic_status(EpicId(new_epic_id)) {
-            tracing::warn!(epic_id = new_epic_id, "failed to recalculate epic status: {e}");
-        }
+        Err(e) => service_err_to_response(id, e),
     }
-
-    // Recalculate parent epic status if subtask status changed
-    if parsed.status.is_some() {
-        match state.db.get_task(TaskId(parsed.task_id)) {
-            Ok(Some(task)) => {
-                if let Some(epic_id) = task.epic_id {
-                    // Best-effort: epic status is derived data, failure doesn't affect the update
-                    if let Err(e) = state.db.recalculate_epic_status(epic_id) {
-                        tracing::warn!(epic_id = epic_id.0, "failed to recalculate epic status: {e}");
-                    }
-                }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                tracing::warn!(task_id = parsed.task_id, "failed to reload task for epic recalculation: {e}");
-            }
-        }
-    }
-
-    state.notify();
-
-    let mut updated = Vec::new();
-    if let Some(ref s) = parsed.status {
-        updated.push(format!("status={s}"));
-    }
-    if parsed.plan.is_some() {
-        updated.push("plan".to_string());
-    }
-    if parsed.title.is_some() {
-        updated.push("title".to_string());
-    }
-    if parsed.description.is_some() {
-        updated.push("description".to_string());
-    }
-    if parsed.repo_path.is_some() {
-        updated.push("repo_path".to_string());
-    }
-    if parsed.sort_order.is_some() {
-        updated.push("sort_order".to_string());
-    }
-    if parsed.pr_url.is_some() {
-        updated.push("pr_url".to_string());
-    }
-    if parsed.tag.is_some() {
-        updated.push("tag".to_string());
-    }
-    if parsed.sub_status.is_some() {
-        updated.push("sub_status".to_string());
-    }
-    if parsed.epic_id.is_some() {
-        updated.push("epic_id".to_string());
-    }
-
-    JsonRpcResponse::ok(
-        id,
-        json!({"content": [{"type": "text", "text": format!("Task {} updated ({})", parsed.task_id, updated.join(", "))}]}),
-    )
 }
 
 pub(super) fn handle_create_task(
@@ -426,55 +264,24 @@ pub(super) fn handle_create_task(
     };
     tracing::info!(title = %parsed.title, epic_id = ?parsed.epic_id, "MCP create_task");
 
-    let repo_path = crate::models::expand_tilde(&parsed.repo_path);
-
-    let plan = parsed.plan.as_deref().map(|p| {
-        std::fs::canonicalize(p)
-            .map(|abs| abs.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| p.to_string())
-    });
-
-    let status = TaskStatus::Backlog;
-
-    match state.db.create_task(
-        &parsed.title,
-        &parsed.description,
-        &repo_path,
-        plan.as_deref(),
-        status,
-    ) {
+    let svc = TaskService::new(state.db.clone());
+    match svc.create_task(CreateTaskParams {
+        title: parsed.title,
+        description: parsed.description,
+        repo_path: parsed.repo_path,
+        plan: parsed.plan,
+        epic_id: parsed.epic_id,
+        sort_order: parsed.sort_order,
+        tag: parsed.tag,
+    }) {
         Ok(task_id) => {
-            if let Some(eid) = parsed.epic_id {
-                if let Err(e) = state.db.set_task_epic_id(task_id, Some(EpicId(eid))) {
-                    return JsonRpcResponse::err(
-                        id,
-                        -32603,
-                        format!("Failed to link task to epic: {e}"),
-                    );
-                }
-            }
-            if let Some(so) = parsed.sort_order {
-                if let Err(e) = state.db.patch_task(task_id, &db::TaskPatch::new().sort_order(Some(so))) {
-                    return JsonRpcResponse::err(id, -32603, format!("Failed to set sort_order: {e}"));
-                }
-            }
-            if let Some(ref t) = parsed.tag {
-                match validation::parse_tag_or_error(t, &id) {
-                    Ok(tag) => {
-                        if let Err(e) = state.db.patch_task(task_id, &db::TaskPatch::new().tag(Some(tag))) {
-                            return JsonRpcResponse::err(id, -32603, format!("Failed to set tag: {e}"));
-                        }
-                    }
-                    Err(resp) => return resp,
-                }
-            }
             state.notify();
             JsonRpcResponse::ok(
                 id,
                 json!({"content": [{"type": "text", "text": format!("Task {task_id} created")}]}),
             )
         }
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+        Err(e) => service_err_to_response(id, e),
     }
 }
 
@@ -484,14 +291,15 @@ pub(super) fn handle_get_task(state: &McpState, id: Option<Value>, args: Value) 
         Err(resp) => return resp,
     };
     tracing::info!(task_id = parsed.task_id, "MCP get_task");
-    match state.db.get_task(TaskId(parsed.task_id)) {
-        Ok(Some(task)) => {
+
+    let svc = TaskService::new(state.db.clone());
+    match svc.get_task(parsed.task_id) {
+        Ok(task) => {
             let epic_titles = build_epic_titles(state);
             let text = format_task_detail(&task, &epic_titles);
             JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
         }
-        Ok(None) => JsonRpcResponse::err(id, -32602, format!("Task {} not found", parsed.task_id)),
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+        Err(e) => service_err_to_response(id, e),
     }
 }
 
@@ -506,6 +314,7 @@ pub(super) fn handle_list_tasks(
     };
     tracing::info!(status = ?parsed.status, "MCP list_tasks");
 
+    // Parse status filter (supports string or array) — this is JSON-RPC parsing logic
     let status_filter: Option<Vec<TaskStatus>> = match parsed.status {
         Some(Value::String(ref s)) => match TaskStatus::parse(s) {
             Some(st) => Some(vec![st]),
@@ -539,40 +348,30 @@ pub(super) fn handle_list_tasks(
         None => None,
     };
 
-    let tasks = match state.db.list_all() {
-        Ok(t) => t,
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
-    };
-
-    let epic_filter = parsed.epic_id.map(EpicId);
-
-    let filtered: Vec<_> = tasks
-        .into_iter()
-        .filter(|t| match &status_filter {
-            Some(statuses) => statuses.contains(&t.status),
-            None => true,
-        })
-        .filter(|t| match epic_filter {
-            Some(eid) => t.epic_id == Some(eid),
-            None => true,
-        })
-        .collect();
-
-    if filtered.is_empty() {
-        return JsonRpcResponse::ok(
-            id,
-            json!({"content": [{"type": "text", "text": "No tasks found"}]}),
-        );
+    let svc = TaskService::new(state.db.clone());
+    match svc.list_tasks(ListTasksFilter {
+        statuses: status_filter,
+        epic_id: parsed.epic_id.map(EpicId),
+    }) {
+        Ok(filtered) => {
+            if filtered.is_empty() {
+                return JsonRpcResponse::ok(
+                    id,
+                    json!({"content": [{"type": "text", "text": "No tasks found"}]}),
+                );
+            }
+            let epic_titles = build_epic_titles(state);
+            let lines: Vec<String> = filtered
+                .iter()
+                .map(|t| format_task_line(t, &epic_titles))
+                .collect();
+            JsonRpcResponse::ok(
+                id,
+                json!({"content": [{"type": "text", "text": lines.join("\n")}]}),
+            )
+        }
+        Err(e) => service_err_to_response(id, e),
     }
-
-    let epic_titles = build_epic_titles(state);
-    let lines: Vec<String> = filtered
-        .iter()
-        .map(|t| format_task_line(t, &epic_titles))
-        .collect();
-
-    let text = lines.join("\n");
-    JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
 }
 
 pub(super) fn handle_claim_task(
@@ -586,64 +385,21 @@ pub(super) fn handle_claim_task(
     };
     tracing::info!(task_id = parsed.task_id, worktree = %parsed.worktree, "MCP claim_task");
 
-    // 1. Fetch the task
-    let task = match state.db.get_task(TaskId(parsed.task_id)) {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return JsonRpcResponse::err(id, -32602, format!("Task {} not found", parsed.task_id));
+    let svc = TaskService::new(state.db.clone());
+    match svc.claim_task(ClaimTaskParams {
+        task_id: parsed.task_id,
+        worktree: parsed.worktree,
+        tmux_window: parsed.tmux_window,
+    }) {
+        Ok(task) => {
+            state.notify();
+            JsonRpcResponse::ok(
+                id,
+                json!({"content": [{"type": "text", "text": format!("Task {} claimed: {}", parsed.task_id, task.title)}]}),
+            )
         }
-        Err(e) => {
-            return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
-        }
-    };
-
-    // 2. Validate status is backlog
-    if task.status != TaskStatus::Backlog {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            format!(
-                "Task {} is already {}",
-                parsed.task_id,
-                task.status.as_str()
-            ),
-        );
+        Err(e) => service_err_to_response(id, e),
     }
-
-    // 3. Same-repo check: derive repo from worktree by stripping /.worktrees/<anything>
-    let repo_from_worktree = parsed
-        .worktree
-        .find("/.worktrees/")
-        .map(|idx| &parsed.worktree[..idx])
-        .unwrap_or(&parsed.worktree);
-
-    if repo_from_worktree != task.repo_path {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            format!(
-                "Repo mismatch: task belongs to {}, your worktree is in {}",
-                task.repo_path, repo_from_worktree
-            ),
-        );
-    }
-
-    // 4. Atomically set status + worktree + tmux_window
-    if let Err(e) = state.db.patch_task(
-        TaskId(parsed.task_id),
-        &db::TaskPatch::new()
-            .status(TaskStatus::Running)
-            .worktree(Some(&parsed.worktree))
-            .tmux_window(Some(&parsed.tmux_window)),
-    ) {
-        return JsonRpcResponse::err(id, -32603, format!("Database error: {e}"));
-    }
-
-    state.notify();
-    JsonRpcResponse::ok(
-        id,
-        json!({"content": [{"type": "text", "text": format!("Task {} claimed: {}", parsed.task_id, task.title)}]}),
-    )
 }
 
 pub(super) async fn handle_wrap_up(
@@ -657,40 +413,16 @@ pub(super) async fn handle_wrap_up(
     };
     tracing::info!(task_id = parsed.task_id, action = %parsed.action, "MCP wrap_up");
 
-    if parsed.action != "rebase" && parsed.action != "pr" {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            format!(
-                "Unknown action: {}. Valid values: rebase, pr",
-                parsed.action
-            ),
-        );
-    }
-
-    let task = match state.db.get_task(TaskId(parsed.task_id)) {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return JsonRpcResponse::err(id, -32602, format!("Task {} not found", parsed.task_id))
-        }
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
+    let svc = TaskService::new(state.db.clone());
+    let task = match svc.validate_wrap_up(parsed.task_id, &parsed.action) {
+        Ok(t) => t,
+        Err(e) => return service_err_to_response(id, e),
     };
-
-    if !dispatch::is_wrappable(&task) {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            format!(
-                "Task {} cannot be wrapped up. Requires Running or Review status with a worktree.",
-                parsed.task_id
-            ),
-        );
-    }
 
     let worktree = task
         .worktree
         .clone()
-        .expect("is_wrappable guarantees worktree is Some");
+        .expect("validate_wrap_up guarantees worktree is Some");
 
     let branch = match dispatch::branch_from_worktree(&worktree) {
         Some(b) => b,
@@ -710,7 +442,6 @@ pub(super) async fn handle_wrap_up(
     let task_id = task.id;
 
     // Gather auto-dispatch context for epic subtasks.
-    // If this task belongs to an epic, find the next backlog subtask to chain-dispatch.
     let next_epic_task =
         task.epic_id
             .and_then(|epic_id| match state.db.list_tasks_for_epic(epic_id) {
@@ -740,13 +471,7 @@ pub(super) async fn handle_wrap_up(
             let rebase_runner = runner.clone();
             let rebase_result = match tokio::task::spawn_blocking(move || {
                 tracing::info!(task_id = task_id.0, %branch, "MCP wrap_up rebase starting");
-                dispatch::finish_task(
-                    &repo_path,
-                    &worktree,
-                    &branch,
-                    None, // Don't kill tmux yet -- need to return response first
-                    &*rebase_runner,
-                )
+                dispatch::finish_task(&repo_path, &worktree, &branch, None, &*rebase_runner)
             })
             .await
             {
@@ -764,22 +489,14 @@ pub(super) async fn handle_wrap_up(
                         );
                     }
                     if let Some(epic_id) = task.epic_id {
-                        // Best-effort: epic status is derived data
-                        if let Err(e) = db.recalculate_epic_status(epic_id) {
-                            tracing::warn!(epic_id = epic_id.0, "failed to recalculate epic status after rebase: {e}");
-                        }
+                        let _ = db.recalculate_epic_status(epic_id);
                     }
-                    // Fire-and-forget: kill tmux, auto-dispatch, notify.
-                    // Runs in background after response is sent — errors are logged, not propagated.
                     let ad_runner = state.runner.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Some(window) = &tmux_window {
-                            if let Err(e) = crate::tmux::kill_window(window, &*ad_runner) {
-                                tracing::warn!("failed to kill tmux window after rebase: {e}");
-                            }
+                            let _ = crate::tmux::kill_window(window, &*ad_runner);
                         }
                         auto_dispatch_next(next_epic_task, &*db, &*ad_runner);
-                        // Channel send: receiver may be dropped if TUI exited; nothing to do
                         if let Some(tx) = notify_tx {
                             let _ = tx.send(crate::mcp::McpEvent::Refresh);
                         }
@@ -790,7 +507,6 @@ pub(super) async fn handle_wrap_up(
                     )
                 }
                 Err(e) => {
-                    // Channel send: receiver may be dropped if TUI exited; nothing to do
                     if let Some(tx) = notify_tx {
                         let _ = tx.send(crate::mcp::McpEvent::Refresh);
                     }
@@ -825,15 +541,9 @@ pub(super) async fn handle_wrap_up(
                         );
                     }
                     if let Some(epic_id) = task.epic_id {
-                        // Best-effort: epic status is derived data
-                        if let Err(e) = db.recalculate_epic_status(epic_id) {
-                            tracing::warn!(epic_id = epic_id.0, "failed to recalculate epic status after PR: {e}");
-                        }
+                        let _ = db.recalculate_epic_status(epic_id);
                     }
-                    // Save before closure moves result
                     let pr_url = result.pr_url.clone();
-                    // Fire-and-forget: inject code review, auto-dispatch, notify.
-                    // Runs in background after response is sent — errors are logged, not propagated.
                     let ad_runner = state.runner.clone();
                     tokio::task::spawn_blocking(move || {
                         if let Some(window) = &tmux_window {
@@ -847,7 +557,6 @@ pub(super) async fn handle_wrap_up(
                             }
                         }
                         auto_dispatch_next(next_epic_task, &*db, &*ad_runner);
-                        // Channel send: receiver may be dropped if TUI exited; nothing to do
                         if let Some(tx) = notify_tx {
                             let _ = tx.send(crate::mcp::McpEvent::Refresh);
                         }
@@ -858,7 +567,6 @@ pub(super) async fn handle_wrap_up(
                     )
                 }
                 Err(e) => {
-                    // Channel send: receiver may be dropped if TUI exited; nothing to do
                     if let Some(tx) = notify_tx {
                         let _ = tx.send(crate::mcp::McpEvent::Refresh);
                     }
@@ -880,49 +588,15 @@ pub(super) fn handle_send_message(
         Err(e) => return e,
     };
 
-    let from_task = match state.db.get_task(TaskId(parsed.from_task_id)) {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return JsonRpcResponse::err(
-                id,
-                -32602,
-                format!("sender task {} not found", parsed.from_task_id),
-            );
-        }
-        Err(e) => {
-            return JsonRpcResponse::err(id, -32603, format!("failed to look up sender: {e}"));
-        }
-    };
+    let svc = TaskService::new(state.db.clone());
+    let (from_task, to_task) =
+        match svc.validate_send_message(parsed.from_task_id, parsed.to_task_id) {
+            Ok(pair) => pair,
+            Err(e) => return service_err_to_response(id, e),
+        };
 
-    let to_task = match state.db.get_task(TaskId(parsed.to_task_id)) {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return JsonRpcResponse::err(
-                id,
-                -32602,
-                format!("target task {} not found", parsed.to_task_id),
-            );
-        }
-        Err(e) => {
-            return JsonRpcResponse::err(id, -32603, format!("failed to look up target: {e}"));
-        }
-    };
-
-    let Some(ref worktree) = to_task.worktree else {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            format!("target task {} has no worktree (not running)", parsed.to_task_id),
-        );
-    };
-
-    let Some(ref tmux_window) = to_task.tmux_window else {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            format!("target task {} has no tmux window (not running)", parsed.to_task_id),
-        );
-    };
+    let worktree = to_task.worktree.as_ref().expect("validated by service");
+    let tmux_window = to_task.tmux_window.as_ref().expect("validated by service");
 
     // Write message to file in target's worktree
     let message_content = format!(
@@ -931,20 +605,15 @@ pub(super) fn handle_send_message(
     );
     let message_path = format!("{worktree}/.claude-message");
     if let Err(e) = std::fs::write(&message_path, &message_content) {
-        return JsonRpcResponse::err(
-            id,
-            -32603,
-            format!("failed to write message file: {e}"),
-        );
+        return JsonRpcResponse::err(id, -32603, format!("failed to write message file: {e}"));
     }
 
-    // Inject a short notification prompt into the target's tmux window
+    // Inject notification into the target's tmux window
     let notification = format!(
         "You received a message from task {}. Read .claude-message for the full content, then delete the file.",
         from_task.id.0
     );
     if let Err(e) = crate::tmux::send_keys(tmux_window, &notification, &*state.runner) {
-        // Clean up the file if we can't deliver
         let _ = std::fs::remove_file(&message_path);
         return JsonRpcResponse::err(
             id,
@@ -971,7 +640,6 @@ pub(super) fn handle_send_message(
 }
 
 /// Auto-dispatch the next epic subtask from main.
-/// Called inside `spawn_blocking` after the rebase/PR work completes.
 fn auto_dispatch_next(
     next_task: Option<Task>,
     db: &dyn db::TaskStore,
@@ -994,9 +662,7 @@ fn auto_dispatch_next(
         DispatchMode::Brainstorm => {
             dispatch::brainstorm_chained_agent(&next_task, runner, epic_ctx.as_ref())
         }
-        DispatchMode::Plan => {
-            dispatch::plan_chained_agent(&next_task, runner, epic_ctx.as_ref())
-        }
+        DispatchMode::Plan => dispatch::plan_chained_agent(&next_task, runner, epic_ctx.as_ref()),
     };
 
     match result {
@@ -1012,10 +678,7 @@ fn auto_dispatch_next(
                 );
             }
             if let Some(epic_id) = next_task.epic_id {
-                // Best-effort: epic status is derived data
-                if let Err(e) = db.recalculate_epic_status(epic_id) {
-                    tracing::warn!(epic_id = epic_id.0, "auto-dispatch: failed to recalculate epic status: {e}");
-                }
+                let _ = db.recalculate_epic_status(epic_id);
             }
         }
         Err(e) => {
@@ -1039,17 +702,10 @@ pub(super) fn handle_report_usage(
         "MCP report_usage"
     );
 
-    match state.db.get_task(TaskId(parsed.task_id)) {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return JsonRpcResponse::err(id, -32602, format!("Task {} not found", parsed.task_id))
-        }
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("Database error: {e}")),
-    }
-
-    match state.db.report_usage(
-        TaskId(parsed.task_id),
-        &UsageReport {
+    let svc = TaskService::new(state.db.clone());
+    match svc.report_usage(
+        parsed.task_id,
+        &crate::models::UsageReport {
             cost_usd: parsed.cost_usd,
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
@@ -1064,6 +720,6 @@ pub(super) fn handle_report_usage(
                 json!({"content": [{"type": "text", "text": format!("Usage recorded for task {}", parsed.task_id)}]}),
             )
         }
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("Failed to record usage: {e}")),
+        Err(e) => service_err_to_response(id, e),
     }
 }

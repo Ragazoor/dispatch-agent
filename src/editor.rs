@@ -93,8 +93,8 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
 mod tests {
     use super::*;
     use crate::models::{EpicId, TaskId, TaskStatus};
-    use proptest::prelude::*;
     use chrono::Utc;
+    use proptest::prelude::*;
 
     fn make_epic(title: &str, description: &str, repo_path: &str) -> Epic {
         Epic {

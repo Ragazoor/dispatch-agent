@@ -60,6 +60,7 @@ A task with a plan always dispatches directly regardless of tag. Tags are select
 | `src/tui/types.rs` | `Message`, `Command`, `ViewMode`, `InputMode`, `AgentTracking` enums and structs |
 | `src/tui/tests.rs` | TUI unit tests |
 | `src/models.rs` | Domain types (`Task`, `Epic`, `TaskStatus`, `SubStatus`, `TaskTag`), `DispatchMode::for_task()` tag routing |
+| `src/service.rs` | Domain service layer (`TaskService`, `EpicService`): business logic (validation, patch building, epic recalculation) decoupled from MCP/HTTP |
 | `src/db.rs` | SQLite storage (`TaskStore` trait, `Database` impl), `TaskPatch` builder, versioned migrations |
 | `src/dispatch.rs` | Worktree creation, tmux session management, agent lifecycle (dispatch/brainstorm/plan/resume/review) |
 | `src/process.rs` | `ProcessRunner` trait + `RealProcessRunner` / `MockProcessRunner` for testable shell execution |
@@ -70,8 +71,8 @@ A task with a plan always dispatches directly regardless of tag. Tags are select
 | `src/setup.rs` | First-run setup: MCP config merging, hook script installation |
 | `src/mcp/mod.rs` | MCP server bootstrap (Axum router), `McpState`, `McpEvent` notification enum |
 | `src/mcp/handlers/dispatch.rs` | JSON-RPC entry point (`handle_mcp`), tool definitions, method routing |
-| `src/mcp/handlers/tasks.rs` | Task tool handlers: `update_task`, `get_task`, `create_task`, `list_tasks`, `claim_task`, `wrap_up`, `send_message`, `report_usage` |
-| `src/mcp/handlers/epics.rs` | Epic tool handlers: `create_epic`, `get_epic`, `list_epics`, `update_epic` |
+| `src/mcp/handlers/tasks.rs` | Task tool handlers (thin wrappers): parse JSON-RPC args → call `TaskService` → format response |
+| `src/mcp/handlers/epics.rs` | Epic tool handlers (thin wrappers): parse JSON-RPC args → call `EpicService` → format response |
 | `src/mcp/handlers/types.rs` | JSON-RPC request/response types, flexible integer deserializer |
 | `src/mcp/handlers/tests.rs` | MCP handler integration tests |
 

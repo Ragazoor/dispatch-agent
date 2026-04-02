@@ -215,15 +215,15 @@ impl SubStatus {
     /// Sort priority for column grouping (lower = more urgent = top of column).
     pub fn column_priority(self) -> u8 {
         match self {
-            SubStatus::Conflict  => 0,
-            SubStatus::Crashed   => 1,
-            SubStatus::Stale     => 2,
+            SubStatus::Conflict => 0,
+            SubStatus::Crashed => 1,
+            SubStatus::Stale => 2,
             SubStatus::NeedsInput => 3,
             SubStatus::ChangesRequested => 4,
-            SubStatus::Active    => 5,
-            SubStatus::AwaitingReview => 5,  // same slot as Active
-            SubStatus::None      => 5,
-            SubStatus::Approved  => 6,
+            SubStatus::Active => 5,
+            SubStatus::AwaitingReview => 5, // same slot as Active
+            SubStatus::None => 5,
+            SubStatus::Approved => 6,
         }
     }
 
@@ -288,14 +288,46 @@ pub struct VisualColumn {
 impl VisualColumn {
     pub const COUNT: usize = 8;
     pub const ALL: &'static [VisualColumn] = &[
-        VisualColumn { label: "Backlog",    parent_status: TaskStatus::Backlog,  sub_statuses: &[SubStatus::None] },
-        VisualColumn { label: "Active",     parent_status: TaskStatus::Running,  sub_statuses: &[SubStatus::Active] },
-        VisualColumn { label: "Blocked",    parent_status: TaskStatus::Running,  sub_statuses: &[SubStatus::NeedsInput] },
-        VisualColumn { label: "Stale",      parent_status: TaskStatus::Running,  sub_statuses: &[SubStatus::Stale, SubStatus::Crashed, SubStatus::Conflict] },
-        VisualColumn { label: "PR Created", parent_status: TaskStatus::Review,   sub_statuses: &[SubStatus::AwaitingReview] },
-        VisualColumn { label: "Revise",     parent_status: TaskStatus::Review,   sub_statuses: &[SubStatus::ChangesRequested] },
-        VisualColumn { label: "Approved",   parent_status: TaskStatus::Review,   sub_statuses: &[SubStatus::Approved] },
-        VisualColumn { label: "Done",       parent_status: TaskStatus::Done,     sub_statuses: &[SubStatus::None] },
+        VisualColumn {
+            label: "Backlog",
+            parent_status: TaskStatus::Backlog,
+            sub_statuses: &[SubStatus::None],
+        },
+        VisualColumn {
+            label: "Active",
+            parent_status: TaskStatus::Running,
+            sub_statuses: &[SubStatus::Active],
+        },
+        VisualColumn {
+            label: "Blocked",
+            parent_status: TaskStatus::Running,
+            sub_statuses: &[SubStatus::NeedsInput],
+        },
+        VisualColumn {
+            label: "Stale",
+            parent_status: TaskStatus::Running,
+            sub_statuses: &[SubStatus::Stale, SubStatus::Crashed, SubStatus::Conflict],
+        },
+        VisualColumn {
+            label: "PR Created",
+            parent_status: TaskStatus::Review,
+            sub_statuses: &[SubStatus::AwaitingReview],
+        },
+        VisualColumn {
+            label: "Revise",
+            parent_status: TaskStatus::Review,
+            sub_statuses: &[SubStatus::ChangesRequested],
+        },
+        VisualColumn {
+            label: "Approved",
+            parent_status: TaskStatus::Review,
+            sub_statuses: &[SubStatus::Approved],
+        },
+        VisualColumn {
+            label: "Done",
+            parent_status: TaskStatus::Done,
+            sub_statuses: &[SubStatus::None],
+        },
     ];
 
     pub fn contains(&self, sub_status: SubStatus) -> bool {
@@ -303,11 +335,17 @@ impl VisualColumn {
     }
 
     pub fn parent_group_start(status: TaskStatus) -> usize {
-        Self::ALL.iter().position(|vc| vc.parent_status == status).unwrap_or(0)
+        Self::ALL
+            .iter()
+            .position(|vc| vc.parent_status == status)
+            .unwrap_or(0)
     }
 
     pub fn parent_group_span(status: TaskStatus) -> usize {
-        Self::ALL.iter().filter(|vc| vc.parent_status == status).count()
+        Self::ALL
+            .iter()
+            .filter(|vc| vc.parent_status == status)
+            .count()
     }
 }
 
@@ -397,7 +435,7 @@ impl EpicSubstatus {
     /// so that epics and tasks share the same section headers.
     pub fn column_priority(&self) -> u8 {
         match self {
-            Self::Blocked(_) => 3,  // NeedsInput equivalent
+            Self::Blocked(_) => 3, // NeedsInput equivalent
             Self::Active => 5,     // Active equivalent
             Self::WrappingUp => 6, // Approved equivalent
             Self::InReview => 5,   // AwaitingReview equivalent
@@ -436,13 +474,19 @@ pub fn epic_substatus(
             }
         }
         TaskStatus::Running => {
-            let blocked_count = subtasks.iter().filter(|t| {
-                t.status == TaskStatus::Running
-                    && matches!(
-                        t.sub_status,
-                        SubStatus::NeedsInput | SubStatus::Stale | SubStatus::Crashed | SubStatus::Conflict
-                    )
-            }).count();
+            let blocked_count = subtasks
+                .iter()
+                .filter(|t| {
+                    t.status == TaskStatus::Running
+                        && matches!(
+                            t.sub_status,
+                            SubStatus::NeedsInput
+                                | SubStatus::Stale
+                                | SubStatus::Crashed
+                                | SubStatus::Conflict
+                        )
+                })
+                .count();
             if blocked_count > 0 {
                 EpicSubstatus::Blocked(blocked_count)
             } else {
@@ -558,10 +602,10 @@ pub enum CiStatus {
 impl CiStatus {
     pub fn symbol(&self) -> &'static str {
         match self {
-            Self::Pending => "\u{23f3}",  // ⏳
-            Self::Success => "\u{2713}",  // ✓
-            Self::Failure => "\u{2717}",  // ✗
-            Self::None => "\u{00b7}",     // ·
+            Self::Pending => "\u{23f3}", // ⏳
+            Self::Success => "\u{2713}", // ✓
+            Self::Failure => "\u{2717}", // ✗
+            Self::None => "\u{00b7}",    // ·
         }
     }
 
@@ -852,9 +896,9 @@ const WEEKS_THRESHOLD_DAYS: i64 = 14;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Staleness {
-    Fresh,  // < 3 days
-    Aging,  // 3-7 days
-    Stale,  // > 7 days
+    Fresh, // < 3 days
+    Aging, // 3-7 days
+    Stale, // > 7 days
 }
 
 impl Staleness {
@@ -959,7 +1003,10 @@ mod tests {
     fn status_invalid_from_str() {
         assert!(TaskStatus::parse("").is_none());
         assert!(TaskStatus::parse("unknown").is_none());
-        assert!(TaskStatus::parse("Backlog").is_none(), "should be case-sensitive");
+        assert!(
+            TaskStatus::parse("Backlog").is_none(),
+            "should be case-sensitive"
+        );
     }
 
     #[test]
@@ -972,7 +1019,11 @@ mod tests {
         assert_eq!(TaskStatus::Backlog.next(), TaskStatus::Running);
         assert_eq!(TaskStatus::Running.next(), TaskStatus::Review);
         assert_eq!(TaskStatus::Review.next(), TaskStatus::Done);
-        assert_eq!(TaskStatus::Done.next(), TaskStatus::Done, "Done.next() should stay Done");
+        assert_eq!(
+            TaskStatus::Done.next(),
+            TaskStatus::Done,
+            "Done.next() should stay Done"
+        );
     }
 
     #[test]
@@ -980,7 +1031,11 @@ mod tests {
         assert_eq!(TaskStatus::Done.prev(), TaskStatus::Review);
         assert_eq!(TaskStatus::Review.prev(), TaskStatus::Running);
         assert_eq!(TaskStatus::Running.prev(), TaskStatus::Backlog);
-        assert_eq!(TaskStatus::Backlog.prev(), TaskStatus::Backlog, "Backlog.prev() should stay Backlog");
+        assert_eq!(
+            TaskStatus::Backlog.prev(),
+            TaskStatus::Backlog,
+            "Backlog.prev() should stay Backlog"
+        );
     }
 
     #[test]
@@ -1004,7 +1059,9 @@ mod tests {
     fn substatus_roundtrip() {
         for &sub in SubStatus::ALL {
             let s = sub.as_str();
-            let parsed: SubStatus = s.parse().unwrap_or_else(|e| panic!("roundtrip failed for {s}: {e}"));
+            let parsed: SubStatus = s
+                .parse()
+                .unwrap_or_else(|e| panic!("roundtrip failed for {s}: {e}"));
             assert_eq!(sub, parsed, "roundtrip failed for {s}");
         }
     }
@@ -1026,7 +1083,10 @@ mod tests {
     fn substatus_from_str_invalid() {
         assert!("bogus".parse::<SubStatus>().is_err());
         assert!("".parse::<SubStatus>().is_err());
-        assert!("None".parse::<SubStatus>().is_err(), "should be case-sensitive");
+        assert!(
+            "None".parse::<SubStatus>().is_err(),
+            "should be case-sensitive"
+        );
     }
 
     #[test]
@@ -1070,10 +1130,19 @@ mod tests {
     #[test]
     fn substatus_default_for() {
         assert_eq!(SubStatus::default_for(TaskStatus::Backlog), SubStatus::None);
-        assert_eq!(SubStatus::default_for(TaskStatus::Running), SubStatus::Active);
-        assert_eq!(SubStatus::default_for(TaskStatus::Review), SubStatus::AwaitingReview);
+        assert_eq!(
+            SubStatus::default_for(TaskStatus::Running),
+            SubStatus::Active
+        );
+        assert_eq!(
+            SubStatus::default_for(TaskStatus::Review),
+            SubStatus::AwaitingReview
+        );
         assert_eq!(SubStatus::default_for(TaskStatus::Done), SubStatus::None);
-        assert_eq!(SubStatus::default_for(TaskStatus::Archived), SubStatus::None);
+        assert_eq!(
+            SubStatus::default_for(TaskStatus::Archived),
+            SubStatus::None
+        );
     }
 
     #[test]
@@ -1498,9 +1567,15 @@ mod tests {
 
     fn make_epic_for_status(status: TaskStatus) -> Epic {
         Epic {
-            id: EpicId(1), title: String::new(), description: String::new(),
-            repo_path: String::new(), status, plan: None, sort_order: None,
-            created_at: Utc::now(), updated_at: Utc::now(),
+            id: EpicId(1),
+            title: String::new(),
+            description: String::new(),
+            repo_path: String::new(),
+            status,
+            plan: None,
+            sort_order: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         }
     }
 
@@ -1536,25 +1611,49 @@ mod tests {
 
     #[test]
     fn review_decision_from_column_index() {
-        assert_eq!(ReviewDecision::from_column_index(0), Some(ReviewDecision::ReviewRequired));
-        assert_eq!(ReviewDecision::from_column_index(1), Some(ReviewDecision::WaitingForResponse));
-        assert_eq!(ReviewDecision::from_column_index(2), Some(ReviewDecision::ChangesRequested));
-        assert_eq!(ReviewDecision::from_column_index(3), Some(ReviewDecision::Approved));
+        assert_eq!(
+            ReviewDecision::from_column_index(0),
+            Some(ReviewDecision::ReviewRequired)
+        );
+        assert_eq!(
+            ReviewDecision::from_column_index(1),
+            Some(ReviewDecision::WaitingForResponse)
+        );
+        assert_eq!(
+            ReviewDecision::from_column_index(2),
+            Some(ReviewDecision::ChangesRequested)
+        );
+        assert_eq!(
+            ReviewDecision::from_column_index(3),
+            Some(ReviewDecision::Approved)
+        );
         assert_eq!(ReviewDecision::from_column_index(4), None);
     }
 
     #[test]
     fn review_decision_as_str() {
         assert_eq!(ReviewDecision::ReviewRequired.as_str(), "Needs Review");
-        assert_eq!(ReviewDecision::ChangesRequested.as_str(), "Changes Requested");
+        assert_eq!(
+            ReviewDecision::ChangesRequested.as_str(),
+            "Changes Requested"
+        );
         assert_eq!(ReviewDecision::Approved.as_str(), "Approved");
     }
 
     #[test]
     fn review_decision_parse() {
-        assert_eq!(ReviewDecision::parse("REVIEW_REQUIRED"), Some(ReviewDecision::ReviewRequired));
-        assert_eq!(ReviewDecision::parse("CHANGES_REQUESTED"), Some(ReviewDecision::ChangesRequested));
-        assert_eq!(ReviewDecision::parse("APPROVED"), Some(ReviewDecision::Approved));
+        assert_eq!(
+            ReviewDecision::parse("REVIEW_REQUIRED"),
+            Some(ReviewDecision::ReviewRequired)
+        );
+        assert_eq!(
+            ReviewDecision::parse("CHANGES_REQUESTED"),
+            Some(ReviewDecision::ChangesRequested)
+        );
+        assert_eq!(
+            ReviewDecision::parse("APPROVED"),
+            Some(ReviewDecision::Approved)
+        );
         assert_eq!(ReviewDecision::parse("bogus"), None);
         assert_eq!(ReviewDecision::parse(""), None);
     }
@@ -1563,17 +1662,26 @@ mod tests {
 
     #[test]
     fn pr_number_from_standard_url() {
-        assert_eq!(pr_number_from_url("https://github.com/org/repo/pull/42"), Some(42));
+        assert_eq!(
+            pr_number_from_url("https://github.com/org/repo/pull/42"),
+            Some(42)
+        );
     }
 
     #[test]
     fn pr_number_from_url_with_trailing_slash() {
-        assert_eq!(pr_number_from_url("https://github.com/org/repo/pull/42/"), Some(42));
+        assert_eq!(
+            pr_number_from_url("https://github.com/org/repo/pull/42/"),
+            Some(42)
+        );
     }
 
     #[test]
     fn pr_number_from_url_with_query_params() {
-        assert_eq!(pr_number_from_url("https://github.com/org/repo/pull/42?diff=split"), Some(42));
+        assert_eq!(
+            pr_number_from_url("https://github.com/org/repo/pull/42?diff=split"),
+            Some(42)
+        );
     }
 
     #[test]
@@ -1588,7 +1696,10 @@ mod tests {
 
     #[test]
     fn pr_number_from_url_with_fragment() {
-        assert_eq!(pr_number_from_url("https://github.com/org/repo/pull/42#issuecomment-123"), Some(42));
+        assert_eq!(
+            pr_number_from_url("https://github.com/org/repo/pull/42#issuecomment-123"),
+            Some(42)
+        );
     }
 
     #[test]
@@ -1639,82 +1750,174 @@ mod tests {
 
     #[test]
     fn epic_substatus_unplanned() {
-        let epic = Epic { plan: None, status: TaskStatus::Backlog, ..test_epic() };
+        let epic = Epic {
+            plan: None,
+            status: TaskStatus::Backlog,
+            ..test_epic()
+        };
         assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::Unplanned);
     }
 
     #[test]
     fn epic_substatus_planned() {
-        let epic = Epic { plan: Some("plan.md".into()), status: TaskStatus::Backlog, ..test_epic() };
+        let epic = Epic {
+            plan: Some("plan.md".into()),
+            status: TaskStatus::Backlog,
+            ..test_epic()
+        };
         assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::Planned);
     }
 
     #[test]
     fn epic_substatus_active_with_backlog() {
-        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let epic = Epic {
+            status: TaskStatus::Running,
+            ..test_epic()
+        };
         let subtasks = vec![
-            Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
-            Task { status: TaskStatus::Backlog, ..test_task() },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::Active,
+                ..test_task()
+            },
+            Task {
+                status: TaskStatus::Backlog,
+                ..test_task()
+            },
         ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Active);
+        assert_eq!(
+            epic_substatus(&epic, &subtasks, None),
+            EpicSubstatus::Active
+        );
     }
 
     #[test]
     fn epic_substatus_active_all_running() {
-        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let epic = Epic {
+            status: TaskStatus::Running,
+            ..test_epic()
+        };
         let subtasks = vec![
-            Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
-            Task { status: TaskStatus::Done, sub_status: SubStatus::None, ..test_task() },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::Active,
+                ..test_task()
+            },
+            Task {
+                status: TaskStatus::Done,
+                sub_status: SubStatus::None,
+                ..test_task()
+            },
         ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Active);
+        assert_eq!(
+            epic_substatus(&epic, &subtasks, None),
+            EpicSubstatus::Active
+        );
     }
 
     #[test]
     fn epic_substatus_blocked_stale() {
-        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let epic = Epic {
+            status: TaskStatus::Running,
+            ..test_epic()
+        };
         let subtasks = vec![
-            Task { status: TaskStatus::Running, sub_status: SubStatus::Stale, ..test_task() },
-            Task { status: TaskStatus::Backlog, ..test_task() },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::Stale,
+                ..test_task()
+            },
+            Task {
+                status: TaskStatus::Backlog,
+                ..test_task()
+            },
         ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Blocked(1));
+        assert_eq!(
+            epic_substatus(&epic, &subtasks, None),
+            EpicSubstatus::Blocked(1)
+        );
     }
 
     #[test]
     fn epic_substatus_blocked_needs_input() {
-        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let epic = Epic {
+            status: TaskStatus::Running,
+            ..test_epic()
+        };
         let subtasks = vec![
-            Task { status: TaskStatus::Running, sub_status: SubStatus::NeedsInput, ..test_task() },
-            Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::NeedsInput,
+                ..test_task()
+            },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::Active,
+                ..test_task()
+            },
         ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Blocked(1));
+        assert_eq!(
+            epic_substatus(&epic, &subtasks, None),
+            EpicSubstatus::Blocked(1)
+        );
     }
 
     #[test]
     fn epic_substatus_blocked_count() {
-        let epic = Epic { status: TaskStatus::Running, ..test_epic() };
+        let epic = Epic {
+            status: TaskStatus::Running,
+            ..test_epic()
+        };
         let subtasks = vec![
-            Task { status: TaskStatus::Running, sub_status: SubStatus::NeedsInput, ..test_task() },
-            Task { status: TaskStatus::Running, sub_status: SubStatus::Stale, ..test_task() },
-            Task { status: TaskStatus::Running, sub_status: SubStatus::Active, ..test_task() },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::NeedsInput,
+                ..test_task()
+            },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::Stale,
+                ..test_task()
+            },
+            Task {
+                status: TaskStatus::Running,
+                sub_status: SubStatus::Active,
+                ..test_task()
+            },
         ];
-        assert_eq!(epic_substatus(&epic, &subtasks, None), EpicSubstatus::Blocked(2));
+        assert_eq!(
+            epic_substatus(&epic, &subtasks, None),
+            EpicSubstatus::Blocked(2)
+        );
     }
 
     #[test]
     fn epic_substatus_in_review() {
-        let epic = Epic { status: TaskStatus::Review, ..test_epic() };
+        let epic = Epic {
+            status: TaskStatus::Review,
+            ..test_epic()
+        };
         assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::InReview);
     }
 
     #[test]
     fn epic_substatus_wrapping_up() {
-        let epic = Epic { status: TaskStatus::Review, ..test_epic() };
-        assert_eq!(epic_substatus(&epic, &[], Some(EpicId(1))), EpicSubstatus::WrappingUp);
+        let epic = Epic {
+            status: TaskStatus::Review,
+            ..test_epic()
+        };
+        assert_eq!(
+            epic_substatus(&epic, &[], Some(EpicId(1))),
+            EpicSubstatus::WrappingUp
+        );
     }
 
     #[test]
     fn epic_substatus_done() {
-        let epic = Epic { status: TaskStatus::Done, ..test_epic() };
+        let epic = Epic {
+            status: TaskStatus::Done,
+            ..test_epic()
+        };
         assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::Done);
     }
 

@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use ratatui::widgets::ListState;
 
-use crate::models::{Epic, EpicId, ReviewDecision, SubStatus, Task, TaskId, TaskStatus, TaskTag, TaskUsage};
+use crate::models::{
+    Epic, EpicId, ReviewDecision, SubStatus, Task, TaskId, TaskStatus, TaskTag, TaskUsage,
+};
 
 // ---------------------------------------------------------------------------
 // MoveDirection
@@ -99,24 +101,44 @@ pub enum Message {
     Quit,
     NavigateColumn(isize),
     NavigateRow(isize),
-    MoveTask { id: TaskId, direction: MoveDirection },
-    ReorderItem(isize),  // +1 = down, -1 = up
+    MoveTask {
+        id: TaskId,
+        direction: MoveDirection,
+    },
+    ReorderItem(isize), // +1 = down, -1 = up
     DispatchTask(TaskId),
     BrainstormTask(TaskId),
     PlanTask(TaskId),
-    Dispatched { id: TaskId, worktree: String, tmux_window: String, switch_focus: bool },
-    TaskCreated { task: Task },
+    Dispatched {
+        id: TaskId,
+        worktree: String,
+        tmux_window: String,
+        switch_focus: bool,
+    },
+    TaskCreated {
+        task: Task,
+    },
     DeleteTask(TaskId),
     ToggleDetail,
-    TmuxOutput { id: TaskId, output: String, activity_ts: u64 },
+    TmuxOutput {
+        id: TaskId,
+        output: String,
+        activity_ts: u64,
+    },
     WindowGone(TaskId),
     RefreshTasks(Vec<Task>),
     ResumeTask(TaskId),
-    Resumed { id: TaskId, tmux_window: String },
+    Resumed {
+        id: TaskId,
+        tmux_window: String,
+    },
     Error(String),
     TaskEdited(TaskEdit),
     RepoPathsUpdated(Vec<String>),
-    QuickDispatch { repo_path: String, epic_id: Option<EpicId> },
+    QuickDispatch {
+        repo_path: String,
+        epic_id: Option<EpicId>,
+    },
     StaleAgent(TaskId),
     AgentCrashed(TaskId),
     KillAndRetry(TaskId),
@@ -128,7 +150,10 @@ pub enum Message {
     ToggleSelectEpic(EpicId),
     ClearSelection,
     SelectAllColumn,
-    BatchMoveTasks { ids: Vec<TaskId>, direction: MoveDirection },
+    BatchMoveTasks {
+        ids: Vec<TaskId>,
+        direction: MoveDirection,
+    },
     BatchArchiveTasks(Vec<TaskId>),
     BatchArchiveEpics(Vec<EpicId>),
     // Input routing messages
@@ -170,12 +195,25 @@ pub enum Message {
     SubmitEpicRepoPath(String),
     // Finish (rebase + cleanup)
     FinishComplete(TaskId),
-    FinishFailed { id: TaskId, error: String, is_conflict: bool },
+    FinishFailed {
+        id: TaskId,
+        error: String,
+        is_conflict: bool,
+    },
     // PR flow
-    PrCreated { id: TaskId, pr_url: String },
-    PrFailed { id: TaskId, error: String },
+    PrCreated {
+        id: TaskId,
+        pr_url: String,
+    },
+    PrFailed {
+        id: TaskId,
+        error: String,
+    },
     PrMerged(TaskId),
-    PrReviewState { id: TaskId, review_decision: Option<crate::dispatch::PrReviewDecision> },
+    PrReviewState {
+        id: TaskId,
+        review_decision: Option<crate::dispatch::PrReviewDecision>,
+    },
     // Done confirmation (no cleanup, just status change)
     ConfirmDone,
     CancelDone,
@@ -194,8 +232,14 @@ pub enum Message {
     ToggleReviewDetail,
     RefreshReviewPrs,
     DispatchReviewAgent(ReviewAgentRequest),
-    ReviewAgentDispatched { repo: String, number: i64, tmux_window: String },
-    ReviewAgentFailed { error: String },
+    ReviewAgentDispatched {
+        repo: String,
+        number: i64,
+        tmux_window: String,
+    },
+    ReviewAgentFailed {
+        error: String,
+    },
     // Repo filter
     StartRepoFilter,
     CloseRepoFilter,
@@ -257,12 +301,26 @@ pub enum Message {
 #[derive(Debug, Clone)]
 pub enum Command {
     PersistTask(Task),
-    InsertTask { draft: TaskDraft, epic_id: Option<EpicId> },
+    InsertTask {
+        draft: TaskDraft,
+        epic_id: Option<EpicId>,
+    },
     DeleteTask(TaskId),
-    Dispatch { task: Task },
-    Brainstorm { task: Task },
-    Plan { task: Task },
-    Cleanup { id: TaskId, repo_path: String, worktree: String, tmux_window: Option<String> },
+    Dispatch {
+        task: Task,
+    },
+    Brainstorm {
+        task: Task,
+    },
+    Plan {
+        task: Task,
+    },
+    Cleanup {
+        id: TaskId,
+        repo_path: String,
+        worktree: String,
+        tmux_window: Option<String>,
+    },
     Finish {
         id: TaskId,
         repo_path: String,
@@ -270,25 +328,57 @@ pub enum Command {
         worktree: String,
         tmux_window: Option<String>,
     },
-    CaptureTmux { id: TaskId, window: String },
-    Resume { task: Task },
-    JumpToTmux { window: String },
-    KillTmuxWindow { window: String },
+    CaptureTmux {
+        id: TaskId,
+        window: String,
+    },
+    Resume {
+        task: Task,
+    },
+    JumpToTmux {
+        window: String,
+    },
+    KillTmuxWindow {
+        window: String,
+    },
     EditTaskInEditor(Task),
     SaveRepoPath(String),
     RefreshFromDb,
-    QuickDispatch { draft: TaskDraft, epic_id: Option<EpicId> },
+    QuickDispatch {
+        draft: TaskDraft,
+        epic_id: Option<EpicId>,
+    },
     // Epic commands
-    DispatchEpic { epic: Epic },
+    DispatchEpic {
+        epic: Epic,
+    },
     InsertEpic(EpicDraft),
     EditEpicInEditor(Epic),
     DeleteEpic(EpicId),
-    PersistEpic { id: EpicId, status: Option<TaskStatus>, sort_order: Option<i64> },
+    PersistEpic {
+        id: EpicId,
+        status: Option<TaskStatus>,
+        sort_order: Option<i64>,
+    },
     RefreshEpicsFromDb,
-    SendNotification { title: String, body: String, urgent: bool },
-    PersistSetting { key: String, value: bool },
-    PersistStringSetting { key: String, value: String },
-    PersistFilterPreset { name: String, repo_paths: String, mode: RepoFilterMode },
+    SendNotification {
+        title: String,
+        body: String,
+        urgent: bool,
+    },
+    PersistSetting {
+        key: String,
+        value: bool,
+    },
+    PersistStringSetting {
+        key: String,
+        value: String,
+    },
+    PersistFilterPreset {
+        name: String,
+        repo_paths: String,
+        mode: RepoFilterMode,
+    },
     DeleteFilterPreset(String),
     CreatePr {
         id: TaskId,
@@ -692,7 +782,11 @@ impl BoardSelection {
     /// Returns `None` when the cursor is on the select-all toggle (header),
     /// since no list item should be selected in that case.
     pub fn list_state_index(&self, col: usize) -> Option<usize> {
-        if self.on_select_all { None } else { Some(self.selected_row[col]) }
+        if self.on_select_all {
+            None
+        } else {
+            Some(self.selected_row[col])
+        }
     }
 }
 

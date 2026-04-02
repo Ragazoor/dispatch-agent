@@ -1,6 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent};
 
-use super::{App, ColumnItem, Command, InputMode, Message, MoveDirection, ReviewAgentRequest, ReviewBoardMode, ViewMode};
+use super::{
+    App, ColumnItem, Command, InputMode, Message, MoveDirection, ReviewAgentRequest,
+    ReviewBoardMode, ViewMode,
+};
 use crate::models::{DispatchMode, ReviewDecision, SubStatus, TaskId, TaskStatus, TaskTag};
 
 impl App {
@@ -51,9 +54,7 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Tab => {
-                self.update(Message::SwitchToReviewBoard)
-            }
+            KeyCode::Tab => self.update(Message::SwitchToReviewBoard),
 
             KeyCode::Char('q') => {
                 if matches!(self.view_mode, ViewMode::Epic { .. }) {
@@ -75,19 +76,17 @@ impl App {
             KeyCode::Char('E') => self.update(Message::StartNewEpic),
             KeyCode::Char('d') => self.handle_key_dispatch(),
             KeyCode::Char('f') => self.update(Message::StartRepoFilter),
-            KeyCode::Char('W') => {
-                match self.selected_column_item() {
-                    Some(ColumnItem::Task(task)) => {
-                        let id = task.id;
-                        self.update(Message::StartWrapUp(id))
-                    }
-                    Some(ColumnItem::Epic(epic)) => {
-                        let id = epic.id;
-                        self.update(Message::StartEpicWrapUp(id))
-                    }
-                    None => vec![],
+            KeyCode::Char('W') => match self.selected_column_item() {
+                Some(ColumnItem::Task(task)) => {
+                    let id = task.id;
+                    self.update(Message::StartWrapUp(id))
                 }
-            }
+                Some(ColumnItem::Epic(epic)) => {
+                    let id = epic.id;
+                    self.update(Message::StartEpicWrapUp(id))
+                }
+                None => vec![],
+            },
             KeyCode::Char('m') => {
                 if let Some(ColumnItem::Epic(epic)) = self.selected_column_item() {
                     let id = epic.id;
@@ -106,13 +105,17 @@ impl App {
             KeyCode::Char('g') => {
                 if let Some(task) = self.selected_task() {
                     if let Some(window) = &task.tmux_window {
-                        vec![Command::JumpToTmux { window: window.clone() }]
+                        vec![Command::JumpToTmux {
+                            window: window.clone(),
+                        }]
                     } else {
                         self.update(Message::StatusInfo("No active session".to_string()))
                     }
                 } else if let Some(ColumnItem::Epic(epic)) = self.selected_column_item() {
                     // Prefer blocked Running subtasks, then Review, by sort_order
-                    let window = self.tasks.iter()
+                    let window = self
+                        .tasks
+                        .iter()
                         .filter(|t| {
                             t.epic_id == Some(epic.id)
                                 && t.status == TaskStatus::Running
@@ -121,7 +124,8 @@ impl App {
                         })
                         .min_by_key(|t| (t.sort_order.unwrap_or(t.id.0), t.id.0))
                         .or_else(|| {
-                            self.tasks.iter()
+                            self.tasks
+                                .iter()
                                 .filter(|t| {
                                     t.epic_id == Some(epic.id)
                                         && t.status == TaskStatus::Review
@@ -157,19 +161,17 @@ impl App {
 
             KeyCode::Char('a') => self.update(Message::SelectAllColumn),
 
-            KeyCode::Char(' ') => {
-                match self.selected_column_item() {
-                    Some(ColumnItem::Task(task)) => {
-                        let id = task.id;
-                        self.update(Message::ToggleSelect(id))
-                    }
-                    Some(ColumnItem::Epic(epic)) => {
-                        let id = epic.id;
-                        self.update(Message::ToggleSelectEpic(id))
-                    }
-                    None => vec![],
+            KeyCode::Char(' ') => match self.selected_column_item() {
+                Some(ColumnItem::Task(task)) => {
+                    let id = task.id;
+                    self.update(Message::ToggleSelect(id))
                 }
-            }
+                Some(ColumnItem::Epic(epic)) => {
+                    let id = epic.id;
+                    self.update(Message::ToggleSelectEpic(id))
+                }
+                None => vec![],
+            },
 
             KeyCode::Enter => {
                 if self.selection().on_select_all {
@@ -178,28 +180,26 @@ impl App {
                 self.update(Message::ToggleDetail)
             }
 
-            KeyCode::Char('e') => {
-                match self.selected_column_item() {
-                    Some(ColumnItem::Task(task)) => {
-                        let title = super::truncate_title(&task.title, 30);
-                        self.input.mode = InputMode::ConfirmEditTask(task.id);
-                        self.set_status(format!("Edit {title}? (y/n)"));
+            KeyCode::Char('e') => match self.selected_column_item() {
+                Some(ColumnItem::Task(task)) => {
+                    let title = super::truncate_title(&task.title, 30);
+                    self.input.mode = InputMode::ConfirmEditTask(task.id);
+                    self.set_status(format!("Edit {title}? (y/n)"));
+                    vec![]
+                }
+                Some(ColumnItem::Epic(epic)) => {
+                    let id = epic.id;
+                    self.update(Message::EnterEpic(id))
+                }
+                None => {
+                    if let ViewMode::Epic { epic_id, .. } = &self.view_mode {
+                        let id = *epic_id;
+                        self.update(Message::EditEpic(id))
+                    } else {
                         vec![]
                     }
-                    Some(ColumnItem::Epic(epic)) => {
-                        let id = epic.id;
-                        self.update(Message::EnterEpic(id))
-                    }
-                    None => {
-                        if let ViewMode::Epic { epic_id, .. } = &self.view_mode {
-                            let id = *epic_id;
-                            self.update(Message::EditEpic(id))
-                        } else {
-                            vec![]
-                        }
-                    }
                 }
-            }
+            },
 
             KeyCode::Char('x') => {
                 if self.has_selection() {
@@ -209,9 +209,7 @@ impl App {
                     vec![]
                 } else {
                     match self.selected_column_item() {
-                        Some(ColumnItem::Epic(_)) => {
-                            self.update(Message::ConfirmArchiveEpic)
-                        }
+                        Some(ColumnItem::Epic(_)) => self.update(Message::ConfirmArchiveEpic),
                         _ => {
                             if self.selected_task().is_some() {
                                 self.input.mode = InputMode::ConfirmArchive;
@@ -352,16 +350,17 @@ impl App {
                             self.update(Message::ResumeTask(id))
                         } else {
                             self.update(Message::StatusInfo(
-                                "No worktree to resume, move to Backlog and re-dispatch".to_string(),
+                                "No worktree to resume, move to Backlog and re-dispatch"
+                                    .to_string(),
                             ))
                         }
                     }
-                    TaskStatus::Done => self.update(Message::StatusInfo(
-                        "Task is done".to_string(),
-                    )),
-                    TaskStatus::Archived => self.update(Message::StatusInfo(
-                        "Task is archived".to_string(),
-                    )),
+                    TaskStatus::Done => {
+                        self.update(Message::StatusInfo("Task is done".to_string()))
+                    }
+                    TaskStatus::Archived => {
+                        self.update(Message::StatusInfo("Task is archived".to_string()))
+                    }
                 }
             }
             None => {
@@ -401,8 +400,12 @@ impl App {
         );
         if is_repo_mode && self.input.buffer.is_empty() {
             match key.code {
-                KeyCode::Char('j') | KeyCode::Down => return self.update(Message::MoveRepoCursor(1)),
-                KeyCode::Char('k') | KeyCode::Up => return self.update(Message::MoveRepoCursor(-1)),
+                KeyCode::Char('j') | KeyCode::Down => {
+                    return self.update(Message::MoveRepoCursor(1))
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    return self.update(Message::MoveRepoCursor(-1))
+                }
                 _ => {}
             }
         }
@@ -414,7 +417,9 @@ impl App {
                     let idx = self.input.repo_cursor;
                     if let Some(path) = self.repo_paths.get(idx) {
                         let msg = match self.input.mode {
-                            InputMode::InputEpicRepoPath => Message::SubmitEpicRepoPath(path.clone()),
+                            InputMode::InputEpicRepoPath => {
+                                Message::SubmitEpicRepoPath(path.clone())
+                            }
                             _ => Message::SubmitRepoPath(path.clone()),
                         };
                         return self.update(msg);
@@ -426,7 +431,9 @@ impl App {
                     InputMode::InputDescription => self.update(Message::SubmitDescription(value)),
                     InputMode::InputRepoPath => self.update(Message::SubmitRepoPath(value)),
                     InputMode::InputEpicTitle => self.update(Message::SubmitEpicTitle(value)),
-                    InputMode::InputEpicDescription => self.update(Message::SubmitEpicDescription(value)),
+                    InputMode::InputEpicDescription => {
+                        self.update(Message::SubmitEpicDescription(value))
+                    }
                     InputMode::InputEpicRepoPath => self.update(Message::SubmitEpicRepoPath(value)),
                     _ => vec![],
                 }
@@ -757,7 +764,10 @@ impl App {
                 if let Some(pr) = self.selected_review_pr() {
                     let is_dependabot = matches!(
                         self.view_mode,
-                        ViewMode::ReviewBoard { mode: ReviewBoardMode::Dependabot, .. }
+                        ViewMode::ReviewBoard {
+                            mode: ReviewBoardMode::Dependabot,
+                            ..
+                        }
                     );
                     self.update(Message::DispatchReviewAgent(ReviewAgentRequest {
                         repo: pr.repo.clone(),
@@ -773,7 +783,13 @@ impl App {
             }
 
             KeyCode::Char('D') => {
-                if matches!(self.view_mode, ViewMode::ReviewBoard { mode: ReviewBoardMode::Author, .. }) {
+                if matches!(
+                    self.view_mode,
+                    ViewMode::ReviewBoard {
+                        mode: ReviewBoardMode::Author,
+                        ..
+                    }
+                ) {
                     self.update(Message::ToggleDispatchPrFilter)
                 } else {
                     vec![]
@@ -786,7 +802,13 @@ impl App {
 
             // Dependabot-specific bindings
             KeyCode::Char(' ') => {
-                if matches!(self.view_mode, ViewMode::ReviewBoard { mode: ReviewBoardMode::Dependabot, .. }) {
+                if matches!(
+                    self.view_mode,
+                    ViewMode::ReviewBoard {
+                        mode: ReviewBoardMode::Dependabot,
+                        ..
+                    }
+                ) {
                     if let Some(pr) = self.selected_review_pr() {
                         let url = pr.url.clone();
                         self.update(Message::ToggleSelectBotPr(url))
@@ -799,7 +821,13 @@ impl App {
             }
 
             KeyCode::Char('a') => {
-                if matches!(self.view_mode, ViewMode::ReviewBoard { mode: ReviewBoardMode::Dependabot, .. }) {
+                if matches!(
+                    self.view_mode,
+                    ViewMode::ReviewBoard {
+                        mode: ReviewBoardMode::Dependabot,
+                        ..
+                    }
+                ) {
                     self.update(Message::SelectAllBotPrColumn)
                 } else {
                     vec![]
@@ -807,7 +835,13 @@ impl App {
             }
 
             KeyCode::Char('A') => {
-                if matches!(self.view_mode, ViewMode::ReviewBoard { mode: ReviewBoardMode::Dependabot, .. }) {
+                if matches!(
+                    self.view_mode,
+                    ViewMode::ReviewBoard {
+                        mode: ReviewBoardMode::Dependabot,
+                        ..
+                    }
+                ) {
                     self.update(Message::StartBatchApprove)
                 } else {
                     vec![]
@@ -815,7 +849,13 @@ impl App {
             }
 
             KeyCode::Char('m') => {
-                if matches!(self.view_mode, ViewMode::ReviewBoard { mode: ReviewBoardMode::Dependabot, .. }) {
+                if matches!(
+                    self.view_mode,
+                    ViewMode::ReviewBoard {
+                        mode: ReviewBoardMode::Dependabot,
+                        ..
+                    }
+                ) {
                     self.update(Message::StartBatchMerge)
                 } else {
                     vec![]

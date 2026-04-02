@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -175,12 +175,24 @@ impl<'a> EpicPatch<'a> {
 // ---------------------------------------------------------------------------
 
 pub trait TaskStore: Send + Sync {
-    fn create_task(&self, title: &str, description: &str, repo_path: &str, plan: Option<&str>, status: TaskStatus) -> Result<TaskId>;
+    fn create_task(
+        &self,
+        title: &str,
+        description: &str,
+        repo_path: &str,
+        plan: Option<&str>,
+        status: TaskStatus,
+    ) -> Result<TaskId>;
     fn get_task(&self, id: TaskId) -> Result<Option<Task>>;
     fn list_all(&self) -> Result<Vec<Task>>;
     fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
     /// Update status only if current status matches `expected`. Returns true if updated.
-    fn update_status_if(&self, id: TaskId, new_status: TaskStatus, expected: TaskStatus) -> Result<bool>;
+    fn update_status_if(
+        &self,
+        id: TaskId,
+        new_status: TaskStatus,
+        expected: TaskStatus,
+    ) -> Result<bool>;
     fn delete_task(&self, id: TaskId) -> Result<()>;
     fn list_repo_paths(&self) -> Result<Vec<String>>;
     fn save_repo_path(&self, path: &str) -> Result<()>;
@@ -384,8 +396,7 @@ impl Database {
 }
 
 /// Column list shared by all task SELECT queries. Pair with `row_to_task`.
-const TASK_COLUMNS: &str =
-    "id, title, description, repo_path, status, worktree, tmux_window, \
+const TASK_COLUMNS: &str = "id, title, description, repo_path, status, worktree, tmux_window, \
      plan, epic_id, sub_status, pr_url, tag, sort_order, created_at, updated_at";
 
 impl TaskStore for Database {
@@ -421,9 +432,9 @@ impl TaskStore for Database {
     fn list_all(&self) -> Result<Vec<Task>> {
         let conn = self.conn()?;
         let mut stmt = conn
-            .prepare(
-                &format!("SELECT {TASK_COLUMNS} FROM tasks ORDER BY COALESCE(sort_order, id) ASC, id ASC"),
-            )
+            .prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks ORDER BY COALESCE(sort_order, id) ASC, id ASC"
+            ))
             .context("Failed to prepare list_all")?;
         let tasks = stmt
             .query_map([], row_to_task)
@@ -448,7 +459,12 @@ impl TaskStore for Database {
         Ok(tasks)
     }
 
-    fn update_status_if(&self, id: TaskId, new_status: TaskStatus, expected: TaskStatus) -> Result<bool> {
+    fn update_status_if(
+        &self,
+        id: TaskId,
+        new_status: TaskStatus,
+        expected: TaskStatus,
+    ) -> Result<bool> {
         let conn = self.conn()?;
         let default_sub = SubStatus::default_for(new_status);
         let rows = conn
@@ -526,7 +542,8 @@ impl TaskStore for Database {
         if matches!((patch.status, patch.sub_status), (Some(s), Some(ss)) if !ss.is_valid_for(s)) {
             anyhow::bail!(
                 "invalid (status, sub_status) pair in patch: {:?}/{:?}",
-                patch.status, patch.sub_status
+                patch.status,
+                patch.sub_status
             );
         }
         let conn = self.conn()?;
@@ -538,7 +555,8 @@ impl TaskStore for Database {
             values.push(Box::new(s.as_str().to_string()));
         }
         // When status changes without an explicit sub_status, reset to the new column's default.
-        let effective_sub_status = patch.sub_status
+        let effective_sub_status = patch
+            .sub_status
             .or_else(|| patch.status.map(SubStatus::default_for));
         if let Some(t) = patch.title {
             sets.push("title = ?");
@@ -584,13 +602,10 @@ impl TaskStore for Database {
         sets.push("updated_at = datetime('now')");
         values.push(Box::new(id.0));
 
-        let sql = format!(
-            "UPDATE tasks SET {} WHERE id = ?",
-            sets.join(", ")
-        );
-        let refs: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let rows = conn.execute(&sql, refs.as_slice())
+        let sql = format!("UPDATE tasks SET {} WHERE id = ?", sets.join(", "));
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let rows = conn
+            .execute(&sql, refs.as_slice())
             .context("Failed to patch task")?;
         if rows == 0 {
             anyhow::bail!("Task {id} not found");
@@ -688,13 +703,10 @@ impl TaskStore for Database {
         sets.push("updated_at = datetime('now')");
         values.push(Box::new(id.0));
 
-        let sql = format!(
-            "UPDATE epics SET {} WHERE id = ?",
-            sets.join(", ")
-        );
-        let refs: Vec<&dyn rusqlite::types::ToSql> =
-            values.iter().map(|v| v.as_ref()).collect();
-        let rows = conn.execute(&sql, refs.as_slice())
+        let sql = format!("UPDATE epics SET {} WHERE id = ?", sets.join(", "));
+        let refs: Vec<&dyn rusqlite::types::ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let rows = conn
+            .execute(&sql, refs.as_slice())
             .context("Failed to patch epic")?;
         if rows == 0 {
             anyhow::bail!("Epic {id} not found");
@@ -835,8 +847,14 @@ impl TaskStore for Database {
                  cache_read_tokens  = cache_read_tokens  + excluded.cache_read_tokens,
                  cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
                  updated_at         = excluded.updated_at",
-            params![task_id.0, usage.cost_usd, usage.input_tokens, usage.output_tokens,
-                    usage.cache_read_tokens, usage.cache_write_tokens],
+            params![
+                task_id.0,
+                usage.cost_usd,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cache_read_tokens,
+                usage.cache_write_tokens
+            ],
         )
         .context("Failed to upsert task_usage")?;
         Ok(())
@@ -844,12 +862,13 @@ impl TaskStore for Database {
 
     fn get_all_usage(&self) -> Result<Vec<TaskUsage>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare(
-            "SELECT task_id, cost_usd, input_tokens, output_tokens,
+        let mut stmt = conn
+            .prepare(
+                "SELECT task_id, cost_usd, input_tokens, output_tokens,
                     cache_read_tokens, cache_write_tokens, updated_at
              FROM task_usage",
-        )
-        .context("Failed to prepare get_all_usage")?;
+            )
+            .context("Failed to prepare get_all_usage")?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((
@@ -901,11 +920,17 @@ impl TaskStore for Database {
 
     fn list_filter_presets(&self) -> Result<Vec<(String, String, String)>> {
         let conn = self.conn()?;
-        let mut stmt = conn.prepare("SELECT name, repo_paths, mode FROM filter_presets ORDER BY name")?;
+        let mut stmt =
+            conn.prepare("SELECT name, repo_paths, mode FROM filter_presets ORDER BY name")?;
         let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
-        rows.collect::<Result<Vec<_>, _>>().context("Failed to list filter presets")
+        rows.collect::<Result<Vec<_>, _>>()
+            .context("Failed to list filter presets")
     }
 
     fn save_review_prs(&self, prs: &[ReviewPr]) -> Result<()> {
@@ -922,12 +947,18 @@ impl TaskStore for Database {
             for pr in prs {
                 let labels_json =
                     serde_json::to_string(&pr.labels).context("Failed to serialize labels")?;
-                let reviewers_json = serde_json::to_string(&pr.reviewers.iter().map(|r| {
-                    serde_json::json!({
-                        "login": r.login,
-                        "decision": r.decision.map(|d| d.as_db_str())
-                    })
-                }).collect::<Vec<_>>()).unwrap_or_default();
+                let reviewers_json = serde_json::to_string(
+                    &pr.reviewers
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "login": r.login,
+                                "decision": r.decision.map(|d| d.as_db_str())
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default();
                 stmt.execute(params![
                     pr.repo,
                     pr.number,
@@ -1028,14 +1059,15 @@ impl TaskStore for Database {
                 .unwrap_or(ReviewDecision::ReviewRequired);
             let labels: Vec<String> = serde_json::from_str(&labels_json).unwrap_or_default();
             let ci_status = CiStatus::from_db_str(&ci_status_str);
-            let reviewers: Vec<Reviewer> = serde_json::from_str::<Vec<serde_json::Value>>(&reviewers_json)
-                .unwrap_or_default()
-                .iter()
-                .map(|v| Reviewer {
-                    login: v["login"].as_str().unwrap_or("").to_string(),
-                    decision: v["decision"].as_str().and_then(ReviewDecision::from_db_str),
-                })
-                .collect();
+            let reviewers: Vec<Reviewer> =
+                serde_json::from_str::<Vec<serde_json::Value>>(&reviewers_json)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|v| Reviewer {
+                        login: v["login"].as_str().unwrap_or("").to_string(),
+                        decision: v["decision"].as_str().and_then(ReviewDecision::from_db_str),
+                    })
+                    .collect();
 
             prs.push(ReviewPr {
                 number,
@@ -1073,12 +1105,18 @@ impl TaskStore for Database {
             for pr in prs {
                 let labels_json =
                     serde_json::to_string(&pr.labels).context("Failed to serialize labels")?;
-                let reviewers_json = serde_json::to_string(&pr.reviewers.iter().map(|r| {
-                    serde_json::json!({
-                        "login": r.login,
-                        "decision": r.decision.map(|d| d.as_db_str())
-                    })
-                }).collect::<Vec<_>>()).unwrap_or_default();
+                let reviewers_json = serde_json::to_string(
+                    &pr.reviewers
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "login": r.login,
+                                "decision": r.decision.map(|d| d.as_db_str())
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default();
                 stmt.execute(params![
                     pr.repo,
                     pr.number,
@@ -1179,14 +1217,15 @@ impl TaskStore for Database {
                 .unwrap_or(ReviewDecision::ReviewRequired);
             let labels: Vec<String> = serde_json::from_str(&labels_json).unwrap_or_default();
             let ci_status = CiStatus::from_db_str(&ci_status_str);
-            let reviewers: Vec<Reviewer> = serde_json::from_str::<Vec<serde_json::Value>>(&reviewers_json)
-                .unwrap_or_default()
-                .iter()
-                .map(|v| Reviewer {
-                    login: v["login"].as_str().unwrap_or("").to_string(),
-                    decision: v["decision"].as_str().and_then(ReviewDecision::from_db_str),
-                })
-                .collect();
+            let reviewers: Vec<Reviewer> =
+                serde_json::from_str::<Vec<serde_json::Value>>(&reviewers_json)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|v| Reviewer {
+                        login: v["login"].as_str().unwrap_or("").to_string(),
+                        decision: v["decision"].as_str().and_then(ReviewDecision::from_db_str),
+                    })
+                    .collect();
 
             prs.push(ReviewPr {
                 number,
@@ -1224,12 +1263,18 @@ impl TaskStore for Database {
             for pr in prs {
                 let labels_json =
                     serde_json::to_string(&pr.labels).context("Failed to serialize labels")?;
-                let reviewers_json = serde_json::to_string(&pr.reviewers.iter().map(|r| {
-                    serde_json::json!({
-                        "login": r.login,
-                        "decision": r.decision.map(|d| d.as_db_str())
-                    })
-                }).collect::<Vec<_>>()).unwrap_or_default();
+                let reviewers_json = serde_json::to_string(
+                    &pr.reviewers
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "login": r.login,
+                                "decision": r.decision.map(|d| d.as_db_str())
+                            })
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default();
                 stmt.execute(params![
                     pr.repo,
                     pr.number,
@@ -1280,18 +1325,44 @@ impl TaskStore for Database {
             let ci_status_str: String = row.get(14)?;
             let reviewers_json: String = row.get(15)?;
             Ok((
-                repo, number, title, author, url, is_draft,
-                created_at_str, updated_at_str, additions, deletions,
-                decision_str, labels_json, body, head_ref, ci_status_str, reviewers_json,
+                repo,
+                number,
+                title,
+                author,
+                url,
+                is_draft,
+                created_at_str,
+                updated_at_str,
+                additions,
+                deletions,
+                decision_str,
+                labels_json,
+                body,
+                head_ref,
+                ci_status_str,
+                reviewers_json,
             ))
         })?;
 
         let mut prs = Vec::new();
         for row in rows {
             let (
-                repo, number, title, author, url, is_draft,
-                created_at_str, updated_at_str, additions, deletions,
-                decision_str, labels_json, body, head_ref, ci_status_str, reviewers_json,
+                repo,
+                number,
+                title,
+                author,
+                url,
+                is_draft,
+                created_at_str,
+                updated_at_str,
+                additions,
+                deletions,
+                decision_str,
+                labels_json,
+                body,
+                head_ref,
+                ci_status_str,
+                reviewers_json,
             ) = row?;
 
             let created_at = DateTime::parse_from_rfc3339(&created_at_str)
@@ -1304,19 +1375,33 @@ impl TaskStore for Database {
                 .unwrap_or(ReviewDecision::ReviewRequired);
             let labels: Vec<String> = serde_json::from_str(&labels_json).unwrap_or_default();
             let ci_status = CiStatus::from_db_str(&ci_status_str);
-            let reviewers: Vec<Reviewer> = serde_json::from_str::<Vec<serde_json::Value>>(&reviewers_json)
-                .unwrap_or_default()
-                .iter()
-                .map(|v| Reviewer {
-                    login: v["login"].as_str().unwrap_or("").to_string(),
-                    decision: v["decision"].as_str().and_then(ReviewDecision::from_db_str),
-                })
-                .collect();
+            let reviewers: Vec<Reviewer> =
+                serde_json::from_str::<Vec<serde_json::Value>>(&reviewers_json)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|v| Reviewer {
+                        login: v["login"].as_str().unwrap_or("").to_string(),
+                        decision: v["decision"].as_str().and_then(ReviewDecision::from_db_str),
+                    })
+                    .collect();
 
             prs.push(ReviewPr {
-                number, title, author, repo, url, is_draft,
-                created_at, updated_at, additions, deletions,
-                review_decision, labels, body, head_ref, ci_status, reviewers,
+                number,
+                title,
+                author,
+                repo,
+                url,
+                is_draft,
+                created_at,
+                updated_at,
+                additions,
+                deletions,
+                review_decision,
+                labels,
+                body,
+                head_ref,
+                ci_status,
+                reviewers,
             });
         }
         Ok(prs)
@@ -1354,17 +1439,14 @@ fn migrate_v3_create_epics_table(conn: &Connection) -> Result<()> {
     )
     .context("Failed to create epics table")?;
 
-    let _ = conn.execute_batch(
-        "ALTER TABLE tasks ADD COLUMN epic_id INTEGER REFERENCES epics(id)",
-    );
+    let _ = conn.execute_batch("ALTER TABLE tasks ADD COLUMN epic_id INTEGER REFERENCES epics(id)");
 
     Ok(())
 }
 
 fn migrate_v4_add_needs_input_drop_epic_plan(conn: &Connection) -> Result<()> {
-    let _ = conn.execute_batch(
-        "ALTER TABLE tasks ADD COLUMN needs_input INTEGER NOT NULL DEFAULT 0",
-    );
+    let _ =
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN needs_input INTEGER NOT NULL DEFAULT 0");
 
     // SQLite doesn't support DROP COLUMN before 3.35.0; recreate the table.
     // Disable FK checks so DROP TABLE succeeds when tasks reference epics,
@@ -1486,12 +1568,9 @@ fn migrate_v14_create_review_prs_table(conn: &Connection) -> Result<()> {
 }
 
 fn migrate_v15_add_sub_status(conn: &Connection) -> Result<()> {
-    let _ = conn.execute_batch(
-        "ALTER TABLE tasks ADD COLUMN sub_status TEXT NOT NULL DEFAULT 'none'",
-    );
-    let _ = conn.execute_batch(
-        "UPDATE tasks SET sub_status = 'needs_input' WHERE needs_input = 1",
-    );
+    let _ =
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN sub_status TEXT NOT NULL DEFAULT 'none'");
+    let _ = conn.execute_batch("UPDATE tasks SET sub_status = 'needs_input' WHERE needs_input = 1");
     let _ = conn.execute_batch(
         "UPDATE tasks SET sub_status = 'active' WHERE status = 'running' AND sub_status = 'none'",
     );
@@ -1664,18 +1743,13 @@ fn migrate_v18_expand_tilde_paths(conn: &Connection) -> Result<()> {
 fn migrate_v19_add_review_pr_columns(conn: &Connection) -> Result<()> {
     // Fresh DBs already have these from the CREATE TABLE in migration 14,
     // so ignore "duplicate column" errors.
-    let _ = conn.execute_batch(
-        "ALTER TABLE review_prs ADD COLUMN body TEXT NOT NULL DEFAULT ''",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE review_prs ADD COLUMN head_ref TEXT NOT NULL DEFAULT ''",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE review_prs ADD COLUMN ci_status TEXT NOT NULL DEFAULT 'none'",
-    );
-    let _ = conn.execute_batch(
-        "ALTER TABLE review_prs ADD COLUMN reviewers TEXT NOT NULL DEFAULT '[]'",
-    );
+    let _ = conn.execute_batch("ALTER TABLE review_prs ADD COLUMN body TEXT NOT NULL DEFAULT ''");
+    let _ =
+        conn.execute_batch("ALTER TABLE review_prs ADD COLUMN head_ref TEXT NOT NULL DEFAULT ''");
+    let _ = conn
+        .execute_batch("ALTER TABLE review_prs ADD COLUMN ci_status TEXT NOT NULL DEFAULT 'none'");
+    let _ = conn
+        .execute_batch("ALTER TABLE review_prs ADD COLUMN reviewers TEXT NOT NULL DEFAULT '[]'");
     Ok(())
 }
 
@@ -1787,15 +1861,18 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         worktree: row.get("worktree")?,
         tmux_window: row.get("tmux_window")?,
         plan: row.get("plan")?,
-        epic_id: row.get::<_, Option<i64>>("epic_id")
+        epic_id: row
+            .get::<_, Option<i64>>("epic_id")
             .unwrap_or(None)
             .map(EpicId),
-        sub_status: row.get::<_, String>("sub_status")
+        sub_status: row
+            .get::<_, String>("sub_status")
             .ok()
             .and_then(|s| SubStatus::parse(&s))
             .unwrap_or(SubStatus::None),
         pr_url: row.get::<_, Option<String>>("pr_url").unwrap_or(None),
-        tag: row.get::<_, Option<String>>("tag")
+        tag: row
+            .get::<_, Option<String>>("tag")
             .unwrap_or(None)
             .as_deref()
             .and_then(TaskTag::parse),
@@ -1846,7 +1923,15 @@ mod tests {
     #[test]
     fn create_and_get() {
         let db = in_memory_db();
-        let id = db.create_task("My Task", "A description", "/repo/path", None, TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task(
+                "My Task",
+                "A description",
+                "/repo/path",
+                None,
+                TaskStatus::Backlog,
+            )
+            .unwrap();
         let task = db.get_task(id).unwrap().expect("task should exist");
         assert_eq!(task.id, id);
         assert_eq!(task.title, "My Task");
@@ -1860,9 +1945,12 @@ mod tests {
     #[test]
     fn list_all() {
         let db = in_memory_db();
-        db.create_task("Task A", "desc", "/a", None, TaskStatus::Backlog).unwrap();
-        db.create_task("Task B", "desc", "/b", None, TaskStatus::Backlog).unwrap();
-        db.create_task("Task C", "desc", "/c", None, TaskStatus::Backlog).unwrap();
+        db.create_task("Task A", "desc", "/a", None, TaskStatus::Backlog)
+            .unwrap();
+        db.create_task("Task B", "desc", "/b", None, TaskStatus::Backlog)
+            .unwrap();
+        db.create_task("Task C", "desc", "/c", None, TaskStatus::Backlog)
+            .unwrap();
         let tasks = db.list_all().unwrap();
         assert_eq!(tasks.len(), 3);
         assert_eq!(tasks[0].title, "Task A");
@@ -1873,12 +1961,19 @@ mod tests {
     #[test]
     fn list_by_status() {
         let db = in_memory_db();
-        let id1 = db.create_task("Task A", "desc", "/a", None, TaskStatus::Backlog).unwrap();
-        let id2 = db.create_task("Task B", "desc", "/b", None, TaskStatus::Backlog).unwrap();
-        db.create_task("Task C", "desc", "/c", None, TaskStatus::Backlog).unwrap();
+        let id1 = db
+            .create_task("Task A", "desc", "/a", None, TaskStatus::Backlog)
+            .unwrap();
+        let id2 = db
+            .create_task("Task B", "desc", "/b", None, TaskStatus::Backlog)
+            .unwrap();
+        db.create_task("Task C", "desc", "/c", None, TaskStatus::Backlog)
+            .unwrap();
 
-        db.patch_task(id1, &TaskPatch::new().status(TaskStatus::Running)).unwrap();
-        db.patch_task(id2, &TaskPatch::new().status(TaskStatus::Running)).unwrap();
+        db.patch_task(id1, &TaskPatch::new().status(TaskStatus::Running))
+            .unwrap();
+        db.patch_task(id2, &TaskPatch::new().status(TaskStatus::Running))
+            .unwrap();
 
         let running = db.list_by_status(TaskStatus::Running).unwrap();
         assert_eq!(running.len(), 2);
@@ -1898,7 +1993,15 @@ mod tests {
     #[test]
     fn create_task_with_plan() {
         let db = in_memory_db();
-        let id = db.create_task("Planned Task", "desc", "/repo", Some("docs/plan.md"), TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task(
+                "Planned Task",
+                "desc",
+                "/repo",
+                Some("docs/plan.md"),
+                TaskStatus::Backlog,
+            )
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.plan.as_deref(), Some("docs/plan.md"));
     }
@@ -1906,7 +2009,9 @@ mod tests {
     #[test]
     fn create_task_without_plan() {
         let db = in_memory_db();
-        let id = db.create_task("Simple Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task("Simple Task", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert!(task.plan.is_none());
     }
@@ -1914,7 +2019,15 @@ mod tests {
     #[test]
     fn find_task_by_plan_returns_match() {
         let db = in_memory_db();
-        let id = db.create_task("Planned", "desc", "/repo", Some("/plans/my-plan.md"), TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task(
+                "Planned",
+                "desc",
+                "/repo",
+                Some("/plans/my-plan.md"),
+                TaskStatus::Backlog,
+            )
+            .unwrap();
 
         let found = db.find_task_by_plan("/plans/my-plan.md").unwrap();
         assert!(found.is_some());
@@ -1924,7 +2037,14 @@ mod tests {
     #[test]
     fn find_task_by_plan_returns_none_when_no_match() {
         let db = in_memory_db();
-        db.create_task("Other", "desc", "/repo", Some("/plans/other.md"), TaskStatus::Backlog).unwrap();
+        db.create_task(
+            "Other",
+            "desc",
+            "/repo",
+            Some("/plans/other.md"),
+            TaskStatus::Backlog,
+        )
+        .unwrap();
 
         let found = db.find_task_by_plan("/plans/nonexistent.md").unwrap();
         assert!(found.is_none());
@@ -1933,7 +2053,8 @@ mod tests {
     #[test]
     fn find_task_by_plan_ignores_tasks_without_plan() {
         let db = in_memory_db();
-        db.create_task("No Plan", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.create_task("No Plan", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
 
         let found = db.find_task_by_plan("/plans/any.md").unwrap();
         assert!(found.is_none());
@@ -1949,10 +2070,16 @@ mod tests {
     fn set_and_get_setting_bool_roundtrips() {
         let db = Database::open_in_memory().unwrap();
         db.set_setting_bool("notifications_enabled", true).unwrap();
-        assert_eq!(db.get_setting_bool("notifications_enabled").unwrap(), Some(true));
+        assert_eq!(
+            db.get_setting_bool("notifications_enabled").unwrap(),
+            Some(true)
+        );
 
         db.set_setting_bool("notifications_enabled", false).unwrap();
-        assert_eq!(db.get_setting_bool("notifications_enabled").unwrap(), Some(false));
+        assert_eq!(
+            db.get_setting_bool("notifications_enabled").unwrap(),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1964,7 +2091,8 @@ mod tests {
     #[test]
     fn set_and_get_setting_string() {
         let db = Database::open_in_memory().unwrap();
-        db.set_setting_string("repo_filter", "/repo1\n/repo2").unwrap();
+        db.set_setting_string("repo_filter", "/repo1\n/repo2")
+            .unwrap();
         assert_eq!(
             db.get_setting_string("repo_filter").unwrap(),
             Some("/repo1\n/repo2".to_string())
@@ -1976,7 +2104,10 @@ mod tests {
         let db = Database::open_in_memory().unwrap();
         db.set_setting_string("repo_filter", "old").unwrap();
         db.set_setting_string("repo_filter", "new").unwrap();
-        assert_eq!(db.get_setting_string("repo_filter").unwrap(), Some("new".to_string()));
+        assert_eq!(
+            db.get_setting_string("repo_filter").unwrap(),
+            Some("new".to_string())
+        );
     }
 
     #[test]
@@ -2018,11 +2149,20 @@ mod tests {
                  path TEXT NOT NULL UNIQUE,
                  last_used TEXT NOT NULL DEFAULT (datetime('now'))
              );",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert a note so we can verify the table gets dropped
-        conn.execute("INSERT INTO tasks (title, description, repo_path) VALUES ('T', 'D', '/r')", []).unwrap();
-        conn.execute("INSERT INTO notes (task_id, content) VALUES (1, 'hello')", []).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (title, description, repo_path) VALUES ('T', 'D', '/r')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO notes (task_id, content) VALUES (1, 'hello')",
+            [],
+        )
+        .unwrap();
 
         // Run init_schema which should migrate
         Database::init_schema(&conn).unwrap();
@@ -2033,7 +2173,10 @@ mod tests {
             .unwrap()
             .exists([])
             .unwrap();
-        assert!(!table_exists, "notes table should be dropped after migration");
+        assert!(
+            !table_exists,
+            "notes table should be dropped after migration"
+        );
 
         // Version should be latest
         let version: i64 = conn
@@ -2042,9 +2185,7 @@ mod tests {
         assert_eq!(version, 23);
 
         // Verify Migration 1 added the plan column
-        let has_plan: bool = conn
-            .prepare("SELECT plan FROM tasks LIMIT 1")
-            .is_ok();
+        let has_plan: bool = conn.prepare("SELECT plan FROM tasks LIMIT 1").is_ok();
         assert!(has_plan, "Migration 1 should have added the plan column");
     }
 
@@ -2086,7 +2227,8 @@ mod tests {
                  value TEXT NOT NULL
              );
              PRAGMA user_version = 5;",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert a ready task
         conn.execute(
@@ -2097,7 +2239,9 @@ mod tests {
         Database::init_schema(&conn).unwrap();
 
         let status: String = conn
-            .query_row("SELECT status FROM tasks WHERE id = 1", [], |row| row.get(0))
+            .query_row("SELECT status FROM tasks WHERE id = 1", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(status, "backlog");
 
@@ -2136,7 +2280,9 @@ mod tests {
     #[test]
     fn create_task_returning_returns_full_task() {
         let db = in_memory_db();
-        let task = db.create_task_returning("Title", "Desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let task = db
+            .create_task_returning("Title", "Desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         assert_eq!(task.title, "Title");
         assert_eq!(task.description, "Desc");
         assert_eq!(task.repo_path, "/repo");
@@ -2149,7 +2295,9 @@ mod tests {
     #[test]
     fn create_task_returning_with_plan() {
         let db = in_memory_db();
-        let task = db.create_task_returning("T", "D", "/r", Some("plan.md"), TaskStatus::Backlog).unwrap();
+        let task = db
+            .create_task_returning("T", "D", "/r", Some("plan.md"), TaskStatus::Backlog)
+            .unwrap();
         assert_eq!(task.plan.as_deref(), Some("plan.md"));
         assert_eq!(task.status, TaskStatus::Backlog);
     }
@@ -2176,7 +2324,13 @@ mod tests {
     fn patch_task_none_fields_unchanged() {
         let db = in_memory_db();
         let id = db
-            .create_task("title", "desc", "/repo", Some("plan.md"), TaskStatus::Running)
+            .create_task(
+                "title",
+                "desc",
+                "/repo",
+                Some("plan.md"),
+                TaskStatus::Running,
+            )
             .unwrap();
         let patch = TaskPatch::new();
         db.patch_task(id, &patch).unwrap();
@@ -2189,8 +2343,11 @@ mod tests {
     #[test]
     fn patch_task_sets_tag() {
         let db = in_memory_db();
-        let id = db.create_task("title", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.patch_task(id, &TaskPatch::new().tag(Some(TaskTag::Bug))).unwrap();
+        let id = db
+            .create_task("title", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::new().tag(Some(TaskTag::Bug)))
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.tag, Some(TaskTag::Bug));
     }
@@ -2198,8 +2355,11 @@ mod tests {
     #[test]
     fn patch_task_clears_tag() {
         let db = in_memory_db();
-        let id = db.create_task("title", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.patch_task(id, &TaskPatch::new().tag(Some(TaskTag::Feature))).unwrap();
+        let id = db
+            .create_task("title", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::new().tag(Some(TaskTag::Feature)))
+            .unwrap();
         db.patch_task(id, &TaskPatch::new().tag(None)).unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert!(task.tag.is_none());
@@ -2208,55 +2368,99 @@ mod tests {
     #[test]
     fn has_other_tasks_with_worktree_returns_false_when_no_others() {
         let db = in_memory_db();
-        let id = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.patch_task(id, &TaskPatch::new()
-            .status(TaskStatus::Running)
-            .worktree(Some("/repo/.worktrees/1-task-a"))
-            .tmux_window(Some("task-1"))).unwrap();
+        let id = db
+            .create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        db.patch_task(
+            id,
+            &TaskPatch::new()
+                .status(TaskStatus::Running)
+                .worktree(Some("/repo/.worktrees/1-task-a"))
+                .tmux_window(Some("task-1")),
+        )
+        .unwrap();
 
-        assert!(!db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id).unwrap());
+        assert!(!db
+            .has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id)
+            .unwrap());
     }
 
     #[test]
     fn has_other_tasks_with_worktree_returns_true_when_shared() {
         let db = in_memory_db();
-        let id1 = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        let id2 = db.create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.patch_task(id1, &TaskPatch::new()
-            .status(TaskStatus::Running)
-            .worktree(Some("/repo/.worktrees/1-task-a"))
-            .tmux_window(Some("task-1"))).unwrap();
-        db.patch_task(id2, &TaskPatch::new()
-            .status(TaskStatus::Running)
-            .worktree(Some("/repo/.worktrees/1-task-a"))
-            .tmux_window(Some("task-1"))).unwrap();
+        let id1 = db
+            .create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let id2 = db
+            .create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        db.patch_task(
+            id1,
+            &TaskPatch::new()
+                .status(TaskStatus::Running)
+                .worktree(Some("/repo/.worktrees/1-task-a"))
+                .tmux_window(Some("task-1")),
+        )
+        .unwrap();
+        db.patch_task(
+            id2,
+            &TaskPatch::new()
+                .status(TaskStatus::Running)
+                .worktree(Some("/repo/.worktrees/1-task-a"))
+                .tmux_window(Some("task-1")),
+        )
+        .unwrap();
 
-        assert!(db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1).unwrap());
-        assert!(db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id2).unwrap());
+        assert!(db
+            .has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1)
+            .unwrap());
+        assert!(db
+            .has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id2)
+            .unwrap());
     }
 
     #[test]
     fn has_other_tasks_with_worktree_ignores_done_tasks() {
         let db = in_memory_db();
-        let id1 = db.create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        let id2 = db.create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        db.patch_task(id1, &TaskPatch::new()
-            .status(TaskStatus::Running)
-            .worktree(Some("/repo/.worktrees/1-task-a"))
-            .tmux_window(Some("task-1"))).unwrap();
-        db.patch_task(id2, &TaskPatch::new()
-            .status(TaskStatus::Done)
-            .worktree(Some("/repo/.worktrees/1-task-a"))
-            .tmux_window(Some("task-1"))).unwrap();
+        let id1 = db
+            .create_task("Task A", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let id2 = db
+            .create_task("Task B", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        db.patch_task(
+            id1,
+            &TaskPatch::new()
+                .status(TaskStatus::Running)
+                .worktree(Some("/repo/.worktrees/1-task-a"))
+                .tmux_window(Some("task-1")),
+        )
+        .unwrap();
+        db.patch_task(
+            id2,
+            &TaskPatch::new()
+                .status(TaskStatus::Done)
+                .worktree(Some("/repo/.worktrees/1-task-a"))
+                .tmux_window(Some("task-1")),
+        )
+        .unwrap();
 
-        assert!(!db.has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1).unwrap());
+        assert!(!db
+            .has_other_tasks_with_worktree("/repo/.worktrees/1-task-a", id1)
+            .unwrap());
     }
 
     #[test]
     fn patch_task_clears_plan() {
         let db = in_memory_db();
         let id = db
-            .create_task("title", "desc", "/repo", Some("plan.md"), TaskStatus::Backlog)
+            .create_task(
+                "title",
+                "desc",
+                "/repo",
+                Some("plan.md"),
+                TaskStatus::Backlog,
+            )
             .unwrap();
         let patch = TaskPatch::new().plan(None);
         db.patch_task(id, &patch).unwrap();
@@ -2295,9 +2499,7 @@ mod tests {
         assert!(task.tmux_window.is_some());
 
         // Clear them
-        let patch = TaskPatch::new()
-            .worktree(None)
-            .tmux_window(None);
+        let patch = TaskPatch::new().worktree(None).tmux_window(None);
         db.patch_task(id, &patch).unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert!(task.worktree.is_none());
@@ -2348,10 +2550,14 @@ mod tests {
     fn patch_task_status_change_resets_sub_status_in_db() {
         // End-to-end: after a status-only patch, sub_status in DB reflects the new default
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_task("T", "d", "/r", None, TaskStatus::Running).unwrap();
-        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Stale)).unwrap();
+        let id = db
+            .create_task("T", "d", "/r", None, TaskStatus::Running)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Stale))
+            .unwrap();
 
-        db.patch_task(id, &TaskPatch::default().status(TaskStatus::Review)).unwrap();
+        db.patch_task(id, &TaskPatch::default().status(TaskStatus::Review))
+            .unwrap();
 
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.status, TaskStatus::Review);
@@ -2361,9 +2567,13 @@ mod tests {
     #[test]
     fn update_status_if_matching() {
         let db = in_memory_db();
-        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Running).unwrap();
+        let id = db
+            .create_task("Task", "desc", "/repo", None, TaskStatus::Running)
+            .unwrap();
 
-        let updated = db.update_status_if(id, TaskStatus::Review, TaskStatus::Running).unwrap();
+        let updated = db
+            .update_status_if(id, TaskStatus::Review, TaskStatus::Running)
+            .unwrap();
         assert!(updated, "should update when current status matches");
 
         let task = db.get_task(id).unwrap().unwrap();
@@ -2373,10 +2583,17 @@ mod tests {
     #[test]
     fn update_status_if_not_matching() {
         let db = in_memory_db();
-        let id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Done).unwrap();
+        let id = db
+            .create_task("Task", "desc", "/repo", None, TaskStatus::Done)
+            .unwrap();
 
-        let updated = db.update_status_if(id, TaskStatus::Review, TaskStatus::Running).unwrap();
-        assert!(!updated, "should not update when current status doesn't match");
+        let updated = db
+            .update_status_if(id, TaskStatus::Review, TaskStatus::Running)
+            .unwrap();
+        assert!(
+            !updated,
+            "should not update when current status doesn't match"
+        );
 
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.status, TaskStatus::Done, "status should be unchanged");
@@ -2385,7 +2602,9 @@ mod tests {
     #[test]
     fn update_status_if_nonexistent() {
         let db = in_memory_db();
-        let updated = db.update_status_if(TaskId(9999), TaskStatus::Review, TaskStatus::Running).unwrap();
+        let updated = db
+            .update_status_if(TaskId(9999), TaskStatus::Review, TaskStatus::Running)
+            .unwrap();
         assert!(!updated, "should return false for nonexistent task");
     }
 
@@ -2394,7 +2613,9 @@ mod tests {
     #[test]
     fn create_and_get_epic() {
         let db = in_memory_db();
-        let epic = db.create_epic("Auth Rewrite", "Rewrite auth", "/repo").unwrap();
+        let epic = db
+            .create_epic("Auth Rewrite", "Rewrite auth", "/repo")
+            .unwrap();
         assert_eq!(epic.title, "Auth Rewrite");
         assert_eq!(epic.description, "Rewrite auth");
         assert_eq!(epic.repo_path, "/repo");
@@ -2424,8 +2645,11 @@ mod tests {
     fn delete_epic_cascades_subtasks() {
         let db = in_memory_db();
         let epic = db.create_epic("Epic", "desc", "/repo").unwrap();
-        db.create_task("Sub 1", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        let sub_id = db.create_task("Sub 2", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        db.create_task("Sub 1", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let sub_id = db
+            .create_task("Sub 2", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
 
         // Link sub 2 to epic
         db.set_task_epic_id(sub_id, Some(epic.id)).unwrap();
@@ -2451,7 +2675,8 @@ mod tests {
     fn patch_epic_status() {
         let db = Database::open_in_memory().unwrap();
         let epic = db.create_epic("Test", "Desc", "/repo").unwrap();
-        db.patch_epic(epic.id, &EpicPatch::new().status(TaskStatus::Running)).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().status(TaskStatus::Running))
+            .unwrap();
         let epic = db.get_epic(epic.id).unwrap().unwrap();
         assert_eq!(epic.status, TaskStatus::Running);
     }
@@ -2461,7 +2686,8 @@ mod tests {
         let db = in_memory_db();
         let epic = db.create_epic("Old Title", "desc", "/repo").unwrap();
 
-        db.patch_epic(epic.id, &EpicPatch::new().title("New Title")).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().title("New Title"))
+            .unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert_eq!(updated.title, "New Title");
         assert_eq!(updated.description, "desc"); // unchanged
@@ -2471,7 +2697,9 @@ mod tests {
     fn task_epic_id_roundtrip() {
         let db = in_memory_db();
         let epic = db.create_epic("Epic", "desc", "/repo").unwrap();
-        let task_id = db.create_task("Task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let task_id = db
+            .create_task("Task", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
 
         db.set_task_epic_id(task_id, Some(epic.id)).unwrap();
         let task = db.get_task(task_id).unwrap().unwrap();
@@ -2486,8 +2714,12 @@ mod tests {
     fn list_tasks_for_epic() {
         let db = in_memory_db();
         let epic = db.create_epic("Epic", "desc", "/repo").unwrap();
-        let id1 = db.create_task("Sub A", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
-        let _id2 = db.create_task("Standalone", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let id1 = db
+            .create_task("Sub A", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let _id2 = db
+            .create_task("Standalone", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
 
         db.set_task_epic_id(id1, Some(epic.id)).unwrap();
 
@@ -2499,20 +2731,29 @@ mod tests {
     #[test]
     fn task_roundtrip_with_pr_fields() {
         let db = in_memory_db();
-        let id = db.create_task("PR task", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task("PR task", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
 
-        db.patch_task(id, &TaskPatch::new()
-            .pr_url(Some("https://github.com/org/repo/pull/42"))
-        ).unwrap();
+        db.patch_task(
+            id,
+            &TaskPatch::new().pr_url(Some("https://github.com/org/repo/pull/42")),
+        )
+        .unwrap();
 
         let task = db.get_task(id).unwrap().unwrap();
-        assert_eq!(task.pr_url.as_deref(), Some("https://github.com/org/repo/pull/42"));
+        assert_eq!(
+            task.pr_url.as_deref(),
+            Some("https://github.com/org/repo/pull/42")
+        );
     }
 
     #[test]
     fn task_pr_fields_default_to_none() {
         let db = in_memory_db();
-        let id = db.create_task("No PR", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task("No PR", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert!(task.pr_url.is_none());
     }
@@ -2520,9 +2761,15 @@ mod tests {
     #[test]
     fn patch_task_sets_pr_url() {
         let db = in_memory_db();
-        let id = db.create_task("t", "d", "/r", None, TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task("t", "d", "/r", None, TaskStatus::Backlog)
+            .unwrap();
 
-        db.patch_task(id, &TaskPatch::new().pr_url(Some("https://example.com/pull/1"))).unwrap();
+        db.patch_task(
+            id,
+            &TaskPatch::new().pr_url(Some("https://example.com/pull/1")),
+        )
+        .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.pr_url.as_deref(), Some("https://example.com/pull/1"));
     }
@@ -2533,7 +2780,8 @@ mod tests {
         let epic = db.create_epic("Epic", "desc", "/repo").unwrap();
         assert!(epic.plan.is_none());
 
-        db.patch_epic(epic.id, &EpicPatch::new().plan(Some("docs/plan.md"))).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().plan(Some("docs/plan.md")))
+            .unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert_eq!(updated.plan.as_deref(), Some("docs/plan.md"));
     }
@@ -2543,8 +2791,10 @@ mod tests {
         let db = in_memory_db();
         let epic = db.create_epic("Epic", "desc", "/repo").unwrap();
 
-        db.patch_epic(epic.id, &EpicPatch::new().plan(Some("docs/plan.md"))).unwrap();
-        db.patch_epic(epic.id, &EpicPatch::new().plan(None)).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().plan(Some("docs/plan.md")))
+            .unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().plan(None))
+            .unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert!(updated.plan.is_none());
     }
@@ -2554,7 +2804,8 @@ mod tests {
         let db = in_memory_db();
         let epic = db.create_epic("Epic", "desc", "/old").unwrap();
 
-        db.patch_epic(epic.id, &EpicPatch::new().repo_path("/new")).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().repo_path("/new"))
+            .unwrap();
         let updated = db.get_epic(epic.id).unwrap().unwrap();
         assert_eq!(updated.repo_path, "/new");
         assert_eq!(updated.title, "Epic"); // unchanged
@@ -2563,8 +2814,11 @@ mod tests {
     #[test]
     fn patch_task_sets_sort_order() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_task("T", "d", "/r", None, TaskStatus::Backlog).unwrap();
-        db.patch_task(id, &TaskPatch::new().sort_order(Some(500))).unwrap();
+        let id = db
+            .create_task("T", "d", "/r", None, TaskStatus::Backlog)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::new().sort_order(Some(500)))
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.sort_order, Some(500));
     }
@@ -2572,9 +2826,13 @@ mod tests {
     #[test]
     fn patch_task_clears_sort_order() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_task("T", "d", "/r", None, TaskStatus::Backlog).unwrap();
-        db.patch_task(id, &TaskPatch::new().sort_order(Some(100))).unwrap();
-        db.patch_task(id, &TaskPatch::new().sort_order(None)).unwrap();
+        let id = db
+            .create_task("T", "d", "/r", None, TaskStatus::Backlog)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::new().sort_order(Some(100)))
+            .unwrap();
+        db.patch_task(id, &TaskPatch::new().sort_order(None))
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.sort_order, None);
     }
@@ -2582,8 +2840,20 @@ mod tests {
     #[test]
     fn report_usage_first_insert() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_task("T", "D", "/r", None, TaskStatus::Backlog).unwrap();
-        db.report_usage(id, &UsageReport { cost_usd: 0.42, input_tokens: 10_000, output_tokens: 2_000, cache_read_tokens: 0, cache_write_tokens: 0 }).unwrap();
+        let id = db
+            .create_task("T", "D", "/r", None, TaskStatus::Backlog)
+            .unwrap();
+        db.report_usage(
+            id,
+            &UsageReport {
+                cost_usd: 0.42,
+                input_tokens: 10_000,
+                output_tokens: 2_000,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+            },
+        )
+        .unwrap();
         let all = db.get_all_usage().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].task_id, id);
@@ -2597,9 +2867,31 @@ mod tests {
     #[test]
     fn report_usage_accumulates() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_task("T", "D", "/r", None, TaskStatus::Backlog).unwrap();
-        db.report_usage(id, &UsageReport { cost_usd: 0.10, input_tokens: 1_000, output_tokens: 500, cache_read_tokens: 100, cache_write_tokens: 50 }).unwrap();
-        db.report_usage(id, &UsageReport { cost_usd: 0.05, input_tokens: 500, output_tokens: 250, cache_read_tokens: 50, cache_write_tokens: 25 }).unwrap();
+        let id = db
+            .create_task("T", "D", "/r", None, TaskStatus::Backlog)
+            .unwrap();
+        db.report_usage(
+            id,
+            &UsageReport {
+                cost_usd: 0.10,
+                input_tokens: 1_000,
+                output_tokens: 500,
+                cache_read_tokens: 100,
+                cache_write_tokens: 50,
+            },
+        )
+        .unwrap();
+        db.report_usage(
+            id,
+            &UsageReport {
+                cost_usd: 0.05,
+                input_tokens: 500,
+                output_tokens: 250,
+                cache_read_tokens: 50,
+                cache_write_tokens: 25,
+            },
+        )
+        .unwrap();
         let all = db.get_all_usage().unwrap();
         assert_eq!(all.len(), 1);
         let u = &all[0];
@@ -2619,8 +2911,10 @@ mod tests {
     #[test]
     fn filter_presets_save_and_list() {
         let db = Database::open_in_memory().unwrap();
-        db.save_filter_preset("frontend", "/repo-a\n/repo-b", "include").unwrap();
-        db.save_filter_preset("backend", "/repo-c", "exclude").unwrap();
+        db.save_filter_preset("frontend", "/repo-a\n/repo-b", "include")
+            .unwrap();
+        db.save_filter_preset("backend", "/repo-c", "exclude")
+            .unwrap();
 
         let presets = db.list_filter_presets().unwrap();
         assert_eq!(presets.len(), 2);
@@ -2634,8 +2928,10 @@ mod tests {
     #[test]
     fn filter_presets_overwrite_and_delete() {
         let db = Database::open_in_memory().unwrap();
-        db.save_filter_preset("frontend", "/repo-a", "include").unwrap();
-        db.save_filter_preset("frontend", "/repo-x\n/repo-y", "exclude").unwrap();
+        db.save_filter_preset("frontend", "/repo-a", "include")
+            .unwrap();
+        db.save_filter_preset("frontend", "/repo-x\n/repo-y", "exclude")
+            .unwrap();
 
         let presets = db.list_filter_presets().unwrap();
         assert_eq!(presets.len(), 1);
@@ -2739,7 +3035,10 @@ mod tests {
             body: "Initial body".to_string(),
             head_ref: "feature/old-branch".to_string(),
             ci_status: CiStatus::Pending,
-            reviewers: vec![Reviewer { login: "carol".to_string(), decision: None }],
+            reviewers: vec![Reviewer {
+                login: "carol".to_string(),
+                decision: None,
+            }],
         };
         db.save_review_prs(&[pr1]).unwrap();
         assert_eq!(db.load_review_prs().unwrap().len(), 1);
@@ -2770,9 +3069,10 @@ mod tests {
             body: "Needs more work".to_string(),
             head_ref: "fix/new-branch".to_string(),
             ci_status: CiStatus::Failure,
-            reviewers: vec![
-                Reviewer { login: "dave".to_string(), decision: Some(ReviewDecision::ChangesRequested) },
-            ],
+            reviewers: vec![Reviewer {
+                login: "dave".to_string(),
+                decision: Some(ReviewDecision::ChangesRequested),
+            }],
         };
         db.save_review_prs(&[pr2]).unwrap();
 
@@ -2785,14 +3085,20 @@ mod tests {
         assert_eq!(loaded[0].ci_status, CiStatus::Failure);
         assert_eq!(loaded[0].reviewers.len(), 1);
         assert_eq!(loaded[0].reviewers[0].login, "dave");
-        assert_eq!(loaded[0].reviewers[0].decision, Some(ReviewDecision::ChangesRequested));
+        assert_eq!(
+            loaded[0].reviewers[0].decision,
+            Some(ReviewDecision::ChangesRequested)
+        );
     }
 
     #[test]
     fn task_sub_status_persists() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_task("Test", "desc", "/repo", None, TaskStatus::Running).unwrap();
-        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Stale)).unwrap();
+        let id = db
+            .create_task("Test", "desc", "/repo", None, TaskStatus::Running)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Stale))
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.sub_status, SubStatus::Stale);
     }
@@ -2800,7 +3106,9 @@ mod tests {
     #[test]
     fn task_sub_status_defaults_to_none() {
         let db = Database::open_in_memory().unwrap();
-        let id = db.create_task("Test", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task("Test", "desc", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.sub_status, SubStatus::None);
     }
@@ -2861,7 +3169,8 @@ mod tests {
                  repo_paths TEXT NOT NULL
              );
              PRAGMA user_version = 12;",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert tasks with various states
         conn.execute(
@@ -2886,33 +3195,46 @@ mod tests {
         assert_eq!(version, 23);
 
         // Verify needs_input=1 became sub_status='needs_input'
-        let ss: String = conn.query_row(
-            "SELECT sub_status FROM tasks WHERE id = 1", [], |row| row.get(0)
-        ).unwrap();
+        let ss: String = conn
+            .query_row("SELECT sub_status FROM tasks WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(ss, "needs_input");
 
         // Verify running task with needs_input=0 became 'active'
-        let ss: String = conn.query_row(
-            "SELECT sub_status FROM tasks WHERE id = 2", [], |row| row.get(0)
-        ).unwrap();
+        let ss: String = conn
+            .query_row("SELECT sub_status FROM tasks WHERE id = 2", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(ss, "active");
 
         // Verify review task became 'awaiting_review'
-        let ss: String = conn.query_row(
-            "SELECT sub_status FROM tasks WHERE id = 3", [], |row| row.get(0)
-        ).unwrap();
+        let ss: String = conn
+            .query_row("SELECT sub_status FROM tasks WHERE id = 3", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(ss, "awaiting_review");
 
         // Verify needs_input column no longer exists
-        let has_needs_input = conn.prepare("SELECT needs_input FROM tasks LIMIT 1").is_ok();
-        assert!(!has_needs_input, "needs_input column should be removed after migration");
+        let has_needs_input = conn
+            .prepare("SELECT needs_input FROM tasks LIMIT 1")
+            .is_ok();
+        assert!(
+            !has_needs_input,
+            "needs_input column should be removed after migration"
+        );
     }
 
     #[test]
     fn create_task_sets_default_sub_status_for_running() {
         // create_task with status=Running must produce sub_status=active, not 'none'
         let db = in_memory_db();
-        let id = db.create_task("T", "d", "/r", None, TaskStatus::Running).unwrap();
+        let id = db
+            .create_task("T", "d", "/r", None, TaskStatus::Running)
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.sub_status, SubStatus::Active);
     }
@@ -2920,7 +3242,9 @@ mod tests {
     #[test]
     fn create_task_sets_default_sub_status_for_backlog() {
         let db = in_memory_db();
-        let id = db.create_task("T", "d", "/r", None, TaskStatus::Backlog).unwrap();
+        let id = db
+            .create_task("T", "d", "/r", None, TaskStatus::Backlog)
+            .unwrap();
         let task = db.get_task(id).unwrap().unwrap();
         assert_eq!(task.sub_status, SubStatus::None);
     }
@@ -2928,10 +3252,15 @@ mod tests {
     #[test]
     fn update_status_if_resets_sub_status_to_default() {
         let db = in_memory_db();
-        let id = db.create_task("T", "d", "/r", None, TaskStatus::Running).unwrap();
-        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Stale)).unwrap();
+        let id = db
+            .create_task("T", "d", "/r", None, TaskStatus::Running)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Stale))
+            .unwrap();
 
-        let updated = db.update_status_if(id, TaskStatus::Review, TaskStatus::Running).unwrap();
+        let updated = db
+            .update_status_if(id, TaskStatus::Review, TaskStatus::Running)
+            .unwrap();
         assert!(updated, "should have updated");
 
         let task = db.get_task(id).unwrap().unwrap();
@@ -2942,10 +3271,15 @@ mod tests {
     #[test]
     fn update_status_if_leaves_sub_status_unchanged_when_condition_fails() {
         let db = in_memory_db();
-        let id = db.create_task("T", "d", "/r", None, TaskStatus::Running).unwrap();
-        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Active)).unwrap();
+        let id = db
+            .create_task("T", "d", "/r", None, TaskStatus::Running)
+            .unwrap();
+        db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Active))
+            .unwrap();
 
-        let updated = db.update_status_if(id, TaskStatus::Review, TaskStatus::Backlog).unwrap();
+        let updated = db
+            .update_status_if(id, TaskStatus::Review, TaskStatus::Backlog)
+            .unwrap();
         assert!(!updated, "condition was wrong, should not have updated");
 
         let task = db.get_task(id).unwrap().unwrap();
@@ -2970,12 +3304,16 @@ mod tests {
             "INSERT INTO tasks (title, description, repo_path, status, sub_status) \
              VALUES ('T', 'D', '/r', 'backlog', 'none')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let result = conn.execute(
             "UPDATE tasks SET status = 'review', sub_status = 'active' WHERE id = 1",
             [],
         );
-        assert!(result.is_err(), "CHECK constraint must reject (review, active)");
+        assert!(
+            result.is_err(),
+            "CHECK constraint must reject (review, active)"
+        );
     }
 
     #[test]
@@ -2986,7 +3324,8 @@ mod tests {
             "INSERT INTO tasks (title, description, repo_path, status, sub_status) \
              VALUES ('T', 'D', '/r', 'backlog', 'none')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         let result = conn.execute(
             "UPDATE tasks SET status = 'review', sub_status = 'awaiting_review' WHERE id = 1",
             [],
@@ -3057,19 +3396,22 @@ mod tests {
                  updated_at TEXT NOT NULL
              );
              PRAGMA user_version = 15;",
-        ).unwrap();
+        )
+        .unwrap();
 
         // Insert invalid rows that migration 16 must clean up
         conn.execute(
             "INSERT INTO tasks (title, description, repo_path, status, sub_status) \
              VALUES ('ReviewBlocked', 'desc', '/r', 'review', 'needs_input')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO tasks (title, description, repo_path, status, sub_status) \
              VALUES ('ValidReview', 'desc', '/r', 'review', 'awaiting_review')",
             [],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Run migrations
         Database::init_schema(&conn).unwrap();
@@ -3080,17 +3422,26 @@ mod tests {
         assert_eq!(version, 23);
 
         // (review, needs_input) must be converted to (review, awaiting_review)
-        let ss: String = conn.query_row(
-            "SELECT sub_status FROM tasks WHERE title = 'ReviewBlocked'",
-            [], |row| row.get(0),
-        ).unwrap();
-        assert_eq!(ss, "awaiting_review", "legacy (review, needs_input) must be cleaned up");
+        let ss: String = conn
+            .query_row(
+                "SELECT sub_status FROM tasks WHERE title = 'ReviewBlocked'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            ss, "awaiting_review",
+            "legacy (review, needs_input) must be cleaned up"
+        );
 
         // Valid row must be unchanged
-        let ss2: String = conn.query_row(
-            "SELECT sub_status FROM tasks WHERE title = 'ValidReview'",
-            [], |row| row.get(0),
-        ).unwrap();
+        let ss2: String = conn
+            .query_row(
+                "SELECT sub_status FROM tasks WHERE title = 'ValidReview'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(ss2, "awaiting_review");
     }
 
@@ -3100,9 +3451,12 @@ mod tests {
         let epic = db.create_epic("E", "", "/repo").unwrap();
         assert_eq!(epic.status, TaskStatus::Backlog);
 
-        let task = db.create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        let task = db
+            .create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         db.set_task_epic_id(task.id, Some(epic.id)).unwrap();
-        db.patch_task(task.id, &TaskPatch::new().status(TaskStatus::Running)).unwrap();
+        db.patch_task(task.id, &TaskPatch::new().status(TaskStatus::Running))
+            .unwrap();
 
         db.recalculate_epic_status(epic.id).unwrap();
         let epic = db.get_epic(epic.id).unwrap().unwrap();
@@ -3113,11 +3467,15 @@ mod tests {
     fn recalculate_epic_status_does_not_move_backward() {
         let db = in_memory_db();
         let epic = db.create_epic("E", "", "/repo").unwrap();
-        db.patch_epic(epic.id, &EpicPatch::new().status(TaskStatus::Review)).unwrap();
+        db.patch_epic(epic.id, &EpicPatch::new().status(TaskStatus::Review))
+            .unwrap();
 
-        let task = db.create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        let task = db
+            .create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         db.set_task_epic_id(task.id, Some(epic.id)).unwrap();
-        db.patch_task(task.id, &TaskPatch::new().status(TaskStatus::Running)).unwrap();
+        db.patch_task(task.id, &TaskPatch::new().status(TaskStatus::Running))
+            .unwrap();
 
         db.recalculate_epic_status(epic.id).unwrap();
         let epic = db.get_epic(epic.id).unwrap().unwrap();
@@ -3129,12 +3487,18 @@ mod tests {
         let db = in_memory_db();
         let epic = db.create_epic("E", "", "/repo").unwrap();
 
-        let t1 = db.create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog).unwrap();
-        let t2 = db.create_task_returning("T2", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        let t1 = db
+            .create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let t2 = db
+            .create_task_returning("T2", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         db.set_task_epic_id(t1.id, Some(epic.id)).unwrap();
         db.set_task_epic_id(t2.id, Some(epic.id)).unwrap();
-        db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Done)).unwrap();
-        db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Done)).unwrap();
+        db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Done))
+            .unwrap();
+        db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Done))
+            .unwrap();
 
         db.recalculate_epic_status(epic.id).unwrap();
         let epic = db.get_epic(epic.id).unwrap().unwrap();
@@ -3146,12 +3510,18 @@ mod tests {
         let db = in_memory_db();
         let epic = db.create_epic("E", "", "/repo").unwrap();
 
-        let t1 = db.create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog).unwrap();
-        let t2 = db.create_task_returning("T2", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        let t1 = db
+            .create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let t2 = db
+            .create_task_returning("T2", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         db.set_task_epic_id(t1.id, Some(epic.id)).unwrap();
         db.set_task_epic_id(t2.id, Some(epic.id)).unwrap();
-        db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Review)).unwrap();
-        db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Done)).unwrap();
+        db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Review))
+            .unwrap();
+        db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Done))
+            .unwrap();
 
         db.recalculate_epic_status(epic.id).unwrap();
         let epic = db.get_epic(epic.id).unwrap().unwrap();
@@ -3163,15 +3533,24 @@ mod tests {
         let db = in_memory_db();
         let epic = db.create_epic("E", "", "/repo").unwrap();
 
-        let t1 = db.create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog).unwrap();
-        let t2 = db.create_task_returning("T2", "", "/repo", None, TaskStatus::Backlog).unwrap();
-        let t3 = db.create_task_returning("T3", "", "/repo", None, TaskStatus::Backlog).unwrap();
+        let t1 = db
+            .create_task_returning("T1", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let t2 = db
+            .create_task_returning("T2", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
+        let t3 = db
+            .create_task_returning("T3", "", "/repo", None, TaskStatus::Backlog)
+            .unwrap();
         db.set_task_epic_id(t1.id, Some(epic.id)).unwrap();
         db.set_task_epic_id(t2.id, Some(epic.id)).unwrap();
         db.set_task_epic_id(t3.id, Some(epic.id)).unwrap();
-        db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Review)).unwrap();
-        db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Review)).unwrap();
-        db.patch_task(t3.id, &TaskPatch::new().status(TaskStatus::Running)).unwrap();
+        db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Review))
+            .unwrap();
+        db.patch_task(t2.id, &TaskPatch::new().status(TaskStatus::Review))
+            .unwrap();
+        db.patch_task(t3.id, &TaskPatch::new().status(TaskStatus::Running))
+            .unwrap();
 
         db.recalculate_epic_status(epic.id).unwrap();
         let epic = db.get_epic(epic.id).unwrap().unwrap();

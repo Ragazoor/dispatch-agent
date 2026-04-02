@@ -970,14 +970,16 @@ mod tests {
 
     #[test]
     fn parse_reviewers_from_reviews_and_requests() {
-        let node = make_pr_node(r#"{
+        let node = make_pr_node(
+            r#"{
             "reviews": {"nodes": [
                 {"state": "APPROVED", "author": {"login": "bob"}, "submittedAt": "2026-03-28T12:00:00Z"}
             ]},
             "reviewRequests": {"nodes": [
                 {"requestedReviewer": {"login": "carol"}}
             ]}
-        }"#);
+        }"#,
+        );
         let mut reviewers = parse_reviewers(&node);
         reviewers.sort_by(|a, b| a.login.cmp(&b.login));
         assert_eq!(reviewers.len(), 2);

@@ -126,3 +126,19 @@ pub(super) fn parse_args<T: serde::de::DeserializeOwned>(
     serde_json::from_value(args)
         .map_err(|e| JsonRpcResponse::err(id.clone(), -32602, format!("Invalid arguments: {e}")))
 }
+
+// ---------------------------------------------------------------------------
+// ServiceError → JsonRpcResponse conversion
+// ---------------------------------------------------------------------------
+
+pub(super) fn service_err_to_response(
+    id: Option<Value>,
+    err: crate::service::ServiceError,
+) -> JsonRpcResponse {
+    use crate::service::ServiceError;
+    match err {
+        ServiceError::Validation(msg) => JsonRpcResponse::err(id, -32602, msg),
+        ServiceError::NotFound(msg) => JsonRpcResponse::err(id, -32602, msg),
+        ServiceError::Internal(msg) => JsonRpcResponse::err(id, -32603, msg),
+    }
+}
