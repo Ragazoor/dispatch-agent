@@ -903,6 +903,7 @@ pub fn pr_number_from_url(url: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     // --- TaskStatus ---
 
@@ -1157,6 +1158,14 @@ mod tests {
     #[test]
     fn slugify_numbers() {
         assert_eq!(slugify("Task 42"), "task-42");
+    }
+
+    proptest! {
+        #[test]
+        fn slugify_never_panics(input in "\\PC{0,2000}") {
+            // slugify should never panic on arbitrary input
+            let _ = slugify(&input);
+        }
     }
 
     #[test]

@@ -93,6 +93,7 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
 mod tests {
     use super::*;
     use crate::models::{EpicId, TaskId, TaskStatus};
+    use proptest::prelude::*;
     use chrono::Utc;
 
     fn make_epic(title: &str, description: &str, repo_path: &str) -> Epic {
@@ -237,5 +238,13 @@ mod tests {
         let fields = parse_editor_content(input);
         assert_eq!(fields.title, "Hello");
         assert_eq!(fields.status, "backlog");
+    }
+
+    proptest! {
+        #[test]
+        fn parse_editor_content_never_panics(input in "\\PC{0,2000}") {
+            // parse_editor_content should never panic on arbitrary input
+            let _ = parse_editor_content(&input);
+        }
     }
 }
