@@ -3,3 +3,4 @@
 docs/superpowers/**
 .superpowers/
 .claude-prompt
+.claude-messages/

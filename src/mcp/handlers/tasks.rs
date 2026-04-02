@@ -598,20 +598,34 @@ pub(super) fn handle_send_message(
     let worktree = to_task.worktree.as_ref().expect("validated by service");
     let tmux_window = to_task.tmux_window.as_ref().expect("validated by service");
 
-    // Write message to file in target's worktree
+    // Write message to a uniquely-named file in target's worktree
+    let messages_dir = format!("{worktree}/.claude-messages");
+    if let Err(e) = std::fs::create_dir_all(&messages_dir) {
+        return JsonRpcResponse::err(
+            id,
+            -32603,
+            format!("failed to create messages dir: {e}"),
+        );
+    }
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let filename = format!("{}-{}.md", from_task.id.0, timestamp);
+    let message_path = format!("{messages_dir}/{filename}");
+
     let message_content = format!(
         "[Message from task {}: \"{}\"]\n{}",
         from_task.id.0, from_task.title, parsed.body
     );
-    let message_path = format!("{worktree}/.claude-message");
     if let Err(e) = std::fs::write(&message_path, &message_content) {
         return JsonRpcResponse::err(id, -32603, format!("failed to write message file: {e}"));
     }
 
     // Inject notification into the target's tmux window
     let notification = format!(
-        "You received a message from task {}. Read .claude-message for the full content, then delete the file.",
-        from_task.id.0
+        "You received a message from task {}. Read .claude-messages/{} for the full content, then delete the file.",
+        from_task.id.0, filename
     );
     if let Err(e) = crate::tmux::send_keys(tmux_window, &notification, &*state.runner) {
         let _ = std::fs::remove_file(&message_path);
