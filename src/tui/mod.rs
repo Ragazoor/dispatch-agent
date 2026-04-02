@@ -572,6 +572,10 @@ impl App {
             Message::DetachTmux(id) => self.handle_detach_tmux(vec![id]),
             Message::BatchDetachTmux(ids) => self.handle_detach_tmux(ids),
             Message::ConfirmDetachTmux => self.handle_confirm_detach_tmux(),
+            Message::MessageReceived(id) => {
+                self.agents.message_flash.insert(id, std::time::Instant::now());
+                vec![]
+            }
             // Review board
             Message::SwitchToReviewBoard => self.handle_switch_to_review_board(),
             Message::SwitchToTaskBoard => self.handle_switch_to_task_board(),
@@ -1085,6 +1089,9 @@ impl App {
                 }
             }
         }
+
+        // Clear expired message flash indicators
+        self.agents.message_flash.retain(|_, t| t.elapsed().as_secs() < 3);
 
         let mut cmds: Vec<Command> = self
             .tasks

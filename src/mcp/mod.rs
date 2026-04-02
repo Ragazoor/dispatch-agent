@@ -6,12 +6,22 @@ use axum::{routing::post, Router};
 use tokio::sync::mpsc;
 
 use crate::db;
+use crate::models::TaskId;
 use crate::process::ProcessRunner;
+
+/// Events sent from the MCP server to the TUI runtime.
+#[derive(Debug)]
+pub enum McpEvent {
+    /// A mutation occurred — trigger a database refresh.
+    Refresh,
+    /// A message was sent to an agent — flash the target task's card.
+    MessageSent { to_task_id: TaskId },
+}
 
 pub struct McpState {
     pub db: Arc<dyn db::TaskStore>,
-    /// When set, MCP sends a `()` after mutations to trigger an immediate TUI refresh.
-    pub notify_tx: Option<mpsc::UnboundedSender<()>>,
+    /// When set, MCP sends events after mutations to trigger TUI updates.
+    pub notify_tx: Option<mpsc::UnboundedSender<McpEvent>>,
     /// Process runner shared with TuiRuntime for executing git/tmux operations.
     pub runner: Arc<dyn ProcessRunner>,
 }
@@ -19,14 +29,20 @@ pub struct McpState {
 impl McpState {
     pub fn notify(&self) {
         if let Some(tx) = &self.notify_tx {
-            let _ = tx.send(());
+            let _ = tx.send(McpEvent::Refresh);
+        }
+    }
+
+    pub fn notify_message_sent(&self, to_task_id: TaskId) {
+        if let Some(tx) = &self.notify_tx {
+            let _ = tx.send(McpEvent::MessageSent { to_task_id });
         }
     }
 }
 
 pub fn router(
     db: Arc<dyn db::TaskStore>,
-    notify_tx: Option<mpsc::UnboundedSender<()>>,
+    notify_tx: Option<mpsc::UnboundedSender<McpEvent>>,
     runner: Arc<dyn ProcessRunner>,
 ) -> Router {
     let state = Arc::new(McpState {
@@ -42,7 +58,7 @@ pub fn router(
 pub async fn serve(
     db: Arc<dyn db::TaskStore>,
     port: u16,
-    notify_tx: mpsc::UnboundedSender<()>,
+    notify_tx: mpsc::UnboundedSender<McpEvent>,
     runner: Arc<dyn ProcessRunner>,
 ) -> anyhow::Result<()> {
     let app = router(db, Some(notify_tx), runner);

@@ -194,6 +194,8 @@ pub enum Message {
     DetachTmux(TaskId),
     BatchDetachTmux(Vec<TaskId>),
     ConfirmDetachTmux,
+    // Inter-agent messaging
+    MessageReceived(TaskId),
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +322,7 @@ pub struct AgentTracking {
     pub notified_needs_input: HashSet<TaskId>,
     pub auto_dispatched_epics: HashSet<EpicId>,
     pub last_pr_poll: HashMap<TaskId, Instant>,
+    pub message_flash: HashMap<TaskId, Instant>,
 }
 
 impl AgentTracking {
@@ -333,6 +336,7 @@ impl AgentTracking {
             notified_needs_input: HashSet::new(),
             auto_dispatched_epics: HashSet::new(),
             last_pr_poll: HashMap::new(),
+            message_flash: HashMap::new(),
         }
     }
 
@@ -344,6 +348,7 @@ impl AgentTracking {
         self.notified_review.remove(&id);
         self.notified_needs_input.remove(&id);
         self.last_pr_poll.remove(&id);
+        self.message_flash.remove(&id);
     }
 }
 

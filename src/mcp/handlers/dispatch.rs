@@ -241,6 +241,19 @@ pub(super) fn tool_definitions() -> Value {
                     },
                     "required": ["task_id", "cost_usd", "input_tokens", "output_tokens"]
                 }
+            },
+            {
+                "name": "send_message",
+                "description": "Send a message/prompt to another running agent. The message is written to a file in the target's worktree and a notification is injected into their tmux window. Fire-and-forget — no response tracking.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "from_task_id": { "type": "integer", "description": "Your own task ID (the sender)" },
+                        "to_task_id": { "type": "integer", "description": "Target agent's task ID" },
+                        "body": { "type": "string", "description": "Message content to send to the other agent" }
+                    },
+                    "required": ["from_task_id", "to_task_id", "body"]
+                }
             }
         ]
     })
@@ -289,6 +302,7 @@ pub async fn handle_mcp(
                 "list_epics" => epics::handle_list_epics(&state, id, args),
                 "update_epic" => epics::handle_update_epic(&state, id, args),
                 "wrap_up" => tasks::handle_wrap_up(&state, id, args).await,
+                "send_message" => tasks::handle_send_message(&state, id, args),
                 other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
             }
         }

@@ -40,7 +40,7 @@ pub async fn run_tui(db_path: &Path, port: u16, inactivity_timeout: u64) -> Resu
     let runner: Arc<dyn ProcessRunner> = Arc::new(RealProcessRunner);
     let mcp_db = database.clone();
     let mcp_runner = runner.clone();
-    let (mcp_notify_tx, mut mcp_notify_rx) = mpsc::unbounded_channel::<()>();
+    let (mcp_notify_tx, mut mcp_notify_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
     tokio::spawn(async move {
         if let Err(e) = mcp::serve(mcp_db, port, mcp_notify_tx, mcp_runner).await {
             eprintln!("MCP server error: {e}");
@@ -1024,7 +1024,7 @@ async fn run_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
     msg_rx: &mut mpsc::UnboundedReceiver<Message>,
-    mcp_notify_rx: &mut mpsc::UnboundedReceiver<()>,
+    mcp_notify_rx: &mut mpsc::UnboundedReceiver<mcp::McpEvent>,
     tick_interval: &mut tokio::time::Interval,
     rt: &TuiRuntime,
 ) -> Result<()> {
@@ -1047,9 +1047,15 @@ async fn run_loop(
                 app.update(msg)
             }
 
-            // MCP mutation notification — immediate refresh
-            Some(()) = mcp_notify_rx.recv() => {
-                rt.exec_refresh_from_db(app)
+            // MCP event notification
+            Some(event) = mcp_notify_rx.recv() => {
+                match event {
+                    mcp::McpEvent::Refresh => rt.exec_refresh_from_db(app),
+                    mcp::McpEvent::MessageSent { to_task_id } => {
+                        app.update(Message::MessageReceived(to_task_id));
+                        rt.exec_refresh_from_db(app)
+                    }
+                }
             }
 
             // Periodic tick for tmux capture

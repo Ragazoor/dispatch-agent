@@ -9,7 +9,7 @@ use crate::mcp::McpState;
 use crate::process::{ProcessRunner, MockProcessRunner};
 
 use super::dispatch::{handle_mcp, tool_definitions};
-use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs, WrapUpArgs, ReportUsageArgs};
+use super::tasks::{UpdateTaskArgs, GetTaskArgs, CreateTaskWithEpicArgs, ListTasksArgs, ClaimTaskArgs, WrapUpArgs, ReportUsageArgs, SendMessageArgs};
 use super::epics::{CreateEpicArgs, GetEpicArgs, UpdateEpicArgs};
 use super::types::{JsonRpcRequest, JsonRpcResponse};
 
@@ -891,6 +891,12 @@ fn tool_schemas_match_arg_structs() {
             json!({"task_id": 1, "cost_usd": 0.42, "input_tokens": 1000,
                    "output_tokens": 500, "cache_read_tokens": 100, "cache_write_tokens": 50}),
         ),
+        (
+            "send_message",
+            BTreeSet::from(["from_task_id", "to_task_id", "body"]),
+            BTreeSet::from(["from_task_id", "to_task_id", "body"]),
+            json!({"from_task_id": 1, "to_task_id": 2, "body": "Hello from task 1"}),
+        ),
     ];
 
     // Verify we cover exactly the tools that exist
@@ -924,6 +930,7 @@ fn tool_schemas_match_arg_structs() {
             "list_epics" => {} // no args
             "update_epic" => { serde_json::from_value::<UpdateEpicArgs>(payload.clone()).unwrap(); }
             "wrap_up" => { serde_json::from_value::<WrapUpArgs>(payload.clone()).unwrap(); }
+            "send_message" => { serde_json::from_value::<SendMessageArgs>(payload.clone()).unwrap(); }
             other => panic!("No deserialization check for tool: {other}"),
         }
     }
@@ -2018,4 +2025,129 @@ async fn update_task_status_recalculates_epic_status() {
     // Epic should auto-advance to Running
     let epic = state.db.get_epic(epic.id).unwrap().unwrap();
     assert_eq!(epic.status, TaskStatus::Running);
+}
+
+// ---------------------------------------------------------------------------
+// send_message tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn send_message_writes_file_and_sends_keys() {
+    let tmp = tempfile::tempdir().unwrap();
+    let worktree_path = tmp.path().to_str().unwrap().to_string();
+
+    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().unwrap());
+    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // tmux send-keys -l (notification text)
+        MockProcessRunner::ok(), // tmux send-keys Enter
+    ]));
+    let state = Arc::new(McpState { db: db.clone(), notify_tx: None, runner });
+
+    // Create sender and receiver tasks
+    let sender_id = db.create_task("Fix auth bug", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let receiver_id = db.create_task("Review PR", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    db.patch_task(receiver_id, &db::TaskPatch::new()
+        .worktree(Some(&worktree_path))
+        .tmux_window(Some("task-2"))
+    ).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "send_message",
+            "arguments": {
+                "from_task_id": sender_id.0,
+                "to_task_id": receiver_id.0,
+                "body": "Can you review path/to/file.rs?"
+            }
+        })),
+    ).await;
+
+    let text = extract_response_text(&resp);
+    assert!(text.contains("Message sent to task"), "Expected success message, got: {text}");
+
+    // Verify message file was written
+    let message_path = tmp.path().join(".claude-message");
+    assert!(message_path.exists(), "Message file should exist");
+    let content = std::fs::read_to_string(&message_path).unwrap();
+    assert!(content.contains("Fix auth bug"), "Message should contain sender title");
+    assert!(content.contains("Can you review path/to/file.rs?"), "Message should contain body");
+}
+
+#[tokio::test]
+async fn send_message_target_not_found() {
+    let state = test_state();
+
+    let sender_id = state.db.create_task("Sender", "desc", "/repo", None, TaskStatus::Running).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "send_message",
+            "arguments": {
+                "from_task_id": sender_id.0,
+                "to_task_id": 9999,
+                "body": "hello"
+            }
+        })),
+    ).await;
+
+    assert!(resp.error.is_some(), "Should return error for missing target");
+    let err = resp.error.unwrap();
+    assert!(err.message.contains("not found"), "Error should mention not found: {}", err.message);
+}
+
+#[tokio::test]
+async fn send_message_target_no_worktree() {
+    let state = test_state();
+
+    let sender_id = state.db.create_task("Sender", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let receiver_id = state.db.create_task("Receiver", "desc", "/repo", None, TaskStatus::Backlog).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "send_message",
+            "arguments": {
+                "from_task_id": sender_id.0,
+                "to_task_id": receiver_id.0,
+                "body": "hello"
+            }
+        })),
+    ).await;
+
+    assert!(resp.error.is_some(), "Should return error for target without worktree");
+    let err = resp.error.unwrap();
+    assert!(err.message.contains("no worktree"), "Error should mention no worktree: {}", err.message);
+}
+
+#[tokio::test]
+async fn send_message_target_no_tmux_window() {
+    let state = test_state();
+
+    let sender_id = state.db.create_task("Sender", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    let receiver_id = state.db.create_task("Receiver", "desc", "/repo", None, TaskStatus::Running).unwrap();
+    state.db.patch_task(receiver_id, &db::TaskPatch::new()
+        .worktree(Some("/some/worktree"))
+    ).unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "send_message",
+            "arguments": {
+                "from_task_id": sender_id.0,
+                "to_task_id": receiver_id.0,
+                "body": "hello"
+            }
+        })),
+    ).await;
+
+    assert!(resp.error.is_some(), "Should return error for target without tmux window");
+    let err = resp.error.unwrap();
+    assert!(err.message.contains("no tmux window"), "Error should mention no tmux window: {}", err.message);
 }

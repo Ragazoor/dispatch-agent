@@ -528,12 +528,22 @@ fn build_task_list_item<'a>(
         Style::default()
     };
 
-    let line1 = Line::from(vec![
+    let has_message_flash = app
+        .agents
+        .message_flash
+        .get(&task.id)
+        .is_some_and(|t| t.elapsed().as_secs() < 3);
+
+    let mut line1_spans = vec![
         Span::styled(select_prefix.to_string(), title_style),
         Span::styled(stripe_char, stripe_style),
         Span::styled(format!(" #{} ", task.id), Style::default().fg(MUTED)),
         Span::styled(title_text.to_string(), title_style),
-    ]);
+    ];
+    if has_message_flash {
+        line1_spans.push(Span::styled(" \u{2709}", Style::default().fg(Color::Yellow)));
+    }
+    let line1 = Line::from(line1_spans);
 
     let line2 = render_card_indicator(classify_card_indicator(task, status, app, now));
 

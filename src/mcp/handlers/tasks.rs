@@ -93,6 +93,15 @@ pub(super) struct WrapUpArgs {
     pub(super) action: String, // "rebase" | "pr"
 }
 
+#[derive(Deserialize)]
+pub(super) struct SendMessageArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) from_task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) to_task_id: i64,
+    pub(super) body: String,
+}
+
 // ---------------------------------------------------------------------------
 // Response formatting
 // ---------------------------------------------------------------------------
@@ -702,7 +711,7 @@ pub(super) async fn handle_wrap_up(
                         }
                         auto_dispatch_next(next_epic_task, &*db, &*ad_runner);
                         if let Some(tx) = notify_tx {
-                            let _ = tx.send(());
+                            let _ = tx.send(crate::mcp::McpEvent::Refresh);
                         }
                     });
                     JsonRpcResponse::ok(
@@ -712,7 +721,7 @@ pub(super) async fn handle_wrap_up(
                 }
                 Err(e) => {
                     if let Some(tx) = notify_tx {
-                        let _ = tx.send(());
+                        let _ = tx.send(crate::mcp::McpEvent::Refresh);
                     }
                     JsonRpcResponse::err(id, -32603, format!("wrap_up failed: {e}"))
                 }
@@ -764,7 +773,7 @@ pub(super) async fn handle_wrap_up(
                         }
                         auto_dispatch_next(next_epic_task, &*db, &*ad_runner);
                         if let Some(tx) = notify_tx {
-                            let _ = tx.send(());
+                            let _ = tx.send(crate::mcp::McpEvent::Refresh);
                         }
                     });
                     JsonRpcResponse::ok(
@@ -774,7 +783,7 @@ pub(super) async fn handle_wrap_up(
                 }
                 Err(e) => {
                     if let Some(tx) = notify_tx {
-                        let _ = tx.send(());
+                        let _ = tx.send(crate::mcp::McpEvent::Refresh);
                     }
                     JsonRpcResponse::err(id, -32603, format!("wrap_up failed: {e}"))
                 }
@@ -782,6 +791,106 @@ pub(super) async fn handle_wrap_up(
         }
         _ => unreachable!(),
     }
+}
+
+pub(super) fn handle_send_message(
+    state: &McpState,
+    id: Option<Value>,
+    args: Value,
+) -> JsonRpcResponse {
+    let parsed: SendMessageArgs = match parse_args(&id, args) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+
+    let from_task = match state.db.get_task(TaskId(parsed.from_task_id)) {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return JsonRpcResponse::err(
+                id,
+                -32602,
+                format!("sender task {} not found", parsed.from_task_id),
+            );
+        }
+        Err(e) => {
+            return JsonRpcResponse::err(id, -32603, format!("failed to look up sender: {e}"));
+        }
+    };
+
+    let to_task = match state.db.get_task(TaskId(parsed.to_task_id)) {
+        Ok(Some(t)) => t,
+        Ok(None) => {
+            return JsonRpcResponse::err(
+                id,
+                -32602,
+                format!("target task {} not found", parsed.to_task_id),
+            );
+        }
+        Err(e) => {
+            return JsonRpcResponse::err(id, -32603, format!("failed to look up target: {e}"));
+        }
+    };
+
+    let Some(ref worktree) = to_task.worktree else {
+        return JsonRpcResponse::err(
+            id,
+            -32602,
+            format!("target task {} has no worktree (not running)", parsed.to_task_id),
+        );
+    };
+
+    let Some(ref tmux_window) = to_task.tmux_window else {
+        return JsonRpcResponse::err(
+            id,
+            -32602,
+            format!("target task {} has no tmux window (not running)", parsed.to_task_id),
+        );
+    };
+
+    // Write message to file in target's worktree
+    let message_content = format!(
+        "[Message from task {}: \"{}\"]\n{}",
+        from_task.id.0, from_task.title, parsed.body
+    );
+    let message_path = format!("{worktree}/.claude-message");
+    if let Err(e) = std::fs::write(&message_path, &message_content) {
+        return JsonRpcResponse::err(
+            id,
+            -32603,
+            format!("failed to write message file: {e}"),
+        );
+    }
+
+    // Inject a short notification prompt into the target's tmux window
+    let notification = format!(
+        "You received a message from task {}. Read .claude-message for the full content, then delete the file.",
+        from_task.id.0
+    );
+    if let Err(e) = crate::tmux::send_keys(tmux_window, &notification, &*state.runner) {
+        // Clean up the file if we can't deliver
+        let _ = std::fs::remove_file(&message_path);
+        return JsonRpcResponse::err(
+            id,
+            -32603,
+            format!("failed to send notification to target agent: {e}"),
+        );
+    }
+
+    state.notify_message_sent(to_task.id);
+
+    tracing::info!(
+        from_task_id = parsed.from_task_id,
+        to_task_id = parsed.to_task_id,
+        "message sent between agents"
+    );
+
+    JsonRpcResponse::ok(
+        id,
+        json!({"content": [{"type": "text", "text": format!(
+            "Message sent to task {} ({})",
+            to_task.id.0, to_task.title
+        )}]}),
+    )
 }
 
 /// Auto-dispatch the next epic subtask from main.
