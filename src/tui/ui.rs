@@ -24,6 +24,7 @@ const PURPLE: Color = Color::Rgb(187, 154, 247);
 const GREEN: Color = Color::Rgb(158, 206, 106);
 const CYAN: Color = Color::Rgb(86, 182, 194);
 const RED_DIM: Color = Color::Rgb(224, 130, 130);
+const FLASH_BG: Color = Color::Rgb(62, 52, 20);
 
 /// Column color per status
 fn column_color(status: TaskStatus) -> Color {
@@ -601,8 +602,15 @@ fn build_task_list_item<'a>(
     // Build two-line ListItem
     let mut item = ListItem::new(vec![line1, line2]);
 
-    // Cursor gets tinted background via ListItem::style() for full-width fill
-    if is_cursor {
+    // Flash bg takes priority over cursor — it's transient (3s) and meant to grab attention
+    if has_message_flash {
+        item = item.style(
+            Style::default()
+                .bg(FLASH_BG)
+                .fg(FG)
+                .add_modifier(Modifier::BOLD),
+        );
+    } else if is_cursor {
         item = item.style(
             Style::default()
                 .bg(cursor_bg_color(status))
