@@ -3233,7 +3233,7 @@ fn dispatch_epic_with_plan_brainstorms_subtask_without_plan() {
 }
 
 #[test]
-fn dispatch_epic_with_plan_no_backlog_subtasks_falls_back_to_planning() {
+fn dispatch_epic_with_plan_no_backlog_subtasks_shows_status() {
     let mut app = App::new(vec![], TEST_TIMEOUT);
     let mut epic = make_epic(10);
     epic.plan = Some("docs/plan.md".to_string());
@@ -3249,8 +3249,7 @@ fn dispatch_epic_with_plan_no_backlog_subtasks_falls_back_to_planning() {
     app.selection_mut().set_row(0, 0);
 
     let cmds = app.update(Message::DispatchEpic(EpicId(10)));
-    assert_eq!(cmds.len(), 1);
-    assert!(matches!(cmds[0], Command::DispatchEpic { ref epic } if epic.id == EpicId(10)));
+    assert!(cmds.is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -5434,6 +5433,44 @@ fn dispatch_epic_no_subtasks_falls_back_to_planning() {
 
     // Should fall back to planning dispatch
     assert!(cmds.iter().any(|c| matches!(c, Command::DispatchEpic { .. })));
+}
+
+#[test]
+fn dispatch_epic_no_plan_with_subtasks_does_not_create_planning() {
+    let mut app = make_app();
+
+    let epic = make_epic(1); // no plan
+    app.epics = vec![epic];
+
+    // Epic has an active (running) subtask — should not spawn planning
+    let mut t1 = make_task(10, TaskStatus::Running);
+    t1.epic_id = Some(EpicId(1));
+    app.tasks = vec![t1];
+
+    let cmds = app.update(Message::DispatchEpic(EpicId(1)));
+    // Epic status is Running, so it's blocked by the Backlog check
+    assert!(cmds.is_empty());
+}
+
+#[test]
+fn dispatch_epic_no_plan_with_backlog_subtask_does_not_create_planning() {
+    let mut app = make_app();
+
+    let epic = make_epic(1); // no plan
+    app.epics = vec![epic];
+
+    // Epic has a backlog subtask — epic status is Backlog but has subtasks
+    let mut t1 = make_task(10, TaskStatus::Backlog);
+    t1.epic_id = Some(EpicId(1));
+    app.tasks = vec![t1];
+
+    app.selection_mut().set_column(0);
+    app.selection_mut().set_row(0, 0);
+
+    let cmds = app.update(Message::DispatchEpic(EpicId(1)));
+    // Should NOT create planning subtask since subtasks already exist
+    assert!(cmds.is_empty());
+    assert!(app.status_message.as_deref().unwrap().contains("no plan"));
 }
 
 #[test]

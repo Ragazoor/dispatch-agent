@@ -863,6 +863,7 @@ rule DispatchEpicPlanning {
 
     requires: epic.derived_status = backlog
     requires: !epic.has_plan
+    requires: epic.active_subtasks.count = 0
 
     -- Creates a planning subtask and dispatches a planning agent.
     -- The planning agent brainstorms and writes an implementation plan
