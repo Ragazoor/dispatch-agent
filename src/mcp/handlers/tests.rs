@@ -79,12 +79,13 @@ async fn tools_list_returns_tools() {
     let result = resp.result.unwrap();
     let tools = result["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"update_task"));
-    assert!(names.contains(&"get_task"));
-    assert!(names.contains(&"create_task"));
-    assert!(names.contains(&"list_tasks"));
-    assert!(names.contains(&"claim_task"));
-    assert!(names.contains(&"wrap_up"));
+    for expected in super::dispatch::TOOL_NAMES {
+        assert!(
+            names.contains(expected),
+            "tools/list missing tool: {expected}"
+        );
+    }
+    assert_eq!(names.len(), super::dispatch::TOOL_NAMES.len());
 }
 
 #[tokio::test]
@@ -1395,18 +1396,6 @@ async fn create_task_with_string_epic_id() {
     assert_eq!(subtasks.len(), 1);
 }
 
-#[tokio::test]
-async fn tools_list_includes_epic_tools() {
-    let state = test_state();
-    let resp = call(&state, "tools/list", None).await;
-    let result = resp.result.unwrap();
-    let tools = result["tools"].as_array().unwrap();
-    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert!(names.contains(&"create_epic"));
-    assert!(names.contains(&"get_epic"));
-    assert!(names.contains(&"list_epics"));
-    assert!(names.contains(&"update_epic"));
-}
 
 #[tokio::test]
 async fn update_epic_no_fields_errors() {

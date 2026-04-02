@@ -8,3 +8,4 @@ mod validation;
 mod tests;
 
 pub use dispatch::handle_mcp;
+pub use dispatch::TOOL_NAMES;

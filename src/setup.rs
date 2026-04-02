@@ -49,12 +49,12 @@ pub fn merge_mcp_config(existing: Option<Value>, port: u16) -> MergeResult {
 // Permissions merging
 // ---------------------------------------------------------------------------
 
-const MCP_PERMISSIONS: &[&str] = &[
-    "mcp__dispatch__update_task",
-    "mcp__dispatch__get_task",
-    "mcp__dispatch__create_task",
-    "mcp__dispatch__report_usage",
-];
+fn mcp_permissions() -> Vec<String> {
+    crate::mcp::handlers::TOOL_NAMES
+        .iter()
+        .map(|name| format!("mcp__dispatch__{name}"))
+        .collect()
+}
 
 pub struct PermissionsMergeResult {
     pub value: Value,
@@ -77,8 +77,8 @@ pub fn merge_permissions(existing: Option<Value>) -> PermissionsMergeResult {
 
     let mut added_count = 0;
     let mut new_allow = allow;
-    for perm in MCP_PERMISSIONS {
-        let val = Value::String(perm.to_string());
+    for perm in mcp_permissions() {
+        let val = Value::String(perm);
         if !new_allow.contains(&val) {
             new_allow.push(val);
             added_count += 1;
@@ -291,11 +291,13 @@ mod tests {
         let existing = None;
         let result = merge_permissions(existing);
         let allow = result.value["permissions"]["allow"].as_array().unwrap();
-        assert!(allow.contains(&json!("mcp__dispatch__update_task")));
-        assert!(allow.contains(&json!("mcp__dispatch__get_task")));
-        assert!(allow.contains(&json!("mcp__dispatch__create_task")));
-        assert!(allow.contains(&json!("mcp__dispatch__report_usage")));
-        assert_eq!(result.added_count, 4);
+        for name in crate::mcp::handlers::TOOL_NAMES {
+            assert!(
+                allow.contains(&json!(format!("mcp__dispatch__{name}"))),
+                "missing permission for {name}"
+            );
+        }
+        assert_eq!(result.added_count, crate::mcp::handlers::TOOL_NAMES.len());
     }
 
     #[test]
@@ -311,8 +313,13 @@ mod tests {
         let allow = result.value["permissions"]["allow"].as_array().unwrap();
         assert!(allow.contains(&json!("Bash(git:*)")));
         assert!(allow.contains(&json!("Read")));
-        assert!(allow.contains(&json!("mcp__dispatch__update_task")));
-        assert_eq!(result.added_count, 4);
+        for name in crate::mcp::handlers::TOOL_NAMES {
+            assert!(
+                allow.contains(&json!(format!("mcp__dispatch__{name}"))),
+                "missing permission for {name}"
+            );
+        }
+        assert_eq!(result.added_count, crate::mcp::handlers::TOOL_NAMES.len());
         assert_eq!(result.value["permissions"]["defaultMode"], "acceptEdits");
         assert!(result.value["hooks"]["Stop"].is_array());
     }
@@ -321,16 +328,26 @@ mod tests {
     fn merge_permissions_already_present() {
         let existing = Some(json!({
             "permissions": {
-                "allow": [
-                    "mcp__dispatch__update_task",
-                    "mcp__dispatch__get_task",
-                    "mcp__dispatch__create_task",
-                    "mcp__dispatch__report_usage"
-                ]
+                "allow": crate::mcp::handlers::TOOL_NAMES
+                    .iter()
+                    .map(|name| format!("mcp__dispatch__{name}"))
+                    .collect::<Vec<_>>()
             }
         }));
         let result = merge_permissions(existing);
         assert_eq!(result.added_count, 0);
+    }
+
+    #[test]
+    fn mcp_permissions_includes_all_tools() {
+        let perms = mcp_permissions();
+        for name in crate::mcp::handlers::TOOL_NAMES {
+            let expected = format!("mcp__dispatch__{name}");
+            assert!(
+                perms.contains(&expected),
+                "missing permission for tool: {name}"
+            );
+        }
     }
 
     // -- Hook script --
