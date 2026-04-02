@@ -1103,7 +1103,6 @@ fn append_repo_path_list<'a>(
     }
 }
 
-/// Renders the input form in the detail panel area. Returns true if it rendered.
 // ── Input-form component functions ──────────────────────────────────
 
 fn input_title_lines(app: &App, active: Style, hint: Style) -> Vec<Line<'static>> {
