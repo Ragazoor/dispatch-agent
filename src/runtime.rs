@@ -1187,6 +1187,55 @@ impl TuiRuntime {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn exec_dispatch_fix_agent(
+        &self,
+        repo: String,
+        number: i64,
+        kind: crate::models::AlertKind,
+        title: String,
+        description: String,
+        package: Option<String>,
+        fixed_version: Option<String>,
+    ) {
+        let tx = self.msg_tx.clone();
+        let runner = self.runner.clone();
+        let mut known_paths = self.database.list_repo_paths().unwrap_or_default();
+        if let Ok(tasks) = self.database.list_all() {
+            for t in tasks {
+                if !known_paths.contains(&t.repo_path) {
+                    known_paths.push(t.repo_path.clone());
+                }
+            }
+        }
+        tokio::task::spawn_blocking(move || {
+            match dispatch::dispatch_fix_agent(
+                &repo,
+                number,
+                kind,
+                &title,
+                &description,
+                package.as_deref(),
+                fixed_version.as_deref(),
+                &known_paths,
+                &*runner,
+            ) {
+                Ok(result) => {
+                    let _ = tx.send(Message::FixAgentDispatched {
+                        repo,
+                        number,
+                        tmux_window: result.tmux_window,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(Message::FixAgentFailed {
+                        error: e.to_string(),
+                    });
+                }
+            }
+        });
+    }
+
     fn exec_dispatch_review_agent(&self, mut req: ReviewAgentRequest) {
         let mut known_paths = self.database.list_repo_paths().unwrap_or_default();
         // Also include repo paths from existing tasks as fallback
@@ -1409,6 +1458,25 @@ async fn execute_commands(
             Command::DispatchReviewAgent(req) => rt.exec_dispatch_review_agent(req),
             Command::FetchSecurityAlerts => rt.exec_fetch_security_alerts(),
             Command::PersistSecurityAlerts(alerts) => rt.exec_persist_security_alerts(alerts),
+            Command::DispatchFixAgent {
+                repo,
+                number,
+                kind,
+                title,
+                description,
+                package,
+                fixed_version,
+            } => {
+                rt.exec_dispatch_fix_agent(
+                    repo,
+                    number,
+                    kind,
+                    title,
+                    description,
+                    package,
+                    fixed_version,
+                );
+            }
         }
     }
 

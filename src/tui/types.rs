@@ -280,6 +280,23 @@ pub enum Message {
     ToggleSecurityRepoFilter(String),
     ToggleAllSecurityRepoFilter,
     ToggleSecurityRepoFilterMode,
+    DispatchFixAgent {
+        repo: String,
+        number: i64,
+        kind: crate::models::AlertKind,
+        title: String,
+        description: String,
+        package: Option<String>,
+        fixed_version: Option<String>,
+    },
+    FixAgentDispatched {
+        repo: String,
+        number: i64,
+        tmux_window: String,
+    },
+    FixAgentFailed {
+        error: String,
+    },
     // Filter presets
     StartSavePreset,
     SaveFilterPreset(String),
@@ -422,6 +439,15 @@ pub enum Command {
     DispatchReviewAgent(ReviewAgentRequest),
     FetchSecurityAlerts,
     PersistSecurityAlerts(Vec<SecurityAlert>),
+    DispatchFixAgent {
+        repo: String,
+        number: i64,
+        kind: crate::models::AlertKind,
+        title: String,
+        description: String,
+        package: Option<String>,
+        fixed_version: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------

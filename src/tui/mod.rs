@@ -912,6 +912,41 @@ impl App {
                 self.clamp_security_selection();
                 vec![]
             }
+            Message::DispatchFixAgent {
+                repo,
+                number,
+                kind,
+                title,
+                description,
+                package,
+                fixed_version,
+            } => {
+                self.set_status(format!("Dispatching fix agent for {}#{}...", repo, number));
+                vec![Command::DispatchFixAgent {
+                    repo,
+                    number,
+                    kind,
+                    title,
+                    description,
+                    package,
+                    fixed_version,
+                }]
+            }
+            Message::FixAgentDispatched {
+                repo,
+                number,
+                tmux_window,
+            } => {
+                self.set_status(format!(
+                    "Fix agent dispatched for {}#{} ({})",
+                    repo, number, tmux_window
+                ));
+                vec![]
+            }
+            Message::FixAgentFailed { error } => {
+                self.set_status(format!("Fix agent failed: {error}"));
+                vec![]
+            }
             // Filter presets
             Message::StartSavePreset => self.handle_start_save_preset(),
             Message::SaveFilterPreset(name) => self.handle_save_filter_preset(name),

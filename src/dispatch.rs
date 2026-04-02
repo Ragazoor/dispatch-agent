@@ -967,6 +967,151 @@ pub fn dispatch_review_agent(
     })
 }
 
+/// Build the prompt for a fix agent based on the alert kind.
+#[allow(clippy::too_many_arguments)]
+pub fn build_fix_prompt(
+    repo: &str,
+    number: i64,
+    kind: crate::models::AlertKind,
+    title: &str,
+    description: &str,
+    package: Option<&str>,
+    fixed_version: Option<&str>,
+) -> String {
+    match kind {
+        crate::models::AlertKind::Dependabot => {
+            let pkg = package.unwrap_or("unknown");
+            let fix = fixed_version
+                .map(|v| format!("A fix is available: upgrade to version {v}"))
+                .unwrap_or_else(|| "No fixed version is available yet.".to_string());
+            format!(
+                "You are fixing security alert #{number} in `{repo}`.\n\n\
+                 ## Vulnerability\n\n\
+                 **{title}**\n\
+                 Package: `{pkg}`\n\
+                 {fix}\n\n\
+                 ## Instructions\n\n\
+                 1. Find and update the dependency `{pkg}` to the fixed version\n\
+                 2. Run the project's tests to verify nothing breaks\n\
+                 3. Commit with a descriptive message referencing the alert\n\
+                 4. Create a PR with `gh pr create`\n\n\
+                 Focus on the minimal change needed to resolve the vulnerability."
+            )
+        }
+        crate::models::AlertKind::CodeScanning => {
+            format!(
+                "You are fixing a code scanning alert #{number} in `{repo}`.\n\n\
+                 ## Alert\n\n\
+                 **{title}**\n\
+                 Location: `{description}`\n\n\
+                 ## Instructions\n\n\
+                 1. Read the flagged code at the reported location\n\
+                 2. Understand the vulnerability and apply the appropriate fix\n\
+                 3. Run tests to verify the fix doesn't break anything\n\
+                 4. Commit and create a PR with `gh pr create`\n\n\
+                 Focus on the minimal change needed to resolve the vulnerability."
+            )
+        }
+    }
+}
+
+/// Dispatch a Claude agent to fix a security vulnerability in an isolated worktree.
+#[allow(clippy::too_many_arguments)]
+pub fn dispatch_fix_agent(
+    github_repo: &str,
+    number: i64,
+    kind: crate::models::AlertKind,
+    title: &str,
+    description: &str,
+    package: Option<&str>,
+    fixed_version: Option<&str>,
+    known_paths: &[String],
+    runner: &dyn ProcessRunner,
+) -> Result<DispatchResult> {
+    let repo_path = resolve_repo_path(github_repo, known_paths).ok_or_else(|| {
+        anyhow::anyhow!("No local repo found for {github_repo}. Add it to your repo paths.")
+    })?;
+
+    let repo_short = repo_path.split('/').next_back().unwrap_or(&repo_path);
+    let worktree_name = format!("fix-vuln-{number}");
+    let worktree_path = format!("{repo_path}/.worktrees/{worktree_name}");
+    let branch_name = format!("fix/vuln-{number}");
+    let tmux_window = format!("fix-{repo_short}-{number}");
+
+    if tmux::has_window(&tmux_window, runner).unwrap_or(false) {
+        return Ok(DispatchResult {
+            worktree_path,
+            tmux_window,
+        });
+    }
+
+    std::fs::create_dir_all(format!("{repo_path}/.worktrees"))
+        .context("failed to create .worktrees directory")?;
+
+    let head_output = runner
+        .run(
+            "git",
+            &["-C", &repo_path, "symbolic-ref", "refs/remotes/origin/HEAD"],
+        )
+        .context("failed to detect default branch")?;
+    let head_stdout = String::from_utf8_lossy(&head_output.stdout);
+    let default_branch = head_stdout
+        .trim()
+        .strip_prefix("refs/remotes/origin/")
+        .unwrap_or("main");
+
+    let _ = runner.run(
+        "git",
+        &["-C", &repo_path, "fetch", "origin", default_branch],
+    );
+
+    if !std::path::Path::new(&worktree_path).exists() {
+        let output = runner
+            .run(
+                "git",
+                &[
+                    "-C",
+                    &repo_path,
+                    "worktree",
+                    "add",
+                    "-b",
+                    &branch_name,
+                    &worktree_path,
+                    &format!("origin/{default_branch}"),
+                ],
+            )
+            .context("failed to create fix worktree")?;
+        anyhow::ensure!(
+            output.status.success(),
+            "git worktree add failed: {}",
+            stderr_str(&output)
+        );
+    }
+
+    tmux::new_window(&tmux_window, &worktree_path, runner)
+        .context("failed to create tmux window")?;
+
+    let prompt = build_fix_prompt(
+        github_repo,
+        number,
+        kind,
+        title,
+        description,
+        package,
+        fixed_version,
+    );
+    let prompt_file = format!("{worktree_path}/.claude-prompt");
+    fs::write(&prompt_file, &prompt).with_context(|| format!("failed to write {prompt_file}"))?;
+    let claude_cmd = "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt && claude --permission-mode acceptEdits \"$prompt\"'";
+    tmux::send_keys(&tmux_window, claude_cmd, runner)
+        .context("failed to send keys to tmux window")?;
+
+    Ok(DispatchResult {
+        worktree_path,
+        tmux_window,
+    })
+}
+
 /// A task can be wrapped up if it has a worktree and is either Running or Review.
 pub fn is_wrappable(task: &Task) -> bool {
     task.worktree.is_some()
@@ -2316,6 +2461,39 @@ mod tests {
             send_keys_arg.contains("--permission-mode acceptEdits"),
             "review agent should use acceptEdits mode, got: {send_keys_arg}"
         );
+    }
+
+    // --- build_fix_prompt tests ---
+
+    #[test]
+    fn build_fix_prompt_dependabot() {
+        let prompt = build_fix_prompt(
+            "acme/app",
+            42,
+            crate::models::AlertKind::Dependabot,
+            "CVE-2024-1234 in lodash",
+            "Prototype pollution",
+            Some("lodash"),
+            Some("4.17.21"),
+        );
+        assert!(prompt.contains("lodash"));
+        assert!(prompt.contains("4.17.21"));
+        assert!(prompt.contains("42"));
+    }
+
+    #[test]
+    fn build_fix_prompt_code_scanning() {
+        let prompt = build_fix_prompt(
+            "acme/app",
+            7,
+            crate::models::AlertKind::CodeScanning,
+            "SQL injection",
+            "src/db.rs:42",
+            None,
+            None,
+        );
+        assert!(prompt.contains("SQL injection"));
+        assert!(prompt.contains("src/db.rs:42"));
     }
 }
 

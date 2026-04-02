@@ -783,6 +783,21 @@ impl App {
                 }
             }
 
+            KeyCode::Char('d') => {
+                if let Some(alert) = self.selected_security_alert() {
+                    self.update(Message::DispatchFixAgent {
+                        repo: alert.repo.clone(),
+                        number: alert.number,
+                        kind: alert.kind,
+                        title: alert.title.clone(),
+                        description: alert.description.clone(),
+                        package: alert.package.clone(),
+                        fixed_version: alert.fixed_version.clone(),
+                    })
+                } else {
+                    vec![]
+                }
+            }
             KeyCode::Char('r') => self.update(Message::RefreshSecurityAlerts),
             KeyCode::Char('f') => self.update(Message::StartSecurityRepoFilter),
             KeyCode::Char('t') => self.update(Message::ToggleSecurityKindFilter),
