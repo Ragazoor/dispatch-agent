@@ -478,7 +478,7 @@ fn render_card_indicator(indicator: CardIndicator) -> Line<'static> {
         CardIndicator::Running => {
             (format!("{} running", status_icon(TaskStatus::Running)), CYAN)
         }
-        CardIndicator::ReviewPr { pr_label } => (pr_label, Color::Cyan),
+        CardIndicator::ReviewPr { pr_label } => (format!("\u{25cf} {pr_label}"), Color::Cyan),
         CardIndicator::DoneMerged { pr_label } => {
             (format!("\u{2714} {pr_label} merged"), Color::Green)
         }

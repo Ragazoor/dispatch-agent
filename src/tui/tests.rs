@@ -2262,7 +2262,7 @@ fn review_card_with_pr_detached_shows_circle_prefix() {
 }
 
 #[test]
-fn review_card_with_pr_not_detached_shows_no_prefix() {
+fn review_card_with_pr_attached_shows_filled_circle() {
     let mut task = make_task(1, TaskStatus::Review);
     task.sub_status = SubStatus::AwaitingReview;
     task.pr_url = Some("https://github.com/org/repo/pull/42".to_string());
@@ -2270,8 +2270,7 @@ fn review_card_with_pr_not_detached_shows_no_prefix() {
     task.tmux_window = Some("1-fix".to_string());
     let mut app = App::new(vec![task], TEST_TIMEOUT);
     let buf = render_to_buffer(&mut app, 120, 20);
-    assert!(buffer_contains(&buf, "PR #42"), "expected 'PR #42'");
-    assert!(!buffer_contains(&buf, "○ PR"), "should not show circle prefix");
+    assert!(buffer_contains(&buf, "● PR #42"), "expected '● PR #42'");
 }
 
 #[test]
