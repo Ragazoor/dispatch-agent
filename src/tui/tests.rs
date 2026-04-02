@@ -140,11 +140,12 @@ fn dispatch_only_backlog_tasks() {
 }
 
 #[test]
-fn quit_sets_flag() {
+fn quit_enters_confirm_mode() {
     let mut app = make_app();
     assert!(!app.should_quit);
     app.update(Message::Quit);
-    assert!(app.should_quit);
+    assert!(!app.should_quit);
+    assert_eq!(app.input.mode, InputMode::ConfirmQuit);
 }
 
 #[test]
@@ -4231,11 +4232,12 @@ fn archive_panel_x_on_empty_is_noop() {
 }
 
 #[test]
-fn archive_panel_q_quits() {
+fn archive_panel_q_enters_confirm_quit() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Archived)], TEST_TIMEOUT);
     app.archive.visible = true;
     app.handle_key(make_key(KeyCode::Char('q')));
-    assert!(app.should_quit);
+    assert!(!app.should_quit);
+    assert_eq!(app.input.mode, InputMode::ConfirmQuit);
 }
 
 #[test]
@@ -7294,10 +7296,38 @@ fn handle_key_normal_navigation() {
 }
 
 #[test]
-fn handle_key_normal_quit() {
+fn handle_key_normal_quit_enters_confirm() {
     let mut app = make_app();
     app.handle_key(make_key(KeyCode::Char('q')));
+    assert!(!app.should_quit);
+    assert_eq!(app.input.mode, InputMode::ConfirmQuit);
+}
+
+#[test]
+fn confirm_quit_y_quits() {
+    let mut app = make_app();
+    app.input.mode = InputMode::ConfirmQuit;
+    app.handle_key(make_key(KeyCode::Char('y')));
     assert!(app.should_quit);
+    assert_eq!(app.input.mode, InputMode::Normal);
+}
+
+#[test]
+fn confirm_quit_n_cancels() {
+    let mut app = make_app();
+    app.input.mode = InputMode::ConfirmQuit;
+    app.handle_key(make_key(KeyCode::Char('n')));
+    assert!(!app.should_quit);
+    assert_eq!(app.input.mode, InputMode::Normal);
+}
+
+#[test]
+fn confirm_quit_esc_cancels() {
+    let mut app = make_app();
+    app.input.mode = InputMode::ConfirmQuit;
+    app.handle_key(make_key(KeyCode::Esc));
+    assert!(!app.should_quit);
+    assert_eq!(app.input.mode, InputMode::Normal);
 }
 
 #[test]

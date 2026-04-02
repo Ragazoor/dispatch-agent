@@ -444,6 +444,7 @@ pub enum InputMode {
     // Dependabot batch operations
     ConfirmBatchApprove(Vec<String>),
     ConfirmBatchMerge(Vec<String>),
+    ConfirmQuit,
 }
 
 // ---------------------------------------------------------------------------

@@ -2193,6 +2193,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let bar = Paragraph::new(text).style(Style::default().fg(Color::Green));
             frame.render_widget(bar, area);
         }
+        InputMode::ConfirmQuit => {
+            let bar =
+                Paragraph::new("Quit dispatch? (y/n)").style(Style::default().fg(Color::Yellow));
+            frame.render_widget(bar, area);
+        }
     }
 }
 

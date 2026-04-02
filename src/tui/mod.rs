@@ -822,7 +822,7 @@ impl App {
     }
 
     fn handle_quit(&mut self) -> Vec<Command> {
-        self.should_quit = true;
+        self.input.mode = InputMode::ConfirmQuit;
         vec![]
     }
 

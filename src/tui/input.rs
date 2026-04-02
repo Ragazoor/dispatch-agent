@@ -41,6 +41,7 @@ impl App {
             InputMode::ConfirmDeletePreset => self.handle_key_confirm_delete_preset(key),
             InputMode::ConfirmBatchApprove(_) => self.handle_key_confirm_batch(key, true),
             InputMode::ConfirmBatchMerge(_) => self.handle_key_confirm_batch(key, false),
+            InputMode::ConfirmQuit => self.handle_key_confirm_quit(key),
         }
     }
 
@@ -475,6 +476,13 @@ impl App {
                 vec![]
             }
         }
+    }
+
+    fn handle_key_confirm_quit(&mut self, key: KeyEvent) -> Vec<Command> {
+        self.confirm_dialog(key, |s| {
+            s.should_quit = true;
+            vec![]
+        })
     }
 
     fn handle_key_confirm_delete(&mut self, key: KeyEvent) -> Vec<Command> {
