@@ -209,7 +209,7 @@ fn tick_captures_review_task_with_live_window() {
 #[test]
 fn tick_fetches_my_prs_when_stale() {
     let mut app = make_app();
-    assert!(app.last_my_prs_fetch.is_none());
+    assert!(app.review.last_my_prs_fetch.is_none());
     let cmds = app.update(Message::Tick);
     assert!(cmds.iter().any(|c| matches!(c, Command::FetchMyPrs)));
 }
@@ -5541,21 +5541,21 @@ fn review_board_navigation() {
 #[test]
 fn review_board_enter_toggles_detail() {
     let mut app = make_app();
-    app.review_prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
+    app.review.prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
     app.update(Message::SwitchToReviewBoard);
-    assert!(!app.review_detail_visible);
+    assert!(!app.review.detail_visible);
 
     app.handle_key(make_key(KeyCode::Enter));
-    assert!(app.review_detail_visible);
+    assert!(app.review.detail_visible);
 
     app.handle_key(make_key(KeyCode::Enter));
-    assert!(!app.review_detail_visible);
+    assert!(!app.review.detail_visible);
 }
 
 #[test]
 fn review_board_p_opens_browser() {
     let mut app = make_app();
-    app.review_prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
+    app.review.prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
     app.update(Message::SwitchToReviewBoard);
 
     let cmds = app.handle_key(make_key(KeyCode::Char('p')));
@@ -7315,7 +7315,7 @@ fn review_board_d_dispatches_review_agent() {
     let mut pr = make_review_pr(42, "alice", ReviewDecision::ReviewRequired);
     pr.repo = "org/repo".to_string();
     pr.head_ref = "fix-bug".to_string();
-    app.review_prs = vec![pr];
+    app.review.prs = vec![pr];
     app.update(Message::SwitchToReviewBoard);
 
     let cmds = app.handle_key(KeyEvent::from(KeyCode::Char('d')));
@@ -7326,7 +7326,7 @@ fn review_board_d_dispatches_review_agent() {
 fn review_board_d_no_repo_shows_error() {
     let mut app = App::new(vec![], TEST_TIMEOUT);
     let pr = make_review_pr(42, "alice", ReviewDecision::ReviewRequired);
-    app.review_prs = vec![pr];
+    app.review.prs = vec![pr];
     app.update(Message::SwitchToReviewBoard);
 
     let cmds = app.handle_key(KeyEvent::from(KeyCode::Char('d')));
@@ -7369,7 +7369,7 @@ fn clamp_review_selection_clamps_approved_column() {
     app.update(Message::SwitchToReviewBoard);
 
     // Manually push a PR into the Approved column (index 3).
-    app.review_prs = vec![make_review_pr(1, "alice", ReviewDecision::Approved)];
+    app.review.prs = vec![make_review_pr(1, "alice", ReviewDecision::Approved)];
 
     // Set the row selection for the Approved column to an out-of-bounds value.
     if let Some(sel) = app.review_selection_mut() {
@@ -7392,14 +7392,14 @@ fn review_repo_filter_hides_prs() {
     pr1.repo = "org/repo-a".to_string();
     let mut pr2 = make_review_pr(2, "bob", ReviewDecision::ReviewRequired);
     pr2.repo = "org/repo-b".to_string();
-    app.review_prs = vec![pr1, pr2];
+    app.review.prs = vec![pr1, pr2];
     app.update(Message::SwitchToReviewBoard);
 
     // No filter — both visible
     assert_eq!(app.filtered_review_prs().len(), 2);
 
     // Filter to repo-a only
-    app.review_repo_filter.insert("org/repo-a".to_string());
+    app.review.repo_filter.insert("org/repo-a".to_string());
     assert_eq!(app.filtered_review_prs().len(), 1);
     assert_eq!(app.filtered_review_prs()[0].repo, "org/repo-a");
 }
@@ -7407,7 +7407,7 @@ fn review_repo_filter_hides_prs() {
 #[test]
 fn review_repo_filter_f_opens_filter() {
     let mut app = make_app();
-    app.review_prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
+    app.review.prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
     app.update(Message::SwitchToReviewBoard);
 
     app.handle_key(KeyEvent::from(KeyCode::Char('f')));
@@ -7417,7 +7417,7 @@ fn review_repo_filter_f_opens_filter() {
 #[test]
 fn review_repo_filter_esc_closes() {
     let mut app = make_app();
-    app.review_prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
+    app.review.prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
     app.update(Message::SwitchToReviewBoard);
     app.update(Message::StartReviewRepoFilter);
     assert_eq!(app.input.mode, InputMode::ReviewRepoFilter);
@@ -7463,16 +7463,16 @@ fn review_repo_filter_toggle_all() {
     pr1.repo = "org/repo-a".to_string();
     let mut pr2 = make_review_pr(2, "bob", ReviewDecision::ReviewRequired);
     pr2.repo = "org/repo-b".to_string();
-    app.review_prs = vec![pr1, pr2];
+    app.review.prs = vec![pr1, pr2];
     app.update(Message::SwitchToReviewBoard);
 
     // Toggle all on
     app.update(Message::ToggleAllReviewRepoFilter);
-    assert_eq!(app.review_repo_filter.len(), 2);
+    assert_eq!(app.review.repo_filter.len(), 2);
 
     // Toggle all off
     app.update(Message::ToggleAllReviewRepoFilter);
-    assert!(app.review_repo_filter.is_empty());
+    assert!(app.review.repo_filter.is_empty());
 }
 
 #[test]
@@ -7480,16 +7480,16 @@ fn review_repo_filter_toggle_single() {
     let mut app = make_app();
     let mut pr1 = make_review_pr(1, "alice", ReviewDecision::ReviewRequired);
     pr1.repo = "org/repo-a".to_string();
-    app.review_prs = vec![pr1];
+    app.review.prs = vec![pr1];
     app.update(Message::SwitchToReviewBoard);
 
     // Toggle on
     app.update(Message::ToggleReviewRepoFilter("org/repo-a".to_string()));
-    assert!(app.review_repo_filter.contains("org/repo-a"));
+    assert!(app.review.repo_filter.contains("org/repo-a"));
 
     // Toggle off
     app.update(Message::ToggleReviewRepoFilter("org/repo-a".to_string()));
-    assert!(!app.review_repo_filter.contains("org/repo-a"));
+    assert!(!app.review.repo_filter.contains("org/repo-a"));
 }
 
 #[test]
@@ -7499,7 +7499,7 @@ fn review_repo_filter_clamps_selection() {
     pr1.repo = "org/repo-a".to_string();
     let mut pr2 = make_review_pr(2, "bob", ReviewDecision::ReviewRequired);
     pr2.repo = "org/repo-b".to_string();
-    app.review_prs = vec![pr1, pr2];
+    app.review.prs = vec![pr1, pr2];
     app.update(Message::SwitchToReviewBoard);
 
     // Select the second row
@@ -7520,7 +7520,7 @@ fn review_repo_filter_selected_pr_uses_filter() {
     pr1.repo = "org/repo-a".to_string();
     let mut pr2 = make_review_pr(2, "bob", ReviewDecision::ReviewRequired);
     pr2.repo = "org/repo-b".to_string();
-    app.review_prs = vec![pr1, pr2];
+    app.review.prs = vec![pr1, pr2];
     app.update(Message::SwitchToReviewBoard);
 
     // Without filter, first PR is selected
@@ -7528,7 +7528,7 @@ fn review_repo_filter_selected_pr_uses_filter() {
     assert_eq!(selected.number, 1);
 
     // Filter to repo-b only, first visible PR should be #2
-    app.review_repo_filter.insert("org/repo-b".to_string());
+    app.review.repo_filter.insert("org/repo-b".to_string());
     let selected = app.selected_review_pr().unwrap();
     assert_eq!(selected.number, 2);
 }
@@ -7596,8 +7596,8 @@ fn toggle_review_board_mode_outside_review_board_is_noop() {
 #[test]
 fn active_review_prs_returns_reviewer_prs_in_reviewer_mode() {
     let mut app = make_app();
-    app.review_prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
-    app.my_prs = vec![make_review_pr(2, "me", ReviewDecision::Approved)];
+    app.review.prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
+    app.review.my_prs = vec![make_review_pr(2, "me", ReviewDecision::Approved)];
     app.update(Message::SwitchToReviewBoard);
     assert_eq!(app.active_review_prs().len(), 1);
     assert_eq!(app.active_review_prs()[0].number, 1);
@@ -7606,8 +7606,8 @@ fn active_review_prs_returns_reviewer_prs_in_reviewer_mode() {
 #[test]
 fn active_review_prs_returns_my_prs_in_author_mode() {
     let mut app = make_app();
-    app.review_prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
-    app.my_prs = vec![make_review_pr(2, "me", ReviewDecision::Approved)];
+    app.review.prs = vec![make_review_pr(1, "alice", ReviewDecision::ReviewRequired)];
+    app.review.my_prs = vec![make_review_pr(2, "me", ReviewDecision::Approved)];
     app.update(Message::SwitchToReviewBoard);
     app.update(Message::ToggleReviewBoardMode);
     assert_eq!(app.active_review_prs().len(), 1);

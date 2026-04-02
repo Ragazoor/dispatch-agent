@@ -730,7 +730,7 @@ impl TaskStore for Database {
             TaskStatus::Backlog
         } else if statuses.iter().all(|s| *s == TaskStatus::Done) {
             TaskStatus::Done
-        } else if statuses.iter().any(|s| *s == TaskStatus::Review) {
+        } else if statuses.contains(&TaskStatus::Review) {
             TaskStatus::Review
         } else if statuses.contains(&TaskStatus::Running) {
             TaskStatus::Running

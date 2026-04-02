@@ -50,20 +50,9 @@ pub struct App {
     pub(in crate::tui) repo_filter: HashSet<String>,
     pub(in crate::tui) repo_filter_mode: RepoFilterMode,
     pub(in crate::tui) filter_presets: Vec<(String, HashSet<String>, RepoFilterMode)>,
-    pub(in crate::tui) review_prs: Vec<crate::models::ReviewPr>,
-    pub(in crate::tui) review_board_loading: bool,
-    pub(in crate::tui) last_review_fetch: Option<Instant>,
-    pub(in crate::tui) last_review_error: Option<String>,
+    pub(in crate::tui) review: ReviewBoardState,
     pub(in crate::tui) usage: HashMap<TaskId, TaskUsage>,
     pub(in crate::tui) merge_queue: Option<MergeQueue>,
-    pub(in crate::tui) review_detail_visible: bool,
-    pub(in crate::tui) review_repo_filter: HashSet<String>,
-    pub(in crate::tui) review_repo_filter_mode: RepoFilterMode,
-    pub(in crate::tui) my_prs: Vec<crate::models::ReviewPr>,
-    pub(in crate::tui) my_prs_loading: bool,
-    pub(in crate::tui) last_my_prs_fetch: Option<Instant>,
-    pub(in crate::tui) my_prs_repo_filter: HashSet<String>,
-    pub(in crate::tui) my_prs_repo_filter_mode: RepoFilterMode,
 }
 
 /// Format a title for display in confirmation prompts, truncating if longer than `max_len` chars.
@@ -98,20 +87,9 @@ impl App {
             repo_filter: HashSet::new(),
             repo_filter_mode: RepoFilterMode::default(),
             filter_presets: Vec::new(),
-            review_prs: Vec::new(),
-            review_board_loading: false,
-            last_review_fetch: None,
-            last_review_error: None,
+            review: ReviewBoardState::default(),
             usage: HashMap::new(),
             merge_queue: None,
-            review_detail_visible: false,
-            review_repo_filter: HashSet::new(),
-            review_repo_filter_mode: RepoFilterMode::default(),
-            my_prs: Vec::new(),
-            my_prs_loading: false,
-            last_my_prs_fetch: None,
-            my_prs_repo_filter: HashSet::new(),
-            my_prs_repo_filter_mode: RepoFilterMode::default(),
         }
     }
 
@@ -174,28 +152,28 @@ impl App {
         &self.filter_presets
     }
     pub fn review_prs(&self) -> &[crate::models::ReviewPr] {
-        &self.review_prs
+        &self.review.prs
     }
     pub fn review_board_loading(&self) -> bool {
-        self.review_board_loading
+        self.review.loading
     }
     pub fn last_review_error(&self) -> Option<&str> {
-        self.last_review_error.as_deref()
+        self.review.last_error.as_deref()
     }
     pub fn review_detail_visible(&self) -> bool {
-        self.review_detail_visible
+        self.review.detail_visible
     }
     pub fn review_repo_filter(&self) -> &HashSet<String> {
-        &self.review_repo_filter
+        &self.review.repo_filter
     }
     pub fn review_repo_filter_mode(&self) -> RepoFilterMode {
-        self.review_repo_filter_mode
+        self.review.repo_filter_mode
     }
     pub fn my_prs(&self) -> &[crate::models::ReviewPr] {
-        &self.my_prs
+        &self.review.my_prs
     }
     pub fn my_prs_loading(&self) -> bool {
-        self.my_prs_loading
+        self.review.my_prs_loading
     }
 
     /// Get the review board selection state, if currently in review board mode.
@@ -218,7 +196,7 @@ impl App {
     }
 
     pub fn set_review_prs(&mut self, prs: Vec<crate::models::ReviewPr>) {
-        self.review_prs = prs;
+        self.review.prs = prs;
     }
 
     pub fn set_repo_filter(&mut self, filter: HashSet<String>) {
@@ -250,26 +228,6 @@ impl App {
         match self.repo_filter_mode {
             RepoFilterMode::Include => self.repo_filter.contains(repo_path),
             RepoFilterMode::Exclude => !self.repo_filter.contains(repo_path),
-        }
-    }
-
-    fn review_repo_matches(&self, repo: &str) -> bool {
-        if self.review_repo_filter.is_empty() {
-            return true;
-        }
-        match self.review_repo_filter_mode {
-            RepoFilterMode::Include => self.review_repo_filter.contains(repo),
-            RepoFilterMode::Exclude => !self.review_repo_filter.contains(repo),
-        }
-    }
-
-    fn my_prs_repo_matches(&self, repo: &str) -> bool {
-        if self.my_prs_repo_filter.is_empty() {
-            return true;
-        }
-        match self.my_prs_repo_filter_mode {
-            RepoFilterMode::Include => self.my_prs_repo_filter.contains(repo),
-            RepoFilterMode::Exclude => !self.my_prs_repo_filter.contains(repo),
         }
     }
 
@@ -629,11 +587,11 @@ impl App {
                 let mut cmds = vec![];
                 match &self.view_mode {
                     ViewMode::ReviewBoard { mode: ReviewBoardMode::Author, .. } => {
-                        self.my_prs_loading = true;
+                        self.review.my_prs_loading = true;
                         cmds.push(Command::FetchMyPrs);
                     }
                     _ => {
-                        self.review_board_loading = true;
+                        self.review.loading = true;
                         cmds.push(Command::FetchReviewPrs);
                     }
                 }
@@ -992,7 +950,7 @@ impl App {
     }
 
     fn handle_toggle_review_detail(&mut self) -> Vec<Command> {
-        self.review_detail_visible = !self.review_detail_visible;
+        self.review.detail_visible = !self.review.detail_visible;
         vec![]
     }
 
@@ -1171,22 +1129,14 @@ impl App {
         }
 
         // Refresh review board data if stale (> 30s), regardless of active tab
-        let needs_fetch = self
-            .last_review_fetch
-            .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
-            .unwrap_or(true);
-        if needs_fetch && !self.review_board_loading {
-            self.review_board_loading = true;
+        if self.review.needs_fetch(REVIEW_REFRESH_INTERVAL) && !self.review.loading {
+            self.review.loading = true;
             cmds.push(Command::FetchReviewPrs);
         }
 
         // Also refresh my PRs data if stale (> 30s)
-        let needs_my_prs_fetch = self
-            .last_my_prs_fetch
-            .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
-            .unwrap_or(true);
-        if needs_my_prs_fetch && !self.my_prs_loading {
-            self.my_prs_loading = true;
+        if self.review.needs_my_prs_fetch(REVIEW_REFRESH_INTERVAL) && !self.review.my_prs_loading {
+            self.review.my_prs_loading = true;
             cmds.push(Command::FetchMyPrs);
         }
 
@@ -2148,12 +2098,8 @@ impl App {
             selection: ReviewBoardSelection::new(),
             saved_board,
         };
-        let needs_fetch = self
-            .last_review_fetch
-            .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
-            .unwrap_or(true);
-        if needs_fetch && !self.review_board_loading {
-            self.review_board_loading = true;
+        if self.review.needs_fetch(REVIEW_REFRESH_INTERVAL) && !self.review.loading {
+            self.review.loading = true;
             vec![Command::FetchReviewPrs]
         } else {
             vec![]
@@ -2180,22 +2126,18 @@ impl App {
         if let ViewMode::ReviewBoard { mode, .. } = &self.view_mode {
             match mode {
                 ReviewBoardMode::Author => {
-                    let needs_fetch = self
-                        .last_my_prs_fetch
-                        .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
-                        .unwrap_or(true);
-                    if needs_fetch && !self.my_prs_loading {
-                        self.my_prs_loading = true;
+                    if self.review.needs_my_prs_fetch(REVIEW_REFRESH_INTERVAL)
+                        && !self.review.my_prs_loading
+                    {
+                        self.review.my_prs_loading = true;
                         cmds.push(Command::FetchMyPrs);
                     }
                 }
                 ReviewBoardMode::Reviewer => {
-                    let needs_fetch = self
-                        .last_review_fetch
-                        .map(|t| t.elapsed() > REVIEW_REFRESH_INTERVAL)
-                        .unwrap_or(true);
-                    if needs_fetch && !self.review_board_loading {
-                        self.review_board_loading = true;
+                    if self.review.needs_fetch(REVIEW_REFRESH_INTERVAL)
+                        && !self.review.loading
+                    {
+                        self.review.loading = true;
                         cmds.push(Command::FetchReviewPrs);
                     }
                 }
@@ -2206,10 +2148,10 @@ impl App {
 
     fn handle_review_prs_loaded(&mut self, prs: Vec<crate::models::ReviewPr>) -> Vec<Command> {
         let cmds = vec![Command::PersistReviewPrs(prs.clone())];
-        self.review_prs = prs;
-        self.review_board_loading = false;
-        self.last_review_fetch = Some(Instant::now());
-        self.last_review_error = None;
+        self.review.prs = prs;
+        self.review.loading = false;
+        self.review.last_fetch = Some(Instant::now());
+        self.review.last_error = None;
         self.clamp_review_selection();
         cmds
     }
@@ -2235,24 +2177,24 @@ impl App {
 
     fn handle_review_prs_fetch_failed(&mut self, error: String) -> Vec<Command> {
         tracing::warn!(error = %error, "review PR fetch failed");
-        self.review_board_loading = false;
-        self.last_review_error = Some(error.clone());
+        self.review.loading = false;
+        self.review.last_error = Some(error.clone());
         self.set_status(format!("Failed to fetch review PRs: {error}"));
         vec![]
     }
 
     fn handle_my_prs_loaded(&mut self, prs: Vec<crate::models::ReviewPr>) -> Vec<Command> {
         let cmds = vec![Command::PersistMyPrs(prs.clone())];
-        self.my_prs = prs;
-        self.my_prs_loading = false;
-        self.last_my_prs_fetch = Some(Instant::now());
+        self.review.my_prs = prs;
+        self.review.my_prs_loading = false;
+        self.review.last_my_prs_fetch = Some(Instant::now());
         self.clamp_review_selection();
         cmds
     }
 
     fn handle_my_prs_fetch_failed(&mut self, error: String) -> Vec<Command> {
         tracing::warn!(error = %error, "my PRs fetch failed");
-        self.my_prs_loading = false;
+        self.review.my_prs_loading = false;
         self.set_status(format!("Failed to fetch my PRs: {error}"));
         vec![]
     }
@@ -2288,15 +2230,11 @@ impl App {
     /// Return review PRs filtered by the review repo filter.
     /// When the filter is empty, all PRs are returned.
     pub fn filtered_review_prs(&self) -> Vec<&crate::models::ReviewPr> {
-        self.review_prs.iter()
-            .filter(|pr| self.review_repo_matches(&pr.repo))
-            .collect()
+        self.review.filtered_prs()
     }
 
     pub fn filtered_my_prs(&self) -> Vec<&crate::models::ReviewPr> {
-        self.my_prs.iter()
-            .filter(|pr| self.my_prs_repo_matches(&pr.repo))
-            .collect()
+        self.review.filtered_my_prs()
     }
 
     /// Return the PR list appropriate for the current review board mode.
@@ -2745,28 +2683,28 @@ impl App {
     }
 
     fn handle_toggle_review_repo_filter(&mut self, repo: String) -> Vec<Command> {
-        if !self.review_repo_filter.remove(&repo) {
-            self.review_repo_filter.insert(repo);
+        if !self.review.repo_filter.remove(&repo) {
+            self.review.repo_filter.insert(repo);
         }
         self.clamp_review_selection();
         vec![]
     }
 
     fn handle_toggle_all_review_repo_filter(&mut self) -> Vec<Command> {
-        let all_repos: HashSet<String> = self.review_prs.iter()
+        let all_repos: HashSet<String> = self.review.prs.iter()
             .map(|pr| pr.repo.clone())
             .collect();
-        if self.review_repo_filter.len() == all_repos.len() {
-            self.review_repo_filter.clear();
+        if self.review.repo_filter.len() == all_repos.len() {
+            self.review.repo_filter.clear();
         } else {
-            self.review_repo_filter = all_repos;
+            self.review.repo_filter = all_repos;
         }
         self.clamp_review_selection();
         vec![]
     }
 
     fn handle_toggle_review_repo_filter_mode(&mut self) -> Vec<Command> {
-        self.review_repo_filter_mode = match self.review_repo_filter_mode {
+        self.review.repo_filter_mode = match self.review.repo_filter_mode {
             RepoFilterMode::Include => RepoFilterMode::Exclude,
             RepoFilterMode::Exclude => RepoFilterMode::Include,
         };

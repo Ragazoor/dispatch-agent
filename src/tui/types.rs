@@ -382,6 +382,78 @@ pub struct ArchiveState {
 }
 
 // ---------------------------------------------------------------------------
+// ReviewBoardState — review board data and loading state
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct ReviewBoardState {
+    pub prs: Vec<crate::models::ReviewPr>,
+    pub loading: bool,
+    pub last_fetch: Option<Instant>,
+    pub last_error: Option<String>,
+    pub detail_visible: bool,
+    pub repo_filter: HashSet<String>,
+    pub repo_filter_mode: RepoFilterMode,
+    pub my_prs: Vec<crate::models::ReviewPr>,
+    pub my_prs_loading: bool,
+    pub last_my_prs_fetch: Option<Instant>,
+    pub my_prs_repo_filter: HashSet<String>,
+    pub my_prs_repo_filter_mode: RepoFilterMode,
+}
+
+impl ReviewBoardState {
+    /// Return review PRs filtered by repo filter. Empty filter means all PRs.
+    pub fn filtered_prs(&self) -> Vec<&crate::models::ReviewPr> {
+        self.prs
+            .iter()
+            .filter(|pr| self.repo_matches(&pr.repo))
+            .collect()
+    }
+
+    /// Return author's PRs filtered by repo filter. Empty filter means all PRs.
+    pub fn filtered_my_prs(&self) -> Vec<&crate::models::ReviewPr> {
+        self.my_prs
+            .iter()
+            .filter(|pr| self.my_prs_repo_matches(&pr.repo))
+            .collect()
+    }
+
+    pub fn repo_matches(&self, repo: &str) -> bool {
+        if self.repo_filter.is_empty() {
+            return true;
+        }
+        match self.repo_filter_mode {
+            RepoFilterMode::Include => self.repo_filter.contains(repo),
+            RepoFilterMode::Exclude => !self.repo_filter.contains(repo),
+        }
+    }
+
+    pub fn my_prs_repo_matches(&self, repo: &str) -> bool {
+        if self.my_prs_repo_filter.is_empty() {
+            return true;
+        }
+        match self.my_prs_repo_filter_mode {
+            RepoFilterMode::Include => self.my_prs_repo_filter.contains(repo),
+            RepoFilterMode::Exclude => !self.my_prs_repo_filter.contains(repo),
+        }
+    }
+
+    /// Whether review PRs need a refresh given the interval.
+    pub fn needs_fetch(&self, interval: Duration) -> bool {
+        self.last_fetch
+            .map(|t| t.elapsed() > interval)
+            .unwrap_or(true)
+    }
+
+    /// Whether author PRs need a refresh given the interval.
+    pub fn needs_my_prs_fetch(&self, interval: Duration) -> bool {
+        self.last_my_prs_fetch
+            .map(|t| t.elapsed() > interval)
+            .unwrap_or(true)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // TaskEdit — bundled fields for Message::TaskEdited
 // ---------------------------------------------------------------------------
 
