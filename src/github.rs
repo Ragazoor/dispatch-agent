@@ -397,12 +397,12 @@ pub fn fetch_bot_prs(runner: &dyn ProcessRunner) -> Result<Vec<ReviewPr>, String
     let query = format!(
         r#"{{
   viewer {{ login }}
-  dependabot: search(query: "is:pr is:open author:app/dependabot -is:draft", type: ISSUE, first: 30) {{
+  dependabot: search(query: "is:pr is:open author:app/dependabot -is:draft", type: ISSUE, first: 10) {{
     nodes {{
       {PR_FIELDS}
     }}
   }}
-  renovate: search(query: "is:pr is:open author:app/renovate -is:draft", type: ISSUE, first: 30) {{
+  renovate: search(query: "is:pr is:open author:app/renovate -is:draft", type: ISSUE, first: 10) {{
     nodes {{
       {PR_FIELDS}
     }}
