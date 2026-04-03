@@ -1034,13 +1034,17 @@ fn task_detail_lines(app: &App, task: &Task) -> Vec<Line<'static>> {
         }
     }
 
-    let mut lines = vec![
-        Line::from(line1_spans),
-        Line::from(Span::styled(
-            task.description.clone(),
-            Style::default().fg(MUTED_LIGHT),
-        )),
-    ];
+    let desc_style = Style::default().fg(MUTED_LIGHT);
+    let mut lines = vec![Line::from(line1_spans)];
+    for desc_line in task.description.lines() {
+        lines.push(Line::from(Span::styled(
+            desc_line.to_string(),
+            desc_style,
+        )));
+    }
+    if task.description.is_empty() {
+        lines.push(Line::from(Span::styled(String::new(), desc_style)));
+    }
     if let Some(u) = app.usage.get(&task.id) {
         lines.push(Line::from(Span::styled(
             format_usage(u),
@@ -1064,11 +1068,17 @@ fn epic_detail_lines(app: &App, epic: &Epic) -> Vec<Line<'static>> {
             Style::default().fg(MUTED),
         ),
     ]);
-    let line2 = Line::from(Span::styled(
-        epic.description.clone(),
-        Style::default().fg(MUTED_LIGHT),
-    ));
-    let mut lines = vec![line1, line2];
+    let desc_style = Style::default().fg(MUTED_LIGHT);
+    let mut lines = vec![line1];
+    for desc_line in epic.description.lines() {
+        lines.push(Line::from(Span::styled(
+            desc_line.to_string(),
+            desc_style,
+        )));
+    }
+    if epic.description.is_empty() {
+        lines.push(Line::from(Span::styled(String::new(), desc_style)));
+    }
     if let Some(plan) = &epic.plan {
         lines.push(Line::from(Span::styled(
             format!("plan: {plan}"),
@@ -1252,11 +1262,11 @@ fn input_description_lines(
         Line::from(Span::styled(format!("  Title: {title}"), completed)),
         Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
         Line::from(Span::styled(
-            format!("  Description: {}_ ", app.input.buffer),
+            "  Description: opening $EDITOR...".to_string(),
             active,
         )),
         Line::from(""),
-        Line::from(Span::styled("  Enter to confirm, Esc to cancel", hint)),
+        Line::from(Span::styled("  Esc to cancel", hint)),
     ]
 }
 
@@ -1286,11 +1296,17 @@ fn input_repo_path_lines<'a>(
         .as_ref()
         .map(|d| d.description.as_str())
         .unwrap_or("");
+    let desc_first_line = description.lines().next().unwrap_or("");
+    let desc_display = if description.contains('\n') {
+        format!("{desc_first_line} ...")
+    } else {
+        desc_first_line.to_string()
+    };
     let mut lines = vec![
         Line::from(Span::styled(format!("  Title: {title}"), completed)),
         Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
         Line::from(Span::styled(
-            format!("  Description: {description}"),
+            format!("  Description: {desc_display}"),
             completed,
         )),
         Line::from(Span::styled(
@@ -1389,11 +1405,11 @@ fn input_epic_description_lines(
     vec![
         Line::from(Span::styled(format!("  Title: {title}"), completed)),
         Line::from(Span::styled(
-            format!("  Description: {}_ ", app.input.buffer),
+            "  Description: opening $EDITOR...".to_string(),
             active,
         )),
         Line::from(""),
-        Line::from(Span::styled("  Enter to confirm, Esc to cancel", hint)),
+        Line::from(Span::styled("  Esc to cancel", hint)),
     ]
 }
 
@@ -1416,10 +1432,16 @@ fn input_epic_repo_path_lines<'a>(
         .as_ref()
         .map(|d| d.description.as_str())
         .unwrap_or("");
+    let desc_first_line = description.lines().next().unwrap_or("");
+    let desc_display = if description.contains('\n') {
+        format!("{desc_first_line} ...")
+    } else {
+        desc_first_line.to_string()
+    };
     let mut lines = vec![
         Line::from(Span::styled(format!("  Title: {title}"), completed)),
         Line::from(Span::styled(
-            format!("  Description: {description}"),
+            format!("  Description: {desc_display}"),
             completed,
         )),
         Line::from(Span::styled(
@@ -2083,7 +2105,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(bar, area);
         }
         InputMode::InputDescription => {
-            let bar = Paragraph::new("Creating task: enter description")
+            let bar = Paragraph::new("Creating task: opening $EDITOR for description")
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(bar, area);
         }
@@ -2134,7 +2156,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(bar, area);
         }
         InputMode::InputEpicDescription => {
-            let bar = Paragraph::new("Creating epic: enter description")
+            let bar = Paragraph::new("Creating epic: opening $EDITOR for description")
                 .style(Style::default().fg(Color::Magenta));
             frame.render_widget(bar, area);
         }

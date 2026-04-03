@@ -166,6 +166,7 @@ pub enum Message {
     CancelDelete,
     SubmitTitle(String),
     SubmitDescription(String),
+    DescriptionEditorResult(String),
     SubmitRepoPath(String),
     SubmitTag(Option<TaskTag>),
     InputChar(char),
@@ -379,6 +380,7 @@ pub enum Command {
         window: String,
     },
     EditTaskInEditor(Task),
+    OpenDescriptionEditor { is_epic: bool },
     SaveRepoPath(String),
     RefreshFromDb,
     QuickDispatch {

@@ -1819,13 +1819,20 @@ fn submit_tag_advances_to_description() {
         ..Default::default()
     });
     let cmds = app.update(Message::SubmitTag(Some(TaskTag::Bug)));
-    assert!(cmds.is_empty());
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(
+        &cmds[0],
+        Command::OpenDescriptionEditor { is_epic: false }
+    ));
     assert_eq!(app.input.mode, InputMode::InputDescription);
     assert_eq!(
         app.input.task_draft.as_ref().unwrap().tag,
         Some(TaskTag::Bug)
     );
-    assert_eq!(app.status_message.as_deref(), Some("Enter description: "));
+    assert_eq!(
+        app.status_message.as_deref(),
+        Some("Opening editor for description...")
+    );
 }
 
 #[test]
@@ -1841,6 +1848,55 @@ fn submit_description_advances_to_repo_path() {
     assert_eq!(
         app.input.task_draft.as_ref().unwrap().description,
         "my desc"
+    );
+}
+
+#[test]
+fn description_editor_result_advances_to_repo_path() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    app.input.mode = InputMode::InputDescription;
+    app.input.task_draft = Some(TaskDraft {
+        title: "T".to_string(),
+        ..Default::default()
+    });
+    app.update(Message::DescriptionEditorResult("some desc".to_string()));
+    assert_eq!(app.input.mode, InputMode::InputRepoPath);
+    assert_eq!(
+        app.input.task_draft.as_ref().unwrap().description,
+        "some desc"
+    );
+}
+
+#[test]
+fn description_editor_result_multiline() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    app.input.mode = InputMode::InputDescription;
+    app.input.task_draft = Some(TaskDraft {
+        title: "T".to_string(),
+        ..Default::default()
+    });
+    app.update(Message::DescriptionEditorResult("Line 1\nLine 2".to_string()));
+    assert_eq!(app.input.mode, InputMode::InputRepoPath);
+    assert_eq!(
+        app.input.task_draft.as_ref().unwrap().description,
+        "Line 1\nLine 2"
+    );
+}
+
+#[test]
+fn description_editor_result_for_epic() {
+    let mut app = App::new(vec![], TEST_TIMEOUT);
+    app.input.mode = InputMode::InputEpicDescription;
+    app.input.epic_draft = Some(EpicDraft {
+        title: "E".to_string(),
+        description: String::new(),
+        repo_path: String::new(),
+    });
+    app.update(Message::DescriptionEditorResult("epic desc\nline 2".to_string()));
+    assert_eq!(app.input.mode, InputMode::InputEpicRepoPath);
+    assert_eq!(
+        app.input.epic_draft.as_ref().unwrap().description,
+        "epic desc\nline 2"
     );
 }
 
@@ -7537,7 +7593,11 @@ fn handle_key_tag_selects_bug() {
     });
 
     let cmds = app.handle_key(make_key(KeyCode::Char('b')));
-    assert!(cmds.is_empty());
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(
+        &cmds[0],
+        Command::OpenDescriptionEditor { is_epic: false }
+    ));
     assert_eq!(*app.mode(), InputMode::InputDescription);
     assert_eq!(
         app.input.task_draft.as_ref().unwrap().tag,
@@ -7555,7 +7615,11 @@ fn handle_key_tag_skip_with_enter() {
     });
 
     let cmds = app.handle_key(make_key(KeyCode::Enter));
-    assert!(cmds.is_empty());
+    assert_eq!(cmds.len(), 1);
+    assert!(matches!(
+        &cmds[0],
+        Command::OpenDescriptionEditor { is_epic: false }
+    ));
     assert_eq!(*app.mode(), InputMode::InputDescription);
     assert_eq!(app.input.task_draft.as_ref().unwrap().tag, None);
 }

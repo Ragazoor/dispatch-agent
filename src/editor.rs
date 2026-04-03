@@ -52,6 +52,15 @@ fn parse_sections(input: &str) -> std::collections::HashMap<&str, String> {
     sections
 }
 
+pub fn format_description_for_editor(existing: &str) -> String {
+    format!("--- DESCRIPTION ---\n{existing}\n")
+}
+
+pub fn parse_description_editor_output(input: &str) -> String {
+    let mut s = parse_sections(input);
+    s.remove("DESCRIPTION").unwrap_or_default()
+}
+
 pub fn format_epic_for_editor(epic: &Epic) -> String {
     format!(
         "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n",
@@ -238,6 +247,27 @@ mod tests {
         let fields = parse_editor_content(input);
         assert_eq!(fields.title, "Hello");
         assert_eq!(fields.status, "backlog");
+    }
+
+    #[test]
+    fn description_editor_roundtrip_empty() {
+        let content = format_description_for_editor("");
+        let result = parse_description_editor_output(&content);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn description_editor_roundtrip_multiline() {
+        let content = format_description_for_editor("Line 1\nLine 2\nLine 3");
+        let result = parse_description_editor_output(&content);
+        assert_eq!(result, "Line 1\nLine 2\nLine 3");
+    }
+
+    #[test]
+    fn description_editor_roundtrip_with_dashes() {
+        let content = format_description_for_editor("Some --- dashes --- in text");
+        let result = parse_description_editor_output(&content);
+        assert_eq!(result, "Some --- dashes --- in text");
     }
 
     proptest! {

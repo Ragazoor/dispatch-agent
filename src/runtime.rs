@@ -22,7 +22,8 @@ const TICK_INTERVAL: Duration = Duration::from_secs(2);
 
 use crate::db::{EpicPatch, TaskStore};
 use crate::editor::{
-    format_editor_content, format_epic_for_editor, parse_editor_content, parse_epic_editor_output,
+    format_description_for_editor, format_editor_content, format_epic_for_editor,
+    parse_description_editor_output, parse_editor_content, parse_epic_editor_output,
 };
 use crate::models::TaskId;
 use crate::process::{ProcessRunner, RealProcessRunner};
@@ -593,6 +594,26 @@ impl TuiRuntime {
             plan,
             tag,
         }));
+        Ok(())
+    }
+
+    fn exec_description_editor(
+        &self,
+        app: &mut App,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        key_rx: &mut mpsc::UnboundedReceiver<crossterm::event::KeyEvent>,
+    ) -> Result<()> {
+        let content = format_description_for_editor("");
+        let result = self.run_editor(terminal, key_rx, "description-", &content)?;
+        match result {
+            Some(text) => {
+                let description = parse_description_editor_output(&text);
+                app.update(Message::DescriptionEditorResult(description));
+            }
+            None => {
+                app.update(Message::CancelInput);
+            }
+        }
         Ok(())
     }
 
@@ -1389,6 +1410,9 @@ async fn execute_commands(
             Command::CaptureTmux { id, window } => rt.exec_capture_tmux(id, window),
             Command::EditTaskInEditor(task) => {
                 rt.exec_edit_in_editor(app, task, terminal, key_rx)?
+            }
+            Command::OpenDescriptionEditor { .. } => {
+                rt.exec_description_editor(app, terminal, key_rx)?
             }
             Command::SaveRepoPath(path) => rt.exec_save_repo_path(app, path),
             Command::RefreshFromDb => {
