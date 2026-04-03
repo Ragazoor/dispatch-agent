@@ -26,7 +26,7 @@ impl EpicContext {
             .list_tasks_for_epic(epic_id)
             .unwrap_or_default()
             .into_iter()
-            .filter(|t| t.id != task.id)
+            .filter(|t| t.id != task.id && t.status != TaskStatus::Archived)
             .map(|t| format!("[{}] {} ({})", t.id, t.title, t.status.as_str()))
             .collect();
         Some(EpicContext {
