@@ -121,7 +121,7 @@ fn rebase_preamble(target: &str) -> String {
     format!(
         "Before starting work, rebase your branch from {target}:\n\
          ```\n\
-         git fetch origin && git rebase {target}\n\
+         git rebase {target}\n\
          ```"
     )
 }
