@@ -1275,8 +1275,16 @@ fn input_description_lines(
         .as_ref()
         .map(|d| d.title.as_str())
         .unwrap_or("");
+    let tag = app
+        .input
+        .task_draft
+        .as_ref()
+        .and_then(|d| d.tag.as_ref())
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "none".to_string());
     vec![
         Line::from(Span::styled(format!("  Title: {title}"), completed)),
+        Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
         Line::from(Span::styled(
             format!("  Description: {}_ ", app.input.buffer),
             active,
@@ -1299,6 +1307,13 @@ fn input_repo_path_lines<'a>(
         .as_ref()
         .map(|d| d.title.as_str())
         .unwrap_or("");
+    let tag = app
+        .input
+        .task_draft
+        .as_ref()
+        .and_then(|d| d.tag.as_ref())
+        .map(|t| t.to_string())
+        .unwrap_or_else(|| "none".to_string());
     let description = app
         .input
         .task_draft
@@ -1307,6 +1322,7 @@ fn input_repo_path_lines<'a>(
         .unwrap_or("");
     let mut lines = vec![
         Line::from(Span::styled(format!("  Title: {title}"), completed)),
+        Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
         Line::from(Span::styled(
             format!("  Description: {description}"),
             completed,
