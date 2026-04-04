@@ -5,7 +5,14 @@ description: Use when implementation is complete to wrap up a dispatch worktree.
 
 # Wrap Up
 
-Wrap up a dispatch worktree: commit remaining changes, ask the user to choose between rebasing onto main or creating a PR, then call the `wrap_up` MCP tool.
+Wrap up a dispatch worktree: commit remaining changes, use the `AskUserQuestion` tool with a question like:
+
+> Wrap up task #{id} (`{title}`):
+> **(r)** rebase onto main — fast-forwards main with this branch, kills this tmux window
+> **(p)** create PR — pushes branch and opens a GitHub PR
+> **(Esc / n)** cancel
+
+Then call the `wrap_up` MCP tool. If the user cancels or says no, exit without calling any tool. 
 
 **Announce at start:** "I'm using the wrap-up skill to complete this task."
 
@@ -30,7 +37,7 @@ Run:
 git status --porcelain
 ```
 
-If there are modified or untracked files, commit them before proceeding. Use a `/commit` skill if available, otherwise create a commit directly.
+If there are modified or untracked files, commit them before proceeding. Use a commit skill if available, otherwise create a commit directly.
 
 ## Step 3: Ask the user to choose — MANDATORY
 
