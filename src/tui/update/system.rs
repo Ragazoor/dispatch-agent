@@ -20,7 +20,7 @@ impl App {
             t.plan_path = edit.plan_path;
             t.tag = edit.tag;
             if let Some(bb) = edit.base_branch {
-                t.base_branch = bb.into();
+                t.base_branch = bb;
             }
             t.wrap_up_mode = edit.wrap_up_mode;
             t.url = edit.url;

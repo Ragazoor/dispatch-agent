@@ -1,6 +1,6 @@
 //! Task-domain side-effect commands.
 
-use crate::models::{BranchName, DispatchMode, EpicId, SubStatus, Task, TaskId};
+use crate::models::{DispatchMode, EpicId, SubStatus, Task, TaskId};
 
 use super::super::types::TaskDraft;
 
@@ -34,7 +34,7 @@ pub enum TaskCommand {
         id: TaskId,
         repo_path: String,
         branch: String,
-        base_branch: BranchName,
+        base_branch: String,
         worktree: String,
         tmux_window: Option<String>,
     },

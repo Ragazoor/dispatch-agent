@@ -633,7 +633,7 @@ impl TuiRuntime {
         id: TaskId,
         repo_path: String,
         branch: String,
-        base_branch: models::BranchName,
+        base_branch: String,
         worktree: String,
         tmux_window: Option<String>,
     ) {

@@ -5,6 +5,7 @@
 //! `models::expand_tilde`, …) regardless of which submodule owns a type.
 //!
 //! - [`ids`] — the `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId`/`TodoId`
+//! - [`string_enum`] — the `define_str_enum!` macro behind status/tag/mode string conversions
 //! - [`paths`] — path utilities (`expand_tilde`)
 //! - [`tasks`] — tasks, statuses, tags, dispatch mode, slugify, age formatting
 //! - [`epics`] — epics, epic sub-status, descendant traversal
@@ -18,6 +19,10 @@
 // `define_id_newtype!` is `#[macro_export]`ed (crate root); consuming modules
 // bring it into scope with `use crate::define_id_newtype;`.
 mod ids;
+
+// `define_str_enum!` is `#[macro_export]`ed (crate root); consuming modules
+// bring it into scope with `use crate::define_str_enum;`.
+mod string_enum;
 
 mod paths;
 pub use paths::expand_tilde;

@@ -2672,7 +2672,6 @@ async fn task_patch_each_setter_marks_has_changes() {
 
 mod property_tests {
     use super::*;
-    use crate::models::BranchName;
     use proptest::prelude::*;
 
     /// Build a `TaskPatch` with the subset of fields indicated by `bits`.
@@ -2835,7 +2834,7 @@ mod property_tests {
                 prop_assert_eq!(&after.title,       &title.unwrap_or(baseline.title));
                 prop_assert_eq!(&after.description, &description.unwrap_or(baseline.description));
                 prop_assert_eq!(&after.repo_path,   &repo_path.unwrap_or(baseline.repo_path));
-                prop_assert_eq!(&after.base_branch, &base_branch.map(BranchName::from).unwrap_or(baseline.base_branch));
+                prop_assert_eq!(&after.base_branch, &base_branch.unwrap_or(baseline.base_branch));
                 prop_assert_eq!(&after.plan_path,   &plan_path.unwrap_or(baseline.plan_path));
                 prop_assert_eq!(&after.worktree,    &worktree.unwrap_or(baseline.worktree));
                 prop_assert_eq!(&after.tmux_window, &tmux_window.unwrap_or(baseline.tmux_window));

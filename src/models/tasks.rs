@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{EpicId, UrlType};
 use crate::define_id_newtype;
+use crate::define_str_enum;
 
 define_id_newtype!(TaskId, task_id_tests);
 
@@ -30,27 +31,6 @@ impl TaskStatus {
     ];
 
     pub const COLUMN_COUNT: usize = Self::ALL.len();
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TaskStatus::Backlog => "backlog",
-            TaskStatus::Running => "running",
-            TaskStatus::Review => "review",
-            TaskStatus::Done => "done",
-            TaskStatus::Archived => "archived",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "backlog" | "ready" => Some(TaskStatus::Backlog),
-            "running" => Some(TaskStatus::Running),
-            "review" => Some(TaskStatus::Review),
-            "done" => Some(TaskStatus::Done),
-            "archived" => Some(TaskStatus::Archived),
-            _ => None,
-        }
-    }
 
     /// Advance to the next status (wraps at Done -> Done).
     pub fn next(self) -> Self {
@@ -97,18 +77,13 @@ impl TaskStatus {
     }
 }
 
-impl std::fmt::Display for TaskStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for TaskStatus {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s).ok_or_else(|| format!("unknown status: {s}"))
-    }
-}
+define_str_enum!(TaskStatus, "status" {
+    Backlog => "backlog" | "ready",
+    Running => "running",
+    Review => "review",
+    Done => "done",
+    Archived => "archived",
+});
 
 // ---------------------------------------------------------------------------
 // TipsShowMode
@@ -121,28 +96,11 @@ pub enum TipsShowMode {
     Never,
 }
 
-impl TipsShowMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            TipsShowMode::Always => "always",
-            TipsShowMode::NewOnly => "new_only",
-            TipsShowMode::Never => "never",
-        }
-    }
-}
-
-impl std::str::FromStr for TipsShowMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "always" => Ok(TipsShowMode::Always),
-            "new_only" => Ok(TipsShowMode::NewOnly),
-            "never" => Ok(TipsShowMode::Never),
-            _ => Err(format!("unknown tips show mode: {s}")),
-        }
-    }
-}
+define_str_enum!(TipsShowMode, "tips show mode" {
+    Always => "always",
+    NewOnly => "new_only",
+    Never => "never",
+});
 
 // ---------------------------------------------------------------------------
 // SubStatus
@@ -174,35 +132,6 @@ impl SubStatus {
         SubStatus::ChangesRequested,
         SubStatus::Approved,
     ];
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SubStatus::None => "none",
-            SubStatus::Active => "active",
-            SubStatus::NeedsInput => "needs_input",
-            SubStatus::Stale => "stale",
-            SubStatus::Crashed => "crashed",
-            SubStatus::Conflict => "conflict",
-            SubStatus::AwaitingReview => "awaiting_review",
-            SubStatus::ChangesRequested => "changes_requested",
-            SubStatus::Approved => "approved",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "none" => Some(SubStatus::None),
-            "active" => Some(SubStatus::Active),
-            "needs_input" => Some(SubStatus::NeedsInput),
-            "stale" => Some(SubStatus::Stale),
-            "crashed" => Some(SubStatus::Crashed),
-            "conflict" => Some(SubStatus::Conflict),
-            "awaiting_review" => Some(SubStatus::AwaitingReview),
-            "changes_requested" => Some(SubStatus::ChangesRequested),
-            "approved" => Some(SubStatus::Approved),
-            _ => None,
-        }
-    }
 
     /// Check whether this sub-status is valid for the given parent status.
     pub fn is_valid_for(&self, status: TaskStatus) -> bool {
@@ -241,150 +170,89 @@ impl SubStatus {
 
     /// Sort priority for column grouping (lower = more urgent = top of column).
     pub fn column_priority(self) -> u8 {
-        match self {
-            SubStatus::Conflict => 0,
-            SubStatus::Crashed => 1,
-            SubStatus::Stale => 2,
-            SubStatus::NeedsInput => 3,
-            SubStatus::ChangesRequested => 4,
-            SubStatus::Active => 5,
-            SubStatus::AwaitingReview => 5, // same slot as Active
-            SubStatus::None => 5,
-            SubStatus::Approved => 6,
-        }
-    }
-
-    /// Sort priority for column grouping, detach-aware variant.
-    /// Detached review tasks sort below Approved so they sink to the bottom.
-    pub fn column_priority_detached(self, is_detached: bool) -> u8 {
-        match (self, is_detached) {
-            (SubStatus::AwaitingReview, true) => 7,
-            _ => self.column_priority(),
-        }
+        self.properties().priority
     }
 
     /// Label for section header lines within a column.
     pub fn header_label(self) -> &'static str {
+        self.properties().header_label
+    }
+
+    /// Per-variant display properties, consolidated into a single match so a
+    /// new variant only touches this table rather than two parallel ones.
+    fn properties(self) -> SubStatusProperties {
         match self {
-            SubStatus::None => "",
-            SubStatus::Active => "active",
-            SubStatus::NeedsInput => "needs input",
-            SubStatus::Stale => "stale",
-            SubStatus::Crashed => "crashed",
-            SubStatus::Conflict => "conflict",
-            SubStatus::AwaitingReview => "awaiting review",
-            SubStatus::ChangesRequested => "changes requested",
-            SubStatus::Approved => "approved",
+            SubStatus::Conflict => SubStatusProperties {
+                priority: PRIORITY_URGENT,
+                header_label: "conflict",
+            },
+            SubStatus::Crashed => SubStatusProperties {
+                priority: PRIORITY_CRASHED,
+                header_label: "crashed",
+            },
+            SubStatus::Stale => SubStatusProperties {
+                priority: PRIORITY_STALE,
+                header_label: "stale",
+            },
+            SubStatus::NeedsInput => SubStatusProperties {
+                priority: PRIORITY_NEEDS_INPUT,
+                header_label: "needs input",
+            },
+            SubStatus::ChangesRequested => SubStatusProperties {
+                priority: PRIORITY_CHANGES_REQUESTED,
+                header_label: "changes requested",
+            },
+            // Active, AwaitingReview, and None share a sort slot: none of
+            // them signals urgency the way Conflict/Crashed/Stale do.
+            SubStatus::Active => SubStatusProperties {
+                priority: PRIORITY_ACTIVE_SLOT,
+                header_label: "active",
+            },
+            SubStatus::AwaitingReview => SubStatusProperties {
+                priority: PRIORITY_ACTIVE_SLOT,
+                header_label: "awaiting review",
+            },
+            SubStatus::None => SubStatusProperties {
+                priority: PRIORITY_ACTIVE_SLOT,
+                header_label: "",
+            },
+            SubStatus::Approved => SubStatusProperties {
+                priority: PRIORITY_APPROVED,
+                header_label: "approved",
+            },
         }
     }
-
-    /// Detach-aware section header label.
-    /// Detached awaiting_review tasks show "awaiting merge" instead.
-    pub fn header_label_detached(self, is_detached: bool) -> &'static str {
-        match (self, is_detached) {
-            (SubStatus::AwaitingReview, true) => "awaiting merge",
-            _ => self.header_label(),
-        }
-    }
 }
 
-impl std::fmt::Display for SubStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
+/// Per-variant properties returned by [`SubStatus::properties`].
+struct SubStatusProperties {
+    priority: u8,
+    header_label: &'static str,
 }
 
-impl std::str::FromStr for SubStatus {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s).ok_or_else(|| format!("unknown sub-status: {s}"))
-    }
-}
+// Column-priority sort slots (lower = more urgent = top of column). Gaps are
+// intentional: they leave room for the presentation layer to insert display-
+// only overrides (see `display_column_priority` in `src/tui/mod.rs`) without
+// colliding with a named slot here.
+const PRIORITY_URGENT: u8 = 0;
+const PRIORITY_CRASHED: u8 = 1;
+const PRIORITY_STALE: u8 = 2;
+const PRIORITY_NEEDS_INPUT: u8 = 3;
+const PRIORITY_CHANGES_REQUESTED: u8 = 4;
+const PRIORITY_ACTIVE_SLOT: u8 = 5;
+const PRIORITY_APPROVED: u8 = 6;
 
-// ---------------------------------------------------------------------------
-// BranchName
-// ---------------------------------------------------------------------------
-
-/// A validated git branch name. Wraps a `String` and provides a type-safe
-/// boundary between branch-name arguments and other stringly-typed fields
-/// such as `worktree` or `repo_path`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct BranchName(pub String);
-
-impl BranchName {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for BranchName {
-    fn default() -> Self {
-        BranchName(DEFAULT_BASE_BRANCH.to_string())
-    }
-}
-
-impl std::fmt::Display for BranchName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl AsRef<str> for BranchName {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::ops::Deref for BranchName {
-    type Target = str;
-    fn deref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for BranchName {
-    fn from(s: String) -> Self {
-        BranchName(s)
-    }
-}
-
-impl From<&str> for BranchName {
-    fn from(s: &str) -> Self {
-        BranchName(s.to_string())
-    }
-}
-
-impl std::str::FromStr for BranchName {
-    type Err = std::convert::Infallible;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(BranchName(s.to_string()))
-    }
-}
-
-impl rusqlite::types::FromSql for BranchName {
-    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
-        String::column_result(value).map(BranchName)
-    }
-}
-
-impl PartialEq<str> for BranchName {
-    fn eq(&self, other: &str) -> bool {
-        self.0 == other
-    }
-}
-
-impl PartialEq<&str> for BranchName {
-    fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<String> for BranchName {
-    fn eq(&self, other: &String) -> bool {
-        self.0 == *other
-    }
-}
+define_str_enum!(SubStatus, "sub-status" {
+    None => "none",
+    Active => "active",
+    NeedsInput => "needs_input",
+    Stale => "stale",
+    Crashed => "crashed",
+    Conflict => "conflict",
+    AwaitingReview => "awaiting_review",
+    ChangesRequested => "changes_requested",
+    Approved => "approved",
+});
 
 // ---------------------------------------------------------------------------
 // Task
@@ -408,7 +276,7 @@ pub struct Task {
     pub url: Option<crate::models::TaskUrl>,
     pub tag: Option<TaskTag>,
     pub sort_order: Option<i64>,
-    pub base_branch: BranchName,
+    pub base_branch: String,
     pub external_id: Option<String>,
     /// Free-form badges rendered on the kanban card alongside derived
     /// indicators. Order is preserved so feed scripts can control rendering
@@ -578,31 +446,6 @@ pub enum TaskTag {
 }
 
 impl TaskTag {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TaskTag::Bug => "bug",
-            TaskTag::Feature => "feature",
-            TaskTag::Chore => "chore",
-            TaskTag::PrReview => "pr-review",
-            TaskTag::Research => "research",
-            TaskTag::Fix => "fix",
-            TaskTag::Dependabot => "dependabot",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "bug" => Some(TaskTag::Bug),
-            "feature" => Some(TaskTag::Feature),
-            "chore" => Some(TaskTag::Chore),
-            "pr-review" => Some(TaskTag::PrReview),
-            "research" => Some(TaskTag::Research),
-            "fix" => Some(TaskTag::Fix),
-            "dependabot" => Some(TaskTag::Dependabot),
-            _ => None,
-        }
-    }
-
     pub fn short_label(&self) -> &'static str {
         match self {
             TaskTag::Bug => "bug",
@@ -623,18 +466,15 @@ impl TaskTag {
     }
 }
 
-impl std::fmt::Display for TaskTag {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for TaskTag {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s).ok_or_else(|| format!("unknown tag: {s}"))
-    }
-}
+define_str_enum!(TaskTag, "tag" {
+    Bug => "bug",
+    Feature => "feature",
+    Chore => "chore",
+    PrReview => "pr-review",
+    Research => "research",
+    Fix => "fix",
+    Dependabot => "dependabot",
+});
 
 // ---------------------------------------------------------------------------
 // WrapUpMode
@@ -648,37 +488,11 @@ pub enum WrapUpMode {
     Done,
 }
 
-impl WrapUpMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            WrapUpMode::Rebase => "rebase",
-            WrapUpMode::Pr => "pr",
-            WrapUpMode::Done => "done",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "rebase" => Some(WrapUpMode::Rebase),
-            "pr" => Some(WrapUpMode::Pr),
-            "done" => Some(WrapUpMode::Done),
-            _ => None,
-        }
-    }
-}
-
-impl std::fmt::Display for WrapUpMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::str::FromStr for WrapUpMode {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse(s).ok_or_else(|| format!("unknown wrap-up mode: {s}"))
-    }
-}
+define_str_enum!(WrapUpMode, "wrap-up mode" {
+    Rebase => "rebase",
+    Pr => "pr",
+    Done => "done",
+});
 
 // ---------------------------------------------------------------------------
 // DispatchResult
@@ -980,70 +794,6 @@ pub fn classify_agent_activity(
     match last_pre_tool_use_at {
         Some(ts) if now.signed_duration_since(ts) <= ACTIVE_THRESHOLD => AgentActivity::Active,
         _ => AgentActivity::Stale,
-    }
-}
-
-#[cfg(test)]
-mod branch_name_tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
-    use super::*;
-
-    #[test]
-    fn default_is_main() {
-        assert_eq!(BranchName::default().as_str(), DEFAULT_BASE_BRANCH);
-    }
-
-    #[test]
-    fn from_str_ref() {
-        let b = BranchName::from("develop");
-        assert_eq!(b.as_str(), "develop");
-    }
-
-    #[test]
-    fn from_string() {
-        let b = BranchName::from("feature-x".to_string());
-        assert_eq!(b.as_str(), "feature-x");
-    }
-
-    #[test]
-    fn display() {
-        assert_eq!(BranchName::from("main").to_string(), "main");
-    }
-
-    #[test]
-    fn clone_and_eq() {
-        let a = BranchName::from("main");
-        let b = a.clone();
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn deref_to_str() {
-        let b = BranchName::from("main");
-        let s: &str = &b;
-        assert_eq!(s, "main");
-    }
-
-    #[test]
-    fn as_ref_str() {
-        let b = BranchName::from("staging");
-        let s: &str = b.as_ref();
-        assert_eq!(s, "staging");
-    }
-
-    #[test]
-    fn from_str_parse() {
-        let b: BranchName = "release/v2".parse().unwrap();
-        assert_eq!(b.as_str(), "release/v2");
-    }
-
-    #[test]
-    fn serde_roundtrip() {
-        let b = BranchName::from("main");
-        let json = serde_json::to_string(&b).unwrap();
-        assert_eq!(json, "\"main\"");
-        let back: BranchName = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, b);
     }
 }
 
@@ -1481,6 +1231,35 @@ mod model_tests {
             SubStatus::default_for(TaskStatus::Archived),
             SubStatus::None
         );
+    }
+
+    #[test]
+    fn substatus_column_priority_matches_urgency_ordering() {
+        assert_eq!(SubStatus::Conflict.column_priority(), 0);
+        assert_eq!(SubStatus::Crashed.column_priority(), 1);
+        assert_eq!(SubStatus::Stale.column_priority(), 2);
+        assert_eq!(SubStatus::NeedsInput.column_priority(), 3);
+        assert_eq!(SubStatus::ChangesRequested.column_priority(), 4);
+        assert_eq!(SubStatus::Active.column_priority(), 5);
+        assert_eq!(SubStatus::AwaitingReview.column_priority(), 5);
+        assert_eq!(SubStatus::None.column_priority(), 5);
+        assert_eq!(SubStatus::Approved.column_priority(), 6);
+    }
+
+    #[test]
+    fn substatus_header_label_matches_display_text() {
+        assert_eq!(SubStatus::None.header_label(), "");
+        assert_eq!(SubStatus::Active.header_label(), "active");
+        assert_eq!(SubStatus::NeedsInput.header_label(), "needs input");
+        assert_eq!(SubStatus::Stale.header_label(), "stale");
+        assert_eq!(SubStatus::Crashed.header_label(), "crashed");
+        assert_eq!(SubStatus::Conflict.header_label(), "conflict");
+        assert_eq!(SubStatus::AwaitingReview.header_label(), "awaiting review");
+        assert_eq!(
+            SubStatus::ChangesRequested.header_label(),
+            "changes requested"
+        );
+        assert_eq!(SubStatus::Approved.header_label(), "approved");
     }
 
     // --- slugify ---
