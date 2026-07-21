@@ -350,16 +350,9 @@ impl TaskService {
                 sort_order: params.sort_order,
                 tag: params.tag,
                 wrap_up_mode: params.wrap_up_mode,
+                auto_run_plan: params.auto_run_plan,
             })
             .await?;
-
-        // auto_run_plan defaults to false at the DB level (column default);
-        // only pay for a second write when the caller actually wants true.
-        if params.auto_run_plan {
-            self.db
-                .patch_task(task_id, &TaskPatch::new().auto_run_plan(true))
-                .await?;
-        }
 
         if let Some(eid) = effective_epic_id {
             let _ = self.db.recalculate_epic_status(eid).await;

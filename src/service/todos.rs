@@ -286,6 +286,7 @@ mod tests {
                 epic_id: None,
                 sort_order: None,
                 wrap_up_mode: None,
+                auto_run_plan: false,
             })
             .await
             .unwrap();
@@ -404,6 +405,7 @@ mod tests {
                 epic_id: None,
                 sort_order: None,
                 wrap_up_mode: None,
+                auto_run_plan: false,
             })
             .await
             .unwrap();

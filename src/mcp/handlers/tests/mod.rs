@@ -161,6 +161,7 @@ async fn create_task_fixture_at(state: &Arc<McpState>, repo_path: &str) -> crate
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap()
@@ -181,6 +182,7 @@ async fn create_running_task_with_window(state: &Arc<McpState>) -> crate::models
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

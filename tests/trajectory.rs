@@ -30,6 +30,7 @@ async fn task_identity_writes_trajectory_entry() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -110,6 +111,7 @@ async fn task_identity_without_worktree_still_writes_trajectory() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

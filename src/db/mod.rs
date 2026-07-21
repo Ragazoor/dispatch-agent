@@ -106,6 +106,7 @@ pub struct CreateTaskRequest<'a> {
     pub sort_order: Option<i64>,
     pub tag: Option<TaskTag>,
     pub wrap_up_mode: Option<WrapUpMode>,
+    pub auto_run_plan: bool,
 }
 
 // ---------------------------------------------------------------------------

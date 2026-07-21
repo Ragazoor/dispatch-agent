@@ -32,6 +32,7 @@ async fn claim_task_success() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -80,6 +81,7 @@ async fn claim_task_rejects_running_task() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -117,6 +119,7 @@ async fn claim_task_rejects_different_repo() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -177,6 +180,7 @@ async fn claim_task_accepts_string_task_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -217,6 +221,7 @@ async fn claim_task_rejects_done_task() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -253,6 +258,7 @@ async fn claim_task_rejects_review_task() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -291,6 +297,7 @@ async fn claim_task_worktree_without_worktrees_dir() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -330,6 +337,7 @@ async fn claim_task_updates_status_to_running() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -397,6 +405,7 @@ async fn send_message_writes_file_and_sends_keys() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -412,6 +421,7 @@ async fn send_message_writes_file_and_sends_keys() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -487,6 +497,7 @@ async fn send_message_target_not_found() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -530,6 +541,7 @@ async fn send_message_target_no_worktree() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -546,6 +558,7 @@ async fn send_message_target_no_worktree() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -592,6 +605,7 @@ async fn send_message_target_no_tmux_window() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -608,6 +622,7 @@ async fn send_message_target_no_tmux_window() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -689,6 +704,7 @@ async fn dispatch_next_no_backlog_returns_success_noop() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -756,6 +772,7 @@ async fn dispatch_next_picks_first_backlog_subtask() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -771,6 +788,7 @@ async fn dispatch_next_picks_first_backlog_subtask() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -860,6 +878,7 @@ async fn dispatch_next_respects_sort_order() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -875,6 +894,7 @@ async fn dispatch_next_respects_sort_order() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -957,6 +977,7 @@ async fn dispatch_next_respects_tag_routing() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1029,6 +1050,7 @@ async fn wrap_up_rebase_preserves_tmux_window() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1100,6 +1122,7 @@ async fn wrap_up_rebase_conflict_sets_conflict_substatus() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1169,6 +1192,7 @@ async fn wrap_up_rebase_clears_conflict_substatus_on_non_conflict_error() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1243,6 +1267,7 @@ async fn dispatch_task_dispatches_backlog_task() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1304,6 +1329,7 @@ async fn dispatch_task_returns_error_for_non_backlog_task() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1376,6 +1402,7 @@ async fn dispatch_task_respects_tag_routing() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1453,6 +1480,7 @@ async fn dispatch_task_dependabot_tag_routes_through_dispatch_agent() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1545,6 +1573,7 @@ async fn dispatch_task_returns_error_when_dispatch_fails() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

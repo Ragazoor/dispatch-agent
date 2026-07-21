@@ -504,6 +504,7 @@ mod fetch_caller_task_tests {
                 sort_order: None,
                 tag: None,
                 wrap_up_mode: None,
+                auto_run_plan: false,
             })
             .await
             .unwrap();

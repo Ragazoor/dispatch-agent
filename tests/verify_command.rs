@@ -30,6 +30,7 @@ async fn verify_command_lookup_matches_task_repo_path() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

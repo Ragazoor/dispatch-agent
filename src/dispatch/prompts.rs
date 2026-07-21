@@ -266,23 +266,17 @@ pub(super) fn build_prompt(
         (Some(TaskTag::PrReview), _) => pr_review_addendum().to_string(),
         (_, None) => plan_or_brainstorm_instruction().to_string(),
         (_, Some(path)) => {
-            if ctx.auto_run_plan {
-                format!(
-                    "Plan: {path}\n\
-Read this file for the full implementation plan and begin implementing it \
-right away — the plan has already been reviewed and confirmed, so no \
-summary or confirmation step is needed."
-                )
+            let tail = if ctx.auto_run_plan {
+                " and begin implementing it right away — the plan has already \
+been reviewed and confirmed, so no summary or confirmation step is needed."
             } else {
-                format!(
-                    "Plan: {path}\n\
-Read this file for the full implementation plan.\n\
+                ".\n\
 \n\
 Review the plan carefully. Summarise your intended approach in 3–5 bullet points, \
 then ask: 'Shall I proceed with implementation?' Wait for confirmation before \
 making any changes."
-                )
-            }
+            };
+            format!("Plan: {path}\nRead this file for the full implementation plan{tail}")
         }
     };
     let trailing = if is_review {
@@ -1197,6 +1191,7 @@ mod rag_dispatch_tests {
                 sort_order: None,
                 tag: None,
                 wrap_up_mode: None,
+                auto_run_plan: false,
             })
             .await
             .unwrap();

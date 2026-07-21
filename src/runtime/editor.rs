@@ -927,6 +927,7 @@ mod tests {
                 tag: None,
 
                 wrap_up_mode: None,
+                auto_run_plan: false,
             })
             .await
             .unwrap();

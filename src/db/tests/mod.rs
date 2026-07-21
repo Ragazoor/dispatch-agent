@@ -34,6 +34,7 @@ pub(super) async fn create_task_returning(
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await?;
     db.get_task(id)

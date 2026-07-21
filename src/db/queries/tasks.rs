@@ -25,6 +25,7 @@ struct OwnedCreateTaskRequest {
     sort_order: Option<i64>,
     tag: Option<crate::models::TaskTag>,
     wrap_up_mode: Option<WrapUpMode>,
+    auto_run_plan: bool,
 }
 
 impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
@@ -40,6 +41,7 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             sort_order,
             tag,
             wrap_up_mode,
+            auto_run_plan,
         } = r;
         Self {
             title: title.to_string(),
@@ -52,6 +54,7 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             sort_order,
             tag,
             wrap_up_mode,
+            auto_run_plan,
         }
     }
 }
@@ -230,8 +233,8 @@ impl super::super::TaskCrud for Database {
             conn.execute(
                 "INSERT INTO tasks \
                  (title, description, repo_path, plan_path, status, sub_status, base_branch, \
-                  epic_id, sort_order, tag, wrap_up_mode) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     req.title,
                     req.description,
@@ -244,6 +247,7 @@ impl super::super::TaskCrud for Database {
                     req.sort_order,
                     req.tag.map(|t| t.as_str()),
                     req.wrap_up_mode.map(|m| m.as_str()),
+                    req.auto_run_plan,
                 ],
             )
             .context("Failed to insert task")?;

@@ -121,6 +121,7 @@ async fn get_epic_shows_subtask_summary() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -137,6 +138,7 @@ async fn get_epic_shows_subtask_summary() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -253,6 +255,7 @@ async fn list_epics_shows_subtask_counts() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -269,6 +272,7 @@ async fn list_epics_shows_subtask_counts() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

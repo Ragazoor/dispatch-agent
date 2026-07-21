@@ -122,6 +122,7 @@ async fn create_task_returning(
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await?;
     db.get_task(id)
@@ -494,6 +495,7 @@ async fn exec_refresh_from_db_syncs_external_changes() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -519,6 +521,7 @@ async fn exec_refresh_from_db_returns_commands_from_refresh() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2535,6 +2538,7 @@ async fn spawn_refresh_from_db_sends_task_refresh_via_msg_tx() {
         tag: None,
         base_branch: "main",
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -3412,6 +3416,7 @@ async fn spawn_refresh_epic_also_sends_epic_tasks_via_msg_tx() {
         sort_order: None,
         tag: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -3554,6 +3559,7 @@ async fn toggle_group_by_repo_on_regroups_existing_tasks() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3726,6 +3732,7 @@ async fn apply_loop_event_tick_triggers_window_sweep() {
             tag: None,
             base_branch: "main",
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

@@ -125,6 +125,7 @@ async fn get_task_found() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -278,6 +279,7 @@ async fn update_task_accepts_string_task_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -501,6 +503,7 @@ async fn get_task_accepts_string_task_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -540,6 +543,7 @@ async fn update_task_with_plan() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -576,6 +580,7 @@ async fn update_task_title_only() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -616,6 +621,7 @@ async fn update_task_status_optional() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -652,6 +658,7 @@ async fn update_task_title_and_description() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -688,6 +695,7 @@ async fn update_task_repo_path() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -728,6 +736,7 @@ async fn update_task_no_fields_errors() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -760,6 +769,7 @@ async fn patch_task_sets_multiple_fields() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -800,6 +810,7 @@ async fn update_task_without_plan_preserves_existing() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -839,6 +850,7 @@ async fn update_task_sets_pr_fields() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1143,6 +1155,7 @@ async fn list_tasks_returns_all_when_no_filter() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1159,6 +1172,7 @@ async fn list_tasks_returns_all_when_no_filter() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1192,6 +1206,7 @@ async fn list_tasks_filters_by_single_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1208,6 +1223,7 @@ async fn list_tasks_filters_by_single_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1241,6 +1257,7 @@ async fn list_tasks_filters_by_multiple_statuses() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1257,6 +1274,7 @@ async fn list_tasks_filters_by_multiple_statuses() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1273,6 +1291,7 @@ async fn list_tasks_filters_by_multiple_statuses() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1428,6 +1447,7 @@ async fn update_task_sets_sub_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1468,6 +1488,7 @@ async fn update_task_rejects_invalid_sub_status_for_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1500,6 +1521,7 @@ async fn update_task_rejects_bogus_sub_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1532,6 +1554,7 @@ async fn update_task_sub_status_with_status_change() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1569,6 +1592,7 @@ async fn update_task_status_running_with_needs_input() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1608,6 +1632,7 @@ async fn update_task_sub_status_invalid_for_new_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1641,6 +1666,7 @@ async fn list_tasks_shows_sub_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1682,6 +1708,7 @@ async fn get_task_shows_sub_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1939,6 +1966,7 @@ async fn list_tasks_filters_by_epic_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1955,6 +1983,7 @@ async fn list_tasks_filters_by_epic_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2003,6 +2032,7 @@ async fn list_tasks_filters_by_status_and_epic_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2019,6 +2049,7 @@ async fn list_tasks_filters_by_status_and_epic_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2070,6 +2101,7 @@ async fn list_tasks_epic_filter_no_match() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2101,6 +2133,7 @@ async fn list_tasks_done_status_filter() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2117,6 +2150,7 @@ async fn list_tasks_done_status_filter() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2168,6 +2202,7 @@ async fn wrap_up_rebase_does_not_change_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2230,6 +2265,7 @@ async fn wrap_up_rebase_does_not_recalculate_epic_status() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2292,6 +2328,7 @@ async fn wrap_up_accepts_string_task_id() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2343,6 +2380,7 @@ async fn get_task_shows_all_fields() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2410,6 +2448,7 @@ async fn get_task_without_epic_omits_epic_line() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2450,6 +2489,7 @@ async fn list_tasks_shows_tag_and_plan_indicators() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2499,6 +2539,7 @@ async fn list_tasks_shows_epic_indicator() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2538,6 +2579,7 @@ async fn list_tasks_truncates_long_descriptions() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2575,6 +2617,7 @@ async fn list_tasks_excludes_archived_by_default() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2591,6 +2634,7 @@ async fn list_tasks_excludes_archived_by_default() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2717,6 +2761,7 @@ async fn update_task_with_base_branch_updates_it() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2769,6 +2814,7 @@ async fn dispatch_next_returns_disabled_when_auto_dispatch_off() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2818,6 +2864,7 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2833,6 +2880,7 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2848,6 +2896,7 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2887,6 +2936,7 @@ async fn list_tasks_task_identity_scopes_to_project_when_no_epic() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2902,6 +2952,7 @@ async fn list_tasks_task_identity_scopes_to_project_when_no_epic() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2938,6 +2989,7 @@ async fn list_tasks_session_identity_sees_all_tasks() {
         sort_order: None,
         tag: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -2952,6 +3004,7 @@ async fn list_tasks_session_identity_sees_all_tasks() {
         sort_order: None,
         tag: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -2985,6 +3038,7 @@ async fn list_tasks_repo_paths_filter() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3001,6 +3055,7 @@ async fn list_tasks_repo_paths_filter() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3074,6 +3129,7 @@ async fn list_tasks_includes_plan_goal_in_output() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3111,6 +3167,7 @@ async fn list_tasks_falls_back_to_description_when_no_plan() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3171,6 +3228,7 @@ async fn update_task_pr_finalisation_appends_reflection_nudge_by_default() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3217,6 +3275,7 @@ async fn update_task_pr_finalisation_omits_nudge_when_disabled() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3261,6 +3320,7 @@ async fn update_task_pr_set_without_status_does_not_nudge() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3303,6 +3363,7 @@ async fn update_task_status_review_without_pr_url_change_does_not_nudge() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3346,6 +3407,7 @@ async fn update_task_pr_url_already_set_does_not_nudge_again() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3415,6 +3477,7 @@ async fn create_task_task_identity_inherits_epic() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3451,6 +3514,7 @@ async fn create_task_explicit_null_epic_clears_inheritance() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3504,6 +3568,7 @@ async fn get_task_shows_wrap_up_mode_when_set() {
             sort_order: None,
             tag: None,
             wrap_up_mode: Some(crate::models::WrapUpMode::Rebase),
+            auto_run_plan: false,
         })
         .await
         .unwrap();

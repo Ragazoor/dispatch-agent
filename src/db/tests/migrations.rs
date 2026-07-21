@@ -3472,6 +3472,7 @@ async fn auto_run_plan_column_defaults_to_false() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
