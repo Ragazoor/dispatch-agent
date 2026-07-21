@@ -25,6 +25,7 @@
 | `src/models/tasks.rs` | `Task`, `TaskStatus`, `SubStatus`, `TaskTag`, `DispatchMode::for_task()` tag routing, `slugify`, age formatting |
 | `src/models/{epics,learnings,review}.rs` | Domain types per area |
 | `src/models/ids.rs` | `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId` |
+| `src/models/string_enum.rs` | `define_str_enum!` macro behind `TaskStatus`/`SubStatus`/`TaskTag`/`WrapUpMode`/`TipsShowMode` string conversions |
 | `src/models/paths.rs` | `expand_tilde` path utility |
 | `src/models/columns.rs` | `VisualColumn` kanban board layout |
 | `src/service/mod.rs` | Service module root: `ServiceError`, `FieldUpdate`, re-exports of all sub-module types |
