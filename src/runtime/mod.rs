@@ -61,16 +61,16 @@ pub(super) fn group_base_branches_by_repo(
     map
 }
 
-/// Set up tmux for the TUI: rename the current window and bind Ctrl+Space (a bare
-/// root chord, no tmux prefix required) to jump back to the TUI window.
+/// Set up tmux for the TUI: rename the current window and bind Prefix+Space
+/// to jump back to the TUI window.
 fn setup_tmux_for_tui(runner: &dyn ProcessRunner) {
     // Use the pane ID of this process's own pane as the rename target. An empty-string
     // target resolves to the session's focused window, which renames the wrong window
     // when the user has a different window active at startup.
     let target = tmux::current_pane_id(runner).unwrap_or_default();
     let _ = tmux::rename_window(&target, TUI_WINDOW_NAME, runner);
-    let _ = tmux::bind_root_key(
-        "C-Space",
+    let _ = tmux::bind_key(
+        "space",
         &format!("select-window -t {TUI_WINDOW_NAME}"),
         runner,
     );
@@ -78,7 +78,7 @@ fn setup_tmux_for_tui(runner: &dyn ProcessRunner) {
 
 /// Tear down tmux TUI state: unbind the key and restore the original window name.
 fn teardown_tmux_for_tui(original_name: Option<&str>, runner: &dyn ProcessRunner) {
-    let _ = tmux::unbind_root_key("C-Space", runner);
+    let _ = tmux::unbind_key("space", runner);
     if let Some(name) = original_name {
         let _ = tmux::rename_window(TUI_WINDOW_NAME, name, runner);
     }
@@ -120,7 +120,7 @@ pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Set up tmux keybinding: Ctrl+Space → jump back to this window.
+    // Set up tmux keybinding: Prefix+Space → jump back to this window.
     // Best-effort: failures don't prevent the TUI from starting.
     let tmux_runner = runtime.runner.clone();
     let original_window_name = tmux::current_window_name(&*tmux_runner).ok();

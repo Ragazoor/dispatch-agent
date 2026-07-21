@@ -248,16 +248,15 @@ pub fn rename_window(target: &str, new_name: &str, runner: &dyn ProcessRunner) -
     Ok(())
 }
 
-/// Bind a tmux *root* key (no prefix required — a bare chord) to a command string.
-/// Uses `bind-key -n`, so the key fires directly without pressing the tmux prefix first.
-pub fn bind_root_key(key: &str, command: &str, runner: &dyn ProcessRunner) -> Result<()> {
-    run_checked(runner, &["bind-key", "-n", key, command], "bind-key")?;
+/// Bind a tmux key (requires the tmux prefix first) to a command string.
+pub fn bind_key(key: &str, command: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    run_checked(runner, &["bind-key", key, command], "bind-key")?;
     Ok(())
 }
 
-/// Remove a tmux *root* key binding (previously registered with `bind-key -n`).
-pub fn unbind_root_key(key: &str, runner: &dyn ProcessRunner) -> Result<()> {
-    run_checked(runner, &["unbind-key", "-n", key], "unbind-key")?;
+/// Remove a tmux key binding (previously registered with `bind-key`).
+pub fn unbind_key(key: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    run_checked(runner, &["unbind-key", key], "unbind-key")?;
     Ok(())
 }
 
@@ -596,26 +595,26 @@ mod tests {
     }
 
     #[test]
-    fn bind_root_key_issues_correct_tmux_args() {
+    fn bind_key_issues_correct_tmux_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
-        bind_root_key("C-Space", "select-window -t dispatch", &mock).unwrap();
+        bind_key("space", "select-window -t dispatch", &mock).unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "tmux");
         assert_eq!(
             calls[0].1,
-            vec!["bind-key", "-n", "C-Space", "select-window -t dispatch"]
+            vec!["bind-key", "space", "select-window -t dispatch"]
         );
     }
 
     #[test]
-    fn unbind_root_key_issues_correct_tmux_args() {
+    fn unbind_key_issues_correct_tmux_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
-        unbind_root_key("C-Space", &mock).unwrap();
+        unbind_key("space", &mock).unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "tmux");
-        assert_eq!(calls[0].1, vec!["unbind-key", "-n", "C-Space"]);
+        assert_eq!(calls[0].1, vec!["unbind-key", "space"]);
     }
 
     #[test]
@@ -1087,19 +1086,19 @@ mod tests {
         assert!(!focus_events_enabled(&mock));
     }
 
-    // --- bind_root_key / unbind_root_key failure paths ---
+    // --- bind_key / unbind_key failure paths ---
 
     #[test]
-    fn bind_root_key_fails_on_nonzero_exit() {
+    fn bind_key_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("invalid key")]);
-        let err = bind_root_key("C-Space", "select-window -t dispatch", &mock).unwrap_err();
+        let err = bind_key("space", "select-window -t dispatch", &mock).unwrap_err();
         assert!(err.to_string().contains("bind-key failed"), "got: {err}");
     }
 
     #[test]
-    fn unbind_root_key_fails_on_nonzero_exit() {
+    fn unbind_key_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no key bound")]);
-        let err = unbind_root_key("C-Space", &mock).unwrap_err();
+        let err = unbind_key("space", &mock).unwrap_err();
         assert!(err.to_string().contains("unbind-key failed"), "got: {err}");
     }
 
