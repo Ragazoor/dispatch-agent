@@ -727,6 +727,7 @@ mod tests {
             learnings: LearningInjections { ranked: vec![&l] },
             tag: None,
             verify_command: None,
+            auto_run_plan: false,
         };
         let text = build_research_prompt(
             TaskId(7),
