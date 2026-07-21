@@ -97,6 +97,34 @@ fn fetch_origin_with_retry(
     Err(last_err)
 }
 
+/// Resolve the git start point for a new worktree branch: fetch `origin/<base>`
+/// (retried, see `fetch_origin_with_retry`) and use it on success, or fall
+/// back to the bare local `<base>` once every attempt fails. Owns the full
+/// fallback policy (which ref to use, what the warning says) so callers don't
+/// have to re-derive it themselves.
+fn resolve_start_point(
+    runner: &dyn ProcessRunner,
+    repo_path: &str,
+    base: &str,
+    timeout: Duration,
+) -> (String, Option<String>) {
+    match fetch_origin_with_retry(runner, repo_path, base, timeout) {
+        Ok(()) => (format!("origin/{base}"), None),
+        Err(err) => {
+            tracing::warn!(
+                base,
+                error = %err,
+                "git fetch origin failed after retries, falling back to local branch"
+            );
+            let warning = format!(
+                "Could not fetch origin/{base} after {FETCH_MAX_ATTEMPTS} attempts \
+                 ({err}); using local branch, which may be stale."
+            );
+            (base.to_string(), Some(warning))
+        }
+    }
+}
+
 /// Create a git worktree and open a tmux window.
 /// Shared by both `dispatch_agent` and `brainstorm_agent`.
 ///
@@ -126,24 +154,13 @@ pub(super) fn provision_worktree(
     // manual sync). Soft-fail: if fetch is unavailable (no origin, no
     // network), fall back to the local branch and continue — dispatch is not
     // blocked.
-    let mut fetch_warning: Option<String> = None;
-    let start_point: Option<String> = base_branch.map(|base| {
-        match fetch_origin_with_retry(runner, &repo_path, base, timeout) {
-            Ok(()) => format!("origin/{base}"),
-            Err(err) => {
-                tracing::warn!(
-                    base,
-                    error = %err,
-                    "git fetch origin failed after retries, falling back to local branch"
-                );
-                fetch_warning = Some(format!(
-                    "Could not fetch origin/{base} after {FETCH_MAX_ATTEMPTS} attempts \
-                     ({err}); using local branch, which may be stale."
-                ));
-                base.to_string()
-            }
+    let (start_point, fetch_warning): (Option<String>, Option<String>) = match base_branch {
+        Some(base) => {
+            let (sp, warning) = resolve_start_point(runner, &repo_path, base, timeout);
+            (Some(sp), warning)
         }
-    });
+        None => (None, None),
+    };
 
     if std::path::Path::new(&worktree_path).exists() {
         tracing::info!(task_id = task.id.0, %worktree_path, "worktree already exists, reusing");
