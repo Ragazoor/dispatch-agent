@@ -113,7 +113,7 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_todo_add(&mut self) -> Vec<Command> {
-        self.pending = PendingAction::None;
+        self.interaction.pending = PendingAction::None;
         self.input.clear_buffer();
         self.input.mode = InputMode::TodoTitle;
         vec![]
@@ -125,7 +125,7 @@ impl App {
         linked: Option<crate::models::TodoLink>,
     ) -> Vec<Command> {
         self.input.set_buffer(title);
-        self.pending = linked.map_or(PendingAction::None, PendingAction::TodoLink);
+        self.interaction.pending = linked.map_or(PendingAction::None, PendingAction::TodoLink);
         self.input.mode = InputMode::TodoQuickAdd;
         vec![]
     }
@@ -135,7 +135,7 @@ impl App {
             if let Some(t) = todos.iter().find(|t| t.id == id) {
                 self.input.set_buffer(t.title.clone());
                 self.input.mode = InputMode::TodoTitle;
-                self.pending = PendingAction::TodoEdit(id);
+                self.interaction.pending = PendingAction::TodoEdit(id);
             }
         }
         vec![]
@@ -146,10 +146,10 @@ impl App {
         self.input.clear_buffer();
         let title = title.trim().to_string();
         if title.is_empty() {
-            self.pending = PendingAction::None;
+            self.interaction.pending = PendingAction::None;
             return vec![];
         }
-        if let PendingAction::TodoEdit(id) = std::mem::take(&mut self.pending) {
+        if let PendingAction::TodoEdit(id) = std::mem::take(&mut self.interaction.pending) {
             // Edit: apply optimistically to the in-memory Vec, then persist.
             if let ViewMode::Todos { todos, .. } = &mut self.board.view_mode {
                 if let Some(t) = todos.iter_mut().find(|t| t.id == id) {
@@ -177,10 +177,10 @@ impl App {
         self.input.clear_buffer();
         let title = title.trim().to_string();
         if title.is_empty() {
-            self.pending = PendingAction::None;
+            self.interaction.pending = PendingAction::None;
             return vec![];
         }
-        let linked = match std::mem::take(&mut self.pending) {
+        let linked = match std::mem::take(&mut self.interaction.pending) {
             PendingAction::TodoLink(link) => Some(link),
             _ => None,
         };

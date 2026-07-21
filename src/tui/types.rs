@@ -872,6 +872,22 @@ impl Default for ViewMode {
 }
 
 // ---------------------------------------------------------------------------
+// BoardViewMode — the board-column-relevant subset of ViewMode
+// ---------------------------------------------------------------------------
+
+/// `ViewMode` narrowed to the two variants that carry board-column layout:
+/// `Board` and `Epic`. Returned by `App::effective_view_mode()`, which peels
+/// away the `TaskDetail`/`Learnings`/`Todos` overlay variants. Column-builder
+/// callers match exhaustively on this with no `unreachable!` fallback.
+pub(in crate::tui) enum BoardViewMode<'a> {
+    Board(&'a BoardSelection),
+    Epic {
+        epic_id: EpicId,
+        selection: &'a BoardSelection,
+    },
+}
+
+// ---------------------------------------------------------------------------
 // ColumnItem — resolves whether cursor is on a task or an epic
 // ---------------------------------------------------------------------------
 
@@ -1037,6 +1053,62 @@ impl SubtaskStats {
 
 /// Pre-computed subtask stats for all epics, keyed by EpicId.
 pub type EpicStatsMap = HashMap<EpicId, SubtaskStats>;
+
+// ---------------------------------------------------------------------------
+// LayoutCache — derived per-frame layout state, invalidated as a unit
+// ---------------------------------------------------------------------------
+
+/// Derived layout state computed from `board.tasks`/`board.epics`, populated
+/// together by `App::cached_epic_stats()` and cleared together by
+/// `App::invalidate_layout_cache()`. Grouped into one struct so the fields
+/// that must stay coherent with each other (and with the board) can only be
+/// invalidated as a unit — see `LayoutCache::invalidate()`. `cached_epic_stats()`
+/// also self-heals on a fingerprint mismatch even if invalidation was
+/// forgotten; see `App::compute_layout_fingerprint()`.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct LayoutCache {
+    /// Cached result of `compute_epic_stats()`, wrapped in an `Arc` so that
+    /// `cached_epic_stats()` returns a reference-counted handle (O(1) clone)
+    /// rather than cloning the full `HashMap` on every call.
+    pub(in crate::tui) epic_stats_cache: Option<std::sync::Arc<EpicStatsMap>>,
+    /// Parent→children adjacency map over `board.epics`. Built once alongside
+    /// `epic_stats_cache` in `cached_epic_stats()`; passed into
+    /// `compute_epic_stats()` so the map is not rebuilt for each epic.
+    pub(in crate::tui) children_map_cache: Option<HashMap<EpicId, Vec<EpicId>>>,
+    /// Pre-sorted selectable items (tasks + epics) per status in display order.
+    /// Built once alongside `epic_stats_cache`; `update_anchor_from_current`
+    /// reads from this (O(1) per nav event) instead of re-sorting the column.
+    pub(in crate::tui) column_anchor_cache: Option<HashMap<TaskStatus, Vec<ColumnAnchor>>>,
+    /// Per-epic `(epic_repo_matches, epic_matches)` results, built once per render frame
+    /// inside `cached_epic_stats()` using a single shared `build_children_map()` call.
+    pub(in crate::tui) epic_filter_cache: Option<HashMap<EpicId, (bool, bool)>>,
+    /// Fingerprint of the cache-relevant fields of `board.tasks`/`board.epics`
+    /// (id, status, epic_id/parent_epic_id, sort_order) captured when
+    /// `epic_stats_cache` and friends were last populated. `cached_epic_stats()`
+    /// recomputes this fingerprint on every call and self-heals (discards and
+    /// rebuilds) if it no longer matches — so a handler that forgets to call
+    /// `invalidate_layout_cache()` cannot serve stale data, it only pays for
+    /// an extra rebuild. See `App::compute_layout_fingerprint()`.
+    pub(in crate::tui) layout_cache_fingerprint: Option<u64>,
+    /// TaskId → Vec index for O(1) lookups in `find_task_mut`. Not primed in
+    /// `App::new()` to avoid staleness when tests mutate `board.tasks` directly.
+    /// Rebuilt lazily in `find_task_mut` whenever `task_index_fingerprint`
+    /// no longer matches `App::compute_task_ids_fingerprint()` (covers both
+    /// length changes and same-length id-set replacement).
+    pub(in crate::tui) task_index: Option<HashMap<TaskId, usize>>,
+    /// Fingerprint of `board.tasks` ids captured when `task_index` was last
+    /// built. See `App::compute_task_ids_fingerprint()`.
+    pub(in crate::tui) task_index_fingerprint: Option<u64>,
+}
+
+impl LayoutCache {
+    /// Clear every cache field as a unit. Called whenever `board.tasks` or
+    /// `board.epics` are mutated; also a no-op-safe fallback since
+    /// `cached_epic_stats()` self-heals on a fingerprint mismatch regardless.
+    pub(in crate::tui) fn invalidate(&mut self) {
+        *self = Self::default();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests

@@ -11,7 +11,7 @@ impl App {
         max_seen_id: u32,
         show_mode: crate::models::TipsShowMode,
     ) -> Vec<Command> {
-        self.tips = Some(TipsOverlayState {
+        self.interaction.tips = Some(TipsOverlayState {
             index: starting_index,
             max_seen_id,
             show_mode,
@@ -21,7 +21,7 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_next_tip(&mut self) -> Vec<Command> {
-        if let Some(overlay) = &mut self.tips {
+        if let Some(overlay) = &mut self.interaction.tips {
             let len = overlay.tips.len();
             if len > 0 {
                 overlay.index = (overlay.index + 1) % len;
@@ -31,7 +31,7 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_prev_tip(&mut self) -> Vec<Command> {
-        if let Some(overlay) = &mut self.tips {
+        if let Some(overlay) = &mut self.interaction.tips {
             let len = overlay.tips.len();
             if len > 0 {
                 overlay.index = (overlay.index + len - 1) % len;
@@ -44,14 +44,14 @@ impl App {
         &mut self,
         mode: crate::models::TipsShowMode,
     ) -> Vec<Command> {
-        if let Some(overlay) = &mut self.tips {
+        if let Some(overlay) = &mut self.interaction.tips {
             overlay.show_mode = mode;
         }
         vec![]
     }
 
     pub(in crate::tui) fn handle_close_tips(&mut self) -> Vec<Command> {
-        if let Some(overlay) = self.tips.take() {
+        if let Some(overlay) = self.interaction.tips.take() {
             let seen_up_to = overlay
                 .current_tip()
                 .map(|t| t.id.max(overlay.max_seen_id))

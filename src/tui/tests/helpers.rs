@@ -50,7 +50,7 @@ pub(in crate::tui) fn without_usage(cmds: Vec<Command>) -> Vec<Command> {
 /// assert the idle backstop clears the stale chord (with no action firing)
 /// without a real sleep.
 pub(in crate::tui) fn resolve_pending_g_via_idle_tick(app: &mut App) -> Vec<Command> {
-    app.pending = crate::tui::PendingAction::GChord(
+    app.interaction.pending = crate::tui::PendingAction::GChord(
         std::time::Instant::now()
             - crate::tui::GG_CHORD_TIMEOUT
             - std::time::Duration::from_millis(50),

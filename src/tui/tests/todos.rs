@@ -215,7 +215,10 @@ fn add_opens_input_mode_todo_title() {
         app.input.mode,
         crate::tui::types::InputMode::TodoTitle
     ));
-    assert!(matches!(app.pending, crate::tui::PendingAction::None));
+    assert!(matches!(
+        app.interaction.pending,
+        crate::tui::PendingAction::None
+    ));
 }
 
 #[test]
@@ -229,7 +232,10 @@ fn d_routes_through_confirm_delete() {
         app.input.mode,
         crate::tui::types::InputMode::ConfirmDeleteTodo
     ));
-    assert_eq!(app.pending, crate::tui::PendingAction::TodoDelete(TodoId(1)));
+    assert_eq!(
+        app.interaction.pending,
+        crate::tui::PendingAction::TodoDelete(TodoId(1))
+    );
 }
 
 #[test]
@@ -261,7 +267,7 @@ fn t_on_board_with_task_selected_enters_quick_add_mode() {
     ));
     assert_eq!(app.input.buffer, "Some task");
     assert_eq!(
-        app.pending,
+        app.interaction.pending,
         crate::tui::PendingAction::TodoLink(TodoLink::Task(TaskId(1)))
     );
     assert!(matches!(app.board.view_mode, ViewMode::Board(_))); // stays on board
@@ -351,7 +357,10 @@ fn submit_title_while_todos_open_preserves_board_as_previous() {
 
     // effective_view_mode must return Board so callers don't hit unreachable!()
     assert!(
-        matches!(app.effective_view_mode(), ViewMode::Board(_)),
+        matches!(
+            app.effective_view_mode(),
+            crate::tui::types::BoardViewMode::Board(_)
+        ),
         "effective_view_mode should return Board"
     );
 }
@@ -397,7 +406,7 @@ fn quick_add_with_task_selected_prefills_buffer_and_stores_link() {
     assert_eq!(app.input.buffer, "My Task");
     assert_eq!(app.input.mode, crate::tui::types::InputMode::TodoQuickAdd);
     assert_eq!(
-        app.pending,
+        app.interaction.pending,
         crate::tui::PendingAction::TodoLink(TodoLink::Task(TaskId(42)))
     );
 }
@@ -407,7 +416,7 @@ fn quick_add_submit_passes_link_to_create_command() {
     use crate::models::TodoLink;
     let mut app = App::new(vec![]);
     app.input.mode = crate::tui::types::InputMode::TodoQuickAdd;
-    app.pending = crate::tui::PendingAction::TodoLink(TodoLink::Task(TaskId(7)));
+    app.interaction.pending = crate::tui::PendingAction::TodoLink(TodoLink::Task(TaskId(7)));
 
     let cmds = app.update(Message::Todo(TodoMessage::SubmitQuickAdd(
         "Buy milk".to_string(),
@@ -592,7 +601,7 @@ fn esc_during_quick_add_clears_pending_link() {
         linked: Some(TodoLink::Task(TaskId(1))),
     }));
     assert_eq!(
-        app.pending,
+        app.interaction.pending,
         crate::tui::PendingAction::TodoLink(TodoLink::Task(TaskId(1))),
         "pending link should be set after QuickAdd"
     );
@@ -605,7 +614,7 @@ fn esc_during_quick_add_clears_pending_link() {
     app.handle_key(key);
 
     assert_eq!(
-        app.pending,
+        app.interaction.pending,
         crate::tui::PendingAction::None,
         "pending link must be cleared on Esc"
     );

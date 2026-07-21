@@ -162,6 +162,64 @@ fn repo_filter_applies_to_epics_in_column_items() {
 }
 
 #[test]
+fn repo_filter_applies_to_epics_in_visual_column_items() {
+    // Same fixture as repo_filter_applies_to_epics_in_column_items, but exercised
+    // through column_items_for_visual_column (the split-pane layout builder) rather
+    // than column_items_for_status (the flat-board builder), since the two used to
+    // apply the repo filter to epics inconsistently.
+    let mut app = App::new(vec![]);
+    let now = chrono::Utc::now();
+    app.board.epics = vec![
+        Epic {
+            id: EpicId(1),
+            title: "A".into(),
+            description: "".into(),
+            status: TaskStatus::Backlog,
+            plan_path: None,
+            sort_order: None,
+            auto_dispatch: true,
+            parent_epic_id: None,
+            feed_command: None,
+            feed_interval_secs: None,
+            group_by_repo: false,
+            feed_role: crate::models::FeedRole::None,
+            origin: crate::models::EpicOrigin::Manual,
+            created_at: now,
+            updated_at: now,
+        },
+        Epic {
+            id: EpicId(2),
+            title: "B".into(),
+            description: "".into(),
+            status: TaskStatus::Backlog,
+            plan_path: None,
+            sort_order: None,
+            auto_dispatch: true,
+            parent_epic_id: None,
+            feed_command: None,
+            feed_interval_secs: None,
+            group_by_repo: false,
+            feed_role: crate::models::FeedRole::None,
+            origin: crate::models::EpicOrigin::Manual,
+            created_at: now,
+            updated_at: now,
+        },
+    ];
+    let mut task_a = make_task(1, TaskStatus::Backlog);
+    task_a.epic_id = Some(EpicId(1));
+    task_a.repo_path = "/repo-a".to_string();
+    let mut task_b = make_task(2, TaskStatus::Backlog);
+    task_b.epic_id = Some(EpicId(2));
+    task_b.repo_path = "/repo-b".to_string();
+    app.board.tasks = vec![task_a, task_b];
+    app.filter.repos.insert("/repo-a".to_string());
+
+    // vcol_idx 0 is the Backlog visual column (VisualColumn::parent_group_start).
+    let items = app.column_items_for_visual_column(0);
+    assert_eq!(items.len(), 1); // only epic A
+}
+
+#[test]
 fn f_key_opens_repo_filter() {
     let mut app = make_app();
     app.board.repo_paths = vec!["/repo".to_string()];

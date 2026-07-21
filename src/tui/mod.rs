@@ -191,6 +191,27 @@ pub(in crate::tui) struct MoveTaskPickerState {
 }
 
 // ---------------------------------------------------------------------------
+// InteractionState — transient overlay/picker state, one-at-a-time by construction
+// ---------------------------------------------------------------------------
+
+/// Transient overlay/picker UI state: at most one of these is meaningfully
+/// active at a time (each is gated by a distinct `InputMode`, mirroring
+/// [`PendingAction`]). Grouped so `App`'s own field list only carries genuine
+/// board/session state, not this long tail of "is some popup open" flags.
+/// Not `Clone` (mirrors [`ReparentPickerState`]/[`MoveTaskPickerState`]:
+/// their `RefCell<TreeState>` fields don't implement it).
+#[derive(Default)]
+pub(in crate::tui) struct InteractionState {
+    pub(in crate::tui) reparent_picker: Option<ReparentPickerState>,
+    pub(in crate::tui) move_task_picker: Option<MoveTaskPickerState>,
+    pub(in crate::tui) managed_feed_config: Option<ManagedFeedConfigState>,
+    /// The single one-shot "remember this until the next message" action in
+    /// flight. See [`PendingAction`].
+    pub(in crate::tui) pending: PendingAction,
+    pub(in crate::tui) tips: Option<TipsOverlayState>,
+}
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 
@@ -212,7 +233,6 @@ pub struct App {
     /// Spinner frame index (0..DISPATCH_SPINNER_FRAMES) for the per-card "dispatching…" indicator.
     /// Advanced by `Tick` only while `dispatching` is non-empty.
     pub(in crate::tui) spinner_tick: u8,
-    pub(in crate::tui) tips: Option<TipsOverlayState>,
     pub(in crate::tui) main_session_dir: Option<String>,
     /// Whether the fixed "dispatch-main" tmux window is currently alive, as of
     /// the last liveness poll. Drives the status-bar main-session badge. Derived
@@ -223,44 +243,10 @@ pub struct App {
     /// Ticks elapsed since the last main-session liveness poll. Reset to 0 on
     /// each poll; the poll fires when this reaches `MAIN_SESSION_POLL_TICKS`.
     pub(in crate::tui) ticks_since_main_session_poll: u64,
-    /// Cached result of `compute_epic_stats()`, wrapped in an `Arc` so that
-    /// `cached_epic_stats()` returns a reference-counted handle (O(1) clone)
-    /// rather than cloning the full `HashMap` on every call. Cleared by
-    /// `invalidate_layout_cache()` and self-healed by `cached_epic_stats()`'s
-    /// fingerprint check — see `layout_cache_fingerprint`.
-    pub(in crate::tui) epic_stats_cache: Option<Arc<EpicStatsMap>>,
-    /// Parent→children adjacency map over `board.epics`. Built once alongside
-    /// `epic_stats_cache` in `cached_epic_stats()`; passed into
-    /// `compute_epic_stats()` so the map is not rebuilt for each epic.
-    /// Cleared/self-healed together with `epic_stats_cache`.
-    pub(in crate::tui) children_map_cache: Option<HashMap<EpicId, Vec<EpicId>>>,
-    /// Pre-sorted selectable items (tasks + epics) per status in display order.
-    /// Built once alongside `epic_stats_cache`; `update_anchor_from_current`
-    /// reads from this (O(1) per nav event) instead of re-sorting the column.
-    /// Cleared/self-healed together with `epic_stats_cache`.
-    pub(in crate::tui) column_anchor_cache: Option<HashMap<TaskStatus, Vec<ColumnAnchor>>>,
-    /// Per-epic `(epic_repo_matches, epic_matches)` results, built once per render frame
-    /// inside `cached_epic_stats()` using a single shared `build_children_map()` call.
-    /// Cleared/self-healed together with `epic_stats_cache`.
-    pub(in crate::tui) epic_filter_cache: Option<HashMap<EpicId, (bool, bool)>>,
-    /// Fingerprint of the cache-relevant fields of `board.tasks`/`board.epics`
-    /// (id, status, epic_id/parent_epic_id, sort_order) captured when
-    /// `epic_stats_cache` and friends were last populated. `cached_epic_stats()`
-    /// recomputes this fingerprint on every call and self-heals (discards and
-    /// rebuilds) if it no longer matches — so a handler that forgets to call
-    /// `invalidate_layout_cache()` cannot serve stale data, it only pays for
-    /// an extra rebuild. See `compute_layout_fingerprint()`.
-    pub(in crate::tui) layout_cache_fingerprint: Option<u64>,
-    /// TaskId → Vec index for O(1) lookups in `find_task_mut`. Not primed in
-    /// `App::new()` to avoid staleness when tests mutate `board.tasks` directly.
-    /// Rebuilt lazily in `find_task_mut` whenever `task_index_fingerprint`
-    /// no longer matches `compute_task_ids_fingerprint()` (covers both
-    /// length changes and same-length id-set replacement). Cleared by
-    /// `invalidate_layout_cache()`.
-    pub(in crate::tui) task_index: Option<HashMap<TaskId, usize>>,
-    /// Fingerprint of `board.tasks` ids captured when `task_index` was last
-    /// built. See `compute_task_ids_fingerprint()`.
-    pub(in crate::tui) task_index_fingerprint: Option<u64>,
+    /// Derived layout state (epic stats, anchor cache, task index, and their
+    /// fingerprints) computed from `board.tasks`/`board.epics`. See
+    /// [`LayoutCache`] for coherence details.
+    pub(in crate::tui) layout: LayoutCache,
     /// Set to `true` whenever state changes that should trigger a redraw.
     /// The runtime skips `terminal.draw` on consecutive events that leave
     /// `dirty` false (e.g. an idle tick whose DB refresh found no changes).
@@ -272,20 +258,12 @@ pub struct App {
     /// Ticks elapsed since the last `RefreshFromDb` was emitted. Reset to 0
     /// on each refresh; the fallback fires when this reaches 5 (= 10 s).
     pub(in crate::tui) ticks_since_last_refresh: u64,
-    pub(in crate::tui) reparent_picker: Option<ReparentPickerState>,
-    pub(in crate::tui) move_task_picker: Option<MoveTaskPickerState>,
     /// Persisted managed-feed settings, snapshotted so the config popup opens
     /// without a DB round-trip. Loaded at startup, refreshed after a save.
     pub(in crate::tui) managed_feed_settings: ManagedFeedSettings,
-    /// In-progress edit buffer for the managed-feed config popup; `Some` only
-    /// while the popup is open.
-    pub(in crate::tui) managed_feed_config: Option<ManagedFeedConfigState>,
-    /// The single one-shot "remember this until the next message" action in
-    /// flight. Exactly one such action can be pending at a time — todo
-    /// edit/delete/link each live in a distinct [`InputMode`], and the `gg`
-    /// chord is only ever armed on the board — so a single matchable value
-    /// replaces the accreting `pending_*` flags. See [`PendingAction`].
-    pub(in crate::tui) pending: PendingAction,
+    /// Transient overlay/picker state (pickers, in-progress popup edits, the
+    /// one-shot pending action, tips overlay). See [`InteractionState`].
+    pub(in crate::tui) interaction: InteractionState,
     /// Paths in `board.repo_paths` that do not exist on disk (`is_dir()` → false).
     /// Recomputed once in `handle_repo_paths_updated` so the render path is
     /// never blocked by filesystem syscalls on every frame.
@@ -467,25 +445,15 @@ impl App {
             merge_queue: None,
             dispatching: HashMap::new(),
             spinner_tick: 0,
-            tips: None,
             main_session_dir: None,
             main_session_alive: false,
             ticks_since_main_session_poll: 0,
-            epic_stats_cache: None,
-            children_map_cache: None,
-            column_anchor_cache: None,
-            epic_filter_cache: None,
-            layout_cache_fingerprint: None,
-            task_index: None,
-            task_index_fingerprint: None,
+            layout: LayoutCache::default(),
             dirty: true,
             dirty_since_refresh: true,
             ticks_since_last_refresh: 0,
-            reparent_picker: None,
-            move_task_picker: None,
             managed_feed_settings: ManagedFeedSettings::default(),
-            managed_feed_config: None,
-            pending: PendingAction::None,
+            interaction: InteractionState::default(),
             broken_repo_paths: HashSet::new(),
             last_stale_cleanup_at: None,
         };
@@ -510,13 +478,27 @@ impl App {
         self.board.view_mode.selection_mut()
     }
 
-    /// When in TaskDetail overlay, returns the board mode beneath (Board or Epic).
-    pub(in crate::tui) fn effective_view_mode(&self) -> &ViewMode {
-        match &self.board.view_mode {
-            ViewMode::TaskDetail { previous, .. } => previous.as_ref(),
-            ViewMode::Learnings { previous, .. } => previous.as_ref(),
-            ViewMode::Todos { previous, .. } => previous.as_ref(),
-            other => other,
+    /// When in an overlay (TaskDetail/Learnings/Todos), returns the board mode
+    /// beneath (Board or Epic) by peeling away `previous` links. Returns
+    /// [`BoardViewMode`] rather than `&ViewMode` so callers get an exhaustive
+    /// 2-variant match with no `unreachable!` fallback for the overlay variants.
+    pub(in crate::tui) fn effective_view_mode(&self) -> BoardViewMode<'_> {
+        let mut current = &self.board.view_mode;
+        loop {
+            match current {
+                ViewMode::Board(sel) => return BoardViewMode::Board(sel),
+                ViewMode::Epic {
+                    epic_id, selection, ..
+                } => {
+                    return BoardViewMode::Epic {
+                        epic_id: *epic_id,
+                        selection,
+                    }
+                }
+                ViewMode::TaskDetail { previous, .. }
+                | ViewMode::Learnings { previous, .. }
+                | ViewMode::Todos { previous, .. } => current = previous,
+            }
         }
     }
 
@@ -668,7 +650,7 @@ impl App {
 
     /// Read-only access to the in-progress config edit buffer (test/render use).
     pub fn managed_feed_config(&self) -> Option<&ManagedFeedConfigState> {
-        self.managed_feed_config.as_ref()
+        self.interaction.managed_feed_config.as_ref()
     }
 
     /// Bootstrap-only carve-out: populated by the runtime loader from
@@ -786,7 +768,7 @@ impl App {
     /// - At least one non-archived subtask's repo_path matches the filter.
     ///
     pub(in crate::tui) fn epic_repo_matches(&self, epic_id: EpicId) -> bool {
-        if let Some(ref cache) = self.epic_filter_cache {
+        if let Some(ref cache) = self.layout.epic_filter_cache {
             if let Some(&(repo_matches, _)) = cache.get(&epic_id) {
                 return repo_matches;
             }
@@ -796,7 +778,7 @@ impl App {
     }
 
     pub(in crate::tui) fn epic_matches(&self, epic_id: EpicId) -> bool {
-        if let Some(ref cache) = self.epic_filter_cache {
+        if let Some(ref cache) = self.layout.epic_filter_cache {
             if let Some(&(_, active_matches)) = cache.get(&epic_id) {
                 return active_matches;
             }
@@ -806,6 +788,24 @@ impl App {
         }
         let epic_ids = crate::models::descendant_epic_ids(epic_id, &self.board.epics);
         epic_active_matches_for_ids(&self.board.tasks, &epic_ids)
+    }
+
+    /// Epics visible in the current board/epic view, filtered by the active
+    /// repo / only-active filters: root epics (no parent) in `Board` mode,
+    /// direct children of the current epic in `Epic` mode. Shared by
+    /// `column_items_for_status_with_view_tasks`, `column_item_count`, and
+    /// `column_items_for_visual_column` so an epic-visibility rule change is
+    /// made in one place instead of three.
+    pub(in crate::tui) fn visible_epics_for_effective_view(&self) -> impl Iterator<Item = &Epic> {
+        let parent = match self.effective_view_mode() {
+            BoardViewMode::Board(_) => None,
+            BoardViewMode::Epic { epic_id, .. } => Some(epic_id),
+        };
+        self.board
+            .epics
+            .iter()
+            .filter(move |e| e.parent_epic_id == parent)
+            .filter(|e| self.epic_matches(e.id) && self.epic_repo_matches(e.id))
     }
 
     /// Epics eligible as reparent targets for `target`.
@@ -867,7 +867,7 @@ impl App {
         let query_lower = self.search.query.to_lowercase();
         let search_match = |t: &&Task| fuzzy_matches_lower(&t.title, &query_lower);
         match self.effective_view_mode() {
-            ViewMode::Board(_) => self
+            BoardViewMode::Board(_) => self
                 .board
                 .tasks
                 .iter()
@@ -879,8 +879,8 @@ impl App {
                 .filter(active_match)
                 .filter(search_match)
                 .collect(),
-            ViewMode::Epic { epic_id, .. } => {
-                let current = *epic_id;
+            BoardViewMode::Epic { epic_id, .. } => {
+                let current = epic_id;
                 if self.board.flattened {
                     let subtree = crate::models::descendant_task_ids(
                         current,
@@ -913,9 +913,6 @@ impl App {
                         .filter(search_match)
                         .collect()
                 }
-            }
-            ViewMode::TaskDetail { .. } | ViewMode::Learnings { .. } | ViewMode::Todos { .. } => {
-                unreachable!("effective_view_mode never returns TaskDetail, Learnings, or Todos")
             }
         }
     }
@@ -989,10 +986,12 @@ impl App {
     /// if invalidation was never called. See `compute_layout_fingerprint()`.
     pub(in crate::tui) fn cached_epic_stats(&mut self) -> Arc<EpicStatsMap> {
         let fingerprint = self.compute_layout_fingerprint();
-        if self.epic_stats_cache.is_some() && self.layout_cache_fingerprint != Some(fingerprint) {
+        if self.layout.epic_stats_cache.is_some()
+            && self.layout.layout_cache_fingerprint != Some(fingerprint)
+        {
             self.invalidate_layout_cache();
         }
-        if self.epic_stats_cache.is_none() {
+        if self.layout.epic_stats_cache.is_none() {
             // Build the children map once; store it so callers can reuse it.
             let children_map = crate::models::build_children_map(&self.board.epics);
             let stats = Arc::new(self.compute_epic_stats_with_map(&children_map));
@@ -1019,8 +1018,8 @@ impl App {
                     })
                     .collect()
             };
-            self.epic_filter_cache = Some(filter_cache);
-            self.children_map_cache = Some(children_map);
+            self.layout.epic_filter_cache = Some(filter_cache);
+            self.layout.children_map_cache = Some(children_map);
 
             // Build column_anchor_cache: sorted selectable items per status.
             // Hoist tasks_for_current_view() out of the loop so it's computed once,
@@ -1044,13 +1043,13 @@ impl App {
                     .collect();
                 anchor_cache.insert(status, anchors);
             }
-            self.column_anchor_cache = Some(anchor_cache);
+            self.layout.column_anchor_cache = Some(anchor_cache);
 
-            self.epic_stats_cache = Some(Arc::clone(&stats));
-            self.layout_cache_fingerprint = Some(fingerprint);
+            self.layout.epic_stats_cache = Some(Arc::clone(&stats));
+            self.layout.layout_cache_fingerprint = Some(fingerprint);
             return stats;
         }
-        if let Some(ref arc) = self.epic_stats_cache {
+        if let Some(ref arc) = self.layout.epic_stats_cache {
             Arc::clone(arc)
         } else {
             unreachable!("epic_stats_cache is set in the branch above")
@@ -1114,13 +1113,7 @@ impl App {
     /// `cached_epic_stats()` call to detect the fingerprint mismatch — but it
     /// is no longer required for correctness.
     pub(in crate::tui) fn invalidate_layout_cache(&mut self) {
-        self.epic_stats_cache = None;
-        self.children_map_cache = None;
-        self.column_anchor_cache = None;
-        self.epic_filter_cache = None;
-        self.layout_cache_fingerprint = None;
-        self.task_index = None;
-        self.task_index_fingerprint = None;
+        self.layout.invalidate();
     }
 
     /// Build a list of items (tasks + epics) for a column in the current view.
@@ -1231,38 +1224,9 @@ impl App {
         // --- Non-flat path (unchanged) ---
         let mut items: Vec<ColumnItem<'_>> = tasks.into_iter().map(ColumnItem::Task).collect();
 
-        match self.effective_view_mode() {
-            ViewMode::Board(_) => {
-                // Main board: show only root epics (no parent)
-                for epic in &self.board.epics {
-                    if epic.parent_epic_id.is_some() {
-                        continue;
-                    }
-                    if !self.epic_matches(epic.id) || !self.epic_repo_matches(epic.id) {
-                        continue;
-                    }
-                    if epic.status == status {
-                        items.push(ColumnItem::Epic(epic));
-                    }
-                }
-            }
-            ViewMode::Epic { epic_id, .. } => {
-                // Inside an epic: show sub-epics whose parent_epic_id matches
-                let current = *epic_id;
-                for epic in &self.board.epics {
-                    if epic.parent_epic_id != Some(current) {
-                        continue;
-                    }
-                    if !self.epic_matches(epic.id) || !self.epic_repo_matches(epic.id) {
-                        continue;
-                    }
-                    if epic.status == status {
-                        items.push(ColumnItem::Epic(epic));
-                    }
-                }
-            }
-            ViewMode::TaskDetail { .. } | ViewMode::Learnings { .. } | ViewMode::Todos { .. } => {
-                unreachable!("effective_view_mode never returns TaskDetail, Learnings, or Todos")
+        for epic in self.visible_epics_for_effective_view() {
+            if epic.status == status {
+                items.push(ColumnItem::Epic(epic));
             }
         }
 
@@ -1309,35 +1273,10 @@ impl App {
         if self.is_flattened_for_status(status) {
             return task_count;
         }
-        let epic_count = match self.effective_view_mode() {
-            ViewMode::Board(_) => self
-                .board
-                .epics
-                .iter()
-                .filter(|e| {
-                    e.parent_epic_id.is_none()
-                        && e.status == status
-                        && self.epic_matches(e.id)
-                        && self.epic_repo_matches(e.id)
-                })
-                .count(),
-            ViewMode::Epic { epic_id, .. } => {
-                let current = *epic_id;
-                self.board
-                    .epics
-                    .iter()
-                    .filter(|e| {
-                        e.parent_epic_id == Some(current)
-                            && e.status == status
-                            && self.epic_matches(e.id)
-                            && self.epic_repo_matches(e.id)
-                    })
-                    .count()
-            }
-            ViewMode::TaskDetail { .. } | ViewMode::Learnings { .. } | ViewMode::Todos { .. } => {
-                unreachable!("effective_view_mode never returns TaskDetail, Learnings, or Todos")
-            }
-        };
+        let epic_count = self
+            .visible_epics_for_effective_view()
+            .filter(|e| e.status == status)
+            .count();
         task_count + epic_count
     }
 
@@ -1359,52 +1298,30 @@ impl App {
 
         let mut items: Vec<ColumnItem<'_>> = tasks.into_iter().map(ColumnItem::Task).collect();
 
-        let epics_to_show: Vec<&Epic> = match self.effective_view_mode() {
-            ViewMode::Board(_) => self
-                .board
-                .epics
-                .iter()
-                .filter(|e| e.parent_epic_id.is_none() && self.epic_matches(e.id))
-                .collect(),
-            ViewMode::Epic { epic_id, .. } => {
-                let current = *epic_id;
-                self.board
-                    .epics
+        let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
+        for epic in self.visible_epics_for_effective_view() {
+            let epic_parent = epic.status;
+            if epic_parent != vcol.parent_status {
+                continue;
+            }
+            if epic_parent == TaskStatus::Running {
+                let subtasks: Vec<&Task> = self
+                    .board
+                    .tasks
                     .iter()
-                    .filter(|e| e.parent_epic_id == Some(current) && self.epic_matches(e.id))
-                    .collect()
-            }
-            ViewMode::TaskDetail { .. } | ViewMode::Learnings { .. } | ViewMode::Todos { .. } => {
-                unreachable!("effective_view_mode never returns TaskDetail, Learnings, or Todos")
-            }
-        };
-
-        if !epics_to_show.is_empty() {
-            let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
-            for epic in epics_to_show {
-                let epic_parent = epic.status;
-                if epic_parent != vcol.parent_status {
-                    continue;
-                }
-                if epic_parent == TaskStatus::Running {
-                    let subtasks: Vec<&Task> = self
-                        .board
-                        .tasks
-                        .iter()
-                        .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
-                        .collect();
-                    let substatus = epic_substatus(epic, &subtasks, active_merge);
-                    let target_col = if matches!(substatus, EpicSubstatus::Blocked(_)) {
-                        2
-                    } else {
-                        1
-                    };
-                    if vcol_idx == target_col {
-                        items.push(ColumnItem::Epic(epic));
-                    }
-                } else if vcol_idx == VisualColumn::parent_group_start(epic_parent) {
+                    .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
+                    .collect();
+                let substatus = epic_substatus(epic, &subtasks, active_merge);
+                let target_col = if matches!(substatus, EpicSubstatus::Blocked(_)) {
+                    2
+                } else {
+                    1
+                };
+                if vcol_idx == target_col {
                     items.push(ColumnItem::Epic(epic));
                 }
+            } else if vcol_idx == VisualColumn::parent_group_start(epic_parent) {
+                items.push(ColumnItem::Epic(epic));
             }
         }
 
@@ -1444,8 +1361,8 @@ impl App {
             return None;
         }
         let status = TaskStatus::from_column_index(col - 1)?;
-        let items =
-            self.column_items_for_status_with_stats(status, self.epic_stats_cache.as_deref());
+        let items = self
+            .column_items_for_status_with_stats(status, self.layout.epic_stats_cache.as_deref());
         let row = self.selection().row(col);
         items.into_iter().filter(|i| i.is_selectable()).nth(row)
     }
@@ -1506,6 +1423,7 @@ impl App {
 
         let _ = self.cached_epic_stats(); // warms column_anchor_cache if cold
         let new_anchor = self
+            .layout
             .column_anchor_cache
             .as_ref()
             .and_then(|m| m.get(&status))
@@ -1537,10 +1455,7 @@ impl App {
         }
 
         let anchor = match self.effective_view_mode() {
-            ViewMode::Board(sel) | ViewMode::Epic { selection: sel, .. } => sel.anchor,
-            ViewMode::TaskDetail { .. } | ViewMode::Learnings { .. } | ViewMode::Todos { .. } => {
-                unreachable!("effective_view_mode never returns TaskDetail, Learnings, or Todos")
-            }
+            BoardViewMode::Board(sel) | BoardViewMode::Epic { selection: sel, .. } => sel.anchor,
         };
 
         let Some(anchor) = anchor else {
@@ -1552,7 +1467,7 @@ impl App {
         let _ = self.cached_epic_stats();
         // Search for the anchor in the pre-sorted anchor cache (avoids re-sorting each column).
         let mut found: Option<(usize, usize)> = None;
-        if let Some(anchor_map) = &self.column_anchor_cache {
+        if let Some(anchor_map) = &self.layout.column_anchor_cache {
             'outer: for (idx, &status) in TaskStatus::ALL.iter().enumerate() {
                 let nav_col = idx + 1;
                 if let Some(anchors) = anchor_map.get(&status) {
@@ -1604,8 +1519,10 @@ impl App {
         // tests, or a wholesale same-length replacement of board.tasks with a
         // different id set — a length-only check would miss that).
         let fingerprint = self.compute_task_ids_fingerprint();
-        if self.task_index.is_none() || self.task_index_fingerprint != Some(fingerprint) {
-            self.task_index = Some(
+        if self.layout.task_index.is_none()
+            || self.layout.task_index_fingerprint != Some(fingerprint)
+        {
+            self.layout.task_index = Some(
                 self.board
                     .tasks
                     .iter()
@@ -1613,9 +1530,9 @@ impl App {
                     .map(|(i, t)| (t.id, i))
                     .collect(),
             );
-            self.task_index_fingerprint = Some(fingerprint);
+            self.layout.task_index_fingerprint = Some(fingerprint);
         }
-        let i = self.task_index.as_ref()?.get(&id).copied()?;
+        let i = self.layout.task_index.as_ref()?.get(&id).copied()?;
         self.board.tasks.get_mut(i)
     }
 

@@ -225,9 +225,9 @@ impl App {
         // went idle (no follow-up keypress completed the chord), clear the
         // stale pending state once the chord window has elapsed. Nothing
         // fires — a lone `g` has no action of its own.
-        if let PendingAction::GChord(started) = self.pending {
+        if let PendingAction::GChord(started) = self.interaction.pending {
             if started.elapsed() > GG_CHORD_TIMEOUT {
-                self.pending = PendingAction::None;
+                self.interaction.pending = PendingAction::None;
             }
         }
 

@@ -599,7 +599,7 @@ fn load_filter_preset_sets_dirty() {
 
 // ---------------------------------------------------------------------------
 // Dirty signal: managed feed config popup (typing/tabbing mutates
-// self.managed_feed_config, entirely invisible to the handle_key snapshot)
+// self.interaction.managed_feed_config, entirely invisible to the handle_key snapshot)
 // ---------------------------------------------------------------------------
 
 #[test]

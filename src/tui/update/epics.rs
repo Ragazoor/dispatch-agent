@@ -472,7 +472,7 @@ impl App {
         tree_state.select_first();
         let eligible = self.reparent_target_epics(epic_id);
         let items = crate::tui::ui::build_reparent_tree(&eligible);
-        self.reparent_picker = Some(crate::tui::ReparentPickerState {
+        self.interaction.reparent_picker = Some(crate::tui::ReparentPickerState {
             epic_id,
             tree_state: std::cell::RefCell::new(tree_state),
             items,
@@ -482,7 +482,7 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_reparent_navigate(&mut self, nav: TreeNav) -> Vec<Command> {
-        if let Some(picker) = &self.reparent_picker {
+        if let Some(picker) = &self.interaction.reparent_picker {
             crate::tui::types::apply_tree_nav(&mut picker.tree_state.borrow_mut(), nav);
             self.dirty = true;
         }
@@ -496,6 +496,7 @@ impl App {
         };
 
         let selected_id: Option<String> = self
+            .interaction
             .reparent_picker
             .as_ref()
             .and_then(|p| p.tree_state.borrow().selected().last().cloned());
@@ -540,7 +541,7 @@ impl App {
 
     fn clear_reparent_state(&mut self) {
         self.input.mode = InputMode::Normal;
-        self.reparent_picker = None;
+        self.interaction.reparent_picker = None;
         self.clear_status();
     }
 
@@ -574,7 +575,7 @@ impl App {
             }
             InputMode::ReparentEpic(_) => {
                 self.input.mode = InputMode::Normal;
-                self.reparent_picker = None;
+                self.interaction.reparent_picker = None;
             }
             _ => {}
         }

@@ -11,7 +11,7 @@ use ratatui::{
 use crate::tui::App;
 
 pub(in crate::tui::ui::kanban) fn render_tips_overlay(frame: &mut Frame, app: &App, area: Rect) {
-    let Some(overlay) = &app.tips else {
+    let Some(overlay) = &app.interaction.tips else {
         return;
     };
     let Some(tip) = overlay.current_tip() else {

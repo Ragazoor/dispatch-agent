@@ -45,7 +45,7 @@ impl App {
         self.input.clear_buffer();
         self.input.task_draft = None;
         self.input.pending_epic_id = None;
-        self.pending = PendingAction::None;
+        self.interaction.pending = PendingAction::None;
         self.clear_status();
         vec![]
     }

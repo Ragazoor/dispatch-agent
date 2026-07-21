@@ -152,7 +152,7 @@ impl App {
             KeyCode::Char('c') => self.update(Message::Todo(TodoMessage::ClearDone)),
             KeyCode::Char('d') => {
                 if let Some(id) = self.selected_todo_id() {
-                    self.pending = PendingAction::TodoDelete(id);
+                    self.interaction.pending = PendingAction::TodoDelete(id);
                     self.input.mode = crate::tui::types::InputMode::ConfirmDeleteTodo;
                 }
                 vec![]
@@ -264,8 +264,8 @@ impl App {
     /// old code unconditionally cleared `pending_g`; scoping the clear to
     /// `GChord` preserves that exact semantics under the collapsed enum.
     fn clear_pending_g_chord(&mut self) {
-        if matches!(self.pending, PendingAction::GChord(_)) {
-            self.pending = PendingAction::None;
+        if matches!(self.interaction.pending, PendingAction::GChord(_)) {
+            self.interaction.pending = PendingAction::None;
         }
     }
 
@@ -273,8 +273,8 @@ impl App {
     /// so the `gg`-chord pre-check can recurse into it for the current key
     /// once a pending `g` has been resolved (see [`PendingAction::GChord`]).
     fn handle_key_board_normal(&mut self, key: KeyEvent) -> Vec<Command> {
-        if let PendingAction::GChord(started) = self.pending {
-            self.pending = PendingAction::None;
+        if let PendingAction::GChord(started) = self.interaction.pending {
+            self.interaction.pending = PendingAction::None;
             if key.code == KeyCode::Char('g') && started.elapsed() <= GG_CHORD_TIMEOUT {
                 // Completed `gg` chord: jump to top of column.
                 return self.update(Message::NavigateRowFirst);
@@ -411,7 +411,7 @@ impl App {
             KeyCode::Char('g') => {
                 // Start a pending `gg` chord; resolved by the next keypress
                 // (above) or by `handle_tick` if the user goes idle.
-                self.pending = PendingAction::GChord(Instant::now());
+                self.interaction.pending = PendingAction::GChord(Instant::now());
                 vec![]
             }
             KeyCode::Char('G') => self.update(Message::NavigateRowLast),

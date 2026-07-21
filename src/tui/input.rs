@@ -58,7 +58,7 @@ impl App {
             self.update(Message::System(
                 crate::tui::messages::SystemMessage::DismissError,
             ))
-        } else if self.tips.is_some() {
+        } else if self.interaction.tips.is_some() {
             self.handle_key_tips(key)
         } else {
             match self.input.mode.clone() {
@@ -134,7 +134,7 @@ impl App {
                 cmds
             }
             KeyCode::Char('n') => {
-                let current_mode = self.tips.as_ref().map(|t| t.show_mode);
+                let current_mode = self.interaction.tips.as_ref().map(|t| t.show_mode);
                 let new_mode = match current_mode {
                     Some(TipsShowMode::NewOnly) => TipsShowMode::Always,
                     _ => TipsShowMode::NewOnly,

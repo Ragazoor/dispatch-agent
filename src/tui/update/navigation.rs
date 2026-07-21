@@ -14,7 +14,8 @@ impl App {
     pub(in crate::tui) fn handle_navigate_column(&mut self, delta: isize) -> Vec<Command> {
         // Column range [1, 5]: 1=Backlog, 2=Running, 3=Review, 4=Done, 5=Archive.
         // In Epic view, Archive is not shown; clamp to [1, COLUMN_COUNT].
-        let (min_col, max_col) = if matches!(self.effective_view_mode(), ViewMode::Epic { .. }) {
+        let (min_col, max_col) = if matches!(self.effective_view_mode(), BoardViewMode::Epic { .. })
+        {
             (1isize, TaskStatus::COLUMN_COUNT as isize) // [1, 4] in epic view
         } else {
             (1isize, TaskStatus::COLUMN_COUNT as isize + 1) // [1, 5] on main board

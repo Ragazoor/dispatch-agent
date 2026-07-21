@@ -821,7 +821,11 @@ fn show_tips_sets_overlay() {
         max_seen_id: 0,
         show_mode: crate::models::TipsShowMode::Always,
     }));
-    let overlay = app.tips.as_ref().expect("tips overlay should be set");
+    let overlay = app
+        .interaction
+        .tips
+        .as_ref()
+        .expect("tips overlay should be set");
     assert_eq!(overlay.index, 1);
     assert_eq!(overlay.tips.len(), 3);
 }
@@ -836,7 +840,7 @@ fn next_tip_increments_index() {
         show_mode: crate::models::TipsShowMode::Always,
     }));
     app.update(Message::Tips(crate::tui::messages::TipsMessage::Next));
-    assert_eq!(app.tips.as_ref().unwrap().index, 1);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 1);
 }
 
 #[test]
@@ -849,7 +853,7 @@ fn next_tip_wraps_at_end() {
         show_mode: crate::models::TipsShowMode::Always,
     }));
     app.update(Message::Tips(crate::tui::messages::TipsMessage::Next));
-    assert_eq!(app.tips.as_ref().unwrap().index, 0);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 0);
 }
 
 #[test]
@@ -862,7 +866,7 @@ fn prev_tip_decrements_index() {
         show_mode: crate::models::TipsShowMode::Always,
     }));
     app.update(Message::Tips(crate::tui::messages::TipsMessage::Prev));
-    assert_eq!(app.tips.as_ref().unwrap().index, 1);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 1);
 }
 
 #[test]
@@ -875,7 +879,7 @@ fn prev_tip_wraps_at_start() {
         show_mode: crate::models::TipsShowMode::Always,
     }));
     app.update(Message::Tips(crate::tui::messages::TipsMessage::Prev));
-    assert_eq!(app.tips.as_ref().unwrap().index, 2);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 2);
 }
 
 #[test]
@@ -891,7 +895,7 @@ fn set_tips_mode_updates_show_mode() {
         crate::models::TipsShowMode::NewOnly,
     )));
     assert_eq!(
-        app.tips.as_ref().unwrap().show_mode,
+        app.interaction.tips.as_ref().unwrap().show_mode,
         crate::models::TipsShowMode::NewOnly
     );
 }
@@ -906,7 +910,7 @@ fn close_tips_clears_overlay_and_returns_save_command() {
         show_mode: crate::models::TipsShowMode::Always,
     }));
     let cmds = app.update(Message::Tips(crate::tui::messages::TipsMessage::Close));
-    assert!(app.tips.is_none());
+    assert!(app.interaction.tips.is_none());
     let save_cmd = cmds.iter().find_map(|c| {
         if let Command::Tips(crate::tui::commands::TipsCommand::SaveState {
             seen_up_to,
@@ -953,28 +957,28 @@ fn close_tips_seen_up_to_respects_max_seen_id() {
 fn tips_l_key_goes_next() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Char('l')));
-    assert_eq!(app.tips.as_ref().unwrap().index, 2);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 2);
 }
 
 #[test]
 fn tips_right_arrow_goes_next() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Right));
-    assert_eq!(app.tips.as_ref().unwrap().index, 2);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 2);
 }
 
 #[test]
 fn tips_h_key_goes_prev() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Char('h')));
-    assert_eq!(app.tips.as_ref().unwrap().index, 0);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 0);
 }
 
 #[test]
 fn tips_left_arrow_goes_prev() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Left));
-    assert_eq!(app.tips.as_ref().unwrap().index, 0);
+    assert_eq!(app.interaction.tips.as_ref().unwrap().index, 0);
 }
 
 #[test]
@@ -982,7 +986,7 @@ fn tips_n_key_sets_new_only_mode() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Char('n')));
     assert_eq!(
-        app.tips.as_ref().unwrap().show_mode,
+        app.interaction.tips.as_ref().unwrap().show_mode,
         crate::models::TipsShowMode::NewOnly
     );
     assert!(
@@ -1003,7 +1007,7 @@ fn tips_n_key_toggles_back_to_always() {
     // Second press: NewOnly → Always
     app.handle_key(make_key(KeyCode::Char('n')));
     assert_eq!(
-        app.tips.as_ref().unwrap().show_mode,
+        app.interaction.tips.as_ref().unwrap().show_mode,
         crate::models::TipsShowMode::Always
     );
     assert!(
@@ -1021,7 +1025,7 @@ fn tips_x_key_sets_never_mode() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Char('x')));
     assert_eq!(
-        app.tips.as_ref().unwrap().show_mode,
+        app.interaction.tips.as_ref().unwrap().show_mode,
         crate::models::TipsShowMode::Never
     );
     assert!(
@@ -1038,14 +1042,14 @@ fn tips_x_key_sets_never_mode() {
 fn tips_q_key_closes_overlay() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Char('q')));
-    assert!(app.tips.is_none());
+    assert!(app.interaction.tips.is_none());
 }
 
 #[test]
 fn tips_escape_closes_overlay() {
     let mut app = app_with_tips();
     app.handle_key(make_key(KeyCode::Esc));
-    assert!(app.tips.is_none());
+    assert!(app.interaction.tips.is_none());
 }
 
 #[test]
@@ -1057,7 +1061,7 @@ fn tips_overlay_captures_input_not_board() {
     // No commands should be emitted for unhandled keys while tips is open
     assert!(cmds.is_empty());
     // Tips overlay is still open
-    assert!(app.tips.is_some());
+    assert!(app.interaction.tips.is_some());
 }
 
 #[test]

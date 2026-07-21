@@ -28,7 +28,7 @@ fn epic_stats_cache_is_populated_after_new() {
     // App::new() calls cached_epic_stats() to seed the anchor, so the cache
     // is warm (not None) from the very first render onward.
     let app = make_app();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 }
 
 // ---------------------------------------------------------------------------
@@ -39,9 +39,9 @@ fn epic_stats_cache_is_populated_after_new() {
 fn cached_epic_stats_populates_cache_after_invalidation() {
     let mut app = make_app();
     app.invalidate_layout_cache();
-    assert!(app.epic_stats_cache.is_none());
+    assert!(app.layout.epic_stats_cache.is_none());
     let _ = app.cached_epic_stats();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 }
 
 #[test]
@@ -66,10 +66,10 @@ fn invalidate_layout_cache_clears_populated_cache() {
     let mut app = make_app();
     app.board.epics = vec![make_epic(10)];
     let _ = app.cached_epic_stats();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 
     app.invalidate_layout_cache();
-    assert!(app.epic_stats_cache.is_none());
+    assert!(app.layout.epic_stats_cache.is_none());
 }
 
 #[test]
@@ -77,10 +77,10 @@ fn invalidate_layout_cache_is_idempotent() {
     let mut app = make_app();
     // First invalidate on a warm cache.
     app.invalidate_layout_cache();
-    assert!(app.epic_stats_cache.is_none());
+    assert!(app.layout.epic_stats_cache.is_none());
     // Second invalidate on an already-empty cache should not panic.
     app.invalidate_layout_cache();
-    assert!(app.epic_stats_cache.is_none());
+    assert!(app.layout.epic_stats_cache.is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -94,11 +94,11 @@ fn navigate_row_does_not_invalidate_populated_cache() {
         make_task(2, TaskStatus::Backlog),
     ]);
     let _ = app.cached_epic_stats();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 
     app.update(Message::NavigateRow(1));
     assert!(
-        app.epic_stats_cache.is_some(),
+        app.layout.epic_stats_cache.is_some(),
         "navigate_row must not clear the cache"
     );
 }
@@ -107,11 +107,11 @@ fn navigate_row_does_not_invalidate_populated_cache() {
 fn navigate_column_does_not_invalidate_populated_cache() {
     let mut app = make_app();
     let _ = app.cached_epic_stats();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 
     app.update(Message::NavigateColumn(1));
     assert!(
-        app.epic_stats_cache.is_some(),
+        app.layout.epic_stats_cache.is_some(),
         "navigate_column must not clear the cache"
     );
 }
@@ -152,7 +152,7 @@ fn refresh_epics_invalidates_and_repopulates_cache() {
     app.board.epics = vec![make_epic(10)];
 
     let _ = app.cached_epic_stats();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 
     // Replace epics: remove epic 10, add epic 20
     app.update(Message::Epic(EpicMessage::Refresh(vec![make_epic(20)])));
@@ -171,7 +171,7 @@ fn task_created_repopulates_cache() {
     app.board.epics = vec![make_epic(10)];
 
     let _ = app.cached_epic_stats();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 
     let mut new_subtask = make_task(99, TaskStatus::Backlog);
     new_subtask.epic_id = Some(EpicId(10));
@@ -190,7 +190,7 @@ fn epic_created_invalidates_cache() {
     let mut app = make_app();
 
     let _ = app.cached_epic_stats();
-    assert!(app.epic_stats_cache.is_some());
+    assert!(app.layout.epic_stats_cache.is_some());
 
     app.update(Message::Epic(EpicMessage::Created(make_epic(42))));
 
@@ -239,7 +239,7 @@ fn column_anchor_cache_starts_empty_after_invalidation() {
     let mut app = make_app();
     app.invalidate_layout_cache();
     assert!(
-        app.column_anchor_cache.is_none(),
+        app.layout.column_anchor_cache.is_none(),
         "invalidate_layout_cache must clear column_anchor_cache"
     );
 }
@@ -251,10 +251,10 @@ fn cached_epic_stats_populates_column_anchor_cache() {
         make_task(2, TaskStatus::Backlog),
     ]);
     app.invalidate_layout_cache();
-    assert!(app.column_anchor_cache.is_none());
+    assert!(app.layout.column_anchor_cache.is_none());
     let _ = app.cached_epic_stats();
     assert!(
-        app.column_anchor_cache.is_some(),
+        app.layout.column_anchor_cache.is_some(),
         "cached_epic_stats must populate column_anchor_cache"
     );
 }
@@ -270,6 +270,7 @@ fn column_anchor_cache_lists_tasks_in_correct_order() {
     let _ = app.cached_epic_stats();
 
     let anchors = app
+        .layout
         .column_anchor_cache
         .as_ref()
         .unwrap()
@@ -291,11 +292,11 @@ fn navigate_row_does_not_clear_column_anchor_cache() {
         make_task(2, TaskStatus::Backlog),
     ]);
     let _ = app.cached_epic_stats();
-    assert!(app.column_anchor_cache.is_some());
+    assert!(app.layout.column_anchor_cache.is_some());
 
     app.update(Message::NavigateRow(1));
     assert!(
-        app.column_anchor_cache.is_some(),
+        app.layout.column_anchor_cache.is_some(),
         "navigation must not clear column_anchor_cache"
     );
 }
@@ -325,7 +326,7 @@ fn update_anchor_from_current_sets_anchor_using_cache() {
 fn column_anchor_cache_invalidated_on_task_mutation() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     let _ = app.cached_epic_stats();
-    assert!(app.column_anchor_cache.is_some());
+    assert!(app.layout.column_anchor_cache.is_some());
 
     app.update(Message::Task(TaskMessage::Refresh(vec![
         make_task(1, TaskStatus::Backlog),
@@ -335,6 +336,7 @@ fn column_anchor_cache_invalidated_on_task_mutation() {
     // After cache is repopulated, new task should appear
     let _ = app.cached_epic_stats();
     let anchors = app
+        .layout
         .column_anchor_cache
         .as_ref()
         .unwrap()
@@ -390,7 +392,7 @@ fn children_map_cache_starts_empty_after_invalidation() {
     let mut app = make_app();
     app.invalidate_layout_cache();
     assert!(
-        app.children_map_cache.is_none(),
+        app.layout.children_map_cache.is_none(),
         "invalidate_layout_cache must clear children_map_cache"
     );
 }
@@ -399,10 +401,10 @@ fn children_map_cache_starts_empty_after_invalidation() {
 fn cached_epic_stats_populates_children_map_cache() {
     let mut app = make_app();
     app.invalidate_layout_cache();
-    assert!(app.children_map_cache.is_none());
+    assert!(app.layout.children_map_cache.is_none());
     let _ = app.cached_epic_stats();
     assert!(
-        app.children_map_cache.is_some(),
+        app.layout.children_map_cache.is_some(),
         "cached_epic_stats must populate children_map_cache"
     );
 }
@@ -420,7 +422,7 @@ fn children_map_cache_reflects_parent_child_structure() {
 
     let _ = app.cached_epic_stats();
 
-    let map = app.children_map_cache.as_ref().unwrap();
+    let map = app.layout.children_map_cache.as_ref().unwrap();
     let children = map.get(&EpicId(1)).expect("parent must have an entry");
     assert!(
         children.contains(&EpicId(2)),
@@ -438,7 +440,7 @@ fn epic_filter_cache_is_none_before_first_cached_epic_stats_call() {
     app.board.epics = vec![make_epic(10)];
     app.invalidate_layout_cache();
     assert!(
-        app.epic_filter_cache.is_none(),
+        app.layout.epic_filter_cache.is_none(),
         "epic_filter_cache must be None after invalidation"
     );
 }
@@ -448,10 +450,10 @@ fn cached_epic_stats_populates_epic_filter_cache() {
     let mut app = make_app();
     app.board.epics = vec![make_epic(10)];
     app.invalidate_layout_cache();
-    assert!(app.epic_filter_cache.is_none());
+    assert!(app.layout.epic_filter_cache.is_none());
     let _ = app.cached_epic_stats();
     assert!(
-        app.epic_filter_cache.is_some(),
+        app.layout.epic_filter_cache.is_some(),
         "cached_epic_stats must populate epic_filter_cache"
     );
 }
@@ -461,10 +463,10 @@ fn invalidate_layout_cache_clears_epic_filter_cache() {
     let mut app = make_app();
     app.board.epics = vec![make_epic(10)];
     let _ = app.cached_epic_stats();
-    assert!(app.epic_filter_cache.is_some());
+    assert!(app.layout.epic_filter_cache.is_some());
     app.invalidate_layout_cache();
     assert!(
-        app.epic_filter_cache.is_none(),
+        app.layout.epic_filter_cache.is_none(),
         "invalidate_layout_cache must clear epic_filter_cache"
     );
 }
@@ -478,6 +480,7 @@ fn epic_filter_cache_repo_matches_agrees_with_direct_call_no_filter() {
     // No repo filter: every epic should repo-match.
     let _ = app.cached_epic_stats();
     let cached = app
+        .layout
         .epic_filter_cache
         .as_ref()
         .unwrap()
@@ -500,6 +503,7 @@ fn epic_filter_cache_active_matches_agrees_with_direct_call_no_filter() {
     // No only_active filter: every epic should match.
     let _ = app.cached_epic_stats();
     let cached = app
+        .layout
         .epic_filter_cache
         .as_ref()
         .unwrap()
@@ -551,7 +555,7 @@ fn cached_epic_stats_self_heals_after_status_mutation_without_invalidate() {
 fn column_anchor_cache_self_heals_after_mutation_without_invalidate() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     let _ = app.cached_epic_stats();
-    assert!(app.column_anchor_cache.is_some());
+    assert!(app.layout.column_anchor_cache.is_some());
 
     {
         let task = app.find_task_mut(TaskId(1)).expect("task 1 must exist");
@@ -560,7 +564,7 @@ fn column_anchor_cache_self_heals_after_mutation_without_invalidate() {
     // NOTE: no invalidate_layout_cache() call here.
 
     let _ = app.cached_epic_stats();
-    let anchors = app.column_anchor_cache.as_ref().unwrap();
+    let anchors = app.layout.column_anchor_cache.as_ref().unwrap();
     assert!(
         anchors[&TaskStatus::Running].contains(&ColumnAnchor::Task(TaskId(1))),
         "column_anchor_cache must reflect the moved task even without an \
@@ -638,7 +642,7 @@ fn fuzzy_matches_lower_accepts_already_lowercased_query() {
 fn task_index_is_none_initially() {
     let app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     assert!(
-        app.task_index.is_none(),
+        app.layout.task_index.is_none(),
         "task_index must not be primed in App::new"
     );
 }
@@ -646,10 +650,10 @@ fn task_index_is_none_initially() {
 #[test]
 fn find_task_mut_populates_task_index() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
-    assert!(app.task_index.is_none());
+    assert!(app.layout.task_index.is_none());
     let _ = app.find_task_mut(TaskId(1));
     assert!(
-        app.task_index.is_some(),
+        app.layout.task_index.is_some(),
         "find_task_mut must build task_index on first call"
     );
 }
@@ -669,10 +673,10 @@ fn find_task_mut_returns_correct_task_via_index() {
 fn invalidate_layout_cache_clears_task_index() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     let _ = app.find_task_mut(TaskId(1));
-    assert!(app.task_index.is_some());
+    assert!(app.layout.task_index.is_some());
     app.invalidate_layout_cache();
     assert!(
-        app.task_index.is_none(),
+        app.layout.task_index.is_none(),
         "invalidate_layout_cache must clear task_index"
     );
 }
@@ -688,7 +692,7 @@ fn find_task_mut_rebuilds_index_after_invalidation() {
         .expect("task must still be found");
     assert_eq!(task.id, TaskId(1));
     assert!(
-        app.task_index.is_some(),
+        app.layout.task_index.is_some(),
         "task_index must be rebuilt by find_task_mut"
     );
 }
@@ -699,7 +703,7 @@ fn find_task_mut_rebuilds_after_direct_tasks_push() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     // Prime the index.
     let _ = app.find_task_mut(TaskId(1));
-    assert!(app.task_index.is_some());
+    assert!(app.layout.task_index.is_some());
     // Directly push a task (bypassing message system).
     app.board.tasks.push(make_task(99, TaskStatus::Running));
     // find_task_mut must detect the length mismatch and rebuild.
@@ -719,7 +723,7 @@ fn find_task_mut_rebuilds_after_same_length_id_replacement() {
         make_task(2, TaskStatus::Backlog),
     ]);
     let _ = app.find_task_mut(TaskId(1));
-    assert!(app.task_index.is_some());
+    assert!(app.layout.task_index.is_some());
 
     // Replace with two different tasks, same length.
     app.board.tasks = vec![

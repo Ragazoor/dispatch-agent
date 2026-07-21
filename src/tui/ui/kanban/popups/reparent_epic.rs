@@ -17,7 +17,7 @@ pub(in crate::tui::ui::kanban) fn render_reparent_epic_overlay(
     app: &App,
     area: Rect,
 ) {
-    let picker = match &app.reparent_picker {
+    let picker = match &app.interaction.reparent_picker {
         Some(p)
             if matches!(
                 app.input.mode,
@@ -45,7 +45,7 @@ pub(in crate::tui::ui::kanban) fn render_move_task_overlay(
     app: &App,
     area: Rect,
 ) {
-    let picker = match &app.move_task_picker {
+    let picker = match &app.interaction.move_task_picker {
         Some(p)
             if matches!(
                 app.input.mode,

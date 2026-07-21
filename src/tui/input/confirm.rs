@@ -212,7 +212,7 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Enter => {
                 self.input.mode = InputMode::Normal;
-                match std::mem::take(&mut self.pending) {
+                match std::mem::take(&mut self.interaction.pending) {
                     PendingAction::TodoDelete(id) => {
                         self.update(Message::Todo(crate::tui::messages::TodoMessage::Delete(id)))
                     }
@@ -221,7 +221,7 @@ impl App {
             }
             KeyCode::Char('n') | KeyCode::Esc => {
                 self.input.mode = InputMode::Normal;
-                self.pending = PendingAction::None;
+                self.interaction.pending = PendingAction::None;
                 vec![]
             }
             _ => vec![],

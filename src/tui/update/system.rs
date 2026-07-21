@@ -115,8 +115,8 @@ impl App {
         self.input.mode = InputMode::Normal;
         self.clear_status();
         let epic_id = match self.effective_view_mode() {
-            ViewMode::Epic { epic_id, .. } => Some(*epic_id),
-            _ => None,
+            BoardViewMode::Epic { epic_id, .. } => Some(epic_id),
+            BoardViewMode::Board(_) => None,
         };
         vec![
             Command::Task(crate::tui::commands::TaskCommand::Insert { draft, epic_id }),

@@ -2676,8 +2676,8 @@ fn start_reparent_sets_mode_and_picker() {
     app.update(Message::Epic(EpicMessage::StartReparent(EpicId(10))));
 
     assert_eq!(app.input.mode, InputMode::ReparentEpic(EpicId(10)));
-    assert!(app.reparent_picker.is_some());
-    let picker = app.reparent_picker.as_ref().unwrap();
+    assert!(app.interaction.reparent_picker.is_some());
+    let picker = app.interaction.reparent_picker.as_ref().unwrap();
     assert_eq!(picker.epic_id, EpicId(10));
 }
 
@@ -2704,7 +2704,7 @@ fn reparent_confirm_with_no_parent_selected_transitions_to_confirm_mode() {
     app.board.epics = vec![make_epic(10), make_epic(20)];
     app.update(Message::Epic(EpicMessage::StartReparent(EpicId(10))));
     // select_first picks "— no parent —" (our sentinel)
-    if let Some(picker) = &app.reparent_picker {
+    if let Some(picker) = &app.interaction.reparent_picker {
         picker.tree_state.borrow_mut().select_first();
     }
 
@@ -2733,12 +2733,12 @@ fn reparent_execute_emits_reparent_command_and_resets_state() {
         epic_id: EpicId(10),
         new_parent: Some(EpicId(20)),
     };
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     let cmds = app.update(Message::Epic(EpicMessage::ReparentExecute));
 
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(app.reparent_picker.is_none());
+    assert!(app.interaction.reparent_picker.is_none());
     assert!(cmds.iter().any(|c| matches!(
         c,
         Command::Epic(crate::tui::commands::EpicCommand::Reparent {
@@ -2757,12 +2757,12 @@ fn reparent_cancel_from_confirm_returns_to_picker() {
         epic_id: EpicId(10),
         new_parent: None,
     };
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     app.update(Message::Epic(EpicMessage::ReparentCancel));
 
     assert_eq!(app.input.mode, InputMode::ReparentEpic(EpicId(10)));
-    assert!(app.reparent_picker.is_some());
+    assert!(app.interaction.reparent_picker.is_some());
 }
 
 #[test]
@@ -2771,12 +2771,12 @@ fn reparent_cancel_from_picker_clears_state() {
     let mut app = App::new(vec![]);
     app.board.epics = vec![make_epic(10)];
     app.input.mode = InputMode::ReparentEpic(EpicId(10));
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     app.update(Message::Epic(EpicMessage::ReparentCancel));
 
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(app.reparent_picker.is_none());
+    assert!(app.interaction.reparent_picker.is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -2793,7 +2793,7 @@ fn m_key_on_epic_card_opens_reparent_picker() {
     app.handle_key(make_key(KeyCode::Char('m')));
 
     assert_eq!(app.input.mode, InputMode::ReparentEpic(EpicId(10)));
-    assert!(app.reparent_picker.is_some());
+    assert!(app.interaction.reparent_picker.is_some());
 }
 
 #[test]
@@ -2810,7 +2810,7 @@ fn m_key_on_task_opens_move_to_epic_picker() {
     app.handle_key(make_key(KeyCode::Char('m')));
 
     assert_eq!(app.input.mode, InputMode::MoveTaskToEpic(TaskId(1)));
-    assert!(app.move_task_picker.is_some());
+    assert!(app.interaction.move_task_picker.is_some());
 }
 
 #[test]
@@ -2818,7 +2818,7 @@ fn reparent_mode_j_k_dispatch_navigate_messages() {
     let mut app = App::new(vec![]);
     app.board.epics = vec![make_epic(10), make_epic(20)];
     app.input.mode = InputMode::ReparentEpic(EpicId(10));
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     // j and k should navigate, not crash
     app.handle_key(make_key(KeyCode::Char('j')));
@@ -2834,12 +2834,12 @@ fn reparent_mode_esc_cancels() {
     let mut app = App::new(vec![]);
     app.board.epics = vec![make_epic(10)];
     app.input.mode = InputMode::ReparentEpic(EpicId(10));
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     app.handle_key(make_key(KeyCode::Esc));
 
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(app.reparent_picker.is_none());
+    assert!(app.interaction.reparent_picker.is_none());
 }
 
 #[test]
@@ -2850,7 +2850,7 @@ fn confirm_reparent_y_executes() {
         epic_id: EpicId(10),
         new_parent: Some(EpicId(20)),
     };
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     let cmds = app.handle_key(make_key(KeyCode::Char('y')));
 
@@ -2872,7 +2872,7 @@ fn confirm_reparent_n_returns_to_picker() {
         epic_id: EpicId(10),
         new_parent: None,
     };
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     app.handle_key(make_key(KeyCode::Char('n')));
 
@@ -2887,12 +2887,12 @@ fn esc_from_confirm_reparent_cancels_entirely() {
         epic_id: EpicId(10),
         new_parent: Some(EpicId(20)),
     };
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     app.handle_key(make_key(KeyCode::Esc));
 
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(app.reparent_picker.is_none());
+    assert!(app.interaction.reparent_picker.is_none());
 }
 
 #[test]
@@ -2903,12 +2903,12 @@ fn q_from_confirm_reparent_cancels_entirely() {
         epic_id: EpicId(10),
         new_parent: Some(EpicId(20)),
     };
-    app.reparent_picker = Some(make_reparent_picker(EpicId(10)));
+    app.interaction.reparent_picker = Some(make_reparent_picker(EpicId(10)));
 
     app.handle_key(make_key(KeyCode::Char('q')));
 
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(app.reparent_picker.is_none());
+    assert!(app.interaction.reparent_picker.is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -3041,7 +3041,11 @@ fn reparent_picker_has_prebuilt_tree_items_on_open() {
         crate::tui::messages::EpicMessage::StartReparent(EpicId(1)),
     ));
 
-    let picker = app.reparent_picker.as_ref().expect("picker should be set");
+    let picker = app
+        .interaction
+        .reparent_picker
+        .as_ref()
+        .expect("picker should be set");
     assert!(
         !picker.items.is_empty(),
         "picker items must be prebuilt when picker opens"
@@ -3065,7 +3069,11 @@ fn move_task_picker_has_prebuilt_tree_items_on_open() {
         crate::tui::messages::TaskMessage::StartMoveToEpic(TaskId(1)),
     ));
 
-    let picker = app.move_task_picker.as_ref().expect("picker should be set");
+    let picker = app
+        .interaction
+        .move_task_picker
+        .as_ref()
+        .expect("picker should be set");
     assert!(
         !picker.items.is_empty(),
         "move-task picker items must be prebuilt when picker opens"

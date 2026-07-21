@@ -14,14 +14,14 @@ use super::super::App;
 impl App {
     pub(in crate::tui) fn handle_open_managed_feed_config(&mut self) -> Vec<Command> {
         self.input.mode = InputMode::ManagedFeedConfig;
-        self.managed_feed_config = Some(ManagedFeedConfigState::from_settings(
+        self.interaction.managed_feed_config = Some(ManagedFeedConfigState::from_settings(
             &self.managed_feed_settings,
         ));
         vec![]
     }
 
     pub(in crate::tui) fn handle_move_managed_feed_field(&mut self, delta: isize) -> Vec<Command> {
-        if let Some(state) = self.managed_feed_config.as_mut() {
+        if let Some(state) = self.interaction.managed_feed_config.as_mut() {
             let order = ManagedFeedField::ORDER;
             let cur = order.iter().position(|f| *f == state.field).unwrap_or(0);
             let len = order.len() as isize;
@@ -33,7 +33,7 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_managed_feed_input(&mut self, c: char) -> Vec<Command> {
-        if let Some(state) = self.managed_feed_config.as_mut() {
+        if let Some(state) = self.interaction.managed_feed_config.as_mut() {
             // Interval fields accept digits only; everything else is ignored so
             // the buffer can never hold a non-numeric interval.
             if state.field.is_interval() && !c.is_ascii_digit() {
@@ -46,7 +46,7 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_managed_feed_backspace(&mut self) -> Vec<Command> {
-        if let Some(state) = self.managed_feed_config.as_mut() {
+        if let Some(state) = self.interaction.managed_feed_config.as_mut() {
             state.focused_mut().pop();
             self.dirty = true;
         }
@@ -56,11 +56,11 @@ impl App {
     pub(in crate::tui) fn handle_close_managed_feed_config(&mut self, save: bool) -> Vec<Command> {
         if !save {
             self.input.mode = InputMode::Normal;
-            self.managed_feed_config = None;
+            self.interaction.managed_feed_config = None;
             return vec![];
         }
 
-        let Some(state) = self.managed_feed_config.clone() else {
+        let Some(state) = self.interaction.managed_feed_config.clone() else {
             self.input.mode = InputMode::Normal;
             return vec![];
         };
@@ -93,7 +93,7 @@ impl App {
         };
 
         self.input.mode = InputMode::Normal;
-        self.managed_feed_config = None;
+        self.interaction.managed_feed_config = None;
         self.set_status("Managed feed config saved".to_string());
 
         vec![
