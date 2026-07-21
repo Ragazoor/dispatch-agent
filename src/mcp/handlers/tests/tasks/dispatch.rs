@@ -740,6 +740,7 @@ async fn dispatch_next_picks_first_backlog_subtask() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook
@@ -943,6 +944,7 @@ async fn dispatch_next_respects_tag_routing() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook
@@ -1239,6 +1241,7 @@ async fn dispatch_task_dispatches_backlog_task() {
 
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook
@@ -1372,6 +1375,7 @@ async fn dispatch_task_respects_tag_routing() {
 
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook
@@ -1452,6 +1456,7 @@ async fn dispatch_task_dependabot_tag_routes_through_dispatch_agent() {
 
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook

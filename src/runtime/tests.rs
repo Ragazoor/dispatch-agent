@@ -435,6 +435,7 @@ async fn exec_quick_dispatch_does_not_record_base_branch_history() {
     let mock = Arc::new(MockProcessRunner::new(vec![
         // detect_default_branch (resolved to "main")
         MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook
@@ -584,6 +585,7 @@ async fn exec_dispatch_sends_dispatched_message() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
+        MockProcessRunner::ok(), // git fetch origin main
         // git worktree add is skipped (dir pre-created above)
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
@@ -1289,7 +1291,8 @@ async fn exec_quick_dispatch_creates_task_and_dispatches() {
     let mock = Arc::new(MockProcessRunner::new(vec![
         // detect_default_branch (resolved to "main")
         MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
-        // provision_worktree: dir exists so git worktree add is skipped
+        // provision_worktree: fetch runs, then dir exists so git worktree add is skipped
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook (after-split-window)
@@ -1350,6 +1353,7 @@ async fn exec_quick_dispatch_sets_base_branch_to_repo_default() {
     let mock = Arc::new(MockProcessRunner::new(vec![
         // detect_default_branch resolves to master
         MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/master\n"),
+        MockProcessRunner::ok(), // git fetch origin master
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook
@@ -1396,6 +1400,7 @@ async fn exec_quick_dispatch_with_epic_dispatches_successfully() {
     let mock = Arc::new(MockProcessRunner::new(vec![
         // detect_default_branch (resolved to "main")
         MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+        MockProcessRunner::ok(), // git fetch origin main
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
         MockProcessRunner::ok(), // tmux set-hook
@@ -2968,7 +2973,9 @@ async fn exec_check_liveness_emits_alive_when_window_present() {
     assert!(
         matches!(
             &msg,
-            Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(true))
+            Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
+                true
+            ))
         ),
         "expected LivenessChanged(true), got: {msg:?}"
     );
@@ -2993,7 +3000,9 @@ async fn exec_check_liveness_emits_not_alive_when_window_absent() {
     assert!(
         matches!(
             &msg,
-            Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(false))
+            Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
+                false
+            ))
         ),
         "expected LivenessChanged(false), got: {msg:?}"
     );

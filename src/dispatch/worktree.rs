@@ -78,29 +78,31 @@ pub(super) fn provision_worktree(
     fs::create_dir_all(format!("{repo_path}/.worktrees"))
         .context("failed to create .worktrees directory")?;
 
+    // Fetch origin/<base_branch> unconditionally — even when reusing an
+    // existing worktree directory — so `origin/<base>` stays fresh for
+    // whatever rebases onto it later (the agent's own rebase preamble, or a
+    // manual sync). Soft-fail: if fetch is unavailable (no origin, no
+    // network), fall back to the local branch and continue — dispatch is not
+    // blocked.
+    let start_point: Option<String> = base_branch.map(|base| {
+        let fetch_ok = runner
+            .run_with_timeout("git", &["-C", &repo_path, "fetch", "origin", base], timeout)
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if fetch_ok {
+            format!("origin/{base}")
+        } else {
+            tracing::warn!(
+                base,
+                "git fetch origin failed, falling back to local branch"
+            );
+            base.to_string()
+        }
+    });
+
     if std::path::Path::new(&worktree_path).exists() {
         tracing::info!(task_id = task.id.0, %worktree_path, "worktree already exists, reusing");
     } else {
-        // Fetch origin/<base_branch> so the new branch starts from the latest
-        // remote state rather than a potentially stale local branch.
-        // Soft-fail: if fetch is unavailable (no origin, no network), fall
-        // back to the local branch and continue — dispatch is not blocked.
-        let start_point: Option<String> = base_branch.map(|base| {
-            let fetch_ok = runner
-                .run_with_timeout("git", &["-C", &repo_path, "fetch", "origin", base], timeout)
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-            if fetch_ok {
-                format!("origin/{base}")
-            } else {
-                tracing::warn!(
-                    base,
-                    "git fetch origin failed, falling back to local branch"
-                );
-                base.to_string()
-            }
-        });
-
         let mut args = vec![
             "-C",
             &repo_path,
