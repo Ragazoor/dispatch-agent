@@ -39,6 +39,23 @@ fn snapshot_dispatch_prompt_with_plan() {
 }
 
 #[test]
+fn snapshot_dispatch_prompt_with_plan_auto_run() {
+    let ctx = PromptContext {
+        auto_run_plan: true,
+        ..PromptContext::default()
+    };
+    let prompt = build_prompt(
+        TaskId(42),
+        "Fix the authentication bug",
+        "Users cannot log in after the password hash migration",
+        Some("/home/user/repo/docs/plans/fix-auth.md"),
+        None,
+        &ctx,
+    );
+    insta::assert_snapshot!(prompt);
+}
+
+#[test]
 fn snapshot_dispatch_prompt_dependabot() {
     let ctx = PromptContext {
         tag: Some(TaskTag::Dependabot),

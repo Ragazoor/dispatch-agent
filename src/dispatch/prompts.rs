@@ -265,14 +265,25 @@ pub(super) fn build_prompt(
         (Some(TaskTag::Dependabot), _) => dependabot_review_addendum(task_id),
         (Some(TaskTag::PrReview), _) => pr_review_addendum().to_string(),
         (_, None) => plan_or_brainstorm_instruction().to_string(),
-        (_, Some(path)) => format!(
-            "Plan: {path}\n\
+        (_, Some(path)) => {
+            if ctx.auto_run_plan {
+                format!(
+                    "Plan: {path}\n\
+Read this file for the full implementation plan and begin implementing it \
+right away — the plan has already been reviewed and confirmed, so no \
+summary or confirmation step is needed."
+                )
+            } else {
+                format!(
+                    "Plan: {path}\n\
 Read this file for the full implementation plan.\n\
 \n\
 Review the plan carefully. Summarise your intended approach in 3–5 bullet points, \
 then ask: 'Shall I proceed with implementation?' Wait for confirmation before \
 making any changes."
-        ),
+                )
+            }
+        }
     };
     let trailing = if is_review {
         format!(
@@ -407,6 +418,7 @@ pub struct PromptContext<'a> {
     pub learnings: LearningInjections<'a>,
     pub tag: Option<TaskTag>,
     pub verify_command: Option<String>,
+    pub auto_run_plan: bool,
 }
 
 impl<'a> PromptContext<'a> {
@@ -415,6 +427,7 @@ impl<'a> PromptContext<'a> {
             learnings,
             tag: None,
             verify_command: None,
+            auto_run_plan: false,
         }
     }
 
@@ -626,6 +639,46 @@ mod tests {
     }
 
     #[test]
+    fn build_prompt_with_plan_and_auto_run_skips_confirmation() {
+        let ctx = PromptContext {
+            auto_run_plan: true,
+            ..PromptContext::default()
+        };
+        let text = build_prompt(
+            TaskId(1),
+            "title",
+            "desc",
+            Some("/path/to/plan.md"),
+            None,
+            &ctx,
+        );
+        assert!(
+            !text.contains("Shall I proceed with implementation?"),
+            "auto_run_plan should skip the ask-permission addendum, got: {text}"
+        );
+        assert!(
+            text.contains("/path/to/plan.md"),
+            "the plan path should still be referenced, got: {text}"
+        );
+    }
+
+    #[test]
+    fn build_prompt_with_plan_default_still_asks_permission() {
+        let text = build_prompt(
+            TaskId(1),
+            "title",
+            "desc",
+            Some("/path/to/plan.md"),
+            None,
+            &PromptContext::default(),
+        );
+        assert!(
+            text.contains("Shall I proceed with implementation?"),
+            "default (auto_run_plan: false) must keep asking, got: {text}"
+        );
+    }
+
+    #[test]
     fn learning_instruction_in_task_prompts_no_plan() {
         let text = build_prompt(
             TaskId(1),
@@ -797,6 +850,7 @@ mod tests {
             learnings: injections,
             tag: None,
             verify_command: None,
+            auto_run_plan: false,
         };
         let text = build_prompt(TaskId(1), "title", "desc", None, None, &ctx);
         // Procedural learnings no longer appear as a verbatim prefix — prompt

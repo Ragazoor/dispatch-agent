@@ -111,6 +111,7 @@ pub fn dispatch_agent(
             let mut ctx =
                 PromptContext::with_learnings(injections.clone()).with_verify(verify_command);
             ctx.tag = task.tag;
+            ctx.auto_run_plan = task.auto_run_plan;
             build_prompt(
                 task.id,
                 &task.title,
