@@ -156,26 +156,27 @@ rule JumpToAgentWindow {
         -- transferring focus.
 }
 
--- == Jump Back to TUI Window (Ctrl+Space) ==
+-- == Jump Back to TUI Window (Prefix+Space) ==
 --
--- The complement of [g]/Space: while focus is on an agent's tmux window,
--- pressing Ctrl+Space jumps tmux focus back to the dispatch TUI window.
+-- The complement of [Space]: while focus is on an agent's tmux window,
+-- pressing the tmux prefix followed by Space jumps tmux focus back to the
+-- dispatch TUI window.
 
 rule JumpBackToTuiWindow {
-    when: UserAction("C-Space")
+    when: UserAction("prefix+space")
 
     ensures: tmux_focus = "TUI"
 
     @guidance
-        -- Registered at TUI startup as a tmux *root* keybinding (no tmux
-        -- prefix required — a bare Ctrl+Space chord):
-        --   tmux bind-key -n C-Space "select-window -t TUI"
+        -- Registered at TUI startup as a prefixed tmux keybinding (the tmux
+        -- prefix must be pressed first, same as any other tmux binding):
+        --   tmux bind-key space "select-window -t TUI"
         -- The TUI window is renamed to the fixed "TUI" constant at startup so
         -- the binding can target it by name. Both the binding and the rename
-        -- are torn down on exit (unbind-key -n C-Space; rename restored).
+        -- are torn down on exit (unbind-key space; rename restored).
         --
         -- Implemented in src/runtime/mod.rs (setup_tmux_for_tui /
-        -- teardown_tmux_for_tui) via tmux::bind_root_key / unbind_root_key.
+        -- teardown_tmux_for_tui) via tmux::bind_key / unbind_key.
         -- Best-effort: a failing tmux call does not prevent the TUI starting.
 }
 
