@@ -121,6 +121,11 @@ Call the `dispatch` MCP tool `create_task` with:
 - `plan_path`: absolute path to the plan file just written
 - `tag`: `"chore"`
 - `sort_order`: N (preserves severity ordering — blockers first)
+- `auto_run_plan`: `true` — the plan was already reviewed via the work-package
+  confirmation in Step 3, so the dispatched agent should implement it
+  immediately instead of asking to proceed
+- `wrap_up_mode`: `"pr"` — so the agent opens a draft PR at wrap-up without
+  asking which path to take
 
 ## Step 7: Report Results
 
