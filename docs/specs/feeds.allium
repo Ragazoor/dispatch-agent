@@ -369,10 +369,11 @@ rule FeedTick {
         -- epic's command is spawned as a background tokio::task so that
         -- key events and MCP notifications remain responsive during fetch.
         -- FeedRunner runs in its own loop at FEED_POLL_INTERVAL (2s,
-        -- src/feed.rs:46), independent from the TUI's TickInterval /
+        -- src/feed/mod.rs:159), independent from the TUI's TickInterval /
         -- TICK_INTERVAL. Both are 2s today, but the constants are kept
         -- separate so the two concerns can evolve independently.
-        -- Implementation: src/feed.rs::FeedRunner.
+        -- Implementation: src/feed/mod.rs::FeedRunner (struct at
+        -- src/feed/mod.rs:161, tick at src/feed/mod.rs:223).
         --
         -- Performance cache + invalidation invariant. The runner caches "does
         -- any epic have a feed_command?" (any_feed_cmds); when it is
@@ -541,7 +542,7 @@ rule UpsertFeedTasks {
         -- alone.
         -- The ON CONFLICT clause is conditional on external_id NOT NULL —
         -- non-feed tasks (external_id = null) never collide.
-        -- Implementation: src/db/queries.rs::upsert_feed_tasks (takes a
+        -- Implementation: src/db/queries/tasks.rs::upsert_feed_tasks (takes a
         -- repo_paths slice, one entry per item, parallel to items, plus a
         -- parallel base_branches slice). The parallel-slice contract is
         -- enforced up front: if items, repo_paths, and base_branches do not all
@@ -555,8 +556,9 @@ rule UpsertFeedTasks {
         -- FeedItemWithTarget::zip at the FeedCommandCompleted boundary
         -- (FeedRunner::tick, exec_trigger_epic_feed), so per-index alignment
         -- is structural end-to-end and needs no separate length check.
-        -- Resolution helpers: src/feed.rs::extract_github_repo,
-        -- src/feed.rs::resolve_repo_path. Callers:
+        -- Resolution helpers: src/dispatch/mod.rs::extract_github_repo
+        -- (src/dispatch/mod.rs:174), src/dispatch/mod.rs::resolve_repo_path
+        -- (src/dispatch/mod.rs:212). Callers:
         -- src/feed/ingest/mod.rs::run_feed_sync (via FeedRunner.tick and exec_trigger_epic_feed).
 }
 
@@ -600,7 +602,7 @@ rule GroupedFeedUpsert {
     @guidance
         -- repo_name(url) = last path segment of extract_github_repo(url),
         -- or "other" when the URL yields no GitHub repo (empty URL, non-GitHub,
-        -- malformed). Implementation: src/feed.rs::sync_grouped_feed,
+        -- malformed). Implementation: src/feed/ingest/grouped.rs::sync_grouped_feed,
         -- src/dispatch/mod.rs::repo_name_from_url.
         -- Sub-epics are not auto-deleted when their tasks disappear; empty
         -- sub-epics remain for the user to clean up manually. The
@@ -733,18 +735,49 @@ rule RoleRoutedFeedSync {
     -- out of scope — so the router insert-inserts a routed copy while the flat
     -- copy lingers — is precisely the deadlock this scoping avoids.
     --
+    -- == Sub-epic-level grouping (a THIRD tree level) ==
+    --
+    -- The routing above places a PR in its role sub-epic (my/team/bots). When
+    -- that ROLE SUB-EPIC itself has group_by_repo enabled (can_auto_group on
+    -- the sub-epic — src/models/epics.rs), the PR is routed ONE LEVEL DEEPER:
+    -- into a per-repo REPO-GROUP sub-epic nested UNDER the role sub-epic,
+    -- found-or-created and keyed by repo name (repo_name_from_url of item.url,
+    -- src/dispatch/mod.rs:150). Tasks then live at this third level, not
+    -- directly on the role sub-epic. When the role sub-epic does NOT have
+    -- grouping enabled the target is the role sub-epic directly — today's
+    -- documented two-level behaviour is the group_by_repo = false case.
+    --
+    -- This is the same group_by_repo grouping GroupedFeedUpsert applies at the
+    -- top level of a flat feed epic, but here it is applied to an ALREADY
+    -- role-routed sub-epic, so it produces a THIRD tree level
+    -- (parent -> role sub-epic -> repo-group sub-epic -> tasks) rather than a
+    -- second. A per-sync cache keyed by (role_sub_epic_id, repo_name) memoises
+    -- the found-or-created repo-group id for the duration of ONE reconcile, so
+    -- multiple items sharing a repo do not create duplicate sub-epics. If the
+    -- repo-group sub-epic cannot be created, the item falls back to the role
+    -- sub-epic directly (logged, not fatal).
+    --
+    -- The third level widens every subtree operation below (identity lookup,
+    -- stale delete, recalculation) — see each section for the specifics.
+    --
     -- == Subtree-scoped delete (the reason this is not UpsertFeedTasks) ==
     --
     -- UpsertFeedTasks' delete pass is PER-EPIC: it removes feed tasks absent
     -- from THAT epic's emission. Run per-role that would delete a task the
     -- moment it moved to another role (it is absent from the losing role's
-    -- keep-set). So the stale-delete here is SUBTREE-SCOPED and runs EXACTLY
-    -- ONCE with the union of every emitted external_id: a task that merely
-    -- moved is still in the keep-set and survives, while a PR absent from the
-    -- whole emission (merged or closed) is removed. Manual tasks
+    -- keep-set). So the stale-delete here is SUBTREE-SCOPED and uses a SINGLE
+    -- union keep-set of every emitted external_id: a task that merely moved is
+    -- still in the keep-set and survives, while a PR absent from the whole
+    -- emission (merged or closed) is removed. Because the delete SQL is one
+    -- level deep, that single keep-set is applied with the PARENT as root
+    -- (reaching the role sub-epics' tasks) AND once per ROLE SUB-EPIC as root
+    -- (reaching that role's repo-group grandchildren — the third level above).
+    -- The role-level pass runs ALWAYS, regardless of whether that role
+    -- currently has group_by_repo enabled, so repo-group tasks orphaned after
+    -- grouping is toggled off are still cleaned up. Manual tasks
     -- (external_id = null) anywhere in the subtree are never touched, as in
     -- UpsertFeedTasks. Roles that contributed no item this cycle are cleared by
-    -- the same single delete (no per-role empty-upsert needed).
+    -- the same delete (no per-role empty-upsert needed).
     --
     -- == Parent sweep ==
     --
@@ -777,16 +810,31 @@ rule RoleRoutedFeedSync {
         for item in items:
             -- route only ever yields my_reviews / team_reviews / bots.
             let role = route(item.signals)
-            let target =
+            let role_target =
                 if role = team_reviews: team
                 else if role = bots:    bots
                 else:                   my
-            -- Scope: the whole reviews_parent subtree, PARENT INCLUDED. A task
-            -- stranded directly on the parent (existing.epic = epic) is found
-            -- here too, so it is moved down rather than duplicate-inserted.
+            -- Third tree level: when the role sub-epic itself has grouping
+            -- enabled, route one level deeper into a per-repo sub-epic nested
+            -- under it (found-or-created, keyed by repo name, memoised per
+            -- sync). Otherwise the target is the role sub-epic directly.
+            let target =
+                if role_target.can_auto_group:
+                    repo_group_sub_epic(role_target, repo_name(item.url))
+                else:
+                    role_target
+            -- Scope: the whole reviews_parent subtree, PARENT INCLUDED, across
+            -- ALL THREE levels (parent, role sub-epics, repo-group
+            -- grandchildren). A task stranded directly on the parent
+            -- (existing.epic = epic) is found here too, so it is moved down
+            -- rather than duplicate-inserted. Identity is global by
+            -- external_id; the scan order (parent, then repo-group
+            -- grandchildren, then role sub-epics last) makes a
+            -- role-sub-epic-direct copy win a tie over a repo-group copy.
             let existing = Task{external_id: item.external_id}
                            where existing.epic = epic
                               or existing.epic.parent_epic_id = epic.id
+                              or existing.epic.parent_epic_id in {my.id, team.id, bots.id}
             if exists existing:
                 if existing.epic != target:
                     -- MOVE: reassign epic only; state-bearing fields preserved.
@@ -806,11 +854,18 @@ rule RoleRoutedFeedSync {
                 -- resolved identically).
                 UpsertFeedTasks(target, {item})
 
-        -- ONE subtree-scoped delete with the union of all emitted ids: removes
-        -- merged/closed PRs from the role sub-epics and clears roles absent from
-        -- this emission, without deleting a just-moved task (it is in the
-        -- keep-set) or any manual task.
-        for task in Tasks where task.epic.parent_epic_id = epic.id
+        -- Subtree-scoped delete with the union of all emitted ids: removes
+        -- merged/closed PRs and clears buckets absent from this emission,
+        -- without deleting a just-moved task (it is in the keep-set) or any
+        -- manual task. The delete SQL is one level deep, so the union keep-set
+        -- is applied with the PARENT as root (role sub-epics' tasks) AND once
+        -- per ROLE SUB-EPIC as root (repo-group grandchildren). The role-level
+        -- pass runs ALWAYS, even for roles with grouping off, so orphaned
+        -- repo-group tasks are cleaned up. Both levels are captured here by
+        -- matching any feed task whose epic is a child of the parent OR a child
+        -- of a role sub-epic.
+        for task in Tasks where (task.epic.parent_epic_id = epic.id
+                                 or task.epic.parent_epic_id in {my.id, team.id, bots.id})
                             and task.external_id != null:
             if not items.any(i => i.external_id = task.external_id):
                 not exists task
@@ -824,29 +879,60 @@ rule RoleRoutedFeedSync {
         for task in Tasks where task.epic = epic and task.external_id != null:
             not exists task
 
-        -- Recalculate epic statuses up the tree: each role sub-epic (it may
-        -- have lost tasks to a move or the delete) and then the parent.
+        -- Recalculate bottom-up through all three levels: repo-group sub-epics
+        -- first (they roll up into their role sub-epic), then each role
+        -- sub-epic (it may have lost tasks to a move or the delete), then the
+        -- parent.
+        for rg in repo_group_sub_epics:
+            RecalculateEpicStatus(rg)
         for sub in {my, team, bots}:
             RecalculateEpicStatus(sub)
         RecalculateEpicStatus(epic)
 
     @guidance
         -- Implementation: src/feed/ingest/role_routed.rs::run_role_routed_feed_sync,
-        -- selected in src/feed/mod.rs by epic.feed_role = ReviewsParent (a
-        -- MyReviews/TeamReviews/Bots epic with a feed_command is a provisioning
-        -- bug; the runner debug_asserts and skips it). The subtree delete is
-        -- src/db/queries/tasks.rs::delete_stale_subtree_feed_tasks (children
-        -- only: DELETE ... WHERE epic_id IN (SELECT id FROM epics WHERE
-        -- parent_epic_id = ?1) ...). The parent itself is cleared separately by
-        -- the parent sweep at the end of run_role_routed_feed_sync (list the
-        -- parent's tasks, delete_task each with external_id != null). The
-        -- existing-task lookup that decides move-vs-insert matches rows on the
-        -- parent as well as its children, so a present parent-stranded task is
-        -- moved (single-row relocation, no uniqueness-trigger collision,
-        -- in-flight state preserved) before the sweep runs. The move is
+        -- selected by the shared dispatcher
+        -- src/feed/ingest/mod.rs::run_feed_sync_by_role when epic.feed_role =
+        -- ReviewsParent (a MyReviews/TeamReviews/Bots epic with a feed_command is
+        -- a provisioning bug, rejected by the provisioning guard in
+        -- src/feed/mod.rs (mod.rs:114-129), which debug_asserts and skips it;
+        -- that guard does NOT itself do the role->path selection).
+        -- Third-level (repo-group) routing lives in
+        -- src/feed/ingest/routing.rs::route_and_group_entries: per item, after
+        -- roles.target_for(route(signals)) gives the role sub-epic
+        -- (role_target), if roles.can_auto_group(role_target) is true the
+        -- actual target is a repo-group sub-epic found-or-created via
+        -- db.create_repo_group_sub_epic (src/db/mod.rs:247), keyed by
+        -- src/dispatch/mod.rs:150::repo_name_from_url and memoised in an
+        -- in-memory (role_sub_epic_id, repo_name) -> repo_group_epic_id cache
+        -- for the duration of one sync; a create failure falls back to
+        -- role_target. can_auto_group is src/models/epics.rs:37 (group_by_repo
+        -- && feed_command.is_none()).
+        -- The subtree delete is
+        -- src/db/queries/tasks.rs::delete_stale_subtree_feed_tasks, ONE level
+        -- deep (DELETE ... WHERE epic_id IN (SELECT id FROM epics WHERE
+        -- parent_epic_id = ?1) ...). src/feed/ingest/stale.rs:16::delete_stale_subtree
+        -- therefore calls it once with the parent as root (reaches role
+        -- sub-epics) AND once per role sub-epic as root (reaches repo-group
+        -- grandchildren) — always, regardless of that role's grouping flag. The
+        -- parent itself is cleared separately by the parent sweep
+        -- (src/feed/ingest/stale.rs::clear_parent_stranded_tasks, an empty
+        -- upsert_feed_tasks). The existing-task lookup that decides
+        -- move-vs-insert is
+        -- src/feed/ingest/role_routed.rs:131::build_existing_task_index: it
+        -- scans the parent FIRST (lowest priority), then each role sub-epic's
+        -- children (repo-group grandchildren), then the role sub-epics
+        -- themselves LAST — so external_id identity is global across all three
+        -- levels and a role-sub-epic-direct copy wins ties over a repo-group
+        -- copy. A present parent-stranded task is thus moved (single-row
+        -- relocation, no uniqueness-trigger collision, in-flight state
+        -- preserved) before the sweep runs. The move is
         -- db.set_task_epic_id (epic_id +
         -- updated_at only) THEN db.patch_task(fields). role_sub_epic is
-        -- ensure_role_sub_epic (idempotent, matched by feed_role). Coverage:
+        -- ensure_role_sub_epic (idempotent, matched by feed_role). Recalculation
+        -- is src/feed/ingest/role_routed.rs:169::recalculate_subtree: repo-group
+        -- sub-epics first (bottom-up), then role sub-epics, then the parent.
+        -- Coverage:
         -- src/feed/ingest/tests.rs (move preserves in-flight worktree/status;
         -- moved task not deleted same cycle; insert on first sight; delete on
         -- merge/close; manual-task preservation; multi-role single emission;
@@ -910,8 +996,9 @@ rule FeedCommandFailure {
         epic.last_run = now()
 
     @guidance
-        -- Implementation: src/feed.rs::FeedRunner.tick — see the three
-        -- match arms wrapping spawn, status, and serde_json::from_slice.
+        -- Implementation: src/feed/mod.rs::FeedRunner.tick (tick at
+        -- src/feed/mod.rs:223) — see the three match arms wrapping spawn,
+        -- status, and serde_json::from_slice.
         -- A future improvement is surfacing repeated failures in the TUI
         -- as an epic-level health badge, but that is out of scope here.
 }
@@ -932,17 +1019,23 @@ rule FeedCommandFailure {
 -- separate from run_feed_sync, because it orchestrates a whole subtree rather
 -- than an epic's own emission. The WHOLE feed_role dispatch — including the
 -- reviews_parent -> run_role_routed_feed_sync branch, not just the
--- flat/group_by_repo branches — is used by BOTH FeedRunner.tick (auto-poll)
--- and exec_trigger_epic_feed (manual "r"), so the two paths have identical sync
--- semantics for every feed_role. A manual refresh must never fall back to a
--- flat upsert for an epic whose feed_role selects a different path; doing so
--- strands feed tasks in the wrong epic (the reviews_parent parent-flat bug).
+-- flat/group_by_repo branches — lives in ONE shared dispatcher function,
+-- src/feed/ingest/mod.rs::run_feed_sync_by_role, which BOTH FeedRunner.tick
+-- (auto-poll) and exec_trigger_epic_feed (manual "r") delegate to. Because the
+-- switch is centralised in that single function rather than duplicated per
+-- caller, the two paths are structurally identical — not merely behaviourally
+-- equivalent by convention — for every feed_role. A manual refresh therefore
+-- cannot fall back to a flat upsert for an epic whose feed_role selects a
+-- different path; doing so would strand feed tasks in the wrong epic (the
+-- reviews_parent parent-flat bug).
 --
--- Implementation: src/feed/mod.rs selects the path from epic.feed_role;
--- src/feed/ingest/mod.rs::run_feed_sync (flat/grouped) and
--- src/feed/ingest/role_routed.rs::run_role_routed_feed_sync (reviews_parent). Both
--- FeedRunner.tick and exec_trigger_epic_feed perform this same feed_role
--- switch.
+-- Implementation: src/feed/ingest/mod.rs::run_feed_sync_by_role
+-- (src/feed/ingest/mod.rs:140) is the shared role->path dispatcher; it
+-- delegates to src/feed/ingest/mod.rs::run_feed_sync (flat/grouped) or
+-- src/feed/ingest/role_routed.rs::run_role_routed_feed_sync (reviews_parent).
+-- FeedRunner.tick (src/feed/mod.rs:130) and exec_trigger_epic_feed
+-- (src/runtime/epics.rs:265) each call run_feed_sync_by_role; neither performs
+-- its own feed_role switch.
 
 -- == Manual trigger ==
 
