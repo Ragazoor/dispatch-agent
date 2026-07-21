@@ -207,6 +207,49 @@ applied, `wrong` if it misled you.\n\n",
     out
 }
 
+/// Whether a blank line separates the intro line from the task block.
+/// `build_prompt` uses a single newline; the other two builders use a blank
+/// line — a pre-existing inconsistency this enum makes explicit instead of
+/// encoding it as raw `"\n"` vs `"\n\n"` bytes in the `intro` string.
+enum IntroSpacing {
+    SingleNewline,
+    BlankLine,
+}
+
+impl IntroSpacing {
+    fn as_separator(&self) -> &'static str {
+        match self {
+            IntroSpacing::SingleNewline => "\n",
+            IntroSpacing::BlankLine => "\n\n",
+        }
+    }
+}
+
+/// Shared skeleton for every `build_*_prompt` variant:
+/// `{intro}{spacing}{block}\n\n{knowledge}{verify}{addendum}\n\n{trailing}`.
+///
+/// Callers build `block` themselves (via `task_block`) since its inputs
+/// aren't otherwise needed here — keeps this under clippy's argument-count
+/// limit.
+///
+/// Each builder computes its own `intro`/`block`/`addendum`/`trailing` and
+/// passes them here, so the knowledge/verify plumbing stays in one place —
+/// a variant can no longer silently drop the knowledge block (the
+/// research-prompt drift this fixed) by forgetting to wire it in.
+fn render_task_prompt(
+    intro: &str,
+    spacing: IntroSpacing,
+    block: &str,
+    ctx: &PromptContext<'_>,
+    addendum: &str,
+    trailing: &str,
+) -> String {
+    let knowledge = render_validated_knowledge_block(&ctx.learnings.ranked);
+    let verify = render_verification(ctx.verify_command.as_deref());
+    let sep = spacing.as_separator();
+    format!("{intro}{sep}{block}\n\n{knowledge}{verify}{addendum}\n\n{trailing}")
+}
+
 pub(super) fn build_prompt(
     task_id: TaskId,
     title: &str,
@@ -215,7 +258,6 @@ pub(super) fn build_prompt(
     epic: Option<&EpicContext>,
     ctx: &PromptContext<'_>,
 ) -> String {
-    let block = task_block(task_id, title, description, epic);
     // Dependabot and PR-review tasks are review-only: they skip the plan /
     // implementation flow and use a trimmed trailing block.
     let is_review = ctx.tag.is_some_and(|t| t.is_review());
@@ -232,7 +274,6 @@ then ask: 'Shall I proceed with implementation?' Wait for confirmation before \
 making any changes."
         ),
     };
-    let knowledge = render_validated_knowledge_block(&ctx.learnings.ranked);
     let trailing = if is_review {
         format!(
             "{mcp}\n\
@@ -244,15 +285,15 @@ making any changes."
     } else {
         trailing_block()
     };
-    let verify = render_verification(ctx.verify_command.as_deref());
 
-    format!(
-        "Your task is:\n\
-{block}\n\
-\n\
-{knowledge}{verify}{addendum}\n\
-\n\
-{trailing}",
+    let block = task_block(task_id, title, description, epic);
+    render_task_prompt(
+        "Your task is:",
+        IntroSpacing::SingleNewline,
+        &block,
+        ctx,
+        &addendum,
+        &trailing,
     )
 }
 
@@ -292,7 +333,6 @@ pub(super) fn build_quick_dispatch_prompt(
     epic: Option<&EpicContext>,
     ctx: &PromptContext<'_>,
 ) -> String {
-    let block = task_block(task_id, title, description, epic);
     let addendum = format!(
         "This is a quick-dispatched task with a placeholder title. Start by asking the user \
 what they want to achieve. Once you understand the goal, call `update_task` with a \
@@ -303,18 +343,15 @@ Then write a focused plan before making any changes:\n\
 {attach}",
         attach = plan_and_attach_instruction(),
     );
-    let knowledge = render_validated_knowledge_block(&ctx.learnings.ranked);
-    let verify = render_verification(ctx.verify_command.as_deref());
 
-    format!(
-        "You are working interactively with the user.\n\
-\n\
-{block}\n\
-\n\
-{knowledge}{verify}{addendum}\n\
-\n\
-{trailing}",
-        trailing = trailing_block(),
+    let block = task_block(task_id, title, description, epic);
+    render_task_prompt(
+        "You are working interactively with the user.",
+        IntroSpacing::BlankLine,
+        &block,
+        ctx,
+        &addendum,
+        &trailing_block(),
     )
 }
 
@@ -325,26 +362,23 @@ pub(super) fn build_research_prompt(
     epic: Option<&EpicContext>,
     ctx: &PromptContext<'_>,
 ) -> String {
-    let block = task_block(task_id, title, description, epic);
-    let verify = render_verification(ctx.verify_command.as_deref());
-
-    format!(
-        "You are a research agent.\n\
-\n\
-{block}\n\
-\n\
-{verify}Investigate the topic described above. You may read the codebase, documentation, and \
-external resources.\n\
+    let addendum = "Investigate the topic described above. You may read the codebase, \
+documentation, and external resources.\n\
 \n\
 When you have gathered sufficient information, present your findings clearly to the user \
 and wait for further instructions. Do NOT call /wrap-up — that is for the user to \
 decide.\n\
 \n\
-Do NOT make code changes.\n\
-\n\
-{mcp}",
-        block = block,
-        mcp = mcp_tools_instruction(),
+Do NOT make code changes.";
+
+    let block = task_block(task_id, title, description, epic);
+    render_task_prompt(
+        "You are a research agent.",
+        IntroSpacing::BlankLine,
+        &block,
+        ctx,
+        addendum,
+        mcp_tools_instruction(),
     )
 }
 
@@ -633,6 +667,32 @@ mod tests {
             text.contains("before guessing or asking"),
             "trailing block should include the 'before guessing or asking' nudge, got: {text}"
         );
+    }
+
+    #[test]
+    fn research_prompt_includes_knowledge_block_when_learnings_injected() {
+        // Regression: build_research_prompt used to silently omit the
+        // validated-knowledge block that build_prompt/build_quick_dispatch_prompt
+        // both include — research tasks get RAG-injected learnings too, so the
+        // block must appear here as well.
+        let l = seed(20, LearningScope::Repo, 1);
+        let ctx = PromptContext {
+            learnings: LearningInjections { ranked: vec![&l] },
+            tag: None,
+            verify_command: None,
+        };
+        let text = build_research_prompt(
+            TaskId(7),
+            "Research async runtimes",
+            "Compare tokio vs async-std",
+            None,
+            &ctx,
+        );
+        assert!(
+            text.contains("## Validated knowledge for this task"),
+            "research prompt should include the knowledge block when learnings are injected, got: {text}"
+        );
+        assert!(text.contains("[#20 repo, \u{2191}1]"));
     }
 
     #[test]

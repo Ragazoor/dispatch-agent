@@ -162,8 +162,21 @@ pub fn format_editor_content(task: &Task) -> String {
     let url = task.url.as_ref().map(|u| u.url.as_str()).unwrap_or("");
     let url_type = task.url.as_ref().map(|u| u.url_type.as_str()).unwrap_or("");
     format!(
-        "--- TITLE ---\n{}\n--- DESCRIPTION ---\n{}\n--- REPO_PATH ---\n{}\n--- STATUS ---\n{}\n--- PLAN ---\n{}\n--- TAG ---\n{}\n--- BASE_BRANCH ---\n{}\n--- WRAP_UP_MODE ---\n{}\n--- URL ---\n{}\n--- URL_TYPE ---\n{}\n",
-        task.title, task.description, task.repo_path, task.status.as_str(), plan, tag, task.base_branch, wrap_up_mode, url, url_type
+        "--- TITLE ---\n{title}\n\
+         --- DESCRIPTION ---\n{description}\n\
+         --- REPO_PATH ---\n{repo_path}\n\
+         --- STATUS ---\n{status}\n\
+         --- PLAN ---\n{plan}\n\
+         --- TAG ---\n{tag}\n\
+         --- BASE_BRANCH ---\n{base_branch}\n\
+         --- WRAP_UP_MODE ---\n{wrap_up_mode}\n\
+         --- URL ---\n{url}\n\
+         --- URL_TYPE ---\n{url_type}\n",
+        title = task.title,
+        description = task.description,
+        repo_path = task.repo_path,
+        status = task.status.as_str(),
+        base_branch = task.base_branch,
     )
 }
 
@@ -194,10 +207,18 @@ pub struct TaskEditApplied {
     pub repo_path: String,
     pub status: crate::models::TaskStatus,
     pub plan_path: FieldUpdate,
+    /// Post-edit plan path resolved once here, so callers building an
+    /// in-memory snapshot (e.g. `finalize_task_edit`) consume it directly
+    /// rather than re-deriving it from `plan_path`.
+    pub resolved_plan_path: Option<String>,
     pub tag: Option<crate::models::TaskTag>,
     pub base_branch: Option<String>,
     pub wrap_up_mode: Option<crate::models::WrapUpMode>,
     pub url: Option<crate::service::UrlUpdate>,
+    /// Post-edit url resolved once here (the value `url` diffs against the
+    /// prior task to decide whether a DB write is needed), so callers get
+    /// the true post-edit value even when `url` itself is `None` (no-op diff).
+    pub resolved_url: Option<crate::models::TaskUrl>,
 }
 
 /// Resolve the desired `Option<TaskUrl>` from the parsed URL string and
@@ -262,21 +283,24 @@ pub fn apply_task_editor_fields(task: &Task, fields: EditorFields) -> TaskEditAp
     let desired_url = resolve_edited_url(&fields.url, fields.url_type, task.url.as_ref());
     let url = if desired_url == task.url {
         None
-    } else if let Some(u) = desired_url {
-        Some(crate::service::UrlUpdate::Set(u))
+    } else if let Some(ref u) = desired_url {
+        Some(crate::service::UrlUpdate::Set(u.clone()))
     } else {
         Some(crate::service::UrlUpdate::Clear)
     };
+    let resolved_plan_path = plan_path.as_option().map(str::to_string);
     TaskEditApplied {
         title,
         description,
         repo_path,
         status,
         plan_path,
+        resolved_plan_path,
         tag,
         base_branch,
         wrap_up_mode,
         url,
+        resolved_url: desired_url,
     }
 }
 
@@ -534,6 +558,59 @@ mod tests {
     }
 
     #[test]
+    fn format_editor_content_maps_each_field_to_its_own_section() {
+        // Regression guard for the positional-format fragility: each field
+        // must land under its own section header, not a neighbour's. A
+        // reordering mistake in the format! call would move a value to the
+        // wrong section and this test would catch it directly (without going
+        // through parse, which would silently "fix" a swap between
+        // same-shaped string fields).
+        let mut task = make_task(
+            "field-title",
+            "field-description",
+            "field-repo-path",
+            TaskStatus::Running,
+            Some("field-plan"),
+        );
+        task.tag = Some(crate::models::TaskTag::Bug);
+        task.base_branch = "field-base-branch".into();
+        task.wrap_up_mode = Some(crate::models::WrapUpMode::Pr);
+        task.url = Some(crate::models::TaskUrl::new(
+            "field-url",
+            crate::models::UrlType::Issue,
+        ));
+
+        let content = format_editor_content(&task);
+        let sections = parse_sections(&content);
+
+        assert_eq!(sections.get("TITLE").map(String::as_str), Some("field-title"));
+        assert_eq!(
+            sections.get("DESCRIPTION").map(String::as_str),
+            Some("field-description")
+        );
+        assert_eq!(
+            sections.get("REPO_PATH").map(String::as_str),
+            Some("field-repo-path")
+        );
+        assert_eq!(sections.get("STATUS").map(String::as_str), Some("running"));
+        assert_eq!(sections.get("PLAN").map(String::as_str), Some("field-plan"));
+        assert_eq!(sections.get("TAG").map(String::as_str), Some("bug"));
+        assert_eq!(
+            sections.get("BASE_BRANCH").map(String::as_str),
+            Some("field-base-branch")
+        );
+        assert_eq!(
+            sections.get("WRAP_UP_MODE").map(String::as_str),
+            Some("pr")
+        );
+        assert_eq!(sections.get("URL").map(String::as_str), Some("field-url"));
+        assert_eq!(
+            sections.get("URL_TYPE").map(String::as_str),
+            Some("issue")
+        );
+    }
+
+    #[test]
     fn editor_includes_base_branch() {
         let task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
         let content = format_editor_content(&task);
@@ -750,6 +827,30 @@ mod tests {
     }
 
     #[test]
+    fn apply_task_editor_fields_resolved_plan_path_matches_set() {
+        let task = sample_task();
+        let fields = EditorFields {
+            plan: "docs/new-plan.md".into(),
+            ..Default::default()
+        };
+        let applied = apply_task_editor_fields(&task, fields);
+        assert_eq!(applied.plan_path, FieldUpdate::Set("docs/new-plan.md".into()));
+        assert_eq!(
+            applied.resolved_plan_path.as_deref(),
+            Some("docs/new-plan.md")
+        );
+    }
+
+    #[test]
+    fn apply_task_editor_fields_resolved_plan_path_none_when_cleared() {
+        let task = sample_task();
+        let fields = EditorFields::default();
+        let applied = apply_task_editor_fields(&task, fields);
+        assert_eq!(applied.plan_path, FieldUpdate::Clear);
+        assert_eq!(applied.resolved_plan_path, None);
+    }
+
+    #[test]
     fn apply_task_empty_plan_clears_plan() {
         let task = sample_task();
         assert!(task.plan_path.is_some());
@@ -932,6 +1033,33 @@ mod tests {
         };
         let applied = apply_task_editor_fields(&task, fields);
         assert_eq!(applied.url, None);
+    }
+
+    #[test]
+    fn apply_task_editor_fields_resolved_url_reflects_new_value_even_when_unchanged() {
+        // resolved_url must reflect the post-edit url regardless of whether
+        // `url` itself is None (unchanged, no diff to forward to the DB).
+        let task = sample_task_with_url(TaskUrl::new("https://github.com/o/r/pull/9", UrlType::Pr));
+        let fields = parse_editor_content(&format_editor_content(&task));
+        let applied = apply_task_editor_fields(&task, fields);
+        assert_eq!(applied.url, None, "unchanged edit is a no-op diff");
+        assert_eq!(
+            applied.resolved_url,
+            Some(TaskUrl::new("https://github.com/o/r/pull/9", UrlType::Pr)),
+            "resolved_url must still carry the post-edit value"
+        );
+    }
+
+    #[test]
+    fn apply_task_editor_fields_resolved_url_none_when_cleared() {
+        let task = sample_task_with_url(TaskUrl::new("https://github.com/o/r/pull/1", UrlType::Pr));
+        let fields = EditorFields {
+            url: String::new(),
+            ..Default::default()
+        };
+        let applied = apply_task_editor_fields(&task, fields);
+        assert_eq!(applied.url, Some(UrlUpdate::Clear));
+        assert_eq!(applied.resolved_url, None);
     }
 
     #[test]

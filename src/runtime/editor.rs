@@ -108,6 +108,23 @@ fn initial_content_for(kind: &EditKind) -> (String, String) {
     }
 }
 
+/// Resolve the `$EDITOR` command to launch, falling back to `vim` when the
+/// variable is unset or invalid. Takes the lookup result rather than reading
+/// the environment itself so it's directly unit-testable.
+fn resolve_editor_command(env_result: Result<String, std::env::VarError>) -> String {
+    env_result.unwrap_or_else(|_| "vim".to_string())
+}
+
+/// Surface a pop-out editor failure as a status error and let the caller
+/// `return`. Funnels the several early-return error paths in
+/// `exec_pop_out_editor` through one place instead of repeating the
+/// `app.update(Message::System(...))` boilerplate at each site.
+fn emit_pop_out_error(app: &mut App, message: String) {
+    app.update(Message::System(crate::tui::messages::SystemMessage::Error(
+        message,
+    )));
+}
+
 /// Generate a unique tmux window name for a new editor session.
 fn new_window_name() -> String {
     // Nanoseconds since the process began are plenty unique for a single
@@ -149,31 +166,25 @@ impl TuiRuntime {
         {
             Ok(f) => f,
             Err(e) => {
-                app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                    Self::db_error("creating editor tempfile", e),
-                )));
+                emit_pop_out_error(app, Self::db_error("creating editor tempfile", e));
                 return;
             }
         };
         if let Err(e) = std::io::Write::write_all(tmp.as_file_mut(), content.as_bytes()) {
-            app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                Self::db_error("writing editor tempfile", e),
-            )));
+            emit_pop_out_error(app, Self::db_error("writing editor tempfile", e));
             return;
         }
 
         let (_file, temp_path) = match tmp.keep() {
             Ok(p) => p,
             Err(e) => {
-                app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                    Self::db_error("persisting editor tempfile", e.error),
-                )));
+                emit_pop_out_error(app, Self::db_error("persisting editor tempfile", e.error));
                 return;
             }
         };
 
         let window_name = new_window_name();
-        let editor_cmd = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+        let editor_cmd = resolve_editor_command(std::env::var("EDITOR"));
         let cwd = std::env::temp_dir();
         let cwd_str = cwd.to_string_lossy().into_owned();
         let temp_str = temp_path.to_string_lossy().into_owned();
@@ -185,9 +196,7 @@ impl TuiRuntime {
             &*self.runner,
         ) {
             let _ = std::fs::remove_file(&temp_path);
-            app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                format!("Failed to open editor window: {e}"),
-            )));
+            emit_pop_out_error(app, format!("Failed to open editor window: {e}"));
             return;
         }
 
@@ -310,33 +319,26 @@ impl TuiRuntime {
 
         let task_id = task.id;
         let prior_repo_path = task.repo_path.clone();
-        let prior_url = task.url.clone();
 
         // Single source of truth: destructure `TaskEditApplied` exhaustively
         // (no `..`) so adding an editable field is a compile error (E0027)
         // here rather than a silently-dropped field. The `UpdateTaskParams`
         // patch and the in-memory `TaskEdit` event are both derived from these
-        // bindings.
+        // bindings. `resolved_plan_path`/`resolved_url` are the post-edit
+        // values `editor.rs` already computed — consumed here, not re-derived.
         let TaskEditApplied {
             title,
             description,
             repo_path,
             status,
             plan_path,
+            resolved_plan_path,
             tag,
             base_branch,
             wrap_up_mode,
             url,
+            resolved_url,
         } = applied;
-
-        // Resolve the post-edit values for the in-memory snapshot before the
-        // owned values are moved into the params builder below.
-        let resolved_plan_path = plan_path.as_option().map(str::to_string);
-        let resolved_url = match &url {
-            Some(crate::service::UrlUpdate::Set(u)) => Some(u.clone()),
-            Some(crate::service::UrlUpdate::Clear) => None,
-            None => prior_url,
-        };
 
         let mut params = UpdateTaskParams::for_task(task_id)
             .status(status)
@@ -796,6 +798,30 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "tmux");
         assert_eq!(calls[0].1, vec!["kill-window", "-t", "edit-window"]);
+    }
+
+    #[test]
+    fn resolve_editor_command_uses_env_value_when_present() {
+        assert_eq!(
+            resolve_editor_command(Ok("nano".to_string())),
+            "nano".to_string()
+        );
+    }
+
+    #[test]
+    fn resolve_editor_command_falls_back_to_vim_when_absent() {
+        assert_eq!(
+            resolve_editor_command(Err(std::env::VarError::NotPresent)),
+            "vim".to_string()
+        );
+    }
+
+    #[test]
+    fn emit_pop_out_error_surfaces_error_popup() {
+        let mut app = App::new(vec![]);
+        emit_pop_out_error(&mut app, "boom".to_string());
+        let msg = app.error_popup().unwrap_or_default();
+        assert!(msg.contains("boom"), "expected 'boom' in error popup, got {msg:?}");
     }
 
     #[tokio::test]
