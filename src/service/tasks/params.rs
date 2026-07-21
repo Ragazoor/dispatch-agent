@@ -33,6 +33,8 @@ pub struct UpdateTaskParams {
     pub last_pre_tool_use_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
     /// Double-Option: outer `None` = no-op; `Some(None)` = clear; `Some(Some(m))` = set.
     pub wrap_up_mode: Option<Option<WrapUpMode>>,
+    /// `None` = leave untouched; `Some(v)` = write `v`.
+    pub auto_run_plan: Option<bool>,
 }
 
 impl UpdateTaskParams {
@@ -87,6 +89,9 @@ impl UpdateTaskParams {
         if self.wrap_up_mode.is_some() {
             names.push("wrap_up_mode");
         }
+        if self.auto_run_plan.is_some() {
+            names.push("auto_run_plan");
+        }
         names
     }
 
@@ -109,6 +114,7 @@ impl UpdateTaskParams {
             base_branch: None,
             last_pre_tool_use_at: None,
             wrap_up_mode: None,
+            auto_run_plan: None,
         }
     }
 
@@ -186,6 +192,11 @@ impl UpdateTaskParams {
         self.wrap_up_mode = Some(mode);
         self
     }
+
+    pub fn auto_run_plan(mut self, value: bool) -> Self {
+        self.auto_run_plan = Some(value);
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +213,7 @@ pub struct CreateTaskParams {
     pub tag: Option<TaskTag>,
     pub base_branch: Option<String>,
     pub wrap_up_mode: Option<WrapUpMode>,
+    pub auto_run_plan: bool,
 }
 
 // ---------------------------------------------------------------------------

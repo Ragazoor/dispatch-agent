@@ -31,6 +31,7 @@ async fn hook_event_flow_drives_sub_status_and_lifecycle() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

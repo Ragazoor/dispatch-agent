@@ -60,6 +60,9 @@ pub(super) fn build_task_patch<'a>(
     if let Some(inner) = params.wrap_up_mode {
         patch = patch.wrap_up_mode(inner);
     }
+    if let Some(v) = params.auto_run_plan {
+        patch = patch.auto_run_plan(v);
+    }
     patch
 }
 
@@ -215,5 +218,12 @@ mod tests {
         let params = UpdateTaskParams::for_task(TaskId(1)).wrap_up_mode(None);
         let patch = build_task_patch(&params, None, None);
         assert_eq!(patch.wrap_up_mode, Some(None));
+    }
+
+    #[test]
+    fn auto_run_plan_maps_to_patch() {
+        let params = UpdateTaskParams::for_task(TaskId(1)).auto_run_plan(true);
+        let patch = build_task_patch(&params, None, None);
+        assert_eq!(patch.auto_run_plan, Some(true));
     }
 }

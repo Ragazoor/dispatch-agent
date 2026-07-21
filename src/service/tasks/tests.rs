@@ -34,6 +34,7 @@ fn make_task_params(repo_path: &str) -> CreateTaskParams {
         tag: None,
         base_branch: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     }
 }
 
@@ -55,6 +56,7 @@ async fn create_and_get_task() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -80,6 +82,7 @@ async fn create_task_with_tag() {
             tag: Some(TaskTag::Bug),
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -105,6 +108,7 @@ async fn create_task_with_sort_order() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -129,6 +133,7 @@ async fn update_task_status() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -160,6 +165,7 @@ async fn update_task_no_fields_returns_error() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -187,6 +193,7 @@ async fn update_task_params_builder_compiles() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -215,6 +222,7 @@ async fn update_task_invalid_substatus_for_status() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -243,6 +251,7 @@ async fn claim_task_success() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -281,6 +290,7 @@ async fn claim_task_seeds_last_pre_tool_use_at() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -318,6 +328,7 @@ async fn claim_task_wrong_repo() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -349,6 +360,7 @@ async fn claim_task_not_backlog() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -384,6 +396,7 @@ async fn list_tasks_with_filter() {
         tag: None,
         base_branch: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -444,6 +457,7 @@ async fn update_task_with_epic_linkage() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -488,6 +502,7 @@ async fn update_task_status_recalculates_parent_epic() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -544,6 +559,7 @@ async fn update_task_relink_recalculates_old_and_new_epic() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -602,6 +618,7 @@ async fn make_task(svc: &TaskService, epic_id: Option<EpicId>) -> TaskId {
         tag: None,
         base_branch: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap()
@@ -899,6 +916,7 @@ async fn list_epics_with_progress() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -951,6 +969,7 @@ async fn list_epics_with_progress_multiple_epics() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -965,6 +984,7 @@ async fn list_epics_with_progress_multiple_epics() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -980,6 +1000,7 @@ async fn list_epics_with_progress_multiple_epics() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1029,6 +1050,7 @@ async fn update_task_status_recalculates_epic() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1071,6 +1093,7 @@ async fn get_epic_with_subtasks() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1111,6 +1134,7 @@ async fn next_backlog_task_returns_first_by_sort_order() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1126,6 +1150,7 @@ async fn next_backlog_task_returns_first_by_sort_order() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1163,6 +1188,7 @@ async fn next_backlog_task_skips_non_backlog() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1203,6 +1229,7 @@ async fn create_task_returning_gives_full_task() {
             tag: Some(TaskTag::Feature),
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1211,6 +1238,29 @@ async fn create_task_returning_gives_full_task() {
     assert_eq!(task.description, "desc");
     assert_eq!(task.tag, Some(TaskTag::Feature));
     assert_eq!(task.status, TaskStatus::Backlog);
+}
+
+#[tokio::test]
+async fn create_task_with_auto_run_plan_true_persists() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+
+    let task = svc
+        .create_task_returning(CreateTaskParams {
+            title: "T".to_string(),
+            description: "d".to_string(),
+            repo_path: "/r".to_string(),
+            plan_path: None,
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            base_branch: None,
+            wrap_up_mode: None,
+            auto_run_plan: true,
+        })
+        .await
+        .unwrap();
+    assert!(task.auto_run_plan);
 }
 
 #[tokio::test]
@@ -1242,6 +1292,7 @@ async fn create_task_returning_with_epic() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1278,6 +1329,7 @@ async fn create_task_returning_sets_all_optional_fields_atomically() {
             tag: Some(TaskTag::Feature),
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1305,6 +1357,7 @@ async fn delete_task_removes_it() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1341,6 +1394,7 @@ async fn update_task_sets_worktree_and_tmux_window() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1375,6 +1429,7 @@ async fn update_task_clears_worktree() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1422,6 +1477,7 @@ async fn update_task_allows_done_status() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1496,6 +1552,7 @@ async fn update_task_worktree_set_persists() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1527,6 +1584,7 @@ async fn update_task_worktree_clear_sets_null() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1567,6 +1625,7 @@ async fn update_task_pr_url_set_and_clear() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1623,6 +1682,7 @@ async fn list_tasks_filters_by_epic_id() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1638,6 +1698,7 @@ async fn list_tasks_filters_by_epic_id() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1669,6 +1730,7 @@ async fn list_tasks_excludes_archived_by_default() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1701,6 +1763,7 @@ async fn list_tasks_filters_by_repo_paths() {
         tag: None,
         base_branch: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -1715,6 +1778,7 @@ async fn list_tasks_filters_by_repo_paths() {
         tag: None,
         base_branch: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -1746,6 +1810,7 @@ async fn list_tasks_excludes_caller_task() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1760,6 +1825,7 @@ async fn list_tasks_excludes_caller_task() {
         tag: None,
         base_branch: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     })
     .await
     .unwrap();
@@ -1791,6 +1857,7 @@ async fn validate_send_message_missing_worktree() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1807,6 +1874,7 @@ async fn validate_send_message_missing_worktree() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1832,6 +1900,7 @@ async fn validate_send_message_missing_tmux_window() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1847,6 +1916,7 @@ async fn validate_send_message_missing_tmux_window() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -1881,6 +1951,7 @@ async fn validate_send_message_target_not_found() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2022,6 +2093,7 @@ async fn update_task_toctou_last_write_wins() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2075,6 +2147,7 @@ async fn update_task_sub_status_validated_against_persisted_status() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2313,6 +2386,7 @@ async fn record_hook_event_noop_for_non_running_task() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2920,6 +2994,7 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -2980,6 +3055,7 @@ async fn create_task_on_grouped_epic_routes_into_sub_epic() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3010,6 +3086,7 @@ async fn update_repo_path_reroutes_within_grouped_epic() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3057,6 +3134,7 @@ async fn move_task_to_grouped_epic_routes_into_sub_epic() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -3101,6 +3179,7 @@ async fn move_task_to_non_grouped_epic_lands_directly() {
             tag: None,
             base_branch: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

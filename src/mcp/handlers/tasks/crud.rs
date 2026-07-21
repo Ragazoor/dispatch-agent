@@ -162,6 +162,7 @@ pub(crate) async fn handle_create_task(
             tag: parsed.tag,
             base_branch: parsed.base_branch,
             wrap_up_mode: parsed.wrap_up_mode,
+            auto_run_plan: false,
         })
         .await
     {
