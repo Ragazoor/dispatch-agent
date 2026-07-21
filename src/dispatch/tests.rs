@@ -1120,11 +1120,14 @@ fn provision_worktree_fetches_origin_before_create() {
 }
 
 #[test]
-fn provision_worktree_fetch_failure_falls_back_to_local() {
-    // Fetch fails → worktree add should use local branch (no error propagated)
+fn provision_worktree_fetch_failure_falls_back_to_local_after_retries() {
+    // Every fetch attempt fails → worktree add should use the local branch
+    // (no error propagated), and a warning should be attached to the result.
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: 'origin' does not appear to be a git repository"),
+        MockProcessRunner::fail("fatal: 'origin' does not appear to be a git repository"),
         MockProcessRunner::fail("fatal: 'origin' does not appear to be a git repository"),
         MockProcessRunner::ok(), // git worktree add
         MockProcessRunner::ok(), // tmux new-window
@@ -1134,20 +1137,69 @@ fn provision_worktree_fetch_failure_falls_back_to_local() {
 
     let task = make_task(&repo_path);
     // Should NOT return an error — soft fail
-    provision_worktree(&task, &mock, Some("main"), SUBPROCESS_TIMEOUT).unwrap();
+    let result = provision_worktree(&task, &mock, Some("main"), SUBPROCESS_TIMEOUT).unwrap();
 
     let calls = mock.recorded_calls();
-    // call[0] = fetch (failed)
-    assert_eq!(calls[0].0, "git");
-    assert!(calls[0].1.contains(&"fetch".to_string()));
-    // call[1] = worktree add using local "main" (not "origin/main")
-    assert_eq!(calls[1].0, "git");
-    assert!(calls[1].1.contains(&"worktree".to_string()));
+    let fetch_attempts = calls
+        .iter()
+        .filter(|(prog, args)| prog == "git" && args.contains(&"fetch".to_string()))
+        .count();
     assert_eq!(
-        calls[1].1.last().unwrap(),
+        fetch_attempts, 3,
+        "expected exactly 3 fetch attempts before giving up, got: {calls:?}"
+    );
+    // call[3] = worktree add using local "main" (not "origin/main")
+    assert_eq!(calls[3].0, "git");
+    assert!(calls[3].1.contains(&"worktree".to_string()));
+    assert_eq!(
+        calls[3].1.last().unwrap(),
         "main",
-        "fallback should use local main, got: {:?}",
-        calls[1].1
+        "fallback should use local main, got: {calls:?}"
+    );
+    let warning = result
+        .fetch_warning
+        .expect("expected a fetch_warning when all fetch attempts fail");
+    assert!(
+        warning.contains("main"),
+        "warning should mention the base branch, got: {warning}"
+    );
+}
+
+#[test]
+fn provision_worktree_retries_fetch_before_falling_back() {
+    // First two fetch attempts fail, third succeeds → no fallback, no warning.
+    let (_dir, repo_path) = make_test_repo();
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: unable to access 'origin': transient network error"),
+        MockProcessRunner::fail("fatal: unable to access 'origin': transient network error"),
+        MockProcessRunner::ok(), // third fetch attempt succeeds
+        MockProcessRunner::ok(), // git worktree add
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(&task, &mock, Some("main"), SUBPROCESS_TIMEOUT).unwrap();
+
+    let calls = mock.recorded_calls();
+    let fetch_attempts = calls
+        .iter()
+        .filter(|(prog, args)| prog == "git" && args.contains(&"fetch".to_string()))
+        .count();
+    assert_eq!(
+        fetch_attempts, 3,
+        "expected 3 fetch attempts (2 failures + 1 success), got: {calls:?}"
+    );
+    assert_eq!(
+        calls[3].1.last().unwrap(),
+        "origin/main",
+        "should use origin/main once fetch eventually succeeds, got: {calls:?}"
+    );
+    assert!(
+        result.fetch_warning.is_none(),
+        "no warning expected when fetch eventually succeeds"
     );
 }
 
@@ -2248,7 +2300,9 @@ fn provision_worktree_kills_git_fetch_on_timeout_and_falls_back() {
     let short_timeout = Duration::from_millis(10);
 
     let mock = MockProcessRunner::new_with_delays(vec![
-        (Some(Duration::from_millis(100)), MockProcessRunner::ok()), // git fetch → timeout (killed)
+        (Some(Duration::from_millis(100)), MockProcessRunner::ok()), // git fetch attempt 1 → timeout (killed)
+        (Some(Duration::from_millis(100)), MockProcessRunner::ok()), // git fetch attempt 2 → timeout (killed)
+        (Some(Duration::from_millis(100)), MockProcessRunner::ok()), // git fetch attempt 3 → timeout (killed)
         (None, MockProcessRunner::ok()), // git worktree add (local fallback)
         (None, MockProcessRunner::ok()), // tmux new-window
         (None, MockProcessRunner::ok()), // tmux set-option

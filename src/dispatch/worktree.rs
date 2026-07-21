@@ -17,6 +17,20 @@ pub(crate) const DISPATCH_DIR: &str = ".dispatch";
 const GITIGNORE_FILE: &str = ".gitignore";
 const DISPATCH_GITIGNORE_LINE: &str = ".dispatch/";
 
+/// Bounded retry budget for `git fetch origin <base>` during worktree
+/// provisioning. Smooths over transient failures (e.g. ref-lock contention
+/// when two dispatches fetch the same repo concurrently) without needing to
+/// pattern-match git's stderr text.
+const FETCH_MAX_ATTEMPTS: u32 = 3;
+// Zero delay under `cfg(test)` so the retry tests below don't spend real
+// wall-clock time sleeping — flagged by adversarial review of this plan,
+// which pointed out a fixed 500ms delay would cost ~1s of real sleep per
+// retry test. The retry *count* is still fully exercised either way.
+#[cfg(not(test))]
+const FETCH_RETRY_DELAY: Duration = Duration::from_millis(500);
+#[cfg(test)]
+const FETCH_RETRY_DELAY: Duration = Duration::from_millis(0);
+
 /// Ensure `<worktree>/.dispatch/` exists and that `<worktree>/.gitignore`
 /// contains an entry for it. Idempotent: safe to call repeatedly.
 pub(crate) fn ensure_dispatch_dir_and_gitignore(worktree: &Path) -> Result<()> {
@@ -53,6 +67,35 @@ pub(crate) fn ensure_dispatch_dir_and_gitignore(worktree: &Path) -> Result<()> {
 pub(super) struct ProvisionResult {
     pub(super) worktree_path: String,
     pub(super) tmux_window: String,
+    // Only read by tests until the next task wires it into the agent's
+    // prompt (injecting a warning when all fetch attempts fail).
+    #[allow(dead_code)]
+    pub(super) fetch_warning: Option<String>,
+}
+
+/// Attempt `git fetch origin <base>` up to `FETCH_MAX_ATTEMPTS` times,
+/// sleeping `FETCH_RETRY_DELAY` between attempts. Returns `Ok(())` on the
+/// first success, or `Err(<last stderr/error text>)` once every attempt has
+/// failed.
+fn fetch_origin_with_retry(
+    runner: &dyn ProcessRunner,
+    repo_path: &str,
+    base: &str,
+    timeout: Duration,
+) -> Result<(), String> {
+    let mut last_err = String::new();
+    for attempt in 1..=FETCH_MAX_ATTEMPTS {
+        match runner.run_with_timeout("git", &["-C", repo_path, "fetch", "origin", base], timeout)
+        {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => last_err = stderr_str(&output),
+            Err(e) => last_err = e.to_string(),
+        }
+        if attempt < FETCH_MAX_ATTEMPTS {
+            std::thread::sleep(FETCH_RETRY_DELAY);
+        }
+    }
+    Err(last_err)
 }
 
 /// Create a git worktree and open a tmux window.
@@ -84,19 +127,22 @@ pub(super) fn provision_worktree(
     // manual sync). Soft-fail: if fetch is unavailable (no origin, no
     // network), fall back to the local branch and continue — dispatch is not
     // blocked.
+    let mut fetch_warning: Option<String> = None;
     let start_point: Option<String> = base_branch.map(|base| {
-        let fetch_ok = runner
-            .run_with_timeout("git", &["-C", &repo_path, "fetch", "origin", base], timeout)
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        if fetch_ok {
-            format!("origin/{base}")
-        } else {
-            tracing::warn!(
-                base,
-                "git fetch origin failed, falling back to local branch"
-            );
-            base.to_string()
+        match fetch_origin_with_retry(runner, &repo_path, base, timeout) {
+            Ok(()) => format!("origin/{base}"),
+            Err(err) => {
+                tracing::warn!(
+                    base,
+                    error = %err,
+                    "git fetch origin failed after retries, falling back to local branch"
+                );
+                fetch_warning = Some(format!(
+                    "Could not fetch origin/{base} after {FETCH_MAX_ATTEMPTS} attempts \
+                     ({err}); using local branch, which may be stale."
+                ));
+                base.to_string()
+            }
         }
     });
 
@@ -135,6 +181,7 @@ pub(super) fn provision_worktree(
     Ok(ProvisionResult {
         worktree_path,
         tmux_window,
+        fetch_warning,
     })
 }
 
