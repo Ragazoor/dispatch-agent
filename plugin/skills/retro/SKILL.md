@@ -89,6 +89,8 @@ Print a structured summary:
 **Follow-up tasks created:** #<id> (<tag>: <title>){, or "none needed"}
 ```
 
+This is the last step of the retro skill itself — it is not the end of the session. Retro is almost always invoked as a sub-step of `wrap-up`, between `wrap_up` and `exit_session`. After printing this summary, immediately resume the calling skill's next instruction (the closing `exit_session` call) in the same turn. Do not stop here.
+
 ## Relationship to other skills
 
 - **`learnings`** still owns reusable pitfalls/conventions/preferences via

@@ -512,6 +512,43 @@ mod tests {
     }
 
     #[test]
+    fn summarize_skill_does_not_claim_unconditional_finality() {
+        // wrap-up invokes summarize mid-flow (before wrap_up/retro/exit_session).
+        // An unconditional "this is always the final step" claim reads as an
+        // instruction to stop the whole session right there, which is how
+        // wrap-up gets stuck after summarize and never reaches exit_session.
+        let content = PLUGIN_DIR
+            .get_file("skills/summarize/SKILL.md")
+            .expect("summarize SKILL.md must be embedded")
+            .contents_utf8()
+            .expect("summarize SKILL.md must be UTF-8");
+        assert!(
+            !content.contains("always the final step"),
+            "summarize skill must not unconditionally claim to be the final step, \
+             since wrap-up invokes it as a mid-flow sub-step"
+        );
+    }
+
+    #[test]
+    fn retro_skill_tells_agent_to_resume_the_caller() {
+        // wrap-up invokes retro between wrap_up and exit_session. Without an
+        // explicit instruction to resume the caller's remaining steps, an
+        // agent that just finished following retro's own steps has nothing
+        // telling it to continue — that's how wrap-up gets stuck after retro
+        // and never reaches exit_session.
+        let content = PLUGIN_DIR
+            .get_file("skills/retro/SKILL.md")
+            .expect("retro SKILL.md must be embedded")
+            .contents_utf8()
+            .expect("retro SKILL.md must be UTF-8");
+        assert!(
+            content.contains("do not stop here") || content.contains("Do not stop here"),
+            "retro skill must explicitly instruct the agent to resume the \
+             calling skill's next step instead of stopping"
+        );
+    }
+
+    #[test]
     fn plugin_hook_scripts_are_executable() {
         let hooks_scripts = PLUGIN_DIR
             .get_dir("hooks/scripts")
