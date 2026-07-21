@@ -130,26 +130,26 @@ rule SplitPaneFocusBorder {
         -- border_color = BORDER when split_pane.focused = false
 }
 
--- == Jump to Agent Window ([g] key) ==
+-- == Jump to Agent Window (Space key) ==
 --
--- Pressing [g] on a task jumps tmux focus to that task's agent window.
+-- Pressing Space on a task jumps tmux focus to that task's agent window.
 -- In the normal case this is a standalone tmux window. When the task is
 -- currently pinned in the split pane, the pane is targeted directly.
 
 rule JumpToAgentWindow {
-    when: UserAction("g", task)
+    when: UserAction(" ", task)
     requires: task.tmux_window != null
 
     ensures: tmux_focus = task.tmux_window
 
     @guidance
-        -- [g] jumps to the agent's window. In the normal case (no split, or
+        -- Space jumps to the agent's window. In the normal case (no split, or
         -- split active but a different task is pinned), this calls
         -- tmux select-window on task.tmux_window.
         --
         -- Edge case: when the task is the currently pinned split-pane task,
         -- its pane has been joined into the dispatch window via join-pane and
-        -- the original standalone window no longer exists. In this case [g]
+        -- the original standalone window no longer exists. In this case Space
         -- calls tmux select-pane on split_pane.right_pane_id instead.
         --
         -- Contrast with [S], which peeks at the window in-place without
