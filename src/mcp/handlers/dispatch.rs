@@ -154,6 +154,10 @@ mcp_tools! {
                     "type": ["string", "null"],
                     "description": "Pre-set the wrap-up action for this task: 'rebase' (rebase onto base_branch), 'pr' (create a PR), or 'done' (mark done immediately). Pass null to clear.",
                     "enum": ["rebase", "pr", "done", null]
+                },
+                "auto_run_plan": {
+                    "type": "boolean",
+                    "description": "When true and the task has a plan_path, the dispatched agent implements the plan immediately instead of asking for confirmation first."
                 }
             },
             "required": ["task_id"]
@@ -214,6 +218,10 @@ mcp_tools! {
                     "type": "string",
                     "description": "Pre-set the wrap-up action for this task: 'rebase' (rebase onto base_branch), 'pr' (create a PR), or 'done' (mark done immediately).",
                     "enum": ["rebase", "pr", "done"]
+                },
+                "auto_run_plan": {
+                    "type": "boolean",
+                    "description": "When true and a plan_path is set, the dispatched agent implements the plan immediately instead of summarizing it and asking for confirmation first. Use only when the plan has already been reviewed (e.g. by the decompose-review skill's work-package confirmation step). Defaults to false."
                 }
             },
             "required": ["title", "repo_path"]

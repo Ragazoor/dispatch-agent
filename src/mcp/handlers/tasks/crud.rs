@@ -100,6 +100,9 @@ pub(crate) async fn handle_update_task(
     if let Some(mode) = parsed.wrap_up_mode {
         params = params.wrap_up_mode(mode);
     }
+    if let Some(value) = parsed.auto_run_plan {
+        params = params.auto_run_plan(value);
+    }
     let fields_display = params.updated_field_names().join(", ");
 
     match state.task_svc.update_task(params).await {
@@ -162,7 +165,7 @@ pub(crate) async fn handle_create_task(
             tag: parsed.tag,
             base_branch: parsed.base_branch,
             wrap_up_mode: parsed.wrap_up_mode,
-            auto_run_plan: false,
+            auto_run_plan: parsed.auto_run_plan,
         })
         .await
     {

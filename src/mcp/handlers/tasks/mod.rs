@@ -60,6 +60,8 @@ pub(super) struct UpdateTaskArgs {
     pub(super) base_branch: Option<String>,
     #[serde(default, deserialize_with = "deserialize_nullable_wrap_up_mode")]
     pub(super) wrap_up_mode: Option<Option<WrapUpMode>>,
+    #[serde(default)]
+    pub(super) auto_run_plan: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -106,6 +108,8 @@ pub(super) struct CreateTaskWithEpicArgs {
     pub(super) base_branch: Option<String>,
     #[serde(default)]
     pub(super) wrap_up_mode: Option<WrapUpMode>,
+    #[serde(default)]
+    pub(super) auto_run_plan: bool,
 }
 
 // WrapUpAction lives in `crate::mcp` — it's shared between wrap_up (which

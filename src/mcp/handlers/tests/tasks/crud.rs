@@ -1050,6 +1050,49 @@ async fn create_task_with_wrap_up_mode() {
 }
 
 #[tokio::test]
+async fn create_task_with_auto_run_plan_true() {
+    let state = test_state().await;
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "create_task",
+            "arguments": {
+                "title": "T",
+                "repo_path": "/r",
+                "auto_run_plan": true
+            }
+        })),
+    )
+    .await;
+    assert!(!is_error(&resp));
+
+    let tasks = state.db.list_all().await.unwrap();
+    let task = tasks.iter().find(|t| t.title == "T").expect("task should exist");
+    assert!(task.auto_run_plan);
+}
+
+#[tokio::test]
+async fn update_task_sets_auto_run_plan() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "auto_run_plan": true }
+        })),
+    )
+    .await;
+    assert!(!is_error(&resp));
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert!(task.auto_run_plan);
+}
+
+#[tokio::test]
 async fn get_task_shows_wrap_up_mode() {
     let state = test_state().await;
     let task_id = create_task_fixture(&state).await;
