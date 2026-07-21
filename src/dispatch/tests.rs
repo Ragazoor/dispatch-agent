@@ -537,9 +537,10 @@ fn rebase_preamble_prepended_to_all_prompts() {
          Always work from this worktree folder — do not `cd` to the parent repo \
          or other directories.\n\n\
          {body}",
-        rebase_preamble("origin/main")
+        rebase_preamble("main")
     );
-    assert!(full.contains("rebase your branch from origin/main"));
+    assert!(full.contains("git fetch origin main"));
+    assert!(full.contains("git rebase origin/main"));
     assert!(full.starts_with("Before starting work"));
     assert!(full.contains("Always work from this worktree folder"));
 }
@@ -1331,8 +1332,12 @@ fn provision_worktree_still_fetches_when_dir_exists() {
 fn rebase_preamble_with_base_branch() {
     let preamble = rebase_preamble("99-prev-task");
     assert!(
-        preamble.contains("99-prev-task"),
-        "should reference the base branch"
+        preamble.contains("git fetch origin 99-prev-task"),
+        "should fetch the base branch first, got: {preamble}"
+    );
+    assert!(
+        preamble.contains("git rebase origin/99-prev-task"),
+        "should rebase onto the fetched origin ref, got: {preamble}"
     );
     assert!(
         !preamble.contains("origin/main"),
@@ -1342,10 +1347,14 @@ fn rebase_preamble_with_base_branch() {
 
 #[test]
 fn rebase_preamble_uses_given_target() {
-    let preamble = rebase_preamble("origin/develop");
+    let preamble = rebase_preamble("develop");
     assert!(
-        preamble.contains("origin/develop"),
-        "should use given target, got: {preamble}"
+        preamble.contains("git fetch origin develop"),
+        "should fetch the given target, got: {preamble}"
+    );
+    assert!(
+        preamble.contains("git rebase origin/develop"),
+        "should rebase onto origin/<given target>, got: {preamble}"
     );
     assert!(
         !preamble.contains("origin/main"),
@@ -1444,11 +1453,11 @@ fn dispatch_uses_task_base_branch_in_prompt() {
     let prompt_file = worktree_dir.join(".claude-prompt");
     let prompt = std::fs::read_to_string(prompt_file).unwrap();
     assert!(
-        prompt.contains("rebase your branch from master"),
+        prompt.contains("git rebase origin/master"),
         "prompt should reference task.base_branch (master), got: {prompt}"
     );
     assert!(
-        !prompt.contains("rebase your branch from main"),
+        !prompt.contains("git rebase origin/main"),
         "prompt should not reference main when task.base_branch is master"
     );
 }
@@ -1956,7 +1965,7 @@ fn dispatch_agent_uses_task_base_branch_in_prompt() {
     let prompt_file = worktree_dir.join(".claude-prompt");
     let prompt = std::fs::read_to_string(prompt_file).unwrap();
     assert!(
-        prompt.contains("rebase your branch from develop"),
+        prompt.contains("git rebase origin/develop"),
         "prompt should reference task.base_branch (develop), got: {prompt}"
     );
     // No symbolic-ref call

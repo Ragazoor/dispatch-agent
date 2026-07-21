@@ -44,9 +44,10 @@ pub(super) fn build_tmux_window_name(task_id: TaskId) -> String {
 
 pub(super) fn rebase_preamble(target: &str) -> String {
     format!(
-        "Before starting work, rebase your branch from {target}:\n\
+        "Before starting work, fetch and rebase your branch onto the latest {target}:\n\
          ```\n\
-         git rebase {target}\n\
+         git fetch origin {target}\n\
+         git rebase origin/{target}\n\
          ```"
     )
 }
