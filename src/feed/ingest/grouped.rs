@@ -20,64 +20,45 @@ async fn upsert_sub_epic_and_recalc(
     repo_paths: &[String],
     base_branches: &[String],
 ) {
-    if let Err(err) = db
+    let result = db
         .upsert_feed_tasks(sub_epic_id, items, repo_paths, base_branches)
-        .await
-    {
-        tracing::warn!(
-            epic_id = parent_id.0,
-            sub_epic_id = sub_epic_id.0,
-            "sync_grouped_feed: upsert_feed_tasks failed: {err:#}"
-        );
-    } else {
+        .await;
+    if result.is_ok() {
         crate::feed::recalculate_epic_status_after_feed(db, sub_epic_id, "sync_grouped_feed").await;
     }
+    crate::feed::warn_on_err(
+        result,
+        parent_id,
+        Some(sub_epic_id),
+        "sync_grouped_feed: upsert_feed_tasks failed",
+    );
 }
 
-/// Group feed items by repo name and upsert each group into its own sub-epic.
-/// Clears any flat feed tasks on the parent epic (migration + ongoing hygiene).
-/// Returns the IDs of all sub-epics that were found or created (used by the
-/// caller to notify the TUI, even when individual upserts partially fail).
-///
-/// Takes a single owned `Vec` of paired entries rather than three parallel
-/// slices, so per-index alignment is structural — the old length-mismatch
-/// guard (and the silent-truncation footgun it papered over) is gone. Taking
-/// the `Vec` by value lets the grouping pass move each entry into its group
-/// instead of cloning it.
-pub(super) async fn sync_grouped_feed(
-    db: &dyn TaskStore,
-    parent_id: EpicId,
-    entries: Vec<FeedItemWithTarget>,
-) -> Vec<EpicId> {
-    // Group entries by repo name, moving each entry into its group (no clone).
+/// Phase 1: group entries by repo name, moving each entry into its group (no
+/// clone). Takes a single owned `Vec` of paired entries rather than three
+/// parallel slices, so per-index alignment is structural — the old
+/// length-mismatch guard (and the silent-truncation footgun it papered over)
+/// is gone.
+fn group_by_repo(entries: Vec<FeedItemWithTarget>) -> HashMap<String, Vec<FeedItemWithTarget>> {
     let mut groups: HashMap<String, Vec<FeedItemWithTarget>> = HashMap::new();
     for entry in entries {
         let name = crate::dispatch::repo_name_from_url(&entry.item.url);
         groups.entry(name).or_default().push(entry);
     }
+    groups
+}
 
-    let existing_sub_epics = match db.list_sub_epics(parent_id).await {
-        Ok(e) => e,
-        Err(err) => {
-            tracing::warn!(
-                epic_id = parent_id.0,
-                "sync_grouped_feed: list_sub_epics failed: {err:#}"
-            );
-            // list_sub_epics failed: no writes occurred, skip notifications
-            return vec![];
-        }
-    };
-
-    let active_sub_epics: Vec<_> = existing_sub_epics
-        .iter()
-        .filter(|e| e.status != crate::models::TaskStatus::Archived)
-        .collect();
-
-    let mut sub_epic_ids: Vec<EpicId> = Vec::new();
-    // Repo names contributing an item this emission, kept for the absent-
-    // sub-epic reconciliation below since `groups` is consumed by value here.
-    let group_names: std::collections::HashSet<String> = groups.keys().cloned().collect();
-
+/// Phase 2: find-or-create each present group's sub-epic and upsert its
+/// items. Returns the sub-epic IDs written to (used by the caller to notify
+/// the TUI, even when an individual upsert fails — partial writes are still
+/// visible).
+async fn upsert_present_groups(
+    db: &dyn TaskStore,
+    parent_id: EpicId,
+    groups: HashMap<String, Vec<FeedItemWithTarget>>,
+    active_sub_epics: &[&crate::models::Epic],
+) -> Vec<EpicId> {
+    let mut sub_epic_ids = Vec::new();
     for (repo_name, group) in groups {
         let (group_items, group_repo_paths, group_base_branches) = FeedItemWithTarget::unzip(group);
 
@@ -98,8 +79,6 @@ pub(super) async fn sync_grouped_feed(
                 }
             };
 
-        // Always collect the sub-epic ID so the caller can notify the TUI,
-        // even if the upsert below fails (partial writes are still visible).
         sub_epic_ids.push(sub_epic_id);
 
         // New backlog tasks may regress a done sub-epic; the recalculation
@@ -114,16 +93,23 @@ pub(super) async fn sync_grouped_feed(
         )
         .await;
     }
+    sub_epic_ids
+}
 
-    // Reconcile sub-epics absent from this emission: any active sub-epic whose
-    // repo contributed no item has its feed tasks cleared, so feed-as-source-of-
-    // truth holds across the whole grouped subtree (not just the present repos).
-    // When `groups` is empty (the feed returned nothing) every active sub-epic
-    // is cleared. upsert_feed_tasks with an empty item list reuses the
-    // external_id-based deletion, so manually-added tasks (external_id = NULL)
-    // are preserved and the sub-epic row itself is left in place.
-    // Sub-epics already handled above are skipped via the groups membership
-    // check; the rest are cleared by upserting an empty list.
+/// Phase 3: clear feed tasks from any active sub-epic whose repo contributed
+/// no item this emission (`group_names`), so feed-as-source-of-truth holds
+/// across the whole grouped subtree, not just the present repos. When
+/// `group_names` is empty (the feed returned nothing) every active sub-epic
+/// is cleared. `upsert_feed_tasks` with an empty item list reuses the
+/// external_id-based deletion, so manually-added tasks (external_id = NULL)
+/// are preserved and the sub-epic row itself is left in place.
+async fn clear_absent_sub_epics(
+    db: &dyn TaskStore,
+    parent_id: EpicId,
+    active_sub_epics: &[&crate::models::Epic],
+    group_names: &std::collections::HashSet<String>,
+) -> Vec<EpicId> {
+    let mut sub_epic_ids = Vec::new();
     for sub_epic in active_sub_epics
         .iter()
         .filter(|e| !group_names.contains(&e.title))
@@ -132,20 +118,71 @@ pub(super) async fn sync_grouped_feed(
         sub_epic_ids.push(sub_epic.id);
         upsert_sub_epic_and_recalc(db, parent_id, sub_epic.id, &[], &[], &[]).await;
     }
+    sub_epic_ids
+}
 
-    // Always clear flat feed tasks from parent, regardless of per-group failures.
-    if let Err(err) = db.upsert_feed_tasks(parent_id, &[], &[], &[]).await {
-        tracing::warn!(
-            epic_id = parent_id.0,
-            "sync_grouped_feed: failed to clear parent feed tasks: {err:#}"
-        );
-    } else {
+/// Phase 4: clear any flat feed tasks left on the parent (migration + ongoing
+/// hygiene), regardless of per-group failures in phases 2/3.
+async fn clear_parent_flat_tasks(db: &dyn TaskStore, parent_id: EpicId) {
+    let result = db.upsert_feed_tasks(parent_id, &[], &[], &[]).await;
+    if result.is_ok() {
         // Recalculate the parent's status after its flat tasks are cleared.
         // Sub-epic recalculations above already propagate upward, but this
         // handles the edge case where all sub-epics failed their upserts and
         // the parent's flat task list is now empty.
         crate::feed::recalculate_epic_status_after_feed(db, parent_id, "sync_grouped_feed").await;
     }
+    crate::feed::warn_on_err(
+        result,
+        parent_id,
+        None,
+        "sync_grouped_feed: failed to clear parent feed tasks",
+    );
+}
+
+/// Group feed items by repo name and upsert each group into its own sub-epic.
+/// Clears any flat feed tasks on the parent epic (migration + ongoing
+/// hygiene). Returns the IDs of all sub-epics that were found or created.
+///
+/// Orchestrates four phases, in order: [`group_by_repo`] (pure),
+/// [`upsert_present_groups`], [`clear_absent_sub_epics`], then
+/// [`clear_parent_flat_tasks`]. `group_names` must be captured from `groups`
+/// before it is moved into `upsert_present_groups` — that dependency is
+/// structural (ownership), not just prose; the present-vs-absent phase order
+/// itself is not compiler-enforced, only asserted by this doc comment.
+pub(super) async fn sync_grouped_feed(
+    db: &dyn TaskStore,
+    parent_id: EpicId,
+    entries: Vec<FeedItemWithTarget>,
+) -> Vec<EpicId> {
+    let groups = group_by_repo(entries);
+
+    let existing_sub_epics = match db.list_sub_epics(parent_id).await {
+        Ok(e) => e,
+        Err(err) => {
+            tracing::warn!(
+                epic_id = parent_id.0,
+                "sync_grouped_feed: list_sub_epics failed: {err:#}"
+            );
+            // list_sub_epics failed: no writes occurred, skip notifications
+            return vec![];
+        }
+    };
+
+    let active_sub_epics: Vec<_> = existing_sub_epics
+        .iter()
+        .filter(|e| e.status != crate::models::TaskStatus::Archived)
+        .collect();
+
+    // Repo names contributing an item this emission, captured before `groups`
+    // is consumed by value in `upsert_present_groups`.
+    let group_names: std::collections::HashSet<String> = groups.keys().cloned().collect();
+
+    let mut sub_epic_ids = upsert_present_groups(db, parent_id, groups, &active_sub_epics).await;
+    sub_epic_ids
+        .extend(clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await);
+
+    clear_parent_flat_tasks(db, parent_id).await;
 
     sub_epic_ids
 }

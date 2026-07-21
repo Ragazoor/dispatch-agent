@@ -17,15 +17,12 @@ pub(super) async fn upsert_role_groups(
 ) {
     for (sub_id, group) in groups {
         let (items, repo_paths, base_branches) = FeedItemWithTarget::unzip(group);
-        if let Err(err) = db
-            .upsert_feed_tasks(sub_id, &items, &repo_paths, &base_branches)
-            .await
-        {
-            tracing::warn!(
-                epic_id = parent_id.0,
-                sub_epic_id = sub_id.0,
-                "run_role_routed_feed_sync: upsert_feed_tasks failed: {err:#}"
-            );
-        }
+        crate::feed::warn_on_err(
+            db.upsert_feed_tasks(sub_id, &items, &repo_paths, &base_branches)
+                .await,
+            parent_id,
+            Some(sub_id),
+            "run_role_routed_feed_sync: upsert_feed_tasks failed",
+        );
     }
 }

@@ -19,27 +19,22 @@ pub(super) async fn delete_stale_subtree(
     roles: &RoleSubEpics,
     all_external_ids: &[String],
 ) {
-    if let Err(err) = db
-        .delete_stale_subtree_feed_tasks(parent_id, all_external_ids)
-        .await
-    {
-        tracing::warn!(
-            epic_id = parent_id.0,
-            "run_role_routed_feed_sync: delete_stale_subtree_feed_tasks failed: {err:#}"
-        );
-    }
+    crate::feed::warn_on_err(
+        db.delete_stale_subtree_feed_tasks(parent_id, all_external_ids)
+            .await,
+        parent_id,
+        None,
+        "run_role_routed_feed_sync: delete_stale_subtree_feed_tasks failed",
+    );
 
     for sub in roles.ids() {
-        if let Err(err) = db
-            .delete_stale_subtree_feed_tasks(sub, all_external_ids)
-            .await
-        {
-            tracing::warn!(
-                epic_id = parent_id.0,
-                sub_epic_id = sub.0,
-                "run_role_routed_feed_sync: delete_stale_subtree_feed_tasks (role level) failed: {err:#}"
-            );
-        }
+        crate::feed::warn_on_err(
+            db.delete_stale_subtree_feed_tasks(sub, all_external_ids)
+                .await,
+            parent_id,
+            Some(sub),
+            "run_role_routed_feed_sync: delete_stale_subtree_feed_tasks (role level) failed",
+        );
     }
 }
 
@@ -54,10 +49,10 @@ pub(super) async fn delete_stale_subtree(
 /// [`super::grouped::sync_grouped_feed`] uses to clear the parent on the
 /// grouped path.
 pub(super) async fn clear_parent_stranded_tasks(db: &dyn TaskStore, parent_id: EpicId) {
-    if let Err(err) = db.upsert_feed_tasks(parent_id, &[], &[], &[]).await {
-        tracing::warn!(
-            epic_id = parent_id.0,
-            "run_role_routed_feed_sync: failed to clear parent-stranded feed tasks: {err:#}"
-        );
-    }
+    crate::feed::warn_on_err(
+        db.upsert_feed_tasks(parent_id, &[], &[], &[]).await,
+        parent_id,
+        None,
+        "run_role_routed_feed_sync: failed to clear parent-stranded feed tasks",
+    );
 }

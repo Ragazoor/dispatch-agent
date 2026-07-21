@@ -19,6 +19,31 @@ pub(crate) use exec::resolve_base_branches;
 pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
 pub use routing::route;
 
+/// Log `result`'s error via `tracing::warn!` and discard it. Shared by the
+/// feed pipeline's fire-and-forget per-epic DB writes, where a failure is
+/// logged but must not abort the surrounding reconciliation pass. Pass
+/// `sub_epic_id` when the write is scoped to a sub-epic beneath `epic_id`.
+///
+/// `context` labels the call site in the log line (e.g.
+/// `"sync_grouped_feed: upsert_feed_tasks failed"`).
+pub(crate) fn warn_on_err<T>(
+    result: anyhow::Result<T>,
+    epic_id: EpicId,
+    sub_epic_id: Option<EpicId>,
+    context: &str,
+) {
+    if let Err(err) = result {
+        match sub_epic_id {
+            Some(sub_epic_id) => tracing::warn!(
+                epic_id = epic_id.0,
+                sub_epic_id = sub_epic_id.0,
+                "{context}: {err:#}"
+            ),
+            None => tracing::warn!(epic_id = epic_id.0, "{context}: {err:#}"),
+        }
+    }
+}
+
 /// Recalculate an epic's status after feed tasks have been upserted, logging a
 /// warning on failure. New non-done tasks can cause a done epic to regress to
 /// backlog; the recalculation propagates upward to any parent epic.
@@ -33,6 +58,95 @@ pub(crate) async fn recalculate_epic_status_after_feed(
         tracing::warn!(
             epic_id = epic_id.0,
             "{context}: recalculate_epic_status failed: {err:#}"
+        );
+    }
+}
+
+/// Per-item dispatch context for one epic's feed poll, spawned by
+/// [`FeedRunner::tick`]. Bundles the fields `tick` used to clone individually
+/// into its spawned task, so `tick` only has to build a `FeedJob` and spawn
+/// it — scheduling (interval bookkeeping, `last_run`) stays in `tick`,
+/// separate from the exec→parse→sync→notify sequence in [`FeedJob::run`].
+struct FeedJob {
+    db: Arc<dyn TaskStore>,
+    notify: mpsc::UnboundedSender<McpEvent>,
+    runner: Arc<dyn ProcessRunner>,
+    cmd: String,
+    epic: crate::models::Epic,
+    known_paths: Arc<Vec<String>>,
+}
+
+impl FeedJob {
+    /// Execute the command, parse its output, and reconcile the epic's tasks
+    /// from it. Any failure along the way is logged and the job simply
+    /// returns — `tick` fires-and-forgets these onto the tokio runtime.
+    async fn run(self) {
+        let Some(stdout) =
+            exec::exec_feed_command(&self.cmd, self.epic.id.0, &self.epic.title).await
+        else {
+            return;
+        };
+
+        let items = match parse::parse_feed_items(&stdout) {
+            Ok(i) => i,
+            Err(err) => {
+                tracing::warn!(
+                    epic_id = self.epic.id.0,
+                    epic_title = %self.epic.title,
+                    "FeedRunner: failed to parse JSON output: {err:#}"
+                );
+                return;
+            }
+        };
+
+        let repo_paths = resolve_feed_item_repo_paths(&items, &self.known_paths);
+        let base_branches = resolve_base_branches(&repo_paths, &*self.runner);
+        let entries = ingest::FeedItemWithTarget::zip(items, repo_paths, base_branches);
+
+        // Role sub-epics (my/team/bots) carry no feed_command (enforced
+        // at provisioning in WP5), so they are never iterated here —
+        // only the parent is polled. Guard against a misconfigured role
+        // sub-epic that somehow has a feed_command: skip it rather than
+        // reconcile a child as if it were a feed. The role→sync-path
+        // decision itself is delegated to the shared dispatcher so this
+        // path and the manual "r" refresh cannot drift.
+        use crate::models::FeedRole;
+        if matches!(
+            self.epic.feed_role,
+            FeedRole::MyReviews | FeedRole::TeamReviews | FeedRole::Bots
+        ) {
+            debug_assert!(
+                false,
+                "role sub-epic {} (feed_role={:?}) must not carry a feed_command",
+                self.epic.id.0, self.epic.feed_role
+            );
+            tracing::warn!(
+                epic_id = self.epic.id.0,
+                feed_role = ?self.epic.feed_role,
+                "FeedRunner: role sub-epic carries a feed_command; skipping (role sub-epics are reconciled only via their reviews_parent)"
+            );
+            return;
+        }
+        let sync_result = ingest::run_feed_sync_by_role(
+            &*self.db,
+            self.epic.id,
+            self.epic.feed_role,
+            self.epic.group_by_repo,
+            entries,
+        )
+        .await;
+
+        if let Ok(affected_ids) = &sync_result {
+            recalculate_epic_status_after_feed(&*self.db, self.epic.id, "FeedRunner").await;
+            for id in affected_ids {
+                let _ = self.notify.send(McpEvent::EpicChanged(*id));
+            }
+        }
+        warn_on_err(
+            sync_result,
+            self.epic.id,
+            None,
+            "FeedRunner: upsert_feed_tasks failed",
         );
     }
 }
@@ -169,86 +283,16 @@ impl FeedRunner {
 
             self.last_run.insert(epic.id, Instant::now());
 
-            let db = self.db.clone();
-            let notify = self.notify.clone();
-            let runner = self.runner.clone();
-            let cmd = cmd.clone();
-            let epic_id = epic.id;
-            let epic_title = epic.title.clone();
-            let epic_group_by_repo = epic.group_by_repo;
-            let epic_feed_role = epic.feed_role;
-            let known_paths = Arc::clone(&known_paths);
+            let job = FeedJob {
+                db: self.db.clone(),
+                notify: self.notify.clone(),
+                runner: self.runner.clone(),
+                cmd: cmd.clone(),
+                epic,
+                known_paths: Arc::clone(&known_paths),
+            };
 
-            tokio::task::spawn(async move {
-                let Some(stdout) = exec::exec_feed_command(&cmd, epic_id.0, &epic_title).await
-                else {
-                    return;
-                };
-
-                let items = match parse::parse_feed_items(&stdout) {
-                    Ok(i) => i,
-                    Err(err) => {
-                        tracing::warn!(
-                            epic_id = epic_id.0,
-                            epic_title = %epic_title,
-                            "FeedRunner: failed to parse JSON output: {err:#}"
-                        );
-                        return;
-                    }
-                };
-
-                let repo_paths = resolve_feed_item_repo_paths(&items, &known_paths);
-                let base_branches = resolve_base_branches(&repo_paths, &*runner);
-                let entries = ingest::FeedItemWithTarget::zip(items, repo_paths, base_branches);
-
-                // Role sub-epics (my/team/bots) carry no feed_command (enforced
-                // at provisioning in WP5), so they are never iterated here —
-                // only the parent is polled. Guard against a misconfigured role
-                // sub-epic that somehow has a feed_command: skip it rather than
-                // reconcile a child as if it were a feed. The role→sync-path
-                // decision itself is delegated to the shared dispatcher so this
-                // path and the manual "r" refresh cannot drift.
-                use crate::models::FeedRole;
-                if matches!(
-                    epic_feed_role,
-                    FeedRole::MyReviews | FeedRole::TeamReviews | FeedRole::Bots
-                ) {
-                    debug_assert!(
-                        false,
-                        "role sub-epic {} (feed_role={:?}) must not carry a feed_command",
-                        epic_id.0, epic_feed_role
-                    );
-                    tracing::warn!(
-                        epic_id = epic_id.0,
-                        feed_role = ?epic_feed_role,
-                        "FeedRunner: role sub-epic carries a feed_command; skipping (role sub-epics are reconciled only via their reviews_parent)"
-                    );
-                    return;
-                }
-                let sync_result = ingest::run_feed_sync_by_role(
-                    &*db,
-                    epic_id,
-                    epic_feed_role,
-                    epic_group_by_repo,
-                    entries,
-                )
-                .await;
-
-                match sync_result {
-                    Ok(affected_ids) => {
-                        recalculate_epic_status_after_feed(&*db, epic_id, "FeedRunner").await;
-                        for id in affected_ids {
-                            let _ = notify.send(McpEvent::EpicChanged(id));
-                        }
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            epic_id = epic_id.0,
-                            "FeedRunner: upsert_feed_tasks failed: {err:#}"
-                        );
-                    }
-                }
-            });
+            tokio::task::spawn(job.run());
         }
     }
 }
