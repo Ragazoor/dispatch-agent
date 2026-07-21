@@ -232,6 +232,10 @@ entity Task {
     last_notification_at: Timestamp?  -- wallclock of the most recent Notification hook; null when no notification is pending (or after Stop)
     pr_learnings_gate_shown_at: Timestamp?  -- set once when the PrLearningsGate fires; null means the gate has never fired for this task
     wrap_up_mode: WrapUpMode?  -- preferred wrap-up path; null means decide at wrap-up time
+    auto_run_plan: Boolean = false  -- when true and plan_path is set, build_prompt's
+                                    -- has-plan addendum skips asking the dispatched
+                                    -- agent to confirm before implementing (see
+                                    -- dispatch.allium's build_prompt guidance)
     created_at: Timestamp
     updated_at: Timestamp
 

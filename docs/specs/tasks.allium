@@ -19,7 +19,7 @@ use "./core.allium" as core
 -- == Task Creation ==
 
 rule CreateTask {
-    when: CreateTask(title, description, repo_path, plan?, epic?, tag?, sort_order?, base_branch?, wrap_up_mode?)
+    when: CreateTask(title, description, repo_path, plan?, epic?, tag?, sort_order?, base_branch?, wrap_up_mode?, auto_run_plan?)
 
     ensures: core/Task.created(
         title: title,
@@ -33,6 +33,7 @@ rule CreateTask {
         sort_order: sort_order,
         base_branch: base_branch ?? config.default_branch,
         wrap_up_mode: wrap_up_mode,
+        auto_run_plan: auto_run_plan ?? false,
         created_at: now,
         updated_at: now
     )
@@ -53,6 +54,11 @@ rule CreateTask {
         -- wrap_up_mode is set during the TUI creation form (InputWrapUpMode
         -- step, after InputBaseBranch) or via the MCP create_task tool.
         -- When null, the wrap-up path is decided at wrap-up time.
+        -- auto_run_plan defaults to false. When true, a dispatched agent
+        -- with a plan skips the "summarize and ask permission" step (see
+        -- dispatch.allium). Set by decompose-review's create_task calls,
+        -- since those plans already went through the work-package
+        -- confirmation step; not exposed in the TUI creation form.
         -- When invoked from the epic view, epic is set to the
         -- current epic, auto-linking the new task as a subtask.
         -- When epic is a grouped root (group_by_repo = true), the task is
@@ -422,6 +428,9 @@ rule CopyTask {
         -- Copies a subset of fields from the source task, including the
         -- wrap_up_mode preference. Fields that are NOT copied: plan,
         -- worktree, tmux_window, url, epic, sort_order.
+        -- auto_run_plan is NOT copied — like plan_path, it's tied to a
+        -- specific (unshared) plan file, and this field is set by skills
+        -- (decompose-review) rather than being a human TUI preference.
         -- The new task is a clean backlog item with no agent history.
         -- The user is prompted to confirm or edit the repo_path before the
         -- task is created (the source's repo_path is pre-filled as default).

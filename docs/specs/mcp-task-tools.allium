@@ -19,7 +19,7 @@ use "./core.allium" as core
 rule UpdateTaskViaMcp {
     when: McpUpdateTask(task, status?, sub_status?, plan?, title?, description?,
                         repo_path?, sort_order?, url?, url_type?, tag?, epic_id?,
-                        base_branch?, wrap_up_mode?)
+                        base_branch?, wrap_up_mode?, auto_run_plan?)
 
     requires: status != null or sub_status != null or plan != null or title != null
               or description != null or repo_path != null
@@ -27,6 +27,7 @@ rule UpdateTaskViaMcp {
               or url != null or tag != null
               or base_branch != null
               or wrap_up_mode != null
+              or auto_run_plan != null
 
     -- Typed-url validation contract. The url string and its type travel
     -- together; the handler rejects inconsistent combinations before any
@@ -78,6 +79,8 @@ rule UpdateTaskViaMcp {
         if base_branch != null: task.base_branch = base_branch
     ensures:
         if wrap_up_mode != null: task.wrap_up_mode = wrap_up_mode
+    ensures:
+        if auto_run_plan != null: task.auto_run_plan = auto_run_plan
     ensures: task.updated_at = now
 
     @guidance
@@ -89,6 +92,9 @@ rule UpdateTaskViaMcp {
         -- wrap_up_mode can be set to "rebase", "pr", or "done" to pre-set
         -- the wrap-up action for the task. Pass null explicitly to clear it
         -- (omitting the field is a no-op).
+        -- auto_run_plan (boolean, not nullable at the Task level) can be
+        -- set via create_task or update_task. Omitting it is a no-op on
+        -- update; create_task defaults it to false when absent.
         -- Note: worktree and tmux_window ARE mutable through the internal
         -- Rust TaskService::update_task API (UpdateTaskParams defines
         -- them; see src/service/tasks/params.rs). The runtime uses that
@@ -122,7 +128,7 @@ rule CreateTaskViaMcp {
     when: McpCreateTask(caller_identity,
                         title, repo_path, description?, plan?,
                         epic_id?, sort_order?, tag?, base_branch?,
-                        wrap_up_mode?)
+                        wrap_up_mode?, auto_run_plan?)
 
     -- caller_identity is supplied by the dispatch HTTP transport, not by
     -- the tool arguments. It is one of:
@@ -154,6 +160,7 @@ rule CreateTaskViaMcp {
         sort_order: sort_order,
         base_branch: base_branch ?? config.default_branch,
         wrap_up_mode: wrap_up_mode,
+        auto_run_plan: auto_run_plan ?? false,
         created_at: now,
         updated_at: now
     )

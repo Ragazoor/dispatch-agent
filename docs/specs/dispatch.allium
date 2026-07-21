@@ -216,9 +216,16 @@ rule DispatchTask {
         --     is plan_or_brainstorm_instruction (conditional: if vague
         --     use /brainstorming, else write the plan directly under
         --     docs/plans/ and attach via update_task).
-        --   * has_plan = true: preamble "Your task is:" and the addendum
-        --     references the plan path with a "review and ask permission
-        --     before implementing" instruction.
+        --   * has_plan = true and task.auto_run_plan = false (default):
+        --     preamble "Your task is:" and the addendum references the
+        --     plan path with a "review and ask permission before
+        --     implementing" instruction.
+        --   * has_plan = true and task.auto_run_plan = true: preamble
+        --     "Your task is:" and the addendum references the plan path
+        --     with an instruction to implement it immediately, no summary
+        --     or confirmation step. Set by decompose-review on its
+        --     generated work packages, since those plans already went
+        --     through a human confirmation step before being written.
         -- CreateQuickTask (build_quick_dispatch_prompt) is the exception:
         -- its preamble is "You are working interactively with the user."
         -- rather than "Your task is:" — quick dispatch begins as an
