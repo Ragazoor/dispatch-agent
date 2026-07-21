@@ -2989,6 +2989,31 @@ async fn patch_task_wrap_up_mode() {
 }
 
 #[tokio::test]
+async fn patch_auto_run_plan_true() {
+    let db = in_memory_db().await;
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "T",
+            description: "d",
+            repo_path: "/r",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+        })
+        .await
+        .unwrap();
+    db.patch_task(id, &TaskPatch::new().auto_run_plan(true))
+        .await
+        .unwrap();
+    let task = db.get_task(id).await.unwrap().expect("task should exist");
+    assert!(task.auto_run_plan);
+}
+
+#[tokio::test]
 async fn get_task_errors_on_unknown_tag() {
     let db = in_memory_db().await;
     let id = db

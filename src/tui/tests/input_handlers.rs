@@ -28,6 +28,7 @@ fn task_created_adds_to_list() {
         last_pre_tool_use_at: None,
         last_notification_at: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     };
     let mut app = App::new(vec![]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
@@ -706,6 +707,7 @@ fn editor_result_task_edit_returns_finalize_command() {
         last_pre_tool_use_at: None,
         last_notification_at: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     };
     let mut app = App::new(vec![task.clone()]);
     let cmds = app.update(Message::Editor(

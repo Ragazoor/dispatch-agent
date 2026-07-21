@@ -3456,3 +3456,25 @@ fn migrate_v75_repo_base_branches_schema_supports_upsert_and_recency_query() {
         "expected a uniqueness violation on (repo_path, branch), got: {dup:?}"
     );
 }
+
+#[tokio::test]
+async fn auto_run_plan_column_defaults_to_false() {
+    let db = in_memory_db().await;
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "T",
+            description: "d",
+            repo_path: "/r",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+        })
+        .await
+        .unwrap();
+    let task = db.get_task(id).await.unwrap().expect("task should exist");
+    assert!(!task.auto_run_plan);
+}

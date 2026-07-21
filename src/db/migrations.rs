@@ -135,6 +135,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         76,
         migrate_v76_fix_feed_task_subtree_insert_trigger_self_conflict,
     ),
+    (77, migrate_v77_add_auto_run_plan),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -200,6 +201,11 @@ pub(super) fn migrate_v62_drop_unused_verdicts(conn: &Connection) -> Result<()> 
 fn migrate_v53_add_wrap_up_mode(conn: &Connection) -> Result<()> {
     conn.execute_batch("ALTER TABLE tasks ADD COLUMN wrap_up_mode TEXT")
         .context("Failed to add wrap_up_mode column")
+}
+
+fn migrate_v77_add_auto_run_plan(conn: &Connection) -> Result<()> {
+    conn.execute_batch("ALTER TABLE tasks ADD COLUMN auto_run_plan BOOLEAN NOT NULL DEFAULT 0")
+        .context("Failed to add auto_run_plan column to tasks")
 }
 
 fn migrate_v1_add_plan_column(conn: &Connection) -> Result<()> {

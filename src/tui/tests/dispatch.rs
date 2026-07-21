@@ -1964,6 +1964,7 @@ fn quick_dispatch_status_uses_freshly_created_title() {
         last_pre_tool_use_at: None,
         last_notification_at: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     };
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Created {

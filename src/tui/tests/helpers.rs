@@ -82,6 +82,7 @@ pub(in crate::tui) fn make_task(id: i64, status: TaskStatus) -> Task {
         last_pre_tool_use_at: None,
         last_notification_at: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     }
 }
 

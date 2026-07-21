@@ -287,6 +287,7 @@ pub struct Task {
     pub last_pre_tool_use_at: Option<DateTime<Utc>>,
     pub last_notification_at: Option<DateTime<Utc>>,
     pub wrap_up_mode: Option<WrapUpMode>,
+    pub auto_run_plan: bool,
 }
 
 impl Task {
@@ -1489,6 +1490,7 @@ mod model_tests {
             last_pre_tool_use_at: None,
             last_notification_at: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         }
     }
 

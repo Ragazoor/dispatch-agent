@@ -30,6 +30,7 @@ fn make_todo_test_task(id: TaskId, title: &str) -> crate::models::Task {
         last_pre_tool_use_at: None,
         last_notification_at: None,
         wrap_up_mode: None,
+        auto_run_plan: false,
     }
 }
 
