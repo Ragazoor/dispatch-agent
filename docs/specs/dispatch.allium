@@ -133,14 +133,27 @@ rule DispatchTask {
 
     @guidance
         -- Before creating the worktree, `git fetch origin <base_branch>` is
-        -- run in the repo root to update the remote-tracking ref. On success,
-        -- the worktree branch is created from `origin/<base_branch>` so the
-        -- agent starts from the latest remote state. On fetch failure (no
-        -- origin remote, network error), the step is skipped silently and the
-        -- worktree falls back to the local base branch.
-        -- Specifically: `git worktree add -B <branch> <path> origin/<base_branch>`.
-        -- If the worktree directory already exists on disk (pre-created),
-        -- the fetch and git worktree add steps are both skipped.
+        -- run in the repo root to update the remote-tracking ref. This fetch
+        -- runs unconditionally — even when the worktree directory already
+        -- exists on disk (pre-created) — so `origin/<base_branch>` stays fresh
+        -- for whatever rebases onto it later (the agent's own rebase preamble,
+        -- or a manual sync). On success, the worktree branch is created from
+        -- `origin/<base_branch>` so the agent starts from the latest remote
+        -- state. Specifically:
+        -- `git worktree add -B <branch> <path> origin/<base_branch>`.
+        -- If the worktree directory already exists, only the `git worktree add`
+        -- step is skipped; the fetch still runs.
+        --
+        -- The fetch is retried: `git fetch origin <base_branch>` is attempted
+        -- up to a small maximum number of times (currently 3) with a short
+        -- delay between attempts. If every attempt fails (no origin remote,
+        -- network error), the worktree falls back to the bare local
+        -- <base_branch> and a warning string is produced. That warning is
+        -- threaded through the dispatch and, when present, appended to the
+        -- agent's own rebase-preamble prompt text as a "Note: ..." line — so
+        -- the agent is told directly in its prompt that the fetch failed and it
+        -- is working from a possibly-stale local branch, not just via a
+        -- server-side log entry.
         --
         -- Review tasks (tag pr-review or dependabot) that carry a PR URL are a
         -- special case: their worktree is based on the PR's head branch instead
@@ -156,9 +169,11 @@ rule DispatchTask {
         -- on-demand refresh so the agent can pull later pushes to the PR.
         -- The launched Claude command includes a plugin-dir flag so
         -- the agent discovers dispatch plugin skills (e.g. /wrap-up).
-        -- The agent prompt is prepended with a `git rebase <base>`
-        -- preamble so the agent picks up latest base changes on first
-        -- run (also useful when an agent is resumed after time passes).
+        -- The agent prompt is prepended with a fetch-then-rebase preamble
+        -- (`git fetch origin <base>` then `git rebase origin/<base>`) so the
+        -- agent picks up latest base changes on first run (also useful when an
+        -- agent is resumed after time passes). This textually mirrors the shape
+        -- of the PR-branch preamble described above.
         -- Task-agent dispatches launch Claude in auto mode by default —
         -- i.e. without a --permission-mode flag — so agents can edit
         -- files without per-edit approval. The Research agent is the
@@ -171,7 +186,9 @@ rule DispatchTask {
         -- build_quick_dispatch_prompt / build_epic_planning_prompt has
         -- the same shape:
         --
-        --   {rebase_preamble}              (git rebase <base> instruction)
+        --   {rebase_preamble}              (fetch-then-rebase instruction:
+        --                                    git fetch origin <base> +
+        --                                    git rebase origin/<base>)
         --   {worktree_preamble}            ("Always work from this
         --                                    worktree folder — do not
         --                                    `cd` to the parent repo
