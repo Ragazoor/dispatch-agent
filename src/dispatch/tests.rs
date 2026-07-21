@@ -930,6 +930,66 @@ fn dispatch_pr_review_task_prompt_rebases_onto_pr_branch() {
 }
 
 #[test]
+fn dispatch_prompt_includes_fetch_warning_when_fetch_fails() {
+    // Pre-create the worktree dir so `git worktree add` is skipped (its
+    // mocked response would otherwise not actually create the directory the
+    // real implementation later writes `.claude-prompt` into).
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: could not read from remote repository"),
+        MockProcessRunner::fail("fatal: could not read from remote repository"),
+        MockProcessRunner::fail("fatal: could not read from remote repository"),
+        // git worktree add is skipped (dir exists)
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(), // tmux send-keys -l
+        MockProcessRunner::ok(), // tmux send-keys Enter
+    ]);
+
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+
+    let prompt = std::fs::read_to_string(format!("{repo_path}/.worktrees/42-fix-bug/.claude-prompt"))
+        .expect("prompt file written");
+    assert!(
+        prompt.contains("origin/main"),
+        "prompt should mention the base branch that could not be fetched, got: {prompt}"
+    );
+    assert!(
+        prompt.contains("Note:"),
+        "fetch warning should be a clearly-marked note, got: {prompt}"
+    );
+}
+
+#[test]
+fn dispatch_prompt_has_no_warning_when_fetch_succeeds() {
+    // Pre-create the worktree dir — see comment in the sibling test above.
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin main
+        // git worktree add is skipped (dir exists)
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(), // tmux send-keys -l
+        MockProcessRunner::ok(), // tmux send-keys Enter
+    ]);
+
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+
+    let prompt = std::fs::read_to_string(format!("{repo_path}/.worktrees/42-fix-bug/.claude-prompt"))
+        .expect("prompt file written");
+    assert!(
+        !prompt.contains("Note:"),
+        "no fetch warning expected when fetch succeeds, got: {prompt}"
+    );
+}
+
+#[test]
 fn dispatch_non_review_task_skips_gh_and_keeps_base_rebase() {
     let (_dir, repo_path) = make_test_repo();
 

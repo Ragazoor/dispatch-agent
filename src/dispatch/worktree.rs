@@ -67,9 +67,8 @@ pub(crate) fn ensure_dispatch_dir_and_gitignore(worktree: &Path) -> Result<()> {
 pub(super) struct ProvisionResult {
     pub(super) worktree_path: String,
     pub(super) tmux_window: String,
-    // Only read by tests until the next task wires it into the agent's
-    // prompt (injecting a warning when all fetch attempts fail).
-    #[allow(dead_code)]
+    /// `Some(...)` when every `git fetch origin <base>` attempt failed;
+    /// injected as a note into the agent's own prompt in `dispatch_with_prompt`.
     pub(super) fetch_warning: Option<String>,
 }
 

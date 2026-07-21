@@ -69,6 +69,11 @@ fn dispatch_with_prompt(
 
     let provision = provision_worktree(task, runner, Some(&effective_base), SUBPROCESS_TIMEOUT)?;
 
+    let preamble = match &provision.fetch_warning {
+        Some(warning) => format!("{preamble}\n\nNote: {warning}"),
+        None => preamble,
+    };
+
     let prompt = make_prompt();
     let full_prompt = format!(
         "{preamble}\n\n\
