@@ -67,6 +67,10 @@ fn main_session_badge(app: &App) -> Option<Vec<Span<'static>>> {
 
 /// Compute the status bar content (a styled `Line` plus a base paragraph style)
 /// for the current app state. Rendering happens once, in `render_status_bar`.
+///
+/// The two structurally-heavier flavours — archive-mode hints and the composed
+/// Normal-mode hint line — live in dedicated builders (`archive_status_line`,
+/// `normal_status_line`); everything else is a fixed per-mode hint.
 fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
     if let Some(msg) = &app.status.message {
         return (Line::from(msg.clone()), Style::default().fg(Color::Yellow));
@@ -74,97 +78,11 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
 
     // Archive mode status bar
     if app.show_archived() {
-        let key_color = MUTED;
-        let label_style = Style::default().fg(MUTED);
-        let spans = vec![
-            Span::styled(
-                "[x]",
-                Style::default().fg(key_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" delete  ", label_style),
-            Span::styled(
-                "[e]",
-                Style::default().fg(key_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" edit  ", label_style),
-            Span::styled(
-                "[H]",
-                Style::default().fg(key_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" close  ", label_style),
-            Span::styled(
-                "[q]",
-                Style::default().fg(key_color).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" quit  ", label_style),
-        ];
-        return (Line::from(spans), Style::default());
+        return archive_status_line();
     }
 
     match &app.input.mode {
-        InputMode::Normal => {
-            let key_color = CYAN;
-            let mut spans = if app.has_selection() {
-                let count = app.selected_tasks().len() + app.selected_epics().len();
-                let has_tasks = !app.selected_tasks().is_empty();
-                batch_action_hints(count, key_color, has_tasks)
-            } else if let Some(ColumnItem::Epic(epic)) = app.selected_column_item() {
-                epic_action_hints(epic, key_color)
-            } else {
-                action_hints(app.selected_task(), app.selected_column(), key_color)
-            };
-            if app.split_active() {
-                prepend(
-                    &mut spans,
-                    vec![
-                        Span::styled(
-                            "[S]",
-                            Style::default()
-                                .fg(Color::Green)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled("plit ", Style::default().fg(Color::Green)),
-                    ],
-                );
-            }
-            if app.board.flattened {
-                prepend(
-                    &mut spans,
-                    vec![Span::styled(
-                        "[flat] ",
-                        Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-                    )],
-                );
-            }
-            if app.filter_only_active() {
-                prepend(
-                    &mut spans,
-                    vec![Span::styled(
-                        "[active] ",
-                        Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
-                    )],
-                );
-            }
-            if app.search_active() {
-                prepend(
-                    &mut spans,
-                    vec![Span::styled(
-                        format!("[/{}] ", app.search.query),
-                        Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
-                    )],
-                );
-            }
-            if let Some(badge) = main_session_badge(app) {
-                prepend(&mut spans, badge);
-            }
-            if app.board.todo_open_count > 0 {
-                spans.push(Span::styled(
-                    format!(" ({}) ", app.board.todo_open_count),
-                    Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
-                ));
-            }
-            (Line::from(spans), Style::default())
-        }
+        InputMode::Normal => normal_status_line(app),
         InputMode::SearchTasks => hint(
             format!(
                 "Search tasks: {}_   [Enter] keep  [Esc] cancel",
@@ -286,6 +204,91 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
             hint_text(app, "Repo not trusted — trust it? [y/N]", Color::Yellow)
         }
     }
+}
+
+/// Archive-mode status bar: a fixed row of `[key] label` hints.
+fn archive_status_line() -> (Line<'static>, Style) {
+    let key_color = MUTED;
+    let label_style = Style::default().fg(MUTED);
+    let key_style = Style::default().fg(key_color).add_modifier(Modifier::BOLD);
+    let spans = vec![
+        Span::styled("[x]", key_style),
+        Span::styled(" delete  ", label_style),
+        Span::styled("[e]", key_style),
+        Span::styled(" edit  ", label_style),
+        Span::styled("[H]", key_style),
+        Span::styled(" close  ", label_style),
+        Span::styled("[q]", key_style),
+        Span::styled(" quit  ", label_style),
+    ];
+    (Line::from(spans), Style::default())
+}
+
+/// Normal-mode status bar: the base action hints (batch / epic / task) with the
+/// active-mode badges (split, flat, active-filter, search, main-session) and the
+/// open-todo count composed around them.
+fn normal_status_line(app: &App) -> (Line<'static>, Style) {
+    let key_color = CYAN;
+    let mut spans = if app.has_selection() {
+        let count = app.selected_tasks().len() + app.selected_epics().len();
+        let has_tasks = !app.selected_tasks().is_empty();
+        batch_action_hints(count, key_color, has_tasks)
+    } else if let Some(ColumnItem::Epic(epic)) = app.selected_column_item() {
+        epic_action_hints(epic, key_color)
+    } else {
+        action_hints(app.selected_task(), app.selected_column(), key_color)
+    };
+    if app.split_active() {
+        prepend(
+            &mut spans,
+            vec![
+                Span::styled(
+                    "[S]",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("plit ", Style::default().fg(Color::Green)),
+            ],
+        );
+    }
+    if app.board.flattened {
+        prepend(
+            &mut spans,
+            vec![Span::styled(
+                "[flat] ",
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            )],
+        );
+    }
+    if app.filter_only_active() {
+        prepend(
+            &mut spans,
+            vec![Span::styled(
+                "[active] ",
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            )],
+        );
+    }
+    if app.search_active() {
+        prepend(
+            &mut spans,
+            vec![Span::styled(
+                format!("[/{}] ", app.search.query),
+                Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
+            )],
+        );
+    }
+    if let Some(badge) = main_session_badge(app) {
+        prepend(&mut spans, badge);
+    }
+    if app.board.todo_open_count > 0 {
+        spans.push(Span::styled(
+            format!(" ({}) ", app.board.todo_open_count),
+            Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+        ));
+    }
+    (Line::from(spans), Style::default())
 }
 
 /// Build status bar hints when tasks are batch-selected.

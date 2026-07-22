@@ -269,6 +269,36 @@ impl App {
         }
     }
 
+    /// Dispatch `msg` through [`Self::update`], then record the keybinding usage
+    /// event. Collapses the update-then-`key_event`-push pattern shared by the
+    /// message-dispatch arms of [`Self::handle_key_board_normal`] into a single
+    /// call, so those arms can't silently forget the telemetry push. Arms that
+    /// delegate to a `handle_key_*` sub-handler use [`Self::dispatch_handler_keyed`]
+    /// instead.
+    fn dispatch_keyed(&mut self, msg: Message, action: &str, key: &str) -> Vec<Command> {
+        let mut cmds = self.update(msg);
+        cmds.push(key_event(action, key));
+        cmds
+    }
+
+    /// Run a `handle_key_*` sub-handler, then record the keybinding usage event
+    /// only if the handler produced commands. Collapses the run-then-conditional-
+    /// `key_event`-push pattern shared by the sub-handler arms of
+    /// [`Self::handle_key_board_normal`] (where a no-op handler must not emit
+    /// telemetry), mirroring [`Self::dispatch_keyed`] for that cluster.
+    fn dispatch_handler_keyed(
+        &mut self,
+        handler: impl FnOnce(&mut Self) -> Vec<Command>,
+        action: &str,
+        key: &str,
+    ) -> Vec<Command> {
+        let mut cmds = handler(self);
+        if !cmds.is_empty() {
+            cmds.push(key_event(action, key));
+        }
+        cmds
+    }
+
     /// The main board/epic key match, split out from [`Self::handle_key_normal`]
     /// so the `gg`-chord pre-check can recurse into it for the current key
     /// once a pending `g` has been resolved (see [`PendingAction::GChord`]).
@@ -300,59 +330,47 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.update(Message::NavigateRow(-1)),
             KeyCode::Char('[') => self.update(Message::NavigateRowFirst),
             KeyCode::Char(']') => self.update(Message::NavigateRowLast),
-            KeyCode::Char('J') => {
-                let mut cmds = self.update(Message::Task(
-                    crate::tui::messages::TaskMessage::ReorderItem(1),
-                ));
-                cmds.push(key_event("reorder_task_down", "J"));
-                cmds
-            }
-            KeyCode::Char('K') => {
-                let mut cmds = self.update(Message::Task(
-                    crate::tui::messages::TaskMessage::ReorderItem(-1),
-                ));
-                cmds.push(key_event("reorder_task_up", "K"));
-                cmds
-            }
+            KeyCode::Char('J') => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::ReorderItem(1)),
+                "reorder_task_down",
+                "J",
+            ),
+            KeyCode::Char('K') => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::ReorderItem(-1)),
+                "reorder_task_up",
+                "K",
+            ),
 
-            KeyCode::Char('n') => {
-                let mut cmds = self.update(Message::Input(
-                    crate::tui::messages::InputMessage::StartNewTask,
-                ));
-                cmds.push(key_event("create_task", "n"));
-                cmds
-            }
-            KeyCode::Char('c') => {
-                let mut cmds =
-                    self.update(Message::Input(crate::tui::messages::InputMessage::CopyTask));
-                cmds.push(key_event("copy_task", "c"));
-                cmds
-            }
-            KeyCode::Char('N') => {
-                let mut cmds = self.update(Message::System(
-                    crate::tui::messages::SystemMessage::ToggleNotifications,
-                ));
-                cmds.push(key_event("toggle_notifications", "N"));
-                cmds
-            }
-            KeyCode::Char('E') => {
-                let mut cmds =
-                    self.update(Message::Epic(crate::tui::messages::EpicMessage::StartNew));
-                cmds.push(key_event("create_epic", "E"));
-                cmds
-            }
+            KeyCode::Char('n') => self.dispatch_keyed(
+                Message::Input(crate::tui::messages::InputMessage::StartNewTask),
+                "create_task",
+                "n",
+            ),
+            KeyCode::Char('c') => self.dispatch_keyed(
+                Message::Input(crate::tui::messages::InputMessage::CopyTask),
+                "copy_task",
+                "c",
+            ),
+            KeyCode::Char('N') => self.dispatch_keyed(
+                Message::System(crate::tui::messages::SystemMessage::ToggleNotifications),
+                "toggle_notifications",
+                "N",
+            ),
+            KeyCode::Char('E') => self.dispatch_keyed(
+                Message::Epic(crate::tui::messages::EpicMessage::StartNew),
+                "create_epic",
+                "E",
+            ),
             KeyCode::Char('d') => {
                 let mut cmds = self.handle_key_dispatch();
                 cmds.push(key_event("dispatch_task", "d"));
                 cmds
             }
-            KeyCode::Char('f') => {
-                let mut cmds = self.update(Message::RepoFilter(
-                    crate::tui::messages::RepoFilterMessage::Start,
-                ));
-                cmds.push(key_event("filter_repos", "f"));
-                cmds
-            }
+            KeyCode::Char('f') => self.dispatch_keyed(
+                Message::RepoFilter(crate::tui::messages::RepoFilterMessage::Start),
+                "filter_repos",
+                "f",
+            ),
             KeyCode::Char('/') => {
                 self.search.saved = Some(self.search.query.clone());
                 self.input.mode = InputMode::SearchTasks;
@@ -376,11 +394,14 @@ impl App {
             }
             KeyCode::Char('L') => {
                 if let Some(id) = self.selected_epic_id() {
-                    let mut cmds = self.update(Message::Epic(
-                        crate::tui::messages::EpicMessage::MoveStatus(id, MoveDirection::Forward),
-                    ));
-                    cmds.push(key_event("move_task_forward", "L"));
-                    return cmds;
+                    return self.dispatch_keyed(
+                        Message::Epic(crate::tui::messages::EpicMessage::MoveStatus(
+                            id,
+                            MoveDirection::Forward,
+                        )),
+                        "move_task_forward",
+                        "L",
+                    );
                 }
                 let mut cmds = self.handle_key_move(MoveDirection::Forward);
                 cmds.push(key_event("move_task_forward", "L"));
@@ -388,11 +409,14 @@ impl App {
             }
             KeyCode::Char('H') => {
                 if let Some(id) = self.selected_epic_id() {
-                    let mut cmds = self.update(Message::Epic(
-                        crate::tui::messages::EpicMessage::MoveStatus(id, MoveDirection::Backward),
-                    ));
-                    cmds.push(key_event("move_task_backward", "H"));
-                    return cmds;
+                    return self.dispatch_keyed(
+                        Message::Epic(crate::tui::messages::EpicMessage::MoveStatus(
+                            id,
+                            MoveDirection::Backward,
+                        )),
+                        "move_task_backward",
+                        "H",
+                    );
                 }
                 let mut cmds = self.handle_key_move(MoveDirection::Backward);
                 cmds.push(key_event("move_task_backward", "H"));
@@ -417,16 +441,10 @@ impl App {
             KeyCode::Char('G') => self.update(Message::NavigateRowLast),
 
             KeyCode::Char('p') => {
-                let mut cmds = self.handle_key_open_pr();
-                if !cmds.is_empty() {
-                    cmds.push(key_event("open_pr_url", "p"));
-                }
-                cmds
+                self.dispatch_handler_keyed(Self::handle_key_open_pr, "open_pr_url", "p")
             }
             KeyCode::Char('a') => {
-                let mut cmds = self.update(Message::SelectAllColumn);
-                cmds.push(key_event("select_all", "a"));
-                cmds
+                self.dispatch_keyed(Message::SelectAllColumn, "select_all", "a")
             }
 
             KeyCode::Char('v') => {
@@ -447,29 +465,17 @@ impl App {
             }
 
             KeyCode::Char(' ') => {
-                let mut cmds = self.handle_key_jump_window();
-                if !cmds.is_empty() {
-                    cmds.push(key_event("jump_to_tmux", " "));
-                }
-                cmds
+                self.dispatch_handler_keyed(Self::handle_key_jump_window, "jump_to_tmux", " ")
             }
 
             KeyCode::Enter => self.handle_key_enter_normal(),
 
             KeyCode::Char('e') => {
-                let mut cmds = self.handle_key_edit();
-                if !cmds.is_empty() {
-                    cmds.push(key_event("edit_task", "e"));
-                }
-                cmds
+                self.dispatch_handler_keyed(Self::handle_key_edit, "edit_task", "e")
             }
 
             KeyCode::Char('x') => {
-                let mut cmds = self.handle_key_archive_item();
-                if !cmds.is_empty() {
-                    cmds.push(key_event("archive_task", "x"));
-                }
-                cmds
+                self.dispatch_handler_keyed(Self::handle_key_archive_item, "archive_task", "x")
             }
 
             KeyCode::Char('D') => {
@@ -480,11 +486,11 @@ impl App {
 
             KeyCode::Char('U') => {
                 if let Some(id) = self.current_epic_id() {
-                    let mut cmds = self.update(Message::Epic(
-                        crate::tui::messages::EpicMessage::ToggleAutoDispatch(id),
-                    ));
-                    cmds.push(key_event("toggle_auto_dispatch", "U"));
-                    cmds
+                    self.dispatch_keyed(
+                        Message::Epic(crate::tui::messages::EpicMessage::ToggleAutoDispatch(id)),
+                        "toggle_auto_dispatch",
+                        "U",
+                    )
                 } else {
                     vec![]
                 }
@@ -492,134 +498,105 @@ impl App {
 
             KeyCode::Char('R') => {
                 if let Some(id) = self.current_epic_id() {
-                    let mut cmds = self.update(Message::Epic(
-                        crate::tui::messages::EpicMessage::ToggleGroupByRepo(id),
-                    ));
-                    cmds.push(key_event("toggle_group_by_repo", "R"));
-                    cmds
+                    self.dispatch_keyed(
+                        Message::Epic(crate::tui::messages::EpicMessage::ToggleGroupByRepo(id)),
+                        "toggle_group_by_repo",
+                        "R",
+                    )
                 } else {
                     vec![]
                 }
             }
 
-            KeyCode::Char('A') => {
-                let mut cmds = self.update(Message::RepoFilter(
-                    crate::tui::messages::RepoFilterMessage::ToggleOnlyActive,
-                ));
-                cmds.push(key_event("filter_active", "A"));
-                cmds
-            }
+            KeyCode::Char('A') => self.dispatch_keyed(
+                Message::RepoFilter(crate::tui::messages::RepoFilterMessage::ToggleOnlyActive),
+                "filter_active",
+                "A",
+            ),
 
-            KeyCode::Char('F') => {
-                let mut cmds = self.update(Message::Task(
-                    crate::tui::messages::TaskMessage::ToggleFlattened,
-                ));
-                cmds.push(key_event("toggle_flattened", "F"));
-                cmds
-            }
+            KeyCode::Char('F') => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::ToggleFlattened),
+                "toggle_flattened",
+                "F",
+            ),
 
             KeyCode::Char('I') => {
-                let mut cmds = self.update(Message::Learning(LearningMessage::Open));
-                cmds.push(key_event("open_learnings", "I"));
-                cmds
+                self.dispatch_keyed(Message::Learning(LearningMessage::Open), "open_learnings", "I")
             }
 
-            KeyCode::Char('P') => {
-                let mut cmds = self.update(Message::Todo(crate::tui::messages::TodoMessage::Open));
-                cmds.push(key_event("open_todos", "P"));
-                cmds
-            }
+            KeyCode::Char('P') => self.dispatch_keyed(
+                Message::Todo(crate::tui::messages::TodoMessage::Open),
+                "open_todos",
+                "P",
+            ),
 
             KeyCode::Char('t') => {
                 use crate::models::TodoLink;
                 use crate::tui::messages::TodoMessage;
                 use crate::tui::types::ColumnItem;
-                match self.selected_column_item() {
-                    Some(ColumnItem::Task(t)) => {
-                        let title = t.title.clone();
-                        let linked = Some(TodoLink::Task(t.id));
-                        let mut cmds =
-                            self.update(Message::Todo(TodoMessage::QuickAdd { title, linked }));
-                        cmds.push(key_event("todo_quick_add", "t"));
-                        cmds
-                    }
-                    Some(ColumnItem::Epic(e)) => {
-                        let title = e.title.clone();
-                        let linked = Some(TodoLink::Epic(e.id));
-                        let mut cmds =
-                            self.update(Message::Todo(TodoMessage::QuickAdd { title, linked }));
-                        cmds.push(key_event("todo_quick_add", "t"));
-                        cmds
-                    }
-                    _ => vec![], // no selection — no-op
-                }
+                let (title, linked) = match self.selected_column_item() {
+                    Some(ColumnItem::Task(t)) => (t.title.clone(), TodoLink::Task(t.id)),
+                    Some(ColumnItem::Epic(e)) => (e.title.clone(), TodoLink::Epic(e.id)),
+                    _ => return vec![], // no selection — no-op
+                };
+                self.dispatch_keyed(
+                    Message::Todo(TodoMessage::QuickAdd {
+                        title,
+                        linked: Some(linked),
+                    }),
+                    "todo_quick_add",
+                    "t",
+                )
             }
 
-            KeyCode::Char('C') => {
-                let mut cmds = self.update(Message::ManagedFeedConfig(
-                    crate::tui::messages::ManagedFeedConfigMessage::Open,
-                ));
-                cmds.push(key_event("open_managed_feed_config", "C"));
-                cmds
-            }
+            KeyCode::Char('C') => self.dispatch_keyed(
+                Message::ManagedFeedConfig(crate::tui::messages::ManagedFeedConfigMessage::Open),
+                "open_managed_feed_config",
+                "C",
+            ),
 
-            KeyCode::Char('?') => {
-                let mut cmds = self.update(Message::System(
-                    crate::tui::messages::SystemMessage::ToggleHelp,
-                ));
-                cmds.push(key_event("toggle_help", "?"));
-                cmds
-            }
+            KeyCode::Char('?') => self.dispatch_keyed(
+                Message::System(crate::tui::messages::SystemMessage::ToggleHelp),
+                "toggle_help",
+                "?",
+            ),
 
-            KeyCode::Char('s') => {
-                let mut cmds =
-                    self.update(Message::Split(crate::tui::messages::SplitMessage::Toggle));
-                cmds.push(key_event("toggle_split_mode", "s"));
-                cmds
-            }
+            KeyCode::Char('s') => self.dispatch_keyed(
+                Message::Split(crate::tui::messages::SplitMessage::Toggle),
+                "toggle_split_mode",
+                "s",
+            ),
 
             KeyCode::Char('S') => {
-                let mut cmds = self.handle_key_swap_split();
-                if !cmds.is_empty() {
-                    cmds.push(key_event("swap_split_pane", "S"));
-                }
-                cmds
+                self.dispatch_handler_keyed(Self::handle_key_swap_split, "swap_split_pane", "S")
             }
 
             KeyCode::Char('T') => {
-                let mut cmds = self.handle_key_detach();
-                if !cmds.is_empty() {
-                    cmds.push(key_event("detach_tmux", "T"));
-                }
-                cmds
+                self.dispatch_handler_keyed(Self::handle_key_detach, "detach_tmux", "T")
             }
 
             KeyCode::Char('r') => {
-                let mut cmds = self.handle_key_feed_refresh();
-                if !cmds.is_empty() {
-                    cmds.push(key_event("refresh_feed", "r"));
-                }
-                cmds
+                self.dispatch_handler_keyed(Self::handle_key_feed_refresh, "refresh_feed", "r")
             }
 
             KeyCode::Char('m') => {
                 if let Some(id) = self.selected_epic_id() {
-                    let mut cmds = self.update(Message::Epic(
-                        crate::tui::messages::EpicMessage::StartReparent(id),
-                    ));
-                    cmds.push(key_event("reparent_epic", "m"));
-                    cmds
+                    self.dispatch_keyed(
+                        Message::Epic(crate::tui::messages::EpicMessage::StartReparent(id)),
+                        "reparent_epic",
+                        "m",
+                    )
                 } else if let Some(task) = self.selected_task() {
                     // `m` on a task card moves it to another epic (or detaches it).
                     if task.status == crate::models::TaskStatus::Archived {
                         return vec![];
                     }
                     let id = task.id;
-                    let mut cmds = self.update(Message::Task(
-                        crate::tui::messages::TaskMessage::StartMoveToEpic(id),
-                    ));
-                    cmds.push(key_event("move_task_to_epic", "m"));
-                    cmds
+                    self.dispatch_keyed(
+                        Message::Task(crate::tui::messages::TaskMessage::StartMoveToEpic(id)),
+                        "move_task_to_epic",
+                        "m",
+                    )
                 } else {
                     vec![]
                 }

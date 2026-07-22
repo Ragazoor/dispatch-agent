@@ -140,12 +140,34 @@ impl App {
         cmds
     }
 
+    /// Periodic-work orchestrator, run once per `TICK_INTERVAL`. Each concern is
+    /// a named `tick_*` sub-step below; this composes them and folds their
+    /// commands into a single batch. Each sub-step owns its own dirty-marking, so
+    /// command order carries no repaint significance.
     pub(in crate::tui) fn handle_tick(&mut self) -> Vec<Command> {
         let status_before = self.status.message.clone();
         let flash_count_before = self.agents.message_flash.len();
 
-        // Auto-clear transient status messages after 5 seconds (only in Normal
-        // mode). Sticky messages (in-flight dispatch feedback) are exempt.
+        self.tick_status_ttl();
+        self.tick_dispatching();
+        self.tick_message_flash();
+        self.tick_gg_chord();
+
+        let mut cmds = self.tick_window_checks();
+        cmds.extend(self.tick_sub_status());
+        cmds.extend(self.tick_pr_poll());
+        cmds.extend(self.tick_split_pane_check());
+        cmds.extend(self.tick_stale_learning());
+        cmds.extend(self.tick_main_session_poll());
+        cmds.extend(self.tick_db_refresh());
+
+        self.mark_tick_dirty(&status_before, flash_count_before);
+        cmds
+    }
+
+    /// Auto-clear transient status messages after 5 seconds (only in Normal
+    /// mode). Sticky messages (in-flight dispatch feedback) are exempt.
+    fn tick_status_ttl(&mut self) {
         if self.input.mode == InputMode::Normal && !self.status.message_sticky {
             if let Some(set_at) = self.status.message_set_at {
                 if set_at.elapsed() > STATUS_MESSAGE_TTL {
@@ -153,55 +175,76 @@ impl App {
                 }
             }
         }
+    }
 
-        if !self.dispatching.is_empty() {
-            // Drop dispatching IDs whose task has been deleted from the list.
-            let live_ids: HashSet<TaskId> = self.board.tasks.iter().map(|t| t.id).collect();
-            let before = self.dispatching.len();
-            self.dispatching.retain(|id, _| live_ids.contains(id));
-            if self.dispatching.len() != before {
-                self.refresh_dispatching_status();
-            }
-
-            // Watchdog: force-fail any dispatch that has exceeded the timeout.
-            let timed_out: Vec<TaskId> = self
-                .dispatching
-                .iter()
-                .filter(|(_, started)| started.elapsed() > DISPATCH_WATCHDOG_TIMEOUT)
-                .map(|(id, _)| *id)
-                .collect();
-            for id in &timed_out {
-                self.dispatching.remove(id);
-            }
-            if !timed_out.is_empty() {
-                self.refresh_dispatching_status();
-                let label = if timed_out.len() == 1 {
-                    format!("Dispatch for task #{} timed out", timed_out[0].0)
-                } else {
-                    format!("{} dispatches timed out", timed_out.len())
-                };
-                self.status.error_popup = Some(label);
-            }
-
-            self.spinner_tick = (self.spinner_tick + 1) % DISPATCH_SPINNER_FRAMES;
+    /// Reconcile the in-flight dispatching set: drop deleted tasks, force-fail
+    /// dispatches past the watchdog timeout, and advance the spinner. No-op when
+    /// nothing is dispatching (so the spinner only advances while active).
+    fn tick_dispatching(&mut self) {
+        if self.dispatching.is_empty() {
+            return;
+        }
+        // Drop dispatching IDs whose task has been deleted from the list.
+        let live_ids: HashSet<TaskId> = self.board.tasks.iter().map(|t| t.id).collect();
+        let before = self.dispatching.len();
+        self.dispatching.retain(|id, _| live_ids.contains(id));
+        if self.dispatching.len() != before {
+            self.refresh_dispatching_status();
         }
 
-        // Clear expired message flash indicators
+        // Watchdog: force-fail any dispatch that has exceeded the timeout.
+        let timed_out: Vec<TaskId> = self
+            .dispatching
+            .iter()
+            .filter(|(_, started)| started.elapsed() > DISPATCH_WATCHDOG_TIMEOUT)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &timed_out {
+            self.dispatching.remove(id);
+        }
+        if !timed_out.is_empty() {
+            self.refresh_dispatching_status();
+            let label = if timed_out.len() == 1 {
+                format!("Dispatch for task #{} timed out", timed_out[0].0)
+            } else {
+                format!("{} dispatches timed out", timed_out.len())
+            };
+            self.status.error_popup = Some(label);
+        }
+
+        self.spinner_tick = (self.spinner_tick + 1) % DISPATCH_SPINNER_FRAMES;
+    }
+
+    /// Clear expired message-flash indicators (older than 3 seconds).
+    fn tick_message_flash(&mut self) {
         self.agents
             .message_flash
             .retain(|_, t| t.elapsed().as_secs() < 3);
+    }
 
-        // Skip capturing the split-pinned task: its window has been joined as a
-        // pane and is no longer visible to `has_window`, which would falsely
-        // trigger WindowGone → Crashed.
+    /// Idle backstop for the `gg` chord: if the user pressed a lone `g` and went
+    /// idle (no follow-up keypress completed the chord), clear the stale pending
+    /// state once the chord window has elapsed. Nothing fires — a lone `g` has
+    /// no action of its own.
+    fn tick_gg_chord(&mut self) {
+        if let PendingAction::GChord(started) = self.interaction.pending {
+            if started.elapsed() > GG_CHORD_TIMEOUT {
+                self.interaction.pending = PendingAction::None;
+            }
+        }
+    }
+
+    /// Collect all windowed tasks into a single `BatchCheckWindows` command —
+    /// one tmux fork per tick instead of one per windowed task. Skips the
+    /// split-pinned task: its window has been joined as a pane and is no longer
+    /// visible to `has_window`, which would falsely trigger WindowGone → Crashed.
+    fn tick_window_checks(&self) -> Vec<Command> {
         let split_pinned = self
             .board
             .split
             .pinned_task_id
             .filter(|_| self.board.split.active);
 
-        // Collect all windows to check into a single batch — one tmux fork per
-        // tick instead of one per windowed task.
         let windows_to_check: Vec<(crate::models::TaskId, String)> = self
             .board
             .tasks
@@ -211,7 +254,7 @@ impl App {
             .filter_map(|t| t.tmux_window.clone().map(|w| (t.id, w)))
             .collect();
 
-        let mut cmds: Vec<Command> = if windows_to_check.is_empty() {
+        if windows_to_check.is_empty() {
             vec![]
         } else {
             vec![Command::Task(
@@ -219,18 +262,13 @@ impl App {
                     windows: windows_to_check,
                 },
             )]
-        };
-
-        // Idle backstop for the `gg` chord: if the user pressed a lone `g` and
-        // went idle (no follow-up keypress completed the chord), clear the
-        // stale pending state once the chord window has elapsed. Nothing
-        // fires — a lone `g` has no action of its own.
-        if let PendingAction::GChord(started) = self.interaction.pending {
-            if started.elapsed() > GG_CHORD_TIMEOUT {
-                self.interaction.pending = PendingAction::None;
-            }
         }
+    }
 
+    /// Re-classify agent activity for running windowed tasks, applying any
+    /// sub-status changes in-memory and returning a single batched DB update
+    /// rather than one Persist per task.
+    fn tick_sub_status(&mut self) -> Vec<Command> {
         let now = chrono::Utc::now();
         let updates: Vec<(TaskId, SubStatus)> = self
             .board
@@ -249,20 +287,26 @@ impl App {
             })
             .collect();
 
-        // Apply sub_status changes in-memory and collect DB updates as a single
-        // batched command rather than one Persist per task.
         for &(id, target) in &updates {
             if let Some(task) = self.find_task_mut(id) {
                 task.sub_status = target;
             }
         }
-        if !updates.is_empty() {
-            cmds.push(Command::Task(
+        if updates.is_empty() {
+            vec![]
+        } else {
+            // A sub-status change is a visible repaint; mark dirty here rather
+            // than re-deriving it downstream by scanning the command batch.
+            self.dirty = true;
+            vec![Command::Task(
                 crate::tui::commands::TaskCommand::BatchPatchSubStatus { updates },
-            ));
+            )]
         }
+    }
 
-        // Poll PR status for review tasks with open PRs
+    /// Poll PR status for review tasks with open PRs, throttled per task by
+    /// `PR_POLL_INTERVAL`. Records the poll timestamp for each task queried.
+    fn tick_pr_poll(&mut self) -> Vec<Command> {
         let pr_tasks: Vec<(TaskId, String)> = self
             .board
             .tasks
@@ -282,6 +326,7 @@ impl App {
             })
             .collect();
 
+        let mut cmds = Vec::new();
         for (id, url) in pr_tasks {
             self.agents.last_pr_poll.insert(id, Instant::now());
             cmds.push(Command::Pr(crate::tui::commands::PrCommand::CheckStatus {
@@ -289,69 +334,81 @@ impl App {
                 url,
             }));
         }
+        cmds
+    }
 
-        // Check if split mode right pane still exists
+    /// Verify the split-mode right pane still exists, if split mode is active.
+    fn tick_split_pane_check(&self) -> Vec<Command> {
         if self.board.split.active {
             if let Some(pane_id) = &self.board.split.right_pane_id {
-                cmds.push(Command::Split(
+                return vec![Command::Split(
                     crate::tui::commands::SplitCommand::CheckPaneExists {
                         pane_id: pane_id.clone(),
                     },
-                ));
+                )];
             }
         }
+        vec![]
+    }
 
-        // Stale-learning cleanup sweep: at most once per STALE_CLEANUP_INTERVAL,
-        // and only when enabled. See docs/specs/learnings.allium: ArchiveStaleLearning.
+    /// Stale-learning cleanup sweep: at most once per STALE_CLEANUP_INTERVAL, and
+    /// only when enabled. See docs/specs/learnings.allium: ArchiveStaleLearning.
+    fn tick_stale_learning(&mut self) -> Vec<Command> {
         if crate::tui::STALE_LEARNING_CLEANUP_ENABLED
             && self
                 .last_stale_cleanup_at
                 .is_none_or(|last| last.elapsed() >= crate::tui::STALE_CLEANUP_INTERVAL)
         {
             self.last_stale_cleanup_at = Some(Instant::now());
-            cmds.push(Command::Learning(
+            return vec![Command::Learning(
                 crate::tui::commands::LearningCommand::ArchiveStale,
-            ));
+            )];
         }
+        vec![]
+    }
 
-        // Poll main-session liveness on a fixed multiple of the tick (not every
-        // tick — the tmux check is cheap but not free). Drives the status-bar
-        // main-session badge. See docs/specs/dispatch.allium: MainSessionIndicator.
+    /// Poll main-session liveness on a fixed multiple of the tick (not every
+    /// tick — the tmux check is cheap but not free). Drives the status-bar
+    /// main-session badge. See docs/specs/dispatch.allium: MainSessionIndicator.
+    fn tick_main_session_poll(&mut self) -> Vec<Command> {
         self.ticks_since_main_session_poll = self.ticks_since_main_session_poll.saturating_add(1);
         if self.ticks_since_main_session_poll >= crate::tui::MAIN_SESSION_POLL_TICKS {
             self.ticks_since_main_session_poll = 0;
-            cmds.push(Command::MainSession(
+            return vec![Command::MainSession(
                 crate::tui::commands::MainSessionCommand::CheckLiveness,
-            ));
+            )];
         }
+        vec![]
+    }
 
+    /// Emit a DB refresh when the board is dirty since the last refresh, or every
+    /// 5 ticks as a fallback catch-all.
+    fn tick_db_refresh(&mut self) -> Vec<Command> {
         self.ticks_since_last_refresh = self.ticks_since_last_refresh.saturating_add(1);
         if self.dirty_since_refresh || self.ticks_since_last_refresh >= 5 {
             self.dirty_since_refresh = false;
             self.ticks_since_last_refresh = 0;
-            cmds.push(Command::Task(
+            return vec![Command::Task(
                 crate::tui::commands::TaskCommand::RefreshFromDb,
-            ));
+            )];
         }
+        vec![]
+    }
 
-        // Mark the board dirty when any visible tick-driven state changed.
-        // The DB refresh (RefreshFromDb → handle_refresh_tasks) sets dirty
-        // independently when it finds changed tasks.
-        let sub_status_changed = cmds.iter().any(|c| {
-            matches!(
-                c,
-                Command::Task(crate::tui::commands::TaskCommand::BatchPatchSubStatus { .. })
-            )
-        });
-        if self.status.message != status_before
+    /// Mark the board dirty when visible tick-driven state changed that the
+    /// sub-steps don't already flag themselves. `tick_sub_status` sets `dirty`
+    /// directly for sub-status changes; the DB refresh (RefreshFromDb →
+    /// handle_refresh_tasks) does likewise when it finds changed tasks. This
+    /// covers the remaining transient state: status message, message flash, and
+    /// the always-advancing dispatch spinner.
+    fn mark_tick_dirty(&mut self, status_before: &Option<String>, flash_count_before: usize) {
+        if self.status.message != *status_before
             || self.agents.message_flash.len() != flash_count_before
-            || !self.dispatching.is_empty()  // spinner always advances when dispatching
-            || sub_status_changed
+            || !self.dispatching.is_empty()
+        // spinner always advances when dispatching
         {
             self.dirty = true;
         }
-
-        cmds
     }
 
     pub(in crate::tui) fn handle_agent_crashed(&mut self, id: TaskId) -> Vec<Command> {
@@ -436,5 +493,122 @@ impl App {
         } else {
             vec![]
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tick_tests {
+    use super::*;
+    use crate::models::{TaskUrl, UrlType};
+    use crate::tui::tests::{make_app, make_task};
+    use crate::tui::{Command, InputMode};
+    use std::time::Duration;
+
+    fn has_refresh(cmds: &[Command]) -> bool {
+        cmds.iter().any(|c| {
+            matches!(
+                c,
+                Command::Task(crate::tui::commands::TaskCommand::RefreshFromDb)
+            )
+        })
+    }
+
+    #[test]
+    fn status_ttl_clears_expired_normal_message() {
+        let mut app = make_app();
+        app.set_status("hello".into());
+        // Backdate the message past the TTL so the sweep clears it.
+        app.status.message_set_at = Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
+
+        app.tick_status_ttl();
+        assert!(app.status.message.is_none(), "expired status should clear");
+    }
+
+    #[test]
+    fn status_ttl_keeps_sticky_message() {
+        let mut app = make_app();
+        app.set_status_sticky("dispatching".into());
+        app.status.message_set_at = Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
+
+        app.tick_status_ttl();
+        assert_eq!(app.status.message.as_deref(), Some("dispatching"));
+    }
+
+    #[test]
+    fn status_ttl_ignored_outside_normal_mode() {
+        let mut app = make_app();
+        app.set_status("hello".into());
+        app.status.message_set_at = Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
+        app.input.mode = InputMode::Help;
+
+        app.tick_status_ttl();
+        assert_eq!(app.status.message.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn main_session_poll_fires_every_n_ticks() {
+        let mut app = make_app();
+        // First N-1 ticks stay silent; the Nth emits a liveness check.
+        for _ in 0..(crate::tui::MAIN_SESSION_POLL_TICKS - 1) {
+            assert!(app.tick_main_session_poll().is_empty());
+        }
+        let cmds = app.tick_main_session_poll();
+        assert!(matches!(
+            cmds.as_slice(),
+            [Command::MainSession(
+                crate::tui::commands::MainSessionCommand::CheckLiveness
+            )]
+        ));
+        // Counter reset — the next tick is silent again.
+        assert!(app.tick_main_session_poll().is_empty());
+    }
+
+    #[test]
+    fn db_refresh_fires_on_dirty_flag() {
+        let mut app = make_app();
+        app.dirty_since_refresh = true;
+        let cmds = app.tick_db_refresh();
+        assert!(has_refresh(&cmds));
+        assert!(!app.dirty_since_refresh, "dirty flag should reset");
+    }
+
+    #[test]
+    fn db_refresh_fallback_after_five_ticks() {
+        let mut app = make_app();
+        app.dirty_since_refresh = false;
+        // Four quiet ticks, then the fifth forces a fallback refresh.
+        for _ in 0..4 {
+            assert!(!has_refresh(&app.tick_db_refresh()));
+        }
+        assert!(has_refresh(&app.tick_db_refresh()));
+    }
+
+    #[test]
+    fn pr_poll_queries_review_task_then_throttles() {
+        let mut app = make_app();
+        let mut task = make_task(50, TaskStatus::Review);
+        task.url = Some(TaskUrl::new("https://example.com/pr/1", UrlType::Pr));
+        app.board.tasks.push(task);
+
+        let cmds = app.tick_pr_poll();
+        assert_eq!(cmds.len(), 1, "first poll should query the PR");
+        assert!(matches!(
+            cmds[0],
+            Command::Pr(crate::tui::commands::PrCommand::CheckStatus { .. })
+        ));
+
+        // Immediately polling again is throttled by PR_POLL_INTERVAL.
+        assert!(app.tick_pr_poll().is_empty(), "second poll should be throttled");
+    }
+
+    #[test]
+    fn pr_poll_ignores_non_pr_url() {
+        let mut app = make_app();
+        let mut task = make_task(51, TaskStatus::Review);
+        task.url = Some(TaskUrl::new("https://example.com/issue/1", UrlType::Issue));
+        app.board.tasks.push(task);
+
+        assert!(app.tick_pr_poll().is_empty(), "issue URLs are not PR-polled");
     }
 }

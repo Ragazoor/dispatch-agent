@@ -76,19 +76,34 @@ pub(super) struct ColumnsData {
 // Immutable build helpers
 // ---------------------------------------------------------------------------
 
-/// Build the list items and selection state for a single task-status column.
-///
-/// Takes only immutable borrows so it can be called while a `ColumnLayout`
+/// Immutable inputs for [`build_task_col_data`], grouped so the builder takes a
+/// single borrow-bundle rather than a wide positional parameter list. All fields
+/// are immutable borrows, so the bundle can be constructed while a `ColumnLayout`
 /// (which itself holds immutable borrows into `App`) is alive.
-fn build_task_col_data(
-    app: &App,
-    items: &[ColumnItem<'_>],
+struct TaskColInput<'a> {
+    app: &'a App,
+    items: &'a [ColumnItem<'a>],
+    epic_stats: &'a EpicStatsMap,
     col_area: Rect,
     now: DateTime<Utc>,
     status: TaskStatus,
     nav_col: usize,
-    epic_stats: &EpicStatsMap,
-) -> TaskColData {
+}
+
+/// Build the list items and selection state for a single task-status column.
+///
+/// Takes only immutable borrows so it can be called while a `ColumnLayout`
+/// (which itself holds immutable borrows into `App`) is alive.
+fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
+    let TaskColInput {
+        app,
+        items,
+        epic_stats,
+        col_area,
+        now,
+        status,
+        nav_col,
+    } = input;
     let col_idx = nav_col - 1;
     let is_focused = app.selected_column() == nav_col;
     let color = column_color(status);
@@ -369,9 +384,15 @@ pub(super) fn compute_columns_data<'a>(
         let nav_col = task_col_idx + 1;
         let items = layout.get(status);
         let col_area = content_areas[task_col_idx];
-        task_cols.push(build_task_col_data(
-            app, items, col_area, now, status, nav_col, epic_stats,
-        ));
+        task_cols.push(build_task_col_data(TaskColInput {
+            app,
+            items,
+            epic_stats,
+            col_area,
+            now,
+            status,
+            nav_col,
+        }));
     }
     // `layout` is last used above; its immutable borrow on `app` ends here (NLL).
 

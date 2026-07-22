@@ -468,3 +468,117 @@ pub(in crate::tui) fn input_epic_description_lines(
         Line::from(Span::styled("  [Esc] cancel", hint)),
     ]
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    /// Concatenate a line's span contents into a single string for assertions.
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn owned(paths: &[&str]) -> Vec<String> {
+        paths.iter().map(|s| s.to_string()).collect()
+    }
+
+    // ---- append_repo_path_list -------------------------------------------
+
+    #[test]
+    fn repo_list_no_scroll_when_all_fit() {
+        let hint = Style::default();
+        let paths = owned(&["a", "b", "c"]);
+        let mut lines: Vec<Line> = Vec::new();
+        // visible = area_height - height_offset = 10; 3 <= 10 → scroll = 0.
+        append_repo_path_list(&mut lines, &paths, 1, 0, 10, hint);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[0]), "    a");
+        // Cursor row is rendered as "  ► " + path across two spans.
+        assert_eq!(line_text(&lines[1]), "  ► b");
+        assert_eq!(lines[1].spans.len(), 2);
+        assert_eq!(line_text(&lines[2]), "    c");
+    }
+
+    #[test]
+    fn repo_list_scrolls_to_keep_cursor_visible() {
+        let hint = Style::default();
+        let paths = owned(&["p0", "p1", "p2", "p3", "p4"]);
+        let mut lines: Vec<Line> = Vec::new();
+        // visible = 3, cursor at last item → scroll = 4.sat_sub(2)=2, min(5-3=2)=2.
+        append_repo_path_list(&mut lines, &paths, 4, 0, 3, hint);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[0]), "    p2");
+        assert_eq!(line_text(&lines[1]), "    p3");
+        assert_eq!(line_text(&lines[2]), "  ► p4");
+    }
+
+    #[test]
+    fn repo_list_visible_height_floors_at_one() {
+        let hint = Style::default();
+        let paths = owned(&["p0", "p1", "p2"]);
+        let mut lines: Vec<Line> = Vec::new();
+        // height_offset >= area_height → saturating_sub is 0, floored to 1 visible row.
+        append_repo_path_list(&mut lines, &paths, 2, 5, 3, hint);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "  ► p2");
+    }
+
+    // ---- append_filtered_repos_with_new_entry ----------------------------
+
+    #[test]
+    fn filtered_new_entry_highlighted_when_cursor_past_list() {
+        let hint = Style::default();
+        let filtered = owned(&["a", "b"]);
+        let mut lines: Vec<Line> = Vec::new();
+        // buffer "c" is new; cursor == filtered.len() selects the new entry.
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "c", 2, 1, 40, hint);
+
+        // Two existing paths + the highlighted new entry.
+        assert_eq!(lines.len(), 3);
+        let last = &lines[2];
+        assert_eq!(last.spans.len(), 3);
+        assert_eq!(line_text(last), "  ► c  (new)");
+        // With the cursor on the new entry, the list itself must not also
+        // highlight a row (scroll_cursor clamps back to filtered.len()-1 = 1).
+        assert_eq!(line_text(&lines[1]), "  ► b");
+    }
+
+    #[test]
+    fn filtered_new_entry_dimmed_when_cursor_in_list() {
+        let hint = Style::default();
+        let filtered = owned(&["a", "b"]);
+        let mut lines: Vec<Line> = Vec::new();
+        // buffer "c" is new but cursor points at an existing row.
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "c", 0, 1, 40, hint);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[0]), "  ► a");
+        assert_eq!(line_text(&lines[2]), "    + c");
+    }
+
+    #[test]
+    fn filtered_no_new_entry_for_empty_buffer() {
+        let hint = Style::default();
+        let filtered = owned(&["a", "b"]);
+        let mut lines: Vec<Line> = Vec::new();
+        // Empty buffer → no "new path" entry offered.
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "", 0, 1, 40, hint);
+
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn filtered_no_new_entry_when_buffer_matches_existing() {
+        let hint = Style::default();
+        let filtered = owned(&["a", "b"]);
+        let mut lines: Vec<Line> = Vec::new();
+        // buffer exactly equals a filtered path → not a "new" entry.
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "b", 1, 1, 40, hint);
+
+        assert_eq!(lines.len(), 2);
+    }
+}
