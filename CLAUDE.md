@@ -84,7 +84,7 @@ When writing async tests over `spawn_blocking` or detached `tokio::spawn` work, 
 
 CI runs `cargo tarpaulin --out xml` in the `coverage` job. Run locally with `cargo tarpaulin --out Html`. Not in the pre-push hook. Coverage is **informational** — there is no enforced threshold; it does not gate the build.
 
-Overall line coverage sits around **85%** as an approximate snapshot (re-measure with `cargo tarpaulin`; the figure drifts and is not tracked). Known-low areas are `src/setup/` and some TUI input/popup files — driving them to 100% is not expected. Treat the baseline as a sanity check, not a target: don't over-invest chasing full coverage on render-heavy code, and a single file below the average is not by itself a problem.
+Overall line coverage sits around **85%** as an approximate snapshot (re-measure with `cargo tarpaulin`; the figure drifts and is not tracked). `src/setup/` carries substantial inline tests despite its size — the real known-low areas are its OS-interaction branches (hooks, filesystem writes) and some TUI input/popup files. Driving those to 100% is not expected. Treat the baseline as a sanity check, not a target: don't over-invest chasing full coverage on render-heavy code, and a single file below the average is not by itself a problem.
 
 ## Test-Driven Development
 
@@ -152,8 +152,14 @@ This file is intentionally slim — it is loaded into every agent's context. Rea
 
 > **Layout-cache coherence** (self-healing, not compiler-enforced): `App.layout` (a [`LayoutCache`](src/tui/types.rs), grouping `epic_stats_cache`, `children_map_cache`, `column_anchor_cache`, `epic_filter_cache`, `task_index`, and their fingerprints) is derived from `board.tasks`/`board.epics`. Calling `invalidate_layout_cache()` after a mutation is still good practice (immediate rebuild — it delegates to `LayoutCache::invalidate()`), but `cached_epic_stats()` also fingerprints the board on every call and self-heals on mismatch — a handler that forgets to invalidate cannot serve stale data. See the layout-cache-coherence section of `docs/architecture.md`.
 
+> **Single DB connection** (first-order performance constraint): `Database` (`src/db/mod.rs`) wraps one `tokio_rusqlite::Connection` — a dedicated worker thread owning the underlying `rusqlite::Connection`. There is no connection pool; every store method, schema init, and migration serializes through that one worker via `db_call`. See the "DB access — `db_call`" section of `docs/conventions.md`.
+
+> **Render-panic policy**: a guarded `unreachable!()` in a render match arm is acceptable when an upstream filter/type already rules that arm out (e.g. `ColumnItem` variants stripped before the match in `src/tui/ui/kanban/columns.rs`) — but MCP handlers and `src/tui/input.rs` must never panic, guarded or not. See the "Rendering purity" section of `docs/conventions.md`.
+
+> **Workhorse macros**: `patch_struct!` (`src/db/mod.rs:30`) generates the `TaskPatch`/`EpicPatch` selective-update builders from a field list. `mcp_tools!` (`src/mcp/handlers/dispatch.rs:39`) generates the MCP tool registry (`tool_definitions()`, `dispatch_tool()`, `TOOL_NAMES`) from one declarative list of tools. Read the macro's doc comment before adding a patch field or an MCP tool by hand.
+
 - [docs/architecture.md](docs/architecture.md) — Message→Command, ProcessRunner, command queue draining, editor session invariant, layout-cache coherence (self-healing), review/security agent state machine, error handling, quick dispatch
-- [docs/conventions.md](docs/conventions.md) — `FieldUpdate`, `TaskPatch`/`EpicPatch` double-Option, DB trait narrowing, `db_call`, service mutation boundary, `recalculate_epic_status` invariant, inline-mutation boundary, `LearningService` injection state, `let _`, dead code, sub-status TOCTOU, immutable `parent_epic_id`, Clippy, visibility, performance footguns (`column_items_for_status` test-only; no `std::fs` in async), prod-vs-test LOC split
+- [docs/conventions.md](docs/conventions.md) — `FieldUpdate`, `TaskPatch`/`EpicPatch` double-Option, DB trait narrowing, `db_call` (single-connection model), rendering-purity panic policy, service mutation boundary, `recalculate_epic_status` invariant, inline-mutation boundary, `LearningService` injection state, `let _`, dead code, sub-status TOCTOU, immutable `parent_epic_id`, Clippy, visibility, performance footguns (`column_items_for_status` test-only; no `std::fs` in async), prod-vs-test LOC split
 - [docs/module-map.md](docs/module-map.md) — file-by-file responsibilities
 - [docs/how-to.md](docs/how-to.md) — adding an MCP tool, TUI view, entity, database migration; projects feature; knowledge base MCP tools
 - [docs/mcp.md](docs/mcp.md) — MCP notification flow, error codes, debugging handlers, feed epics, knowledge base flow

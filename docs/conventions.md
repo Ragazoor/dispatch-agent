@@ -15,7 +15,9 @@ Code under `src/tui/ui/` must be pure: it reads `App` and shared helpers, writes
 - Process spawning (`std::process::Command`, `tokio::process`)
 - Async runtime calls (`tokio::*`, `block_on`, channel sends/receives)
 - MCP calls or network I/O
-- `unwrap()` / `expect()` / `panic!` outside `#[cfg(test)]` — render must never crash the TUI
+- `unwrap()` / `expect()` / `panic!` on data the render layer can't control — render must never crash the TUI on bad input
+
+**One narrow exception:** a guarded `unreachable!()` in a match arm is acceptable when an upstream filter/type already rules that arm out — e.g. `src/tui/ui/kanban/columns.rs` matches on `ColumnItem` after a prior pass has stripped `EpicHeader`/`SubstatusLabel`/`OrphanSeparator` variants, so those arms can't be hit. This differs from an unguarded `unwrap()`: the invariant is upheld by code the reader can point to, not by hoping the data is well-formed. This exception is render-only — MCP handlers and `src/tui/input.rs` must never panic, guarded or not, since their inputs (MCP args, keystrokes) aren't invariant-checked upstream the way render's `App` state is.
 
 If a render path needs data that isn't on `App`, compute it in the runtime/update layer and stash the result on `App` before rendering — do not reach for it from `src/tui/ui/`.
 
@@ -305,6 +307,6 @@ Use whichever of these fits the thing you're waiting on:
 
   The `timeout` is a safety net (the test fails if the signal never arrives), not a timing assumption — the test proceeds the instant the event lands.
 
-- **A test-only completion signal for detached writes.** When production spawns fire-and-forget work with no observable signal (the MCP handler's usage + trajectory writes), add an optional sender that the spawn fires on completion — `McpState::bg_write_done_tx` / `BackgroundWrite`, installed via `router_with_bg_done` / `test_state_with_bg_done`. It is always `None` in production. Mirrors the existing optional `notify_tx` pattern.
+- **A test-only completion signal for detached writes.** When production spawns fire-and-forget work with no observable signal (the MCP handler's usage + trajectory writes), add an optional sender that the spawn fires on completion — `McpState::test_hooks.bg_write_done_tx` / `BackgroundWrite`, installed via `router_with_bg_done` / `test_state_with_bg_done`. It is always `None` in production. Mirrors the existing optional `notify_tx` pattern.
 
 - **An injected clock for time-dependent behaviour.** Hook-event timestamps persist at one-second resolution, so a test that needs two events in distinct seconds must not sleep ≥1s — inject `service::FixedClock` via `TaskService::with_clock` and `clock.advance(chrono::Duration::seconds(2))`. Production defaults to `SystemClock` (`Utc::now()`), so no call sites change.
