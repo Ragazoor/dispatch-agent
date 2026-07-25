@@ -808,8 +808,9 @@ surface DispatchingFeedback {
 
     @guarantee DeletedTaskPruned
         -- If a task referenced in `dispatching` is deleted from the task
-        -- list (e.g. via `d`), the next Tick removes the stale ID so the
-        -- status text never references a vanished task.
+        -- list (e.g. via `x` in the archive view, after first archiving it
+        -- with `x` from the board), the next Tick removes the stale ID so
+        -- the status text never references a vanished task.
 
     @guarantee SinglePathMutation
         -- Mutation of `dispatching` flows through a single helper so the
