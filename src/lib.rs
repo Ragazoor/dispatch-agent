@@ -11,6 +11,7 @@ pub mod feed;
 pub mod git;
 pub mod mcp;
 pub mod models;
+pub mod notify;
 pub mod plan;
 pub mod process;
 pub mod runtime;
