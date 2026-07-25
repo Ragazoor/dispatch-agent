@@ -101,24 +101,30 @@ impl TaskService {
     }
 
     /// Called before a task is hard-deleted. Notifies watchers that it was
-    /// deleted (not finished), then removes every watch row involving it
-    /// (as target or as watcher).
+    /// deleted (not finished) — unless the deleted task had already reached
+    /// Done/Archived, in which case NotifyWatchersOnFinish already notified
+    /// and cleared its target-role rows and there is nothing left to notify
+    /// (see docs/specs/task-watchers.allium's NotifyWatchersOnDelete). Then
+    /// removes every watch row involving it (as target or as watcher),
+    /// unconditionally regardless of status.
     pub(super) async fn notify_watchers_of_deletion(&self, deleted: &Task) {
-        match self.db.list_watchers_of(deleted.id).await {
-            Ok(watcher_ids) => {
-                let body = format!(
-                    "Task {} (\"{}\") that you were watching was deleted before it finished.",
-                    deleted.id.0, deleted.title
-                );
-                for watcher_id in watcher_ids {
-                    self.deliver_watch_notification(watcher_id, deleted.id, &body, "deleted")
-                        .await;
+        if !matches!(deleted.status, TaskStatus::Done | TaskStatus::Archived) {
+            match self.db.list_watchers_of(deleted.id).await {
+                Ok(watcher_ids) => {
+                    let body = format!(
+                        "Task {} (\"{}\") that you were watching was deleted before it finished.",
+                        deleted.id.0, deleted.title
+                    );
+                    for watcher_id in watcher_ids {
+                        self.deliver_watch_notification(watcher_id, deleted.id, &body, "deleted")
+                            .await;
+                    }
                 }
+                Err(e) => tracing::warn!(
+                    task_id = deleted.id.0,
+                    "failed to list watchers for deleted task: {e}"
+                ),
             }
-            Err(e) => tracing::warn!(
-                task_id = deleted.id.0,
-                "failed to list watchers for deleted task: {e}"
-            ),
         }
         if let Err(e) = self.db.delete_watches_of_target(deleted.id).await {
             tracing::warn!(

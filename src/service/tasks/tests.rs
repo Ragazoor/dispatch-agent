@@ -3452,6 +3452,87 @@ mod watchers {
 
         assert_eq!(mock.recorded_calls().len(), 2);
         assert!(db.list_watchers_of(target).await.unwrap().is_empty());
+
+        // Assert the delivered message body actually says the task was
+        // deleted before it finished (not a generic/finished-style body).
+        let messages_dir = tmp.path().join(".claude-messages");
+        let entries: Vec<_> = std::fs::read_dir(&messages_dir).unwrap().collect();
+        assert_eq!(entries.len(), 1, "should have exactly one message file");
+        let content = std::fs::read_to_string(entries[0].as_ref().unwrap().path()).unwrap();
+        assert!(
+            content.contains("deleted"),
+            "message should mention deletion: {content}"
+        );
+        assert!(
+            content.contains("before it finished"),
+            "message should mention it was deleted before finishing: {content}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_task_does_not_notify_watcher_when_target_already_finished_via_bypassed_write()
+    {
+        // Characterization test for the previously-masked gap: FeedRunner
+        // writes task status directly via its own DB write handle, bypassing
+        // TaskService::update_task/cli_update_task entirely — so a
+        // feed-synced task that auto-completes never gets its watcher rows
+        // cleared by notify_watchers_if_finished. If that already-Done task
+        // is later deleted through TaskService::delete_task, the watcher
+        // must NOT receive a "deleted before it finished" notification — it
+        // actually finished successfully.
+        //
+        // The watcher is given a live worktree/tmux_window (as in
+        // delete_task_notifies_watchers_of_deletion) so the buggy,
+        // unconditional code path would actually reach the
+        // MockProcessRunner. A zero-response MockProcessRunner means any
+        // such call panics *inside* the notification's spawn_blocking task —
+        // that panic is caught by tokio and only logged (it does not fail
+        // this test on its own), so the deterministic assertion is
+        // `recorded_calls()` staying empty, not an uncaught panic.
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().to_str().unwrap().to_string();
+        let db = test_db().await;
+        let mock = Arc::new(crate::process::MockProcessRunner::new(vec![]));
+        let runner: Arc<dyn crate::process::ProcessRunner> = mock.clone();
+        let svc = task_svc_with_runner(&db, runner);
+
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        db.patch_task(
+            watcher,
+            &db::TaskPatch::new()
+                .worktree(Some(&worktree))
+                .tmux_window(Some("task-watcher")),
+        )
+        .await
+        .unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+
+        // Bypass TaskService entirely (simulating FeedRunner's sanctioned
+        // direct DB write) so notify_watchers_if_finished never runs and the
+        // watcher row is NOT cleared by the finish hook.
+        db.patch_task(target, &db::TaskPatch::new().status(TaskStatus::Done))
+            .await
+            .unwrap();
+        assert_eq!(
+            db.list_watchers_of(target).await.unwrap(),
+            vec![watcher],
+            "direct DB write bypasses the finish hook; watcher row survives"
+        );
+
+        svc.delete_task(target).await.unwrap();
+
+        // No tmux call was attempted at all.
+        assert!(
+            mock.recorded_calls().is_empty(),
+            "no notification attempt should be made for an already-finished target: {:?}",
+            mock.recorded_calls()
+        );
+        // And the watcher row is still cleaned up on delete regardless.
+        assert!(
+            db.list_watchers_of(target).await.unwrap().is_empty(),
+            "watcher row should still be cleaned up on delete regardless of notification"
+        );
     }
 
     #[tokio::test]
