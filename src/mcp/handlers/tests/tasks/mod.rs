@@ -4,6 +4,7 @@ use super::*;
 mod crud;
 mod dispatch;
 mod verify;
+mod watch;
 mod wrap_up;
 
 // =======================================================================

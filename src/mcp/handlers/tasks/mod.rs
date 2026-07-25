@@ -15,6 +15,7 @@ pub(super) use super::types::{
 mod crud;
 mod dispatch;
 mod verify;
+mod watch;
 mod wrap_up;
 
 pub(super) use crud::{
@@ -24,6 +25,7 @@ pub(super) use dispatch::{
     handle_claim_task, handle_dispatch_next, handle_dispatch_task, handle_send_message,
 };
 pub(super) use verify::handle_set_verify_command;
+pub(super) use watch::{handle_subscribe_to_task, handle_unsubscribe_from_task};
 pub(super) use wrap_up::{handle_exit_session, handle_wrap_up};
 
 // ---------------------------------------------------------------------------
@@ -150,6 +152,22 @@ pub(super) struct SendMessageArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) to_task_id: i64,
     pub(super) body: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct SubscribeToTaskArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) watcher_task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) target_task_id: i64,
+}
+
+#[derive(Deserialize)]
+pub(super) struct UnsubscribeFromTaskArgs {
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) watcher_task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_i64")]
+    pub(super) target_task_id: i64,
 }
 
 #[derive(Deserialize)]

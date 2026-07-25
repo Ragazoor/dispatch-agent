@@ -382,6 +382,28 @@ the resulting URL to exit_session (not to wrap_up).",
             "required": ["from_task_id", "to_task_id", "body"]
         };
 
+    async "subscribe_to_task" => tasks::handle_subscribe_to_task,
+        "Subscribe to be notified when another task finishes (reaches Done or Archived) or is deleted first. If the target has already finished, you're told immediately instead of being subscribed. Delivery is a one-shot tmux nudge, same mechanism as send_message.",
+        {
+            "type": "object",
+            "properties": {
+                "watcher_task_id": { "type": "integer", "description": "Your own task ID (the one to notify)" },
+                "target_task_id": { "type": "integer", "description": "ID of the task to watch for completion" }
+            },
+            "required": ["watcher_task_id", "target_task_id"]
+        };
+
+    async "unsubscribe_from_task" => tasks::handle_unsubscribe_from_task,
+        "Cancel a previously registered subscribe_to_task watch. Idempotent — succeeds even if no such subscription exists.",
+        {
+            "type": "object",
+            "properties": {
+                "watcher_task_id": { "type": "integer", "description": "Your own task ID" },
+                "target_task_id": { "type": "integer", "description": "ID of the task you were watching" }
+            },
+            "required": ["watcher_task_id", "target_task_id"]
+        };
+
     async "record_learning" => learnings::handle_record_learning,
         "Record a new entry in the shared knowledge base. The entry is immediately active and will be injected into future dispatch prompts for agents working in the matching scope. Omit scope_ref to auto-derive it from the calling task (recommended in most cases).",
         {

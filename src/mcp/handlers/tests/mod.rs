@@ -586,6 +586,18 @@ async fn tool_schemas_match_arg_structs() {
             json!({"from_task_id": 1, "to_task_id": 2, "body": "Hello from task 1"}),
         ),
         (
+            "subscribe_to_task",
+            BTreeSet::from(["watcher_task_id", "target_task_id"]),
+            BTreeSet::from(["watcher_task_id", "target_task_id"]),
+            json!({"watcher_task_id": 1, "target_task_id": 2}),
+        ),
+        (
+            "unsubscribe_from_task",
+            BTreeSet::from(["watcher_task_id", "target_task_id"]),
+            BTreeSet::from(["watcher_task_id", "target_task_id"]),
+            json!({"watcher_task_id": 1, "target_task_id": 2}),
+        ),
+        (
             "dispatch_next",
             BTreeSet::from(["epic_id"]),
             BTreeSet::from(["epic_id"]),
@@ -728,6 +740,14 @@ async fn tool_schemas_match_arg_structs() {
             }
             "send_message" => {
                 serde_json::from_value::<SendMessageArgs>(payload.clone()).unwrap();
+            }
+            "subscribe_to_task" => {
+                serde_json::from_value::<super::tasks::SubscribeToTaskArgs>(payload.clone())
+                    .unwrap();
+            }
+            "unsubscribe_from_task" => {
+                serde_json::from_value::<super::tasks::UnsubscribeFromTaskArgs>(payload.clone())
+                    .unwrap();
             }
             "dispatch_next" => {
                 serde_json::from_value::<DispatchNextArgs>(payload.clone()).unwrap();
