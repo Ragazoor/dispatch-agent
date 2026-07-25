@@ -136,6 +136,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
         migrate_v76_fix_feed_task_subtree_insert_trigger_self_conflict,
     ),
     (77, migrate_v77_add_auto_run_plan),
+    (78, migrate_v78_create_task_watchers),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1109,6 +1110,23 @@ pub(super) fn migrate_v75_create_repo_base_branches(conn: &Connection) -> Result
         );",
     )
     .context("Failed to create repo_base_branches table (migration v75)")?;
+    Ok(())
+}
+
+/// Creates `task_watchers`: one-shot subscriptions where `watcher_task_id`
+/// wants to be notified when `target_task_id` reaches `Done`/`Archived`, or
+/// is deleted before finishing. See `docs/specs/task-watchers.allium`.
+pub(super) fn migrate_v78_create_task_watchers(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_watchers (
+            id              INTEGER PRIMARY KEY,
+            watcher_task_id INTEGER NOT NULL,
+            target_task_id  INTEGER NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(watcher_task_id, target_task_id)
+        );",
+    )
+    .context("v78: failed to create task_watchers table")?;
     Ok(())
 }
 

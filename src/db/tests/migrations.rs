@@ -3479,3 +3479,68 @@ async fn auto_run_plan_column_defaults_to_false() {
     let task = db.get_task(id).await.unwrap().expect("task should exist");
     assert!(!task.auto_run_plan);
 }
+
+#[tokio::test]
+async fn fresh_db_creates_task_watchers_table() {
+    let db = in_memory_db().await;
+    let exists: i64 = db
+        .db_call(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'task_watchers'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        exists, 1,
+        "expected migration v78 to create the task_watchers table"
+    );
+}
+
+#[test]
+fn migrate_v78_creates_task_watchers_table_on_legacy_db() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    conn.execute_batch("PRAGMA user_version = 77;").unwrap();
+
+    crate::db::migrations::migrate_v78_create_task_watchers(&conn).unwrap();
+
+    let exists: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name = 'task_watchers'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        exists, 1,
+        "migrate_v78 should create the task_watchers table on a legacy DB"
+    );
+
+    // Idempotent: running again must not error.
+    crate::db::migrations::migrate_v78_create_task_watchers(&conn).unwrap();
+}
+
+#[test]
+fn migrate_v78_task_watchers_unique_constraint_rejects_duplicate_pair() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    crate::db::migrations::migrate_v78_create_task_watchers(&conn).unwrap();
+
+    conn.execute(
+        "INSERT INTO task_watchers (watcher_task_id, target_task_id) VALUES (1, 2)",
+        [],
+    )
+    .unwrap();
+
+    let err = conn
+        .execute(
+            "INSERT INTO task_watchers (watcher_task_id, target_task_id) VALUES (1, 2)",
+            [],
+        )
+        .unwrap_err();
+    assert!(format!("{err}").to_lowercase().contains("unique"));
+}
