@@ -17,6 +17,26 @@ pub enum SubscribeOutcome {
     AlreadyFinished(TaskStatus),
 }
 
+/// Why a watch notification is being delivered — mirrors `reason:
+/// finished | deleted` in `docs/specs/task-watchers.allium`. Used to build
+/// both the `.claude-messages` filename prefix and the tmux nudge text, so
+/// the two can't drift out of sync the way two independent string literals
+/// could.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchReason {
+    Finished,
+    Deleted,
+}
+
+impl WatchReason {
+    fn label(self) -> &'static str {
+        match self {
+            WatchReason::Finished => "finished",
+            WatchReason::Deleted => "deleted",
+        }
+    }
+}
+
 impl TaskService {
     pub async fn subscribe_to_task(
         &self,
@@ -52,22 +72,19 @@ impl TaskService {
             .map_err(ServiceError::from)
     }
 
-    /// Called after a task's status is persisted. No-ops unless the status
-    /// actually changed to a finished state (`Done`/`Archived`).
-    pub(super) async fn notify_watchers_if_finished(
-        &self,
-        task_id: TaskId,
-        old_status: TaskStatus,
-        new_status: TaskStatus,
-    ) {
-        if old_status == new_status
+    /// Called after a task's status is persisted, given the task as it was
+    /// *before* the write (so callers that already fetched it for their own
+    /// purposes don't pay for a second `get_task`). No-ops unless the
+    /// transition actually entered a finished state (`Done`/`Archived`).
+    pub(super) async fn notify_watchers_if_finished(&self, prior: &Task, new_status: TaskStatus) {
+        if prior.status == new_status
             || !matches!(new_status, TaskStatus::Done | TaskStatus::Archived)
         {
             return;
         }
-        let Ok(watcher_ids) = self.db.list_watchers_of(task_id).await else {
+        let Ok(watcher_ids) = self.db.list_watchers_of(prior.id).await else {
             tracing::warn!(
-                task_id = task_id.0,
+                task_id = prior.id.0,
                 "failed to list watchers for finished task"
             );
             return;
@@ -75,26 +92,19 @@ impl TaskService {
         if watcher_ids.is_empty() {
             return;
         }
-        let Ok(Some(target)) = self.db.get_task(task_id).await else {
-            tracing::warn!(
-                task_id = task_id.0,
-                "finished task disappeared before notifying watchers"
-            );
-            return;
-        };
         let body = format!(
             "Task {} (\"{}\") that you were watching has reached status '{}'.",
-            target.id.0,
-            target.title,
+            prior.id.0,
+            prior.title,
             new_status.as_str()
         );
         for watcher_id in watcher_ids {
-            self.deliver_watch_notification(watcher_id, target.id, &body, "finished")
+            self.deliver_watch_notification(watcher_id, prior.id, &body, WatchReason::Finished)
                 .await;
         }
-        if let Err(e) = self.db.delete_watches_of_target(task_id).await {
+        if let Err(e) = self.db.delete_watches_of_target(prior.id).await {
             tracing::warn!(
-                task_id = task_id.0,
+                task_id = prior.id.0,
                 "failed to clean up watch rows after firing: {e}"
             );
         }
@@ -116,8 +126,13 @@ impl TaskService {
                         deleted.id.0, deleted.title
                     );
                     for watcher_id in watcher_ids {
-                        self.deliver_watch_notification(watcher_id, deleted.id, &body, "deleted")
-                            .await;
+                        self.deliver_watch_notification(
+                            watcher_id,
+                            deleted.id,
+                            &body,
+                            WatchReason::Deleted,
+                        )
+                        .await;
                     }
                 }
                 Err(e) => tracing::warn!(
@@ -148,7 +163,7 @@ impl TaskService {
         watcher_id: TaskId,
         target_id: TaskId,
         body: &str,
-        kind: &str,
+        reason: WatchReason,
     ) {
         let Ok(Some(watcher)) = self.db.get_task(watcher_id).await else {
             tracing::warn!(
@@ -169,30 +184,28 @@ impl TaskService {
             return;
         };
 
-        let runner = self.runner.clone();
-        let body = body.to_string();
-        let kind = kind.to_string();
-        let file_prefix = format!("watch-{kind}-{}", target_id.0);
-        let result = tokio::task::spawn_blocking(move || {
-            let filename = crate::notify::write_message_file(&worktree, &file_prefix, &body)?;
-            let text = format!(
-                "The task you were watching (#{}) just {kind}. Read .claude-messages/{filename} for details, then delete the file.",
-                target_id.0
-            );
-            crate::notify::notify_tmux(&*runner, &worktree, &tmux_window, &filename, &text)
-        })
+        let file_prefix = format!("watch-{}-{}", reason.label(), target_id.0);
+        let result = crate::notify::deliver(
+            self.runner.clone(),
+            worktree,
+            tmux_window,
+            file_prefix,
+            body.to_string(),
+            move |filename| {
+                format!(
+                    "The task you were watching (#{}) just {}. Read .claude-messages/{filename} for details, then delete the file.",
+                    target_id.0,
+                    reason.label()
+                )
+            },
+        )
         .await;
 
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!(
+        if let Err(e) = result {
+            tracing::warn!(
                 watcher_id = watcher_id.0,
                 "failed to deliver watch notification: {e}"
-            ),
-            Err(e) => tracing::warn!(
-                watcher_id = watcher_id.0,
-                "watch notification delivery task panicked: {e}"
-            ),
+            );
         }
     }
 }

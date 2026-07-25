@@ -120,12 +120,8 @@ impl TaskService {
 
         self.db.patch_task(task_id, &patch).await?;
 
-        if is_finishing_status {
-            if let (Some(new_status), Some(p)) = (params.status, prior.as_ref()) {
-                self.notify_watchers_if_finished(task_id, p.status, new_status)
-                    .await;
-            }
-        }
+        self.notify_watchers_after_status_write(prior.as_ref(), params.status)
+            .await;
 
         if let Some(routed_id) = routed_epic_id {
             let old_epic_id = prior.as_ref().and_then(|t| t.epic_id);
@@ -273,6 +269,29 @@ impl TaskService {
         }
     }
 
+    /// After a status-affecting write, notify watchers if `new_status` is a
+    /// finishing status (`Done`/`Archived`) the write actually transitioned
+    /// into. Shared by `update_task` and `cli_update_task` so both callers
+    /// funnel through one call with one ordering relative to epic
+    /// recalculation, instead of each re-deriving this check. `prior` is the
+    /// task as fetched before the write — pass `None` when the caller didn't
+    /// need to fetch it (this no-ops immediately in that case, since a
+    /// finishing transition always requires `prior` to have been fetched).
+    async fn notify_watchers_after_status_write(
+        &self,
+        prior: Option<&Task>,
+        new_status: Option<TaskStatus>,
+    ) {
+        let Some(new_status) = new_status else {
+            return;
+        };
+        if !matches!(new_status, TaskStatus::Done | TaskStatus::Archived) {
+            return;
+        }
+        let Some(prior) = prior else { return };
+        self.notify_watchers_if_finished(prior, new_status).await;
+    }
+
     /// Updates a task status from a CLI subcommand (human operator path).
     ///
     /// **Caller:** `src/main.rs` CLI subcommands (`dispatch update`, etc.).
@@ -292,8 +311,8 @@ impl TaskService {
         sub_status: Option<SubStatus>,
     ) -> Result<bool, ServiceError> {
         let is_finishing_status = matches!(new_status, TaskStatus::Done | TaskStatus::Archived);
-        let old_status = if is_finishing_status {
-            self.db.get_task(task_id).await?.map(|t| t.status)
+        let prior = if is_finishing_status {
+            self.db.get_task(task_id).await?
         } else {
             None
         };
@@ -321,11 +340,9 @@ impl TaskService {
         };
 
         if updated {
+            self.notify_watchers_after_status_write(prior.as_ref(), Some(new_status))
+                .await;
             self.recalculate_epic_for_task(task_id).await;
-            if let Some(old) = old_status {
-                self.notify_watchers_if_finished(task_id, old, new_status)
-                    .await;
-            }
         }
 
         Ok(updated)

@@ -2,6 +2,8 @@
 //! worktree and injects a tmux nudge pointing at it. Used by both the
 //! `send_message` MCP tool and task-watcher completion/deletion notices.
 
+use std::sync::Arc;
+
 use crate::process::ProcessRunner;
 
 /// Writes `body` to a uniquely-named markdown file under
@@ -37,6 +39,29 @@ pub fn notify_tmux(
         return Err(format!("failed to send notification to target agent: {e}"));
     }
     Ok(())
+}
+
+/// Writes `body` to a message file and injects a tmux nudge pointing at it,
+/// wrapping both blocking calls in a single `spawn_blocking`. `notification_text`
+/// builds the tmux nudge from the filename `write_message_file` produced, since
+/// the text can't be known until the file is written. Folds a `spawn_blocking`
+/// panic into the same `Result` as a write/tmux failure, so callers get one
+/// error type regardless of which step failed.
+pub async fn deliver(
+    runner: Arc<dyn ProcessRunner>,
+    worktree: String,
+    tmux_window: String,
+    file_prefix: String,
+    body: String,
+    notification_text: impl FnOnce(&str) -> String + Send + 'static,
+) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let filename = write_message_file(&worktree, &file_prefix, &body)?;
+        let text = notification_text(&filename);
+        notify_tmux(&*runner, &worktree, &tmux_window, &filename, &text)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("notification task panicked: {e}")))
 }
 
 #[cfg(test)]
@@ -92,5 +117,52 @@ mod tests {
             !std::path::Path::new(&path).exists(),
             "message file should be cleaned up on delivery failure"
         );
+    }
+
+    #[tokio::test]
+    async fn deliver_writes_file_and_notifies_using_its_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().to_str().unwrap().to_string();
+        let runner: Arc<dyn crate::process::ProcessRunner> =
+            Arc::new(MockProcessRunner::new(vec![
+                MockProcessRunner::ok(),
+                MockProcessRunner::ok(),
+            ]));
+
+        deliver(
+            runner,
+            worktree.clone(),
+            "task-1".to_string(),
+            "prefix".to_string(),
+            "body".to_string(),
+            |filename| format!("see {filename}"),
+        )
+        .await
+        .unwrap();
+
+        let messages_dir = format!("{worktree}/.claude-messages");
+        let entries: Vec<_> = std::fs::read_dir(&messages_dir).unwrap().collect();
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn deliver_maps_spawn_blocking_panic_to_an_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().to_str().unwrap().to_string();
+        let runner: Arc<dyn crate::process::ProcessRunner> =
+            Arc::new(MockProcessRunner::new(vec![]));
+
+        let err = deliver(
+            runner,
+            worktree,
+            "task-1".to_string(),
+            "prefix".to_string(),
+            "body".to_string(),
+            |_filename| panic!("boom"),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.contains("notification task panicked"));
     }
 }

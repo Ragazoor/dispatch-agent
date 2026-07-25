@@ -52,15 +52,6 @@ fn make_task_params(repo_path: &str) -> CreateTaskParams {
 // -- TaskService ----------------------------------------------------------
 
 #[tokio::test]
-async fn task_service_defaults_to_real_process_runner() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    // No observable behavior differs yet — this just locks in that
-    // construction without with_runner() compiles and doesn't panic.
-    let _ = svc.create_task(make_task_params("/repo")).await.unwrap();
-}
-
-#[tokio::test]
 async fn create_and_get_task() {
     let db = test_db().await;
     let svc = task_svc(&db);
@@ -3470,8 +3461,7 @@ mod watchers {
     }
 
     #[tokio::test]
-    async fn delete_task_does_not_notify_watcher_when_target_already_finished_via_bypassed_write()
-    {
+    async fn delete_task_does_not_notify_watcher_when_target_already_finished_via_bypassed_write() {
         // Characterization test for the previously-masked gap: FeedRunner
         // writes task status directly via its own DB write handle, bypassing
         // TaskService::update_task/cli_update_task entirely — so a

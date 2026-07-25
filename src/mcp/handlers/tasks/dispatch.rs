@@ -307,30 +307,27 @@ pub(crate) async fn handle_send_message(
         );
     };
 
+    let sender_id = from_task.id.0;
     let message_content = format!(
         "[Message from task {}: \"{}\"]\n{}",
         from_task.id.0, from_task.title, parsed.body
     );
-    let file_prefix = from_task.id.0.to_string();
-    let worktree = worktree.clone();
-    let tmux_window = tmux_window.clone();
-    let runner = state.runner.clone();
-    let notification_result = tokio::task::spawn_blocking(move || {
-        let filename = crate::notify::write_message_file(&worktree, &file_prefix, &message_content)?;
-        let notification = format!(
-            "You received a message from task {}. Read .claude-messages/{} for the full content, then delete the file.",
-            from_task.id.0, filename
-        );
-        crate::notify::notify_tmux(&*runner, &worktree, &tmux_window, &filename, &notification)
-    })
-    .await;
-
-    match notification_result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return JsonRpcResponse::err(id, -32603, e),
-        Err(e) => {
-            return JsonRpcResponse::err(id, -32603, format!("notification task panicked: {e}"))
-        }
+    let file_prefix = sender_id.to_string();
+    if let Err(e) = crate::notify::deliver(
+        state.runner.clone(),
+        worktree.clone(),
+        tmux_window.clone(),
+        file_prefix,
+        message_content,
+        move |filename| {
+            format!(
+                "You received a message from task {sender_id}. Read .claude-messages/{filename} for the full content, then delete the file."
+            )
+        },
+    )
+    .await
+    {
+        return JsonRpcResponse::err(id, -32603, e);
     }
 
     state.notify_message_sent(to_task.id);
