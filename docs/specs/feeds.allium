@@ -328,11 +328,12 @@ rule SeedExampleFeedEpic {
             )
 
     @guidance
-        -- Implementation: src/setup.rs::seed_feed_epics calls
-        -- src/setup.rs::install_example_script(data_dir).
+        -- Implementation: src/setup/plugins.rs::seed_feed_epics calls
+        -- src/setup/plugins.rs::install_example_script(data_dir)
+        -- (both re-exported via `pub use` in src/setup/mod.rs).
         -- The embedded script source: scripts/fetch-dependabot.sh
         -- (included via include_str!).
-        -- Coverage: src/setup.rs tests prefixed with seed_feed_epics_
+        -- Coverage: src/setup/plugins.rs tests prefixed with seed_feed_epics_
         -- and install_example_script_.
 }
 
