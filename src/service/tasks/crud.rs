@@ -393,8 +393,8 @@ impl TaskService {
     }
 
     pub async fn delete_task(&self, task_id: TaskId) -> Result<(), ServiceError> {
-        // Verify task exists
-        self.get_task(task_id).await?;
+        let task = self.get_task(task_id).await?;
+        self.notify_watchers_of_deletion(&task).await;
 
         self.db
             .delete_task(task_id)

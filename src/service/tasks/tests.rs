@@ -3423,4 +3423,50 @@ mod watchers {
 
         assert!(db.list_watchers_of(target).await.unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn delete_task_notifies_watchers_of_deletion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().to_str().unwrap().to_string();
+        let db = test_db().await;
+        let mock = Arc::new(crate::process::MockProcessRunner::new(vec![
+            crate::process::MockProcessRunner::ok(),
+            crate::process::MockProcessRunner::ok(),
+        ]));
+        let runner: Arc<dyn crate::process::ProcessRunner> = mock.clone();
+        let svc = task_svc_with_runner(&db, runner);
+
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        db.patch_task(
+            watcher,
+            &db::TaskPatch::new()
+                .worktree(Some(&worktree))
+                .tmux_window(Some("task-watcher")),
+        )
+        .await
+        .unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+
+        svc.delete_task(target).await.unwrap();
+
+        assert_eq!(mock.recorded_calls().len(), 2);
+        assert!(db.list_watchers_of(target).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_task_cleans_up_rows_where_it_was_the_watcher() {
+        let db = test_db().await;
+        let runner: Arc<dyn crate::process::ProcessRunner> =
+            Arc::new(crate::process::MockProcessRunner::new(vec![]));
+        let svc = task_svc_with_runner(&db, runner);
+
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+
+        svc.delete_task(watcher).await.unwrap();
+
+        assert!(db.list_watchers_of(target).await.unwrap().is_empty());
+    }
 }

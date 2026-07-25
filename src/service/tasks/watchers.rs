@@ -103,9 +103,6 @@ impl TaskService {
     /// Called before a task is hard-deleted. Notifies watchers that it was
     /// deleted (not finished), then removes every watch row involving it
     /// (as target or as watcher).
-    ///
-    /// Unused until Tasks 8-9 wire this into `delete_task`.
-    #[allow(dead_code)]
     pub(super) async fn notify_watchers_of_deletion(&self, deleted: &Task) {
         match self.db.list_watchers_of(deleted.id).await {
             Ok(watcher_ids) => {
@@ -140,9 +137,6 @@ impl TaskService {
     /// Deliver a one-shot notification to `watcher_id`'s tmux window, if it
     /// has one. Logs and drops (no error propagated) if the watcher has no
     /// live tmux window — this is a best-effort nudge, not a durable queue.
-    ///
-    /// Unused until Tasks 8-9 wire callers that invoke the two methods above.
-    #[allow(dead_code)]
     async fn deliver_watch_notification(
         &self,
         watcher_id: TaskId,
