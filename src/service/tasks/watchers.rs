@@ -54,9 +54,6 @@ impl TaskService {
 
     /// Called after a task's status is persisted. No-ops unless the status
     /// actually changed to a finished state (`Done`/`Archived`).
-    ///
-    /// Unused until Tasks 8-9 wire this into `update_task`/`cli_update_task`.
-    #[allow(dead_code)]
     pub(super) async fn notify_watchers_if_finished(
         &self,
         task_id: TaskId,

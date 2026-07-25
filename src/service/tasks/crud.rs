@@ -93,8 +93,11 @@ impl TaskService {
             params.url.as_ref(),
             Some(UrlUpdate::Set(u)) if u.is_pr()
         );
+        let is_finishing_status =
+            matches!(params.status, Some(TaskStatus::Done | TaskStatus::Archived));
         let needs_prior = params.epic_id.is_some()
-            || (params.status == Some(TaskStatus::Review) && is_pr_url_set);
+            || (params.status == Some(TaskStatus::Review) && is_pr_url_set)
+            || is_finishing_status;
         let prior = if needs_prior {
             self.db.get_task(task_id).await?
         } else {
@@ -116,6 +119,13 @@ impl TaskService {
         };
 
         self.db.patch_task(task_id, &patch).await?;
+
+        if is_finishing_status {
+            if let (Some(new_status), Some(p)) = (params.status, prior.as_ref()) {
+                self.notify_watchers_if_finished(task_id, p.status, new_status)
+                    .await;
+            }
+        }
 
         if let Some(routed_id) = routed_epic_id {
             let old_epic_id = prior.as_ref().and_then(|t| t.epic_id);
@@ -281,6 +291,13 @@ impl TaskService {
         only_if: Option<TaskStatus>,
         sub_status: Option<SubStatus>,
     ) -> Result<bool, ServiceError> {
+        let is_finishing_status = matches!(new_status, TaskStatus::Done | TaskStatus::Archived);
+        let old_status = if is_finishing_status {
+            self.db.get_task(task_id).await?.map(|t| t.status)
+        } else {
+            None
+        };
+
         let updated = if let Some(expected) = only_if {
             let changed = self
                 .db
@@ -305,6 +322,10 @@ impl TaskService {
 
         if updated {
             self.recalculate_epic_for_task(task_id).await;
+            if let Some(old) = old_status {
+                self.notify_watchers_if_finished(task_id, old, new_status)
+                    .await;
+            }
         }
 
         Ok(updated)

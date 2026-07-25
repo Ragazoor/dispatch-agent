@@ -24,9 +24,8 @@ fn epic_svc(db: &Arc<dyn db::TaskStore>) -> EpicService {
 }
 
 /// Construct a `TaskService` with a caller-supplied `ProcessRunner` (e.g. a
-/// `MockProcessRunner`). Unused until Task 8/9 wire watch/finish notification
-/// behavior on top of `with_runner`.
-#[allow(dead_code)]
+/// `MockProcessRunner`). Used by watch/finish notification tests to assert
+/// on tmux/file-system side effects deterministically.
 fn task_svc_with_runner(
     db: &Arc<dyn db::TaskStore>,
     runner: Arc<dyn crate::process::ProcessRunner>,
@@ -3313,5 +3312,115 @@ mod watchers {
         let target = svc.create_task(make_task_params("/repo")).await.unwrap();
 
         svc.unsubscribe_from_task(watcher, target).await.unwrap(); // no prior subscribe — must not error
+    }
+
+    #[tokio::test]
+    async fn update_task_to_done_notifies_live_watcher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().to_str().unwrap().to_string();
+        let db = test_db().await;
+        let mock = Arc::new(crate::process::MockProcessRunner::new(vec![
+            crate::process::MockProcessRunner::ok(),
+            crate::process::MockProcessRunner::ok(),
+        ]));
+        let runner: Arc<dyn crate::process::ProcessRunner> = mock.clone();
+        let svc = task_svc_with_runner(&db, runner);
+
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        db.patch_task(
+            watcher,
+            &db::TaskPatch::new()
+                .worktree(Some(&worktree))
+                .tmux_window(Some("task-watcher")),
+        )
+        .await
+        .unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+
+        svc.update_task(UpdateTaskParams::for_task(target).status(TaskStatus::Done))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            mock.recorded_calls().len(),
+            2,
+            "expected one tmux notification (2 send-keys calls)"
+        );
+        assert!(
+            db.list_watchers_of(target).await.unwrap().is_empty(),
+            "subscription should be cleared after firing"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_task_to_done_is_noop_when_status_unchanged() {
+        let db = test_db().await;
+        let runner: Arc<dyn crate::process::ProcessRunner> =
+            Arc::new(crate::process::MockProcessRunner::new(vec![]));
+        let svc = task_svc_with_runner(&db, runner);
+
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        db.patch_task(target, &db::TaskPatch::new().status(TaskStatus::Done))
+            .await
+            .unwrap();
+
+        // Re-setting to Done (same status) must not attempt any notification —
+        // the MockProcessRunner has zero queued responses, so any call would panic.
+        svc.update_task(UpdateTaskParams::for_task(target).status(TaskStatus::Done))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_task_to_done_logs_and_drops_dead_watcher() {
+        let db = test_db().await;
+        let runner: Arc<dyn crate::process::ProcessRunner> =
+            Arc::new(crate::process::MockProcessRunner::new(vec![]));
+        let svc = task_svc_with_runner(&db, runner);
+
+        // Watcher has no worktree/tmux_window — still Backlog.
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+
+        // Must not panic even though the MockProcessRunner has zero queued
+        // responses — the dead watcher is dropped before any process call.
+        svc.update_task(UpdateTaskParams::for_task(target).status(TaskStatus::Done))
+            .await
+            .unwrap();
+
+        assert!(db.list_watchers_of(target).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn cli_update_task_to_done_notifies_watcher() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().to_str().unwrap().to_string();
+        let db = test_db().await;
+        let runner: Arc<dyn crate::process::ProcessRunner> =
+            Arc::new(crate::process::MockProcessRunner::new(vec![
+                crate::process::MockProcessRunner::ok(),
+                crate::process::MockProcessRunner::ok(),
+            ]));
+        let svc = task_svc_with_runner(&db, runner);
+
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        db.patch_task(
+            watcher,
+            &db::TaskPatch::new()
+                .worktree(Some(&worktree))
+                .tmux_window(Some("task-watcher")),
+        )
+        .await
+        .unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+
+        svc.cli_update_task(target, TaskStatus::Done, None, None)
+            .await
+            .unwrap();
+
+        assert!(db.list_watchers_of(target).await.unwrap().is_empty());
     }
 }
