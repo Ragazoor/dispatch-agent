@@ -270,37 +270,22 @@ mod tests {
     async fn exec_archive_learning_uses_injected_learning_svc_not_ad_hoc_construction() {
         use crate::db::LearningFilter;
         use crate::models::{Learning, LearningVerdict, RetrievalSource};
-        use crate::service::{
-            CreateLearningParams, LearningServiceApi, ServiceError, UpdateLearningParams,
-        };
+        use crate::service::{LearningServiceApiStub, ServiceError};
 
+        /// Only the methods this flow touches are mocked; the rest inherit the
+        /// panicking defaults from `LearningServiceApiStub`.
         struct AlwaysFailLearningService;
 
         #[async_trait::async_trait]
-        impl LearningServiceApi for AlwaysFailLearningService {
-            async fn create_learning(
-                &self,
-                _: CreateLearningParams,
-            ) -> Result<LearningId, ServiceError> {
-                Err(ServiceError::Validation("mock".into()))
-            }
-            async fn get_learning(&self, _: LearningId) -> Result<Learning, ServiceError> {
-                Err(ServiceError::Validation("mock".into()))
-            }
+        impl LearningServiceApiStub for AlwaysFailLearningService {
             async fn list_learnings(
                 &self,
                 _: LearningFilter,
             ) -> Result<Vec<Learning>, ServiceError> {
                 Ok(vec![])
             }
-            async fn reject_learning(&self, _: LearningId) -> Result<(), ServiceError> {
-                Err(ServiceError::Validation("mock".into()))
-            }
             async fn archive_learning(&self, _: LearningId) -> Result<(), ServiceError> {
                 Err(ServiceError::Validation("injected mock error".into()))
-            }
-            async fn update_learning(&self, _: UpdateLearningParams) -> Result<(), ServiceError> {
-                Err(ServiceError::Validation("mock".into()))
             }
             async fn record_retrieval(
                 &self,
@@ -324,6 +309,8 @@ mod tests {
                 Ok(0)
             }
         }
+
+        crate::learning_service_api!(service_api_stub_bridge, AlwaysFailLearningService);
 
         let db = Arc::new(Database::open_in_memory().await.unwrap());
         let db_arc: Arc<dyn crate::db::TaskStore> = db.clone();

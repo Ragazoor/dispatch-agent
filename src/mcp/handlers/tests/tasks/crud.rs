@@ -307,112 +307,27 @@ async fn update_task_accepts_string_task_id() {
 // Mock service injection — demonstrates the TaskServiceApi seam
 // ---------------------------------------------------------------------------
 
-fn not_mocked<T>() -> Result<T, crate::service::ServiceError> {
-    Err(crate::service::ServiceError::Internal(anyhow::anyhow!(
-        "not mocked"
-    )))
-}
-
 /// A minimal mock that satisfies `TaskServiceApi` without a database.
-/// Unused methods return `ServiceError::Internal` so test panics are obvious.
+///
+/// Only `list_tasks` is mocked; every other method inherits the panicking
+/// default from `TaskServiceApiStub`, so an unexpected call fails loudly and
+/// adding a method to the seam does not touch this file. See the emitter docs
+/// in `src/service/api.rs`.
 struct MockTaskService {
     tasks: Vec<crate::models::Task>,
 }
 
 #[async_trait::async_trait]
-impl crate::service::TaskServiceApi for MockTaskService {
+impl crate::service::TaskServiceApiStub for MockTaskService {
     async fn list_tasks(
         &self,
         _filter: crate::service::ListTasksFilter,
     ) -> Result<Vec<crate::models::Task>, crate::service::ServiceError> {
         Ok(self.tasks.clone())
     }
-
-    async fn update_task(
-        &self,
-        _p: crate::service::UpdateTaskParams,
-    ) -> Result<crate::service::UpdateTaskResult, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn cli_update_task(
-        &self,
-        _id: crate::models::TaskId,
-        _s: crate::models::TaskStatus,
-        _o: Option<crate::models::TaskStatus>,
-        _ss: Option<crate::models::SubStatus>,
-    ) -> Result<bool, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn create_task(
-        &self,
-        _p: crate::service::CreateTaskParams,
-    ) -> Result<crate::models::TaskId, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn create_task_returning(
-        &self,
-        _p: crate::service::CreateTaskParams,
-    ) -> Result<crate::models::Task, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn delete_task(
-        &self,
-        _id: crate::models::TaskId,
-    ) -> Result<(), crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn batch_patch_sub_status(
-        &self,
-        _updates: &[(crate::models::TaskId, crate::models::SubStatus)],
-    ) -> Result<(), crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn get_task(
-        &self,
-        _id: crate::models::TaskId,
-    ) -> Result<crate::models::Task, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn claim_task(
-        &self,
-        _p: crate::service::ClaimTaskParams,
-    ) -> Result<crate::models::Task, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn validate_wrap_up(
-        &self,
-        _id: crate::models::TaskId,
-    ) -> Result<crate::models::Task, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn validate_send_message(
-        &self,
-        _from: crate::models::TaskId,
-        _to: crate::models::TaskId,
-    ) -> Result<(crate::models::Task, crate::models::Task), crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn record_hook_event(
-        &self,
-        _id: crate::models::TaskId,
-        _kind: crate::models::HookEventKind,
-    ) -> Result<(), crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn next_backlog_task(
-        &self,
-        _epic_id: crate::models::EpicId,
-    ) -> Result<Option<crate::models::Task>, crate::service::ServiceError> {
-        not_mocked()
-    }
-    async fn move_task_to_epic(
-        &self,
-        _task_id: crate::models::TaskId,
-        _new_epic: Option<crate::models::EpicId>,
-    ) -> Result<(), crate::service::ServiceError> {
-        not_mocked()
-    }
 }
+
+crate::task_service_api!(service_api_stub_bridge, MockTaskService);
 
 fn mock_task(id: i64, title: &str) -> crate::models::Task {
     crate::models::Task {

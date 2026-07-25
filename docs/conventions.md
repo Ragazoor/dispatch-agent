@@ -161,9 +161,35 @@ Parallel to DB trait narrowing, the service layer exposes these traits in `src/s
 
 Consumers that call task or epic operations should hold `Arc<dyn TaskServiceApi>` / `Arc<dyn EpicServiceApi>` rather than the concrete struct. This lets unit tests inject a mock service without a real database — construct `McpState` directly (all fields are `pub` or `pub(crate)`) and pass a custom `Arc<dyn TaskServiceApi>`.
 
-The concrete structs (`TaskService`, `EpicService`) delegate via UFCS (`TaskService::method(self, …)`) inside the `impl` blocks to avoid shadowing the inherent methods.
+### Each seam is declared once — edit the spec macro, not the impls
 
-**`LearningServiceApi` injection is complete.** `src/service/api.rs` exports `LearningServiceApi` and a `MockLearningService` (test-only, panics on every method). Both `TuiRuntime` and `McpState` hold `learning_svc: Arc<dyn LearningServiceApi>`, constructed once at startup. Tests that do not exercise learning operations use `MockLearningService`; tests that need real learning behaviour (e.g. `runtime/learnings.rs`, `runtime/editor.rs` learning-editor tests) inject `Arc::new(LearningService::new(db, emb_svc))` directly.
+Every seam's signature list lives in exactly one place: a `macro_rules!` *spec* macro in `src/service/api.rs` (`task_service_api!`, `epic_service_api!`, `todo_service_api!`, `learning_service_api!`). A spec macro takes the name of an *emitter* macro and replays its signature list into it, so trait, impl, and mock scaffolding are all generated from the same tokens and cannot drift:
+
+| Emitter | Generates |
+|---------|-----------|
+| `service_api_trait!` | the `#[async_trait]` trait declaration |
+| `service_api_delegate!` | the production impl, delegating via UFCS (`TaskService::method(self, …)`) so the inherent methods are not shadowed |
+| `service_api_stub_trait!` | a test-only `*ServiceApiStub` trait whose methods all default to `panic!("… is not mocked")` |
+| `service_api_stub_bridge!` | `impl <Api> for <MockType>`, forwarding every method to that mock's stub-trait impl |
+
+**Adding or changing a method** means editing one signature list. Types there are fully qualified (`$crate::models::TaskId`, …) because `macro_rules!` resolves type paths at the *call site*, and mocks in other modules invoke the same spec macro.
+
+**Writing a mock**: implement the `*ServiceApiStub` trait, override only the methods the test exercises, then bridge it onto the real seam:
+
+```rust
+#[async_trait::async_trait]
+impl crate::service::TaskServiceApiStub for MockTaskService {
+    async fn list_tasks(&self, _: ListTasksFilter) -> Result<Vec<Task>, ServiceError> {
+        Ok(self.tasks.clone())
+    }
+}
+
+crate::task_service_api!(service_api_stub_bridge, MockTaskService);
+```
+
+Unmocked calls panic rather than silently returning a default, and a new seam method no longer breaks unrelated mocks with `E0046`. Stub traits are generated for `TaskServiceApi` and `LearningServiceApi` (the seams with mocks); add a `#[cfg(test)] <spec>!(service_api_stub_trait);` line in `api.rs` when another seam needs one.
+
+**`LearningServiceApi` injection is complete.** `src/service/api.rs` exports `LearningServiceApi` and a `MockLearningService` (test-only, an empty `LearningServiceApiStub` impl, so every method panics). Both `TuiRuntime` and `McpState` hold `learning_svc: Arc<dyn LearningServiceApi>`, constructed once at startup. Tests that do not exercise learning operations use `MockLearningService`; tests that need real learning behaviour (e.g. `runtime/learnings.rs`, `runtime/editor.rs` learning-editor tests) inject `Arc::new(LearningService::new(db, emb_svc))` directly.
 
 ## Service layer is the mutation boundary
 
