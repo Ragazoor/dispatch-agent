@@ -307,38 +307,30 @@ pub(crate) async fn handle_send_message(
         );
     };
 
-    // Write message to a uniquely-named file in target's worktree
-    let messages_dir = format!("{worktree}/.claude-messages");
-    if let Err(e) = std::fs::create_dir_all(&messages_dir) {
-        return JsonRpcResponse::err(id, -32603, format!("failed to create messages dir: {e}"));
-    }
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let filename = format!("{}-{}.md", from_task.id.0, timestamp);
-    let message_path = format!("{messages_dir}/{filename}");
-
     let message_content = format!(
         "[Message from task {}: \"{}\"]\n{}",
         from_task.id.0, from_task.title, parsed.body
     );
-    if let Err(e) = std::fs::write(&message_path, &message_content) {
-        return JsonRpcResponse::err(id, -32603, format!("failed to write message file: {e}"));
-    }
-
-    // Inject notification into the target's tmux window
-    let notification = format!(
-        "You received a message from task {}. Read .claude-messages/{} for the full content, then delete the file.",
-        from_task.id.0, filename
-    );
-    if let Err(e) = crate::tmux::send_keys(tmux_window, &notification, &*state.runner) {
-        let _ = std::fs::remove_file(&message_path);
-        return JsonRpcResponse::err(
-            id,
-            -32603,
-            format!("failed to send notification to target agent: {e}"),
+    let file_prefix = from_task.id.0.to_string();
+    let worktree = worktree.clone();
+    let tmux_window = tmux_window.clone();
+    let runner = state.runner.clone();
+    let notification_result = tokio::task::spawn_blocking(move || {
+        let filename = crate::notify::write_message_file(&worktree, &file_prefix, &message_content)?;
+        let notification = format!(
+            "You received a message from task {}. Read .claude-messages/{} for the full content, then delete the file.",
+            from_task.id.0, filename
         );
+        crate::notify::notify_tmux(&*runner, &worktree, &tmux_window, &filename, &notification)
+    })
+    .await;
+
+    match notification_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return JsonRpcResponse::err(id, -32603, e),
+        Err(e) => {
+            return JsonRpcResponse::err(id, -32603, format!("notification task panicked: {e}"))
+        }
     }
 
     state.notify_message_sent(to_task.id);
