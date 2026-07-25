@@ -43,7 +43,7 @@ impl crate::db::UsageStore for Database {
         let since = q.since;
         let limit = q.limit.unwrap_or(50).clamp(1, 500) as i64;
 
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut conditions: Vec<String> = Vec::new();
             let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 

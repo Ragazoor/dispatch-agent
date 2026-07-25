@@ -4,7 +4,7 @@ mod queries;
 mod tests;
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
 use crate::models::{
@@ -546,7 +546,12 @@ pub trait UsageStore: Send + Sync {
 // ---------------------------------------------------------------------------
 
 pub trait TaskStore:
-    TaskAndEpicStore + TaskReadStore + SettingsStore + LearningStore + LearningRetrievalStore + UsageStore
+    TaskAndEpicStore
+    + TaskReadStore
+    + SettingsStore
+    + LearningStore
+    + LearningRetrievalStore
+    + UsageStore
 {
 }
 
@@ -636,15 +641,41 @@ impl std::fmt::Display for AnyhowErr {
 
 impl std::error::Error for AnyhowErr {}
 
+/// Number of lazily-opened read-only connections available to
+/// [`Database::db_call_read`]. Not runtime-configurable — see the "Pool size
+/// rationale" section of
+/// `docs/superpowers/specs/2026-07-25-db-connection-pooling-design.md`.
+const READ_POOL_SIZE: usize = 4;
+
+/// Monotonic counter used to mint a unique shared-cache in-memory database
+/// name per [`Database::open_in_memory`] call, so independent in-memory
+/// instances (e.g. parallel tests) never collide on the same named cache.
+static NEXT_MEMDB_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Where read-pool connections should (re)open against. Resolved once, at
+/// [`Database::open`]/[`Database::open_in_memory`] time, so a pool slot can
+/// lazily open the right target the first time it's needed.
+enum ReadTarget {
+    File(std::path::PathBuf),
+    MemoryUri(String),
+}
+
 /// Async-only storage backing for the [`Database`].
 ///
-/// Wraps a single [`tokio_rusqlite::Connection`] — a dedicated worker thread
-/// owning a `rusqlite::Connection` that all async store impls dispatch to via
-/// [`Database::db_call`]. There is no sync connection or `Mutex` anymore;
-/// schema init and migrations also run on the worker thread via the same
-/// closure mechanism.
+/// Wraps a single writer [`tokio_rusqlite::Connection`] — a dedicated worker
+/// thread owning a `rusqlite::Connection` that all *mutating* async store
+/// impls dispatch to via [`Database::db_call`] — plus a small pool of
+/// read-only WAL connections that pure-read impls dispatch to via
+/// [`Database::db_call_read`], removing reader/reader and reader/writer
+/// serialization on the single writer thread. See
+/// `docs/superpowers/specs/2026-07-25-db-connection-pooling-design.md`.
+/// There is no sync connection or `Mutex`; schema init and migrations run on
+/// the writer thread via the same closure mechanism, before any reader opens.
 pub struct Database {
     conn: tokio_rusqlite::Connection,
+    read_pool: Vec<tokio::sync::OnceCell<tokio_rusqlite::Connection>>,
+    next_reader: std::sync::atomic::AtomicUsize,
+    read_target: ReadTarget,
 }
 
 impl Database {
@@ -661,24 +692,119 @@ impl Database {
 
         Self::init_schema(&conn).await?;
 
-        Ok(Database { conn })
+        Ok(Database {
+            conn,
+            read_pool: Self::empty_read_pool(),
+            next_reader: std::sync::atomic::AtomicUsize::new(0),
+            read_target: ReadTarget::File(path.to_path_buf()),
+        })
     }
 
     pub async fn open_in_memory() -> Result<Self> {
-        let conn = tokio_rusqlite::Connection::open_in_memory()
+        let id = NEXT_MEMDB_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // A plain `:memory:` connection is private to itself; the read pool
+        // needs the writer and every reader to share the same in-memory
+        // database, so this uses SQLite's `memdb` VFS (3.36+) via a named
+        // URI — unique per `Database` instance so concurrently-running tests
+        // never collide. Note: the older `file:name?mode=memory&cache=shared`
+        // idiom does NOT work here — SQLite's docs say mixing the `mode=`
+        // query parameter with explicit `sqlite3_open_v2` flags is undefined,
+        // and empirically it silently ignores `SQLITE_OPEN_READ_ONLY` (every
+        // connection ends up read-write regardless of the flags passed). The
+        // `memdb` VFS is the purpose-built mechanism for a named, shared,
+        // multi-connection in-memory database that correctly enforces
+        // read-only opens — required for `open_reader` below. `memdb`
+        // additionally requires the name to start with `/` to be treated as
+        // a *shared* store (see `memdbOpen` in SQLite's `os_mem.c` — a name
+        // with no leading slash gets a private, unshared store instead).
+        let uri = format!("file:/dispatch-mem-{id}?vfs=memdb");
+        let conn = tokio_rusqlite::Connection::open(&uri)
             .await
             .context("Failed to open in-memory database")?;
         Self::init_schema(&conn).await?;
-        Ok(Database { conn })
+        Ok(Database {
+            conn,
+            read_pool: Self::empty_read_pool(),
+            next_reader: std::sync::atomic::AtomicUsize::new(0),
+            read_target: ReadTarget::MemoryUri(uri),
+        })
     }
 
-    /// Run a synchronous closure against the underlying SQLite database from an
-    /// async context, returning its result without blocking the Tokio worker.
+    fn empty_read_pool() -> Vec<tokio::sync::OnceCell<tokio_rusqlite::Connection>> {
+        std::iter::repeat_with(tokio::sync::OnceCell::new)
+            .take(READ_POOL_SIZE)
+            .collect()
+    }
+
+    /// Opens a new read-only connection against `target` and applies the
+    /// reader-relevant PRAGMAs `init_schema_sync` sets on the writer
+    /// (`busy_timeout`, `cache_size`, `temp_store`). `journal_mode` and
+    /// `foreign_keys` are database-wide/write-relevant and don't need
+    /// resetting per reader connection.
+    async fn open_reader(target: &ReadTarget) -> Result<tokio_rusqlite::Connection> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = match target {
+            ReadTarget::File(path) => tokio_rusqlite::Connection::open_with_flags(path, flags)
+                .await
+                .with_context(|| format!("Failed to open read connection to {}", path.display()))?,
+            ReadTarget::MemoryUri(uri) => tokio_rusqlite::Connection::open_with_flags(uri, flags)
+                .await
+                .context("Failed to open in-memory read connection")?,
+        };
+        Self::dispatch(&conn, std::panic::Location::caller(), |c| {
+            c.execute_batch(CONNECTION_PRAGMAS)
+                .context("Failed to set reader PRAGMAs")
+        })
+        .await?;
+        Ok(conn)
+    }
+
+    /// Shared dispatch body for [`Database::db_call`] and
+    /// [`Database::db_call_read`]: run `f` on `conn`, time it, warn on slow
+    /// calls, and translate `tokio_rusqlite`'s boxed error back to
+    /// `anyhow::Error`.
+    async fn dispatch<R, F>(
+        conn: &tokio_rusqlite::Connection,
+        caller: &'static std::panic::Location<'static>,
+        f: F,
+    ) -> Result<R>
+    where
+        F: FnOnce(&mut Connection) -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let start = std::time::Instant::now();
+        let result = conn
+            .call(move |c| f(c).map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e)))))
+            .await;
+        let elapsed = start.elapsed();
+        if elapsed > SLOW_DB_CALL_THRESHOLD {
+            tracing::warn!(
+                duration_ms = elapsed.as_millis() as u64,
+                location = %caller,
+                "slow db_call"
+            );
+        }
+        match result {
+            Ok(value) => Ok(value),
+            Err(tokio_rusqlite::Error::Other(other)) => match other.downcast::<AnyhowErr>() {
+                Ok(boxed) => Err(boxed.0),
+                Err(other) => Err(anyhow::anyhow!(other.to_string())),
+            },
+            Err(e) => Err(anyhow::Error::from(e)),
+        }
+    }
+
+    /// Run a synchronous closure against the writer connection from an async
+    /// context, returning its result without blocking the Tokio worker. Use
+    /// for any closure that writes (`execute`/`execute_batch`/INSERT/UPDATE/
+    /// DELETE) or that must observe its own prior write in the same call.
     ///
-    /// The closure receives a `&mut rusqlite::Connection` (the dedicated thread
-    /// owned by [`tokio_rusqlite::Connection`]). It must be `Send + 'static`,
-    /// so any borrowed parameters need to be cloned to owned values before
-    /// being moved in.
+    /// The closure receives a `&mut rusqlite::Connection` (the dedicated
+    /// thread owned by [`tokio_rusqlite::Connection`]). It must be
+    /// `Send + 'static`, so any borrowed parameters need to be cloned to
+    /// owned values before being moved in.
     ///
     /// Errors returned from the closure are wrapped in
     /// [`tokio_rusqlite::Error::Other`] and surfaced as `anyhow::Error`.
@@ -697,33 +823,53 @@ impl Database {
         R: Send + 'static,
     {
         let caller = std::panic::Location::caller();
+        async move { Self::dispatch(&self.conn, caller, f).await }
+    }
+
+    /// Run a synchronous **read-only** closure against a pooled read
+    /// connection, round-robin. Use only for closures that issue no writes —
+    /// pool connections are opened `SQLITE_OPEN_READ_ONLY`, so a write
+    /// attempted here fails loudly (`SQLITE_READONLY`) rather than silently
+    /// succeeding or corrupting state.
+    ///
+    /// Pool slots are opened lazily (on first use, via
+    /// `tokio::sync::OnceCell`) rather than eagerly at `Database::open` time —
+    /// most callers (one-shot CLI subcommands, most tests) never need more
+    /// than one reader, and eagerly opening `READ_POOL_SIZE` connections (and
+    /// OS threads — `tokio_rusqlite` dedicates one per connection) for every
+    /// `Database` instance would be pure overhead for them. A reader that
+    /// fails to open is retried on the next call that round-robins onto its
+    /// slot, since `get_or_try_init` leaves a slot uninitialized on error.
+    ///
+    /// See [`Database::db_call`] for why this is a plain fn, not `async fn`.
+    #[track_caller]
+    pub fn db_call_read<R, F>(&self, f: F) -> impl std::future::Future<Output = Result<R>> + '_
+    where
+        F: FnOnce(&mut Connection) -> Result<R> + Send + 'static,
+        R: Send + 'static,
+    {
+        let caller = std::panic::Location::caller();
+        let idx = self
+            .next_reader
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.read_pool.len();
         async move {
-            let start = std::time::Instant::now();
-            let result = self
-                .conn
-                .call(move |c| {
-                    f(c).map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))))
-                })
-                .await;
-            let elapsed = start.elapsed();
-            if elapsed > SLOW_DB_CALL_THRESHOLD {
-                tracing::warn!(
-                    duration_ms = elapsed.as_millis() as u64,
-                    location = %caller,
-                    "slow db_call"
-                );
-            }
-            match result {
-                Ok(value) => Ok(value),
-                Err(tokio_rusqlite::Error::Other(other)) => match other.downcast::<AnyhowErr>() {
-                    Ok(boxed) => Err(boxed.0),
-                    Err(other) => Err(anyhow::anyhow!(other.to_string())),
-                },
-                Err(e) => Err(anyhow::Error::from(e)),
-            }
+            let conn = self.read_pool[idx]
+                .get_or_try_init(|| Self::open_reader(&self.read_target))
+                .await?;
+            Self::dispatch(conn, caller, f).await
         }
     }
 
+    /// Deliberately does NOT go through [`Database::dispatch`] (unlike
+    /// `db_call`/`db_call_read`) even though the error-translation logic is
+    /// identical: `dispatch` also emits the slow-db-call warning
+    /// (`SLOW_DB_CALL_THRESHOLD`), and schema init/migrations are expected to
+    /// occasionally run slow (e.g. under test-suite load) without tripping
+    /// that instrumentation — it exists to catch abnormal *query* latency,
+    /// not one-time startup cost. Tests that assert exact warning counts
+    /// around `Database::open`/`open_in_memory` (see `db::tests::async_handle`)
+    /// depend on `init_schema` never contributing to that count.
     async fn init_schema(conn: &tokio_rusqlite::Connection) -> Result<()> {
         conn.call(|c| {
             init_schema_sync(c).map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))))
@@ -739,15 +885,22 @@ impl Database {
     }
 }
 
+/// PRAGMAs that apply the same way to any connection, reader or writer:
+/// bounds how long a connection waits on SQLite's lock before giving up, caps
+/// the page cache, and keeps temp b-trees/sorting in memory rather than a
+/// temp file. Shared between `init_schema_sync` (writer) and `open_reader`
+/// (pool connections) so retuning one doesn't silently leave the other stale.
+const CONNECTION_PRAGMAS: &str = "PRAGMA busy_timeout=5000;
+     PRAGMA cache_size=-8000;
+     PRAGMA temp_store=MEMORY;";
+
 fn init_schema_sync(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
+    conn.execute_batch(&format!(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
-         PRAGMA busy_timeout=5000;
          PRAGMA synchronous=NORMAL;
-         PRAGMA cache_size=-8000;
-         PRAGMA temp_store=MEMORY;",
-    )
+         {CONNECTION_PRAGMAS}"
+    ))
     .context("Failed to set PRAGMAs")?;
 
     conn.execute_batch(

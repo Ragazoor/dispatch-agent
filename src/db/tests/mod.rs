@@ -5,6 +5,7 @@ mod async_handle;
 mod epics;
 mod learnings;
 mod migrations;
+mod read_pool;
 mod settings;
 mod tasks;
 mod todos;

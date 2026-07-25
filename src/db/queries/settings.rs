@@ -7,7 +7,7 @@ use super::{get_tips_state, save_tips_state};
 #[async_trait::async_trait]
 impl super::super::SettingsStore for Database {
     async fn list_repo_paths(&self) -> Result<Vec<String>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare("SELECT path FROM repo_paths ORDER BY last_used DESC")
                 .context("Failed to prepare list_repo_paths")?;
@@ -75,7 +75,7 @@ impl super::super::SettingsStore for Database {
 
     async fn get_setting_bool(&self, key: &str) -> Result<Option<bool>> {
         let key = key.to_string();
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             conn.query_row(
                 "SELECT value FROM settings WHERE key = ?1",
                 params![key],
@@ -105,7 +105,7 @@ impl super::super::SettingsStore for Database {
 
     async fn get_setting_string(&self, key: &str) -> Result<Option<String>> {
         let key = key.to_string();
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             conn.query_row(
                 "SELECT value FROM settings WHERE key = ?1",
                 params![key],
@@ -161,7 +161,7 @@ impl super::super::SettingsStore for Database {
     }
 
     async fn list_filter_presets(&self) -> Result<Vec<(String, Vec<String>, String)>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt =
                 conn.prepare("SELECT name, repo_paths, mode FROM filter_presets ORDER BY name")?;
             let rows = stmt.query_map([], |row| {
@@ -187,7 +187,7 @@ impl super::super::SettingsStore for Database {
     }
 
     async fn get_tips_state(&self) -> Result<(u32, crate::models::TipsShowMode)> {
-        self.db_call(move |conn| get_tips_state(conn)).await
+        self.db_call_read(move |conn| get_tips_state(conn)).await
     }
 
     async fn save_tips_state(
@@ -201,7 +201,7 @@ impl super::super::SettingsStore for Database {
 
     async fn get_verify_command(&self, path: &str) -> Result<Option<String>> {
         let path = path.to_string();
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let result: Option<Option<String>> = conn
                 .query_row(
                     "SELECT verify_command FROM repo_paths WHERE path = ?1",
@@ -339,7 +339,7 @@ impl super::super::SettingsStore for Database {
     }
 
     async fn list_all_base_branches(&self) -> Result<Vec<(String, String)>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT repo_path, branch FROM repo_base_branches ORDER BY last_used DESC, id DESC",

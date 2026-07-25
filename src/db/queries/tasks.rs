@@ -136,7 +136,7 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
 #[async_trait::async_trait]
 impl super::super::TaskRead for Database {
     async fn get_task(&self, id: TaskId) -> Result<Option<crate::models::Task>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             conn.query_row(
                 &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE id = ?1"),
                 params![id.0],
@@ -149,7 +149,7 @@ impl super::super::TaskRead for Database {
     }
 
     async fn list_all(&self) -> Result<Vec<crate::models::Task>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare_cached(&format!(
                     "SELECT {TASK_COLUMNS} FROM tasks ORDER BY COALESCE(sort_order, id) ASC, id ASC"
@@ -166,7 +166,7 @@ impl super::super::TaskRead for Database {
     }
 
     async fn list_by_status(&self, status: TaskStatus) -> Result<Vec<crate::models::Task>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare_cached(
                     &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE status = ?1 ORDER BY COALESCE(sort_order, id) ASC, id ASC"),
@@ -184,7 +184,7 @@ impl super::super::TaskRead for Database {
 
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<crate::models::Task>> {
         let plan = plan.to_string();
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             conn.query_row(
                 &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE plan_path = ?1"),
                 params![plan],
@@ -202,7 +202,7 @@ impl super::super::TaskRead for Database {
         exclude_id: TaskId,
     ) -> Result<bool> {
         let worktree = worktree.to_string();
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM tasks WHERE worktree = ?1 AND id != ?2 AND status != 'done'",

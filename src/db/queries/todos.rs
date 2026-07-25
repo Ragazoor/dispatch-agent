@@ -31,7 +31,7 @@ fn row_to_todo(row: &rusqlite::Row<'_>) -> rusqlite::Result<Todo> {
 #[async_trait::async_trait]
 impl super::super::TodoStore for Database {
     async fn list_todos(&self) -> Result<Vec<Todo>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare(&format!(
                     "SELECT {TODO_COLUMNS} FROM todos ORDER BY sort_order ASC, id ASC"

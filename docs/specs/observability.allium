@@ -6,8 +6,9 @@
 -- Includes: TrajectoryEntry value type, append-on-each-MCP-call rule,
 --           fire-and-forget error handling;
 --           SlowDbCallWarning value type and the DbCallSlowWarning rule that
---           emits a warn-level log line when a db_call exceeds the configured
---           latency threshold.
+--           emits a warn-level log line when a DB call exceeds the configured
+--           latency threshold, on either dispatch path (the single writer
+--           connection or a read-only pool connection).
 -- Excludes: tmux pane capture, Claude lifecycle hooks (PreToolUse, Stop —
 --           see agent-health.allium), dispatch-internal commands, reader UIs,
 --           replay tooling.
@@ -15,8 +16,8 @@
 --           the TUI and the `hook` one-shot subcommand -- both initialise a
 --           tracing subscriber writing to the same <data_dir>/app.log. The
 --           remaining one-shot CLI subcommands (update, pr-gate, list, repo,
---           prune-repo-paths, doctor, plan, setup) call the same shared db_call
---           path, but with no subscriber configured their warn events are
+--           prune-repo-paths, doctor, plan, setup) call the same shared DB-call
+--           paths, but with no subscriber configured their warn events are
 --           silently dropped -- persisting those is out of scope for now (see
 --           DbCallSlowWarning for the scope boundary).
 
@@ -54,12 +55,14 @@ value TrajectoryEntry {
 -- depends on the running process having a subscriber configured (see
 -- DbCallSlowWarning for the scope boundary). It has no identity and no lifecycle.
 value SlowDbCallWarning {
-    duration_ms: Integer   -- measured wall-clock elapsed time of the db_call,
-                           -- including time spent queued/retrying behind another
+    duration_ms: Integer   -- measured wall-clock elapsed time of the DB call,
+                           -- including time spent queued behind other calls on
+                           -- the same connection, or retrying behind another
                            -- connection's SQLite lock
-    location:    String    -- call-site of the invoking db_call caller, formatted
-                           -- as "file.rs:line:column" (std::panic::Location's
-                           -- Display, which includes the column)
+    location:    String    -- call-site of the invoking db_call / db_call_read
+                           -- caller, formatted as "file.rs:line:column"
+                           -- (std::panic::Location's Display, which includes
+                           -- the column)
 }
 
 ------------------------------------------------------------
@@ -70,8 +73,9 @@ config {
     trajectory_schema_version: String = "1.0.0"
     -- Subdirectory name within the dispatch data dir that holds trajectory files.
     trajectory_subdir: String = "trajectories"
-    -- A db_call whose measured wall-clock elapsed time exceeds this many
+    -- A DB call whose measured wall-clock elapsed time exceeds this many
     -- milliseconds is considered abnormally slow and triggers a warn log.
+    -- The same threshold applies on both dispatch paths (writer and read pool).
     -- 200ms sits well above normal SQLite query time (sub-millisecond to low
     -- milliseconds) and well below perceptible user lag, so it only fires on
     -- genuinely abnormal calls.
@@ -159,12 +163,20 @@ rule TrajectoryWriteFailureIsSilent {
 -- == Slow DB call latency warning ==
 
 rule DbCallSlowWarning {
-    -- When an async db_call to the SQLite database completes, its wall-clock
+    -- When an async call to the SQLite database completes, its wall-clock
     -- elapsed time is measured from just before the call is issued to when it
-    -- resolves — which includes any time the call spent queued or retrying
-    -- behind another connection's write lock. If that elapsed time exceeds the
-    -- configured threshold, a warn-level log line is emitted carrying the
-    -- elapsed duration and the call site that invoked db_call.
+    -- resolves — which includes any time the call spent queued behind other
+    -- calls on the same connection, or retrying behind another connection's
+    -- write lock. If that elapsed time exceeds the configured threshold, a
+    -- warn-level log line is emitted carrying the elapsed duration and the
+    -- call site that issued the call.
+    --
+    -- "db_call" in this rule's name and prose means either dispatch path: the
+    -- single writer connection (db_call, which serves every mutation) or one of
+    -- the read-only pool connections (db_call_read, which serves pure reads).
+    -- DbCallCompleted fires for both, and the threshold check and resulting
+    -- warning are identical on both. Which connection served the call is not
+    -- part of the warning.
     when: DbCallCompleted(location, elapsed_ms)
 
     -- Only abnormally slow calls warn. Calls at or below the threshold produce
@@ -186,19 +198,33 @@ rule DbCallSlowWarning {
         -- #[track_caller] so no call site needs to change; it is rendered via
         -- std::panic::Location's Display as "file.rs:line:column".
         --
+        -- DIAGNOSTIC-QUALITY CAVEAT: read calls are assigned to a pool
+        -- connection round-robin, so a cheap query can land on a connection
+        -- that is already mid-flight on an unrelated slow read, wait out that
+        -- connection's queue, and cross the threshold on queueing alone. A
+        -- "slow db_call" line therefore reports how long that call took, not
+        -- necessarily what its own query cost. This is the same ambiguity the
+        -- single-connection path always had (a fast call queued behind a slow
+        -- one), now spread across several connections instead of one — not a
+        -- new correctness issue, but worth knowing before reading a warning as
+        -- evidence that the logged call site's own query is slow. Correlating
+        -- neighbouring warn lines by timestamp is the only way to tell the two
+        -- apart from the log alone.
+        --
         -- SCOPE BOUNDARY (intentional, not a bug): SlowDbCallLogged is a
         -- tracing::warn event ("slow db_call"), not an entity, and its durable
         -- capture depends on the running process having a tracing subscriber.
         -- Two processes initialise a subscriber and thus persist these warnings
         -- to the same <data_dir>/app.log: the TUI subcommand and the `hook`
-        -- one-shot subcommand. db_call is shared code, so the timing check runs
-        -- in every process that calls it (the TUI, its in-process MCP server
-        -- and FeedRunner, and each one-shot CLI subcommand), but only the TUI
-        -- and hook processes have a subscriber, so only their warnings are
-        -- persisted. hook is included because it fires on every agent
-        -- tool-use event and is the most likely source of the write-lock
-        -- contention this instrumentation is meant to catch — without it the
-        -- process actually holding the lock could not explain itself in the log.
+        -- one-shot subcommand. Both dispatch paths are shared code, so the
+        -- timing check runs in every process that calls either of them (the
+        -- TUI, its in-process MCP server and FeedRunner, and each one-shot CLI
+        -- subcommand), but only the TUI and hook processes have a subscriber,
+        -- so only their warnings are persisted. hook is included because it
+        -- fires on every agent tool-use event and is the most likely source of
+        -- the write-lock contention this instrumentation is meant to catch —
+        -- without it the process actually holding the write lock could not
+        -- explain itself in the log.
         -- The remaining one-shot subcommands (update, pr-gate, list, repo,
         -- prune-repo-paths, doctor, plan, setup) still have no subscriber, so their
         -- warn events are silently dropped; persisting those is deferred.

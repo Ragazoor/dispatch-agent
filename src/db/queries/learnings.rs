@@ -89,7 +89,7 @@ impl super::super::LearningStore for Database {
     }
 
     async fn get_learning(&self, id: LearningId) -> Result<Option<Learning>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             conn.query_row(
                 &format!("SELECT {LEARNING_COLUMNS} FROM learnings WHERE id = ?1"),
                 params![id.0],
@@ -102,7 +102,7 @@ impl super::super::LearningStore for Database {
     }
 
     async fn list_learnings(&self, filter: LearningFilter) -> Result<Vec<Learning>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut conditions: Vec<String> = Vec::new();
             let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
@@ -232,7 +232,7 @@ impl super::super::LearningStore for Database {
         epic_id: Option<EpicId>,
     ) -> Result<Vec<Learning>> {
         let repo_path = repo_path.to_owned();
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let epic_ref = epic_id.map(|id| id.0.to_string());
 
             let mut scope_conditions: Vec<String> = vec!["scope = 'user'".to_string()];
@@ -280,7 +280,7 @@ impl super::super::LearningStore for Database {
     }
 
     async fn list_all_approved_non_task_learnings(&self) -> Result<Vec<(Learning, Vec<u8>)>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let sql = format!(
                 "SELECT {LEARNING_COLUMNS}, embedding FROM learnings \
                  WHERE status = 'approved' AND scope != 'task' AND embedding IS NOT NULL \
@@ -305,7 +305,7 @@ impl super::super::LearningStore for Database {
     }
 
     async fn list_learnings_missing_embedding(&self) -> Result<Vec<Learning>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let sql = format!(
                 "SELECT {LEARNING_COLUMNS} FROM learnings \
                  WHERE embedding IS NULL AND status = 'approved' AND scope != 'task' \
@@ -363,7 +363,7 @@ impl super::super::LearningRetrievalStore for Database {
     }
 
     async fn list_retrievals_for_task(&self, task_id: TaskId) -> Result<Vec<LearningRetrieval>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT id, task_id, learning_id, source, retrieved_at

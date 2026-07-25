@@ -13,11 +13,11 @@ use super::{row_to_epic, row_to_task, EPIC_COLUMNS, TASK_COLUMNS};
 #[async_trait::async_trait]
 impl super::super::EpicRead for Database {
     async fn get_epic(&self, id: EpicId) -> Result<Option<crate::models::Epic>> {
-        self.db_call(move |conn| get_epic_row(conn, id)).await
+        self.db_call_read(move |conn| get_epic_row(conn, id)).await
     }
 
     async fn list_epics(&self) -> Result<Vec<crate::models::Epic>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare_cached(&format!(
                     "SELECT {EPIC_COLUMNS} FROM epics ORDER BY COALESCE(sort_order, id) ASC, id ASC"
@@ -34,7 +34,7 @@ impl super::super::EpicRead for Database {
     }
 
     async fn list_root_epics(&self) -> Result<Vec<crate::models::Epic>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare_cached(&format!(
                     "SELECT {EPIC_COLUMNS} FROM epics WHERE parent_epic_id IS NULL \
@@ -52,7 +52,7 @@ impl super::super::EpicRead for Database {
     }
 
     async fn list_sub_epics(&self, parent_id: EpicId) -> Result<Vec<crate::models::Epic>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare_cached(&format!(
                     "SELECT {EPIC_COLUMNS} FROM epics WHERE parent_epic_id = ?1 \
@@ -70,7 +70,7 @@ impl super::super::EpicRead for Database {
     }
 
     async fn list_tasks_for_epic(&self, epic_id: EpicId) -> Result<Vec<crate::models::Task>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare_cached(
                     &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE epic_id = ?1 ORDER BY COALESCE(sort_order, id) ASC, id ASC"),
@@ -87,7 +87,7 @@ impl super::super::EpicRead for Database {
     }
 
     async fn list_all_tasks_with_epic_id(&self) -> Result<Vec<crate::models::Task>> {
-        self.db_call(move |conn| {
+        self.db_call_read(move |conn| {
             let mut stmt = conn
                 .prepare_cached(&format!(
                     "SELECT {TASK_COLUMNS} FROM tasks WHERE epic_id IS NOT NULL ORDER BY epic_id ASC, COALESCE(sort_order, id) ASC, id ASC"
