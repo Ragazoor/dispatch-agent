@@ -25,9 +25,7 @@ impl MainSessionMessage {
         match self {
             MainSessionMessage::Configure => app.handle_configure_main_session(),
             MainSessionMessage::SubmitDir(dir) => app.handle_submit_main_session_dir(dir),
-            MainSessionMessage::LivenessChanged(alive) => {
-                app.handle_main_session_liveness(alive)
-            }
+            MainSessionMessage::LivenessChanged(alive) => app.handle_main_session_liveness(alive),
         }
     }
 }

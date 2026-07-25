@@ -345,5 +345,8 @@ fn tick_polls_main_session_liveness_every_fifth_tick() {
     }
     // The 5th tick polls.
     let cmds = app.handle_tick();
-    assert!(is_check(&cmds), "5th tick should poll main-session liveness");
+    assert!(
+        is_check(&cmds),
+        "5th tick should poll main-session liveness"
+    );
 }

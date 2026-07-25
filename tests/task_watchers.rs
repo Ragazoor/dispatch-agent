@@ -126,7 +126,8 @@ async fn subscribe_then_finish_delivers_notification() {
     //    update_task tool refuses to set status to done/archived (agents
     //    must go through the TUI's ConfirmDone flow instead), so this is the
     //    same status-transition path ConfirmDone/wrap-up ultimately drive.
-    let task_svc = TaskService::new(db.clone() as Arc<dyn db::TaskAndEpicStore>).with_runner(runner);
+    let task_svc =
+        TaskService::new(db.clone() as Arc<dyn db::TaskAndEpicStore>).with_runner(runner);
     task_svc
         .update_task(UpdateTaskParams::for_task(target_id).status(TaskStatus::Done))
         .await

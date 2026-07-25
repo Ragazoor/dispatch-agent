@@ -576,7 +576,11 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
-    async fn create_task_watcher(&self, watcher_task_id: TaskId, target_task_id: TaskId) -> Result<()> {
+    async fn create_task_watcher(
+        &self,
+        watcher_task_id: TaskId,
+        target_task_id: TaskId,
+    ) -> Result<()> {
         self.db_call(move |conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO task_watchers (watcher_task_id, target_task_id) VALUES (?1, ?2)",
@@ -588,7 +592,11 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
-    async fn delete_task_watcher(&self, watcher_task_id: TaskId, target_task_id: TaskId) -> Result<()> {
+    async fn delete_task_watcher(
+        &self,
+        watcher_task_id: TaskId,
+        target_task_id: TaskId,
+    ) -> Result<()> {
         self.db_call(move |conn| {
             conn.execute(
                 "DELETE FROM task_watchers WHERE watcher_task_id = ?1 AND target_task_id = ?2",

@@ -211,9 +211,17 @@ pub trait TaskCrud: TaskRead {
     /// Insert a watch: `watcher_task_id` wants to be notified when
     /// `target_task_id` finishes (`Done`/`Archived`) or is deleted first.
     /// Idempotent — inserting an existing (watcher, target) pair is a no-op.
-    async fn create_task_watcher(&self, watcher_task_id: TaskId, target_task_id: TaskId) -> Result<()>;
+    async fn create_task_watcher(
+        &self,
+        watcher_task_id: TaskId,
+        target_task_id: TaskId,
+    ) -> Result<()>;
     /// Remove a specific watch. Idempotent — no-op if it doesn't exist.
-    async fn delete_task_watcher(&self, watcher_task_id: TaskId, target_task_id: TaskId) -> Result<()>;
+    async fn delete_task_watcher(
+        &self,
+        watcher_task_id: TaskId,
+        target_task_id: TaskId,
+    ) -> Result<()>;
     /// List every task currently watching `target_task_id`.
     async fn list_watchers_of(&self, target_task_id: TaskId) -> Result<Vec<TaskId>>;
     /// Remove every watch row where `target_task_id` is the target. Called

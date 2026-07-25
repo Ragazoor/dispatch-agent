@@ -271,7 +271,13 @@ pub(super) async fn run_setup_in(
     // 1. MCP config — Claude Code reads user-level MCP servers from
     // `~/.claude.json`, NOT `~/.claude/.mcp.json`. Older dispatch setups
     // wrote to the latter; clean that up.
-    if apply_mcp_setup(&paths.mcp_path, &paths.legacy_mcp_path, port, yes, confirmer)? {
+    if apply_mcp_setup(
+        &paths.mcp_path,
+        &paths.legacy_mcp_path,
+        port,
+        yes,
+        confirmer,
+    )? {
         any_changes = true;
     }
 
@@ -962,9 +968,17 @@ mod tests {
         // yes=true: no confirmer prompts should fire.
         let confirmer = FakeConfirmer::never();
 
-        run_setup_in(&db, data_dir.path(), &paths, 3142, true, &confirmer, &runner)
-            .await
-            .unwrap();
+        run_setup_in(
+            &db,
+            data_dir.path(),
+            &paths,
+            3142,
+            true,
+            &confirmer,
+            &runner,
+        )
+        .await
+        .unwrap();
 
         // MCP config written to the target with the dispatch entry.
         let mcp = read_json_file(&paths.mcp_path).unwrap().unwrap();
@@ -983,7 +997,11 @@ mod tests {
         assert!(conf.contains("focus-events on"));
         // Example feed epic seeded.
         assert_eq!(db.list_epics().await.unwrap().len(), 1);
-        assert_eq!(confirmer.confirm_call_count(), 0, "--yes suppresses prompts");
+        assert_eq!(
+            confirmer.confirm_call_count(),
+            0,
+            "--yes suppresses prompts"
+        );
     }
 
     #[tokio::test]
@@ -998,9 +1016,17 @@ mod tests {
         // Decline MCP, plugin, and tmux prompts in order.
         let confirmer = FakeConfirmer::new(vec![false, false, false], vec![]);
 
-        run_setup_in(&db, data_dir.path(), &paths, 3142, false, &confirmer, &runner)
-            .await
-            .unwrap();
+        run_setup_in(
+            &db,
+            data_dir.path(),
+            &paths,
+            3142,
+            false,
+            &confirmer,
+            &runner,
+        )
+        .await
+        .unwrap();
 
         assert!(
             !paths.mcp_path.exists(),
@@ -1029,9 +1055,17 @@ mod tests {
         let runner = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"on\n")]);
         let confirmer = FakeConfirmer::never();
 
-        run_setup_in(&db, data_dir.path(), &paths, 3142, true, &confirmer, &runner)
-            .await
-            .unwrap();
+        run_setup_in(
+            &db,
+            data_dir.path(),
+            &paths,
+            3142,
+            true,
+            &confirmer,
+            &runner,
+        )
+        .await
+        .unwrap();
 
         let conf = fs::read_to_string(&paths.tmux_conf_path).unwrap();
         assert!(
@@ -1051,15 +1085,31 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"off\n"),
             MockProcessRunner::ok(),
         ]);
-        run_setup_in(&db, data_dir.path(), &paths, 3142, true, &FakeConfirmer::never(), &runner1)
-            .await
-            .unwrap();
+        run_setup_in(
+            &db,
+            data_dir.path(),
+            &paths,
+            3142,
+            true,
+            &FakeConfirmer::never(),
+            &runner1,
+        )
+        .await
+        .unwrap();
 
         // Second run: MCP already configured, plugin up to date, focus-events on.
         let runner2 = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"on\n")]);
-        run_setup_in(&db, data_dir.path(), &paths, 3142, true, &FakeConfirmer::never(), &runner2)
-            .await
-            .unwrap();
+        run_setup_in(
+            &db,
+            data_dir.path(),
+            &paths,
+            3142,
+            true,
+            &FakeConfirmer::never(),
+            &runner2,
+        )
+        .await
+        .unwrap();
 
         // Still exactly one seeded epic (seeding stayed idempotent).
         assert_eq!(db.list_epics().await.unwrap().len(), 1);

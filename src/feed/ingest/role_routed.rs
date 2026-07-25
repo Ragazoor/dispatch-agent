@@ -178,7 +178,8 @@ async fn recalculate_subtree(
     for sub in roles.ids() {
         crate::feed::recalculate_epic_status_after_feed(db, sub, "run_role_routed_feed_sync").await;
     }
-    crate::feed::recalculate_epic_status_after_feed(db, parent_id, "run_role_routed_feed_sync").await;
+    crate::feed::recalculate_epic_status_after_feed(db, parent_id, "run_role_routed_feed_sync")
+        .await;
 }
 
 /// Reconcile a `reviews_parent` epic's whole role-sub-epic subtree from one
