@@ -64,7 +64,7 @@ async fn test_state_with_bg_done() -> (Arc<McpState>, mpsc::UnboundedReceiver<Ba
         },
         None,
     );
-    state.bg_write_done_tx = Some(tx);
+    state.test_hooks.bg_write_done_tx = Some(tx);
     (Arc::new(state), rx)
 }
 

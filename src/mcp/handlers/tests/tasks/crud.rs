@@ -365,7 +365,6 @@ async fn state_with_mock_task_svc(
         Arc::new(crate::service::EpicService::new(db.clone()));
     Arc::new(McpState {
         db: db.clone(),
-        db_write: db,
         task_svc,
         epic_svc,
         learning_svc: Arc::new(crate::service::MockLearningService),
@@ -374,7 +373,10 @@ async fn state_with_mock_task_svc(
         embedding_service: EmbeddingService::new_test(),
         exit_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
         data_dir: std::env::temp_dir(),
-        bg_write_done_tx: None,
+        test_hooks: crate::mcp::TestHooks {
+            bg_write_done_tx: None,
+            db_write: db,
+        },
     })
 }
 

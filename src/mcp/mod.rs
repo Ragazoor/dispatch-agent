@@ -108,14 +108,23 @@ pub struct McpState {
     /// Dispatch data directory (parent of the SQLite DB). Trajectory files are
     /// written here under `trajectories/<task_id>.jsonl`.
     pub data_dir: std::path::PathBuf,
-    /// Test-only completion signal. When set, each fire-and-forget background
-    /// write (usage, trajectory) sends its [`BackgroundWrite`] tag here after
-    /// the write lands, so tests can await it deterministically instead of
-    /// sleeping. Always `None` in production.
+    /// Fields that exist only to make async tests deterministic. See [`TestHooks`].
+    pub(crate) test_hooks: TestHooks,
+}
+
+/// Test-support fields grouped out of [`McpState`]'s field list. Not all of
+/// these are `#[cfg(test)]` — `bg_write_done_tx` is read unconditionally by
+/// production code (`handlers/dispatch.rs`, `router_with_bg_done`) and is
+/// simply always `None` outside tests, whereas `db_write` is compiled only
+/// under `#[cfg(test)]`.
+pub(crate) struct TestHooks {
+    /// Fires with a [`BackgroundWrite`] tag after each fire-and-forget
+    /// background write (usage, trajectory) lands, so tests can await it
+    /// deterministically instead of sleeping.
     pub(crate) bg_write_done_tx: Option<mpsc::UnboundedSender<BackgroundWrite>>,
-    /// Test-only write-capable handle, used by tests to seed fixtures directly
-    /// (production mutations go through `task_svc`/`epic_svc`). Reachable only via
-    /// [`McpState::db_write`], which is `#[cfg(test)]`, so handler code cannot use it.
+    /// Write-capable handle for seeding DB fixtures directly (production
+    /// mutations go through `task_svc`/`epic_svc`). Reachable only via
+    /// [`McpState::db_write`].
     #[cfg(test)]
     pub(crate) db_write: Arc<dyn db::TaskStore>,
 }
@@ -134,8 +143,6 @@ impl McpState {
         let db: Arc<dyn db::TaskReadStore> = deps.db.clone();
         Self {
             db,
-            #[cfg(test)]
-            db_write: deps.db,
             task_svc,
             epic_svc,
             learning_svc,
@@ -144,7 +151,11 @@ impl McpState {
             embedding_service: deps.embedding_service,
             exit_tokens: Arc::new(RwLock::new(HashMap::new())),
             data_dir: deps.data_dir,
-            bg_write_done_tx: None,
+            test_hooks: TestHooks {
+                bg_write_done_tx: None,
+                #[cfg(test)]
+                db_write: deps.db,
+            },
         }
     }
 
@@ -158,7 +169,7 @@ impl McpState {
     /// production builds, so handler code keeps going through the services.
     #[cfg(test)]
     pub(crate) fn db_write(&self) -> &Arc<dyn db::TaskStore> {
-        &self.db_write
+        &self.test_hooks.db_write
     }
 
     pub fn notify_message_sent(&self, to_task_id: TaskId) {
@@ -216,7 +227,7 @@ pub fn router_with_bg_done(
     bg_write_done_tx: Option<mpsc::UnboundedSender<BackgroundWrite>>,
 ) -> Router {
     let mut state = McpState::new(deps, notify_tx);
-    state.bg_write_done_tx = bg_write_done_tx;
+    state.test_hooks.bg_write_done_tx = bg_write_done_tx;
     let state = Arc::new(state);
     Router::new()
         .route("/mcp", post(handlers::handle_mcp))
