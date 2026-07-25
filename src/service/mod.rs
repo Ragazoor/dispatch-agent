@@ -21,8 +21,8 @@ pub use managed_feeds::{
     ManagedFeedSettings,
 };
 pub use tasks::{
-    ClaimTaskParams, CreateTaskParams, ListTasksFilter, TaskService, UpdateTaskParams,
-    UpdateTaskResult,
+    ClaimTaskParams, CreateTaskParams, ListTasksFilter, SubscribeOutcome, TaskService,
+    UpdateTaskParams, UpdateTaskResult,
 };
 pub use todos::{TodoService, TodoUpdate};
 

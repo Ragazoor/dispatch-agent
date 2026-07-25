@@ -3217,3 +3217,101 @@ async fn move_task_to_non_grouped_epic_lands_directly() {
         "plain epic: task must land directly on it"
     );
 }
+
+// -- watchers ---------------------------------------------------------------
+
+mod watchers {
+    use super::*;
+    use crate::service::tasks::watchers::SubscribeOutcome;
+
+    #[tokio::test]
+    async fn subscribe_to_task_creates_watch() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+        let outcome = svc.subscribe_to_task(watcher, target).await.unwrap();
+        assert!(matches!(outcome, SubscribeOutcome::Subscribed));
+
+        let watchers = db.list_watchers_of(target).await.unwrap();
+        assert_eq!(watchers, vec![watcher]);
+    }
+
+    #[tokio::test]
+    async fn subscribe_to_task_rejects_self_watch() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let task = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+        let err = svc.subscribe_to_task(task, task).await.unwrap_err();
+        assert!(matches!(err, ServiceError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn subscribe_to_task_target_not_found() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+        let err = svc
+            .subscribe_to_task(watcher, TaskId(999_999))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn subscribe_to_task_already_finished_does_not_create_row() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        db.patch_task(target, &db::TaskPatch::new().status(TaskStatus::Done))
+            .await
+            .unwrap();
+
+        let outcome = svc.subscribe_to_task(watcher, target).await.unwrap();
+        assert!(matches!(
+            outcome,
+            SubscribeOutcome::AlreadyFinished(TaskStatus::Done)
+        ));
+        assert!(db.list_watchers_of(target).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn subscribe_to_task_is_idempotent_when_still_unfinished() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+        let outcome = svc.subscribe_to_task(watcher, target).await.unwrap();
+        assert!(matches!(outcome, SubscribeOutcome::Subscribed));
+        assert_eq!(db.list_watchers_of(target).await.unwrap(), vec![watcher]);
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_from_task_removes_watch() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.subscribe_to_task(watcher, target).await.unwrap();
+
+        svc.unsubscribe_from_task(watcher, target).await.unwrap();
+
+        assert!(db.list_watchers_of(target).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unsubscribe_from_task_is_idempotent_when_absent() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+        svc.unsubscribe_from_task(watcher, target).await.unwrap(); // no prior subscribe — must not error
+    }
+}

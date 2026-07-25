@@ -244,6 +244,18 @@ macro_rules! task_service_api {
                 &self,
                 epic_id: $crate::models::EpicId
             ) -> Result<Option<$crate::models::Task>, $crate::service::ServiceError>;
+
+            async fn subscribe_to_task(
+                &self,
+                watcher_task_id: $crate::models::TaskId,
+                target_task_id: $crate::models::TaskId
+            ) -> Result<$crate::service::SubscribeOutcome, $crate::service::ServiceError>;
+
+            async fn unsubscribe_from_task(
+                &self,
+                watcher_task_id: $crate::models::TaskId,
+                target_task_id: $crate::models::TaskId
+            ) -> Result<(), $crate::service::ServiceError>;
         }
     };
 }
