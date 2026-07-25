@@ -225,14 +225,17 @@ Any code that changes a task's **status** or its **epic linkage** (`epic_id`) mu
 
 The canonical implementation is in `TaskService` (`src/service/tasks/crud.rs` — `recalculate_epic` / `recalculate_epic_for_task`, which call `db.recalculate_epic_status(epic_id)`). Task mutations that go through the service layer get this for free; this is the main reason mutations should not bypass the service (see the mutation-boundary section above). When a task moves between epics, both the old and the new parent must be recalculated.
 
-## DB access — `db_call`
+## DB access — `db_call` / `db_call_read`
 
-`Database` (`src/db/mod.rs`) wraps a single [`tokio_rusqlite::Connection`] — a dedicated worker thread owning the underlying `rusqlite::Connection`. There is no sync handle or mutex; every store impl, schema init, and migration runs through that worker.
+`Database` (`src/db/mod.rs`) wraps a single writer [`tokio_rusqlite::Connection`] — a dedicated worker thread owning the underlying `rusqlite::Connection` — plus a small pool of up to 4 lazily-opened, read-only WAL connections. There is no sync handle or mutex; schema init and migrations run on the writer thread, mutations dispatch to the writer, and pure reads dispatch across the pool instead of queueing behind writer traffic.
 
-- `Database::open(path).await` / `Database::open_in_memory().await` open the connection and run the migration chain on the worker thread.
-- `self.db_call(|conn| { … }).await` is the single entry point for all SQL. The closure receives a `&mut rusqlite::Connection`, must be `Send + 'static`, and returns `Result<R>`. Errors are routed back through `tokio_rusqlite::Error::Other` and surfaced as `anyhow::Error`. Clone any borrowed `&str`/slice arguments to owned values before moving them into the closure.
+- `Database::open(path).await` / `Database::open_in_memory().await` open the writer connection and run the migration chain on its worker thread. Pool connections are not opened here — each slot opens lazily on first use, so instances that never issue a concurrent read (most CLI subcommands, most tests) never pay for connections they don't need.
+- `self.db_call(|conn| { … }).await` is the **writer** entry point. Use it for any closure that writes (`execute`/`execute_batch`/INSERT/UPDATE/DELETE), or that must read a connection-local counter like `get_total_changes` — that's a per-connection SQLite tally, so reading it from a pool connection would always return 0.
+- `self.db_call_read(|conn| { … }).await` is the **read-pool** entry point, dispatched round-robin across the pool. Use it only for closures that issue no writes: pool connections are opened `SQLITE_OPEN_READ_ONLY`, so a write attempted through one fails loudly (`SQLITE_READONLY`) instead of silently succeeding or corrupting state. A write committed via `db_call` is immediately visible to a subsequent `db_call_read` — pool reads never see a stale snapshot.
 
-Every `*Store` trait method is `async fn` and uses `db_call` internally. Callers `.await` each store call.
+Both closures receive a `&mut rusqlite::Connection`, must be `Send + 'static`, and return `Result<R>`. Errors are routed back through `tokio_rusqlite::Error::Other` and surfaced as `anyhow::Error`. Clone any borrowed `&str`/slice arguments to owned values before moving them into the closure.
+
+Every `*Store` trait method is `async fn` and uses whichever entry point matches its access pattern — `db_call_read` for pure reads (`TaskRead`, `EpicRead`, `SettingsStore`, `LearningStore`, `LearningRetrievalStore`, `TodoStore`, `UsageStore`), `db_call` for anything that mutates. Callers `.await` each store call the same way regardless of which one it uses underneath.
 
 ## Inline-mutation boundary
 
