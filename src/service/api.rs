@@ -516,6 +516,7 @@ mod tests {
                 tag: None,
                 base_branch: None,
                 wrap_up_mode: None,
+                auto_run_plan: false,
             })
             .await
             .unwrap();
