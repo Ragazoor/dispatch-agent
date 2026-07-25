@@ -147,6 +147,7 @@ impl TaskService {
         let Ok(Some(watcher)) = self.db.get_task(watcher_id).await else {
             tracing::warn!(
                 watcher_id = watcher_id.0,
+                target_id = target_id.0,
                 "watcher task disappeared before notification"
             );
             return;
@@ -156,6 +157,7 @@ impl TaskService {
         else {
             tracing::warn!(
                 watcher_id = watcher_id.0,
+                target_id = target_id.0,
                 "watcher has no live tmux window; dropping watch notification"
             );
             return;

@@ -75,8 +75,10 @@ rule SubscribeToTask {
         -- before either branch below is considered.
         -- already_finished short-circuits: no row is created, since there is
         -- nothing left to wait for. The caller is told immediately via
-        -- UserInformed — the MCP tool surfaces this as
-        -- {"status": "already_finished", "task_status": target.status}.
+        -- UserInformed — the MCP tool surfaces this as a plain-text content
+        -- response naming target.id and target.status (the same
+        -- {"content": [{"type": "text", ...}]} shape every other MCP tool
+        -- in this codebase returns, not a bespoke structured payload).
         -- Idempotency: re-subscribing an existing UNFINISHED (watcher,
         -- target) pair is a no-op success — the `not exists existing` guard
         -- means no duplicate row is created and no error is raised.
@@ -241,12 +243,16 @@ rule DeliverWatcherNotification {
             TmuxNotificationSent(to: watcher_task, about: task_deleted)
 
     @guidance
-        -- Reuses the exact same delivery mechanism SendMessageViaMcp uses
+        -- Reuses the exact same delivery primitives SendMessageViaMcp uses
         -- (see mcp-task-tools.allium): a timestamped file written under
         -- <watcher_task.worktree>/.claude-messages/, followed by a
-        -- tmux send-keys nudge pointing at it. The shared function is
-        -- deliver_agent_notification (extracted from the send_message
-        -- handler), not a reimplementation.
+        -- tmux send-keys nudge pointing at it. The shared primitives are
+        -- write_message_file and notify_tmux (src/notify.rs), called from
+        -- both handle_send_message and this rule's own
+        -- deliver_watch_notification helper (src/service/tasks/watchers.rs)
+        -- — the low-level file-write/tmux-send-keys mechanics are not
+        -- reimplemented, though each call site still builds its own
+        -- message body and wraps its own spawn_blocking call.
         -- Message body distinguishes the two reasons: task_finished names
         -- target_task's title and its new status; task_deleted states the
         -- task was deleted, not finished.
