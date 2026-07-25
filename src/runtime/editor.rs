@@ -821,7 +821,10 @@ mod tests {
         let mut app = App::new(vec![]);
         emit_pop_out_error(&mut app, "boom".to_string());
         let msg = app.error_popup().unwrap_or_default();
-        assert!(msg.contains("boom"), "expected 'boom' in error popup, got {msg:?}");
+        assert!(
+            msg.contains("boom"),
+            "expected 'boom' in error popup, got {msg:?}"
+        );
     }
 
     #[tokio::test]

@@ -63,6 +63,7 @@ async fn subscribe_then_finish_delivers_notification() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();
@@ -88,6 +89,7 @@ async fn subscribe_then_finish_delivers_notification() {
             sort_order: None,
             tag: None,
             wrap_up_mode: None,
+            auto_run_plan: false,
         })
         .await
         .unwrap();

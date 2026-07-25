@@ -952,8 +952,9 @@ fn dispatch_prompt_includes_fetch_warning_when_fetch_fails() {
     let task = make_task(&repo_path);
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
-    let prompt = std::fs::read_to_string(format!("{repo_path}/.worktrees/42-fix-bug/.claude-prompt"))
-        .expect("prompt file written");
+    let prompt =
+        std::fs::read_to_string(format!("{repo_path}/.worktrees/42-fix-bug/.claude-prompt"))
+            .expect("prompt file written");
     assert!(
         prompt.contains("origin/main"),
         "prompt should mention the base branch that could not be fetched, got: {prompt}"
@@ -982,8 +983,9 @@ fn dispatch_prompt_has_no_warning_when_fetch_succeeds() {
     let task = make_task(&repo_path);
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
-    let prompt = std::fs::read_to_string(format!("{repo_path}/.worktrees/42-fix-bug/.claude-prompt"))
-        .expect("prompt file written");
+    let prompt =
+        std::fs::read_to_string(format!("{repo_path}/.worktrees/42-fix-bug/.claude-prompt"))
+            .expect("prompt file written");
     assert!(
         !prompt.contains("Note:"),
         "no fetch warning expected when fetch succeeds, got: {prompt}"

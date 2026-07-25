@@ -84,8 +84,7 @@ fn fetch_origin_with_retry(
 ) -> Result<(), String> {
     let mut last_err = String::new();
     for attempt in 1..=FETCH_MAX_ATTEMPTS {
-        match runner.run_with_timeout("git", &["-C", repo_path, "fetch", "origin", base], timeout)
-        {
+        match runner.run_with_timeout("git", &["-C", repo_path, "fetch", "origin", base], timeout) {
             Ok(output) if output.status.success() => return Ok(()),
             Ok(output) => last_err = stderr_str(&output),
             Err(e) => last_err = e.to_string(),

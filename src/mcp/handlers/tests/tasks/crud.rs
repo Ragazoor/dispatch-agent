@@ -995,7 +995,10 @@ async fn create_task_with_auto_run_plan_true() {
     assert!(!is_error(&resp));
 
     let tasks = state.db.list_all().await.unwrap();
-    let task = tasks.iter().find(|t| t.title == "T").expect("task should exist");
+    let task = tasks
+        .iter()
+        .find(|t| t.title == "T")
+        .expect("task should exist");
     assert!(task.auto_run_plan);
 }
 

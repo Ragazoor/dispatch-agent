@@ -584,7 +584,10 @@ mod tests {
         let content = format_editor_content(&task);
         let sections = parse_sections(&content);
 
-        assert_eq!(sections.get("TITLE").map(String::as_str), Some("field-title"));
+        assert_eq!(
+            sections.get("TITLE").map(String::as_str),
+            Some("field-title")
+        );
         assert_eq!(
             sections.get("DESCRIPTION").map(String::as_str),
             Some("field-description")
@@ -600,15 +603,9 @@ mod tests {
             sections.get("BASE_BRANCH").map(String::as_str),
             Some("field-base-branch")
         );
-        assert_eq!(
-            sections.get("WRAP_UP_MODE").map(String::as_str),
-            Some("pr")
-        );
+        assert_eq!(sections.get("WRAP_UP_MODE").map(String::as_str), Some("pr"));
         assert_eq!(sections.get("URL").map(String::as_str), Some("field-url"));
-        assert_eq!(
-            sections.get("URL_TYPE").map(String::as_str),
-            Some("issue")
-        );
+        assert_eq!(sections.get("URL_TYPE").map(String::as_str), Some("issue"));
     }
 
     #[test]
@@ -835,7 +832,10 @@ mod tests {
             ..Default::default()
         };
         let applied = apply_task_editor_fields(&task, fields);
-        assert_eq!(applied.plan_path, FieldUpdate::Set("docs/new-plan.md".into()));
+        assert_eq!(
+            applied.plan_path,
+            FieldUpdate::Set("docs/new-plan.md".into())
+        );
         assert_eq!(
             applied.resolved_plan_path.as_deref(),
             Some("docs/new-plan.md")

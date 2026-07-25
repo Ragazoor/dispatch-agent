@@ -519,7 +519,8 @@ mod tick_tests {
         let mut app = make_app();
         app.set_status("hello".into());
         // Backdate the message past the TTL so the sweep clears it.
-        app.status.message_set_at = Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
+        app.status.message_set_at =
+            Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
 
         app.tick_status_ttl();
         assert!(app.status.message.is_none(), "expired status should clear");
@@ -529,7 +530,8 @@ mod tick_tests {
     fn status_ttl_keeps_sticky_message() {
         let mut app = make_app();
         app.set_status_sticky("dispatching".into());
-        app.status.message_set_at = Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
+        app.status.message_set_at =
+            Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
 
         app.tick_status_ttl();
         assert_eq!(app.status.message.as_deref(), Some("dispatching"));
@@ -539,7 +541,8 @@ mod tick_tests {
     fn status_ttl_ignored_outside_normal_mode() {
         let mut app = make_app();
         app.set_status("hello".into());
-        app.status.message_set_at = Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
+        app.status.message_set_at =
+            Some(Instant::now() - STATUS_MESSAGE_TTL - Duration::from_secs(1));
         app.input.mode = InputMode::Help;
 
         app.tick_status_ttl();
@@ -599,7 +602,10 @@ mod tick_tests {
         ));
 
         // Immediately polling again is throttled by PR_POLL_INTERVAL.
-        assert!(app.tick_pr_poll().is_empty(), "second poll should be throttled");
+        assert!(
+            app.tick_pr_poll().is_empty(),
+            "second poll should be throttled"
+        );
     }
 
     #[test]
@@ -609,6 +615,9 @@ mod tick_tests {
         task.url = Some(TaskUrl::new("https://example.com/issue/1", UrlType::Issue));
         app.board.tasks.push(task);
 
-        assert!(app.tick_pr_poll().is_empty(), "issue URLs are not PR-polled");
+        assert!(
+            app.tick_pr_poll().is_empty(),
+            "issue URLs are not PR-polled"
+        );
     }
 }

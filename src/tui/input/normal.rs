@@ -443,9 +443,7 @@ impl App {
             KeyCode::Char('p') => {
                 self.dispatch_handler_keyed(Self::handle_key_open_pr, "open_pr_url", "p")
             }
-            KeyCode::Char('a') => {
-                self.dispatch_keyed(Message::SelectAllColumn, "select_all", "a")
-            }
+            KeyCode::Char('a') => self.dispatch_keyed(Message::SelectAllColumn, "select_all", "a"),
 
             KeyCode::Char('v') => {
                 let mut cmds = self.dispatch_selection(
@@ -520,9 +518,11 @@ impl App {
                 "F",
             ),
 
-            KeyCode::Char('I') => {
-                self.dispatch_keyed(Message::Learning(LearningMessage::Open), "open_learnings", "I")
-            }
+            KeyCode::Char('I') => self.dispatch_keyed(
+                Message::Learning(LearningMessage::Open),
+                "open_learnings",
+                "I",
+            ),
 
             KeyCode::Char('P') => self.dispatch_keyed(
                 Message::Todo(crate::tui::messages::TodoMessage::Open),
