@@ -170,35 +170,55 @@ rule NotifyWatchersOnFinish {
 rule NotifyWatchersOnDelete {
     when: DeleteTask(task)
 
-    -- Only fires for a task that never reached a finished state. A task
-    -- deleted after reaching Done/Archived already had its subscriptions
-    -- notified and cleared by NotifyWatchersOnFinish.
-    requires: task.status != done
-    requires: task.status != archived
-
     ensures:
-        for w in TaskWatchers where target_task_id = task.id:
-            WatcherNotificationDue(watcher_task_id: w.watcher_task_id, target_task: task, reason: deleted)
-            not exists w
+        -- Target-role branch: only fires for a task that never reached a
+        -- finished state. A task deleted after reaching Done/Archived
+        -- already had its target-role subscriptions notified and cleared
+        -- by NotifyWatchersOnFinish, so re-running it here would
+        -- double-notify.
+        if task.status != done and task.status != archived:
+            for w in TaskWatchers where target_task_id = task.id:
+                WatcherNotificationDue(watcher_task_id: w.watcher_task_id, target_task: task, reason: deleted)
+                not exists w
+    ensures:
+        -- Watcher-role branch: unconditional, regardless of the deleted
+        -- task's own status. Any subscription where the deleted task was
+        -- itself a watcher of some OTHER task is removed silently — no
+        -- notification is owed, since nobody needs telling that a watcher
+        -- disappeared.
         for w in TaskWatchers where watcher_task_id = task.id:
             not exists w
 
     @guidance
-        -- Two independent cleanups: watchers OF the deleted task are told
-        -- it was deleted (not finished) and their subscriptions are
-        -- cleared; separately, any subscription where the deleted task was
-        -- itself a watcher of some OTHER task is also removed silently (no
-        -- notification is owed — nobody needs telling that a watcher
-        -- disappeared).
+        -- These two branches are deliberately decoupled: the target-role
+        -- notify-and-clear is gated on the deleted task not having already
+        -- finished (see above), but the watcher-role cleanup is NOT gated
+        -- on that condition, or on any status of the deleted task. This
+        -- matters because a task A can subscribe to watch task B, then A
+        -- itself later reach Done/Archived, and only then be deleted — at
+        -- that point A's own status is finished, but the (watcher_task_id:
+        -- A, target_task_id: B) row still must be cleared, because
+        -- NotifyWatchersOnFinish only ever clears rows where the
+        -- *finishing* task is the target, never rows where it is the
+        -- watcher. Gating the watcher-role branch behind the same
+        -- unfinished-status check as the target-role branch would leave
+        -- that row orphaned forever: B would eventually finish, and
+        -- NotifyWatchersOnFinish would emit a WatcherNotificationDue for
+        -- the now-nonexistent A (see DeliverWatcherNotification /
+        -- DeadWatcherDrop for how that is handled defensively).
         -- Shares the DeleteTask stimulus with tasks.allium's DeleteTask
         -- rule (ensures: not exists task). That rule's own requires
         -- (task.status = archived) reflects today's TUI entry point (the
         -- archive view is the only delete surface), not a service-layer
         -- restriction: TaskService::delete_task itself has no status
-        -- precondition. This rule specifies the general, status-agnostic
-        -- case; under the current TUI-only entry point it does not
-        -- observably fire, since by the time a task is deletable there it
-        -- is already Archived and already handled by NotifyWatchersOnFinish.
+        -- precondition. Under the current TUI-only entry point, the
+        -- target-role branch does not observably fire, since by the time a
+        -- task is deletable there it is already Archived and its
+        -- target-role rows were already cleared by NotifyWatchersOnFinish.
+        -- The watcher-role branch, by contrast, DOES observably fire under
+        -- today's TUI-only entry point: any archived task that had
+        -- subscribed to watch something else has that watcher-role row
+        -- cleared here on delete.
         -- Implementation: a second helper called from
         -- TaskServiceApi::delete_task (src/service/tasks/crud.rs), invoked
         -- before the row is actually removed.
@@ -211,6 +231,7 @@ rule DeliverWatcherNotification {
 
     let watcher_task = core/Task.find(watcher_task_id)
 
+    requires: watcher_task != null
     requires: watcher_task.tmux_window != null
 
     ensures:
@@ -236,7 +257,7 @@ rule DeadWatcherDrop {
 
     let watcher_task = core/Task.find(watcher_task_id)
 
-    requires: watcher_task.tmux_window = null
+    requires: watcher_task = null or watcher_task.tmux_window = null
 
     ensures: WatcherNotificationDropped(
         watcher_task_id: watcher_task_id,
@@ -245,14 +266,28 @@ rule DeadWatcherDrop {
     )
 
     @guidance
-        -- A watcher whose own session has already ended (no live tmux
-        -- window) cannot receive the nudge. The notification is dropped:
-        -- logged via tracing::warn! naming the watcher and target task ids,
-        -- NOT retried, with no dead-letter queue — this is a best-effort
-        -- nudge, not a durable message queue.
+        -- Covers two distinct can't-deliver cases identically: (a) the
+        -- watcher task still exists but its own session has already ended
+        -- (no live tmux window), and (b) Task.find(watcher_task_id)
+        -- resolves to nothing at all — the watcher task itself no longer
+        -- exists. Case (b) is now unreachable via either currently-wired
+        -- producer of WatcherNotificationDue (NotifyWatchersOnFinish and
+        -- NotifyWatchersOnDelete's target-role branch), because
+        -- NotifyWatchersOnDelete's watcher-role cleanup (see above)
+        -- unconditionally clears any row where a task was itself the
+        -- watcher at the moment that task is deleted — so by the time any
+        -- rule would look up that row's watcher_task_id, either the row is
+        -- already gone or the watcher task it names still exists. It is
+        -- specified anyway, defensively, as a fallback for any future
+        -- producer of WatcherNotificationDue this spec does not yet
+        -- anticipate. Both cases are handled identically: logged
+        -- via tracing::warn! naming the watcher and target task ids, NOT
+        -- retried, with no dead-letter queue, and no error raised — this is
+        -- a best-effort nudge, not a durable message queue.
         -- WatcherNotificationDropped is observable via the standard tracing
         -- subscriber; it has no entity representation in this spec.
         -- Regardless of this rule firing, the TaskWatcher row was already
         -- removed by NotifyWatchersOnFinish/NotifyWatchersOnDelete above —
-        -- a dead watcher never blocks subscription cleanup.
+        -- a dead (or nonexistent) watcher never blocks subscription
+        -- cleanup.
 }
