@@ -339,7 +339,8 @@ rule ResumeTask {
         -- the Task.status graph edge done -> running in core.allium). So a done
         -- task still satisfies worktree != null and tmux_window = null and can
         -- be resumed straight back to running like any Running/Review task.
-        -- Bound to `d` on a task card in the Done column.
+        -- Reached via Space on a task card with a worktree but no live tmux
+        -- window (see split-pane.allium JumpToAgentWindow, priority 3).
 }
 
 -- == Retry ==
