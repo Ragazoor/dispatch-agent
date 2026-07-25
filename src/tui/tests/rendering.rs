@@ -15,7 +15,7 @@ async fn action_hints_backlog_task() {
         .map(|s| s.content.as_ref())
         .collect();
     assert!(
-        keys.contains(&"[d]"),
+        keys.contains(&"[Space]"),
         "should have dispatch/brainstorm hint"
     );
     assert!(keys.contains(&"[e]"), "should have edit hint");
@@ -40,7 +40,7 @@ async fn action_hints_backlog_task_with_plan() {
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(keys.contains(&"[d]"), "should have dispatch hint");
+    assert!(keys.contains(&"[Space]"), "should have dispatch hint");
     let text: String = hints.iter().map(|s| s.content.as_ref()).collect();
     assert!(
         text.contains("ispatch"),
@@ -75,13 +75,13 @@ async fn action_hints_running_with_worktree_no_window() {
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(keys.contains(&"[d]"), "should have resume hint");
+    assert!(keys.contains(&"[Space]"), "should have resume hint");
     assert!(
-        !keys.contains(&"[Space]"),
-        "no go-to-session without window"
+        !keys.contains(&"[d]"),
+        "the d key is no longer bound"
     );
     let text: String = hints.iter().map(|s| s.content.as_ref()).collect();
-    assert!(text.contains("resume"), "d means resume here");
+    assert!(text.contains("resume"), "Space means resume here");
 }
 
 #[tokio::test]

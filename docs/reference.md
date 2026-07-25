@@ -22,11 +22,10 @@
 | `n` | New task |
 | `c` | Copy selected task |
 | `e` | Edit task in editor (opens in a separate tmux window) |
-| `d` | Dispatch agent — behavior depends on tag (see README) / resume (Running task whose window is gone) |
 | `D` | Quick dispatch — pick repo and dispatch immediately |
 | `Shift+L` / `Shift+H` | Move task forward / backward |
 | `W` | Wrap up — commit and rebase. PR creation is agent-driven (run the `/wrap-up` skill from the agent session) |
-| `Space` | Jump to the agent's tmux window |
+| `Space` | Activate the task: jump to the agent's tmux window if one exists, otherwise dispatch (Backlog) or resume (Running/Review/Done with a worktree). Replaces the former `d` key |
 | `Prefix+Space` | (tmux global) Jump back from an agent's window to the dispatch TUI — press your tmux prefix, then Space |
 | `s` | Toggle split view — side-by-side TUI + agent pane |
 | `S` | Swap the selected task into the split pane (in-place) |
@@ -45,7 +44,6 @@
 |-----|--------|
 | `E` | New epic |
 | `Space` | Enter epic view (see subtasks) |
-| `d` | Dispatch next backlog subtask |
 | `D` | Quick dispatch subtask for this epic |
 | `Shift+L` / `Shift+H` | Move epic status forward / backward |
 | `J` / `K` | Reorder subtasks (determines dispatch order) |
@@ -65,13 +63,13 @@ Typing inserts at the caret. In repo-picker fields (`←`/`→` move the text ca
 
 ## How Dispatch Works
 
-Press `d` on a Backlog task:
+Press `Space` on a Backlog task:
 
 1. Creates a git worktree at `<repo>/.worktrees/<id>-<slug>`
 2. Opens a new tmux window in your current session
 3. Launches `claude` with the task description and completion instructions (the MCP server is already wired up via `~/.claude.json` from `dispatch setup`)
 
-The agent reports progress via the MCP server running on `localhost:3142`. When it finishes, it moves the task to Review. Closing a tmux window does **not** delete the worktree — press `d` again on a Running task to resume.
+The agent reports progress via the MCP server running on `localhost:3142`. When it finishes, it moves the task to Review. Closing a tmux window does **not** delete the worktree — press `Space` again on a Running task to resume (or, if the window is still alive, `Space` jumps to it).
 
 ## CLI Usage
 
@@ -242,7 +240,7 @@ Verify the dispatch plugin is installed: `ls ~/.claude/plugins/local/dispatch/ho
 The dispatch plugin may not be installed. Run `dispatch setup` to install it.
 
 **Agent window disappeared but task is still Running**
-Press `d` on the Running task to reopen a tmux window in the existing worktree and resume the agent.
+Press `Space` on the Running task to reopen a tmux window in the existing worktree and resume the agent.
 
 **`Ctrl+←` / `Ctrl+→` don't jump words in text fields**
 Some tmux configs don't forward the modifier on arrow keys unless `xterm-keys` is

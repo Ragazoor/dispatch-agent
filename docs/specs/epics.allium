@@ -108,50 +108,6 @@ rule CreateEpic {
         -- the epic level.
 }
 
-rule DispatchEpicSubtask {
-    when: DispatchEpic(epic)
-
-    requires: epic.status = backlog
-    requires: epic.has_plan
-
-    -- Dispatches the next backlog subtask of this epic, ordered by
-    -- sort_order ascending (nulls treated as the task id, tie-broken
-    -- by id ascending).
-    ensures:
-        let candidates = epic.active_subtasks where status = backlog
-        let next = sort_by_order(candidates).first
-        if next != null:
-            AgentLaunched(task: next, mode: standard)
-
-    @guidance
-        -- The TUI considers only active subtasks (Task) as dispatch
-        -- candidates; sub-epics are not auto-dispatched as children of
-        -- a parent epic. Dispatching a sub-epic is an explicit user
-        -- action (selecting the sub-epic and pressing Enter on it, or
-        -- opening it and pressing Enter from within).
-        --
-        -- The TUI requires epic.status = backlog so that all children
-        -- are dispatched in a batch before any start running. Once the
-        -- first child is dispatched and the epic auto-advances to
-        -- running (via RecalculateEpicStatus), no further TUI dispatches
-        -- are possible until the epic returns to backlog. This is
-        -- stricter than DispatchNextViaMcp, which omits the backlog
-        -- guard so that running agents can chain-dispatch siblings.
-        --
-        -- The TUI also excludes tasks currently in the in-flight
-        -- `dispatching` set to avoid racing a second dispatch while the
-        -- first is still provisioning its worktree.
-        --
-        -- All subtasks dispatch via the same standard path: the unified
-        -- prompt skeleton (build_prompt) handles both has_plan = true
-        -- (review the plan, ask permission, implement) and has_plan = false
-        -- (use /brainstorming if vague, else write a plan and attach it
-        -- via update_task) without any tag-based branching at the
-        -- dispatch layer.
-        -- When no backlog subtasks remain, the TUI shows a status
-        -- message instead of dispatching.
-}
-
 rule EpicBatchWrapUp {
     when: EpicBatchWrapUp(epic, rebase)
 
@@ -485,11 +441,9 @@ rule DispatchNextViaMcp {
 
     requires: epic.auto_dispatch = true
 
-    -- Intentionally looser than the TUI DispatchEpicSubtask rule:
-    -- does not require epic.status = backlog. The TUI dispatches
-    -- subtasks in batch while the epic is still in backlog; MCP
-    -- dispatches sequentially as agents complete work, so the epic
-    -- will already be running.
+    -- Does not require epic.status = backlog: MCP dispatches sequentially
+    -- as agents complete work, so the epic will already be running by the
+    -- time the next subtask is requested.
 
     ensures:
         let candidates = epic.active_subtasks where status = backlog
@@ -499,9 +453,11 @@ rule DispatchNextViaMcp {
 
     @guidance
         -- MCP tool for agents to dispatch the next backlog subtask of
-        -- their epic. Routes through the same single dispatch path as
-        -- DispatchEpicSubtask: build_prompt produces the unified prompt
-        -- skeleton with the appropriate addendum based on has_plan.
+        -- their epic. Routes through the standard single dispatch path:
+        -- build_prompt produces the unified prompt skeleton with the
+        -- appropriate addendum based on has_plan.
+        -- Only active subtasks (Task) are dispatch candidates, ordered by
+        -- sort_order ascending (nulls treated as the task id).
         -- The task is transitioned to running with a provisioned worktree
         -- and tmux window; the parent epic's status is recalculated after
         -- the dispatch completes.
@@ -661,10 +617,10 @@ rule RegroupEpic {
         -- RegroupEpic is idempotent: calling it when tasks are already
         -- in the correct sub-epic is a no-op for each task.
         -- Dispatching a grouped epic operates per sub-epic, not on the
-        -- parent directly (see DispatchEpicSubtask: only direct Task
-        -- children are considered, so the human selects a sub-epic to
-        -- dispatch). Sub-epics are one level deep — sub-epics of
-        -- repo-group sub-epics are not created.
+        -- parent directly: only direct Task children are dispatch
+        -- candidates (see DispatchNextViaMcp), so the human selects a
+        -- sub-epic to dispatch. Sub-epics are one level deep — sub-epics
+        -- of repo-group sub-epics are not created.
         --
         -- TUI progress aggregation: the TUI's epic-status indicator (●N
         -- counts by status column) aggregates across all active_children

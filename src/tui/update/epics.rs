@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use crate::dispatch;
-use crate::models::{descendant_epic_ids, DispatchMode, Epic, EpicId, Task, TaskId, TaskStatus};
+use crate::models::{descendant_epic_ids, Epic, EpicId, Task, TaskId, TaskStatus};
 
 use super::super::types::*;
 use super::super::{truncate_title, App, TITLE_DISPLAY_LENGTH};
@@ -144,54 +144,6 @@ impl App {
     // -----------------------------------------------------------------------
     // Epic handlers
     // -----------------------------------------------------------------------
-
-    pub(in crate::tui) fn handle_dispatch_epic(&mut self, id: EpicId) -> Vec<Command> {
-        let Some(epic) = self.board.epics.iter().find(|e| e.id == id) else {
-            return vec![];
-        };
-        let status = epic.status;
-
-        if status != TaskStatus::Backlog {
-            self.set_status("No backlog tasks in epic".to_string());
-            return vec![];
-        }
-
-        if epic.plan_path.is_some() {
-            // Epic has a plan — dispatch the next backlog subtask sorted by sort_order
-            let mut backlog_subtasks: Vec<&Task> = self
-                .board
-                .tasks
-                .iter()
-                .filter(|t| {
-                    t.epic_id == Some(id)
-                        && t.status == TaskStatus::Backlog
-                        && !self.dispatching.contains_key(&t.id)
-                })
-                .collect();
-            backlog_subtasks.sort_by_key(|t| (t.sort_order.unwrap_or(t.id.0), t.id.0));
-
-            let next = backlog_subtasks
-                .first()
-                .map(|t| (t.id, DispatchMode::for_task(t), (*t).clone()));
-            drop(backlog_subtasks);
-
-            match next {
-                Some((task_id, mode, task)) => {
-                    self.mark_dispatching(task_id);
-                    vec![Command::Task(
-                        crate::tui::commands::TaskCommand::DispatchAgent { task, mode },
-                    )]
-                }
-                None => {
-                    self.set_status("No backlog subtasks in epic".to_string());
-                    vec![]
-                }
-            }
-        } else {
-            self.set_status("Cannot dispatch an epic".to_string());
-            vec![]
-        }
-    }
 
     pub(in crate::tui) fn handle_enter_epic(&mut self, epic_id: EpicId) -> Vec<Command> {
         let parent = Box::new(self.board.view_mode.clone());

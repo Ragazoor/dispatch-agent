@@ -130,27 +130,87 @@ rule SplitPaneFocusBorder {
         -- border_color = BORDER when split_pane.focused = false
 }
 
--- == Jump to Agent Window (Space key) ==
+-- == Jump to Agent Window / Activate Task (Space key) ==
 --
--- Pressing Space on a task jumps tmux focus to that task's agent window.
--- In the normal case this is a standalone tmux window. When the task is
--- currently pinned in the split pane, the pane is targeted directly.
+-- Pressing Space on a task is the single "work on this task" action: it
+-- jumps tmux focus to that task's agent window when one exists, and
+-- otherwise starts or resumes the agent. This unifies the former Space
+-- jump key with the now-removed [d] dispatch/resume key.
+--
+-- Priority order (first match wins):
+--   1. Task pinned in the split pane   -> focus that pane.
+--   2. task.tmux_window != null        -> jump to the window.
+--   3. No window, routed by status     -> dispatch / resume / retry / hint.
+--
+-- The window check (2) precedes the status check (3), so a Stale or Crashed
+-- task that still has a window is jumped to (a stale agent is usually just
+-- idle) rather than opening the retry dialog. The retry dialog is reached
+-- only for a windowless Stale/Crashed task (3).
 
 rule JumpToAgentWindow {
     when: UserAction(" ", task)
-    requires: task.tmux_window != null
 
-    ensures: tmux_focus = task.tmux_window
+    ensures:
+        if split_pane.active = true and split_pane.pinned_task = task:
+            -- Priority 1: the task is pinned; its window was joined into the
+            -- dispatch window via join-pane, so focus the pane directly.
+            tmux_focus = split_pane.pane
+        else if task.tmux_window != null:
+            -- Priority 2: jump to the standalone agent window.
+            tmux_focus = task.tmux_window
+        else if task.status = backlog:
+            -- Priority 3, Backlog: start the agent. Repo-trust confirmation
+            -- (ConfirmTrustRepo) is preserved as a pre-dispatch gate.
+            DispatchTask(task)
+        else if task.status in {running, review, done}:
+            if task.sub_status in {stale, crashed}:
+                -- Windowless Stale/Crashed: open the kill-and-retry dialog.
+                ConfirmRetry(task)
+            else if task.worktree != null:
+                -- Worktree survives, no live window: reattach the agent.
+                ResumeTask(task)
+            else:
+                UserInformed(about: no_worktree_to_resume, task: task)
+        else:
+            -- Archived.
+            UserInformed(about: task_archived, task: task)
 
     @guidance
-        -- Space jumps to the agent's window. In the normal case (no split, or
-        -- split active but a different task is pinned), this calls
-        -- tmux select-window on task.tmux_window.
+        -- Space is the unified activate action. The branches, in priority
+        -- order:
         --
-        -- Edge case: when the task is the currently pinned split-pane task,
-        -- its pane has been joined into the dispatch window via join-pane and
-        -- the original standalone window no longer exists. In this case Space
-        -- calls tmux select-pane on split_pane.right_pane_id instead.
+        --   1. Pinned in the split pane: the task's pane has been joined into
+        --      the dispatch window via join-pane and the original standalone
+        --      window no longer exists, so this calls tmux select-pane on
+        --      split_pane.right_pane_id rather than select-window.
+        --
+        --   2. Has a tmux window: the normal jump (no split, or split active
+        --      but a different task is pinned) calls tmux select-window on
+        --      task.tmux_window. This branch also covers Stale/Crashed tasks
+        --      that still have a window — the window check wins over the
+        --      problematic-status check, because a stale agent is usually just
+        --      idle and jumping to it is what the user wants.
+        --
+        --   3. No window, routed by status:
+        --      * Backlog        -> DispatchTask (dispatch.allium). The
+        --        repo-trust confirmation (ConfirmTrustRepo) is preserved: an
+        --        untrusted repo first shows the trust prompt, which on accept
+        --        proceeds to dispatch. Tag-based routing (research ->
+        --        DispatchResearchTask) lives in dispatch.allium, not here.
+        --      * Running/Review/Done, Stale or Crashed -> open the
+        --        kill-and-retry dialog (ConfirmRetry: [r] resume / [f] fresh
+        --        start). This is the only path that still opens that dialog
+        --        (RetryResume / RetryFresh in dispatch.allium).
+        --      * Running/Review/Done with a worktree -> ResumeTask
+        --        (dispatch.allium): reattach the agent in the existing
+        --        worktree.
+        --      * Running/Review/Done without a worktree -> a status hint
+        --        ("No worktree to resume, move to Backlog and re-dispatch").
+        --      * Archived -> a status hint ("Task is archived").
+        --
+        -- Space on an epic row (board view) is unchanged: it enters the epic
+        -- view. Inside the epic, Space on each subtask follows the task rules
+        -- above.
         --
         -- Contrast with [S], which peeks at the window in-place without
         -- transferring focus.

@@ -389,16 +389,21 @@ fn space_key_with_live_window_jumps() {
 }
 
 #[test]
-fn space_key_without_window_shows_message() {
+fn space_key_without_window_dispatches_backlog() {
+    // Space on a windowless Backlog task now activates it (dispatch), routing
+    // through the repo-trust gate for the untrusted "/repo" fixture rather than
+    // showing "No active session".
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     app.selection_mut().set_column(1); // Backlog = nav col 1
     app.handle_key(make_key(KeyCode::Char(' ')));
-    assert!(app
-        .status
-        .message
-        .as_deref()
-        .unwrap()
-        .contains("No active session"));
+    assert!(
+        matches!(
+            app.input.mode,
+            InputMode::ConfirmTrustRepo { task_id: TaskId(1), .. }
+        ),
+        "expected ConfirmTrustRepo mode, got {:?}",
+        app.input.mode
+    );
 }
 
 #[test]

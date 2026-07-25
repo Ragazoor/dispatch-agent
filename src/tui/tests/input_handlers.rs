@@ -1523,13 +1523,13 @@ fn handle_key_tag_esc_cancels() {
 }
 
 #[test]
-fn handle_key_normal_dispatch_backlog_task() {
+fn handle_key_normal_activate_backlog_task() {
     let mut app = make_app();
     // Select task 1 (backlog)
     app.selection_mut().set_column(1);
     app.selection_mut().set_row(1, 0);
 
-    app.handle_key(make_key(KeyCode::Char('d')));
+    app.handle_key(make_key(KeyCode::Char(' ')));
     // repo_path "/repo" is not trusted, so we enter confirm-trust mode instead
     // of dispatching immediately
     assert!(
@@ -1540,7 +1540,7 @@ fn handle_key_normal_dispatch_backlog_task() {
 }
 
 #[test]
-fn handle_key_normal_dispatch_running_task_with_window_shows_info() {
+fn handle_key_normal_activate_running_task_with_window_jumps() {
     let mut app = make_app();
     // Select running task (column 2)
     app.selection_mut().set_column(2);
@@ -1554,9 +1554,15 @@ fn handle_key_normal_dispatch_running_task_with_window_shows_info() {
         .unwrap();
     task_3.tmux_window = Some("main:task-3".to_string());
 
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    // Should just show status info, no dispatch
-    assert!(cmds.is_empty());
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    // Space jumps to the live window rather than dispatching.
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "main:task-3"
+        )),
+        "Space on a running task with a window should jump, got {cmds:?}"
+    );
 }
 
 #[test]

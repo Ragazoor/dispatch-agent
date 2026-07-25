@@ -10,7 +10,6 @@ use crate::tui::App;
 /// Wrapped by [`crate::tui::types::Message::Epic`] for dispatch.
 #[derive(Debug, Clone)]
 pub enum EpicMessage {
-    Dispatch(EpicId),
     Enter(EpicId),
     Exit,
     Refresh(Vec<Epic>),
@@ -43,7 +42,6 @@ impl EpicMessage {
     /// Route this message to its handler on [`App`]. See [`super::SplitMessage::route`].
     pub(in crate::tui) fn route(self, app: &mut App) -> Vec<Command> {
         match self {
-            EpicMessage::Dispatch(id) => app.handle_dispatch_epic(id),
             EpicMessage::Enter(id) => app.handle_enter_epic(id),
             EpicMessage::Exit => app.handle_exit_epic(),
             EpicMessage::Refresh(epics) => app.handle_refresh_epics(epics),

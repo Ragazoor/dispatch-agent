@@ -267,21 +267,46 @@ impl App {
         }
     }
 
-    /// Handle the 'd' key: dispatch, brainstorm, resume, or retry depending on item type/status.
-    /// Done tasks resume via the same path as Running/Review: their worktree survives
-    /// ConfirmDone (only the tmux window is torn down), so 'd' reattaches an agent there.
-    pub(in crate::tui) fn handle_key_dispatch(&mut self) -> Vec<Command> {
+    /// `Space` — the unified "activate task" action (see
+    /// docs/specs/split-pane.allium: JumpToAgentWindow). Priority order for a
+    /// task: (1) pinned in the split pane → focus the pane; (2) a live tmux
+    /// window exists → jump to it (this wins over the Stale/Crashed status
+    /// check — a stale agent is usually just idle); (3) no window → route by
+    /// status: Backlog dispatches, Running/Review/Done resumes (or opens the
+    /// retry dialog for a windowless Stale/Crashed task), Archived shows a hint.
+    /// On an epic row it enters the epic view. Replaces the former split
+    /// `d` (dispatch) / `Space` (jump) keys.
+    pub(in crate::tui) fn handle_key_activate(&mut self) -> Vec<Command> {
         match self.selected_column_item() {
-            Some(ColumnItem::Epic(epic)) => {
-                let id = epic.id;
-                self.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-                    id,
-                )))
-            }
             Some(ColumnItem::Task(task)) => {
                 let id = task.id;
+
+                // Priority 1: the task is pinned in the split pane — its window
+                // was joined into the dispatch window via join-pane, so focus
+                // the pane directly instead of the (now-absent) window.
+                if self.board.split.active && self.board.split.pinned_task_id == Some(id) {
+                    if let Some(pane_id) = self.board.split.right_pane_id.clone() {
+                        return vec![
+                            Command::Split(crate::tui::commands::SplitCommand::FocusPane {
+                                pane_id,
+                            }),
+                            key_event("jump_to_tmux", " "),
+                        ];
+                    }
+                }
+
+                // Priority 2: a standalone window exists — jump to it.
+                if let Some(window) = &task.tmux_window {
+                    return vec![
+                        Command::Task(crate::tui::commands::TaskCommand::JumpToTmux {
+                            window: window.clone(),
+                        }),
+                        key_event("jump_to_tmux", " "),
+                    ];
+                }
+
+                // Priority 3: no window — route by status.
                 let status = task.status;
-                let has_window = task.tmux_window.is_some();
                 let has_worktree = task.worktree.is_some();
                 let is_problematic = self.find_task(id).is_some_and(|t| {
                     t.sub_status == SubStatus::Stale || t.sub_status == SubStatus::Crashed
@@ -296,34 +321,38 @@ impl App {
                                 self.set_status(format!("Trust check failed: {e}"));
                                 vec![]
                             }
-                            Ok(true) => self.update(Message::Task(
-                                crate::tui::messages::TaskMessage::Dispatch(id, mode),
-                            )),
+                            Ok(true) => {
+                                let mut cmds = self.update(Message::Task(
+                                    crate::tui::messages::TaskMessage::Dispatch(id, mode),
+                                ));
+                                cmds.push(key_event("dispatch_task", " "));
+                                cmds
+                            }
                             Ok(false) => {
                                 let expanded = crate::models::expand_tilde(&repo_path);
                                 self.input.mode = InputMode::ConfirmTrustRepo { task_id: id, mode };
                                 self.set_status(format!(
                                     "Repo '{expanded}' not trusted by Claude Code — trust it? [y/N]"
                                 ));
-                                vec![]
+                                vec![key_event("dispatch_task", " ")]
                             }
                         }
                     }
                     TaskStatus::Running | TaskStatus::Review | TaskStatus::Done => {
                         if is_problematic {
-                            self.update(Message::Task(
+                            // Windowless Stale/Crashed: open the kill-and-retry
+                            // dialog (the only path that still reaches it).
+                            let mut cmds = self.update(Message::Task(
                                 crate::tui::messages::TaskMessage::KillAndRetry(id),
-                            ))
-                        } else if has_window {
-                            self.update(Message::System(
-                                crate::tui::messages::SystemMessage::StatusInfo(
-                                    "Agent already running, press g to jump".to_string(),
-                                ),
-                            ))
+                            ));
+                            cmds.push(key_event("open_retry_dialog", " "));
+                            cmds
                         } else if has_worktree {
-                            self.update(Message::Task(crate::tui::messages::TaskMessage::Resume(
-                                id,
-                            )))
+                            let mut cmds = self.update(Message::Task(
+                                crate::tui::messages::TaskMessage::Resume(id),
+                            ));
+                            cmds.push(key_event("resume_task", " "));
+                            cmds
                         } else {
                             self.update(Message::System(
                                 crate::tui::messages::SystemMessage::StatusInfo(
@@ -340,16 +369,18 @@ impl App {
                     )),
                 }
             }
+            Some(ColumnItem::Epic(epic)) => {
+                let id = epic.id;
+                self.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(id)))
+            }
             Some(
                 ColumnItem::EpicHeader(_)
                 | ColumnItem::SubstatusLabel(_)
                 | ColumnItem::OrphanSeparator,
             ) => vec![],
             None => {
-                if let ViewMode::Epic { epic_id, .. } = self.board.view_mode {
-                    self.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-                        epic_id,
-                    )))
+                if let Some(id) = self.selected_epic_id() {
+                    self.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(id)))
                 } else {
                     vec![]
                 }

@@ -361,11 +361,6 @@ impl App {
                 "create_epic",
                 "E",
             ),
-            KeyCode::Char('d') => {
-                let mut cmds = self.handle_key_dispatch();
-                cmds.push(key_event("dispatch_task", "d"));
-                cmds
-            }
             KeyCode::Char('f') => self.dispatch_keyed(
                 Message::RepoFilter(crate::tui::messages::RepoFilterMessage::Start),
                 "filter_repos",
@@ -462,9 +457,7 @@ impl App {
                 cmds
             }
 
-            KeyCode::Char(' ') => {
-                self.dispatch_handler_keyed(Self::handle_key_jump_window, "jump_to_tmux", " ")
-            }
+            KeyCode::Char(' ') => self.handle_key_activate(),
 
             KeyCode::Enter => self.handle_key_enter_normal(),
 
@@ -605,38 +598,6 @@ impl App {
             KeyCode::Esc => self.handle_key_esc_normal(),
 
             _ => vec![],
-        }
-    }
-
-    /// `'space'` — jump to the selected task's tmux window, or enter an epic.
-    pub(in crate::tui) fn handle_key_jump_window(&mut self) -> Vec<Command> {
-        if let Some(task) = self.selected_task() {
-            // If the task's window is pinned in the split pane, it no longer
-            // exists as a standalone window — focus the pane directly instead.
-            if self.board.split.active && self.board.split.pinned_task_id == Some(task.id) {
-                if let Some(pane_id) = self.board.split.right_pane_id.clone() {
-                    return vec![Command::Split(
-                        crate::tui::commands::SplitCommand::FocusPane { pane_id },
-                    )];
-                }
-            }
-            if let Some(window) = &task.tmux_window {
-                vec![Command::Task(
-                    crate::tui::commands::TaskCommand::JumpToTmux {
-                        window: window.clone(),
-                    },
-                )]
-            } else {
-                self.update(Message::System(
-                    crate::tui::messages::SystemMessage::StatusInfo(
-                        "No active session".to_string(),
-                    ),
-                ))
-            }
-        } else if let Some(id) = self.selected_epic_id() {
-            self.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(id)))
-        } else {
-            vec![]
         }
     }
 

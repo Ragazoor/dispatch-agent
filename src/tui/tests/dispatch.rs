@@ -80,137 +80,6 @@ fn dispatch_from_review_is_noop() {
 }
 
 #[test]
-fn d_key_on_backlog_with_plan_enters_confirm_trust_mode() {
-    let mut task = make_task(3, TaskStatus::Backlog);
-    task.plan_path = Some("plan.md".into());
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(1); // Backlog column
-    app.handle_key(make_key(KeyCode::Char('d')));
-    // repo_path "/repo" is not trusted, so we enter confirm-trust mode
-    assert!(
-        matches!(app.input.mode, InputMode::ConfirmTrustRepo { .. }),
-        "expected ConfirmTrustRepo mode, got {:?}",
-        app.input.mode
-    );
-}
-
-#[test]
-fn d_key_on_running_with_window_shows_warning() {
-    let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("task-4".to_string());
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(2); // Running column
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert!(app
-        .status
-        .message
-        .as_deref()
-        .unwrap()
-        .contains("already running"));
-}
-
-#[test]
-fn d_key_on_running_no_window_resumes() {
-    let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    task.tmux_window = None;
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(2); // Running column
-    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
-    assert!(matches!(
-        &cmds[0],
-        Command::Task(crate::tui::commands::TaskCommand::Resume { .. })
-    ));
-}
-
-#[test]
-fn d_key_on_backlog_dispatches() {
-    let mut task = make_task(1, TaskStatus::Backlog);
-    task.tag = Some(TaskTag::Feature);
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(1); // Backlog column
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    // repo_path "/repo" is not trusted, so no dispatch command is emitted
-    assert!(
-        cmds.iter().all(|c| !matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::DispatchAgent { .. })
-        )),
-        "should not dispatch untrusted repo"
-    );
-    assert!(
-        matches!(
-            app.input.mode,
-            InputMode::ConfirmTrustRepo {
-                task_id: TaskId(1),
-                ..
-            }
-        ),
-        "expected ConfirmTrustRepo mode, got {:?}",
-        app.input.mode
-    );
-}
-
-#[test]
-fn d_key_on_done_shows_warning() {
-    let mut app = App::new(vec![make_task(1, TaskStatus::Done)]);
-    app.selection_mut().set_column(4); // Done column
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert!(app.status.message.is_some());
-}
-
-#[test]
-fn d_key_on_done_with_worktree_resumes() {
-    let mut task = make_task(1, TaskStatus::Done);
-    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = None;
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(4); // Done column
-    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
-    assert!(matches!(
-        &cmds[0],
-        Command::Task(crate::tui::commands::TaskCommand::Resume { .. })
-    ));
-}
-
-#[test]
-fn d_key_on_done_with_window_shows_warning() {
-    let mut task = make_task(1, TaskStatus::Done);
-    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(4); // Done column
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert!(app
-        .status
-        .message
-        .as_deref()
-        .unwrap()
-        .contains("already running"));
-}
-
-#[test]
-fn d_key_on_running_no_worktree_no_window_shows_warning() {
-    let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = None;
-    task.tmux_window = None;
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(2); // Running column
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert!(app
-        .status
-        .message
-        .as_deref()
-        .unwrap()
-        .contains("No worktree"));
-}
-
-#[test]
 fn shift_d_with_one_repo_emits_quick_dispatch() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     app.board.repo_paths = vec!["/repo".to_string()];
@@ -489,62 +358,6 @@ fn dispatched_unknown_id_is_noop() {
 }
 
 #[test]
-fn d_key_on_review_with_window_shows_warning() {
-    let mut task = make_task(5, TaskStatus::Review);
-    task.tmux_window = Some("task-5".to_string());
-    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(3); // Review column
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert!(app
-        .status
-        .message
-        .as_deref()
-        .unwrap()
-        .contains("already running"));
-}
-
-#[test]
-fn d_key_on_review_no_window_with_worktree_resumes() {
-    let mut task = make_task(5, TaskStatus::Review);
-    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
-    task.tmux_window = None;
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(3); // Review column
-    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
-    assert!(matches!(
-        &cmds[0],
-        Command::Task(crate::tui::commands::TaskCommand::Resume { .. })
-    ));
-}
-
-#[test]
-fn d_key_on_review_no_worktree_no_window_shows_warning() {
-    let mut task = make_task(5, TaskStatus::Review);
-    task.worktree = None;
-    task.tmux_window = None;
-    let mut app = App::new(vec![task]);
-    app.selection_mut().set_column(3); // Review column
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert!(app
-        .status
-        .message
-        .as_deref()
-        .unwrap()
-        .contains("No worktree"));
-}
-
-#[test]
-fn d_key_on_empty_column_is_noop() {
-    let mut app = App::new(vec![]);
-    app.selection_mut().set_column(1);
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-}
-
-#[test]
 fn kill_and_retry_enters_confirm_mode() {
     let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
     app.board.tasks[0].tmux_window = Some("task-4".to_string());
@@ -626,32 +439,6 @@ fn retry_fresh_emits_cleanup_and_dispatch() {
 }
 
 #[test]
-fn d_key_on_stale_running_task_enters_retry_mode() {
-    let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("task-4".to_string());
-    app.board.tasks[0].sub_status = SubStatus::Stale;
-    // Navigate to Running column (index 2)
-    app.selection_mut().set_column(2);
-    app.selection_mut().set_row(2, 0);
-
-    app.handle_key(make_key(KeyCode::Char('d')));
-    assert!(matches!(app.input.mode, InputMode::ConfirmRetry(TaskId(4))));
-}
-
-#[test]
-fn d_key_on_crashed_running_task_enters_retry_mode() {
-    let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("task-4".to_string());
-    app.board.tasks[0].sub_status = SubStatus::Crashed;
-    // Navigate to Running column (index 2)
-    app.selection_mut().set_column(2);
-    app.selection_mut().set_row(2, 0);
-
-    app.handle_key(make_key(KeyCode::Char('d')));
-    assert!(matches!(app.input.mode, InputMode::ConfirmRetry(TaskId(4))));
-}
-
-#[test]
 fn crashed_card_with_no_window_shows_detached_not_crashed() {
     // Detached out-prioritizes Crashed when tmux_window is None
     let mut task = make_task(1, TaskStatus::Running);
@@ -665,146 +452,6 @@ fn crashed_card_with_no_window_shows_detached_not_crashed() {
         !buffer_contains(&buf, "\u{26a0} crashed"),
         "should not show ⚠ crashed"
     );
-}
-
-#[test]
-fn d_key_on_backlog_epic_no_plan_shows_cannot_dispatch() {
-    let mut app = make_app_with_epic_selected(); // epic at row 1 in Backlog
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert_eq!(
-        app.status.message.as_deref(),
-        Some("Cannot dispatch an epic")
-    );
-}
-
-#[test]
-fn d_key_in_epic_view_with_no_subtasks_shows_cannot_dispatch() {
-    let mut app = App::new(vec![]);
-    let epic = make_epic(10);
-    app.board.epics = vec![epic];
-    app.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(
-        EpicId(10),
-    )));
-
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
-    assert!(cmds.is_empty());
-    assert_eq!(
-        app.status.message.as_deref(),
-        Some("Cannot dispatch an epic")
-    );
-}
-
-#[test]
-fn dispatch_epic_on_backlog_epic_no_plan_shows_cannot_dispatch() {
-    let mut app = make_app_with_epic_selected(); // epic at row 1, Backlog column
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(10),
-    )));
-    assert!(cmds.is_empty());
-    assert_eq!(
-        app.status.message.as_deref(),
-        Some("Cannot dispatch an epic")
-    );
-}
-
-#[test]
-fn dispatch_epic_on_non_backlog_shows_status() {
-    let mut app = App::new(vec![{
-        let mut t = make_task(1, TaskStatus::Running);
-        t.epic_id = Some(EpicId(10));
-        t
-    }]);
-    let mut epic = make_epic(10);
-    epic.status = TaskStatus::Running;
-    app.board.epics = vec![epic];
-
-    // Epic status is Running (not Backlog) — dispatch should be rejected
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(10),
-    )));
-    assert!(cmds.is_empty());
-    assert!(app
-        .status
-        .message
-        .as_ref()
-        .unwrap()
-        .contains("No backlog tasks"));
-}
-
-#[test]
-fn dispatch_epic_with_plan_dispatches_next_backlog_subtask() {
-    let mut app = App::new(vec![]);
-    let mut epic = make_epic(10);
-    epic.plan_path = Some("docs/plan.md".to_string());
-    app.board.epics = vec![epic];
-
-    // Add two backlog subtasks for this epic
-    let mut task1 = make_task(1, TaskStatus::Backlog);
-    task1.epic_id = Some(EpicId(10));
-    task1.plan_path = Some("plan1.md".to_string());
-    let mut task2 = make_task(2, TaskStatus::Backlog);
-    task2.epic_id = Some(EpicId(10));
-
-    app.board.tasks = vec![task1.clone(), task2];
-
-    // Select the epic (only item in backlog column at row 0)
-    app.selection_mut().set_column(1);
-    app.selection_mut().set_row(1, 0);
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(10),
-    )));
-    // Should dispatch task1 (first backlog subtask, has plan)
-    assert_eq!(cmds.len(), 1);
-    assert!(
-        matches!(cmds[0], Command::Task(crate::tui::commands::TaskCommand::DispatchAgent { ref task, .. }) if task.id == TaskId(1))
-    );
-}
-
-#[test]
-fn dispatch_epic_with_plan_dispatches_subtask_without_plan() {
-    let mut app = App::new(vec![]);
-    let mut epic = make_epic(10);
-    epic.plan_path = Some("docs/plan.md".to_string());
-    app.board.epics = vec![epic];
-
-    let mut task1 = make_task(1, TaskStatus::Backlog);
-    task1.epic_id = Some(EpicId(10));
-    app.board.tasks = vec![task1];
-
-    app.selection_mut().set_column(1);
-    app.selection_mut().set_row(1, 0);
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(10),
-    )));
-    assert_eq!(cmds.len(), 1);
-    assert!(
-        matches!(cmds[0], Command::Task(crate::tui::commands::TaskCommand::DispatchAgent { ref task, mode: DispatchMode::Dispatch }) if task.id == TaskId(1))
-    );
-}
-
-#[test]
-fn dispatch_epic_with_plan_no_backlog_subtasks_shows_status() {
-    let mut app = App::new(vec![]);
-    let mut epic = make_epic(10);
-    epic.plan_path = Some("docs/plan.md".to_string());
-    app.board.epics = vec![epic];
-
-    // Only an archived subtask — archived tasks are excluded from epic_status
-    // so the epic stays Backlog, but there are no backlog subtasks to dispatch
-    let mut task1 = make_task(1, TaskStatus::Archived);
-    task1.epic_id = Some(EpicId(10));
-    app.board.tasks = vec![task1];
-
-    app.selection_mut().set_column(1);
-    app.selection_mut().set_row(1, 0);
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(10),
-    )));
-    assert!(cmds.is_empty());
 }
 
 #[test]
@@ -1117,128 +764,6 @@ fn pr_polling_only_targets_pr_typed_urls() {
         .collect();
 
     assert_eq!(polled_ids, vec![TaskId(1)]);
-}
-
-#[test]
-fn dispatch_epic_with_backlog_subtasks_dispatches_first_by_sort_order() {
-    let mut app = make_app();
-
-    // Create epic with a plan so subtask dispatch path is taken
-    let mut epic = make_epic(1);
-    epic.plan_path = Some("docs/plans/epic-1.md".to_string());
-    app.board.epics = vec![epic];
-
-    // Create two backlog subtasks with different sort orders (both have plans)
-    let mut t1 = make_task(10, TaskStatus::Backlog);
-    t1.epic_id = Some(EpicId(1));
-    t1.sort_order = Some(200);
-    t1.title = "Second task".to_string();
-    t1.plan_path = Some("docs/plans/task-10.md".to_string());
-    let mut t2 = make_task(11, TaskStatus::Backlog);
-    t2.epic_id = Some(EpicId(1));
-    t2.sort_order = Some(100);
-    t2.title = "First task".to_string();
-    t2.plan_path = Some("docs/plans/task-11.md".to_string());
-    app.board.tasks = vec![t1, t2];
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(1),
-    )));
-
-    // Should dispatch the task with lower sort_order (task 11, sort_order=100)
-    assert!(cmds
-        .iter()
-        .any(|c| matches!(c, Command::Task(crate::tui::commands::TaskCommand::DispatchAgent { task, .. }) if task.id == TaskId(11))));
-}
-
-#[test]
-fn dispatch_epic_no_subtasks_shows_cannot_dispatch() {
-    let mut app = make_app();
-
-    let epic = make_epic(1);
-    app.board.epics = vec![epic];
-    // No subtasks
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(1),
-    )));
-
-    assert!(cmds.is_empty());
-    assert_eq!(
-        app.status.message.as_deref(),
-        Some("Cannot dispatch an epic")
-    );
-}
-
-#[test]
-fn dispatch_epic_no_plan_with_subtasks_does_not_create_planning() {
-    let mut app = make_app();
-
-    let epic = make_epic(1); // no plan
-    app.board.epics = vec![epic];
-
-    // Epic has an active (running) subtask — should not spawn planning
-    let mut t1 = make_task(10, TaskStatus::Running);
-    t1.epic_id = Some(EpicId(1));
-    app.board.tasks = vec![t1];
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(1),
-    )));
-    // Epic status is Running, so it's blocked by the Backlog check
-    assert!(cmds.is_empty());
-}
-
-#[test]
-fn dispatch_epic_no_plan_with_backlog_subtask_does_not_create_planning() {
-    let mut app = make_app();
-
-    let epic = make_epic(1); // no plan
-    app.board.epics = vec![epic];
-
-    // Epic has a backlog subtask — epic status is Backlog but has subtasks
-    let mut t1 = make_task(10, TaskStatus::Backlog);
-    t1.epic_id = Some(EpicId(1));
-    app.board.tasks = vec![t1];
-
-    app.selection_mut().set_column(1);
-    app.selection_mut().set_row(1, 0);
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(1),
-    )));
-    // Should NOT dispatch since there is no plan
-    assert!(cmds.is_empty());
-    assert_eq!(
-        app.status.message.as_deref(),
-        Some("Cannot dispatch an epic")
-    );
-}
-
-#[test]
-fn dispatch_epic_all_done_shows_message() {
-    let mut app = make_app();
-
-    let mut epic = make_epic(1);
-    epic.status = TaskStatus::Done;
-    app.board.epics = vec![epic];
-
-    let mut t1 = make_task(10, TaskStatus::Done);
-    t1.epic_id = Some(EpicId(1));
-    app.board.tasks = vec![t1];
-
-    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Dispatch(
-        EpicId(1),
-    )));
-
-    // Epic status is Done — should not dispatch
-    assert!(cmds.is_empty());
-    assert!(app
-        .status
-        .message
-        .as_deref()
-        .unwrap()
-        .contains("No backlog tasks"));
 }
 
 #[test]
@@ -2005,12 +1530,12 @@ fn manual_move_review_to_running_seeds_last_pre_tool_use_at() {
 }
 
 #[test]
-fn dispatch_d_on_untrusted_repo_enters_confirm_trust_mode() {
+fn dispatch_space_on_untrusted_repo_enters_confirm_trust_mode() {
     // make_task uses repo_path "/repo" which is absent from ~/.claude.json
     // in any standard test environment, so is_repo_trusted returns Ok(false).
     let mut app = make_app();
     // Navigate to task 1 (Backlog)
-    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+    let cmds = app.handle_key(make_key(KeyCode::Char(' ')));
     // Should produce no dispatch command
     assert!(
         without_usage(cmds).iter().all(|c| !matches!(
@@ -2083,4 +1608,241 @@ fn trust_and_dispatch_message_emits_trust_command() {
         )),
         "expected TrustAndDispatch command from message handler"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Unified Space "activate task" behavior (docs/specs/split-pane.allium:
+// JumpToAgentWindow). Space jumps to a live window when one exists; otherwise
+// it dispatches / resumes / opens the retry dialog. `d` is no longer bound.
+// The window-present cases already jump under the pre-existing Space handler,
+// so the behavioral change is confined to the no-window branches below.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn space_on_backlog_no_window_dispatches() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.tag = Some(TaskTag::Feature);
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(1); // Backlog column
+    app.selection_mut().set_row(1, 0);
+    let _cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    // repo_path "/repo" is not trusted, so Space routes to the trust prompt
+    // (the pre-dispatch gate) rather than showing "No active session".
+    assert!(
+        matches!(
+            app.input.mode,
+            InputMode::ConfirmTrustRepo { task_id: TaskId(1), .. }
+        ),
+        "expected ConfirmTrustRepo mode, got {:?}",
+        app.input.mode
+    );
+}
+
+#[test]
+fn space_on_running_no_window_with_worktree_resumes() {
+    let mut task = make_task(4, TaskStatus::Running);
+    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    task.tmux_window = None;
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(2); // Running column
+    app.selection_mut().set_row(2, 0);
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Resume { .. })
+        )),
+        "Space on a windowless Running task with a worktree should resume, got {cmds:?}"
+    );
+}
+
+#[test]
+fn space_on_stale_running_no_window_enters_retry_mode() {
+    let mut task = make_task(4, TaskStatus::Running);
+    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    task.tmux_window = None;
+    task.sub_status = SubStatus::Stale;
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(2); // Running column
+    app.selection_mut().set_row(2, 0);
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    // Windowless Stale/Crashed is the only path that still opens the retry dialog.
+    assert!(
+        matches!(app.input.mode, InputMode::ConfirmRetry(TaskId(4))),
+        "expected ConfirmRetry mode, got {:?}",
+        app.input.mode
+    );
+}
+
+#[test]
+fn space_on_crashed_running_no_window_enters_retry_mode() {
+    let mut task = make_task(4, TaskStatus::Running);
+    task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
+    task.tmux_window = None;
+    task.sub_status = SubStatus::Crashed;
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(2); // Running column
+    app.selection_mut().set_row(2, 0);
+    app.handle_key(make_key(KeyCode::Char(' ')));
+    assert!(
+        matches!(app.input.mode, InputMode::ConfirmRetry(TaskId(4))),
+        "expected ConfirmRetry mode, got {:?}",
+        app.input.mode
+    );
+}
+
+#[test]
+fn space_on_running_no_window_no_worktree_shows_no_worktree_hint() {
+    let mut task = make_task(4, TaskStatus::Running);
+    task.worktree = None;
+    task.tmux_window = None;
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(2); // Running column
+    app.selection_mut().set_row(2, 0);
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(cmds.is_empty());
+    assert!(
+        app.status
+            .message
+            .as_deref()
+            .unwrap_or("")
+            .contains("No worktree"),
+        "expected a 'No worktree' hint, got {:?}",
+        app.status.message
+    );
+}
+
+#[test]
+fn d_key_on_backlog_is_inert() {
+    let mut task = make_task(1, TaskStatus::Backlog);
+    task.tag = Some(TaskTag::Feature);
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(1); // Backlog column
+    app.selection_mut().set_row(1, 0);
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('d'))));
+    // `d` is unbound: it dispatches nothing and opens no confirmation.
+    assert!(cmds.is_empty(), "`d` should emit no commands, got {cmds:?}");
+    assert!(
+        !matches!(app.input.mode, InputMode::ConfirmTrustRepo { .. }),
+        "`d` should not open the trust prompt, got {:?}",
+        app.input.mode
+    );
+}
+
+// Window-present cases: Space jumps regardless of status or sub_status. The
+// window check wins over the Stale/Crashed problematic check.
+
+#[test]
+fn space_on_stale_running_with_window_jumps() {
+    let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
+    app.board.tasks[0].tmux_window = Some("task-4".to_string());
+    app.board.tasks[0].sub_status = SubStatus::Stale;
+    app.selection_mut().set_column(2);
+    app.selection_mut().set_row(2, 0);
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "task-4"
+        )),
+        "Space on a Stale task with a window should jump, not open retry, got {cmds:?}"
+    );
+    assert!(
+        !matches!(app.input.mode, InputMode::ConfirmRetry(_)),
+        "Space on a windowed Stale task must not open the retry dialog"
+    );
+}
+
+#[test]
+fn space_on_crashed_running_with_window_jumps() {
+    let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
+    app.board.tasks[0].tmux_window = Some("task-4".to_string());
+    app.board.tasks[0].sub_status = SubStatus::Crashed;
+    app.selection_mut().set_column(2);
+    app.selection_mut().set_row(2, 0);
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "task-4"
+        )),
+        "Space on a Crashed task with a window should jump, got {cmds:?}"
+    );
+    assert!(!matches!(app.input.mode, InputMode::ConfirmRetry(_)));
+}
+
+#[test]
+fn space_on_review_with_window_jumps() {
+    let mut task = make_task(5, TaskStatus::Review);
+    task.tmux_window = Some("task-5".to_string());
+    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(3); // Review column
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "task-5"
+        )),
+        "Space on a Review task with a window should jump, got {cmds:?}"
+    );
+}
+
+#[test]
+fn space_on_done_with_window_jumps() {
+    let mut task = make_task(1, TaskStatus::Done);
+    task.tmux_window = Some("task-1".to_string());
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(4); // Done column
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "task-1"
+        )),
+        "Space on a Done task with a window should jump, got {cmds:?}"
+    );
+}
+
+#[test]
+fn space_on_review_no_window_with_worktree_resumes() {
+    let mut task = make_task(5, TaskStatus::Review);
+    task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
+    task.tmux_window = None;
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(3); // Review column
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Resume { .. })
+        )),
+        "Space on a windowless Review task with a worktree should resume, got {cmds:?}"
+    );
+}
+
+#[test]
+fn space_on_done_no_window_with_worktree_resumes() {
+    let mut task = make_task(1, TaskStatus::Done);
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.tmux_window = None;
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(4); // Done column
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Resume { .. })
+        )),
+        "Space on a windowless Done task with a worktree should resume, got {cmds:?}"
+    );
+}
+
+#[test]
+fn space_on_empty_column_is_noop() {
+    let mut app = App::new(vec![]);
+    app.selection_mut().set_column(1);
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(cmds.is_empty());
 }

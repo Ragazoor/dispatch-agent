@@ -465,12 +465,12 @@ pub(in crate::tui) fn action_hints(
     if let Some(task) = task {
         match task.status {
             TaskStatus::Backlog => {
-                let d_label = if task.plan_path.is_some() {
+                let space_label = if task.plan_path.is_some() {
                     "dispatch"
                 } else {
                     "brainstorm"
                 };
-                push_hint("d", d_label);
+                push_hint("Space", space_label);
                 push_hint("e", "edit");
                 push_hint("L", "move");
                 push_hint("x", "archive");
@@ -479,7 +479,7 @@ pub(in crate::tui) fn action_hints(
                 if task.tmux_window.is_some() {
                     push_hint("Space", "session");
                 } else if task.worktree.is_some() {
-                    push_hint("d", "resume");
+                    push_hint("Space", "resume");
                 }
                 push_hint("e", "edit");
                 push_hint("L", "move");
@@ -494,7 +494,7 @@ pub(in crate::tui) fn action_hints(
                     push_hint("Space", "session");
                     push_hint("T", "detach");
                 } else if task.worktree.is_some() {
-                    push_hint("d", "resume");
+                    push_hint("Space", "resume");
                 }
                 push_hint("e", "edit");
                 push_hint("L", "move");
@@ -543,11 +543,6 @@ pub(in crate::tui) fn epic_action_hints(epic: &Epic, key_color: Color) -> Vec<Sp
         push_hint_spans(&mut spans, key, label, key_color, label_style);
     };
 
-    if epic.plan_path.is_some() {
-        push_hint("d", "dispatch");
-    } else {
-        push_hint("d", "plan");
-    }
     push_hint("Space", "board");
     push_hint("Enter", "detail");
     push_hint("e", "edit");
