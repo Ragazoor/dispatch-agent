@@ -1,0 +1,258 @@
+-- allium: 3
+-- task-watchers.allium
+--
+-- Scope: Task watchers — an agent subscribes to be notified when another
+--        task finishes (reaches Done or Archived) or is deleted first. A
+--        one-shot subscription mechanism, delivered by tmux injection.
+-- Excludes: Task status lifecycle itself, including the ConfirmDone/
+--           Archive/PR-merge/exit_session/dispatch-update paths that
+--           produce the Done/Archived transitions this spec reacts to
+--           (see tasks.allium); the subscribe_to_task/unsubscribe_from_task
+--           MCP tool argument contracts (see mcp-task-tools.allium); the
+--           tmux-injection + .claude-messages delivery mechanism itself,
+--           which this spec reuses rather than redefining (TmuxNotificationSent,
+--           see SendMessageViaMcp in mcp-task-tools.allium); domain model
+--           (see core.allium).
+
+use "./core.allium" as core
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- A TaskWatcher is a one-shot subscription: watcher_task_id is notified the
+-- moment target_task_id finishes (NotifyWatchersOnFinish) or is deleted
+-- unfinished (NotifyWatchersOnDelete). Firing always removes the row —
+-- there is no persistent or repeating watch, and no dead-letter retry of a
+-- dropped notification (see DeadWatcherDrop). No foreign keys tie
+-- watcher_task_id/target_task_id back to core/Task, consistent with how
+-- other task-id columns are stored elsewhere in this schema; referential
+-- cleanup (NotifyWatchersOnDelete) is explicit, not ON DELETE CASCADE.
+entity TaskWatcher {
+    watcher_task_id: Integer   -- the subscribing task
+    target_task_id: Integer    -- the task being watched
+    created_at: Timestamp
+
+    -- DB-level invariant: at most one row per (watcher_task_id,
+    -- target_task_id) pair. Enforced by a UNIQUE constraint, which is what
+    -- makes SubscribeToTask's re-subscribe idempotency a plain insert-or-
+    -- skip rather than requiring an explicit duplicate check race.
+    invariant UniqueWatcherTargetPair {
+        for a in TaskWatchers:
+            for b in TaskWatchers:
+                a != b and a.watcher_task_id = b.watcher_task_id
+                    implies a.target_task_id != b.target_task_id
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- == Subscribe / Unsubscribe ==
+
+rule SubscribeToTask {
+    when: SubscribeToTask(watcher, target)
+
+    requires: watcher != null
+    requires: target != null
+    requires: watcher.id != target.id
+
+    let existing = TaskWatcher{watcher_task_id: watcher.id, target_task_id: target.id}
+
+    ensures:
+        if target.status = done or target.status = archived:
+            UserInformed(about: already_finished, task: target)
+        else if not exists existing:
+            TaskWatcher.created(
+                watcher_task_id: watcher.id,
+                target_task_id: target.id,
+                created_at: now
+            )
+
+    @guidance
+        -- A task cannot watch itself: watcher.id = target.id is rejected
+        -- before either branch below is considered.
+        -- already_finished short-circuits: no row is created, since there is
+        -- nothing left to wait for. The caller is told immediately via
+        -- UserInformed — the MCP tool surfaces this as
+        -- {"status": "already_finished", "task_status": target.status}.
+        -- Idempotency: re-subscribing an existing UNFINISHED (watcher,
+        -- target) pair is a no-op success — the `not exists existing` guard
+        -- means no duplicate row is created and no error is raised.
+        -- Implementation: src/mcp/handlers/tasks/watch.rs, backed by a
+        -- `task_watchers` table (migration in src/db/migrations.rs) with a
+        -- UNIQUE(watcher_task_id, target_task_id) constraint.
+}
+
+rule UnsubscribeFromTask {
+    when: UnsubscribeFromTask(watcher, target)
+
+    requires: watcher != null
+    requires: target != null
+
+    let existing = TaskWatcher{watcher_task_id: watcher.id, target_task_id: target.id}
+
+    ensures:
+        if exists existing:
+            not exists existing
+
+    @guidance
+        -- Idempotent: unsubscribing when no matching (watcher, target) row
+        -- exists is a no-op success, not an error.
+        -- Implementation: src/mcp/handlers/tasks/watch.rs.
+}
+
+-- == Finish Notification ==
+
+-- core/Task.status reaches a finished state two ways (see core.allium's
+-- Task.status transition graph): `-> done` and `-> archived`. Each is its
+-- own detector rule below; both chain into TaskFinished so the actual
+-- notify-and-clear logic (NotifyWatchersOnFinish) exists exactly once
+-- regardless of which status a task finished into. transitions_to fires
+-- only on an actual transition from a different prior value, so a no-op
+-- patch that leaves status unchanged never re-fires either detector.
+
+rule DetectTaskDone {
+    when: task: core/Task.status transitions_to done
+    ensures: TaskFinished(task: task)
+}
+
+rule DetectTaskArchived {
+    when: task: core/Task.status transitions_to archived
+    ensures: TaskFinished(task: task)
+}
+
+rule NotifyWatchersOnFinish {
+    when: TaskFinished(task)
+
+    ensures:
+        for w in TaskWatchers where target_task_id = task.id:
+            WatcherNotificationDue(watcher_task_id: w.watcher_task_id, target_task: task, reason: finished)
+            not exists w
+
+    @guidance
+        -- Every watcher of task is notified (see DeliverWatcherNotification
+        -- / DeadWatcherDrop for the per-watcher outcome), and ALL
+        -- subscriptions targeting this task are cleared unconditionally —
+        -- cleanup does not wait on, or depend on, whether delivery actually
+        -- reached a live tmux session.
+        -- Hook points, per the feature design: TaskServiceApi::update_task
+        -- (the TUI/MCP path: ConfirmDone, PR-merge/close, Archive,
+        -- exit_session) and TaskServiceApi::cli_update_task (the
+        -- `dispatch update <id> <status>` CLI path) both call this after
+        -- their db.patch_task write succeeds. See the known-limitation note
+        -- below for the one status-writing path that does NOT reach here.
+}
+
+-- == Known Limitation: Feed-Synced Auto-Completion Bypasses Notification ==
+--
+-- FeedRunner (src/feed/mod.rs) writes task status directly via its own
+-- sanctioned DB write handle, bypassing TaskService::update_task and
+-- cli_update_task entirely — a pre-existing, sanctioned mutation-boundary
+-- exception in this repo (see the service mutation-boundary docs), not
+-- something this feature introduces.
+--
+-- Consequence: when a feed-synced task is auto-completed via that path, a
+-- task watching it via subscribe_to_task will NOT trigger a notification —
+-- DetectTaskDone/DetectTaskArchived above only observe transitions produced
+-- through TaskService's own write paths. Only the TUI/MCP/CLI-driven paths
+-- (ConfirmDone, PR-merge/close, exit_session, Archive, `dispatch update`)
+-- trigger notification.
+--
+-- This is a deliberate, documented limitation of this feature, not an
+-- oversight: closing it would mean routing FeedRunner's writes back through
+-- TaskService, which is out of scope here and would revisit an existing,
+-- separately-sanctioned exception.
+
+-- == Delete Notification ==
+
+rule NotifyWatchersOnDelete {
+    when: DeleteTask(task)
+
+    -- Only fires for a task that never reached a finished state. A task
+    -- deleted after reaching Done/Archived already had its subscriptions
+    -- notified and cleared by NotifyWatchersOnFinish.
+    requires: task.status != done
+    requires: task.status != archived
+
+    ensures:
+        for w in TaskWatchers where target_task_id = task.id:
+            WatcherNotificationDue(watcher_task_id: w.watcher_task_id, target_task: task, reason: deleted)
+            not exists w
+        for w in TaskWatchers where watcher_task_id = task.id:
+            not exists w
+
+    @guidance
+        -- Two independent cleanups: watchers OF the deleted task are told
+        -- it was deleted (not finished) and their subscriptions are
+        -- cleared; separately, any subscription where the deleted task was
+        -- itself a watcher of some OTHER task is also removed silently (no
+        -- notification is owed — nobody needs telling that a watcher
+        -- disappeared).
+        -- Shares the DeleteTask stimulus with tasks.allium's DeleteTask
+        -- rule (ensures: not exists task). That rule's own requires
+        -- (task.status = archived) reflects today's TUI entry point (the
+        -- archive view is the only delete surface), not a service-layer
+        -- restriction: TaskService::delete_task itself has no status
+        -- precondition. This rule specifies the general, status-agnostic
+        -- case; under the current TUI-only entry point it does not
+        -- observably fire, since by the time a task is deletable there it
+        -- is already Archived and already handled by NotifyWatchersOnFinish.
+        -- Implementation: a second helper called from
+        -- TaskServiceApi::delete_task (src/service/tasks/crud.rs), invoked
+        -- before the row is actually removed.
+}
+
+-- == Delivery ==
+
+rule DeliverWatcherNotification {
+    when: WatcherNotificationDue(watcher_task_id, target_task, reason)
+
+    let watcher_task = core/Task.find(watcher_task_id)
+
+    requires: watcher_task.tmux_window != null
+
+    ensures:
+        if reason = finished:
+            TmuxNotificationSent(to: watcher_task, about: task_finished)
+        else:
+            TmuxNotificationSent(to: watcher_task, about: task_deleted)
+
+    @guidance
+        -- Reuses the exact same delivery mechanism SendMessageViaMcp uses
+        -- (see mcp-task-tools.allium): a timestamped file written under
+        -- <watcher_task.worktree>/.claude-messages/, followed by a
+        -- tmux send-keys nudge pointing at it. The shared function is
+        -- deliver_agent_notification (extracted from the send_message
+        -- handler), not a reimplementation.
+        -- Message body distinguishes the two reasons: task_finished names
+        -- target_task's title and its new status; task_deleted states the
+        -- task was deleted, not finished.
+}
+
+rule DeadWatcherDrop {
+    when: WatcherNotificationDue(watcher_task_id, target_task, reason)
+
+    let watcher_task = core/Task.find(watcher_task_id)
+
+    requires: watcher_task.tmux_window = null
+
+    ensures: WatcherNotificationDropped(
+        watcher_task_id: watcher_task_id,
+        target_task_id: target_task.id,
+        reason: reason
+    )
+
+    @guidance
+        -- A watcher whose own session has already ended (no live tmux
+        -- window) cannot receive the nudge. The notification is dropped:
+        -- logged via tracing::warn! naming the watcher and target task ids,
+        -- NOT retried, with no dead-letter queue — this is a best-effort
+        -- nudge, not a durable message queue.
+        -- WatcherNotificationDropped is observable via the standard tracing
+        -- subscriber; it has no entity representation in this spec.
+        -- Regardless of this rule firing, the TaskWatcher row was already
+        -- removed by NotifyWatchersOnFinish/NotifyWatchersOnDelete above —
+        -- a dead watcher never blocks subscription cleanup.
+}
