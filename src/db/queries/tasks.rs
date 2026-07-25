@@ -575,4 +575,69 @@ impl super::super::TaskCrud for Database {
         })
         .await
     }
+
+    async fn create_task_watcher(&self, watcher_task_id: TaskId, target_task_id: TaskId) -> Result<()> {
+        self.db_call(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO task_watchers (watcher_task_id, target_task_id) VALUES (?1, ?2)",
+                params![watcher_task_id.0, target_task_id.0],
+            )
+            .context("Failed to insert task_watcher")?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_task_watcher(&self, watcher_task_id: TaskId, target_task_id: TaskId) -> Result<()> {
+        self.db_call(move |conn| {
+            conn.execute(
+                "DELETE FROM task_watchers WHERE watcher_task_id = ?1 AND target_task_id = ?2",
+                params![watcher_task_id.0, target_task_id.0],
+            )
+            .context("Failed to delete task_watcher")?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn list_watchers_of(&self, target_task_id: TaskId) -> Result<Vec<TaskId>> {
+        self.db_call(move |conn| {
+            let mut stmt = conn
+                .prepare("SELECT watcher_task_id FROM task_watchers WHERE target_task_id = ?1")
+                .context("Failed to prepare list_watchers_of query")?;
+            let rows = stmt
+                .query_map(params![target_task_id.0], |r| r.get::<_, i64>(0))
+                .context("Failed to query watchers")?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(TaskId(row.context("Failed to read watcher_task_id row")?));
+            }
+            Ok(out)
+        })
+        .await
+    }
+
+    async fn delete_watches_of_target(&self, target_task_id: TaskId) -> Result<()> {
+        self.db_call(move |conn| {
+            conn.execute(
+                "DELETE FROM task_watchers WHERE target_task_id = ?1",
+                params![target_task_id.0],
+            )
+            .context("Failed to delete watches of target")?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_watches_by_watcher(&self, watcher_task_id: TaskId) -> Result<()> {
+        self.db_call(move |conn| {
+            conn.execute(
+                "DELETE FROM task_watchers WHERE watcher_task_id = ?1",
+                params![watcher_task_id.0],
+            )
+            .context("Failed to delete watches by watcher")?;
+            Ok(())
+        })
+        .await
+    }
 }

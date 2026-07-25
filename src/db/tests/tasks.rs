@@ -3481,3 +3481,106 @@ async fn get_total_changes_stable_when_no_writes() {
         "total_changes must not change across read-only queries"
     );
 }
+
+#[tokio::test]
+async fn create_task_watcher_is_idempotent() {
+    let db = in_memory_db().await;
+    let a = create_task_returning(&db, "Watcher", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let b = create_task_returning(&db, "Target", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+
+    db.create_task_watcher(a.id, b.id).await.unwrap();
+    db.create_task_watcher(a.id, b.id).await.unwrap(); // no-op, must not error
+
+    let watchers = db.list_watchers_of(b.id).await.unwrap();
+    assert_eq!(watchers, vec![a.id]);
+}
+
+#[tokio::test]
+async fn delete_task_watcher_is_idempotent() {
+    let db = in_memory_db().await;
+    let a = create_task_returning(&db, "Watcher", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let b = create_task_returning(&db, "Target", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+
+    db.create_task_watcher(a.id, b.id).await.unwrap();
+    db.delete_task_watcher(a.id, b.id).await.unwrap();
+    db.delete_task_watcher(a.id, b.id).await.unwrap(); // no-op, must not error
+
+    assert!(db.list_watchers_of(b.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn list_watchers_of_returns_all_watchers() {
+    let db = in_memory_db().await;
+    let a = create_task_returning(&db, "Watcher A", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let b = create_task_returning(&db, "Watcher B", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let target = create_task_returning(&db, "Target", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+
+    db.create_task_watcher(a.id, target.id).await.unwrap();
+    db.create_task_watcher(b.id, target.id).await.unwrap();
+
+    let mut watchers = db.list_watchers_of(target.id).await.unwrap();
+    watchers.sort_by_key(|t| t.0);
+    let mut expected = vec![a.id, b.id];
+    expected.sort_by_key(|t| t.0);
+    assert_eq!(watchers, expected);
+}
+
+#[tokio::test]
+async fn delete_watches_of_target_removes_all_watchers() {
+    let db = in_memory_db().await;
+    let a = create_task_returning(&db, "Watcher A", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let b = create_task_returning(&db, "Watcher B", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let target = create_task_returning(&db, "Target", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+
+    db.create_task_watcher(a.id, target.id).await.unwrap();
+    db.create_task_watcher(b.id, target.id).await.unwrap();
+
+    db.delete_watches_of_target(target.id).await.unwrap();
+
+    assert!(db.list_watchers_of(target.id).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn delete_watches_by_watcher_removes_only_that_watchers_rows() {
+    let db = in_memory_db().await;
+    let a = create_task_returning(&db, "Watcher A", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let b = create_task_returning(&db, "Watcher B", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let target1 = create_task_returning(&db, "Target 1", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    let target2 = create_task_returning(&db, "Target 2", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+
+    db.create_task_watcher(a.id, target1.id).await.unwrap();
+    db.create_task_watcher(b.id, target2.id).await.unwrap();
+
+    db.delete_watches_by_watcher(a.id).await.unwrap();
+
+    assert!(db.list_watchers_of(target1.id).await.unwrap().is_empty());
+    assert_eq!(db.list_watchers_of(target2.id).await.unwrap(), vec![b.id]);
+}
