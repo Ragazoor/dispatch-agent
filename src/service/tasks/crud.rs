@@ -31,6 +31,7 @@ pub struct UpdateTaskResult {
 pub struct TaskService {
     pub db: Arc<dyn db::TaskAndEpicStore>,
     clock: Arc<dyn crate::service::Clock>,
+    pub(super) runner: Arc<dyn crate::process::ProcessRunner>,
 }
 
 impl TaskService {
@@ -38,6 +39,7 @@ impl TaskService {
         Self {
             db,
             clock: Arc::new(crate::service::SystemClock),
+            runner: Arc::new(crate::process::RealProcessRunner),
         }
     }
 
@@ -46,6 +48,14 @@ impl TaskService {
     /// (hook-event ordering) are deterministic without sleeping.
     pub fn with_clock(mut self, clock: Arc<dyn crate::service::Clock>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    /// Override the process runner used to deliver watch/finish
+    /// notifications. Tests inject a `MockProcessRunner` to assert on
+    /// tmux/file-system side effects deterministically.
+    pub fn with_runner(mut self, runner: Arc<dyn crate::process::ProcessRunner>) -> Self {
+        self.runner = runner;
         self
     }
 

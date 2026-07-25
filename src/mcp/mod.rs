@@ -122,7 +122,8 @@ pub struct McpState {
 
 impl McpState {
     pub fn new(deps: McpDeps, notify_tx: Option<mpsc::UnboundedSender<McpEvent>>) -> Self {
-        let task_svc: Arc<dyn TaskServiceApi> = Arc::new(TaskService::new(deps.db.clone()));
+        let task_svc: Arc<dyn TaskServiceApi> =
+            Arc::new(TaskService::new(deps.db.clone()).with_runner(deps.runner.clone()));
         let epic_svc: Arc<dyn EpicServiceApi> = Arc::new(EpicService::new(deps.db.clone()));
         let learning_svc: Arc<dyn LearningServiceApi> = Arc::new(LearningService::new(
             deps.db.clone(),

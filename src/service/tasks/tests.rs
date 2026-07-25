@@ -23,6 +23,18 @@ fn epic_svc(db: &Arc<dyn db::TaskStore>) -> EpicService {
     EpicService::new(d)
 }
 
+/// Construct a `TaskService` with a caller-supplied `ProcessRunner` (e.g. a
+/// `MockProcessRunner`). Unused until Task 8/9 wire watch/finish notification
+/// behavior on top of `with_runner`.
+#[allow(dead_code)]
+fn task_svc_with_runner(
+    db: &Arc<dyn db::TaskStore>,
+    runner: Arc<dyn crate::process::ProcessRunner>,
+) -> TaskService {
+    let d: Arc<dyn db::TaskAndEpicStore> = db.clone();
+    TaskService::new(d).with_runner(runner)
+}
+
 fn make_task_params(repo_path: &str) -> CreateTaskParams {
     CreateTaskParams {
         title: "T".into(),
@@ -39,6 +51,15 @@ fn make_task_params(repo_path: &str) -> CreateTaskParams {
 }
 
 // -- TaskService ----------------------------------------------------------
+
+#[tokio::test]
+async fn task_service_defaults_to_real_process_runner() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    // No observable behavior differs yet — this just locks in that
+    // construction without with_runner() compiles and doesn't panic.
+    let _ = svc.create_task(make_task_params("/repo")).await.unwrap();
+}
 
 #[tokio::test]
 async fn create_and_get_task() {
