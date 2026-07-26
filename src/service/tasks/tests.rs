@@ -14,7 +14,7 @@ async fn test_db() -> Arc<dyn db::TaskStore> {
 }
 
 fn task_svc(db: &Arc<dyn db::TaskStore>) -> TaskService {
-    task_svc_with_runner(db, Arc::new(crate::process::MockProcessRunner::new(vec![])))
+    task_svc_with_runner(db, crate::process::MockProcessRunner::unused())
 }
 
 fn epic_svc(db: &Arc<dyn db::TaskStore>) -> EpicService {
@@ -3073,7 +3073,7 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let svc = TaskService::new(
         db.clone() as Arc<dyn db::TaskAndEpicStore>,
-        Arc::new(crate::process::MockProcessRunner::new(vec![])),
+        crate::process::MockProcessRunner::unused(),
     );
 
     // Create a task that we'll corrupt so get_task fails
@@ -3132,10 +3132,8 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
 async fn create_task_on_grouped_epic_routes_into_sub_epic() {
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(
-        db.clone(),
-        Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc =
+        crate::service::TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
     let root = db.create_epic("root", "", None).await.unwrap();
     db.patch_epic(root.id, &crate::db::EpicPatch::new().group_by_repo(true))
         .await
@@ -3167,10 +3165,8 @@ async fn create_task_on_grouped_epic_routes_into_sub_epic() {
 async fn update_repo_path_reroutes_within_grouped_epic() {
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(
-        db.clone(),
-        Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc =
+        crate::service::TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
     let root = db.create_epic("root", "", None).await.unwrap();
     db.patch_epic(root.id, &crate::db::EpicPatch::new().group_by_repo(true))
         .await
@@ -3214,10 +3210,8 @@ async fn move_task_to_grouped_epic_routes_into_sub_epic() {
     // per-repo RepoGroup sub-epic, NOT directly on the root.
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(
-        db.clone(),
-        Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc =
+        crate::service::TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
 
     // Create a grouped (non-feed) root.
     let root = db.create_epic("root", "", None).await.unwrap();
@@ -3267,10 +3261,8 @@ async fn move_task_to_non_grouped_epic_lands_directly() {
     // Regression guard: moving to a plain (non-grouped) epic must NOT route.
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(
-        db.clone(),
-        Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc =
+        crate::service::TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
 
     let plain = db.create_epic("plain", "", None).await.unwrap();
 
@@ -3442,7 +3434,7 @@ mod watchers {
     async fn update_task_to_done_is_noop_when_status_unchanged() {
         let db = test_db().await;
         let runner: Arc<dyn crate::process::ProcessRunner> =
-            Arc::new(crate::process::MockProcessRunner::new(vec![]));
+            crate::process::MockProcessRunner::unused();
         let svc = task_svc_with_runner(&db, runner);
 
         let target = svc.create_task(make_task_params("/repo")).await.unwrap();
@@ -3461,7 +3453,7 @@ mod watchers {
     async fn update_task_to_done_logs_and_drops_dead_watcher() {
         let db = test_db().await;
         let runner: Arc<dyn crate::process::ProcessRunner> =
-            Arc::new(crate::process::MockProcessRunner::new(vec![]));
+            crate::process::MockProcessRunner::unused();
         let svc = task_svc_with_runner(&db, runner);
 
         // Watcher has no worktree/tmux_window — still Backlog.
@@ -3576,6 +3568,7 @@ mod watchers {
         let tmp = tempfile::tempdir().unwrap();
         let worktree = tmp.path().to_str().unwrap().to_string();
         let db = test_db().await;
+        // Concrete type retained: this test asserts on `recorded_calls()`.
         let mock = Arc::new(crate::process::MockProcessRunner::new(vec![]));
         let runner: Arc<dyn crate::process::ProcessRunner> = mock.clone();
         let svc = task_svc_with_runner(&db, runner);
@@ -3623,7 +3616,7 @@ mod watchers {
     async fn delete_task_cleans_up_rows_where_it_was_the_watcher() {
         let db = test_db().await;
         let runner: Arc<dyn crate::process::ProcessRunner> =
-            Arc::new(crate::process::MockProcessRunner::new(vec![]));
+            crate::process::MockProcessRunner::unused();
         let svc = task_svc_with_runner(&db, runner);
 
         let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();

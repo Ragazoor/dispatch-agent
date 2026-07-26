@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::VecDeque;
 use std::process::Output;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Canonical timeout for long-running subprocesses (git fetch, worktree add).
@@ -157,6 +157,15 @@ impl MockProcessRunner {
             .unwrap_or_else(|| {
                 panic!("MockProcessRunner: no response queued for {program} {args:?}")
             })
+    }
+
+    /// A runner with no queued responses, ready to inject as a dependency.
+    ///
+    /// Use this wherever a test must supply a `ProcessRunner` but expects no
+    /// commands to be run — the mock panics on the first call, so an
+    /// accidental shell-out fails the test loudly instead of hitting the host.
+    pub fn unused() -> Arc<dyn ProcessRunner> {
+        Arc::new(Self::new(vec![]))
     }
 
     /// Successful Output with empty stdout/stderr.

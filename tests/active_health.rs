@@ -18,11 +18,8 @@ async fn hook_event_flow_drives_sub_status_and_lifecycle() {
             .parse::<chrono::DateTime<chrono::Utc>>()
             .unwrap(),
     );
-    let svc = TaskService::new(
-        db,
-        Arc::new(dispatch_tui::process::MockProcessRunner::new(vec![])),
-    )
-    .with_clock(Arc::new(clock.clone()));
+    let svc = TaskService::new(db, dispatch_tui::process::MockProcessRunner::unused())
+        .with_clock(Arc::new(clock.clone()));
 
     let id = svc
         .create_task(CreateTaskParams {

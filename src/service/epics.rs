@@ -29,15 +29,9 @@ impl UpdateEpicParams {
         !self.updated_field_names().is_empty()
     }
 
-    /// Names of the fields this params value actually sets.
-    ///
-    /// Parity with the struct is compiler-enforced: the exhaustive
-    /// destructuring below (no `..`) fails to compile when a field is added to
-    /// [`UpdateEpicParams`] without being handled here, and an unused binding
-    /// warns if the field is destructured but never pushed. This is not
-    /// cosmetic — [`has_any_field`](Self::has_any_field) is defined in terms of
-    /// this list, so a missing entry makes `update_epic` reject an update that
-    /// *did* provide the field with "At least one field must be provided".
+    /// Names of the fields this params value actually sets. Mirrors
+    /// [`UpdateTaskParams::updated_field_names`](crate::service::UpdateTaskParams::updated_field_names)
+    /// — same compiler-enforced parity, same reason.
     pub fn updated_field_names(&self) -> Vec<&str> {
         let Self {
             epic_id: _,
@@ -53,38 +47,21 @@ impl UpdateEpicParams {
             parent_epic_id,
         } = self;
 
-        let mut names = Vec::new();
-        if title.is_some() {
-            names.push("title");
-        }
-        if description.is_some() {
-            names.push("description");
-        }
-        if status.is_some() {
-            names.push("status");
-        }
-        if plan_path.is_some() {
-            names.push("plan_path");
-        }
-        if sort_order.is_some() {
-            names.push("sort_order");
-        }
-        if auto_dispatch.is_some() {
-            names.push("auto_dispatch");
-        }
-        if feed_command.is_some() {
-            names.push("feed_command");
-        }
-        if feed_interval_secs.is_some() {
-            names.push("feed_interval_secs");
-        }
-        if group_by_repo.is_some() {
-            names.push("group_by_repo");
-        }
-        if parent_epic_id.is_some() {
-            names.push("parent_epic_id");
-        }
-        names
+        [
+            ("title", title.is_some()),
+            ("description", description.is_some()),
+            ("status", status.is_some()),
+            ("plan_path", plan_path.is_some()),
+            ("sort_order", sort_order.is_some()),
+            ("auto_dispatch", auto_dispatch.is_some()),
+            ("feed_command", feed_command.is_some()),
+            ("feed_interval_secs", feed_interval_secs.is_some()),
+            ("group_by_repo", group_by_repo.is_some()),
+            ("parent_epic_id", parent_epic_id.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, is_set)| is_set.then_some(name))
+        .collect()
     }
 }
 
@@ -143,27 +120,21 @@ impl EpicService {
             .create_epic(&params.title, &params.description, params.parent_epic_id)
             .await?;
 
-        let mut patch = EpicPatch::new();
-        let mut has_extra = false;
-        if let Some(so) = params.sort_order {
-            patch = patch.sort_order(Some(so));
-            has_extra = true;
-        }
-        if let Some(ref fc) = params.feed_command {
-            patch = patch.feed_command(Some(fc.as_str()));
-            has_extra = true;
-        }
-        if let Some(fi) = params.feed_interval_secs {
-            patch = patch.feed_interval_secs(Some(fi));
-            has_extra = true;
-        }
-        if !has_extra {
+        // The insert above only carries title/description/parent, so anything
+        // else the caller supplied needs a follow-up write.
+        let patch = EpicPatch {
+            sort_order: params.sort_order.map(Some),
+            feed_command: params.feed_command.as_deref().map(Some),
+            feed_interval_secs: params.feed_interval_secs.map(Some),
+            ..EpicPatch::new()
+        };
+        if !patch.has_changes() {
             return Ok(epic);
         }
 
         self.db.patch_epic(epic.id, &patch).await?;
-        // Re-read: `epic` is the insert result, which only carries
-        // title/description/parent — the extras above land in this second write.
+        // Re-read so the returned Epic reflects the follow-up write rather
+        // than the pre-patch insert result.
         self.get_epic(epic.id).await
     }
 
@@ -442,56 +413,90 @@ mod tests {
 
     #[test]
     fn update_epic_params_every_field_covered() {
-        let cases: Vec<UpdateEpicParams> = vec![
-            UpdateEpicParams {
-                title: Some("t".to_string()),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                description: Some("d".to_string()),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                status: Some(TaskStatus::Backlog),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                plan_path: Some("p".to_string()),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                sort_order: Some(0),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                auto_dispatch: Some(true),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                feed_command: Some(FieldUpdate::Set("cmd".to_string())),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                feed_interval_secs: Some(Some(300)),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                group_by_repo: Some(true),
-                ..base_params(EpicId(1))
-            },
-            UpdateEpicParams {
-                parent_epic_id: Some(Some(EpicId(2))),
-                ..base_params(EpicId(1))
-            },
+        // The exhaustive destructuring in updated_field_names() already makes an
+        // unhandled field a compile error; what this test uniquely covers is
+        // that each field reports its *own* name.
+        let cases: Vec<(&str, UpdateEpicParams)> = vec![
+            (
+                "title",
+                UpdateEpicParams {
+                    title: Some("t".to_string()),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "description",
+                UpdateEpicParams {
+                    description: Some("d".to_string()),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "status",
+                UpdateEpicParams {
+                    status: Some(TaskStatus::Backlog),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "plan_path",
+                UpdateEpicParams {
+                    plan_path: Some("p".to_string()),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "sort_order",
+                UpdateEpicParams {
+                    sort_order: Some(0),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "auto_dispatch",
+                UpdateEpicParams {
+                    auto_dispatch: Some(true),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "feed_command",
+                UpdateEpicParams {
+                    feed_command: Some(FieldUpdate::Set("cmd".to_string())),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "feed_interval_secs",
+                UpdateEpicParams {
+                    feed_interval_secs: Some(Some(300)),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "group_by_repo",
+                UpdateEpicParams {
+                    group_by_repo: Some(true),
+                    ..base_params(EpicId(1))
+                },
+            ),
+            (
+                "parent_epic_id",
+                UpdateEpicParams {
+                    parent_epic_id: Some(Some(EpicId(2))),
+                    ..base_params(EpicId(1))
+                },
+            ),
         ];
-        for params in &cases {
+        for (expected, params) in &cases {
             assert!(
                 params.has_any_field(),
-                "has_any_field() should be true when a field is set"
+                "has_any_field() should be true when {expected} is set"
             );
-            assert!(
-                !params.updated_field_names().is_empty(),
-                "updated_field_names() should be non-empty when a field is set"
+            assert_eq!(
+                params.updated_field_names(),
+                vec![*expected],
+                "setting {expected} should report exactly that field name"
             );
         }
     }

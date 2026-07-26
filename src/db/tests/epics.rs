@@ -525,10 +525,7 @@ async fn cli_update_conditional_task_to_review_leaves_epic_in_backlog() {
         .unwrap();
     db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
 
-    let svc = TaskService::new(
-        db.clone(),
-        std::sync::Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
     let updated = svc
         .cli_update_task(task.id, TaskStatus::Review, Some(TaskStatus::Running), None)
         .await
@@ -550,10 +547,7 @@ async fn cli_update_unconditional_task_to_running_leaves_epic_in_backlog() {
         .unwrap();
     db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
 
-    let svc = TaskService::new(
-        db.clone(),
-        std::sync::Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
     let updated = svc
         .cli_update_task(task.id, TaskStatus::Running, None, None)
         .await
@@ -585,10 +579,7 @@ async fn cli_update_epic_stays_backlog_when_review_task_completes() {
         TaskStatus::Backlog // running+review tasks → no auto-advance
     );
 
-    let svc = TaskService::new(
-        db.clone(),
-        std::sync::Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
     svc.cli_update_task(t2.id, TaskStatus::Done, Some(TaskStatus::Review), None)
         .await
         .unwrap();
@@ -609,10 +600,7 @@ async fn cli_update_with_substatus_keeps_task_running_and_epic_in_backlog() {
     db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
     db.recalculate_epic_status(epic.id).await.unwrap();
 
-    let svc = TaskService::new(
-        db.clone(),
-        std::sync::Arc::new(crate::process::MockProcessRunner::new(vec![])),
-    );
+    let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
     svc.cli_update_task(
         task.id,
         TaskStatus::Running,

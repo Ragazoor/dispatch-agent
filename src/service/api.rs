@@ -517,7 +517,7 @@ mod tests {
     async fn task_service_api_delegates_to_task_service() {
         let svc: Arc<dyn TaskServiceApi> = Arc::new(TaskService::new(
             store().await,
-            Arc::new(crate::process::MockProcessRunner::new(vec![])),
+            crate::process::MockProcessRunner::unused(),
         ));
 
         let id = svc

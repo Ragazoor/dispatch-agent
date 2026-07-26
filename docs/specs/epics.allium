@@ -96,11 +96,18 @@ rule CreateEpic {
     )
 
     @guidance
-        -- Implementation note: the insert only carries title, description
-        -- and parent; sort_order, feed_command and feed_interval_secs land
-        -- in a follow-up patch. That patch's failure is an error of the
-        -- whole creation, and the returned Epic is the post-patch value —
-        -- callers must never see an Epic missing the fields they supplied.
+        -- Invariant: the returned Epic reflects every field the caller
+        -- supplied. A caller must never see an Epic reporting a field as
+        -- unset when it passed a value for it.
+        --
+        -- Known implementation limitation (not design intent): the current
+        -- insert cannot express sort_order, feed_command or
+        -- feed_interval_secs, so the service writes them in a follow-up
+        -- patch and re-reads. That patch's failure is an error of the whole
+        -- creation. The two-write shape is not atomic — a failure between
+        -- them leaves a half-populated epic — and it is not a pattern to
+        -- extend: a fourth such field wants a single-insert create request
+        -- (mirroring core/CreateTaskRequest) rather than another patch line.
         --
         -- When parent is provided, this creates a sub-epic nested inside
         -- the given parent. Root epics (parent = null) appear on the main board;

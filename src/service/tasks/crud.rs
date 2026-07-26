@@ -37,13 +37,10 @@ pub struct TaskService {
 impl TaskService {
     /// Construct a `TaskService` with an explicitly chosen process runner.
     ///
-    /// The runner is a required argument on purpose. `TaskService` shells out
-    /// for real when delivering watch/finish notifications
-    /// (`watchers.rs` → `crate::notify::deliver` → filesystem write +
-    /// `tmux::send_keys`), so a default would let a test silently touch the
-    /// real system — the opposite of *"Tests use `MockProcessRunner` — never
-    /// shell out in tests"* (`docs/architecture.md`). Production callers that
-    /// genuinely want the real runner say so by name via
+    /// Required, not defaulted: `TaskService` really does shell out (see
+    /// `watchers.rs`), so a default would let a test silently touch the host.
+    /// Tests pass [`MockProcessRunner::unused`](crate::process::MockProcessRunner::unused);
+    /// production says so by name via
     /// [`new_with_real_runner`](Self::new_with_real_runner).
     pub fn new(
         db: Arc<dyn db::TaskAndEpicStore>,
@@ -65,6 +62,10 @@ impl TaskService {
     /// Override the clock used for timestamping. Tests inject a
     /// [`FixedClock`](crate::service::FixedClock) so timestamp-dependent flows
     /// (hook-event ordering) are deterministic without sleeping.
+    ///
+    /// Unlike the runner, this stays an optional builder on purpose:
+    /// `SystemClock` only reads the wall clock, so an un-injected default
+    /// costs determinism, never a real side effect.
     pub fn with_clock(mut self, clock: Arc<dyn crate::service::Clock>) -> Self {
         self.clock = clock;
         self
@@ -414,7 +415,7 @@ impl TaskService {
             .await?;
 
         if let Some(eid) = effective_epic_id {
-            let _ = self.db.recalculate_epic_status(eid).await;
+            self.recalculate_epic(eid).await;
         }
 
         self.get_task(task_id).await
@@ -520,7 +521,12 @@ impl TaskService {
 
         // Backlog → Running changes the parent epic's rolled-up status; see
         // the EpicStatusRecalculation invariant in docs/specs/epics.allium.
-        self.recalculate_epic_for_task(params.task_id).await;
+        // `task.epic_id` is still current: `TaskPatch` cannot carry epic_id
+        // (linkage moves only via `set_task_epic_id`), so there is no need to
+        // re-read the task the way `recalculate_epic_for_task` would.
+        if let Some(epic_id) = task.epic_id {
+            self.recalculate_epic(epic_id).await;
+        }
 
         // Return the post-patch row: `task` above is the pre-patch snapshot
         // and would still report Backlog with no worktree.

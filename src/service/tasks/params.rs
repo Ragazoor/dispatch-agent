@@ -44,13 +44,11 @@ impl UpdateTaskParams {
 
     /// Names of the fields this params value actually sets.
     ///
-    /// Parity with the struct is compiler-enforced: the exhaustive
-    /// destructuring below (no `..`) fails to compile when a field is added to
-    /// [`UpdateTaskParams`] without being handled here, and an unused binding
-    /// warns if the field is destructured but never pushed. This is not
-    /// cosmetic — [`has_any_field`](Self::has_any_field) is defined in terms of
-    /// this list, so a missing entry makes `update_task` reject an update that
-    /// *did* provide the field with "At least one field must be provided".
+    /// Parity with the struct is compiler-enforced — see the
+    /// `updated_field_names` section of `docs/conventions.md` for why that
+    /// matters. In short: the exhaustive destructuring (no `..`) rejects an
+    /// unhandled new field at compile time, and a bound-but-unlisted field
+    /// warns as an unused binding.
     pub fn updated_field_names(&self) -> Vec<&str> {
         let Self {
             task_id: _,
@@ -72,56 +70,27 @@ impl UpdateTaskParams {
             auto_run_plan,
         } = self;
 
-        let mut names = Vec::new();
-        if status.is_some() {
-            names.push("status");
-        }
-        if plan_path.is_some() {
-            names.push("plan_path");
-        }
-        if title.is_some() {
-            names.push("title");
-        }
-        if description.is_some() {
-            names.push("description");
-        }
-        if repo_path.is_some() {
-            names.push("repo_path");
-        }
-        if sort_order.is_some() {
-            names.push("sort_order");
-        }
-        if url.is_some() {
-            names.push("url");
-        }
-        if tag.is_some() {
-            names.push("tag");
-        }
-        if sub_status.is_some() {
-            names.push("sub_status");
-        }
-        if epic_id.is_some() {
-            names.push("epic_id");
-        }
-        if worktree.is_some() {
-            names.push("worktree");
-        }
-        if tmux_window.is_some() {
-            names.push("tmux_window");
-        }
-        if base_branch.is_some() {
-            names.push("base_branch");
-        }
-        if last_pre_tool_use_at.is_some() {
-            names.push("last_pre_tool_use_at");
-        }
-        if wrap_up_mode.is_some() {
-            names.push("wrap_up_mode");
-        }
-        if auto_run_plan.is_some() {
-            names.push("auto_run_plan");
-        }
-        names
+        [
+            ("status", status.is_some()),
+            ("plan_path", plan_path.is_some()),
+            ("title", title.is_some()),
+            ("description", description.is_some()),
+            ("repo_path", repo_path.is_some()),
+            ("sort_order", sort_order.is_some()),
+            ("url", url.is_some()),
+            ("tag", tag.is_some()),
+            ("sub_status", sub_status.is_some()),
+            ("epic_id", epic_id.is_some()),
+            ("worktree", worktree.is_some()),
+            ("tmux_window", tmux_window.is_some()),
+            ("base_branch", base_branch.is_some()),
+            ("last_pre_tool_use_at", last_pre_tool_use_at.is_some()),
+            ("wrap_up_mode", wrap_up_mode.is_some()),
+            ("auto_run_plan", auto_run_plan.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, is_set)| is_set.then_some(name))
+        .collect()
     }
 
     /// Create params with all optional fields unset (no-op except task_id).
@@ -316,34 +285,90 @@ mod tests {
         // Each field set individually must trigger both has_any_field() and
         // updated_field_names(). Add a case here whenever a new field is added
         // to UpdateTaskParams so both methods stay in sync.
-        let cases: Vec<UpdateTaskParams> = vec![
-            UpdateTaskParams::for_task(TaskId(1)).status(TaskStatus::Backlog),
-            UpdateTaskParams::for_task(TaskId(1)).plan_path(FieldUpdate::Set("p".to_string())),
-            UpdateTaskParams::for_task(TaskId(1)).title("t".to_string()),
-            UpdateTaskParams::for_task(TaskId(1)).description("d".to_string()),
-            UpdateTaskParams::for_task(TaskId(1)).repo_path("r".to_string()),
-            UpdateTaskParams::for_task(TaskId(1)).sort_order(0),
-            UpdateTaskParams::for_task(TaskId(1)).url(crate::service::UrlUpdate::Set(
-                crate::models::TaskUrl::new("u", crate::models::UrlType::Other),
-            )),
-            UpdateTaskParams::for_task(TaskId(1)).tag(Some(Some(TaskTag::Bug))),
-            UpdateTaskParams::for_task(TaskId(1)).sub_status(SubStatus::Active),
-            UpdateTaskParams::for_task(TaskId(1)).epic_id(EpicId(1)),
-            UpdateTaskParams::for_task(TaskId(1)).worktree(FieldUpdate::Set("w".to_string())),
-            UpdateTaskParams::for_task(TaskId(1)).tmux_window(FieldUpdate::Set("tw".to_string())),
-            UpdateTaskParams::for_task(TaskId(1)).base_branch(Some("main".to_string())),
-            UpdateTaskParams::for_task(TaskId(1)).last_pre_tool_use_at(Some(chrono::Utc::now())),
-            UpdateTaskParams::for_task(TaskId(1)).wrap_up_mode(Some(WrapUpMode::Rebase)),
-            UpdateTaskParams::for_task(TaskId(1)).auto_run_plan(true),
+        //
+        // The exhaustive destructuring in updated_field_names() already makes an
+        // unhandled field a compile error, so what this test uniquely covers is
+        // the *name*: a copy-paste that reports "title" for the description
+        // field compiles fine and is caught only here.
+        let cases: Vec<(&str, UpdateTaskParams)> = vec![
+            (
+                "status",
+                UpdateTaskParams::for_task(TaskId(1)).status(TaskStatus::Backlog),
+            ),
+            (
+                "plan_path",
+                UpdateTaskParams::for_task(TaskId(1)).plan_path(FieldUpdate::Set("p".to_string())),
+            ),
+            (
+                "title",
+                UpdateTaskParams::for_task(TaskId(1)).title("t".to_string()),
+            ),
+            (
+                "description",
+                UpdateTaskParams::for_task(TaskId(1)).description("d".to_string()),
+            ),
+            (
+                "repo_path",
+                UpdateTaskParams::for_task(TaskId(1)).repo_path("r".to_string()),
+            ),
+            (
+                "sort_order",
+                UpdateTaskParams::for_task(TaskId(1)).sort_order(0),
+            ),
+            (
+                "url",
+                UpdateTaskParams::for_task(TaskId(1)).url(crate::service::UrlUpdate::Set(
+                    crate::models::TaskUrl::new("u", crate::models::UrlType::Other),
+                )),
+            ),
+            (
+                "tag",
+                UpdateTaskParams::for_task(TaskId(1)).tag(Some(Some(TaskTag::Bug))),
+            ),
+            (
+                "sub_status",
+                UpdateTaskParams::for_task(TaskId(1)).sub_status(SubStatus::Active),
+            ),
+            (
+                "epic_id",
+                UpdateTaskParams::for_task(TaskId(1)).epic_id(EpicId(1)),
+            ),
+            (
+                "worktree",
+                UpdateTaskParams::for_task(TaskId(1)).worktree(FieldUpdate::Set("w".to_string())),
+            ),
+            (
+                "tmux_window",
+                UpdateTaskParams::for_task(TaskId(1))
+                    .tmux_window(FieldUpdate::Set("tw".to_string())),
+            ),
+            (
+                "base_branch",
+                UpdateTaskParams::for_task(TaskId(1)).base_branch(Some("main".to_string())),
+            ),
+            (
+                "last_pre_tool_use_at",
+                UpdateTaskParams::for_task(TaskId(1))
+                    .last_pre_tool_use_at(Some(chrono::Utc::now())),
+            ),
+            (
+                "wrap_up_mode",
+                UpdateTaskParams::for_task(TaskId(1)).wrap_up_mode(Some(WrapUpMode::Rebase)),
+            ),
+            (
+                "auto_run_plan",
+                UpdateTaskParams::for_task(TaskId(1)).auto_run_plan(true),
+            ),
         ];
-        for params in &cases {
+        for (expected, params) in &cases {
             assert!(
                 params.has_any_field(),
-                "has_any_field() should be true when a field is set"
+                "has_any_field() should be true when {expected} is set"
             );
-            assert!(
-                !params.updated_field_names().is_empty(),
-                "updated_field_names() should be non-empty when a field is set"
+            assert_eq!(
+                params.updated_field_names(),
+                vec![*expected],
+                "setting {expected} should report exactly that field name"
             );
         }
     }

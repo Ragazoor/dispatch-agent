@@ -149,8 +149,12 @@ destructuring, and for a load-bearing reason: `has_any_field()` is defined as
 request with `"At least one field must be provided"` when it returns false. Omit one entry and
 an update that sets *only* that field is refused — with a message saying the opposite of what
 happened. Adding a field without naming it in the pattern is a compile error; naming it without
-pushing it produces an unused-binding warning (a hard error under `-D warnings`). The
-`*_every_field_covered` unit tests remain as a documented backstop.
+listing it produces an unused-binding warning (a hard error under `-D warnings`).
+
+What the compiler *can't* catch is a wrong name — listing `"title"` against the `description`
+field compiles cleanly. That is the gap the `*_every_field_covered` unit tests fill: each sets one
+field and asserts `updated_field_names()` returns exactly that name. Keep them in sync when adding
+a field; they are not redundant with the destructuring.
 
 ## DB trait narrowing — take the narrowest sub-trait you need
 
