@@ -496,11 +496,7 @@ mod tests {
 
     #[test]
     fn wrap_up_skill_uses_simplify_not_code_simplifier() {
-        let content = PLUGIN_DIR
-            .get_file("skills/wrap-up/SKILL.md")
-            .expect("wrap-up SKILL.md must be embedded")
-            .contents_utf8()
-            .expect("wrap-up SKILL.md must be UTF-8");
+        let content = skill_body("wrap-up");
         assert!(
             !content.contains("code-simplifier"),
             "wrap-up skill must not reference the old 'code-simplifier' skill"
@@ -511,17 +507,41 @@ mod tests {
         );
     }
 
+    /// Read an embedded skill's `SKILL.md` by skill name, for tests that assert
+    /// on skill copy.
+    fn skill_body(skill: &str) -> &'static str {
+        let path = format!("skills/{skill}/SKILL.md");
+        PLUGIN_DIR
+            .get_file(&path)
+            .unwrap_or_else(|| panic!("{path} must be embedded"))
+            .contents_utf8()
+            .unwrap_or_else(|| panic!("{path} must be UTF-8"))
+    }
+
+    #[test]
+    fn decompose_review_skill_defaults_wrap_up_mode_to_rebase() {
+        // Review work packages are small and land on main — one draft PR per
+        // package is noise. The skill pre-sets wrap_up_mode purely to skip
+        // wrap-up's AskUserQuestion step, and 'rebase' is the right value.
+        let content = skill_body("decompose-review");
+        assert!(
+            content.contains("`wrap_up_mode`: `\"rebase\"`"),
+            "decompose-review skill must set wrap_up_mode to \"rebase\""
+        );
+        assert!(
+            !content.contains("`wrap_up_mode`: `\"pr\"`"),
+            "decompose-review skill must not set wrap_up_mode to \"pr\" — \
+             a decomposed review epic would open one draft PR per work package"
+        );
+    }
+
     #[test]
     fn summarize_skill_does_not_claim_unconditional_finality() {
         // wrap-up invokes summarize mid-flow (before wrap_up/retro/exit_session).
         // An unconditional "this is always the final step" claim reads as an
         // instruction to stop the whole session right there, which is how
         // wrap-up gets stuck after summarize and never reaches exit_session.
-        let content = PLUGIN_DIR
-            .get_file("skills/summarize/SKILL.md")
-            .expect("summarize SKILL.md must be embedded")
-            .contents_utf8()
-            .expect("summarize SKILL.md must be UTF-8");
+        let content = skill_body("summarize");
         assert!(
             !content.contains("always the final step"),
             "summarize skill must not unconditionally claim to be the final step, \
@@ -536,11 +556,7 @@ mod tests {
         // agent that just finished following retro's own steps has nothing
         // telling it to continue — that's how wrap-up gets stuck after retro
         // and never reaches exit_session.
-        let content = PLUGIN_DIR
-            .get_file("skills/retro/SKILL.md")
-            .expect("retro SKILL.md must be embedded")
-            .contents_utf8()
-            .expect("retro SKILL.md must be UTF-8");
+        let content = skill_body("retro");
         assert!(
             content.contains("do not stop here") || content.contains("Do not stop here"),
             "retro skill must explicitly instruct the agent to resume the \

@@ -124,8 +124,9 @@ Call the `dispatch` MCP tool `create_task` with:
 - `auto_run_plan`: `true` — the plan was already reviewed via the work-package
   confirmation in Step 3, so the dispatched agent should implement it
   immediately instead of asking to proceed
-- `wrap_up_mode`: `"pr"` — so the agent opens a draft PR at wrap-up without
-  asking which path to take
+- `wrap_up_mode`: `"rebase"` — so the agent rebases onto `base_branch` at
+  wrap-up without asking which path to take. Review work packages are small and
+  land on main; they don't each need their own PR.
 
 ## Step 7: Report Results
 
