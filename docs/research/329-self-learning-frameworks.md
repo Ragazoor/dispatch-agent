@@ -107,7 +107,7 @@ Adopting LangMem-the-SDK is a no — it is a Python framework and dispatch is Ru
 Already in this repo / workspace:
 
 - **Allium specs** (`docs/specs/*.allium`) — domain rules, source of truth, human-edited.
-- **Plan files** (`docs/plans/*.md`) — implementation plans, working artifacts, never committed.
+- **Plan files** (`docs/plans/*.md`) — implementation plans, working artifacts.
 - **Skills** (`.claude/skills/<name>/SKILL.md`) — invocable instructions, plugin-installed via `setup.rs`.
 - **Tips** (`src/tips/*.md`, `docs/specs/tips.allium`) — startup hints; static, ID-numbered.
 - **`CLAUDE.md`** at repo root and workspace root — always-on agent instructions.

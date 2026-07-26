@@ -1,7 +1,5 @@
 /target
 /.worktrees
-docs/superpowers/**
-docs/plans/**
 .superpowers/
 .claude-prompt
 .claude-messages/

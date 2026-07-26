@@ -200,7 +200,7 @@ This file is intentionally slim — it is loaded into every agent's context. Rea
 - [docs/mcp.md](docs/mcp.md) — MCP notification flow, error codes, debugging handlers, feed epics, knowledge base flow
 - [docs/reference.md](docs/reference.md) — key bindings, configuration, environment variables, troubleshooting, learning store
 - [docs/specs/](docs/specs/) — Allium specifications for domain logic
-- [docs/plans/](docs/plans/) — implementation plans and one-off analysis/review docs (working artifacts, never committed)
+- [docs/plans/](docs/plans/) — implementation plans and one-off analysis/review docs
 
 Subsystem entry points (no dedicated doc page — read the source):
 

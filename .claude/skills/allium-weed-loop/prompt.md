@@ -49,8 +49,6 @@ docs: align allium spec with implementation
 - [Any code fixes if user-approved]
 ```
 
-Do NOT commit files under `docs/plans/`.
-
 ### 5. Check completion
 
 After the weed agent reports findings and you've processed them all:

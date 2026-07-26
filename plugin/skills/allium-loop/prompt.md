@@ -91,7 +91,7 @@ spec bugs; for code bugs that contradict a correct spec, ask the user before fix
 
 ### 8. Commit
 
-Stage and commit this run's changes (never `docs/plans/`, and never the loop's own state file
+Stage and commit this run's changes (never the loop's own state file
 `.claude/allium-loop-state.local.md`). This is required, not optional: the next iteration is a
 fresh agent with no memory of this one, so it can only see your progress via git history, and its
 own rebase step needs a clean tree to start from.
@@ -143,8 +143,7 @@ steps 3-8 didn't otherwise execute.
   write it into the spec (or wherever it belongs), commit that resolution, then continue.
 - Honor spec parameters; no magic numbers.
 - Fix code, not the contract, when the spec is correct.
-- Never commit files under `docs/plans/`, and never stage or commit the loop's own state file
-  `.claude/allium-loop-state.local.md`.
+- Never stage or commit the loop's own state file `.claude/allium-loop-state.local.md`.
 - Never end with a dirty tree: always commit this run's work before ending, using the
   `wip(allium-loop):` prefix if verification is not green. There is no "skip committing" escape
   hatch. Ending with no new commit is acceptable only when the tree is genuinely clean and there
