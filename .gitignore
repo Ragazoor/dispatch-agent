@@ -9,3 +9,4 @@ scripts/local/
 .dispatch/
 .fastembed_cache/
 .claude/ralph-loop.local.md
+.claude/allium-loop-state.local.md
