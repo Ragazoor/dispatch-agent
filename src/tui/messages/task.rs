@@ -53,6 +53,13 @@ pub enum TaskMessage {
         id: TaskId,
         mode: DispatchMode,
     },
+    /// Emitted by the runtime once `CheckTrustAndDispatch` finds the repo
+    /// untrusted: enters the trust-confirmation prompt.
+    TrustCheckUntrusted {
+        id: TaskId,
+        mode: DispatchMode,
+        repo_path: String,
+    },
     RetryResume(TaskId),
     RetryFresh(TaskId),
     Archive(TaskId),
@@ -111,6 +118,11 @@ impl TaskMessage {
             TaskMessage::AgentCrashed(id) => app.handle_agent_crashed(id),
             TaskMessage::KillAndRetry(id) => app.handle_kill_and_retry(id),
             TaskMessage::TrustAndDispatch { id, mode } => app.handle_trust_and_dispatch(id, mode),
+            TaskMessage::TrustCheckUntrusted {
+                id,
+                mode,
+                repo_path,
+            } => app.handle_trust_check_untrusted(id, mode, repo_path),
             TaskMessage::RetryResume(id) => app.handle_retry_resume(id),
             TaskMessage::RetryFresh(id) => app.handle_retry_fresh(id),
             TaskMessage::Archive(id) => app.handle_archive_task(id),

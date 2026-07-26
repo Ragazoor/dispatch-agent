@@ -3,9 +3,7 @@
 use crate::models::{TaskTag, WrapUpMode};
 
 use super::super::types::*;
-use super::super::{
-    filtered_repos, has_new_repo_option, truncate_title, App, PendingAction, TITLE_DISPLAY_LENGTH,
-};
+use super::super::{filtered_repos, has_new_repo_option, App, PendingAction};
 
 impl App {
     pub(in crate::tui) fn handle_copy_task(&mut self) -> Vec<Command> {
@@ -50,38 +48,6 @@ impl App {
         vec![]
     }
 
-    pub(in crate::tui) fn handle_confirm_delete_start(&mut self) -> Vec<Command> {
-        if let Some(task) = self.selected_task() {
-            let title = truncate_title(&task.title, TITLE_DISPLAY_LENGTH);
-            let status = task.status.as_str();
-            let warning = if task.worktree.is_some() {
-                " (has worktree)"
-            } else {
-                ""
-            };
-            self.input.mode = InputMode::ConfirmDelete;
-            self.set_status(format!("Delete {title} [{status}]{warning}? [y/n]"));
-        }
-        vec![]
-    }
-
-    pub(in crate::tui) fn handle_confirm_delete_yes(&mut self) -> Vec<Command> {
-        self.input.mode = InputMode::Normal;
-        self.clear_status();
-        if let Some(task) = self.selected_task() {
-            let id = task.id;
-            self.handle_delete_task(id)
-        } else {
-            vec![]
-        }
-    }
-
-    pub(in crate::tui) fn handle_cancel_delete(&mut self) -> Vec<Command> {
-        self.input.mode = InputMode::Normal;
-        self.clear_status();
-        vec![]
-    }
-
     pub(in crate::tui) fn handle_submit_title(&mut self, value: String) -> Vec<Command> {
         self.input.clear_buffer();
         if value.is_empty() {
@@ -120,6 +86,9 @@ impl App {
             self.set_status("Repo path required (no saved paths available)".to_string());
             return vec![];
         }
+        // Accepted std::fs-in-handler exception (docs/conventions.md, "No
+        // std::fs inside async handlers"): a bare exists()/is_dir() stat, no
+        // read or parse, on the low-frequency repo-path submit path.
         if let Err(msg) = crate::dispatch::validate_repo_path(&value) {
             self.set_status(msg);
             return vec![];

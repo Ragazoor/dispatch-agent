@@ -233,6 +233,40 @@ async fn dispatch_task(
             }
             vec![]
         }
+        CheckTrustAndDispatch {
+            id,
+            repo_path,
+            mode,
+        } => {
+            let (repo_path, trust_result) = tokio::task::spawn_blocking(move || {
+                let result = crate::dispatch::is_repo_trusted(&repo_path);
+                (repo_path, result)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                (
+                    String::new(),
+                    Err(anyhow::anyhow!("is_repo_trusted panicked: {e}")),
+                )
+            });
+            match trust_result {
+                Ok(true) => app.update(crate::tui::Message::Task(
+                    crate::tui::messages::TaskMessage::Dispatch(id, mode),
+                )),
+                Ok(false) => app.update(crate::tui::Message::Task(
+                    crate::tui::messages::TaskMessage::TrustCheckUntrusted {
+                        id,
+                        mode,
+                        repo_path,
+                    },
+                )),
+                Err(e) => app.update(crate::tui::Message::System(
+                    crate::tui::messages::SystemMessage::StatusInfo(format!(
+                        "Trust check failed: {e}"
+                    )),
+                )),
+            }
+        }
         Cleanup {
             id,
             repo_path,

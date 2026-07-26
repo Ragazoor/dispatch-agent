@@ -134,17 +134,18 @@ impl App {
                 cmds
             }
             KeyCode::Char('n') => {
+                // Toggles only between Always and NewOnly, so new_mode and its
+                // label are derived together — no exhaustive match over
+                // TipsShowMode (with a dead Never arm) is needed here.
                 let current_mode = self.interaction.tips.as_ref().map(|t| t.show_mode);
-                let new_mode = match current_mode {
-                    Some(TipsShowMode::NewOnly) => TipsShowMode::Always,
-                    _ => TipsShowMode::NewOnly,
-                };
-                let label = match new_mode {
-                    TipsShowMode::NewOnly => "Tips: will only show when there are new tips",
-                    TipsShowMode::Always => "Tips: will show on every startup",
-                    TipsShowMode::Never => {
-                        unreachable!("n key only toggles between Always and NewOnly")
+                let (new_mode, label) = match current_mode {
+                    Some(TipsShowMode::NewOnly) => {
+                        (TipsShowMode::Always, "Tips: will show on every startup")
                     }
+                    _ => (
+                        TipsShowMode::NewOnly,
+                        "Tips: will only show when there are new tips",
+                    ),
                 };
                 let mut cmds = self.update(Message::Tips(
                     crate::tui::messages::TipsMessage::SetMode(new_mode),
@@ -316,27 +317,16 @@ impl App {
                     TaskStatus::Backlog => {
                         let mode = DispatchMode::for_task(task);
                         let repo_path = task.repo_path.clone();
-                        match crate::dispatch::is_repo_trusted(&repo_path) {
-                            Err(e) => {
-                                self.set_status(format!("Trust check failed: {e}"));
-                                vec![]
-                            }
-                            Ok(true) => {
-                                let mut cmds = self.update(Message::Task(
-                                    crate::tui::messages::TaskMessage::Dispatch(id, mode),
-                                ));
-                                cmds.push(key_event("dispatch_task", " "));
-                                cmds
-                            }
-                            Ok(false) => {
-                                let expanded = crate::models::expand_tilde(&repo_path);
-                                self.input.mode = InputMode::ConfirmTrustRepo { task_id: id, mode };
-                                self.set_status(format!(
-                                    "Repo '{expanded}' not trusted by Claude Code — trust it? [y/N]"
-                                ));
-                                vec![key_event("dispatch_task", " ")]
-                            }
-                        }
+                        vec![
+                            Command::Task(
+                                crate::tui::commands::TaskCommand::CheckTrustAndDispatch {
+                                    id,
+                                    repo_path,
+                                    mode,
+                                },
+                            ),
+                            key_event("dispatch_task", " "),
+                        ]
                     }
                     TaskStatus::Running | TaskStatus::Review | TaskStatus::Done => {
                         if is_problematic {

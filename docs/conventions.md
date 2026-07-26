@@ -317,6 +317,8 @@ Two patterns have already caused bugs and must not be repeated:
 
 - **No `std::fs` inside async handlers.** Blocking I/O on the async executor stalls the tokio thread pool. Any file-system operation inside an `async fn` must use `tokio::fs` or be wrapped in `tokio::task::spawn_blocking`.
 
+  **Accepted exception:** `validate_repo_path` (`src/dispatch/worktree.rs`), called synchronously from `handle_submit_repo_path` (`src/tui/update/forms.rs`). It does only a `.exists()`/`.is_dir()` stat — no file content is read or parsed — on the low-frequency repo-path form-submit path (once per new task typed), unlike the `~/.claude.json` read-plus-`serde_json`-parse that motivated moving the `Space`-key trust check off the render thread (`CheckTrustAndDispatch` in `src/tui/commands/task.rs`). Keep it inline; don't route it through a `Command` unless it grows beyond a bare stat.
+
 ## No `tokio::time::sleep` in tests
 
 Async tests must never `tokio::time::sleep` to "wait for" background work. Wall-clock sleeps are flaky on slow CI (the work may not be done when the timer fires) and needlessly slow the suite. `./scripts/check-no-test-sleep.sh` enforces this in the pre-push hook; production `std::thread::sleep` (e.g. `src/process.rs`) is unaffected.

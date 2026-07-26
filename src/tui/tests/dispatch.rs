@@ -1530,32 +1530,34 @@ fn manual_move_review_to_running_seeds_last_pre_tool_use_at() {
 }
 
 #[test]
-fn dispatch_space_on_untrusted_repo_enters_confirm_trust_mode() {
-    // make_task uses repo_path "/repo" which is absent from ~/.claude.json
-    // in any standard test environment, so is_repo_trusted returns Ok(false).
+fn dispatch_space_on_backlog_task_emits_trust_check_command() {
+    // The trust check (`is_repo_trusted`, a `~/.claude.json` read) is file
+    // I/O and must not run inline on the key-handling path — it is deferred
+    // to a Command the runtime executes via spawn_blocking. handle_key must
+    // not decide dispatch-vs-confirm-trust itself; it only emits the check.
     let mut app = make_app();
     // Navigate to task 1 (Backlog)
-    let cmds = app.handle_key(make_key(KeyCode::Char(' ')));
-    // Should produce no dispatch command
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
     assert!(
-        without_usage(cmds).iter().all(|c| !matches!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::CheckTrustAndDispatch {
+                id: TaskId(1),
+                ..
+            })
+        )),
+        "expected CheckTrustAndDispatch command, got {cmds:?}"
+    );
+    // No dispatch and no mode change happen synchronously — both depend on
+    // the check command's result, which only the runtime can produce.
+    assert!(
+        cmds.iter().all(|c| !matches!(
             c,
             Command::Task(crate::tui::commands::TaskCommand::DispatchAgent { .. })
         )),
-        "should not dispatch when repo is untrusted"
+        "should not dispatch before the trust check runs"
     );
-    // Mode should be ConfirmTrustRepo
-    assert!(
-        matches!(
-            app.input.mode,
-            InputMode::ConfirmTrustRepo {
-                task_id: TaskId(1),
-                ..
-            }
-        ),
-        "expected ConfirmTrustRepo mode, got {:?}",
-        app.input.mode
-    );
+    assert_eq!(app.input.mode, InputMode::Normal);
 }
 
 #[test]
@@ -1610,6 +1612,53 @@ fn trust_and_dispatch_message_emits_trust_command() {
     );
 }
 
+#[test]
+fn trust_check_untrusted_enters_confirm_trust_mode() {
+    // What the runtime sends back when CheckTrustAndDispatch's spawn_blocking
+    // read of ~/.claude.json finds the repo untrusted.
+    let mut app = make_app();
+    let cmds = without_usage(app.update(Message::Task(
+        crate::tui::messages::TaskMessage::TrustCheckUntrusted {
+            id: TaskId(1),
+            mode: DispatchMode::Dispatch,
+            repo_path: "/repo".to_string(),
+        },
+    )));
+    assert!(cmds.is_empty());
+    assert!(
+        matches!(
+            app.input.mode,
+            InputMode::ConfirmTrustRepo {
+                task_id: TaskId(1),
+                ..
+            }
+        ),
+        "expected ConfirmTrustRepo mode, got {:?}",
+        app.input.mode
+    );
+    let msg = app.status.message.as_deref().expect("status set");
+    assert!(msg.contains("/repo"), "got: {msg}");
+}
+
+#[test]
+fn trust_check_untrusted_ignored_if_already_dispatching() {
+    // Guards the async gap: if the task was dispatched (or otherwise no
+    // longer a pending Backlog dispatch) by the time the check result
+    // arrives, don't clobber whatever mode the UI is in now.
+    let mut app = make_app();
+    app.mark_dispatching(TaskId(1));
+    app.input.mode = InputMode::Help;
+    let cmds = without_usage(app.update(Message::Task(
+        crate::tui::messages::TaskMessage::TrustCheckUntrusted {
+            id: TaskId(1),
+            mode: DispatchMode::Dispatch,
+            repo_path: "/repo".to_string(),
+        },
+    )));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::Help);
+}
+
 // ---------------------------------------------------------------------------
 // Unified Space "activate task" behavior (docs/specs/split-pane.allium:
 // JumpToAgentWindow). Space jumps to a live window when one exists; otherwise
@@ -1625,20 +1674,21 @@ fn space_on_backlog_no_window_dispatches() {
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(1); // Backlog column
     app.selection_mut().set_row(1, 0);
-    let _cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
-    // repo_path "/repo" is not trusted, so Space routes to the trust prompt
-    // (the pre-dispatch gate) rather than showing "No active session".
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    // Space on a windowless Backlog task routes through the repo-trust gate
+    // (a CheckTrustAndDispatch command) rather than dispatching or showing
+    // "No active session" synchronously.
     assert!(
-        matches!(
-            app.input.mode,
-            InputMode::ConfirmTrustRepo {
-                task_id: TaskId(1),
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::CheckTrustAndDispatch {
+                id: TaskId(1),
                 ..
-            }
-        ),
-        "expected ConfirmTrustRepo mode, got {:?}",
-        app.input.mode
+            })
+        )),
+        "expected CheckTrustAndDispatch command, got {cmds:?}"
     );
+    assert_eq!(app.input.mode, InputMode::Normal);
 }
 
 #[test]

@@ -961,32 +961,6 @@ fn enter_on_new_base_branch_entry_submits_typed_text() {
 }
 
 #[test]
-fn confirm_delete_start_enters_mode() {
-    let mut app = make_app();
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::ConfirmDeleteStart,
-    ));
-    assert_eq!(app.input.mode, InputMode::ConfirmDelete);
-    // make_app() selects column 0, row 0 = Task 1 (Backlog)
-    assert_eq!(
-        app.status.message.as_deref(),
-        Some("Delete \"Task 1\" [backlog]? [y/n]")
-    );
-}
-
-#[test]
-fn cancel_delete_returns_to_normal() {
-    let mut app = App::new(vec![]);
-    app.input.mode = InputMode::ConfirmDelete;
-    app.status.message = Some("Delete \"Task 1\" [backlog]? [y/n]".to_string());
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::CancelDelete,
-    ));
-    assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(app.status.message.is_none());
-}
-
-#[test]
 fn cancel_retry_returns_to_normal() {
     let mut app = App::new(vec![]);
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
@@ -1101,23 +1075,6 @@ fn esc_dismisses_help() {
 
     app.handle_key(make_key(KeyCode::Esc));
     assert_eq!(app.input.mode, InputMode::Normal);
-}
-
-#[test]
-fn confirm_delete_start_running_with_worktree_shows_warning() {
-    let mut task = make_task(4, TaskStatus::Running);
-    task.worktree = Some("/wt/4-test".to_string());
-    let mut app = App::new(vec![task]);
-    // Task is in Running column (column 2), navigate there
-    app.selection_mut().set_column(2);
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::ConfirmDeleteStart,
-    ));
-    assert_eq!(app.input.mode, InputMode::ConfirmDelete);
-    assert_eq!(
-        app.status.message.as_deref(),
-        Some("Delete \"Task 4\" [running] (has worktree)? [y/n]")
-    );
 }
 
 #[test]
@@ -1529,14 +1486,17 @@ fn handle_key_normal_activate_backlog_task() {
     app.selection_mut().set_column(1);
     app.selection_mut().set_row(1, 0);
 
-    app.handle_key(make_key(KeyCode::Char(' ')));
-    // repo_path "/repo" is not trusted, so we enter confirm-trust mode instead
-    // of dispatching immediately
+    let cmds = app.handle_key(make_key(KeyCode::Char(' ')));
+    // The trust check is deferred to a Command (see CheckTrustAndDispatch) —
+    // handle_key must not decide dispatch-vs-confirm-trust synchronously.
     assert!(
-        matches!(app.input.mode, InputMode::ConfirmTrustRepo { .. }),
-        "expected ConfirmTrustRepo mode, got {:?}",
-        app.input.mode
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::CheckTrustAndDispatch { .. })
+        )),
+        "expected CheckTrustAndDispatch command, got {cmds:?}"
     );
+    assert_eq!(app.input.mode, InputMode::Normal);
 }
 
 #[test]

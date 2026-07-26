@@ -171,6 +171,31 @@ impl App {
         vec![]
     }
 
+    /// Result of `CheckTrustAndDispatch` finding the repo untrusted: enter the
+    /// trust-confirmation prompt. Guarded like [`Self::handle_dispatch_task`]
+    /// against the async gap between the check starting and its result
+    /// arriving (task dispatched/deleted/moved in the meantime).
+    pub(in crate::tui) fn handle_trust_check_untrusted(
+        &mut self,
+        task_id: TaskId,
+        mode: DispatchMode,
+        repo_path: String,
+    ) -> Vec<Command> {
+        if self.is_dispatching(task_id)
+            || !self
+                .find_task(task_id)
+                .is_some_and(|t| t.status == TaskStatus::Backlog)
+        {
+            return vec![];
+        }
+        let expanded = crate::models::expand_tilde(&repo_path);
+        self.input.mode = InputMode::ConfirmTrustRepo { task_id, mode };
+        self.set_status(format!(
+            "Repo '{expanded}' not trusted by Claude Code — trust it? [y/N]"
+        ));
+        vec![]
+    }
+
     pub(in crate::tui) fn handle_dispatched(
         &mut self,
         id: TaskId,

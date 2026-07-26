@@ -24,6 +24,16 @@ pub enum TaskCommand {
         task: Task,
         mode: DispatchMode,
     },
+    /// Check whether `repo_path` is trusted by Claude Code (reads
+    /// `~/.claude.json` via `spawn_blocking`) and emit the message that routes
+    /// to a dispatch or a trust-confirmation prompt based on the result.
+    /// Keeps the file I/O off the render thread — see docs/conventions.md
+    /// "No `std::fs` inside async handlers".
+    CheckTrustAndDispatch {
+        id: TaskId,
+        repo_path: String,
+        mode: DispatchMode,
+    },
     Cleanup {
         id: TaskId,
         repo_path: String,
