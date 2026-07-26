@@ -16,6 +16,7 @@ use super::types::{
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct CreateEpicArgs {
     pub(super) title: String,
     #[serde(default)]
@@ -27,12 +28,14 @@ pub(super) struct CreateEpicArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct GetEpicArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) epic_id: i64,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct UpdateEpicArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) epic_id: i64,
@@ -109,15 +112,10 @@ pub(super) async fn handle_get_epic(
 
     match state
         .epic_svc
-        .get_epic_with_subtasks(EpicId(parsed.epic_id))
+        .get_epic_with_progress(EpicId(parsed.epic_id))
         .await
     {
-        Ok((epic, subtasks)) => {
-            let done_count = subtasks
-                .iter()
-                .filter(|t| t.status == TaskStatus::Done)
-                .count();
-            let total = subtasks.len();
+        Ok((epic, done_count, total)) => {
             let mut text = format!(
                 "Epic {id}: {title}\nDescription: {desc}\nStatus: {status}",
                 id = epic.id,

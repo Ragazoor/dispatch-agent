@@ -305,6 +305,13 @@ pub(super) fn parse_args<T: serde::de::DeserializeOwned>(
 // Caller task lookup helper
 // ---------------------------------------------------------------------------
 
+/// Application-defined JSON-RPC error code for "entity not found", distinct
+/// from `-32602` (Invalid params). Reserved server-error range per the
+/// JSON-RPC 2.0 spec (`-32000` to `-32099`). Without this split, a caller
+/// cannot distinguish "you sent garbage" from "the entity is gone" without
+/// string-matching the message.
+pub(super) const NOT_FOUND_CODE: i32 = -32001;
+
 /// Fetch the task identified by `caller_id` from the DB, mapping errors to
 /// JSON-RPC responses. Used by handlers that resolve the caller task for
 /// context inheritance (project_id, epic_id, etc.).
@@ -317,7 +324,7 @@ pub(super) async fn fetch_caller_task(
         Ok(Some(task)) => Ok(task),
         Ok(None) => Err(JsonRpcResponse::err(
             id.clone(),
-            -32602,
+            NOT_FOUND_CODE,
             format!("Unknown caller task {}", caller_id.0),
         )),
         Err(e) => Err(JsonRpcResponse::err(
@@ -339,7 +346,7 @@ pub(super) fn service_err_to_response(
     use crate::service::ServiceError;
     match err {
         ServiceError::Validation(msg) => JsonRpcResponse::err(id, -32602, msg),
-        ServiceError::NotFound(msg) => JsonRpcResponse::err(id, -32602, msg),
+        ServiceError::NotFound(msg) => JsonRpcResponse::err(id, NOT_FOUND_CODE, msg),
         ServiceError::Internal(e) => JsonRpcResponse::err(id, -32603, e.to_string()),
     }
 }
@@ -516,13 +523,34 @@ mod fetch_caller_task_tests {
     }
 
     #[tokio::test]
-    async fn returns_invalid_params_error_when_not_found() {
+    async fn returns_not_found_error_when_not_found() {
         let db = Database::open_in_memory().await.unwrap();
 
         let result = fetch_caller_task(&db, &Some(json!(1)), TaskId(99999)).await;
         let err_resp = result.unwrap_err();
         let err = err_resp.error.unwrap();
-        assert_eq!(err.code, -32602);
+        assert_eq!(err.code, super::NOT_FOUND_CODE);
         assert!(err.message.contains("99999"), "got: {}", err.message);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod service_err_to_response_tests {
+    use super::service_err_to_response;
+    use crate::service::ServiceError;
+
+    // `NotFound` ("the entity is gone") and `Validation` ("you sent garbage")
+    // are semantically distinct failures; callers need different codes to
+    // react differently (e.g. retry-with-different-id vs fix-the-request).
+    #[tokio::test]
+    async fn not_found_and_validation_have_distinct_codes() {
+        let not_found = service_err_to_response(None, ServiceError::NotFound("x".into()));
+        let validation = service_err_to_response(None, ServiceError::Validation("y".into()));
+        let nf_code = not_found.error.unwrap().code;
+        let val_code = validation.error.unwrap().code;
+        assert_ne!(nf_code, val_code);
+        assert_eq!(nf_code, super::NOT_FOUND_CODE);
+        assert_eq!(val_code, -32602);
     }
 }

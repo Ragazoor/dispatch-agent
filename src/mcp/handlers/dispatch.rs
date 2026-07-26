@@ -278,12 +278,11 @@ mcp_tools! {
             "type": "object",
             "properties": {
                 "title": { "type": "string", "description": "Epic title" },
-                "repo_path": { "type": "string", "description": "Repository path" },
                 "description": { "type": "string", "description": "Epic description" },
                 "sort_order": { "type": "integer", "description": "Display order within column (lower values appear first)" },
                 "parent_epic_id": { "type": "integer", "description": "Optional parent epic ID. When set, this epic becomes a sub-epic of the specified parent. Cannot be set to the epic's own ID (self-referential cycles are rejected by the database)." }
             },
-            "required": ["title", "repo_path"]
+            "required": ["title"]
         };
 
     async "get_epic" => epics::handle_get_epic,
@@ -301,7 +300,7 @@ mcp_tools! {
         { "type": "object", "properties": {} };
 
     async "update_epic" => epics::handle_update_epic,
-        "Update an epic's title, description, status, plan, sort order, repo path, feed configuration, or parent epic.",
+        "Update an epic's title, description, status, plan, sort order, feed configuration, or parent epic.",
         {
             "type": "object",
             "properties": {
@@ -311,7 +310,6 @@ mcp_tools! {
                 "status": { "type": "string", "description": "New status: backlog, running, review, or done", "enum": ["backlog", "running", "review", "done"] },
                 "plan_path": { "type": "string", "description": "Path to the plan file" },
                 "sort_order": { "type": "integer", "description": "Display order within column (lower values appear first)" },
-                "repo_path": { "type": "string", "description": "Repository path for the epic" },
                 "feed_command": { "type": ["string", "null"], "description": "Shell command that emits JSON FeedItems to populate tasks. Pass null to clear." },
                 "feed_interval_secs": { "type": ["integer", "null"], "description": "Polling interval in seconds (overrides the default). Pass null to clear." },
                 "group_by_repo": { "type": "boolean", "description": "When true, group feed tasks by repository path in the TUI. Pass false to disable grouping." },

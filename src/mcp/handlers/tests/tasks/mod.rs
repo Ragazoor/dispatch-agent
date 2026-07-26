@@ -19,7 +19,7 @@ async fn create_epic_minimal() {
         "tools/call",
         Some(json!({
             "name": "create_epic",
-            "arguments": { "title": "My Epic", "repo_path": "/repo" }
+            "arguments": { "title": "My Epic" }
         })),
     )
     .await;
@@ -42,7 +42,6 @@ async fn create_epic_with_all_fields() {
             "name": "create_epic",
             "arguments": {
                 "title": "Full Epic",
-                "repo_path": "/repo",
                 "description": "Epic desc"
             }
         })),
@@ -62,7 +61,7 @@ async fn create_epic_missing_title() {
         "tools/call",
         Some(json!({
             "name": "create_epic",
-            "arguments": { "repo_path": "/repo" }
+            "arguments": {}
         })),
     )
     .await;
@@ -678,7 +677,6 @@ async fn mcp_create_sub_epic() {
             "name": "create_epic",
             "arguments": {
                 "title": "Sub Epic",
-                "repo_path": "/tmp",
                 "description": "child",
                 "parent_epic_id": parent.id.0
             }

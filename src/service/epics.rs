@@ -79,6 +79,21 @@ pub struct CreateEpicParams {
 }
 
 // ---------------------------------------------------------------------------
+// Progress-rollup helper types
+// ---------------------------------------------------------------------------
+
+/// Tasks grouped by their epic id, for the progress rollup.
+type TasksByEpic<'a> = std::collections::HashMap<EpicId, Vec<&'a Task>>;
+
+/// (done, total) over a task slice, counting `TaskStatus::Done` as done.
+fn count_progress(tasks: &[&Task]) -> (usize, usize) {
+    (
+        tasks.iter().filter(|t| t.status == TaskStatus::Done).count(),
+        tasks.len(),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // EpicService
 // ---------------------------------------------------------------------------
 
@@ -158,6 +173,74 @@ impl EpicService {
         Ok((epic, subtasks))
     }
 
+    /// Progress for a single epic, rolled up the same way as
+    /// [`list_epics_with_progress`](Self::list_epics_with_progress): a
+    /// `group_by_repo` epic's counts include its descendant sub-epics, not
+    /// just its direct subtasks. Used by `get_epic` so it agrees with the
+    /// board/`list_epics` view instead of undercounting to 0/0.
+    ///
+    /// Only `group_by_repo` epics need the whole-board rollup — every other
+    /// epic still counts its own direct subtasks, so the common case stays as
+    /// cheap as the old direct-subtasks-only lookup.
+    pub async fn get_epic_with_progress(
+        &self,
+        epic_id: EpicId,
+    ) -> Result<(Epic, usize, usize), ServiceError> {
+        let epic = self.get_epic(epic_id).await?;
+        if !epic.group_by_repo {
+            let subtasks = self
+                .db
+                .list_tasks_for_epic(epic.id)
+                .await
+                .unwrap_or_default();
+            let (done, total) = count_progress(&subtasks.iter().collect::<Vec<_>>());
+            return Ok((epic, done, total));
+        }
+
+        let all_epics = self.db.list_epics().await?;
+        let all_tasks = self.db.list_all_tasks_with_epic_id().await?;
+        let tasks_by_epic = Self::group_tasks_by_epic(&all_tasks);
+        let children = crate::models::build_children_map(&all_epics);
+        let (done, total) = Self::epic_progress(&epic, &tasks_by_epic, &children);
+        Ok((epic, done, total))
+    }
+
+    /// Group tasks by epic id, for the progress rollup.
+    fn group_tasks_by_epic(tasks: &[Task]) -> TasksByEpic<'_> {
+        let mut tasks_by_epic: TasksByEpic = std::collections::HashMap::new();
+        for task in tasks {
+            if let Some(eid) = task.epic_id {
+                tasks_by_epic.entry(eid).or_default().push(task);
+            }
+        }
+        tasks_by_epic
+    }
+
+    /// (done, total) for one epic: direct subtasks, plus — when the epic is
+    /// `group_by_repo` — the rollup of all descendant sub-epics' tasks, via
+    /// the shared [`crate::models::descendant_epic_ids_with_map`] traversal
+    /// (the same one `SubtaskStats::for_epic` uses in the TUI).
+    fn epic_progress(
+        epic: &Epic,
+        tasks_by_epic: &TasksByEpic<'_>,
+        children: &std::collections::HashMap<EpicId, Vec<EpicId>>,
+    ) -> (usize, usize) {
+        if epic.group_by_repo {
+            let ids = crate::models::descendant_epic_ids_with_map(epic.id, children);
+            let tasks: Vec<&Task> = ids
+                .iter()
+                .filter_map(|id| tasks_by_epic.get(id))
+                .flatten()
+                .copied()
+                .collect();
+            count_progress(&tasks)
+        } else {
+            let empty = Vec::new();
+            let tasks = tasks_by_epic.get(&epic.id).unwrap_or(&empty);
+            count_progress(tasks)
+        }
+    }
+
     pub async fn list_epics(&self) -> Result<Vec<Epic>, ServiceError> {
         Ok(self.db.list_epics().await?)
     }
@@ -175,62 +258,14 @@ impl EpicService {
     ) -> Result<Vec<(Epic, usize, usize)>, ServiceError> {
         let epics = self.list_epics().await?;
         let all_subtasks = self.db.list_all_tasks_with_epic_id().await?;
-
-        // Group tasks by epic_id in Rust — avoids N+1 queries
-        let mut tasks_by_epic: std::collections::HashMap<i64, Vec<&Task>> =
-            std::collections::HashMap::new();
-        for task in &all_subtasks {
-            if let Some(eid) = task.epic_id {
-                tasks_by_epic.entry(eid.0).or_default().push(task);
-            }
-        }
-
-        // Build parent_id -> child epic ids map for descendant aggregation
-        let mut children: std::collections::HashMap<i64, Vec<i64>> =
-            std::collections::HashMap::new();
-        for e in &epics {
-            if let Some(p) = e.parent_epic_id {
-                children.entry(p.0).or_default().push(e.id.0);
-            }
-        }
-
-        fn agg(
-            id: i64,
-            tasks_by_epic: &std::collections::HashMap<i64, Vec<&Task>>,
-            children: &std::collections::HashMap<i64, Vec<i64>>,
-        ) -> (usize, usize) {
-            let here = tasks_by_epic.get(&id).map(|v| v.as_slice()).unwrap_or(&[]);
-            let mut done = here.iter().filter(|t| t.status == TaskStatus::Done).count();
-            let mut total = here.len();
-            if let Some(kids) = children.get(&id) {
-                for k in kids {
-                    let (d, t) = agg(*k, tasks_by_epic, children);
-                    done += d;
-                    total += t;
-                }
-            }
-            (done, total)
-        }
+        let tasks_by_epic = Self::group_tasks_by_epic(&all_subtasks);
+        let children = crate::models::build_children_map(&epics);
 
         let result = epics
             .into_iter()
             .filter(|e| e.status != TaskStatus::Archived)
             .map(|e| {
-                let (done, total) = if e.group_by_repo {
-                    agg(e.id.0, &tasks_by_epic, &children)
-                } else {
-                    let subtasks = tasks_by_epic
-                        .get(&e.id.0)
-                        .map(|v| v.as_slice())
-                        .unwrap_or(&[]);
-                    (
-                        subtasks
-                            .iter()
-                            .filter(|t| t.status == TaskStatus::Done)
-                            .count(),
-                        subtasks.len(),
-                    )
-                };
+                let (done, total) = Self::epic_progress(&e, &tasks_by_epic, &children);
                 (e, done, total)
             })
             .collect();

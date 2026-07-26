@@ -17,16 +17,15 @@ impl TuiRuntime {
         cve_command: Option<String>,
         cve_interval_secs: Option<i64>,
     ) {
-        let db = &self.database;
-        let result = async {
-            db.set_reviews_feed_command(reviews_command.as_deref())
-                .await?;
-            db.set_reviews_feed_interval_secs(reviews_interval_secs)
-                .await?;
-            db.set_cve_feed_command(cve_command.as_deref()).await?;
-            db.set_cve_feed_interval_secs(cve_interval_secs).await?;
-            anyhow::Ok(())
-        }
+        let result = crate::service::write_managed_feed_settings(
+            &*self.database,
+            crate::service::ManagedFeedSettingsPatch {
+                reviews_command: Some(reviews_command),
+                reviews_interval_secs: Some(reviews_interval_secs),
+                cve_command: Some(cve_command),
+                cve_interval_secs: Some(cve_interval_secs),
+            },
+        )
         .await;
         if let Err(e) = result {
             app.update(Message::System(crate::tui::messages::SystemMessage::Error(

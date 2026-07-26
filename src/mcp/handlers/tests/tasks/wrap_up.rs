@@ -1666,7 +1666,7 @@ async fn exit_session_unknown_task_returns_error() {
     )
     .await;
 
-    assert_error(&resp, "not found");
+    assert_error(&resp, "9999");
 }
 
 #[tokio::test]

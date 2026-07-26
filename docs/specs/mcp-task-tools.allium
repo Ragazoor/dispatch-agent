@@ -202,8 +202,12 @@ rule CreateTaskViaMcp {
         -- `tools/call`) reject missing or malformed identity at the
         -- handler boundary with JSON-RPC -32600, echoing back the
         -- request's actual id.
-        -- Other validation errors: -32602 on unknown caller-task or
-        -- unknown epic_id.
+        -- An unknown caller-task is a not-found condition, not a
+        -- validation one: the shared caller-task lookup (fetch_caller_task
+        -- in src/mcp/handlers/types.rs) rejects it with -32001, the same
+        -- code every ServiceError::NotFound maps to.
+        -- An unknown epic_id is a separate, hand-rolled check that still
+        -- returns -32602 (src/mcp/handlers/tasks/dispatch.rs).
         -- Unlike the TUI CreateTask rule, this rule does not fire
         -- RecordRepoPath — MCP task creation skips repo path persistence.
         -- repo_path is expanded through expand_tilde before being

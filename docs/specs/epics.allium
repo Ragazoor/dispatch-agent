@@ -313,18 +313,26 @@ rule GetEpicViaMcp {
     requires: core/Epic.exists(epic_id)
 
     -- Returns the Epic record for epic_id along with a subtask summary
-    -- (done_count, total_count) computed from the epic's direct subtasks.
+    -- (done_count, total_count) rolled up exactly as ListEpicsViaMcp
+    -- rolls it up.
     ensures: EpicRetrieved(epic_id)
 
     @guidance
         -- Returns the epic's core fields (title, description,
         -- status, plan_path, sort_order, feed_command, feed_interval_secs,
         -- created_at, updated_at) plus a "Subtasks: D/T done" line
-        -- where D counts direct subtasks with status = done and T is
-        -- the total count of direct subtasks. Sub-epics are not counted
-        -- in the summary.
-        -- An unknown epic_id returns a -32602 validation error via
-        -- ServiceError::NotFound.
+        -- where D counts subtasks with status = done and T is the total.
+        -- The counts come from EpicService::get_epic_with_progress, which
+        -- reuses the same rollup as list_epics_with_progress
+        -- (ListEpicsViaMcp) so get_epic, list_epics and the board never
+        -- disagree: for a group_by_repo epic the tasks of all descendant
+        -- sub-epics are aggregated recursively; for any other epic only
+        -- the direct subtasks are counted. Without the shared rollup a
+        -- group_by_repo epic whose tasks all live in per-repo sub-epics
+        -- reports 0/0 here while list_epics shows the real totals.
+        -- An unknown epic_id returns ServiceError::NotFound, surfaced as
+        -- the -32001 not-found code (distinct from -32602, which means
+        -- invalid params).
 }
 
 rule ListEpicsViaMcp {

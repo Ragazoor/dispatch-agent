@@ -261,6 +261,23 @@ async fn create_task_missing_title() {
     assert!(is_error(&resp));
 }
 
+// An unknown argument name is a typo or a stale/removed field — without
+// `deny_unknown_fields` it is silently dropped instead of surfacing as an error.
+#[tokio::test]
+async fn create_task_unknown_field_returns_error() {
+    let state = test_state().await;
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "create_task",
+            "arguments": { "title": "t", "repo_path": "/repo", "bogus_field": "x" }
+        })),
+    )
+    .await;
+    assert_error(&resp, "bogus_field");
+}
+
 // -- String task_id coercion (Claude Code sends integers as strings) ------
 
 #[tokio::test]

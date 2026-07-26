@@ -143,8 +143,11 @@ rule IndexRepoViaMcp {
         -- below.
         --
         -- Resolution / errors: an omitted repo_path resolves to the calling
-        -- task's repo_path; a Session caller with no repo_path is rejected with
-        -- JSON-RPC -32602; an unknown caller-task likewise rejects with -32602.
+        -- task's repo_path; a Session caller with no repo_path is a genuine
+        -- bad-input case and is rejected with JSON-RPC -32602; an unknown
+        -- caller-task is a not-found case and rejects with -32001, the code
+        -- the shared caller-task lookup (fetch_caller_task) and every
+        -- ServiceError::NotFound use.
         -- Handled by handle_index_repo in src/mcp/handlers/repo_rag.rs and
         -- RepoIndexService::index_repo in src/service/repo_index/mod.rs (scan,
         -- chunking and embed/commit live in sibling submodules).
@@ -192,7 +195,8 @@ rule SearchDocsViaMcp {
         --
         -- Resolution / errors: identical to index_repo — omitted repo_path
         -- uses the caller task's repo; a Session caller without repo_path is
-        -- rejected with JSON-RPC -32602.
+        -- rejected with JSON-RPC -32602, and an unknown caller-task rejects
+        -- with the not-found code -32001 (same fetch_caller_task lookup).
         -- Handled by handle_search_docs in src/mcp/handlers/repo_rag.rs and
         -- RepoIndexService::search_docs in src/service/repo_index/mod.rs, which
         -- delegates scoring to score_and_rank in the search submodule.

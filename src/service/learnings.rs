@@ -5,9 +5,24 @@ use crate::models::{
     Learning, LearningId, LearningKind, LearningScope, LearningStatus, LearningVerdict,
     RetrievalSource, TaskId,
 };
-use crate::service::embeddings::{embed_text_for_learning, serialize_embedding, EmbeddingService};
+use crate::service::embeddings::{
+    deserialize_candidate_rows, embed_text_for_learning, embed_text_for_query, rag_rank_learnings,
+    serialize_embedding, EmbeddingService, RagRankParams, RAG_SIMILARITY_THRESHOLD,
+};
 
 use super::{FieldUpdate, ServiceError};
+
+// ---------------------------------------------------------------------------
+// QueryLearningsParams
+// ---------------------------------------------------------------------------
+
+pub struct QueryLearningsParams {
+    pub task_id: TaskId,
+    /// Semantic query text. `None` derives it from the task's title + description.
+    pub query: Option<String>,
+    pub tag_filter: Vec<String>,
+    pub limit: usize,
+}
 
 // ---------------------------------------------------------------------------
 // CreateLearningParams / UpdateLearningParams
@@ -260,6 +275,72 @@ impl LearningService {
             .await
             .map_err(ServiceError::from)
     }
+
+    pub async fn delete_learning(&self, id: LearningId) -> Result<(), ServiceError> {
+        let deleted = self.db.delete_learning(id).await?;
+        if !deleted {
+            return Err(ServiceError::NotFound(format!("learning {id} not found")));
+        }
+        Ok(())
+    }
+
+    /// Rank approved learnings against a task's context and record a retrieval
+    /// for each one returned, so `rate_learning` can later validate a verdict
+    /// against what was actually surfaced. Owns the fetch→embed→rank→record
+    /// orchestration so it is testable without going through JSON-RPC and is
+    /// reachable from non-MCP callers (e.g. the TUI) if ever needed.
+    pub async fn query_learnings(
+        &self,
+        params: QueryLearningsParams,
+    ) -> Result<Vec<Learning>, ServiceError> {
+        let task = self
+            .db
+            .get_task(params.task_id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("task {} not found", params.task_id)))?;
+
+        let query_text = params
+            .query
+            .unwrap_or_else(|| embed_text_for_query(&task.title, &task.description));
+        let query_vec = self
+            .embedding_service
+            .embed(query_text)
+            .await
+            .map_err(ServiceError::from)?;
+
+        let candidates_raw = self.db.list_all_approved_non_task_learnings().await?;
+        let candidates = deserialize_candidate_rows(candidates_raw);
+
+        let epic_id_str = task.epic_id.map(|e| e.0.to_string());
+        let ranked = rag_rank_learnings(
+            &candidates,
+            &RagRankParams {
+                query_vec: &query_vec,
+                task_epic_id: epic_id_str.as_deref(),
+                task_repo: Some(task.repo_path.as_str()),
+                threshold: RAG_SIMILARITY_THRESHOLD,
+                tag_filter: &params.tag_filter,
+                limit: params.limit,
+            },
+        );
+
+        for l in &ranked {
+            if let Err(e) = self
+                .db
+                .record_retrieval(params.task_id, l.id, RetrievalSource::QueryLearnings)
+                .await
+            {
+                tracing::warn!(
+                    task_id = params.task_id.0,
+                    learning_id = l.id.0,
+                    error = ?e,
+                    "failed to record learning retrieval"
+                );
+            }
+        }
+
+        Ok(ranked.into_iter().cloned().collect())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -271,7 +352,7 @@ mod learning_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use std::sync::Arc;
 
-    use super::{CreateLearningParams, LearningService, UpdateLearningParams};
+    use super::{CreateLearningParams, LearningService, QueryLearningsParams, UpdateLearningParams};
     use crate::db::{CreateTaskRequest, Database, TaskStore};
     use crate::models::{
         LearningId, LearningKind, LearningScope, LearningStatus, LearningVerdict, RetrievalSource,
@@ -563,6 +644,65 @@ mod learning_tests {
         let (svc, db) = service_with_db().await;
         let task_id = seed_task(&db).await;
         svc.apply_verdicts(task_id, vec![]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_learning_removes_entry() {
+        let svc = service().await;
+        let id = seed_approved_learning(&svc).await;
+        svc.delete_learning(id).await.unwrap();
+        let err = svc.get_learning(id).await.unwrap_err();
+        assert!(matches!(err, ServiceError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_learning_not_found_returns_error() {
+        let svc = service().await;
+        let err = svc.delete_learning(LearningId(99999)).await.unwrap_err();
+        assert!(matches!(err, ServiceError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn query_learnings_ranks_and_records_retrieval() {
+        let (svc, db) = service_with_db().await;
+        let task_id = seed_task(&db).await;
+        let learning_id = seed_approved_learning(&svc).await;
+
+        let ranked = svc
+            .query_learnings(QueryLearningsParams {
+                task_id,
+                query: Some("A convention".to_string()),
+                tag_filter: vec![],
+                limit: 10,
+            })
+            .await
+            .unwrap();
+
+        assert!(
+            ranked.iter().any(|l| l.id == learning_id),
+            "expected the seeded learning among ranked results"
+        );
+
+        let retrievals = db.list_retrievals_for_task(task_id).await.unwrap();
+        assert!(
+            retrievals.iter().any(|r| r.learning_id == learning_id),
+            "query_learnings must record a retrieval for each ranked learning"
+        );
+    }
+
+    #[tokio::test]
+    async fn query_learnings_unknown_task_returns_error() {
+        let svc = service().await;
+        let err = svc
+            .query_learnings(QueryLearningsParams {
+                task_id: TaskId(99999),
+                query: Some("q".to_string()),
+                tag_filter: vec![],
+                limit: 10,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::NotFound(_)));
     }
 
     #[tokio::test]

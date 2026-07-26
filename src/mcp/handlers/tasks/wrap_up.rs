@@ -7,7 +7,8 @@ use crate::models::{SubStatus, Task, TaskId, TaskStatus};
 use crate::service::{FieldUpdate, UpdateTaskParams};
 
 use super::{
-    parse_args, service_err_to_response, ExitSessionArgs, JsonRpcResponse, WrapUpAction, WrapUpArgs,
+    fetch_caller_task, parse_args, service_err_to_response, ExitSessionArgs, JsonRpcResponse,
+    WrapUpAction, WrapUpArgs,
 };
 
 const ERR_NO_TOKEN: &str = "no exit token — call wrap_up first";
@@ -275,12 +276,9 @@ pub(crate) async fn handle_exit_session(
     };
     let task_id = TaskId(parsed.task_id);
 
-    let task = match state.db.get_task(task_id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
-            return JsonRpcResponse::err(id, -32602, format!("task #{} not found", parsed.task_id))
-        }
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("internal error: {e}")),
+    let task = match fetch_caller_task(&*state.db, &id, task_id).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
     };
 
     let token = match parsed.token {

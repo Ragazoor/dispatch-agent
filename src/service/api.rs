@@ -289,6 +289,11 @@ macro_rules! epic_service_api {
                 epic_id: $crate::models::EpicId
             ) -> Result<($crate::models::Epic, Vec<$crate::models::Task>), $crate::service::ServiceError>;
 
+            async fn get_epic_with_progress(
+                &self,
+                epic_id: $crate::models::EpicId
+            ) -> Result<($crate::models::Epic, usize, usize), $crate::service::ServiceError>;
+
             async fn list_epics(
                 &self
             ) -> Result<Vec<$crate::models::Epic>, $crate::service::ServiceError>;
@@ -446,6 +451,16 @@ macro_rules! learning_service_api {
                 &self,
                 cutoff: chrono::DateTime<chrono::Utc>
             ) -> Result<u64, $crate::service::ServiceError>;
+
+            async fn delete_learning(
+                &self,
+                id: $crate::models::LearningId
+            ) -> Result<(), $crate::service::ServiceError>;
+
+            async fn query_learnings(
+                &self,
+                params: $crate::service::QueryLearningsParams
+            ) -> Result<Vec<$crate::models::Learning>, $crate::service::ServiceError>;
         }
     };
 }

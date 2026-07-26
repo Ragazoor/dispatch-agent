@@ -4,16 +4,19 @@ use serde_json::{json, Value};
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
 use crate::service::repo_index::{RepoIndexService, BATCH_SIZE};
+use crate::service::ServiceError;
 
-use super::types::{parse_args, tool_error, JsonRpcResponse};
+use super::types::{fetch_caller_task, parse_args, service_err_to_response, tool_error, JsonRpcResponse};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct IndexRepoArgs {
     #[serde(default)]
     pub(super) repo_path: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SearchDocsArgs {
     pub(super) query: String,
     #[serde(default)]
@@ -32,27 +35,17 @@ async fn resolve_repo_path(
         return Ok(std::path::PathBuf::from(crate::models::expand_tilde(&p)));
     }
     let CallerIdentity::Task(tid) = identity else {
-        return Err(JsonRpcResponse::err(
+        return Err(service_err_to_response(
             id.clone(),
-            -32602,
-            "repo_path is required when called outside a task session",
+            ServiceError::Validation(
+                "repo_path is required when called outside a task session".to_string(),
+            ),
         ));
     };
-    match state.db.get_task(*tid).await {
-        Ok(Some(t)) => Ok(std::path::PathBuf::from(crate::models::expand_tilde(
-            &t.repo_path,
-        ))),
-        Ok(None) => Err(JsonRpcResponse::err(
-            id.clone(),
-            -32602,
-            format!("task {} not found — pass repo_path explicitly", tid.0),
-        )),
-        Err(e) => Err(JsonRpcResponse::err(
-            id.clone(),
-            -32603,
-            format!("db error: {e}"),
-        )),
-    }
+    let task = fetch_caller_task(&*state.db, id, *tid).await?;
+    Ok(std::path::PathBuf::from(crate::models::expand_tilde(
+        &task.repo_path,
+    )))
 }
 
 pub(super) async fn handle_index_repo(

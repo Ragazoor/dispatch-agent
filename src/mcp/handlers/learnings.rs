@@ -5,17 +5,12 @@ use crate::db::LearningFilter;
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
 use crate::models::{
-    LearningId, LearningKind, LearningScope, LearningStatus, LearningVerdict, RetrievalSource,
-    TaskId,
+    LearningId, LearningKind, LearningScope, LearningStatus, LearningVerdict, TaskId,
 };
 
 use super::types::{
-    deserialize_flexible_i64, deserialize_optional_flexible_i64, parse_args,
+    deserialize_flexible_i64, deserialize_optional_flexible_i64, fetch_caller_task, parse_args,
     service_err_to_response, JsonRpcResponse,
-};
-use crate::service::embeddings::{
-    deserialize_candidate_rows, embed_text_for_query, rag_rank_learnings, RagRankParams,
-    RAG_SIMILARITY_THRESHOLD,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,6 +18,7 @@ use crate::service::embeddings::{
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct RecordLearningArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
@@ -38,6 +34,7 @@ pub(super) struct RecordLearningArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct QueryLearningsArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
@@ -54,6 +51,7 @@ pub(super) struct QueryLearningsArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct RateLearningArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) learning_id: i64,
@@ -63,6 +61,7 @@ pub(super) struct RateLearningArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct DeleteLearningArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) learning_id: i64,
@@ -84,10 +83,9 @@ pub(super) async fn handle_record_learning(
     };
 
     let task_id = crate::models::TaskId(parsed.task_id);
-    let task = match state.db.get_task(task_id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => return JsonRpcResponse::err(id, -32602, format!("task {task_id} not found")),
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("database error: {e}")),
+    let task = match fetch_caller_task(&*state.db, &id, task_id).await {
+        Ok(t) => t,
+        Err(resp) => return resp,
     };
 
     let scope_ref = match parsed.scope_ref {
@@ -98,10 +96,11 @@ pub(super) async fn handle_record_learning(
             LearningScope::Epic => match task.epic_id {
                 Some(eid) => Some(eid.0.to_string()),
                 None => {
-                    return JsonRpcResponse::err(
+                    return service_err_to_response(
                         id,
-                        -32602,
-                        "scope=epic requires the task to belong to an epic".to_string(),
+                        crate::service::ServiceError::Validation(
+                            "scope=epic requires the task to belong to an epic".to_string(),
+                        ),
                     )
                 }
             },
@@ -187,59 +186,21 @@ pub(super) async fn handle_query_learnings(
     };
 
     let task_id = crate::models::TaskId(parsed.task_id);
-    let task = match state.db.get_task(task_id).await {
-        Ok(Some(t)) => t,
-        Ok(None) => return JsonRpcResponse::err(id, -32602, format!("task {task_id} not found")),
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("database error: {e}")),
-    };
-
-    let query_text = match parsed.query {
-        Some(q) => q,
-        None => embed_text_for_query(&task.title, &task.description),
-    };
-
-    let query_vec = match state.embedding_service.embed(query_text).await {
-        Ok(v) => v,
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("embedding error: {e}")),
-    };
-
-    let candidates_raw = match state.db.list_all_approved_non_task_learnings().await {
-        Ok(c) => c,
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("database error: {e}")),
-    };
-
-    let candidates = deserialize_candidate_rows(candidates_raw);
-
-    let tag_filter = parsed.tag_filter.unwrap_or_default();
     let limit = parsed.limit.unwrap_or(50).min(50) as usize;
 
-    let epic_id_str = task.epic_id.map(|e| e.0.to_string());
-    let ranked = rag_rank_learnings(
-        &candidates,
-        &RagRankParams {
-            query_vec: &query_vec,
-            task_epic_id: epic_id_str.as_deref(),
-            task_repo: Some(task.repo_path.as_str()),
-            threshold: RAG_SIMILARITY_THRESHOLD,
-            tag_filter: &tag_filter,
+    let ranked = match state
+        .learning_svc
+        .query_learnings(crate::service::QueryLearningsParams {
+            task_id,
+            query: parsed.query,
+            tag_filter: parsed.tag_filter.unwrap_or_default(),
             limit,
-        },
-    );
-
-    for l in &ranked {
-        if let Err(e) = state
-            .db
-            .record_retrieval(task_id, l.id, RetrievalSource::QueryLearnings)
-            .await
-        {
-            tracing::warn!(
-                task_id = task_id.0,
-                learning_id = l.id.0,
-                error = ?e,
-                "failed to record learning retrieval"
-            );
-        }
-    }
+        })
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => return service_err_to_response(id, e),
+    };
 
     if ranked.is_empty() {
         return JsonRpcResponse::ok(
@@ -335,8 +296,8 @@ pub(super) async fn handle_delete_learning(
 
     tracing::info!(learning_id = learning_id.0, "MCP delete_learning");
 
-    match state.db.delete_learning(learning_id).await {
-        Ok(true) => JsonRpcResponse::ok(
+    match state.learning_svc.delete_learning(learning_id).await {
+        Ok(()) => JsonRpcResponse::ok(
             id,
             json!({
                 "content": [{
@@ -345,9 +306,6 @@ pub(super) async fn handle_delete_learning(
                 }]
             }),
         ),
-        Ok(false) => {
-            JsonRpcResponse::err(id, -32602, format!("learning {} not found", learning_id.0))
-        }
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("database error: {e}")),
+        Err(e) => service_err_to_response(id, e),
     }
 }

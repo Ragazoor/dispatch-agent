@@ -177,6 +177,40 @@ pub async fn read_managed_feed_settings(
     })
 }
 
+/// Partial update for the four managed-feed settings: absent (`None`) leaves
+/// a field unchanged, `Some(None)` clears it, `Some(Some(v))` sets it. A named
+/// struct (rather than four positional double-Option params) so the two
+/// `(command, interval)` pairs can't be transposed at a call site — mirrors
+/// the read-side [`ManagedFeedSettings`].
+#[derive(Debug, Clone, Default)]
+pub struct ManagedFeedSettingsPatch {
+    pub reviews_command: Option<Option<String>>,
+    pub reviews_interval_secs: Option<Option<i64>>,
+    pub cve_command: Option<Option<String>>,
+    pub cve_interval_secs: Option<Option<i64>>,
+}
+
+/// Persist only the provided managed-feed settings fields, leaving any absent
+/// field unchanged. Mirrors [`read_managed_feed_settings`] for the write side.
+pub async fn write_managed_feed_settings(
+    db: &dyn crate::db::SettingsStore,
+    patch: ManagedFeedSettingsPatch,
+) -> Result<()> {
+    if let Some(v) = patch.reviews_command {
+        db.set_reviews_feed_command(v.as_deref()).await?;
+    }
+    if let Some(v) = patch.reviews_interval_secs {
+        db.set_reviews_feed_interval_secs(v).await?;
+    }
+    if let Some(v) = patch.cve_command {
+        db.set_cve_feed_command(v.as_deref()).await?;
+    }
+    if let Some(v) = patch.cve_interval_secs {
+        db.set_cve_feed_interval_secs(v).await?;
+    }
+    Ok(())
+}
+
 /// Read the managed-feed settings and provision accordingly. This is the
 /// startup entry point (called from `run_tui`), also exercised directly in
 /// tests. A no-op when neither command is configured.
@@ -342,5 +376,55 @@ mod tests {
         );
         let parent = by_role(&epics, FeedRole::ReviewsParent)[0];
         assert_eq!(parent.feed_command.as_deref(), Some(REVIEWS));
+    }
+
+    #[tokio::test]
+    async fn write_managed_feed_settings_updates_only_provided_fields() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.set_cve_feed_command(Some("/existing.sh")).await.unwrap();
+
+        write_managed_feed_settings(
+            &db,
+            ManagedFeedSettingsPatch {
+                reviews_command: Some(Some(REVIEWS.to_string())),
+                reviews_interval_secs: Some(Some(300)),
+                cve_command: None,
+                cve_interval_secs: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.get_reviews_feed_command().await.unwrap().as_deref(),
+            Some(REVIEWS)
+        );
+        assert_eq!(db.get_reviews_feed_interval_secs().await.unwrap(), Some(300));
+        assert_eq!(
+            db.get_cve_feed_command().await.unwrap().as_deref(),
+            Some("/existing.sh"),
+            "absent field must be left unchanged"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_managed_feed_settings_clears_on_explicit_none() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.set_reviews_feed_command(Some(REVIEWS)).await.unwrap();
+
+        write_managed_feed_settings(
+            &db,
+            ManagedFeedSettingsPatch {
+                reviews_command: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            db.get_reviews_feed_command().await.unwrap().is_none(),
+            "Some(None) must clear the setting"
+        );
     }
 }

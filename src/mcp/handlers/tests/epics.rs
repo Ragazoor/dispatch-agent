@@ -100,6 +100,76 @@ async fn get_epic_not_found() {
     assert_error(&resp, "not found");
 }
 
+// `get_epic` must agree with `list_epics` on a `group_by_repo` epic's progress —
+// both roll up descendant sub-epics rather than counting only direct subtasks.
+#[tokio::test]
+async fn get_epic_matches_list_epics_progress_for_grouped_epic() {
+    let state = test_state().await;
+    let root = state
+        .db_write()
+        .create_epic("Grouped Root", "", None)
+        .await
+        .unwrap();
+    state
+        .db_write()
+        .patch_epic(root.id, &db::EpicPatch::new().group_by_repo(true))
+        .await
+        .unwrap();
+    let sub = state
+        .db_write()
+        .create_repo_group_sub_epic(root.id, "alpha")
+        .await
+        .unwrap();
+    state
+        .db_write()
+        .create_task(CreateTaskRequest {
+            title: "t",
+            description: "",
+            repo_path: "/x/alpha",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: Some(sub),
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+
+    let list_resp = call(
+        &state,
+        "tools/call",
+        Some(json!({ "name": "list_epics", "arguments": {} })),
+    )
+    .await;
+    let list_text = extract_response_text(&list_resp);
+    let list_line = list_text
+        .lines()
+        .find(|l| l.contains("Grouped Root"))
+        .expect("list_epics should show Grouped Root");
+    assert!(
+        list_line.contains("0/1 done"),
+        "list_epics should aggregate the sub-epic's task: {list_line}"
+    );
+
+    let get_resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "get_epic",
+            "arguments": { "epic_id": root.id.0 }
+        })),
+    )
+    .await;
+    let get_text = extract_response_text(&get_resp);
+    assert!(
+        get_text.contains("0/1 done"),
+        "get_epic should match list_epics' rollup (0/1 done), got: {get_text}"
+    );
+}
+
 #[tokio::test]
 async fn get_epic_shows_subtask_summary() {
     let state = test_state().await;
@@ -708,7 +778,6 @@ async fn mcp_create_sub_epic() {
             "name": "create_epic",
             "arguments": {
                 "title": "Sub Epic",
-                "repo_path": "/tmp",
                 "description": "child",
                 "parent_epic_id": parent.id.0
             }
@@ -911,5 +980,46 @@ async fn create_epic_tool_schema_includes_parent_epic_id() {
     assert!(
         props.get("parent_epic_id").is_some(),
         "create_epic schema is missing parent_epic_id property"
+    );
+}
+
+// `Epic` has had no `repo_path` column since migration `v61_drop_epic_repo_path`,
+// and `CreateEpicArgs`/`UpdateEpicArgs` have never carried the field — a schema
+// that requires or accepts it makes every caller invent a value that is discarded.
+#[tokio::test]
+async fn create_epic_schema_excludes_repo_path() {
+    let state = test_state().await;
+    let resp = call(&state, "tools/list", None).await;
+    let tools = resp.result.as_ref().unwrap()["tools"].as_array().unwrap();
+    let create_epic = tools
+        .iter()
+        .find(|t| t["name"] == "create_epic")
+        .expect("create_epic not in tool list");
+    let schema = &create_epic["inputSchema"];
+    assert!(
+        schema["properties"].get("repo_path").is_none(),
+        "create_epic schema should not declare repo_path — CreateEpicArgs has no such field"
+    );
+    let required = schema["required"].as_array().unwrap();
+    assert!(
+        !required.iter().any(|v| v == "repo_path"),
+        "create_epic schema should not require repo_path"
+    );
+}
+
+#[tokio::test]
+async fn update_epic_schema_excludes_repo_path() {
+    let state = test_state().await;
+    let resp = call(&state, "tools/list", None).await;
+    let tools = resp.result.as_ref().unwrap()["tools"].as_array().unwrap();
+    let update_epic = tools
+        .iter()
+        .find(|t| t["name"] == "update_epic")
+        .expect("update_epic not in tool list");
+    assert!(
+        update_epic["inputSchema"]["properties"]
+            .get("repo_path")
+            .is_none(),
+        "update_epic schema should not declare repo_path — UpdateEpicArgs has no such field"
     );
 }

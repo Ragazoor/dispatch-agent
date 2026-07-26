@@ -3,12 +3,15 @@ use serde_json::{json, Value};
 
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
+use crate::service::ServiceError;
 
 use super::types::{
-    deserialize_nullable_flexible_i64, deserialize_nullable_string, parse_args, JsonRpcResponse,
+    deserialize_nullable_flexible_i64, deserialize_nullable_string, parse_args,
+    service_err_to_response, JsonRpcResponse,
 };
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SetManagedFeedConfigArgs {
     #[serde(default, deserialize_with = "deserialize_nullable_string")]
     pub(super) reviews_command: Option<Option<String>>,
@@ -62,10 +65,9 @@ pub(super) async fn handle_get_managed_feed_config(
     tracing::info!("MCP get_managed_feed_config");
     match config_summary(state, "Managed-feed config:").await {
         Ok(text) => JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]})),
-        Err(e) => JsonRpcResponse::err(
+        Err(e) => service_err_to_response(
             id,
-            -32603,
-            format!("failed to read managed feed config: {e}"),
+            ServiceError::Internal(e.context("failed to read managed feed config")),
         ),
     }
 }
@@ -89,33 +91,29 @@ pub(super) async fn handle_set_managed_feed_config(
     ] {
         if let Some(Some(n)) = field {
             if n < 0 {
-                return JsonRpcResponse::err(id, -32602, format!("{label} must be >= 0"));
+                return service_err_to_response(
+                    id,
+                    ServiceError::Validation(format!("{label} must be >= 0")),
+                );
             }
         }
     }
 
     // Persist only the provided fields; an omitted field (None) is left as-is.
-    let write = async {
-        if let Some(v) = &parsed.reviews_command {
-            state.db.set_reviews_feed_command(v.as_deref()).await?;
-        }
-        if let Some(v) = parsed.reviews_interval_secs {
-            state.db.set_reviews_feed_interval_secs(v).await?;
-        }
-        if let Some(v) = &parsed.cve_command {
-            state.db.set_cve_feed_command(v.as_deref()).await?;
-        }
-        if let Some(v) = parsed.cve_interval_secs {
-            state.db.set_cve_feed_interval_secs(v).await?;
-        }
-        anyhow::Ok(())
-    }
+    let write = crate::service::write_managed_feed_settings(
+        &*state.db,
+        crate::service::ManagedFeedSettingsPatch {
+            reviews_command: parsed.reviews_command,
+            reviews_interval_secs: parsed.reviews_interval_secs,
+            cve_command: parsed.cve_command,
+            cve_interval_secs: parsed.cve_interval_secs,
+        },
+    )
     .await;
     if let Err(e) = write {
-        return JsonRpcResponse::err(
+        return service_err_to_response(
             id,
-            -32603,
-            format!("failed to persist managed feed config: {e}"),
+            ServiceError::Internal(e.context("failed to persist managed feed config")),
         );
     }
 
@@ -123,19 +121,14 @@ pub(super) async fn handle_set_managed_feed_config(
     let settings = match crate::service::read_managed_feed_settings(&*state.db).await {
         Ok(s) => s,
         Err(e) => {
-            return JsonRpcResponse::err(
+            return service_err_to_response(
                 id,
-                -32603,
-                format!("failed to read managed feed settings: {e}"),
+                ServiceError::Internal(e.context("failed to read managed feed settings")),
             );
         }
     };
     if let Err(e) = state.epic_svc.provision_managed_feeds(settings).await {
-        return JsonRpcResponse::err(
-            id,
-            -32603,
-            format!("failed to provision managed feeds: {e}"),
-        );
+        return service_err_to_response(id, e);
     }
     state.notify();
 

@@ -27,11 +27,6 @@ use crate::process::{MockProcessRunner, ProcessRunner};
 use crate::service::embeddings::{serialize_embedding, EmbeddingService};
 
 use super::dispatch::{handle_mcp, tool_definitions};
-use super::epics::{CreateEpicArgs, GetEpicArgs, UpdateEpicArgs};
-use super::tasks::{
-    ClaimTaskArgs, CreateTaskWithEpicArgs, DispatchNextArgs, ExitSessionArgs, GetTaskArgs,
-    ListTasksArgs, SendMessageArgs, UpdateTaskArgs, WrapUpArgs,
-};
 use super::types::{JsonRpcRequest, JsonRpcResponse};
 
 async fn test_state() -> Arc<McpState> {
@@ -444,358 +439,127 @@ async fn tools_call_with_conflict_identity_returns_invalid_request() {
     assert_eq!(resp.id, Some(json!(1)));
 }
 
-/// Validates that JSON schemas in `tool_definitions()` match the argument structs.
-/// Catches drift when a field is added/removed from a struct but not the schema
-/// (or vice versa). The `expected_props` lists must be kept in sync with struct
-/// fields — if you add a field to a struct, add it here too; the test then fails
-/// if the schema wasn't also updated.
+/// Every tool's schema is internally consistent: `required` only lists names
+/// that are actually declared in `properties`. A required-but-undeclared field
+/// (the shape of the `repo_path` defect: schema said "required" for a field no
+/// struct backs) would slip past `deny_unknown_fields`, since that attribute
+/// only rejects fields present in a *request*, not fields the schema
+/// over-promises without a request ever mentioning them.
 #[tokio::test]
-async fn tool_schemas_match_arg_structs() {
-    use std::collections::BTreeSet;
-
+async fn tool_schemas_have_consistent_required_fields() {
     let defs = tool_definitions();
     let tools_arr = defs["tools"].as_array().unwrap();
-    let tools: std::collections::HashMap<&str, &Value> = tools_arr
-        .iter()
-        .map(|t| (t["name"].as_str().unwrap(), t))
-        .collect();
 
-    fn schema_props(tool: &Value) -> (BTreeSet<&str>, BTreeSet<&str>) {
+    for tool in tools_arr {
+        let name = tool["name"].as_str().unwrap();
         let schema = &tool["inputSchema"];
-        let props: BTreeSet<&str> = schema["properties"]
+        let props = schema["properties"]
             .as_object()
-            .unwrap()
-            .keys()
-            .map(|k| k.as_str())
-            .collect();
-        let required: BTreeSet<&str> = schema
+            .unwrap_or_else(|| panic!("{name}: inputSchema.properties must be an object"));
+        let required = schema
             .get("required")
             .and_then(Value::as_array)
-            .map(|arr| arr.iter().map(|v| v.as_str().unwrap()).collect())
+            .cloned()
             .unwrap_or_default();
-        (props, required)
+        for field in &required {
+            let field = field.as_str().unwrap();
+            assert!(
+                props.contains_key(field),
+                "{name}: '{field}' is required but not declared in properties"
+            );
+        }
     }
+}
 
-    // (tool_name, expected_properties, expected_required, full_payload)
-    // expected_properties MUST match the struct fields — update when structs change.
-    let cases: Vec<(&str, BTreeSet<&str>, BTreeSet<&str>, Value)> = vec![
-        (
-            "update_task",
-            BTreeSet::from([
-                "task_id",
-                "status",
-                "plan_path",
-                "title",
-                "description",
-                "repo_path",
-                "sort_order",
-                "url",
-                "url_type",
-                "tag",
-                "sub_status",
-                "epic_id",
-                "base_branch",
-                "wrap_up_mode",
-                "auto_run_plan",
-            ]),
-            BTreeSet::from(["task_id"]),
-            json!({"task_id": 1, "status": "review", "plan_path": "/p.md", "title": "t", "description": "d", "repo_path": "/r", "sort_order": 100, "url": "https://github.com/org/repo/pull/1", "url_type": "pr", "tag": "bug", "sub_status": "awaiting_review", "epic_id": 5}),
-        ),
-        (
-            "get_task",
-            BTreeSet::from(["task_id"]),
-            BTreeSet::from(["task_id"]),
-            json!({"task_id": 1}),
-        ),
-        (
-            "create_task",
-            BTreeSet::from([
-                "title",
-                "repo_path",
-                "description",
-                "plan_path",
-                "epic_id",
-                "sort_order",
-                "tag",
-                "base_branch",
-                "wrap_up_mode",
-                "auto_run_plan",
-            ]),
-            BTreeSet::from(["title", "repo_path"]),
-            json!({"title": "t", "repo_path": "/r", "description": "d", "plan_path": "/p.md", "sort_order": 10, "tag": "feature"}),
-        ),
-        (
-            "list_tasks",
-            BTreeSet::from(["status", "epic_id", "repo_paths"]),
-            BTreeSet::new(),
-            json!({"status": "backlog", "epic_id": 1, "repo_paths": ["/r"]}),
-        ),
+/// Every MCP arg struct carries `#[serde(deny_unknown_fields)]`, so a stray or
+/// stale argument (like the discarded `repo_path` on `create_epic`) surfaces
+/// as a JSON-RPC error instead of being silently dropped. This exercises every
+/// registered tool with a minimal valid payload plus one bogus field — the
+/// per-field/per-value behaviour of each struct is covered by that handler's
+/// own tests elsewhere in this suite.
+///
+/// `list_epics` and `get_managed_feed_config` are intentionally absent: both
+/// take zero arguments and their handlers never parse `args` at all, so there
+/// is no struct for `deny_unknown_fields` to guard.
+#[tokio::test]
+async fn every_tool_with_args_rejects_unknown_field() {
+    let state = test_state().await;
+
+    let payloads: &[(&str, Value)] = &[
+        ("update_task", json!({"task_id": 1})),
+        ("get_task", json!({"task_id": 1})),
+        ("create_task", json!({"title": "t", "repo_path": "/r"})),
+        ("list_tasks", json!({})),
         (
             "claim_task",
-            BTreeSet::from(["task_id", "worktree", "tmux_window"]),
-            BTreeSet::from(["task_id", "worktree", "tmux_window"]),
             json!({"task_id": 1, "worktree": "/w", "tmux_window": "tw"}),
         ),
-        (
-            "create_epic",
-            BTreeSet::from([
-                "title",
-                "repo_path",
-                "description",
-                "sort_order",
-                "parent_epic_id",
-            ]),
-            BTreeSet::from(["title", "repo_path"]),
-            json!({"title": "Epic", "repo_path": "/repo", "sort_order": 5}),
-        ),
-        (
-            "get_epic",
-            BTreeSet::from(["epic_id"]),
-            BTreeSet::from(["epic_id"]),
-            json!({"epic_id": 1}),
-        ),
-        ("list_epics", BTreeSet::new(), BTreeSet::new(), json!({})),
-        (
-            "update_epic",
-            BTreeSet::from([
-                "epic_id",
-                "title",
-                "description",
-                "status",
-                "plan_path",
-                "sort_order",
-                "repo_path",
-                "feed_command",
-                "feed_interval_secs",
-                "group_by_repo",
-                "parent_epic_id",
-            ]),
-            BTreeSet::from(["epic_id"]),
-            json!({"epic_id": 1, "plan_path": "docs/plan.md", "sort_order": 42, "repo_path": "/new/path"}),
-        ),
-        (
-            "wrap_up",
-            BTreeSet::from(["task_id", "action"]),
-            BTreeSet::from(["task_id", "action"]),
-            json!({"task_id": 1, "action": "rebase"}),
-        ),
+        ("create_epic", json!({"title": "t"})),
+        ("get_epic", json!({"epic_id": 1})),
+        ("update_epic", json!({"epic_id": 1})),
+        ("wrap_up", json!({"task_id": 1, "action": "rebase"})),
+        ("dispatch_next", json!({"epic_id": 1})),
+        ("dispatch_task", json!({"task_id": 1})),
         (
             "send_message",
-            BTreeSet::from(["from_task_id", "to_task_id", "body"]),
-            BTreeSet::from(["from_task_id", "to_task_id", "body"]),
-            json!({"from_task_id": 1, "to_task_id": 2, "body": "Hello from task 1"}),
+            json!({"from_task_id": 1, "to_task_id": 2, "body": "hi"}),
         ),
         (
             "subscribe_to_task",
-            BTreeSet::from(["watcher_task_id", "target_task_id"]),
-            BTreeSet::from(["watcher_task_id", "target_task_id"]),
             json!({"watcher_task_id": 1, "target_task_id": 2}),
         ),
         (
             "unsubscribe_from_task",
-            BTreeSet::from(["watcher_task_id", "target_task_id"]),
-            BTreeSet::from(["watcher_task_id", "target_task_id"]),
             json!({"watcher_task_id": 1, "target_task_id": 2}),
         ),
         (
-            "dispatch_next",
-            BTreeSet::from(["epic_id"]),
-            BTreeSet::from(["epic_id"]),
-            json!({"epic_id": 1}),
-        ),
-        (
-            "dispatch_task",
-            BTreeSet::from(["task_id"]),
-            BTreeSet::from(["task_id"]),
-            json!({"task_id": 1}),
-        ),
-        (
             "record_learning",
-            BTreeSet::from([
-                "task_id",
-                "kind",
-                "summary",
-                "scope",
-                "detail",
-                "scope_ref",
-                "tags",
-            ]),
-            BTreeSet::from(["task_id", "kind", "summary", "scope"]),
-            json!({"task_id": 1, "kind": "pitfall", "summary": "Watch out", "scope": "user"}),
+            json!({"task_id": 1, "kind": "pitfall", "summary": "s", "scope": "user"}),
         ),
-        (
-            "query_learnings",
-            BTreeSet::from(["task_id", "query", "tag_filter", "limit"]),
-            BTreeSet::from(["task_id"]),
-            json!({"task_id": 1}),
-        ),
+        ("query_learnings", json!({"task_id": 1})),
         (
             "rate_learning",
-            BTreeSet::from(["learning_id", "task_id", "verdict"]),
-            BTreeSet::from(["learning_id", "task_id", "verdict"]),
             json!({"learning_id": 1, "task_id": 1, "verdict": "helped"}),
         ),
-        (
-            "delete_learning",
-            BTreeSet::from(["learning_id"]),
-            BTreeSet::from(["learning_id"]),
-            json!({"learning_id": 1}),
-        ),
-        (
-            "set_verify_command",
-            BTreeSet::from(["repo_path", "command"]),
-            BTreeSet::from(["repo_path"]),
-            json!({"repo_path": "/repo"}),
-        ),
+        ("delete_learning", json!({"learning_id": 1})),
+        ("set_verify_command", json!({"repo_path": "/r"})),
         (
             "exit_session",
-            BTreeSet::from(["task_id", "token", "action", "pr_url"]),
-            BTreeSet::from(["task_id", "token", "action"]),
-            json!({"task_id": 1, "token": "tok", "action": "rebase"}),
+            json!({"task_id": 1, "token": "t", "action": "rebase"}),
         ),
-        (
-            "index_repo",
-            BTreeSet::from(["repo_path"]),
-            BTreeSet::new(),
-            json!({"repo_path": "/some/path"}),
-        ),
-        (
-            "search_docs",
-            BTreeSet::from(["query", "repo_path", "limit"]),
-            BTreeSet::from(["query"]),
-            json!({"query": "escalation patterns"}),
-        ),
-        (
-            "get_managed_feed_config",
-            BTreeSet::new(),
-            BTreeSet::new(),
-            json!({}),
-        ),
-        (
-            "set_managed_feed_config",
-            BTreeSet::from([
-                "reviews_command",
-                "reviews_interval_secs",
-                "cve_command",
-                "cve_interval_secs",
-            ]),
-            BTreeSet::new(),
-            json!({}),
-        ),
-        (
-            "query_usage",
-            BTreeSet::from(["category", "actor", "since", "limit"]),
-            BTreeSet::new(),
-            json!({"category": "mcp_tool", "actor": "human", "since": "2026-01-01T00:00:00Z", "limit": 25}),
-        ),
+        ("index_repo", json!({})),
+        ("search_docs", json!({"query": "q"})),
+        ("set_managed_feed_config", json!({})),
+        ("query_usage", json!({})),
     ];
 
-    // Verify we cover exactly the tools that exist
-    let expected_names: BTreeSet<&str> = cases.iter().map(|(name, _, _, _)| *name).collect();
-    let actual_names: BTreeSet<&str> = tools.keys().copied().collect();
+    let no_arg_tools = ["list_epics", "get_managed_feed_config"];
+    let covered: std::collections::BTreeSet<&str> =
+        payloads.iter().map(|(n, _)| *n).chain(no_arg_tools).collect();
+    let all_tools: std::collections::BTreeSet<&str> =
+        super::dispatch::TOOL_NAMES.iter().copied().collect();
     assert_eq!(
-        actual_names, expected_names,
-        "Tool list mismatch — update this test when adding/removing tools"
+        covered, all_tools,
+        "every registered tool must appear either in `payloads` or `no_arg_tools`"
     );
 
-    for (name, exp_props, exp_required, payload) in &cases {
-        let tool = tools[name];
-        let (actual_props, actual_required) = schema_props(tool);
+    for (name, base_args) in payloads {
+        let mut args = base_args.clone();
+        args.as_object_mut()
+            .unwrap()
+            .insert("__bogus_unknown_field__".to_string(), json!(true));
 
-        assert_eq!(&actual_props, exp_props, "Property mismatch for '{name}'");
-        assert_eq!(
-            &actual_required, exp_required,
-            "Required field mismatch for '{name}'"
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({ "name": name, "arguments": args })),
+        )
+        .await;
+        assert!(
+            is_error(&resp),
+            "tool '{name}' should reject an unknown argument, got: {:?}",
+            resp.result
         );
-
-        // Verify the full payload deserializes into the struct
-        match *name {
-            "update_task" => {
-                serde_json::from_value::<UpdateTaskArgs>(payload.clone()).unwrap();
-            }
-            "get_task" => {
-                serde_json::from_value::<GetTaskArgs>(payload.clone()).unwrap();
-            }
-            "create_task" => {
-                serde_json::from_value::<CreateTaskWithEpicArgs>(payload.clone()).unwrap();
-            }
-            "list_tasks" => {
-                serde_json::from_value::<ListTasksArgs>(payload.clone()).unwrap();
-            }
-            "claim_task" => {
-                serde_json::from_value::<ClaimTaskArgs>(payload.clone()).unwrap();
-            }
-            "create_epic" => {
-                serde_json::from_value::<CreateEpicArgs>(payload.clone()).unwrap();
-            }
-            "get_epic" => {
-                serde_json::from_value::<GetEpicArgs>(payload.clone()).unwrap();
-            }
-            "list_epics" => {} // no args
-            "update_epic" => {
-                serde_json::from_value::<UpdateEpicArgs>(payload.clone()).unwrap();
-            }
-            "wrap_up" => {
-                serde_json::from_value::<WrapUpArgs>(payload.clone()).unwrap();
-            }
-            "send_message" => {
-                serde_json::from_value::<SendMessageArgs>(payload.clone()).unwrap();
-            }
-            "subscribe_to_task" => {
-                serde_json::from_value::<super::tasks::SubscribeToTaskArgs>(payload.clone())
-                    .unwrap();
-            }
-            "unsubscribe_from_task" => {
-                serde_json::from_value::<super::tasks::UnsubscribeFromTaskArgs>(payload.clone())
-                    .unwrap();
-            }
-            "dispatch_next" => {
-                serde_json::from_value::<DispatchNextArgs>(payload.clone()).unwrap();
-            }
-            "dispatch_task" => {
-                serde_json::from_value::<super::tasks::DispatchTaskArgs>(payload.clone()).unwrap();
-            }
-            "record_learning" => {
-                serde_json::from_value::<super::learnings::RecordLearningArgs>(payload.clone())
-                    .unwrap();
-            }
-            "query_learnings" => {
-                serde_json::from_value::<super::learnings::QueryLearningsArgs>(payload.clone())
-                    .unwrap();
-            }
-            "rate_learning" => {
-                serde_json::from_value::<super::learnings::RateLearningArgs>(payload.clone())
-                    .unwrap();
-            }
-            "delete_learning" => {
-                serde_json::from_value::<super::learnings::DeleteLearningArgs>(payload.clone())
-                    .unwrap();
-            }
-            "set_verify_command" => {
-                serde_json::from_value::<super::tasks::SetVerifyCommandArgs>(payload.clone())
-                    .unwrap();
-            }
-            "exit_session" => {
-                serde_json::from_value::<ExitSessionArgs>(payload.clone()).unwrap();
-            }
-            "index_repo" => {
-                serde_json::from_value::<super::repo_rag::IndexRepoArgs>(payload.clone()).unwrap();
-            }
-            "search_docs" => {
-                serde_json::from_value::<super::repo_rag::SearchDocsArgs>(payload.clone()).unwrap();
-            }
-            "get_managed_feed_config" => {} // no args
-            "set_managed_feed_config" => {
-                serde_json::from_value::<super::managed_feeds::SetManagedFeedConfigArgs>(
-                    payload.clone(),
-                )
-                .unwrap();
-            }
-            "query_usage" => {
-                serde_json::from_value::<super::tasks::QueryUsageArgs>(payload.clone()).unwrap();
-            }
-            other => panic!("No deserialization check for tool: {other}"),
-        }
     }
 }
 

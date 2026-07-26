@@ -513,9 +513,13 @@ rule DeleteLearningViaMcp {
 
     @guidance
         -- Permanently removes the learning row. Implemented in
-        -- handle_delete_learning() (src/mcp/handlers/learnings.rs).
+        -- handle_delete_learning() (src/mcp/handlers/learnings.rs), which
+        -- goes through LearningService::delete_learning on the
+        -- LearningServiceApi seam rather than calling the DB directly.
         -- The DB delete returns Result<bool>: true if a row was deleted,
-        -- false if not found. The handler surfaces false as a -32602 error.
+        -- false if not found. The service turns false into
+        -- ServiceError::NotFound, surfaced as the -32001 not-found code
+        -- (distinct from -32602, which means invalid params).
 }
 
 rule ReScopeLearningsOnRepoGroupDelete {

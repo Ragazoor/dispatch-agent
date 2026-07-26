@@ -33,6 +33,7 @@ pub(super) use wrap_up::{handle_exit_session, handle_wrap_up};
 // ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct UpdateTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
@@ -67,12 +68,14 @@ pub(super) struct UpdateTaskArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct GetTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ListTasksArgs {
     #[serde(default)]
     pub(super) status: Option<StatusFilter>,
@@ -83,6 +86,7 @@ pub(super) struct ListTasksArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ClaimTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
@@ -91,6 +95,7 @@ pub(super) struct ClaimTaskArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct CreateTaskWithEpicArgs {
     pub(super) title: String,
     pub(super) repo_path: String,
@@ -121,6 +126,7 @@ pub(super) struct CreateTaskWithEpicArgs {
 pub(super) use crate::mcp::WrapUpAction;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct WrapUpArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
@@ -128,6 +134,7 @@ pub(super) struct WrapUpArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ExitSessionArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
@@ -140,12 +147,14 @@ pub(super) struct ExitSessionArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SetVerifyCommandArgs {
     pub(super) repo_path: String,
     pub(super) command: Option<String>,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SendMessageArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) from_task_id: i64,
@@ -155,6 +164,7 @@ pub(super) struct SendMessageArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct SubscribeToTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) watcher_task_id: i64,
@@ -163,6 +173,7 @@ pub(super) struct SubscribeToTaskArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct UnsubscribeFromTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) watcher_task_id: i64,
@@ -171,18 +182,21 @@ pub(super) struct UnsubscribeFromTaskArgs {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct DispatchNextArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) epic_id: i64,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct DispatchTaskArgs {
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) task_id: i64,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct QueryUsageArgs {
     #[serde(default)]
     pub(super) category: Option<String>,
