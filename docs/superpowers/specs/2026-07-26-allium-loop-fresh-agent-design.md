@@ -70,26 +70,32 @@ active: true
 runs_completed: 0
 max_iterations: 6
 retry_count: 0
+consecutive_no_change_runs: 0
 design_doc: "docs/superpowers/specs/2026-07-26-....md"
 base_branch: "main"
 verify_command: "cargo test && ./scripts/check-doc-paths.sh"
-iteration_start_sha: "abc1234"
 started_at: "2026-07-26T12:00:00Z"
 ---
 ```
+
+The file itself is gitignored (`.claude/allium-loop-state.local.md`), and prompt.md's commit step
+explicitly forbids staging it: it is mutated after every iteration, so a committed copy would leave
+the tree dirty and break the next iteration's rebase.
 
 This is a plain durable record for the driver session itself (resilient to context compaction,
 inspectable by the user), not read by any hook.
 
 - `retry_count`: how many times the *current* iteration has been retried after an error (0 or 1
-  — see the "Subagent errored or was skipped" case in the SKILL.md flow below). Reset to 0
-  whenever an iteration completes (errored or not).
-- `iteration_start_sha`: the commit the current iteration's subagent rebased onto, captured by
-  the subagent itself right after its rebase step and reported back to the driver, which writes
-  it here before the *next* dispatch. Used to scope "this run's" touched specs (see prompt.md
-  step 2) — a merge-base diff would be wrong here because every iteration rebases and replays all
-  prior iterations' commits, so a merge-base-anchored diff widens cumulatively across the whole
-  loop instead of reflecting just the current run.
+  — see the "Subagent errored or was skipped" case in the SKILL.md flow below). Reset to 0 when a
+  real (parseable) report is returned — not on every error, since the error path is exactly what
+  the counter exists to bound.
+- `consecutive_no_change_runs`: how many completed runs in a row reported no changes. Incremented
+  when a run's `SUMMARY` reports no changes, reset to 0 otherwise, and consulted by the
+  give-up condition (`>= 2`). It exists because that stop condition must be evaluable from the
+  state file alone — the driver cannot rely on remembering the *previous* run's summary across a
+  context compaction.
+- The current iteration number is not stored; it is always derived as `runs_completed + 1`, which
+  stays correct across a resume or a compaction.
 
 ### Resuming an orphaned loop
 
@@ -111,6 +117,13 @@ creating a new one:
 - **Abandon**: delete the state file and proceed with normal kickoff.
 - Never silently overwrite an active state file.
 
+Crucially, `active: true` is **not** evidence the driver died. Given the async dispatch model, the
+likelier reading is that another session is still driving this loop and merely waiting on an
+in-flight iteration — and resuming in that case double-dispatches a second agent into the same
+worktree, racing rebases and commits. The question must therefore say so explicitly and ask the
+user to confirm no other session is driving this loop before Resume is chosen, recommending
+**Cancel** (wait and check back) whenever they are unsure.
+
 ### SKILL.md flow
 
 1. Check for an existing active loop first (see "Resuming an orphaned loop" above). If found,
@@ -121,30 +134,38 @@ creating a new one:
    skill (e.g. "run allium-loop with max_iterations 20"), else default `6`. No target-spec
    resolution step — removed entirely (see below).
 4. Read `prompt.md` (the per-iteration template).
-5. Write `.claude/allium-loop-state.local.md` as above (`retry_count: 0`, no `iteration_start_sha`
-   yet — the first iteration's subagent reports its own after rebasing).
+5. Write `.claude/allium-loop-state.local.md` as above (`retry_count: 0`,
+   `consecutive_no_change_runs: 0`).
 6. Tell the user the loop is active: design doc, verify command, base branch, and
    `max_iterations` (noting it can be raised by asking).
 7. Dispatch iteration 1: an `Agent` tool call — a **fresh subagent, not `fork`** — with the
    filled-in `prompt.md` content as its task, substituting `{{ITERATION_NUMBER}}: 1` so the
    subagent (which has no memory of prior runs) knows definitively whether it's the first run.
+   Subsequent dispatches derive the number as `runs_completed + 1`.
 8. On receiving that call's result (a later task-notification — see the verified async dispatch
    semantics above), and on every subsequent iteration's result:
-   - Read the subagent's final report (`CONVERGED: yes/no`, `iteration_start_sha` it rebased onto,
-     and a summary of changes made this run) and `.claude/allium-loop-state.local.md`.
-   - **Subagent errored or was skipped** (crashed, no parseable `CONVERGED:` line, or a harness
-     error rather than a completed report): if `retry_count == 0`, set it to 1 and re-dispatch the
-     *same* iteration number unchanged; if `retry_count` was already 1, stop, delete the state
-     file, and surface the failure to the user rather than retrying indefinitely or silently
-     treating it as "no progress."
+   - Read the subagent's two-line final report (`CONVERGED: yes/no` and a one-line `SUMMARY` of
+     changes made this run) and `.claude/allium-loop-state.local.md`.
+   - **Subagent errored or was skipped** (crashed, a harness error rather than a completed report,
+     or a report missing EITHER required label — a partial/malformed report counts as an error, not
+     a result): if `retry_count == 0`, set it to 1 and re-dispatch the *same* iteration number
+     unchanged; if `retry_count` was already 1, stop, delete the state file, and surface the failure
+     to the user rather than retrying indefinitely or silently treating it as "no progress."
    - Otherwise (a real report was returned): increment `runs_completed` — exactly once, because a
-     full run just genuinely finished — reset `retry_count` to 0, and store the reported
-     `iteration_start_sha`.
+     full run just genuinely finished — reset `retry_count` to 0, and update
+     `consecutive_no_change_runs` (increment if the summary reports no changes, else reset to 0; a
+     `BLOCKED —` summary resets it, since an answer is about to be supplied).
      - **Converged** → delete the state file, report success to the user.
-     - **Not converged**, budget remains, and this run made changes (per its report) → dispatch
-       the next iteration with `{{ITERATION_NUMBER}}` incremented by one.
-     - **Not converged** and (`runs_completed >= max_iterations`, OR this run and the previous run
-       both reported no changes) → delete the state file, summarize what's unresolved, stop.
+     - **Not converged** and (`runs_completed >= max_iterations` OR
+       `consecutive_no_change_runs >= 2`) → delete the state file, summarize what's unresolved,
+       stop. This budget check takes precedence over the `BLOCKED —` handling below.
+     - **Not converged**, budget remains, and the summary starts with `BLOCKED —` → the iteration
+       could not reach a human itself; the driver (which *is* the interactive session) asks the
+       carried question via AskUserQuestion and dispatches the next iteration with the answer
+       appended to the prompt as an `**Answer to previous question:**` line.
+     - **Not converged** and budget remains (any other summary) → dispatch the next iteration.
+     In both dispatch cases the iteration number advances on its own, since `runs_completed` was
+     just incremented and the number is always derived as `runs_completed + 1`.
 
 ### prompt.md — the per-iteration template
 
@@ -153,11 +174,9 @@ iterations beyond the repo itself):
 
 ```
 1. Rebase: git fetch origin {{BASE_BRANCH}} && git rebase origin/{{BASE_BRANCH}}
-   Then capture `ITERATION_START_SHA=$(git rev-parse HEAD)` — this anchors "this run's" diff in
-   step 2 and gets reported back to the driver in step 9. If the rebase produces conflicts inside
-   docs/specs/ files, resolve conservatively (preserve both sides' content where the intent isn't
-   unambiguous from the diff alone, never silently drop a clause) and call out the resolution
-   explicitly in the final report rather than guessing silently.
+   If the rebase produces conflicts inside docs/specs/ files, resolve conservatively (preserve both
+   sides' content where the intent isn't unambiguous from the diff alone, never silently drop a
+   clause) and call out the resolution explicitly in the final report rather than guessing silently.
 
 2. Advance the spec(s):
    - If `{{ITERATION_NUMBER}} == 1`, use the Agent tool with subagent_type "allium:tend", given
@@ -165,16 +184,19 @@ iterations beyond the repo itself):
      judgment — one file, several files, or a new file, as the behavior warrants. No pre-declared
      target file.
    - Otherwise, only re-invoke tend if this run's work reveals a spec error.
-   - Determine this run's touched specs: `git diff --name-only $ITERATION_START_SHA..HEAD -- docs/specs/`
-     (plus working-tree changes) — anchored to this iteration's own start point, NOT a merge-base
-     against {{BASE_BRANCH}}, since the latter would re-include every prior iteration's spec
-     changes after each rebase and widen back toward whole-directory scope.
+   - Determine this run's touched specs: `git status --porcelain -- docs/specs/`. No history diff
+     is involved: this step runs BEFORE the run's own commit (step 8) and every iteration always
+     commits before ending, so "touched this run" is exactly the currently-uncommitted working-tree
+     state. `git status --porcelain` rather than `git diff` so that new *untracked* spec files
+     `allium:tend` may have created are counted too.
    - Check the `open questions` section of EACH touched spec (not the whole directory). Non-empty
      in any → STOP and resolve via AskUserQuestion before proceeding. The resolution MUST be
      written into the spec (clearing/updating the open-questions entry) and included in this
      iteration's commit (step 8) before ending — the next iteration is a fresh agent with no
      memory of this conversation, so an answer that isn't committed is lost outright, and the next
      run would face the same open question again.
+   - Resolving and committing an open question's answer is itself a complete, valid run: the
+     iteration may end there (step 8, then 9) or continue into step 3. Either is acceptable.
 
 3. Propagate tests: /propagate for behavior changed in the touched specs this run.
 
@@ -190,25 +212,37 @@ iterations beyond the repo itself):
    against the implementation (unchanged — weed already sweeps the whole directory; no target
    needed).
 
-8. Commit: stage and commit this run's changes (never `docs/plans/`) so the next iteration — a
-   fresh agent with no memory of this one — can reconstruct progress via git history, and so its
-   own rebase step doesn't hit a dirty tree. If verify (step 6) still fails and can't be resolved
+8. Commit: stage and commit this run's changes (never `docs/plans/`, and never the loop's own
+   `.claude/allium-loop-state.local.md`) so the next iteration — a fresh agent with no memory of
+   this one — can reconstruct progress via git history, and so its own rebase step doesn't hit a
+   dirty tree. If verify (step 6) still fails and can't be resolved
    within this run, commit anyway but prefix the message `wip(allium-loop): iteration N, verify
    failing — <what's broken>` — never leave the tree dirty — and say so plainly in the final
    report; the next iteration must treat fixing it as its first priority before any new work. A
    green iteration commits normally (no `wip` prefix). These are working-history commits, expected
    to be squashed at the normal task wrap-up like any other task's commits.
 
-9. Report: end with a clear final message containing `CONVERGED: yes` only when verify passes,
-   weed reports no divergence, AND every touched spec's open-questions section is empty; otherwise
-   `CONVERGED: no`. Either way, also report `ITERATION_START_SHA` (from step 1, for the driver to
-   persist) and a one-line summary of what changed this run — resolving an open question and
-   committing that resolution counts as a change, even if steps 3-8 didn't otherwise run.
+9. Report: end with exactly two labelled lines — `CONVERGED: yes|no` and a one-line `SUMMARY`.
+   `CONVERGED: yes` only when verify passes, weed reports no divergence, AND every touched spec's
+   open-questions section is empty; otherwise `CONVERGED: no`. Resolving an open question and
+   committing that resolution counts as a change for the summary, even if steps 3-8 didn't
+   otherwise run. The driver parses both labels literally, and a report missing either one is
+   treated as an error rather than a result.
 ```
 
 Guardrails carried over unchanged: never weaken/hand-edit generated tests, escalate ambiguity via
 AskUserQuestion rather than guessing, honor spec parameters (no magic numbers), fix code not the
 contract when the spec is correct, never commit `docs/plans/`, never skip rebase.
+
+**One addition to the escalation guardrail.** Under this design an iteration runs as a
+*backgrounded* subagent, and whether such a subagent's AskUserQuestion calls actually reach and
+pause for a human is not established — unlike the driver, which is definitionally the interactive
+session. The prompt therefore keeps AskUserQuestion as the first attempt but gives it an explicit
+fallback rather than leaving "guess silently" as the path of least resistance: if no answer is
+obtainable, the iteration commits whatever partial progress is safe and ends with
+`CONVERGED: no` / `SUMMARY: BLOCKED — <the question, verbatim>`. The driver recognises that prefix,
+puts the question to the user itself, and passes the answer into the next iteration's prompt, where
+the existing open-questions-persistence rule commits the resolution into the spec.
 
 ## Design Decisions
 
@@ -216,10 +250,10 @@ contract when the spec is correct, never commit `docs/plans/`, never skip rebase
   sweeps all of `docs/specs/`; `allium:tend` has full Read/Glob/Grep access and its own mandate to
   push back on ambiguity, so it's trusted to decide placement (single file, several, or new)
   without an upfront enumeration step. Each run's actual touched-file set is derived after the
-  fact via `git diff`, not declared beforehand.
+  fact from git (see the touched-spec-scope decision below), not declared beforehand.
 - **Open-questions convergence gate scopes to files touched this run**, not the whole directory —
   this also fixes learning #305 (pre-existing, unrelated open questions blocking convergence) as
-  a natural side effect of deriving scope from git diff instead of a fixed target.
+  a natural side effect of deriving scope from git state instead of a fixed target.
 - **`max_iterations` default stays 6**, overridable by explicit user request — no invented
   "generous ceiling" magic number. Because iterations are now fresh-agent dispatches rather than
   raw turn-boundaries, 6 now means what it says: 6 real runs.
@@ -230,11 +264,20 @@ contract when the spec is correct, never commit `docs/plans/`, never skip rebase
   be visible via git history, and rebase needs a clean tree. A failing-verify iteration still
   commits, marked `wip(allium-loop): ...`, rather than choosing between a dirty tree and a silent
   red commit.
-- **Touched-spec scope is anchored to `iteration_start_sha`, not a merge-base against the base
-  branch.** Because every iteration rebases and replays all prior iterations' commits, a
-  merge-base-anchored diff would cumulatively re-include earlier iterations' spec changes and
-  widen the open-questions gate back toward whole-directory scope after a few runs — undoing the
-  learning-#305 fix it's meant to provide.
+- **Touched-spec scope needs no history diff at all — it is the uncommitted working tree.** The
+  open-questions gate (prompt.md step 2) runs *before* the iteration's own commit (step 8), and
+  every iteration commits before it ends, so nothing from a prior run is ever left uncommitted:
+  "specs touched this run" is exactly `git status --porcelain -- docs/specs/`. An earlier draft
+  anchored this to a start-of-iteration commit SHA captured right after the rebase, on the theory
+  that a merge-base diff would cumulatively re-include earlier iterations' spec changes. That
+  mechanism was both unnecessary (there is no prior-iteration history to exclude) and broken in
+  practice: at step 2, `HEAD` still equals that captured commit, so the diff was guaranteed empty —
+  which would have made the gate conclude "no specs touched" and skip the loop's single most
+  important safety check. It also never survived the trip: the capture was a bare shell assignment
+  producing no stdout, and shell variables do not persist across separate Bash tool calls. Plain
+  `git status` also catches brand-new *untracked* spec files that `allium:tend` may create, which
+  `git diff` would miss. Nothing is reported back to the driver for this, so the report shrank to
+  two lines (`CONVERGED:` / `SUMMARY:`).
 - **Dropping the ralph-loop Stop hook also drops its one enforced guarantee**: it mechanically
   re-fed the prompt regardless of what the model did, so the loop couldn't silently die mid-flight.
   The fresh-agent design has no external equivalent, so it adds its own: an orphan check at
