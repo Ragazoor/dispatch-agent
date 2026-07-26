@@ -239,7 +239,7 @@ async fn cmd_update(
         None
     };
     let only_if_status = only_if.as_deref().map(parse_status).transpose()?;
-    let svc = service::TaskService::new(std::sync::Arc::new(database));
+    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
     match svc
         .cli_update_task(task_id, new_status, only_if_status, resolved_sub_status)
         .await
@@ -260,7 +260,7 @@ async fn cmd_update(
 
 async fn cmd_pr_gate(db: &std::path::Path, id: i64) -> Result<()> {
     let database = db::Database::open(db).await?;
-    let svc = service::TaskService::new(std::sync::Arc::new(database));
+    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
     let first_time = svc.mark_pr_learnings_gate_shown(models::TaskId(id)).await?;
     if first_time {
         eprintln!(
@@ -299,7 +299,7 @@ async fn cmd_hook(
     let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
     init_app_log_subscriber(data_dir)?;
     let database = db::Database::open(db).await?;
-    let svc = service::TaskService::new(std::sync::Arc::new(database));
+    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
     match svc.record_hook_event(models::TaskId(id), parsed).await {
         Ok(()) => {}
         Err(service::ServiceError::NotFound(_)) => {
@@ -450,7 +450,7 @@ async fn cmd_plan(db: &std::path::Path, id: i64, path: PathBuf) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to resolve plan path {}: {}", path.display(), e))?;
     let plan_str = plan_path.to_string_lossy();
     let database = db::Database::open(db).await?;
-    let svc = service::TaskService::new(std::sync::Arc::new(database));
+    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
     match svc.attach_plan(models::TaskId(id), &plan_str).await {
         Ok(()) => println!("Plan attached to task #{}: {}", id, plan_str),
         Err(service::ServiceError::NotFound(_)) => {

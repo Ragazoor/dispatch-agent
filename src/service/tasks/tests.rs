@@ -14,8 +14,7 @@ async fn test_db() -> Arc<dyn db::TaskStore> {
 }
 
 fn task_svc(db: &Arc<dyn db::TaskStore>) -> TaskService {
-    let d: Arc<dyn db::TaskAndEpicStore> = db.clone();
-    TaskService::new(d)
+    task_svc_with_runner(db, Arc::new(crate::process::MockProcessRunner::new(vec![])))
 }
 
 fn epic_svc(db: &Arc<dyn db::TaskStore>) -> EpicService {
@@ -31,7 +30,7 @@ fn task_svc_with_runner(
     runner: Arc<dyn crate::process::ProcessRunner>,
 ) -> TaskService {
     let d: Arc<dyn db::TaskAndEpicStore> = db.clone();
-    TaskService::new(d).with_runner(runner)
+    TaskService::new(d, runner)
 }
 
 fn make_task_params(repo_path: &str) -> CreateTaskParams {
@@ -321,6 +320,86 @@ async fn claim_task_seeds_last_pre_tool_use_at() {
         .expect("claim_task should seed last_pre_tool_use_at");
     assert!(stamp >= before - chrono::Duration::seconds(1));
     assert!(stamp <= chrono::Utc::now() + chrono::Duration::seconds(1));
+}
+
+#[tokio::test]
+async fn claim_task_returns_post_patch_task() {
+    // The returned Task must reflect the write, not the pre-patch snapshot.
+    let db = test_db().await;
+    let svc = task_svc(&db);
+
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    let claimed = svc
+        .claim_task(ClaimTaskParams {
+            task_id: id,
+            worktree: "/repo/.worktrees/feature".into(),
+            tmux_window: "win1".into(),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(claimed.status, TaskStatus::Running);
+    assert_eq!(
+        claimed.worktree.as_deref(),
+        Some("/repo/.worktrees/feature")
+    );
+    assert_eq!(claimed.tmux_window.as_deref(), Some("win1"));
+    assert!(claimed.last_pre_tool_use_at.is_some());
+}
+
+#[tokio::test]
+async fn claim_task_recalculates_parent_epic_status() {
+    // Backlog → Running on an epic subtask must recalculate the parent epic
+    // per the EpicStatusRecalculation invariant (docs/specs/epics.allium).
+    // Observable via the done → backlog regression path: an epic marked done
+    // that still has an active non-done child regresses to backlog.
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let epics = epic_svc(&db);
+
+    let epic = epics
+        .create_epic(CreateEpicParams {
+            title: "E".into(),
+            description: String::new(),
+            sort_order: None,
+            parent_epic_id: None,
+            feed_command: None,
+            feed_interval_secs: None,
+        })
+        .await
+        .unwrap();
+
+    let id = svc
+        .create_task(CreateTaskParams {
+            epic_id: Some(epic.id),
+            ..make_task_params("/repo")
+        })
+        .await
+        .unwrap();
+
+    // Force a stale rollup: the epic claims done while its only child is backlog.
+    db.patch_epic(epic.id, &db::EpicPatch::new().status(TaskStatus::Done))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.get_epic(epic.id).await.unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+
+    svc.claim_task(ClaimTaskParams {
+        task_id: id,
+        worktree: "/repo/.worktrees/feature".into(),
+        tmux_window: "win1".into(),
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        db.get_epic(epic.id).await.unwrap().unwrap().status,
+        TaskStatus::Backlog,
+        "claim_task must recalculate the parent epic's rolled-up status"
+    );
 }
 
 #[tokio::test]
@@ -2992,7 +3071,10 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
     // needs_prior=true) and the DB returns an error when reading the task back,
     // the error should propagate rather than being silently swallowed as None.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let svc = TaskService::new(db.clone() as Arc<dyn db::TaskAndEpicStore>);
+    let svc = TaskService::new(
+        db.clone() as Arc<dyn db::TaskAndEpicStore>,
+        Arc::new(crate::process::MockProcessRunner::new(vec![])),
+    );
 
     // Create a task that we'll corrupt so get_task fails
     let id = svc
@@ -3050,7 +3132,10 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
 async fn create_task_on_grouped_epic_routes_into_sub_epic() {
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(db.clone());
+    let svc = crate::service::TaskService::new(
+        db.clone(),
+        Arc::new(crate::process::MockProcessRunner::new(vec![])),
+    );
     let root = db.create_epic("root", "", None).await.unwrap();
     db.patch_epic(root.id, &crate::db::EpicPatch::new().group_by_repo(true))
         .await
@@ -3082,7 +3167,10 @@ async fn create_task_on_grouped_epic_routes_into_sub_epic() {
 async fn update_repo_path_reroutes_within_grouped_epic() {
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(db.clone());
+    let svc = crate::service::TaskService::new(
+        db.clone(),
+        Arc::new(crate::process::MockProcessRunner::new(vec![])),
+    );
     let root = db.create_epic("root", "", None).await.unwrap();
     db.patch_epic(root.id, &crate::db::EpicPatch::new().group_by_repo(true))
         .await
@@ -3126,7 +3214,10 @@ async fn move_task_to_grouped_epic_routes_into_sub_epic() {
     // per-repo RepoGroup sub-epic, NOT directly on the root.
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(db.clone());
+    let svc = crate::service::TaskService::new(
+        db.clone(),
+        Arc::new(crate::process::MockProcessRunner::new(vec![])),
+    );
 
     // Create a grouped (non-feed) root.
     let root = db.create_epic("root", "", None).await.unwrap();
@@ -3176,7 +3267,10 @@ async fn move_task_to_non_grouped_epic_lands_directly() {
     // Regression guard: moving to a plain (non-grouped) epic must NOT route.
     use crate::db::EpicCrud;
     let db = std::sync::Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-    let svc = crate::service::TaskService::new(db.clone());
+    let svc = crate::service::TaskService::new(
+        db.clone(),
+        Arc::new(crate::process::MockProcessRunner::new(vec![])),
+    );
 
     let plain = db.create_epic("plain", "", None).await.unwrap();
 

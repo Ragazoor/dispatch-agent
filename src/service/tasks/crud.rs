@@ -35,12 +35,31 @@ pub struct TaskService {
 }
 
 impl TaskService {
-    pub fn new(db: Arc<dyn db::TaskAndEpicStore>) -> Self {
+    /// Construct a `TaskService` with an explicitly chosen process runner.
+    ///
+    /// The runner is a required argument on purpose. `TaskService` shells out
+    /// for real when delivering watch/finish notifications
+    /// (`watchers.rs` → `crate::notify::deliver` → filesystem write +
+    /// `tmux::send_keys`), so a default would let a test silently touch the
+    /// real system — the opposite of *"Tests use `MockProcessRunner` — never
+    /// shell out in tests"* (`docs/architecture.md`). Production callers that
+    /// genuinely want the real runner say so by name via
+    /// [`new_with_real_runner`](Self::new_with_real_runner).
+    pub fn new(
+        db: Arc<dyn db::TaskAndEpicStore>,
+        runner: Arc<dyn crate::process::ProcessRunner>,
+    ) -> Self {
         Self {
             db,
             clock: Arc::new(crate::service::SystemClock),
-            runner: Arc::new(crate::process::RealProcessRunner),
+            runner,
         }
+    }
+
+    /// Construct a `TaskService` that shells out for real. Named so that the
+    /// non-hermetic choice is visible at the call site; see [`new`](Self::new).
+    pub fn new_with_real_runner(db: Arc<dyn db::TaskAndEpicStore>) -> Self {
+        Self::new(db, Arc::new(crate::process::RealProcessRunner))
     }
 
     /// Override the clock used for timestamping. Tests inject a
@@ -48,14 +67,6 @@ impl TaskService {
     /// (hook-event ordering) are deterministic without sleeping.
     pub fn with_clock(mut self, clock: Arc<dyn crate::service::Clock>) -> Self {
         self.clock = clock;
-        self
-    }
-
-    /// Override the process runner used to deliver watch/finish
-    /// notifications. Tests inject a `MockProcessRunner` to assert on
-    /// tmux/file-system side effects deterministically.
-    pub fn with_runner(mut self, runner: Arc<dyn crate::process::ProcessRunner>) -> Self {
-        self.runner = runner;
         self
     }
 
@@ -507,7 +518,13 @@ impl TaskService {
             )
             .await?;
 
-        Ok(task)
+        // Backlog → Running changes the parent epic's rolled-up status; see
+        // the EpicStatusRecalculation invariant in docs/specs/epics.allium.
+        self.recalculate_epic_for_task(params.task_id).await;
+
+        // Return the post-patch row: `task` above is the pre-patch snapshot
+        // and would still report Backlog with no worktree.
+        self.get_task(params.task_id).await
     }
 
     pub async fn validate_wrap_up(&self, task_id: TaskId) -> Result<Task, ServiceError> {

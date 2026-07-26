@@ -261,6 +261,11 @@ rule ClaimTaskViaMcp {
     ensures: task.updated_at = now
 
     @guidance
+        -- The backlog -> running transition changes the parent epic's
+        -- rolled-up status, so the service recalculates it after the write
+        -- per the EpicStatusRecalculation invariant in epics.allium.
+        -- The service returns the post-write task, not the pre-write
+        -- snapshot it read to validate the requires clauses above.
         -- repo_from_worktree splits on "/.worktrees/" and returns the
         -- prefix; when the path does not contain "/.worktrees/", the
         -- full path is returned (so a user's repo root is accepted as-is).

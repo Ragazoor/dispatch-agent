@@ -29,36 +29,59 @@ impl UpdateEpicParams {
         !self.updated_field_names().is_empty()
     }
 
+    /// Names of the fields this params value actually sets.
+    ///
+    /// Parity with the struct is compiler-enforced: the exhaustive
+    /// destructuring below (no `..`) fails to compile when a field is added to
+    /// [`UpdateEpicParams`] without being handled here, and an unused binding
+    /// warns if the field is destructured but never pushed. This is not
+    /// cosmetic — [`has_any_field`](Self::has_any_field) is defined in terms of
+    /// this list, so a missing entry makes `update_epic` reject an update that
+    /// *did* provide the field with "At least one field must be provided".
     pub fn updated_field_names(&self) -> Vec<&str> {
+        let Self {
+            epic_id: _,
+            title,
+            description,
+            status,
+            plan_path,
+            sort_order,
+            auto_dispatch,
+            feed_command,
+            feed_interval_secs,
+            group_by_repo,
+            parent_epic_id,
+        } = self;
+
         let mut names = Vec::new();
-        if self.title.is_some() {
+        if title.is_some() {
             names.push("title");
         }
-        if self.description.is_some() {
+        if description.is_some() {
             names.push("description");
         }
-        if self.status.is_some() {
+        if status.is_some() {
             names.push("status");
         }
-        if self.plan_path.is_some() {
+        if plan_path.is_some() {
             names.push("plan_path");
         }
-        if self.sort_order.is_some() {
+        if sort_order.is_some() {
             names.push("sort_order");
         }
-        if self.auto_dispatch.is_some() {
+        if auto_dispatch.is_some() {
             names.push("auto_dispatch");
         }
-        if self.feed_command.is_some() {
+        if feed_command.is_some() {
             names.push("feed_command");
         }
-        if self.feed_interval_secs.is_some() {
+        if feed_interval_secs.is_some() {
             names.push("feed_interval_secs");
         }
-        if self.group_by_repo.is_some() {
+        if group_by_repo.is_some() {
             names.push("group_by_repo");
         }
-        if self.parent_epic_id.is_some() {
+        if parent_epic_id.is_some() {
             names.push("parent_epic_id");
         }
         names
@@ -134,11 +157,14 @@ impl EpicService {
             patch = patch.feed_interval_secs(Some(fi));
             has_extra = true;
         }
-        if has_extra {
-            let _ = self.db.patch_epic(epic.id, &patch).await;
+        if !has_extra {
+            return Ok(epic);
         }
 
-        Ok(epic)
+        self.db.patch_epic(epic.id, &patch).await?;
+        // Re-read: `epic` is the insert result, which only carries
+        // title/description/parent — the extras above land in this second write.
+        self.get_epic(epic.id).await
     }
 
     pub async fn get_epic(&self, epic_id: EpicId) -> Result<Epic, ServiceError> {
@@ -468,6 +494,31 @@ mod tests {
                 "updated_field_names() should be non-empty when a field is set"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn create_epic_returns_the_post_patch_epic() {
+        // sort_order / feed_command / feed_interval_secs are applied in a
+        // second write; the returned Epic must carry them, not the pre-patch
+        // insert result.
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let svc = EpicService::new(db.clone());
+
+        let epic = svc
+            .create_epic(CreateEpicParams {
+                title: "E".to_string(),
+                description: String::new(),
+                sort_order: Some(42),
+                parent_epic_id: None,
+                feed_command: Some("gh api repos/x/pulls".to_string()),
+                feed_interval_secs: Some(300),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(epic.sort_order, Some(42));
+        assert_eq!(epic.feed_command.as_deref(), Some("gh api repos/x/pulls"));
+        assert_eq!(epic.feed_interval_secs, Some(300));
     }
 
     #[tokio::test]

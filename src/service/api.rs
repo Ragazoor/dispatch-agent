@@ -515,7 +515,10 @@ mod tests {
 
     #[tokio::test]
     async fn task_service_api_delegates_to_task_service() {
-        let svc: Arc<dyn TaskServiceApi> = Arc::new(TaskService::new(store().await));
+        let svc: Arc<dyn TaskServiceApi> = Arc::new(TaskService::new(
+            store().await,
+            Arc::new(crate::process::MockProcessRunner::new(vec![])),
+        ));
 
         let id = svc
             .create_task(CreateTaskParams {

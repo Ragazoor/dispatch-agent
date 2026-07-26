@@ -519,7 +519,10 @@ mod learning_editor_tests {
         TuiRuntime {
             feed_db: db_arc.clone(),
             database: db_arc.clone(),
-            task_svc: Arc::new(crate::service::TaskService::new(db_arc.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(
+                db_arc.clone(),
+                runner.clone(),
+            )),
             epic_svc: Arc::new(crate::service::EpicService::new(db_arc.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(db.clone())),
             learning_svc: Arc::new(crate::service::LearningService::new(
@@ -867,7 +870,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -946,7 +949,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -1006,7 +1009,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -1060,7 +1063,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -1122,7 +1125,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -1171,7 +1174,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -1236,7 +1239,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -1293,7 +1296,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),
@@ -1351,7 +1354,7 @@ mod tests {
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
                 Database::open_in_memory().await.unwrap(),

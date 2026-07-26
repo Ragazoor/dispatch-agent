@@ -140,6 +140,18 @@ compiler rejects anything less.
 entering `db_call` and handled via `labels_json` in `patch_task`. The `labels: _` binding in
 the `From` impl keeps the exhaustive pattern intact despite the omission.
 
+### updated_field_names — same pattern, same reason
+
+`UpdateTaskParams::updated_field_names` (`src/service/tasks/params.rs`) and
+`UpdateEpicParams::updated_field_names` (`src/service/epics.rs`) use the identical exhaustive
+destructuring, and for a load-bearing reason: `has_any_field()` is defined as
+`!updated_field_names().is_empty()`, and both `update_task` and `update_epic` reject the whole
+request with `"At least one field must be provided"` when it returns false. Omit one entry and
+an update that sets *only* that field is refused — with a message saying the opposite of what
+happened. Adding a field without naming it in the pattern is a compile error; naming it without
+pushing it produces an unused-binding warning (a hard error under `-D warnings`). The
+`*_every_field_covered` unit tests remain as a documented backstop.
+
 ## DB trait narrowing — take the narrowest sub-trait you need
 
 `TaskStore` (`src/db/mod.rs:570`) is a supertrait of `TaskAndEpicStore + TaskReadStore + SettingsStore + LearningStore + LearningRetrievalStore + UsageStore`. New consumers should hold the narrowest sub-trait they actually call:
@@ -251,10 +263,11 @@ The rule: if you're only changing what the screen looks like without touching ex
 
 ## Intentional `let _ =`
 
-`let _ = expr` silences the `#[must_use]` warning on a result or value. In this codebase it appears in two patterns — neither is a bug:
+`let _ = expr` silences the `#[must_use]` warning on a result or value. The one sanctioned pattern is:
 
 - **Fire-and-forget channel sends** — `let _ = tx.send(McpEvent::Refresh)` in `src/mcp/mod.rs`: the send can only fail if the receiver has dropped (TUI exited), which is fine to ignore
-- **Non-critical side-effect patches** — `let _ = self.db.patch_epic(...)` where the caller cannot usefully recover from a transient DB error on a non-primary write
+
+**Do not use it to discard a DB write's `Result`.** A second write that completes an entity (e.g. the follow-up `patch_epic` in `EpicService::create_epic` that applies `sort_order` / `feed_command` / `feed_interval_secs`) is part of the operation, not a "non-critical" extra: swallowing its error returns a success the caller can't trust. Propagate with `?`, and re-read (or otherwise refresh) so the returned entity reflects the write rather than the pre-patch insert result.
 
 If you see `let _ =` and are unsure whether it's intentional, check the surrounding comment or commit message. Add a comment when adding a new one.
 

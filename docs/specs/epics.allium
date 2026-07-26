@@ -96,6 +96,12 @@ rule CreateEpic {
     )
 
     @guidance
+        -- Implementation note: the insert only carries title, description
+        -- and parent; sort_order, feed_command and feed_interval_secs land
+        -- in a follow-up patch. That patch's failure is an error of the
+        -- whole creation, and the returned Epic is the post-patch value —
+        -- callers must never see an Epic missing the fields they supplied.
+        --
         -- When parent is provided, this creates a sub-epic nested inside
         -- the given parent. Root epics (parent = null) appear on the main board;
         -- sub-epics appear only inside their parent's epic view.

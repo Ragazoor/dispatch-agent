@@ -75,7 +75,7 @@ async fn make_runtime(
     let todo_db: Arc<dyn crate::db::TodoStore> =
         Arc::new(Database::open_in_memory().await.unwrap());
     TuiRuntime {
-        task_svc: Arc::new(crate::service::TaskService::new(db.clone())),
+        task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
         epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
         todo_svc: Arc::new(crate::service::TodoService::new(todo_db)),
         feed_runner: Some(feed_runner),

@@ -102,7 +102,10 @@ mod tests {
             Arc::new(crate::process::MockProcessRunner::new(vec![]));
         let emb_svc = EmbeddingService::new_noop();
         TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db_arc.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(
+                db_arc.clone(),
+                runner.clone(),
+            )),
             epic_svc: Arc::new(crate::service::EpicService::new(db_arc.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(db.clone())),
             learning_svc: Arc::new(crate::service::LearningService::new(
@@ -320,7 +323,10 @@ mod tests {
             Arc::new(crate::process::MockProcessRunner::new(vec![]));
         let emb_svc = EmbeddingService::new_noop();
         let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db_arc.clone())),
+            task_svc: Arc::new(crate::service::TaskService::new(
+                db_arc.clone(),
+                runner.clone(),
+            )),
             epic_svc: Arc::new(crate::service::EpicService::new(db_arc.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(db.clone())),
             learning_svc: Arc::new(AlwaysFailLearningService),

@@ -42,54 +42,83 @@ impl UpdateTaskParams {
         !self.updated_field_names().is_empty()
     }
 
+    /// Names of the fields this params value actually sets.
+    ///
+    /// Parity with the struct is compiler-enforced: the exhaustive
+    /// destructuring below (no `..`) fails to compile when a field is added to
+    /// [`UpdateTaskParams`] without being handled here, and an unused binding
+    /// warns if the field is destructured but never pushed. This is not
+    /// cosmetic — [`has_any_field`](Self::has_any_field) is defined in terms of
+    /// this list, so a missing entry makes `update_task` reject an update that
+    /// *did* provide the field with "At least one field must be provided".
     pub fn updated_field_names(&self) -> Vec<&str> {
+        let Self {
+            task_id: _,
+            status,
+            plan_path,
+            title,
+            description,
+            repo_path,
+            sort_order,
+            url,
+            tag,
+            sub_status,
+            epic_id,
+            worktree,
+            tmux_window,
+            base_branch,
+            last_pre_tool_use_at,
+            wrap_up_mode,
+            auto_run_plan,
+        } = self;
+
         let mut names = Vec::new();
-        if self.status.is_some() {
+        if status.is_some() {
             names.push("status");
         }
-        if self.plan_path.is_some() {
+        if plan_path.is_some() {
             names.push("plan_path");
         }
-        if self.title.is_some() {
+        if title.is_some() {
             names.push("title");
         }
-        if self.description.is_some() {
+        if description.is_some() {
             names.push("description");
         }
-        if self.repo_path.is_some() {
+        if repo_path.is_some() {
             names.push("repo_path");
         }
-        if self.sort_order.is_some() {
+        if sort_order.is_some() {
             names.push("sort_order");
         }
-        if self.url.is_some() {
+        if url.is_some() {
             names.push("url");
         }
-        if self.tag.is_some() {
+        if tag.is_some() {
             names.push("tag");
         }
-        if self.sub_status.is_some() {
+        if sub_status.is_some() {
             names.push("sub_status");
         }
-        if self.epic_id.is_some() {
+        if epic_id.is_some() {
             names.push("epic_id");
         }
-        if self.worktree.is_some() {
+        if worktree.is_some() {
             names.push("worktree");
         }
-        if self.tmux_window.is_some() {
+        if tmux_window.is_some() {
             names.push("tmux_window");
         }
-        if self.base_branch.is_some() {
+        if base_branch.is_some() {
             names.push("base_branch");
         }
-        if self.last_pre_tool_use_at.is_some() {
+        if last_pre_tool_use_at.is_some() {
             names.push("last_pre_tool_use_at");
         }
-        if self.wrap_up_mode.is_some() {
+        if wrap_up_mode.is_some() {
             names.push("wrap_up_mode");
         }
-        if self.auto_run_plan.is_some() {
+        if auto_run_plan.is_some() {
             names.push("auto_run_plan");
         }
         names
@@ -305,6 +334,7 @@ mod tests {
             UpdateTaskParams::for_task(TaskId(1)).base_branch(Some("main".to_string())),
             UpdateTaskParams::for_task(TaskId(1)).last_pre_tool_use_at(Some(chrono::Utc::now())),
             UpdateTaskParams::for_task(TaskId(1)).wrap_up_mode(Some(WrapUpMode::Rebase)),
+            UpdateTaskParams::for_task(TaskId(1)).auto_run_plan(true),
         ];
         for params in &cases {
             assert!(

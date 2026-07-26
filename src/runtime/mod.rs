@@ -425,9 +425,10 @@ impl TuiRuntime {
             crate::feed::FeedRunner::new(database.clone(), feed_notify_tx, runner.clone());
         let feed_invalidate_tx = Some(feed_runner.epic_invalidate_tx());
         let runtime = TuiRuntime {
-            task_svc: Arc::new(
-                crate::service::TaskService::new(database.clone()).with_runner(runner.clone()),
-            ),
+            task_svc: Arc::new(crate::service::TaskService::new(
+                database.clone(),
+                runner.clone(),
+            )),
             epic_svc: Arc::new(crate::service::EpicService::new(database.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(database.clone())),
             learning_svc: Arc::new(crate::service::LearningService::new(

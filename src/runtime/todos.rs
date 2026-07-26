@@ -56,7 +56,10 @@ mod tests {
         let runner: std::sync::Arc<dyn crate::process::ProcessRunner> =
             std::sync::Arc::new(crate::process::MockProcessRunner::new(vec![]));
         TuiRuntime {
-            task_svc: std::sync::Arc::new(crate::service::TaskService::new(db_arc.clone())),
+            task_svc: std::sync::Arc::new(crate::service::TaskService::new(
+                db_arc.clone(),
+                runner.clone(),
+            )),
             epic_svc: std::sync::Arc::new(crate::service::EpicService::new(db_arc.clone())),
             todo_svc: std::sync::Arc::new(crate::service::TodoService::new(db.clone())),
             learning_svc: std::sync::Arc::new(crate::service::MockLearningService),
