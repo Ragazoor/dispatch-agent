@@ -23,7 +23,7 @@ rebase/tend/implement/verify/weed work itself.
 1. **Check for an existing active loop first.** Look for `.claude/allium-loop-state.local.md`
    with `active: true`. If found, read it and use AskUserQuestion to ask the user whether to:
    - **Resume** — dispatch the next iteration using the existing file's values (do not reset
-     `runs_completed` or `retry_count`).
+     `runs_completed`, `retry_count`, or `consecutive_no_change_runs`).
    - **Abandon** — delete the state file and continue with a fresh kickoff below.
    - **Cancel** — stop here, do nothing further.
 
@@ -132,8 +132,10 @@ started_at: "TIMESTAMP"
        hit a question it could not put to the user itself. You are the interactive session, so ask
        the carried question directly via AskUserQuestion, then dispatch the next iteration (repeat
        step 1 above) with the user's answer appended to the substituted prompt as a
-       `**Answer to previous question:** <answer>` line — so that iteration can act on it and commit
-       the resolution into the spec per the prompt's open-questions-persistence rule.
+       `**Answer to previous question:** <answer>` line — prompt.md step 2 opens by requiring that
+       iteration to locate the spec holding the question, write the answer in, commit it, and count
+       that spec as touched this run. The answer exists nowhere but in that prompt, so include it
+       verbatim.
      - **`CONVERGED: no`** and budget remains (any other summary): dispatch the next iteration
        (repeat step 1 above).
 

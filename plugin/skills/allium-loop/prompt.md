@@ -28,6 +28,35 @@ resolving silently.
 
 ### 2. Advance the spec(s)
 
+**First, before anything else in this step: did this prompt hand you an answer?** If the prompt you
+were given includes an `**Answer to previous question:**` line, a previous iteration ended
+`BLOCKED — <question>` because it could not reach the user, and the driver has now obtained the
+answer for you. That answer exists nowhere but in this prompt — persist it before doing anything
+else:
+
+1. Locate the spec under `docs/specs/` whose `open questions` section contains the question the
+   answer resolves. The question text was carried verbatim through the `BLOCKED —` report, so it
+   is enough to find the entry (Grep for its distinctive wording).
+2. Write the answer into that spec, clearing or updating the open-questions entry — exactly the
+   same "resolve it in writing" treatment as the in-run case below.
+3. Commit that change now, on its own — do not defer it to step 8, and do not proceed while it is
+   uncommitted. Step 8's exclusions still apply (never `docs/plans/`, never the loop's state file).
+   This is a spec-text-only commit, so it takes a normal message (e.g.
+   `docs(specs): resolve open question — <topic>`) and needs no `wip(allium-loop):` prefix even if
+   a prior run left verification red; the rest of this run's work is committed separately per
+   step 8.
+4. Treat that spec as **touched this run**, regardless of what the `git status --porcelain` check
+   below reports. The previous iteration already committed everything it had, so the working tree
+   is otherwise clean and that check will not surface this spec on its own — but the open-questions
+   gate and the step-9 convergence check must both still see it.
+
+If you cannot find the spec holding that question, do NOT guess and do NOT drop the answer: end
+with `CONVERGED: no` / `SUMMARY: BLOCKED — cannot locate the spec holding the open question
+"<question, verbatim>"; answer received was "<answer, verbatim>"` so the answer survives into the
+next run's prompt.
+
+Only once the carried answer is persisted and committed, continue with the normal checks below.
+
 - If `{{ITERATION_NUMBER}}` is `1`, use the Agent tool with `subagent_type: "allium:tend"`,
   giving it the full design document at `{{DESIGN_DOC}}` and telling it to place or update spec
   content across `docs/specs/` using its own judgment — one file, several files, or a new file,
@@ -43,8 +72,9 @@ resolving silently.
 
   This step runs BEFORE this run's commit (step 8), and every iteration always commits before it
   ends — so "specs touched this run" is exactly the currently-uncommitted working-tree state under
-  `docs/specs/`. Use `git status --porcelain` rather than `git diff`: it reports both modified
-  tracked specs and brand-new untracked ones that `allium:tend` may have created.
+  `docs/specs/`, **plus** any spec you resolved a carried answer into above (already committed by
+  then, so invisible here). Use `git status --porcelain` rather than `git diff`: it reports both
+  modified tracked specs and brand-new untracked ones that `allium:tend` may have created.
 - Read the `open questions` section of EACH touched spec (not the whole directory). If any is
   non-empty, STOP and resolve it with the user via AskUserQuestion before proceeding — do not
   guess. Once resolved, write the resolution into the spec (clear or update the open-questions
@@ -53,9 +83,10 @@ resolving silently.
   lost outright and the next run will hit the same open question again.
 
   If you cannot get a response (e.g. no answer is available to you as a backgrounded subagent), do
-  NOT guess: commit whatever partial progress is safe to commit, and end with `CONVERGED: no` /
-  `SUMMARY: BLOCKED — <the specific question, verbatim>`. The driver session is interactive and
-  will put the question to the user, then hand you the answer on the next iteration.
+  NOT guess: commit per step 8 (see "Committing on a BLOCKED exit" there), then end with
+  `CONVERGED: no` / `SUMMARY: BLOCKED — <the specific question, verbatim>`. The driver session is
+  interactive and will put the question to the user, then hand you the answer on the next
+  iteration.
 - Resolving an open question and committing that resolution is itself a complete, valid run: you
   may end here (go straight to step 8, then step 9) or continue into step 3 if there is more to do
   this run. Either is acceptable.
@@ -87,8 +118,8 @@ magic numbers. Do NOT edit the generated tests.
 - If a test genuinely contradicts correct implementation, the spec is likely wrong: STOP and ask
   the user via AskUserQuestion. Only then `allium:tend` the spec and re-run `/propagate`. If you
   cannot get a response (e.g. no answer is available to you as a backgrounded subagent), do NOT
-  guess: commit whatever partial progress is safe to commit, and end with `CONVERGED: no` /
-  `SUMMARY: BLOCKED — <the specific question, verbatim>`.
+  guess: commit per step 8 (see "Committing on a BLOCKED exit" there), then end with
+  `CONVERGED: no` / `SUMMARY: BLOCKED — <the specific question, verbatim>`.
 
 ### 7. Weed
 
@@ -117,6 +148,17 @@ own rebase step needs a clean tree to start from.
   first priority before starting any new work. These are working-history commits, expected to be
   squashed at the normal task wrap-up like any other task's commits.
 
+**Committing on a BLOCKED exit.** Ending with `SUMMARY: BLOCKED — ...` does not exempt you from
+this step. There is no "skip committing" escape hatch anywhere in this loop: you must never leave
+the tree dirty, whatever the reason you are ending. Concretely:
+
+- Do not commit something half-edited or syntactically broken. That is all "commit whatever
+  partial progress is safe to commit" means — back out the incomplete edit, don't skip the commit.
+- If, after backing that out, there is genuinely nothing left to commit, a clean tree with no new
+  commit is fine — a BLOCKED run legitimately may produce nothing.
+- If verification was left failing at the moment you blocked, the commit still uses the
+  `wip(allium-loop):` prefix above, exactly as for any other red iteration.
+
 ### 9. Report
 
 End your final message with exactly one of:
@@ -130,8 +172,13 @@ or
 
 ```
 CONVERGED: no
-SUMMARY: <one line: what changed this run, or "no changes" if genuinely blocked>
+SUMMARY: <one line: what changed this run, or "no changes" if this run genuinely produced none>
 ```
+
+`BLOCKED — <question>` is a distinct, separately-documented `SUMMARY` form (see step 2, step 6, and
+the guardrails): use it only for the specific case where you needed an answer from the user and
+could not obtain one. Do not use the word "blocked" in an ordinary no-changes summary — the driver
+matches the `BLOCKED —` prefix literally.
 
 Emit `CONVERGED: yes` ONLY when ALL hold:
 - `{{VERIFY_COMMAND}}` passes.
@@ -148,13 +195,20 @@ steps 3-8 didn't otherwise execute.
 - Never weaken or hand-edit generated tests.
 - Escalate ambiguity, open questions, and any code-vs-test conflict by PAUSING and asking the
   user via AskUserQuestion — never guess silently. If you cannot get a response (e.g. no answer is
-  available to you as a backgrounded subagent), do NOT guess: commit whatever partial progress is
-  safe to commit, and end with `CONVERGED: no` / `SUMMARY: BLOCKED — <the specific question,
-  verbatim>` so the interactive driver session can put the question to the user for you.
+  available to you as a backgrounded subagent), do NOT guess: commit per step 8 (including its
+  "Committing on a BLOCKED exit" rules), then end with `CONVERGED: no` / `SUMMARY: BLOCKED — <the
+  specific question, verbatim>` so the interactive driver session can put the question to the user
+  for you.
+- If this run's prompt carries an `**Answer to previous question:**` line, persist that answer into
+  the spec holding the question and commit it BEFORE any other step-2 work — it exists nowhere but
+  in this prompt, and the next iteration will not receive it again.
 - Honor spec parameters; no magic numbers.
 - Fix code, not the contract, when the spec is correct.
 - Never commit files under `docs/plans/`, and never stage or commit the loop's own state file
   `.claude/allium-loop-state.local.md`.
-- Always commit before ending, using the `wip(allium-loop):` prefix if verification is not green.
+- Never end with a dirty tree: always commit this run's work before ending, using the
+  `wip(allium-loop):` prefix if verification is not green. This holds for a `BLOCKED —` exit too —
+  there is no "skip committing" escape hatch. Ending with no new commit is acceptable only when the
+  tree is genuinely clean and there was nothing to commit.
 - Always end with the exact two-line `CONVERGED:` / `SUMMARY:` block from step 9 — the driver
   parses it literally.

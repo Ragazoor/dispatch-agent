@@ -113,7 +113,8 @@ creating a new one:
   `runs_completed`/`max_iterations` so far, last known state `Y`. Resume it, abandon it (delete
   the state file and start fresh), or cancel?" — via AskUserQuestion.
 - **Resume**: dispatch the next iteration using the existing state file's values (do not reset
-  `runs_completed`).
+  `runs_completed`, `retry_count`, or `consecutive_no_change_runs` — all three bound the loop and
+  resetting any of them silently re-grants budget).
 - **Abandon**: delete the state file and proceed with normal kickoff.
 - Never silently overwrite an active state file.
 
@@ -179,16 +180,27 @@ iterations beyond the repo itself):
    clause) and call out the resolution explicitly in the final report rather than guessing silently.
 
 2. Advance the spec(s):
+   - FIRST, before any other check in this step: if this run's prompt contains an
+     `**Answer to previous question:**` line (the driver supplies it after a `BLOCKED —` run —
+     see the escalation-guardrail addition below), locate the spec whose `open questions` section
+     holds the question it answers (the question text was carried verbatim, so it is enough to
+     Grep for), write the answer in (clearing/updating the entry), commit it immediately (a plain
+     spec-text commit, no `wip` prefix, separate from step 8 — the answer must not sit uncommitted
+     while the run proceeds), and treat that spec as touched this run REGARDLESS of the
+     `git status --porcelain` result below. If the spec
+     cannot be located, end `BLOCKED —` again carrying both question and answer verbatim rather
+     than dropping the answer.
    - If `{{ITERATION_NUMBER}} == 1`, use the Agent tool with subagent_type "allium:tend", given
      the FULL design doc, and told to place/update spec content across docs/specs/ using its own
      judgment — one file, several files, or a new file, as the behavior warrants. No pre-declared
      target file.
    - Otherwise, only re-invoke tend if this run's work reveals a spec error.
-   - Determine this run's touched specs: `git status --porcelain -- docs/specs/`. No history diff
-     is involved: this step runs BEFORE the run's own commit (step 8) and every iteration always
-     commits before ending, so "touched this run" is exactly the currently-uncommitted working-tree
-     state. `git status --porcelain` rather than `git diff` so that new *untracked* spec files
-     `allium:tend` may have created are counted too.
+   - Determine this run's touched specs: `git status --porcelain -- docs/specs/`, unioned with any
+     spec resolved from a carried answer above. No history diff is involved: this step runs BEFORE
+     the run's own commit (step 8) and every iteration always commits before ending, so "touched
+     this run" is exactly the currently-uncommitted working-tree state (plus that already-committed
+     carried-answer spec). `git status --porcelain` rather than `git diff` so that new *untracked*
+     spec files `allium:tend` may have created are counted too.
    - Check the `open questions` section of EACH touched spec (not the whole directory). Non-empty
      in any → STOP and resolve via AskUserQuestion before proceeding. The resolution MUST be
      written into the spec (clearing/updating the open-questions entry) and included in this
@@ -220,9 +232,17 @@ iterations beyond the repo itself):
    failing — <what's broken>` — never leave the tree dirty — and say so plainly in the final
    report; the next iteration must treat fixing it as its first priority before any new work. A
    green iteration commits normally (no `wip` prefix). These are working-history commits, expected
-   to be squashed at the normal task wrap-up like any other task's commits.
+   to be squashed at the normal task wrap-up like any other task's commits. A `BLOCKED —` exit is
+   NOT exempt from this step: there is no "skip committing" escape hatch anywhere in the design.
+   "Commit whatever partial progress is safe to commit" means "back out anything half-edited or
+   syntactically broken, then commit" — not "optionally skip the commit". If nothing is left to
+   commit after that, a clean tree with no new commit is fine; if verification was left failing at
+   the moment of blocking, the commit still carries the `wip(allium-loop):` prefix.
 
-9. Report: end with exactly two labelled lines — `CONVERGED: yes|no` and a one-line `SUMMARY`.
+9. Report: end with exactly two labelled lines — `CONVERGED: yes|no` and a one-line `SUMMARY`
+   (`<what changed this run, or "no changes" if this run genuinely produced none>` — the word
+   "blocked" is deliberately absent from that generic description, since `BLOCKED — <question>` is
+   a distinct, separately-documented `SUMMARY` form the driver prefix-matches literally).
    `CONVERGED: yes` only when verify passes, weed reports no divergence, AND every touched spec's
    open-questions section is empty; otherwise `CONVERGED: no`. Resolving an open question and
    committing that resolution counts as a change for the summary, even if steps 3-8 didn't
@@ -239,10 +259,22 @@ contract when the spec is correct, never commit `docs/plans/`, never skip rebase
 pause for a human is not established — unlike the driver, which is definitionally the interactive
 session. The prompt therefore keeps AskUserQuestion as the first attempt but gives it an explicit
 fallback rather than leaving "guess silently" as the path of least resistance: if no answer is
-obtainable, the iteration commits whatever partial progress is safe and ends with
-`CONVERGED: no` / `SUMMARY: BLOCKED — <the question, verbatim>`. The driver recognises that prefix,
-puts the question to the user itself, and passes the answer into the next iteration's prompt, where
-the existing open-questions-persistence rule commits the resolution into the spec.
+obtainable, the iteration commits per step 8 (backing out anything half-edited, never leaving the
+tree dirty) and ends with `CONVERGED: no` / `SUMMARY: BLOCKED — <the question, verbatim>`. The
+driver recognises that prefix, puts the question to the user itself, and passes the answer into the
+next iteration's prompt as an `**Answer to previous question:**` line.
+
+**Carrying the answer forward needs its own explicit rule.** An earlier draft of this design claimed
+the existing open-questions-persistence rule would take it from there. It would not have: that rule
+is scoped to specs the run *touched*, discovered via `git status --porcelain -- docs/specs/`, and
+the blocked iteration had already committed everything it had. So the receiving run would see zero
+touched specs, never inspect the spec still holding the unresolved question, and vacuously satisfy
+the "every touched spec's open-questions section is empty" convergence condition — legitimately
+emitting `CONVERGED: yes` while both the question and the hard-won answer never reached the spec at
+all, defeating the "never guess silently, always persist the answer" guardrail this whole design
+exists to enforce. prompt.md step 2 therefore opens with an explicit carried-answer instruction
+(see step 2 above): persist the answer into the spec holding the question, commit it, and force
+that spec into the touched set for this run so the gate and the convergence check both see it.
 
 ## Design Decisions
 
@@ -277,7 +309,11 @@ the existing open-questions-persistence rule commits the resolution into the spe
   producing no stdout, and shell variables do not persist across separate Bash tool calls. Plain
   `git status` also catches brand-new *untracked* spec files that `allium:tend` may create, which
   `git diff` would miss. Nothing is reported back to the driver for this, so the report shrank to
-  two lines (`CONVERGED:` / `SUMMARY:`).
+  two lines (`CONVERGED:` / `SUMMARY:`). **One deliberate exception**: a spec resolved from a
+  carried `**Answer to previous question:**` line is committed *within* step 2 and so is invisible
+  to the porcelain check — prompt.md forces it into the touched set explicitly (see the
+  carried-answer rule above), because otherwise the gate would skip the one spec that provably has
+  an outstanding question.
 - **Dropping the ralph-loop Stop hook also drops its one enforced guarantee**: it mechanically
   re-fed the prompt regardless of what the model did, so the loop couldn't silently die mid-flight.
   The fresh-agent design has no external equivalent, so it adds its own: an orphan check at
