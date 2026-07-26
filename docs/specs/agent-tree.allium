@@ -1,0 +1,642 @@
+-- allium: 3
+-- agent-tree.allium
+--
+-- Scope: The agent file tree panel — a companion pane living inside each
+--        agent's own tmux window that shows which files that agent has read
+--        and modified.
+-- Includes: The capture pipeline (a PostToolUse-driven, per-task JSONL event
+--           log of Read/Write/Edit/NotebookEdit tool calls); the companion
+--           pane's lifecycle (split at agent-window creation, global toggle
+--           keybinding bound alongside the board TUI, kill-pane + re-split);
+--           and the tree/badge rendering rules (worktree-rooted tree, Modified
+--           badge beating Read, auto-expanded directories).
+-- Excludes: Task-activity classification and the existing activity-signal hook
+--           (see agent-health.allium — HookPreToolUse fires for both PreToolUse
+--           and PostToolUse and is NOT modified by anything in this spec);
+--           MCP tool-call auditing and slow-DB warnings (see
+--           observability.allium, which deliberately scopes out hook events);
+--           the board TUI's own split pane, which joins a whole agent window
+--           next to the kanban board (see split-pane.allium — a different pane,
+--           in a different window, with a different lifecycle);
+--           agent-window creation itself and the main-session window (see
+--           dispatch.allium).
+--
+-- Two deliberately decoupled halves. CAPTURE is driven by Claude Code hooks and
+-- runs whether or not anything is watching: a dispatched agent fills its event
+-- log even when the board TUI is not running and no pane is open. RENDER is a
+-- standalone process inside the agent's own tmux window that tails that log.
+-- Neither half touches the board TUI's state, its DB refresh cycle, or the
+-- kanban App — the whole feature is invisible to the board process.
+
+use "./core.allium" as core
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- The Claude Code tools whose calls are captured. Every other tool call
+-- (including Bash, Grep, Glob, Task and every mcp__dispatch__* call) produces
+-- no FileEvent — see the BashGap note on CaptureFileEvent.
+enum TrackedFileTool { read | write | edit | notebook_edit }
+
+-- What a captured tool call did to the file. Also the badge vocabulary: a
+-- rendered node's badge is a FileOperation, so badge precedence
+-- (modified beats read) is a comparison within one named enum rather than
+-- across two anonymous ones.
+enum FileOperation { read | modified }
+
+enum TreeNodeKind { file | directory }
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+-- One line in <dispatch_data_dir>/<file_events_subdir>/<task_id>.jsonl.
+-- Every captured tool call becomes one FileEvent, serialised as a single JSON
+-- object on its own line. Events for a task accumulate in a single file named
+-- by the task's integer ID, under the centralized data dir (parent of the
+-- SQLite database) so the log outlives worktree cleanup — the same storage
+-- shape observability.allium uses for TrajectoryEntry.
+--
+-- The file shard coincides exactly with the natural serialization boundary:
+-- one task, one agent session, one strictly serial tool-call stream, so at
+-- most one process ever appends to a given task's file at a time. That, not
+-- precedent, is why an append-only file is safe here.
+value FileEvent {
+    schema_version: String        -- semver string, e.g. "1.0.0"
+    timestamp:      Timestamp     -- UTC, RFC 3339
+    task_id:        String        -- stringified Task.id of the agent that tooled
+    tool:           TrackedFileTool
+    path:           String        -- path exactly as the tool reported it
+                                  -- (absolute); relativised at render time
+    operation:      FileOperation -- read for read; modified for the other three
+}
+
+-- One row of the rendered tree. Nodes are derived, not stored: they are
+-- recomputed from the worktree's directory structure plus the task's FileEvent
+-- log on every refresh, so a node carries no identity of its own.
+value AgentTreeNode {
+    pane_root: String            -- the pane root this node was rendered under
+    path:      String            -- path relative to pane_root
+    kind:      TreeNodeKind
+    badge:     FileOperation?    -- null for directories and for untouched files
+    expanded:  Boolean           -- directories only; always false for files
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- The companion pane inside one agent's tmux window. Created by splitting that
+-- window at creation time; toggled between shown and hidden by killing and
+-- re-splitting the pane. Its state is not persisted — it is re-derived from
+-- live tmux, the same way dispatch.allium re-derives main-session liveness.
+entity AgentTreePane {
+    -- The agent window this pane was split out of. One pane per window
+    -- (see OneCompanionPanePerAgentWindow).
+    window: core/TmuxWindow
+
+    -- The task whose event log feeds this pane. Null for the main-session
+    -- window, which has no task context (see the MainSessionPaneScope open
+    -- question).
+    task: core/Task?
+
+    -- Absolute directory the tree is rooted at: the task's worktree path when
+    -- task != null, otherwise the main session's chosen directory.
+    root: String
+
+    status: shown | hidden
+
+    -- The tmux pane exists only while the pane is shown; hiding kills it.
+    tmux_pane: core/TmuxPane when status = shown
+
+    -- Stamped on every refresh; drives the redraw timer (see RefreshAgentTree).
+    last_rendered_at: Timestamp
+
+    transitions status {
+        shown -> hidden
+        hidden -> shown
+    }
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    file_event_schema_version: String = "1.0.0"
+
+    -- Subdirectory within the dispatch data dir that holds per-task file-event
+    -- logs. Sibling of observability.allium's trajectory_subdir.
+    file_events_subdir: String = "file-events"
+
+    -- Width of the companion pane as a percentage of the agent window.
+    -- Deliberately narrower than the board's own 40% split-pane: Claude's CLI
+    -- output needs the room, and a file tree is mostly short path segments.
+    agent_tree_pane_percent: Integer = 30
+
+    -- Redraw cadence. The renderer re-reads an append-only file it already has
+    -- open, so a one-second poll is cheap; it is also well below the point
+    -- where a follow-along view feels laggy. Not tied to the board TUI's
+    -- tick_interval — the two processes are independent.
+    agent_tree_refresh_interval: Duration = 1.second
+
+    -- The tmux key (pressed after the tmux prefix) that toggles the companion
+    -- pane. "e" for explorer: unbound in tmux's default key table, so the
+    -- binding shadows nothing. See the ToggleKeyChoice open question.
+    agent_tree_toggle_key: String = "e"
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- == Capture ==
+
+rule CaptureFileEvent {
+    -- After a dispatched agent completes a file-touching tool call, append one
+    -- FileEvent to that task's event log.
+    when: AgentFileToolCompleted(task, tool, path)
+
+    -- A tool call that reported no file path (a malformed payload, or a tool
+    -- schema change that renamed the path field) is skipped, not captured and
+    -- not an error. Soft-fail: the agent's tool call must not be disturbed by
+    -- anything this rule does.
+    requires: path != ""
+
+    ensures: append_jsonl(
+        path: dispatch_data_dir
+              + "/" + config.file_events_subdir
+              + "/" + str(task.id) + ".jsonl",
+        entry: FileEvent {
+            schema_version: config.file_event_schema_version,
+            timestamp: now,
+            task_id: str(task.id),
+            tool: tool,
+            path: path,
+            operation: if tool = read: read else: modified
+        }
+    )
+
+    @guidance
+        -- == Where the trigger comes from ==
+        -- AgentFileToolCompleted is emitted by the PostToolUse half of the
+        -- shell hook's existing PreToolUse|PostToolUse case arm, only for the
+        -- four tracked tools, and only when a path was extracted from the
+        -- payload.
+        --
+        -- ADDITIVE, NOT A REPLACEMENT. The same case arm's existing
+        -- `dispatch hook <id> pre_tool_use` call is untouched: it still fires
+        -- on BOTH events and for ALL tools (minus the mcp__dispatch__* early
+        -- exit), which is what keeps agent-health.allium's HookPreToolUse
+        -- stamping last_pre_tool_use_at. This rule adds a second, independent
+        -- call on the PostToolUse half; it does not gate, reorder or replace
+        -- the activity signal, and it introduces no new HookEventKind variant.
+        -- record_hook_event never sees a tool name or a file path — that enum
+        -- and that service path stay narrowly scoped to task-activity/
+        -- sub-status classification, and this capture deliberately routes
+        -- around them through its own CLI subcommand.
+        --
+        -- == Per-tool path field ==
+        -- Read, Write and Edit report the path as tool_input.file_path;
+        -- NotebookEdit reports it as tool_input.notebook_path. The mapping is
+        -- per-tool and must be revisited if Claude Code changes tool schemas —
+        -- a rename shows up as a silently empty path, which this rule's
+        -- requires clause turns into "no event" rather than a crash.
+        --
+        -- == The Bash gap ==
+        -- Files touched only through Bash (mv, sed -i, redirects) carry no
+        -- structured path in the payload and are therefore invisible to the
+        -- tree. Mitigated outside this spec by a global agent rule file that
+        -- steers agents toward Read/Write/Edit over raw shell file operations.
+        -- A blocking PreToolUse hook is the documented fallback if that proves
+        -- insufficient; it is out of scope here.
+        --
+        -- == Success is assumed ==
+        -- Whether the PostToolUse payload reliably signals a FAILED tool call
+        -- (an Edit whose old_string did not match, a Write denied by
+        -- permissions) is unconfirmed. Every captured PostToolUse is therefore
+        -- treated as a successful touch. Accepted inaccuracy: a file can carry
+        -- a Modified badge on the strength of an edit that did not land.
+        --
+        -- == Independent of the board ==
+        -- Capture runs in the agent's own short-lived hook process. It needs no
+        -- board TUI, no companion pane and no MCP connection, so an agent
+        -- dispatched with the board closed still builds a complete log, and a
+        -- pane opened later shows the whole history from the first tool call.
+}
+
+rule FileEventWriteFailureIsSilent {
+    -- Event-log writes are best-effort. File I/O errors (permission denied,
+    -- disk full) must not propagate into the agent's tool call.
+    when: FileEventWriteFailed(task_id, error)
+
+    ensures: FileEventWriteWarning(task_id: task_id, error: error)
+
+    @guidance
+        -- Mirrors observability.allium's TrajectoryWriteFailureIsSilent: the
+        -- append is wrapped in a fallible block, the error goes to a warn-level
+        -- log, and the hook process exits successfully anyway. No retry, no
+        -- buffering, no dead-letter file. A dropped event costs one missing
+        -- badge, which is not worth failing an agent's tool call over.
+}
+
+-- == Companion Pane Lifecycle ==
+--
+-- The toggle is a GLOBAL tmux keybinding, so like split-pane.allium's
+-- prefix+space jump-back binding its lifetime is the board TUI process's
+-- lifetime: bound when the board starts, unbound when it exits. A companion
+-- pane created by an agent window survives the board's exit — only the ability
+-- to toggle it goes away.
+
+rule BindAgentTreeToggle {
+    when: AppStarts()
+
+    ensures: AgentTreeToggleBound(key: config.agent_tree_toggle_key)
+
+    @guidance
+        -- Registered as a prefixed tmux binding alongside the existing
+        -- prefix+space jump-back binding (see split-pane.allium:
+        -- JumpBackToTuiWindow), through the same bind_key helper and the same
+        -- board-startup path. Best-effort: a failing tmux call must not
+        -- prevent the board TUI from starting.
+}
+
+rule UnbindAgentTreeToggle {
+    when: AppExits()
+
+    ensures: AgentTreeToggleUnbound(key: config.agent_tree_toggle_key)
+
+    @guidance
+        -- Torn down with the rest of the board's tmux setup, so the key is
+        -- returned to whatever tmux had bound it to. Consequence, shared with
+        -- prefix+space: the companion pane cannot be toggled while the board
+        -- TUI is not running.
+}
+
+rule SplitAgentTreePaneOnAgentLaunch {
+    -- Every agent window gets a companion pane the moment it is created. One
+    -- rule covers every launch path because they all emit AgentLaunched:
+    -- fresh dispatch, research dispatch, quick dispatch, epic auto-dispatch,
+    -- resume and retry-resume.
+    when: AgentLaunched(task, mode)
+
+    requires: task.tmux_window != null
+    requires: task.worktree != null
+
+    ensures: AgentTreePane.created(
+        window: task.tmux_window,
+        task: task,
+        root: task.worktree.path,
+        status: shown,
+        tmux_pane: core/TmuxPane.created(),
+        last_rendered_at: now
+    )
+
+    @guidance
+        -- The window is split immediately after it is created and the agent
+        -- command has been sent, using a split helper that takes both a size
+        -- (config.agent_tree_pane_percent) and a command to run in the new
+        -- pane — the same "create and immediately run a command" shape the
+        -- window-creation helper already establishes. The board's existing
+        -- 40%-hardcoded horizontal split helper is left alone; it serves the
+        -- board's own split-pane feature (see split-pane.allium).
+        --
+        -- The new pane runs a standalone tree renderer for this task
+        -- (`dispatch agent-tree <task_id>`), not part of the board's App. It
+        -- opens even when the task's log is still empty — the tree simply
+        -- shows the worktree with nothing badged.
+        --
+        -- NO RETROFIT. Creation is triggered only by window creation, so agent
+        -- windows that already existed when this feature shipped never grow a
+        -- pane on their own. Whether the toggle can create one on demand in
+        -- such a window is unresolved — see the ToggleTargetResolution open
+        -- question.
+}
+
+rule SplitAgentTreePaneOnMainSession {
+    -- The main session (a task-independent interactive Claude window rooted at
+    -- a user-chosen directory) is split for consistency with agent windows,
+    -- even though it has no task and therefore no event log.
+    when: CreateMainSession(user, dir)
+
+    requires: dir != ""
+
+    ensures: AgentTreePane.created(
+        window: core/TmuxWindow.created(name: "dispatch-main"),
+        task: null,
+        root: dir,
+        status: shown,
+        tmux_pane: core/TmuxPane.created(),
+        last_rendered_at: now
+    )
+
+    @guidance
+        -- DEGENERATE BY CONSTRUCTION, and known to be so. The capture hook
+        -- derives its task id from the worktree's numeric branch/directory
+        -- prefix; the main session has neither, so it exits before capturing
+        -- anything. This pane therefore renders the session directory with no
+        -- badges and no auto-expansion, forever. It is specified this way
+        -- because the design called for all three window-creation paths to
+        -- behave alike, not because an always-empty tree is useful — see the
+        -- MainSessionPaneScope open question, which asks whether this path
+        -- should be dropped instead.
+        --
+        -- The main-session window is also not covered by either pane-teardown
+        -- rule below: both key off a Task, and this pane has none.
+}
+
+rule HideAgentTreePane {
+    when: ToggleAgentTreePane(user)
+
+    let pane = AgentTreePane{window: current_tmux_window()}
+
+    requires: exists pane
+    requires: pane.status = shown
+
+    ensures: pane.status = hidden
+    ensures: pane.tmux_pane = null
+
+    @guidance
+        -- Hiding kills the pane outright rather than zooming or resizing it,
+        -- matching the board's own enter/exit split mechanism (kill-pane, then
+        -- re-split on the way back). The cost is that the renderer process dies
+        -- and restarts on the next show; that is cheap, because all its state
+        -- comes from re-reading the append-only event log.
+        --
+        -- The killed pane is the companion pane, never the agent's own pane:
+        -- the target is resolved from the AgentTreePane record for the focused
+        -- window, not from "whichever pane is not focused".
+}
+
+rule ShowAgentTreePane {
+    when: ToggleAgentTreePane(user)
+
+    let pane = AgentTreePane{window: current_tmux_window()}
+
+    requires: exists pane
+    requires: pane.status = hidden
+
+    ensures: pane.status = shown
+    ensures: pane.tmux_pane = core/TmuxPane.created()
+    ensures: pane.last_rendered_at = now
+
+    @guidance
+        -- Re-splits the window at config.agent_tree_pane_percent and restarts
+        -- the renderer, which rebuilds the full tree from the event log — so a
+        -- hide/show cycle loses no history, only the scroll position and any
+        -- manual expand/collapse the user had done.
+}
+
+rule DiscardAgentTreePaneOnWindowGone {
+    -- The companion pane lives inside the agent window. When that window dies,
+    -- the pane dies with it, whether or not dispatch asked for it.
+    when: WindowGone(task)
+
+    let pane = AgentTreePane{task: task}
+
+    requires: exists pane
+
+    ensures: not exists pane
+
+    @guidance
+        -- Covers the crash path specifically: agent-health.allium's
+        -- DetectCrashedAgent deliberately leaves task.tmux_window set so the
+        -- retry prompt can still name the window, so the field-transition rule
+        -- below would never fire for a crashed agent. The pane record must go
+        -- anyway — the tmux pane it refers to no longer exists.
+}
+
+rule DiscardAgentTreePaneOnWindowCleared {
+    -- Covers every lifecycle path that clears a task's window: wrap-up,
+    -- PR merge, manual Review -> Done, archive, and the kill half of a
+    -- retry-resume.
+    when: task: core/Task.tmux_window transitions_to null
+
+    let pane = AgentTreePane{task: task}
+
+    requires: exists pane
+
+    ensures: not exists pane
+
+    @guidance
+        -- Mirrors the trigger split-pane.allium's
+        -- SplitPaneRespawnOnWindowCleared uses, for the same reason: keying on
+        -- the field transition rather than on each individual lifecycle event
+        -- means no path can be forgotten. Unlike the board's split pane, there
+        -- is nothing to respawn — the pane is inside the window being
+        -- destroyed, so it is simply gone. A retry-resume produces a fresh
+        -- pane via SplitAgentTreePaneOnAgentLaunch.
+}
+
+-- == Rendering ==
+
+rule RefreshAgentTree {
+    -- A shown pane redraws on a timer, picking up whatever lines have landed in
+    -- the event log since the last pass.
+    when: pane: AgentTreePane.last_rendered_at + config.agent_tree_refresh_interval <= now
+
+    -- Hidden panes have no renderer process. The timestamp is not advanced
+    -- while hidden, so the trigger stays satisfied and the first refresh
+    -- happens immediately on show.
+    requires: pane.status = shown
+
+    -- Events for this pane's task, restricted to paths that lie under the
+    -- pane's root. A tool call against a file outside the worktree (a global
+    -- config file, a sibling repo) is still captured in the log, but has no
+    -- node in a tree rooted at the worktree and so contributes nothing here.
+    let events = file_events_under(file_events_for(pane.task), pane.root)
+
+    ensures: pane.last_rendered_at = now
+    ensures:
+        for entry in worktree_tree(pane.root):
+            AgentTreeNodeRendered(
+                pane: pane,
+                node: AgentTreeNode {
+                    pane_root: pane.root,
+                    path: entry.path,
+                    kind: entry.kind,
+                    -- Badge precedence: a file that was both read and modified
+                    -- shows Modified. Directories are never badged.
+                    badge:
+                        if entry.kind = directory: null
+                        else if events_for_path(events, entry.path).any(e => e.operation = modified): modified
+                        else if events_for_path(events, entry.path).count > 0: read
+                        else: null,
+                    -- Auto-expand: a directory opens exactly when something
+                    -- under it was touched, so the path to every badge is
+                    -- visible without the view degenerating into a full repo
+                    -- browser.
+                    expanded: entry.kind = directory
+                              and has_touched_descendant(events, entry.path)
+                }
+            )
+
+    @guidance
+        -- == The three rendering rules, in one place ==
+        --   1. ROOT. The tree is rooted at the pane's root — the task's
+        --      worktree, never the parent repo. Node paths are relative to it;
+        --      the log stores absolute paths, so relativisation happens here.
+        --   2. BADGES. Write, Edit and NotebookEdit produce Modified; Read
+        --      produces Read; a file with both shows Modified. Modified wins
+        --      because "this agent changed this file" is the fact the user is
+        --      scanning for, and it is strictly the more consequential of the
+        --      two.
+        --   3. EXPANSION. Directories containing a touched file are expanded;
+        --      untouched subtrees stay collapsed. Collapsed nodes are still
+        --      part of the tree, so the user can open them manually — the
+        --      expansion state computed here is the initial state, not a
+        --      filter. A manual expand/collapse is not overwritten by the next
+        --      refresh; only newly-touched directories open on their own.
+        --
+        -- == Black boxes ==
+        -- worktree_tree(root) enumerates the directory structure under root as
+        -- (path, kind) entries. events_for_path / has_touched_descendant /
+        -- file_events_under are pure lookups over the already-loaded event set.
+        -- A malformed line in the log is skipped rather than aborting the
+        -- refresh, so one bad append cannot blank the tree.
+        --
+        -- == Implementation notes ==
+        -- The renderer is a small standalone ratatui loop reusing the existing
+        -- tree widget dependency; it is not part of the board's App and shares
+        -- none of its state. Whether the directory scan is eager or lazy for
+        -- collapsed subtrees is an implementation choice — see the
+        -- TreeScanExclusions open question for what it should skip either way.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+--
+-- The node-scoped black boxes below (events_for_node,
+-- has_touched_descendant_node) are the node-only counterparts of
+-- RefreshAgentTree's event-scoped ones (events_for_path,
+-- has_touched_descendant): an invariant is handed a rendered node, not the
+-- event set the refresh pass had in scope, so it re-derives the events for
+-- that node from its pane_root and path.
+
+-- Every persisted event must carry the current schema version; readers
+-- dispatch on it, so an event without one is unreadable.
+invariant FileEventHasSchemaVersion {
+    for e in FileEvents:
+        e.schema_version != ""
+}
+
+-- A captured event always names a file. CaptureFileEvent guards on this, so it
+-- holds by construction.
+invariant FileEventHasPath {
+    for e in FileEvents:
+        e.path != ""
+}
+
+-- operation is a projection of tool, not an independent field: Read maps to
+-- read, and each of the three editing tools maps to modified. Nothing may
+-- record a read-only tool as a modification, or vice versa.
+invariant FileEventOperationMatchesTool {
+    for e in FileEvents:
+        (e.tool = read implies e.operation = read)
+        and (e.tool != read implies e.operation = modified)
+}
+
+-- An event's task_id must identify a real task. Events only ever come from a
+-- hook that resolved the id from a live worktree.
+invariant FileEventReferencesRealTask {
+    for e in FileEvents:
+        core/Task.exists(e.task_id)
+}
+
+-- One companion pane per agent window. A second split in the same window would
+-- steal room from the agent's own pane and leave two renderers tailing the same
+-- log.
+invariant OneCompanionPanePerAgentWindow {
+    for a in AgentTreePanes:
+        for b in AgentTreePanes:
+            a != b implies a.window != b.window
+}
+
+-- A task-bound pane is always rooted at that task's worktree — never at the
+-- parent repo, and never at another task's worktree.
+invariant TaskPaneRootIsTaskWorktree {
+    for p in AgentTreePanes:
+        p.task != null implies p.root = p.task?.worktree?.path
+}
+
+-- Modified beats Read: no node may show a Read badge while a modifying event
+-- exists for it.
+invariant ModifiedBadgeWinsOverRead {
+    for n in AgentTreeNodes:
+        n.badge = read implies not events_for_node(n).any(e => e.operation = modified)
+}
+
+-- Expansion is a directory-only property, and it follows touched descendants
+-- exactly: no expanded file nodes, no expanded-but-untouched directories, no
+-- collapsed directory hiding a badge on first render.
+invariant DirectoryExpansionFollowsTouchedDescendants {
+    for n in AgentTreeNodes:
+        (n.expanded implies n.kind = directory)
+        and (n.kind = directory implies n.expanded = has_touched_descendant_node(n))
+}
+
+-- Files are never badged as directories are: a directory carries no badge, so a
+-- badge on a node always means "this exact file was touched".
+invariant OnlyFilesCarryBadges {
+    for n in AgentTreeNodes:
+        n.kind = directory implies n.badge = null
+}
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface AgentTreeCompanionPane {
+    facing user: User
+
+    -- One surface instance per companion pane. The user reading it is looking
+    -- at the agent's own tmux window, not at the kanban board.
+    context pane: AgentTreePane
+
+    exposes:
+        pane.status
+        pane.root
+        pane.task
+
+    provides:
+        -- The global tmux binding (prefix + config.agent_tree_toggle_key).
+        -- Acts on the pane belonging to the currently focused window.
+        ToggleAgentTreePane(user)
+
+    @guarantee ReadOnlyObservation
+        -- The pane only reads: the event log, and the worktree's directory
+        -- structure. It never writes to the worktree, never mutates the task,
+        -- and never issues an MCP call. Killing it, or never opening it, cannot
+        -- change what the agent does or what the board shows.
+
+    @guarantee NoBoardCoupling
+        -- The pane is a separate process in a separate window from the board
+        -- TUI. It does not appear in the board's App state, does not
+        -- participate in the board's DB refresh cycle, and introduces no board
+        -- input mode. The board's only involvement is owning the lifetime of
+        -- the toggle keybinding.
+
+    @guidance
+        -- The pane's initial state is shown, so an agent window opens with the
+        -- tree already visible. Everything the pane displays is derived from
+        -- the event log, so it survives its own restart: toggling off and on
+        -- rebuilds the same badges.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "ToggleTargetResolution: how does the global toggle identify the pane it acts on? Window names encode the task (task-<id>), so parsing the focused window's name would let the toggle re-create a companion pane in a window that never had one — retrofitting on demand, which the no-retrofit scope boundary neither promises nor forbids. Recording the pane's identity as a tmux pane/window option at split time instead would make the toggle a strict no-op in such windows. HideAgentTreePane / ShowAgentTreePane are written to require an existing pane record, so today the answer decides whether a pre-existing agent window can ever show a tree at all."
+
+open question "MainSessionPaneScope: the main-session window has no task id and no worktree, so its companion pane renders an always-empty tree (SplitAgentTreePaneOnMainSession) and is covered by neither teardown rule. Should the main session be excluded from the split entirely, or should the capture hook learn to attribute main-session tool calls to some non-task log so the pane earns its space?"
+
+open question "ToggleKeyChoice: config.agent_tree_toggle_key defaults to e because tmux leaves prefix+e unbound, but the choice was not made in the design. It must not collide with the board's existing prefix+space jump-back binding, and overriding a tmux default (prefix+f find-window, prefix+t clock) should be a deliberate decision rather than a side effect."
+
+open question "TreeScanExclusions: worktree_tree enumerates the directory structure under the pane root. Which subtrees should it skip — .git, gitignored paths, build output (target/, node_modules/) — and is the scan eager or lazy for collapsed directories? An unfiltered eager scan of a large repo is both slow and useless, since none of those paths will ever carry a badge."
+
+open question "EventLogRetention: <dispatch_data_dir>/<file_events_subdir>/<task_id>.jsonl grows unbounded for the life of a task. A long agent session touching the same files repeatedly writes one line per touch, and nothing truncates, rotates or caps the file — the same gap observability.allium records for trajectory files. Should there be a size cap, a dedup-on-write, or a wrap-up-time truncation?"
+
+open question "OutOfWorktreeTouches: events whose path lies outside the pane root are captured but contribute no node, so an agent reading a global config file or a sibling repo leaves no visible trace. Should those touches be surfaced somewhere in the pane (a flat outside-worktree section) or is silently dropping them from the tree the intended behaviour?"
