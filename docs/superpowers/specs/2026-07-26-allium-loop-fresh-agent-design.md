@@ -109,21 +109,15 @@ clobber it, resetting the budget.
 SKILL.md's kickoff step therefore checks for an existing `active: true` state file **before**
 creating a new one:
 
-- If found, read it and tell the user: "An allium-loop is already active — started at `X`,
-  `runs_completed`/`max_iterations` so far, last known state `Y`. Resume it, abandon it (delete
-  the state file and start fresh), or cancel?" — via AskUserQuestion.
+- If found, read it and tell the user a loop is already active, including its current progress
+  (`started_at`, `runs_completed`/`max_iterations`), then ask via AskUserQuestion whether to
+  resume, abandon (delete the state file and start fresh), or cancel.
 - **Resume**: dispatch the next iteration using the existing state file's values (do not reset
   `runs_completed`, `retry_count`, or `consecutive_no_change_runs` — all three bound the loop and
   resetting any of them silently re-grants budget).
 - **Abandon**: delete the state file and proceed with normal kickoff.
+- **Cancel**: do nothing further.
 - Never silently overwrite an active state file.
-
-Crucially, `active: true` is **not** evidence the driver died. Given the async dispatch model, the
-likelier reading is that another session is still driving this loop and merely waiting on an
-in-flight iteration — and resuming in that case double-dispatches a second agent into the same
-worktree, racing rebases and commits. The question must therefore say so explicitly and ask the
-user to confirm no other session is driving this loop before Resume is chosen, recommending
-**Cancel** (wait and check back) whenever they are unsure.
 
 ### SKILL.md flow
 
@@ -154,19 +148,15 @@ user to confirm no other session is driving this loop before Resume is chosen, r
      to the user rather than retrying indefinitely or silently treating it as "no progress."
    - Otherwise (a real report was returned): increment `runs_completed` — exactly once, because a
      full run just genuinely finished — reset `retry_count` to 0, and update
-     `consecutive_no_change_runs` (increment if the summary reports no changes, else reset to 0; a
-     `BLOCKED —` summary resets it, since an answer is about to be supplied).
+     `consecutive_no_change_runs` (increment if the summary reports no changes, else reset to 0).
      - **Converged** → delete the state file, report success to the user.
      - **Not converged** and (`runs_completed >= max_iterations` OR
        `consecutive_no_change_runs >= 2`) → delete the state file, summarize what's unresolved,
-       stop. This budget check takes precedence over the `BLOCKED —` handling below.
-     - **Not converged**, budget remains, and the summary starts with `BLOCKED —` → the iteration
-       could not reach a human itself; the driver (which *is* the interactive session) asks the
-       carried question via AskUserQuestion and dispatches the next iteration with the answer
-       appended to the prompt as an `**Answer to previous question:**` line.
-     - **Not converged** and budget remains (any other summary) → dispatch the next iteration.
-     In both dispatch cases the iteration number advances on its own, since `runs_completed` was
-     just incremented and the number is always derived as `runs_completed + 1`.
+       stop.
+     - **Not converged** and budget remains (`runs_completed < max_iterations` AND
+       `consecutive_no_change_runs < 2`) → dispatch the next iteration. The iteration number
+       advances on its own, since `runs_completed` was just incremented and the number is always
+       derived as `runs_completed + 1`.
 
 ### prompt.md — the per-iteration template
 
@@ -180,27 +170,16 @@ iterations beyond the repo itself):
    clause) and call out the resolution explicitly in the final report rather than guessing silently.
 
 2. Advance the spec(s):
-   - FIRST, before any other check in this step: if this run's prompt contains an
-     `**Answer to previous question:**` line (the driver supplies it after a `BLOCKED —` run —
-     see the escalation-guardrail addition below), locate the spec whose `open questions` section
-     holds the question it answers (the question text was carried verbatim, so it is enough to
-     Grep for), write the answer in (clearing/updating the entry), commit it immediately (a plain
-     spec-text commit, no `wip` prefix, separate from step 8 — the answer must not sit uncommitted
-     while the run proceeds), and treat that spec as touched this run REGARDLESS of the
-     `git status --porcelain` result below. If the spec
-     cannot be located, end `BLOCKED —` again carrying both question and answer verbatim rather
-     than dropping the answer.
    - If `{{ITERATION_NUMBER}} == 1`, use the Agent tool with subagent_type "allium:tend", given
      the FULL design doc, and told to place/update spec content across docs/specs/ using its own
      judgment — one file, several files, or a new file, as the behavior warrants. No pre-declared
      target file.
    - Otherwise, only re-invoke tend if this run's work reveals a spec error.
-   - Determine this run's touched specs: `git status --porcelain -- docs/specs/`, unioned with any
-     spec resolved from a carried answer above. No history diff is involved: this step runs BEFORE
-     the run's own commit (step 8) and every iteration always commits before ending, so "touched
-     this run" is exactly the currently-uncommitted working-tree state (plus that already-committed
-     carried-answer spec). `git status --porcelain` rather than `git diff` so that new *untracked*
-     spec files `allium:tend` may have created are counted too.
+   - Determine this run's touched specs: `git status --porcelain -- docs/specs/`. No history diff is
+     involved: this step runs BEFORE the run's own commit (step 8) and every iteration always
+     commits before ending, so "touched this run" is exactly the currently-uncommitted working-tree
+     state. `git status --porcelain` rather than `git diff` so that new *untracked* spec files
+     `allium:tend` may have created are counted too.
    - Check the `open questions` section of EACH touched spec (not the whole directory). Non-empty
      in any → STOP and resolve via AskUserQuestion before proceeding. The resolution MUST be
      written into the spec (clearing/updating the open-questions entry) and included in this
@@ -232,17 +211,12 @@ iterations beyond the repo itself):
    failing — <what's broken>` — never leave the tree dirty — and say so plainly in the final
    report; the next iteration must treat fixing it as its first priority before any new work. A
    green iteration commits normally (no `wip` prefix). These are working-history commits, expected
-   to be squashed at the normal task wrap-up like any other task's commits. A `BLOCKED —` exit is
-   NOT exempt from this step: there is no "skip committing" escape hatch anywhere in the design.
-   "Commit whatever partial progress is safe to commit" means "back out anything half-edited or
-   syntactically broken, then commit" — not "optionally skip the commit". If nothing is left to
-   commit after that, a clean tree with no new commit is fine; if verification was left failing at
-   the moment of blocking, the commit still carries the `wip(allium-loop):` prefix.
+   to be squashed at the normal task wrap-up like any other task's commits. There is no "skip
+   committing" escape hatch anywhere in the design; ending with no new commit is acceptable only
+   when the tree is genuinely clean and there was nothing to commit.
 
 9. Report: end with exactly two labelled lines — `CONVERGED: yes|no` and a one-line `SUMMARY`
-   (`<what changed this run, or "no changes" if this run genuinely produced none>` — the word
-   "blocked" is deliberately absent from that generic description, since `BLOCKED — <question>` is
-   a distinct, separately-documented `SUMMARY` form the driver prefix-matches literally).
+   (`<what changed this run, or "no changes" if this run genuinely produced none>`).
    `CONVERGED: yes` only when verify passes, weed reports no divergence, AND every touched spec's
    open-questions section is empty; otherwise `CONVERGED: no`. Resolving an open question and
    committing that resolution counts as a change for the summary, even if steps 3-8 didn't
@@ -254,27 +228,22 @@ Guardrails carried over unchanged: never weaken/hand-edit generated tests, escal
 AskUserQuestion rather than guessing, honor spec parameters (no magic numbers), fix code not the
 contract when the spec is correct, never commit `docs/plans/`, never skip rebase.
 
-**One addition to the escalation guardrail.** Under this design an iteration runs as a
-*backgrounded* subagent, and whether such a subagent's AskUserQuestion calls actually reach and
-pause for a human is not established — unlike the driver, which is definitionally the interactive
-session. The prompt therefore keeps AskUserQuestion as the first attempt but gives it an explicit
-fallback rather than leaving "guess silently" as the path of least resistance: if no answer is
-obtainable, the iteration commits per step 8 (backing out anything half-edited, never leaving the
-tree dirty) and ends with `CONVERGED: no` / `SUMMARY: BLOCKED — <the question, verbatim>`. The
-driver recognises that prefix, puts the question to the user itself, and passes the answer into the
-next iteration's prompt as an `**Answer to previous question:**` line.
+**Escalation happens in-run, with no relay through the driver.** An iteration that hits an open
+question or ambiguity calls AskUserQuestion itself, writes the answer into the spec (or wherever it
+belongs), commits that resolution, and continues — all within the same run. Nothing is handed back
+to the driver for it.
 
-**Carrying the answer forward needs its own explicit rule.** An earlier draft of this design claimed
-the existing open-questions-persistence rule would take it from there. It would not have: that rule
-is scoped to specs the run *touched*, discovered via `git status --porcelain -- docs/specs/`, and
-the blocked iteration had already committed everything it had. So the receiving run would see zero
-touched specs, never inspect the spec still holding the unresolved question, and vacuously satisfy
-the "every touched spec's open-questions section is empty" convergence condition — legitimately
-emitting `CONVERGED: yes` while both the question and the hard-won answer never reached the spec at
-all, defeating the "never guess silently, always persist the answer" guardrail this whole design
-exists to enforce. prompt.md step 2 therefore opens with an explicit carried-answer instruction
-(see step 2 above): persist the answer into the spec holding the question, commit it, and force
-that spec into the touched set for this run so the gate and the convergence check both see it.
+An earlier revision of this design added a defensive fallback for the hypothetical case of a
+backgrounded subagent being unable to reach a human: the iteration would report
+`SUMMARY: BLOCKED — <question>`, the driver would ask the user itself, and the answer would be
+carried into the next iteration's prompt as an `**Answer to previous question:**` line. That
+fallback was **removed as unwarranted speculative complexity** — nothing ever established that a
+backgrounded subagent's AskUserQuestion actually fails to reach a human, and defending the
+hypothesis produced three rounds of increasingly narrow bugs (lost answers, wrong-origin
+assumptions, broken carry-forward chains) for no observed benefit. If background AskUserQuestion
+unreachability turns out to be real, it surfaces as an observably stuck or hanging loop in normal
+use, which is far more tractable to diagnose and fix with actual evidence than to engineer around
+speculatively.
 
 ## Design Decisions
 
@@ -308,12 +277,8 @@ that spec into the touched set for this run so the gate and the convergence chec
   important safety check. It also never survived the trip: the capture was a bare shell assignment
   producing no stdout, and shell variables do not persist across separate Bash tool calls. Plain
   `git status` also catches brand-new *untracked* spec files that `allium:tend` may create, which
-  `git diff` would miss. Nothing is reported back to the driver for this, so the report shrank to
-  two lines (`CONVERGED:` / `SUMMARY:`). **One deliberate exception**: a spec resolved from a
-  carried `**Answer to previous question:**` line is committed *within* step 2 and so is invisible
-  to the porcelain check — prompt.md forces it into the touched set explicitly (see the
-  carried-answer rule above), because otherwise the gate would skip the one spec that provably has
-  an outstanding question.
+  `git diff` would miss. Nothing is reported back to the driver for this, so the report is exactly
+  two lines (`CONVERGED:` / `SUMMARY:`).
 - **Dropping the ralph-loop Stop hook also drops its one enforced guarantee**: it mechanically
   re-fed the prompt regardless of what the model did, so the loop couldn't silently die mid-flight.
   The fresh-agent design has no external equivalent, so it adds its own: an orphan check at

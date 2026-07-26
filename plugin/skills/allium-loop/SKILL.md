@@ -21,19 +21,13 @@ rebase/tend/implement/verify/weed work itself.
 ### Kickoff
 
 1. **Check for an existing active loop first.** Look for `.claude/allium-loop-state.local.md`
-   with `active: true`. If found, read it and use AskUserQuestion to ask the user whether to:
+   with `active: true`. If found, read it and tell the user a loop is already active, including its
+   current progress (`started_at`, and `runs_completed` of `max_iterations`). Then use
+   AskUserQuestion to ask whether to:
    - **Resume** — dispatch the next iteration using the existing file's values (do not reset
      `runs_completed`, `retry_count`, or `consecutive_no_change_runs`).
    - **Abandon** — delete the state file and continue with a fresh kickoff below.
    - **Cancel** — stop here, do nothing further.
-
-   An `active: true` file does **not** mean the loop is dead. Because iteration dispatch is
-   asynchronous, the far more likely explanation is that another session/terminal is still
-   legitimately driving this loop and simply waiting on an in-flight iteration's result. Say this
-   explicitly in the question, and ask the user to confirm that no other session is currently
-   driving this same loop before choosing **Resume** — resuming while another driver is live
-   dispatches a second concurrent agent into the same worktree, producing racing rebases and
-   commits. If the user is unsure, recommend **Cancel** (wait, then check back) over Resume.
 
    Never silently overwrite an active state file.
 
@@ -117,27 +111,15 @@ started_at: "TIMESTAMP"
        as "no progress."
    - **A real report was returned** (both labels present): increment `runs_completed` in the state
      file by exactly 1 and reset `retry_count` to `0`. Then update `consecutive_no_change_runs`: if
-     this run's `SUMMARY` reports no changes, increment it by 1; otherwise reset it to `0`. A
-     `SUMMARY` starting with `BLOCKED —` resets it to `0` — the loop is not stuck, it is waiting on
-     an answer you are about to supply.
+     this run's `SUMMARY` reports no changes, increment it by 1; otherwise reset it to `0`.
      - **`CONVERGED: yes`**: delete `.claude/allium-loop-state.local.md` and report success to
        the user, including the final `SUMMARY`.
      - **`CONVERGED: no`** and either `runs_completed >= max_iterations` or
        `consecutive_no_change_runs >= 2`: delete the state file, summarize to the user exactly
        what's unresolved and why, and stop. Never emit a false convergence claim to exit early.
-       This budget check wins over the `BLOCKED —` handling below — never dispatch past the budget
-       just because a question is outstanding; surface the unanswered question in the summary
-       instead.
-     - **`CONVERGED: no`**, budget remains, and `SUMMARY` starts with `BLOCKED —`: the iteration
-       hit a question it could not put to the user itself. You are the interactive session, so ask
-       the carried question directly via AskUserQuestion, then dispatch the next iteration (repeat
-       step 1 above) with the user's answer appended to the substituted prompt as a
-       `**Answer to previous question:** <answer>` line — prompt.md step 2 opens by requiring that
-       iteration to locate the spec holding the question, write the answer in, commit it, and count
-       that spec as touched this run. The answer exists nowhere but in that prompt, so include it
-       verbatim.
-     - **`CONVERGED: no`** and budget remains (any other summary): dispatch the next iteration
-       (repeat step 1 above).
+     - **`CONVERGED: no`** and budget remains (`runs_completed < max_iterations` **and**
+       `consecutive_no_change_runs < 2`): dispatch the next iteration (repeat step 1 above).
 
-   In both dispatch cases the iteration number advances on its own: `runs_completed` was just
-   incremented, and step 1 derives the number as `runs_completed + 1`.
+   When dispatching the next iteration the number advances on its own: `runs_completed` was just
+   incremented, and step 1 derives the number as `runs_completed + 1`. (The retry re-dispatch above
+   is the one case that deliberately reuses the same number.)
