@@ -90,6 +90,22 @@ enum Commands {
         #[arg(long = "kind")]
         notification_kind: Option<String>,
     },
+    /// Append a file-touch event (Read/Write/Edit/NotebookEdit) to a task's
+    /// file-events JSONL log (see `docs/specs/agent-tree.allium`). Deliberately
+    /// independent of `Hook`/`HookEventKind` — this command never touches
+    /// `TaskService` or the database, and does not affect task-activity
+    /// classification.
+    HookFileEvent {
+        /// Task ID
+        id: i64,
+        /// Claude Code tool name: Read, Write, Edit, or NotebookEdit
+        #[arg(long)]
+        tool: String,
+        /// File path from the tool's payload (`tool_input.file_path`, or
+        /// `tool_input.notebook_path` for NotebookEdit)
+        #[arg(long)]
+        path: String,
+    },
     /// Gate `gh pr create`: block the first attempt for a task with a reminder
     /// to consult PR learnings, then allow subsequent attempts. Exits 2 to
     /// block (Claude Code PreToolUse block signal), 0 to allow.
@@ -307,6 +323,18 @@ async fn cmd_hook(
         }
         Err(e) => return Err(e.into()),
     }
+    Ok(())
+}
+
+async fn cmd_hook_file_event(
+    db: &std::path::Path,
+    id: i64,
+    tool: String,
+    path: String,
+) -> Result<()> {
+    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
+    init_app_log_subscriber(data_dir)?;
+    dispatch_tui::file_events::append_file_event(data_dir, id, &tool, &path).await;
     Ok(())
 }
 
@@ -652,6 +680,9 @@ async fn main() -> Result<()> {
             kind,
             notification_kind,
         } => cmd_hook(&cli.db, id, kind, notification_kind).await?,
+        Commands::HookFileEvent { id, tool, path } => {
+            cmd_hook_file_event(&cli.db, id, tool, path).await?
+        }
         Commands::PrGate { id } => cmd_pr_gate(&cli.db, id).await?,
         Commands::List { status } => cmd_list(&cli.db, status).await?,
         Commands::Setup { port, yes } => {

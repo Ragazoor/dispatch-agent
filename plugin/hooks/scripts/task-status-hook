@@ -40,6 +40,22 @@ case "$EVENT" in
         # Without this, the wrap-up skill's get_task and wrap_up calls clobber review status.
         [[ "$TOOL" == mcp__dispatch__* ]] && exit 0
         dispatch hook "$ID" pre_tool_use
+
+        # Additive: on PostToolUse only, forward file-touching tool calls to the
+        # per-task file-events log. Does not gate, reorder, or replace the
+        # activity signal above.
+        if [[ "$EVENT" == "PostToolUse" ]]; then
+            case "$TOOL" in
+                Read|Write|Edit)
+                    FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty') ;;
+                NotebookEdit)
+                    FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.notebook_path // empty') ;;
+                *) FILE_PATH="" ;;
+            esac
+            if [[ -n "$FILE_PATH" ]]; then
+                dispatch hook-file-event "$ID" --tool "$TOOL" --path "$FILE_PATH"
+            fi
+        fi
         ;;
     Stop)               dispatch hook "$ID" stop ;;
     Notification)
