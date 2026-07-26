@@ -108,9 +108,9 @@ started_at: "TIMESTAMP"
      `iteration_start_sha`.
      - **`CONVERGED: yes`**: delete `.claude/allium-loop-state.local.md` and report success to
        the user, including the final `SUMMARY`.
-     - **`CONVERGED: no`**, `runs_completed < max_iterations`, and the `SUMMARY` reports real
-       changes this run: dispatch the next iteration (repeat step 1 above, with
-       `{{ITERATION_NUMBER}}` incremented by one).
+     - **`CONVERGED: no`** and NOT (`runs_completed >= max_iterations`, or this run's and the
+       previous run's `SUMMARY` both reported no changes): dispatch the next iteration (repeat
+       step 1 above, with `{{ITERATION_NUMBER}}` incremented by one).
      - **`CONVERGED: no`** and either `runs_completed >= max_iterations`, or this run's and the
        previous run's `SUMMARY` both reported no changes: delete the state file, summarize to the
        user exactly what's unresolved and why, and stop. Never emit a false convergence claim to
