@@ -76,10 +76,7 @@ async fn action_hints_running_with_worktree_no_window() {
         .map(|s| s.content.as_ref())
         .collect();
     assert!(keys.contains(&"[Space]"), "should have resume hint");
-    assert!(
-        !keys.contains(&"[d]"),
-        "the d key is no longer bound"
-    );
+    assert!(!keys.contains(&"[d]"), "the d key is no longer bound");
     let text: String = hints.iter().map(|s| s.content.as_ref()).collect();
     assert!(text.contains("resume"), "Space means resume here");
 }

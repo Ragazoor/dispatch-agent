@@ -1631,7 +1631,10 @@ fn space_on_backlog_no_window_dispatches() {
     assert!(
         matches!(
             app.input.mode,
-            InputMode::ConfirmTrustRepo { task_id: TaskId(1), .. }
+            InputMode::ConfirmTrustRepo {
+                task_id: TaskId(1),
+                ..
+            }
         ),
         "expected ConfirmTrustRepo mode, got {:?}",
         app.input.mode
