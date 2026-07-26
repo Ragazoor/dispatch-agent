@@ -119,3 +119,6 @@ jobs:
 
       - name: Validate path references in CLAUDE.md
         run: ./scripts/check-doc-paths.sh
+
+      - name: Self-test the doc-path checker
+        run: bash ./scripts/test-check-doc-paths.sh

@@ -21,7 +21,7 @@ cargo run -- verify-feed 'gh api ...'  # run a feed command and validate its JSO
 
 ### First-time setup
 
-The pre-push hook runs `cargo fmt` (auto-formats), `cargo clippy --all-targets -- -D warnings`, `./scripts/check-doc-paths.sh` (validates doc links), and `./scripts/check-no-test-sleep.sh` (rejects `tokio::time::sleep` in test code — see the async-test rule below). Run `cargo test` separately before pushing.
+The pre-push hook (`.githooks/pre-push`) runs, in order: `cargo fmt` (auto-formats), `cargo clippy --all-targets -- -D warnings` (no `--fix` — it checks, it does not rewrite), `./scripts/check-doc-paths.sh` (validates every `src/…`/`docs/…` path and `file:NN` line citation in the agent-facing docs), `./scripts/test-check-doc-paths.sh` (self-test for that checker), `./scripts/check-no-test-sleep.sh` (rejects `tokio::time::sleep` in test code — see the async-test rule below), and `bash ./scripts/test-fetch-reviews.sh` (stub-`gh` test for the review feed script). Run `cargo test` separately before pushing.
 
 The hook is tracked at `.githooks/pre-push`. A fresh clone must point git at it once — run `cargo run -- doctor hooks --repair` (which sets `core.hooksPath = .githooks`) or `git config core.hooksPath .githooks`. Don't add hooks to `.git/hooks/` directly: that directory is untracked and shared across all worktrees, so changes there aren't version-controlled or reviewed.
 
@@ -46,7 +46,7 @@ Suite is green; if a runtime test fails locally, suspect timing — `spawn_block
 
 Snapshots live in `src/tui/tests/snapshots/` and render to a 120×40 `TestBackend`. **Do not change the backend size** — it breaks all existing diffs.
 
-Agent prompt snapshots live in `src/dispatch/snapshots/` and lock the rendered output of every `build_*_prompt` variant. Agent prompt bodies live in `src/dispatch/prompts/` as markdown files.
+Agent prompt snapshots live in `src/dispatch/snapshots/` and lock the rendered output of every `build_*_prompt` variant. `src/dispatch/prompts/` holds only the two review addenda as markdown (`pr-review.md`, `dependabot.md`, inlined via `include_str!`) — the dispatch, quick-dispatch, and research bodies are string-built in `src/dispatch/prompts.rs`.
 
 To accept intentional UI changes:
 
@@ -59,8 +59,6 @@ rm src/dispatch/snapshots/*.snap.new                 # always clean up
 ```
 
 **Don't skip the `rm *.snap.new` cleanup.** A stray `.snap.new` left in the tree is picked up by the next `cargo insta review` and silently mixed into an unrelated review pass, making it easy to accept the wrong diff. Always remove them once you've accepted (or rejected) a change.
-
-**Adding a new `InputMode` variant** causes every key-sequence snapshot to diverge even when no rendering changed — the serialised state embedded in each snapshot now includes the new variant name. Run `INSTA_UPDATE=always cargo test tui::tests::snapshots` to accept all the diffs, then verify the diffs contain only the new mode name (no layout or content changes), and finally re-run `cargo test tui::tests::scenarios` to confirm behaviour is unchanged.
 
 ### Where new tests go
 
@@ -86,6 +84,34 @@ CI runs `cargo tarpaulin --out xml` in the `coverage` job. Run locally with `car
 
 Overall line coverage sits around **85%** as an approximate snapshot (re-measure with `cargo tarpaulin`; the figure drifts and is not tracked). `src/setup/` carries substantial inline tests despite its size — the real known-low areas are its OS-interaction branches (hooks, filesystem writes) and some TUI input/popup files. Driving those to 100% is not expected. Treat the baseline as a sanity check, not a target: don't over-invest chasing full coverage on render-heavy code, and a single file below the average is not by itself a problem.
 
+## Running & Debugging Locally
+
+```bash
+cargo run -- tui                                  # requires a running tmux server
+cargo run -- --db /tmp/scratch.db tui             # throwaway DB — never point a dev run at your real one
+RUST_LOG=dispatch_tui=debug cargo run -- tui      # then tail the log file (see below)
+```
+
+- **DB location**: `$XDG_DATA_HOME/dispatch/tasks.db`, else `~/.local/share/dispatch/tasks.db` (`default_db_path()` in `src/lib.rs`). Override with the global `--db` flag or `DISPATCH_DB`. To reset, delete the file — the schema is rebuilt from `MIGRATIONS` on next open.
+- **Logs do not go to stderr.** `cmd_tui` installs a `tracing_subscriber` that appends to `app.log` **next to the database file** (`init_app_log_subscriber` in `src/main.rs`), because stderr belongs to the TUI. Watch it with `tail -f ~/.local/share/dispatch/app.log`. The floor is `INFO`; `RUST_LOG` (crate name `dispatch_tui`) raises it.
+- **MCP port**: `DEFAULT_PORT = 3142` (`src/lib.rs`), override with `--port` on `tui`/`setup` or `DISPATCH_PORT`.
+- **Exercising MCP by hand**: see `docs/mcp.md`. Identity comes from headers, and **exactly one** of the two must be set (`CallerIdentity::from_headers`, `src/mcp/identity.rs:21`, applied by the `src/mcp/middleware.rs` middleware). A bare `curl` sends neither, so it resolves to `IdentityError::Missing` and any handler that requires authorization rejects it. Send `-H 'X-Caller-Task-Id: <id>'` to act as that task's agent, or `-H 'X-Caller-Kind: session'` to act as the human session; sending both is a `Conflict`.
+
+## External Dependencies
+
+Required on `PATH` at runtime, with **no startup preflight** — `dispatch doctor` checks worktrees, sessions, and hooks, not binary availability, so a missing binary surfaces as a failed shell command mid-operation:
+
+- **tmux** (`src/tmux.rs`) — every window/pane operation.
+- **git** (`src/git.rs`, `src/dispatch/worktree.rs`, `src/dispatch/finish.rs`) — worktrees, rebase, branch detection.
+- **gh** (`src/dispatch/mod.rs`, and the `scripts/fetch-*.sh` feed commands) — PR status and feed data. Network calls.
+- **claude** — spawned inside the tmux window by `src/dispatch/agents.rs` as `claude --plugin-dir ~/.claude/plugins/local/dispatch …`; that plugin dir is installed by `cargo run -- setup`.
+
+POSIX-only. Embeddings/RAG (`src/service/embeddings.rs`) also make live calls.
+
+## Verify Command
+
+A per-repo, single-line shell command (e.g. `cargo test`) that dispatched agents must run before declaring work complete. Stored on the `repo_paths` row for the task's `repo_path`; set via the `set_verify_command` MCP tool or `cargo run -- repo set-verify <path> <command>`. When set, `build_prompt` appends a `## Verification` section (`render_verification` in `src/dispatch/prompts.rs`); when null, nothing is emitted. Newlines and carriage returns are rejected — chain steps with `&&` or `;`.
+
 ## Test-Driven Development
 
 Always use TDD. Express intended behaviour as tests before writing the code that satisfies them — for new features, bug fixes, and refactors alike.
@@ -102,6 +128,7 @@ The Allium specs in `docs/specs/` are the **source of truth** for domain logic:
 - `split-pane.allium` — split-pane lifecycle, focus border, jump-to-agent, pin, swap, tmux detach
 - `mcp-task-tools.allium` — MCP tools for task management and the CLI plan-attachment surface
 - `epics.allium` — epic lifecycle and MCP epic tools
+- `task-watchers.allium` — task-watcher subscriptions (`subscribe_to_task` / `unsubscribe_from_task`) and the one-shot completion notice
 - `learnings.allium` — knowledge base rules and MCP learning tools
 - `feeds.allium` — programmable feed epics (the feed pipeline that upserts tasks from external commands)
 - `todo.allium` — personal TODO overlay (lightweight checklist, separate from the kanban board)
@@ -129,7 +156,14 @@ Dispatched agents always work from their worktree folder. Every prompt includes 
 
 ## Tag System
 
-Tags (`TaskTag` in `src/models/tasks.rs`: `Bug`, `Feature`, `Chore`, `PrReview`, `Research`, `Fix`) drive dispatch behavior via `DispatchMode::for_task()`. A task with a plan always routes to `Dispatch` regardless of tag. Without a plan: `PrReview`/`Research`/`Fix` route to dedicated agents; everything else (including no tag) → `Dispatch`. Read `DispatchMode::for_task()` in `src/models/tasks.rs` for the authoritative mapping.
+Tags (`TaskTag` in `src/models/tasks.rs:438`): `Bug`, `Feature`, `Chore`, `PrReview`, `Research`, `Fix`, `Dependabot`. Most are **kanban labels only**.
+
+Exactly two mechanisms read the tag:
+
+- `DispatchMode::for_task()` (`src/models/tasks.rs:420`) — `Research`, and only `Research`, and only when the task has no plan, routes to the read-only research agent (`build_research_prompt`). Everything else, plan or no plan, routes to `Dispatch`. There are only two `DispatchMode` variants.
+- `TaskTag::is_review()` (`src/models/tasks.rs:465`) — true for `PrReview | Dependabot`. Inside the unified `build_prompt` (`src/dispatch/prompts.rs:264`) this swaps in a review addendum from `src/dispatch/prompts/pr-review.md` or `dependabot.md`, skips the plan/implement instructions in favour of a trimmed trailing block, and — when the task carries a PR URL — bases the worktree on the PR's head branch instead of the repo's base branch, soft-falling back to the base branch if that can't be resolved (`src/dispatch/agents.rs:50`).
+
+`Bug`, `Feature`, `Chore`, and `Fix` change nothing but the card badge.
 
 ## Timing Constants
 
@@ -158,10 +192,10 @@ This file is intentionally slim — it is loaded into every agent's context. Rea
 
 > **Workhorse macros**: `patch_struct!` (`src/db/mod.rs:30`) generates the `TaskPatch`/`EpicPatch` selective-update builders from a field list. `mcp_tools!` (`src/mcp/handlers/dispatch.rs:39`) generates the MCP tool registry (`tool_definitions()`, `dispatch_tool()`, `TOOL_NAMES`) from one declarative list of tools. Read the macro's doc comment before adding a patch field or an MCP tool by hand.
 
-- [docs/architecture.md](docs/architecture.md) — Message→Command, ProcessRunner, command queue draining, editor session invariant, layout-cache coherence (self-healing), review/security agent state machine, error handling, quick dispatch
-- [docs/conventions.md](docs/conventions.md) — `FieldUpdate`, `TaskPatch`/`EpicPatch` double-Option, DB trait narrowing, `db_call`/`db_call_read` (writer + read-pool model), rendering-purity panic policy, service mutation boundary, `recalculate_epic_status` invariant, inline-mutation boundary, `LearningService` injection state, `let _`, dead code, sub-status TOCTOU, immutable `parent_epic_id`, Clippy, visibility, performance footguns (`column_items_for_status` test-only; no `std::fs` in async), prod-vs-test LOC split
-- [docs/module-map.md](docs/module-map.md) — file-by-file responsibilities
-- [docs/how-to.md](docs/how-to.md) — adding an MCP tool, TUI view, entity, database migration; projects feature; knowledge base MCP tools
+- [docs/architecture.md](docs/architecture.md) — Message→Command, ProcessRunner, command queue draining, editor session invariant, layout-cache coherence (self-healing), render dirty flag (fail-open), error handling, quick dispatch
+- [docs/conventions.md](docs/conventions.md) — `FieldUpdate`, `TaskPatch`/`EpicPatch` double-Option, DB trait narrowing, `db_call`/`db_call_read` (writer + read-pool model), rendering-purity panic policy, service mutation boundary, `recalculate_epic_status` invariant, inline-mutation boundary, `LearningService` injection state, `let _`, dead code, sub-status TOCTOU, epic reparenting guards, Clippy, visibility, performance footguns (`column_items_for_status` test-only; no `std::fs` in async), prod-vs-test LOC split
+- [docs/module-map.md](docs/module-map.md) — module and subsystem responsibilities
+- [docs/how-to.md](docs/how-to.md) — adding an MCP tool, TUI view, entity, database migration; knowledge base MCP tools
 - [docs/mcp.md](docs/mcp.md) — MCP notification flow, error codes, debugging handlers, feed epics, knowledge base flow
 - [docs/reference.md](docs/reference.md) — key bindings, configuration, environment variables, troubleshooting, learning store
 - [docs/specs/](docs/specs/) — Allium specifications for domain logic

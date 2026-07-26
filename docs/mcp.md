@@ -6,7 +6,7 @@ When an MCP handler mutates the database, the TUI must refresh to show the chang
 
 ```
 MCP handler (e.g. handle_update_task)
-  → mutates DB via state.db
+  → mutates via state.task_svc / state.epic_svc   # never state.db — that's a compile error
   → calls state.notify()                          # McpState method
     → sends McpEvent::Refresh via mpsc::UnboundedSender
       → runtime event loop receives it             # tokio::select! in run_event_loop()
@@ -17,7 +17,7 @@ MCP handler (e.g. handle_update_task)
 ```
 
 Key types in the chain:
-- `McpEvent` (`src/mcp/mod.rs`) — enum with `Refresh` and `MessageSent` variants
+- `McpEvent` (`src/mcp/mod.rs:24`) — `Refresh` (catch-all full reload), `TaskChanged(TaskId)` / `EpicChanged(EpicId)` (targeted single-row reloads, preferred when the changed entity is known), and `MessageSent { to_task_id }`
 - `McpState::notify()` — fire-and-forget send on the channel
 - `TuiRuntime::exec_refresh_from_db()` (`src/runtime/tasks.rs`) — reloads tasks, epics, and usage from DB
 - `Message::RefreshTasks` (`src/tui/types.rs`) — carries the fresh task list into the App
@@ -109,7 +109,6 @@ Each learning has a `scope` that determines which tasks receive it:
 | Scope | Included when | `scope_ref` |
 |-------|---------------|-------------|
 | `user` | Always | `null` |
-| `project` | Task belongs to this project | `str(project_id)` |
 | `repo` | Task's repo path matches | `repo_path` |
 | `epic` | Task belongs to this epic | `str(epic_id)` |
 | `task` | Only via explicit `query_learnings` | `str(task_id)` |
@@ -123,8 +122,7 @@ Within an injected prompt, learnings are ordered (highest first):
 1. `procedural` — prepended as verbatim prompt-prefix instructions before the normal learnings block
 2. `epic` — most specific to the current work
 3. `repo` — repository-wide conventions
-4. `project` — project-wide preferences
-5. `user` — global preferences
+4. `user` — global preferences
 
 Within each level, entries are sorted by `upvote_count DESC`.
 

@@ -45,7 +45,9 @@ fn pre_push_hook_runs_full_check_sequence() {
         "cargo fmt",
         "cargo clippy --all-targets -- -D warnings",
         "scripts/check-doc-paths.sh",
+        "scripts/test-check-doc-paths.sh",
         "scripts/check-no-test-sleep.sh",
+        "scripts/test-fetch-reviews.sh",
     ] {
         assert!(
             body.contains(needle),

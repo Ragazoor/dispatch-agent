@@ -10,6 +10,9 @@ cargo clippy --all-targets -- -D warnings
 echo "doc-paths..."
 ./scripts/check-doc-paths.sh
 
+echo "doc-paths self-test..."
+bash ./scripts/test-check-doc-paths.sh
+
 echo "no-test-sleep..."
 ./scripts/check-no-test-sleep.sh
 

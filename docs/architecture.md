@@ -22,37 +22,13 @@ Key patterns that aren't obvious from reading the code:
 - **Layout-cache coherence (self-healing)**: `App.layout` is a [`LayoutCache`](../src/tui/types.rs) grouping five caches derived from `board.tasks`/`board.epics` — `epic_stats_cache`, `children_map_cache`, `column_anchor_cache`, `epic_filter_cache`, `task_index` — plus their fingerprints, so the fields that must stay coherent with each other can only be invalidated as a unit (`LayoutCache::invalidate()`). Handlers that mutate the board should still call `App::invalidate_layout_cache()` (directly or via `sync_board_selection()`) as a perf optimization — it forces an immediate rebuild — but it is **not required for correctness**. `cached_epic_stats()` computes a cheap fingerprint (`compute_layout_fingerprint()`: a plain FNV-1a-style fold over id/status/epic-membership/sort_order of every task and epic, deliberately cheaper than a cryptographic hash) on every call, including the cache-hit fast path, and self-heals — discarding and rebuilding the four `HashMap`-backed caches — whenever the fingerprint no longer matches the one captured at the last rebuild. `task_index` (used by `find_task_mut`) uses the same pattern with its own lighter fingerprint, `compute_task_ids_fingerprint()` (task ids only, no epics/status/sort_order — `task_index` only maps id→Vec position), so a same-length wholesale replacement of `board.tasks` with a different id set is caught too, not just length changes. This means a handler that forgets to invalidate can no longer produce silently stale UI on any of the five caches; it only pays for one extra rebuild on the next read.
 - **Render dirty flag (fail-open)**: `App::handle_key()` (`src/tui/input.rs`) unconditionally sets `self.dirty = true` after dispatching a key to its mode-specific handler; the render loop in `src/runtime/mod.rs` only redraws when `frame_ready` sees `dirty && elapsed_since_render >= MIN_FRAME_INTERVAL` (16ms). A prior version tried to skip redraws for true no-ops (e.g. `j` at the last row) by snapshotting a handful of fields — row, column, mode/view discriminant, caret, buffer length — before and after the handler ran, only marking dirty when one of them changed. That opt-in snapshot was fixed for missed handlers three separate times (popup cursor state, tree-view open/collapse state living in a `RefCell`, edit buffers — all invisible to the snapshot) before being replaced outright: any mutating handler that forgot to also call `self.dirty = true` produced a keystroke with no visible effect until an unrelated event (the next keypress, a tick, an MCP notification) happened to trigger a redraw, at which point the missed change and the new one both appeared at once. `Message`/`Mcp` events already set `dirty = true` unconditionally in `apply_loop_event`; `Key` events now follow the same fail-open rule instead of an opt-in one — the 16ms cap already bounds the cost of a redundant redraw, so there is no correctness or perf reason to special-case no-ops.
 
-## Review/Security Agent State Machine
-
-Review agents (dispatched for PRs) and fix agents (dispatched for security alerts) track their lifecycle via `ReviewAgentStatus` (`src/models/review.rs`):
-
-| Status | DB value | Card badge | Meaning |
-|--------|----------|------------|---------|
-| `Reviewing` | `"reviewing"` | `[reviewing]` yellow | Agent session is active; agent is analyzing |
-| *(none)* | `NULL` | *(no badge)* | No agent dispatched |
-
-`FindingsReady` and `Idle` variants still exist on the enum so legacy DB rows parse, but no current code path writes them.
-
-State transitions:
-
-```
-dispatch (d) → Reviewing → detach (T) or PR merge → NULL (agent_status cleared)
-```
-
-Key bindings on a PR/alert card:
-- `d` — dispatch agent (blocked when `Reviewing`)
-- `g` — jump to the active tmux session
-- `T` — detach: kills the tmux window and clears `tmux_window`, `worktree`, and `agent_status` atomically
-
-`set_pr_agent` / `set_alert_agent` write `ReviewAgentStatus = Reviewing` atomically with `tmux_window` and `worktree`; detach and PR-merge detection clear all three. See `docs/specs/2026-04-07-review-agent-ux-design.md` for the full specification.
-
 ## Error Handling
 
 The codebase uses three error types at different layers:
 
 - **`anyhow::Result`** — infrastructure and IO errors (file operations, shell commands, DB initialization). Used at the outer edges where errors propagate up to the caller.
 - **`ServiceError`** (`Validation` / `NotFound` / `Internal`) — business logic errors in `src/service/mod.rs`. MCP handlers match on these to return appropriate JSON-RPC error codes.
-- **Domain-specific errors** (`FinishError`, `PrError`) — operations with distinct failure modes that callers need to handle differently (e.g., rebase conflicts vs. push failures).
+- **Domain-specific errors** (`FinishError` in `src/dispatch/finish.rs`) — operations with distinct failure modes that callers need to handle differently (e.g., rebase conflicts vs. push failures).
 
 Rule of thumb: use `ServiceError` for request validation and business rules, domain-specific errors when callers branch on the variant, and `anyhow` for everything else.
 

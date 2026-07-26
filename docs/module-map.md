@@ -1,37 +1,50 @@
 # Module Map
 
+Module and subsystem responsibilities. Rows are at whatever granularity is
+useful — a single file where it earns one, a directory where the files inside
+share a job. It is deliberately *not* one row per file (there are over 200
+`.rs` files); if a file you need is not listed, its directory's row says where
+to look.
+
 | File | Responsibility |
 |------|---------------|
-| `src/main.rs` | CLI entry point (clap), subcommand dispatch (`tui`, `setup`, `verify-feed`, …) |
-| `src/lib.rs` | Crate root, public module re-exports |
-| `src/runtime/mod.rs` | Async event loop (`tokio::select!`), bridges TUI ↔ MCP ↔ shell commands |
+| `src/main.rs` | CLI entry point (clap), subcommand dispatch (`tui`, `setup`, `verify-feed`, `doctor`, …), global `--db` flag, `app.log` tracing subscriber |
+| `src/lib.rs` | Crate root, public module re-exports, `DEFAULT_PORT`, `default_db_path()` |
+| `src/cli/mod.rs` | CLI submodule declarations (`caller_headers`, `doctor`) |
+| `src/cli/doctor.rs` | `dispatch doctor` self-diagnosis: worktree/session/hook checks and `--repair` (see `docs/specs/doctor.allium`) |
+| `src/cli/caller_headers.rs` | `dispatch caller-headers` — pure CWD→identity-header resolver used as Claude Code's `headersHelper`, so an agent's MCP calls carry `X-Caller-Task-Id`. No DB, no network, no async |
+| `src/runtime/mod.rs` | Async event loop (`tokio::select!`), bridges TUI ↔ MCP ↔ shell commands; `TICK_INTERVAL`, `execute_commands` |
 | `src/runtime/commands.rs` | `Command` side-effect dispatcher (called by `execute_commands`) |
 | `src/runtime/tasks.rs` | Per-command runtime handlers for tasks (refresh, dispatch, finish, etc.) |
-| `src/runtime/{agents,epics,learnings,pr,settings,split,editor}.rs` | Domain-specific runtime helpers |
-| `src/tui/mod.rs` | `App` struct, lifecycle, `update()` entry point. Column-listing helpers: `column_items_for_status_with_stats` (production render path — requires pre-computed `EpicStatsMap`, used by kanban columns); `column_items_for_visual_column` (snapshot/archive views — filters by `VisualColumn` granularity, no stats needed). `column_items_for_status` is test-only. |
+| `src/runtime/{editor,epics,learnings,managed_feeds,pr,settings,split,todos}.rs` | Domain-specific runtime helpers. (`src/runtime/agents.rs` is a vestigial empty `impl TuiRuntime {}` — nothing lives there) |
+| `src/tui/mod.rs` | `App` struct, lifecycle, `update()` entry point, timing constants (`STATUS_MESSAGE_TTL`, `PR_POLL_INTERVAL`, `MAIN_SESSION_POLL_TICKS`, `GG_CHORD_TIMEOUT`). Column-listing helpers: `column_items_for_status_with_stats` (production render path — requires pre-computed `EpicStatsMap`, used by kanban columns); `column_items_for_visual_column` (snapshot/archive views — filters by `VisualColumn` granularity, no stats needed). `column_items_for_status` is test-only. |
 | `src/tui/dispatcher.rs` | `dispatch(app, msg)` — thin top-level router: one arm per outer `Message` domain, delegating to that domain's inner-enum `route(self, app)` method |
-| `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `input.rs`, `system.rs`, `split.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
-| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `learnings.rs`, `lifecycle.rs`, `main_session.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `tips_projects.rs`, `wrap_up.rs`) |
-| `src/tui/input.rs` | Key event entry point, inline-mutation convention for UI-only state |
-| `src/tui/input/` | Per-mode key handlers: `normal.rs`, `confirm.rs`, `projects.rs`, `repo_filter.rs` |
+| `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `system.rs`, `split.rs`, `todos.rs`, `learnings.rs`, `managed_feeds.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
+| `src/tui/commands/` | Per-domain inner `*Command` enums (`task.rs`, `epic.rs`, `editor.rs`, `feed.rs`, `split.rs`, `todos.rs`, …) — the command twin of `src/tui/messages/`. Variants of the outer `Command` enum are progressively migrated here. Unlike `messages/`, these are pure data: `Command` → effect stays centralised in `src/runtime/commands.rs` |
+| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `learnings.rs`, `lifecycle.rs`, `main_session.rs`, `managed_feeds.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `tips_projects.rs`, `todos.rs`, `wrap_up.rs`) |
+| `src/tui/input.rs` | Key event entry point, `text_edit_message()` caret routing, inline-mutation convention for UI-only state, unconditional `dirty = true` |
+| `src/tui/input/` | Per-mode key handlers: `normal.rs`, `confirm.rs`, `managed_feeds.rs`, `repo_filter.rs` |
+| `src/tui/text_caret.rs` | Pure single-line caret mechanics (`insert`, `delete_before`, `move_left`, `word_left`, `byte_offset`, …) shared by every text `InputMode` — see the caret convention in `docs/conventions.md` |
 | `src/tui/ui/mod.rs` | Rendering entry point — re-exports `render()`, thin dispatcher |
-| `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `projects_panel.rs`, `popups/` overlays |
-| `src/tui/ui/shared.rs` | Cross-board helpers: `render_tab_bar`, `refresh_status`, `truncate`, `push_hint_spans` |
+| `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `tips.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`, `managed_feeds.rs`) |
+| `src/tui/ui/shared.rs` | Cross-board helpers: `render_tab_bar`, `refresh_status`, `truncate`, `push_hint_spans`, `caret_line` |
 | `src/tui/ui/palette.rs` | Tokyo Night color palette constants |
-| `src/tui/ui/{input_form,learnings}.rs` | Overlay renderers (input forms, knowledge base panel) |
-| `src/tui/types.rs` | `Message`, `Command`, `ViewMode`, `InputMode`, `AgentTracking` enums and structs |
+| `src/tui/ui/{input_form,learnings,todos}.rs` | Overlay renderers (input forms, knowledge base panel, TODO overlay) |
+| `src/tui/types.rs` | `Message`, `Command`, `ViewMode`, `InputMode`, `LayoutCache`, `AgentTracking` enums and structs |
 | `src/tui/tests/` | TUI unit and scenario tests, snapshots, helpers |
 | `src/models/mod.rs` | Module declarations + flat re-exports of all domain types (no logic, no tests) |
-| `src/models/tasks.rs` | `Task`, `TaskStatus`, `SubStatus`, `TaskTag`, `DispatchMode::for_task()` tag routing, `slugify`, age formatting |
-| `src/models/{epics,learnings,review}.rs` | Domain types per area |
-| `src/models/ids.rs` | `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId` |
+| `src/models/tasks.rs` | `Task`, `TaskStatus`, `SubStatus`, `TaskTag` (+ `is_review()`), `DispatchMode::for_task()` tag routing, `slugify`, age formatting |
+| `src/models/{epics,learnings,review,todos,usage}.rs` | Domain types per area. `review.rs` holds `ReviewDecision` and `pr_number_from_url` |
+| `src/models/url.rs` | `TaskUrl` / `UrlType` — the typed URL on a task (PR, issue, security alert), stored explicitly rather than sniffed |
+| `src/models/ids.rs` | `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId`/`TodoId` |
 | `src/models/string_enum.rs` | `define_str_enum!` macro behind `TaskStatus`/`SubStatus`/`TaskTag`/`WrapUpMode`/`TipsShowMode` string conversions |
 | `src/models/paths.rs` | `expand_tilde` path utility |
 | `src/models/columns.rs` | `VisualColumn` kanban board layout |
-| `src/service/mod.rs` | Service module root: `ServiceError`, `FieldUpdate`, re-exports of all sub-module types |
+| `src/service/mod.rs` | Service module root: `ServiceError`, `FieldUpdate`, `UrlUpdate`, re-exports of all sub-module types |
 | `src/service/tasks/mod.rs` | `TaskService` — task business logic |
 | `src/service/tasks/{crud,params,validators}.rs` | Task CRUD methods, `*Params` request types, validation helpers |
-| `src/service/epics.rs` | `EpicService`, `UpdateEpicParams`, `CreateEpicParams` — epic business logic |
+| `src/service/tasks/watchers.rs` | Task-watcher subscriptions: `subscribe`/`unsubscribe` plus the completion notice fired when a watched task reaches `Done`/`Archived` or is deleted (see `docs/specs/task-watchers.allium`) |
+| `src/service/epics.rs` | `EpicService`, `UpdateEpicParams`, `CreateEpicParams` — epic business logic, including reparenting with cycle detection |
 | `src/service/learnings.rs` | `LearningService`, `CreateLearningParams`, `UpdateLearningParams` — learning business logic |
 | `src/service/api.rs` | Service trait objects (`TaskServiceApi`, `EpicServiceApi`, `TodoServiceApi`, `LearningServiceApi`) + `MockLearningService` for injection in tests. Each seam's signature list lives once, in a spec macro (`task_service_api!`, …) replayed into emitter macros that generate the trait, the delegating impl, and the test-only `*ServiceApiStub` mock scaffolding |
 | `src/service/todos.rs` | `TodoService` — personal TODO overlay business logic |
@@ -41,20 +54,24 @@
 | `src/service/clock.rs` | `Clock` trait + `SystemClock`/`FixedClock` for injectable time in services/tests |
 | `src/service/repo_index/mod.rs` | Repo-index orchestration: `index_repo` / `search_docs` driver |
 | `src/service/repo_index/{scan,chunking,embed,search}.rs` | RAG pipeline: source scan, chunking, embedding, vector search |
-| `src/db/mod.rs` | `Database` struct, constructor, `TaskStore` trait, `TaskPatch`/`EpicPatch` builders |
-| `src/db/migrations.rs` | Versioned schema migrations (`MIGRATIONS` array, `migrate_vN_*` functions) |
-| `src/db/queries/mod.rs` | `impl TaskStore for Database` — fans out across the per-domain query files |
-| `src/db/queries/{tasks,epics,prs,alerts,projects,learnings,settings}.rs` | CRUD per domain |
+| `src/db/mod.rs` | `Database` struct, `db_call` (writer) / `db_call_read` (read pool), the `*Store` trait hierarchy (`TaskStore`, `TaskReadStore`, …), `patch_struct!` behind the `TaskPatch`/`EpicPatch` builders |
+| `src/db/migrations.rs` | Versioned schema migrations (`MIGRATIONS` array, `migrate_vN_*` functions, `LATEST_SCHEMA_VERSION`) |
+| `src/db/queries/mod.rs` | `impl TaskStore for Database` — fans out across the per-domain query files; `set_field!` macro and the soft-fail row decoders (`row_to_task`, `row_to_epic`) |
+| `src/db/queries/{tasks,epics,learnings,settings,todos,usage}.rs` | CRUD per domain |
 | `src/db/tests/mod.rs` | Database unit tests entry point |
-| `src/db/tests/{tasks,epics,prs,alerts,projects,learnings,settings,migrations}.rs` | Tests per domain |
-| `src/dispatch/mod.rs` | Worktree creation, tmux session management, agent lifecycle (dispatch/brainstorm/plan/resume/review) |
-| `src/dispatch/agents.rs` | Agent-specific dispatch helpers |
-| `src/dispatch/prompts.rs` | Prompt construction (with-plan, no-plan variants, learning injection) |
-| `src/dispatch/worktree.rs` | Worktree creation/teardown |
+| `src/db/tests/{tasks,epics,learnings,settings,todos,usage,migrations,async_handle,read_pool}.rs` | Tests per domain, plus the async-handle and read-pool behaviour tests |
+| `src/dispatch/mod.rs` | Dispatch module root: PR-status polling via `gh` (`check_pr_status`, `pr_head_branch`) and repo-path/URL helpers (`repo_name_from_path`, `extract_github_repo`, `resolve_repo_path`, `resolve_feed_item_repo_paths`) |
+| `src/dispatch/agents.rs` | The agent launchers — `dispatch_agent`, `research_agent`, `quick_dispatch_agent`, `resume_agent` — plus `fetch_verify_command`. Each provisions a worktree, writes the prompt file, and starts `claude` inside a tmux window |
+| `src/dispatch/prompts.rs` | Prompt construction: `build_prompt` (with-plan / no-plan / review variants), `build_quick_dispatch_prompt`, `build_research_prompt`, knowledge-block and verification rendering |
+| `src/dispatch/prompts/` | Markdown bodies for the two review addenda (`pr-review.md`, `dependabot.md`), inlined via `include_str!` |
+| `src/dispatch/prompts_snapshots.rs` | Insta snapshot tests locking the rendered output of every `build_*_prompt` variant (snapshots in `src/dispatch/snapshots/`) |
+| `src/dispatch/worktree.rs` | Worktree creation/teardown, `.dispatch/` directory + gitignore bootstrap |
+| `src/dispatch/trust.rs` | Reads and writes Claude Code's per-project trust flag in `~/.claude.json` so a fresh worktree doesn't stall on the trust prompt |
 | `src/dispatch/finish.rs` | Rebase + fast-forward branch onto base branch, kill tmux window (`finish_task`); defines `FinishError` |
 | `src/feed/mod.rs` | `FeedRunner` struct, poll loop, `tick()` orchestration — composes exec/parse/ingest; re-exports `resolve_base_branches` |
 | `src/feed/exec.rs` | `resolve_base_branches()` (cached per-path git lookup), `exec_feed_command()` (async shell spawn + stdout capture) |
 | `src/feed/parse.rs` | `parse_feed_items()` — JSON → `Vec<FeedItem>` deserialization |
+| `src/feed/routing.rs` | `route()` — pure signal→`FeedRole` mapping for the PR-review feed. Not to be confused with `src/feed/ingest/routing.rs`, which groups already-routed entries |
 | `src/feed/ingest/mod.rs` | `FeedItemWithTarget` (shared entry type), `run_feed_sync_by_role()` / `run_feed_sync()` — dispatch an emission to the right sync strategy |
 | `src/feed/ingest/grouped.rs` | `sync_grouped_feed()` — `group_by_repo` path: groups items by repo, creates/reuses sub-epics, upserts tasks |
 | `src/feed/ingest/role_routed.rs` | `run_role_routed_feed_sync()` — `reviews_parent` path: role sub-epic scaffolding + subtree reconcile orchestration |
@@ -63,22 +80,30 @@
 | `src/feed/ingest/stale.rs` | `delete_stale_subtree()` / `clear_parent_stranded_tasks()` — role-routed phase 3: delete absent tasks + clear the parent |
 | `src/process.rs` | `ProcessRunner` trait + `RealProcessRunner` / `MockProcessRunner` for testable shell execution |
 | `src/tmux.rs` | Tmux API: create windows, send keys, capture pane output, kill windows |
+| `src/git.rs` | Small git plumbing shared across the crate (e.g. `detect_default_branch` via `origin/HEAD`) |
 | `src/notify.rs` | Shared notification delivery (`write_message_file` / `notify_tmux` / `deliver`) — writes a message file into a task's worktree and injects a tmux nudge; used by `send_message` (`src/mcp/handlers/tasks/dispatch.rs`) and task-watcher completion notices (`src/service/tasks/watchers.rs`) |
 | `src/editor.rs` | External `$EDITOR` integration for editing task/epic fields |
 | `src/plan.rs` | Plan file parsing (extract title/description from markdown) |
+| `src/tips.rs` | Startup tips: `Tip` struct and the compile-time `include_str!` load of the numbered markdown files in `src/tips/` (see `docs/specs/tips.allium`) |
 | `src/setup/mod.rs` | First-run setup entry point |
 | `src/setup/{config,plugins,hooks}.rs` | MCP config merging, plugin installation, git hook installation |
 | `src/mcp/mod.rs` | MCP server bootstrap (Axum router), `McpState`, `McpEvent` notification enum |
-| `src/mcp/handlers/dispatch.rs` | JSON-RPC entry point (`handle_mcp`), tool definitions, method routing |
-| `src/mcp/handlers/tasks/mod.rs` | Task arg structs, shared response helpers, re-exports; epic/learning/project tests |
+| `src/mcp/identity.rs` | `CallerIdentity` / `IdentityError` and `from_headers` — parses `X-Caller-Task-Id` / `X-Caller-Kind` into a typed caller |
+| `src/mcp/middleware.rs` | `extract_caller_identity` Axum middleware — attaches `Result<CallerIdentity, IdentityError>` to every request's extensions |
+| `src/mcp/trajectory.rs` | Per-task audit log of MCP tool calls, appended under the worktree's `trajectories/` dir (see `docs/specs/observability.allium`) |
+| `src/mcp/handlers/dispatch.rs` | JSON-RPC entry point (`handle_mcp`) plus the `mcp_tools!` macro that generates `tool_definitions()`, `dispatch_tool()`, and `TOOL_NAMES` from one declarative tool list |
+| `src/mcp/handlers/tasks/mod.rs` | Task arg structs, shared response helpers, re-exports |
 | `src/mcp/handlers/tasks/crud.rs` | CRUD task handlers: `update_task`, `create_task`, `get_task`, `list_tasks`, `query_usage` |
 | `src/mcp/handlers/tasks/dispatch.rs` | Dispatch handlers: `claim_task`, `dispatch_next`, `dispatch_task`, `send_message` |
 | `src/mcp/handlers/tasks/wrap_up.rs` | Wrap-up handlers: `wrap_up`, `exit_session` |
 | `src/mcp/handlers/tasks/verify.rs` | Verify handler: `set_verify_command` |
+| `src/mcp/handlers/tasks/watch.rs` | Task-watcher handlers: `subscribe_to_task`, `unsubscribe_from_task` |
 | `src/mcp/handlers/epics.rs` | Epic tool handlers (thin wrappers): parse JSON-RPC args → call `EpicService` → format response |
 | `src/mcp/handlers/learnings.rs` | Knowledge base tool handlers |
+| `src/mcp/handlers/managed_feeds.rs` | Managed feed config tool handlers (`get`/`set_managed_feed_config`) |
+| `src/mcp/handlers/repo_rag.rs` | Repo-RAG tool handlers: `index_repo`, `search_docs` |
 | `src/mcp/handlers/types.rs` | JSON-RPC request/response types, flexible integer deserializer |
 | `src/mcp/handlers/tests/mod.rs` | MCP handler integration tests entry point |
-| `src/mcp/handlers/tests/tasks/mod.rs` | Task test entry point: module declarations, epic/learning/project tests |
-| `src/mcp/handlers/tests/tasks/{crud,dispatch,wrap_up,verify}.rs` | Task handler tests per sub-domain |
-| `src/mcp/handlers/tests/{epics,learnings,projects}.rs` | MCP handler tests per domain |
+| `src/mcp/handlers/tests/tasks/mod.rs` | Task test entry point: module declarations and shared helpers |
+| `src/mcp/handlers/tests/tasks/{crud,dispatch,wrap_up,verify,watch}.rs` | Task handler tests per sub-domain |
+| `src/mcp/handlers/tests/{epics,learnings,managed_feeds,repo_rag,usage}.rs` | MCP handler tests per domain |

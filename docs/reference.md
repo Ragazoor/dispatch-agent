@@ -258,7 +258,6 @@ Learnings are tagged with a scope that determines which tasks see them:
 | Scope     | Covers                        | Example use |
 |-----------|-------------------------------|-------------|
 | `user`    | All tasks for this user       | Editor preference, personal workflow rules |
-| `project` | All tasks in a project        | Project-specific conventions |
 | `repo`    | All tasks in a repository     | Build toolchain, test patterns |
 | `epic`    | All tasks in an epic          | Shared design decisions for this feature |
 | `task`    | One specific task             | Episodic notes scoped to a single agent run |
@@ -269,7 +268,6 @@ When an agent is dispatched, Dispatch queries approved learnings that match the 
 
 - **Always**: `user`-scoped learnings
 - **Always**: `repo`-scoped learnings where `scope_ref` matches the task's repo path
-- **Always**: `project`-scoped learnings where `scope_ref` matches the task's project
 - **If task belongs to an epic**: `epic`-scoped learnings for that epic
 
 `task`-scoped learnings are **not** auto-injected. They can be retrieved explicitly via `query_learnings` with a `tag_filter`.
@@ -279,7 +277,7 @@ When an agent is dispatched, Dispatch queries approved learnings that match the 
 Within the injected set, learnings are ordered:
 
 1. **Kind first**: `procedural` learnings appear before all others (injected verbatim as prompt-prefix instructions)
-2. **Scope proximity**: epic → repo → project → user (closest context first)
+2. **Scope proximity**: epic → repo → user (closest context first)
 3. **Confirmation count**: more-confirmed learnings rank higher within the same band
 
 The auto-inject cap is **10 learnings**. Agents can retrieve up to **50** via an explicit `query_learnings` call.
@@ -291,7 +289,6 @@ Agents propose learnings via `record_learning`. The `scope_ref` is auto-derived 
 ```
 scope=user    → scope_ref: (none)
 scope=repo    → scope_ref: task.repo_path
-scope=project → scope_ref: task.project_id
 scope=epic    → scope_ref: task.epic_id  (error if task has no epic)
 scope=task    → scope_ref: task.id
 ```

@@ -44,9 +44,12 @@ name) shares one caret model:
   `handle_key_quick_dispatch`, `handle_key_input_preset_name`). `Ctrl+←/→` are
   the primary word-motion keys; `Alt+←/→` and readline `Alt+B`/`Alt+F` are the
   modifier-free fallback for tmux without `xterm-keys` (see docs/reference.md).
-- A pure caret move changes no other tracked field, so `handle_key`'s dirty
-  detector snapshots `input.caret` — otherwise the frame is skipped and the caret
-  doesn't visibly move.
+- No handler needs to flag a caret move as render-worthy: `handle_key` ends with
+  an unconditional `self.dirty = true` (`src/tui/input.rs`), so every keystroke
+  schedules a redraw. The earlier opt-in dirty detector had to snapshot
+  `input.caret` explicitly or the frame was skipped and the caret didn't visibly
+  move — see the "Render dirty flag (fail-open)" bullet in
+  `docs/architecture.md` for why that was replaced.
 - Rendering uses `ui::caret_line`, which draws the caret as a reversed block cell
   and horizontally scrolls long values so the caret stays visible.
 
@@ -62,7 +65,7 @@ boundaries — `Ctrl+←/→` steps through path segments, which is the point.
 
 ## Soft-fail decoding
 
-Schema enum values may be added in a migration before all rows are upgraded. Row decoders in `src/db/queries/` default unknown values and emit `tracing::warn!` rather than panicking — see `row_to_task` in `src/db/queries/mod.rs:20-25` for the canonical example.
+Schema enum values may be added in a migration before all rows are upgraded. Row decoders in `src/db/queries/` default unknown values and emit `tracing::warn!` rather than panicking — see `row_to_task` in `src/db/queries/mod.rs:73` for the canonical example.
 
 Never `panic!` (or `unwrap()`/`expect()`) on an unknown enum value read from the DB. Use `Enum::parse(&s).unwrap_or_else(|| { tracing::warn!(...); Enum::Default })`. This keeps an old DB readable after a partial migration and prevents a poisoned row from killing the TUI.
 
@@ -139,7 +142,7 @@ the `From` impl keeps the exhaustive pattern intact despite the omission.
 
 ## DB trait narrowing — take the narrowest sub-trait you need
 
-`TaskStore` is a supertrait of `TaskAndEpicStore + PrStore + AlertStore + SettingsStore`. New consumers should hold the narrowest sub-trait they actually call:
+`TaskStore` (`src/db/mod.rs:570`) is a supertrait of `TaskAndEpicStore + TaskReadStore + SettingsStore + LearningStore + LearningRetrievalStore + UsageStore`. New consumers should hold the narrowest sub-trait they actually call:
 
 | Consumer | Holds |
 |----------|-------|
@@ -271,13 +274,19 @@ Any `unsafe` block must have a `// SAFETY:` comment directly above it explaining
 
 `TaskService::update_task()` (`src/service/tasks/crud.rs`) reads the existing task to validate the requested sub-status before applying the patch. This is a TOCTOU window: a concurrent MCP call could change the task status between the read and the write. This is intentional and accepted — simultaneous status changes from two agents on the same task are considered a user error, and the window is too small to be worth a transaction-level fix.
 
-## Immutable `parent_epic_id`
+## Reparenting an epic — three guards, no immutability
 
-`EpicPatch` intentionally omits `parent_epic_id`. Reparenting an epic is not supported: the parent is set at creation time and never changed. This keeps the parent chain immutable and prevents accidental cycle introduction. The database enforces `CHECK (parent_epic_id != id)` (migration v35) as a final guard. See the doc comment at `src/db/mod.rs` (`EpicPatch` definition) for the full rationale.
+`parent_epic_id` **is** mutable: `EpicPatch` declares it `nullable` (`src/db/mod.rs:130`), `patch_epic` writes it (`src/db/queries/epics.rs:241`), `EpicService::update_epic` implements reparent-and-detach (`src/service/epics.rs:292`), and the TUI has a reparent picker (`src/tui/ui/kanban/popups/reparent_epic.rs`). Route reparenting through the service — it owns three guards a bare `patch_epic` skips:
+
+1. **Cycle detection** — `check_no_cycle` (`src/service/epics.rs:313`) walks the proposed parent's ancestor chain and rejects with `ServiceError::Validation` if the epic being moved appears in it (self-parent included).
+2. **RepoGroup guard** (`src/service/epics.rs:282`) — an auto-created `EpicOrigin::RepoGroup` sub-epic cannot be reparented *or* detached to root; either would orphan it outside its grouping root.
+3. **DB `CHECK (parent_epic_id != id)`** (migration v35) — defence-in-depth against a row becoming its own parent, alongside the visited-set guard in `recalculate_epic_status_inner`.
+
+`UpdateEpicParams.parent_epic_id` is an `Option<Option<EpicId>>`: `None` leaves the parent alone, `Some(Some(id))` reparents, `Some(None)` detaches to root.
 
 ## Clippy lint rules
 
-Custom lint rules are configured in `[lints.clippy]` in `Cargo.toml`. The pre-push hook enforces them via `cargo clippy --all-targets --fix -- -D warnings`. When you discover a pattern worth enforcing, add a new entry with a structured comment explaining why. Consult the `/lint` skill for the full workflow.
+Custom lint rules are configured in `[lints.clippy]` in `Cargo.toml`. The pre-push hook enforces them via `cargo clippy --all-targets -- -D warnings` — note there is **no** `--fix`; the hook checks, it does not rewrite your source. When you discover a pattern worth enforcing, add a new entry with a structured comment explaining why. Consult the `/lint` skill for the full workflow.
 
 ## Visibility convention
 
