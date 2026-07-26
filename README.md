@@ -117,7 +117,7 @@ Dispatch agents can coordinate with each other through the MCP server:
 
 **Agent-to-agent messaging** — `send_message` delivers a prompt directly into another running agent's tmux window. Fire-and-forget: the sender doesn't wait for a response. Useful for passing context or unblocking a dependent agent.
 
-**Epic as orchestration** — an epic planning agent writes an implementation plan with subtasks, then each subtask is dispatched in sequence. Agents can call `dispatch_next` to trigger the next subtask themselves once their own work is complete.
+**Epic as orchestration** — an epic planning agent writes an implementation plan with subtasks, then each subtask is dispatched in sequence. Closing an agent's session dispatches the epic's next backlog subtask automatically, so each subtask's worktree is cut from a base branch that already contains its predecessor's work.
 
 ## Learn More
 

@@ -175,6 +175,22 @@ pub trait TaskCrud: TaskRead {
     /// caller should block), `false` if it was already set or the task does not
     /// exist (caller should allow the PR).
     async fn mark_pr_learnings_gate_shown(&self, id: TaskId) -> Result<bool>;
+    /// Atomically claim a backlog task for dispatch: move it to `Running` with
+    /// the default running sub-status and `last_pre_tool_use_at = now`, but only
+    /// while it is still in `Backlog`. Returns `true` when this call won the
+    /// row, `false` when a concurrent caller already claimed it (or the task
+    /// does not exist).
+    ///
+    /// The `WHERE status = 'backlog'` clause is what makes the claim exclusive —
+    /// not a lock. Every mutation serialises through the single writer
+    /// connection, so the conditional `UPDATE` is atomic against all other
+    /// writes. Backs the epic-chaining claim described by
+    /// `AutoDispatchNextSubtask` in `docs/specs/epics.allium`.
+    async fn try_claim_backlog_task(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool>;
     /// Upsert tasks from a feed. Inserts new tasks; on conflict (epic_id, external_id)
     /// updates title and description only — status and other user-managed fields are preserved.
     ///

@@ -97,7 +97,7 @@ to look.
 | `src/mcp/handlers/dispatch.rs` | JSON-RPC entry point (`handle_mcp`) plus the `mcp_tools!` macro that generates `tool_definitions()`, `dispatch_tool()`, and `TOOL_NAMES` from one declarative tool list |
 | `src/mcp/handlers/tasks/mod.rs` | Task arg structs, shared response helpers, re-exports |
 | `src/mcp/handlers/tasks/crud.rs` | CRUD task handlers: `update_task`, `create_task`, `get_task`, `list_tasks`, `query_usage` |
-| `src/mcp/handlers/tasks/dispatch.rs` | Dispatch handlers: `claim_task`, `dispatch_next`, `dispatch_task`, `send_message` |
+| `src/mcp/handlers/tasks/dispatch.rs` | Dispatch handlers: `claim_task`, `dispatch_task`, `send_message`, plus `auto_dispatch_next` (the epic chain fired by `exit_session`) |
 | `src/mcp/handlers/tasks/wrap_up.rs` | Wrap-up handlers: `wrap_up`, `exit_session` |
 | `src/mcp/handlers/tasks/verify.rs` | Verify handler: `set_verify_command` |
 | `src/mcp/handlers/tasks/watch.rs` | Task-watcher handlers: `subscribe_to_task`, `unsubscribe_from_task` |

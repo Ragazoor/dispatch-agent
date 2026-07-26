@@ -1301,6 +1301,133 @@ async fn next_backlog_task_epic_not_found() {
     assert!(matches!(err, ServiceError::NotFound(_)));
 }
 
+// -- claim_next_backlog_task -----------------------------------------------
+//
+// The atomic claim is what makes AutoDispatchNextSubtask's "at most one agent
+// per closed session" guarantee hold under concurrent closes
+// (docs/specs/epics.allium).
+
+/// Create an epic with `count` backlog subtasks, sort_order 1..=count.
+async fn epic_with_backlog_subtasks(
+    db: &Arc<dyn db::TaskStore>,
+    count: i64,
+) -> (EpicId, Vec<TaskId>) {
+    let epic_svc = epic_svc(db);
+    let task_svc = task_svc(db);
+    let epic = epic_svc
+        .create_epic(CreateEpicParams {
+            title: "E".into(),
+            description: "".into(),
+            sort_order: None,
+            parent_epic_id: None,
+            feed_command: None,
+            feed_interval_secs: None,
+        })
+        .await
+        .unwrap();
+    let mut ids = Vec::new();
+    for i in 1..=count {
+        let id = task_svc
+            .create_task(CreateTaskParams {
+                title: format!("Sub {i}"),
+                description: "".into(),
+                repo_path: "/repo".to_string(),
+                plan_path: None,
+                epic_id: Some(epic.id),
+                sort_order: Some(i),
+                tag: None,
+                base_branch: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+            })
+            .await
+            .unwrap();
+        ids.push(id);
+    }
+    (epic.id, ids)
+}
+
+#[tokio::test]
+async fn claim_next_backlog_task_marks_the_claimed_task_running() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let (epic_id, ids) = epic_with_backlog_subtasks(&db, 2).await;
+
+    let claimed = svc.claim_next_backlog_task(epic_id).await.unwrap().unwrap();
+    assert_eq!(claimed.id, ids[0], "claims the first subtask by sort_order");
+    assert_eq!(claimed.status, TaskStatus::Running);
+    assert_eq!(
+        claimed.sub_status,
+        SubStatus::default_for(TaskStatus::Running)
+    );
+    assert!(
+        claimed.last_pre_tool_use_at.is_some(),
+        "the claim seeds last_pre_tool_use_at so the tick classifier keeps the task Active"
+    );
+
+    let persisted = db.get_task(ids[0]).await.unwrap().unwrap();
+    assert_eq!(persisted.status, TaskStatus::Running);
+    assert!(persisted.worktree.is_none(), "the claim does not provision");
+}
+
+#[tokio::test]
+async fn claim_next_backlog_task_returns_none_when_no_backlog_remains() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let (epic_id, _) = epic_with_backlog_subtasks(&db, 1).await;
+
+    assert!(svc
+        .claim_next_backlog_task(epic_id)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(
+        svc.claim_next_backlog_task(epic_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "a claimed task is out of contention"
+    );
+}
+
+#[tokio::test]
+async fn claim_next_backlog_task_is_exclusive_under_concurrency() {
+    let db = test_db().await;
+    let svc = Arc::new(task_svc(&db));
+    let (epic_id, _) = epic_with_backlog_subtasks(&db, 2).await;
+
+    let a = {
+        let svc = svc.clone();
+        tokio::spawn(async move { svc.claim_next_backlog_task(epic_id).await })
+    };
+    let b = {
+        let svc = svc.clone();
+        tokio::spawn(async move { svc.claim_next_backlog_task(epic_id).await })
+    };
+    let first = a.await.unwrap().unwrap().expect("first claim");
+    let second = b.await.unwrap().unwrap().expect("second claim");
+
+    assert_ne!(
+        first.id, second.id,
+        "two concurrent claims must never win the same subtask"
+    );
+    assert!(
+        svc.claim_next_backlog_task(epic_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "both subtasks are claimed, so a third caller gets None"
+    );
+}
+
+#[tokio::test]
+async fn claim_next_backlog_task_epic_not_found() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let err = svc.claim_next_backlog_task(EpicId(999)).await.unwrap_err();
+    assert!(matches!(err, ServiceError::NotFound(_)));
+}
+
 // -- create_task_returning ---------------------------------------------------
 
 #[tokio::test]

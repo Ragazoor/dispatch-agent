@@ -21,9 +21,7 @@ mod wrap_up;
 pub(super) use crud::{
     handle_create_task, handle_get_task, handle_list_tasks, handle_query_usage, handle_update_task,
 };
-pub(super) use dispatch::{
-    handle_claim_task, handle_dispatch_next, handle_dispatch_task, handle_send_message,
-};
+pub(super) use dispatch::{handle_claim_task, handle_dispatch_task, handle_send_message};
 pub(super) use verify::handle_set_verify_command;
 pub(super) use watch::{handle_subscribe_to_task, handle_unsubscribe_from_task};
 pub(super) use wrap_up::{handle_exit_session, handle_wrap_up};
@@ -179,13 +177,6 @@ pub(super) struct UnsubscribeFromTaskArgs {
     pub(super) watcher_task_id: i64,
     #[serde(deserialize_with = "deserialize_flexible_i64")]
     pub(super) target_task_id: i64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct DispatchNextArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) epic_id: i64,
 }
 
 #[derive(Deserialize)]

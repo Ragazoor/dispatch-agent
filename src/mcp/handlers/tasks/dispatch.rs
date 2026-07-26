@@ -6,8 +6,8 @@ use crate::mcp::McpState;
 use crate::models::{DispatchMode, EpicId, TaskId, TaskStatus};
 
 use super::{
-    parse_args, service_err_to_response, ClaimTaskArgs, DispatchNextArgs, DispatchTaskArgs,
-    JsonRpcResponse, SendMessageArgs,
+    parse_args, service_err_to_response, ClaimTaskArgs, DispatchTaskArgs, JsonRpcResponse,
+    SendMessageArgs,
 };
 use crate::service::{ClaimTaskParams, FieldUpdate, UpdateTaskParams};
 
@@ -65,62 +65,46 @@ pub(crate) async fn handle_claim_task(
     }
 }
 
-pub(crate) async fn handle_dispatch_next(
+/// Dispatches the next backlog subtask of `epic_id`, if any. Returns
+/// `Some((id, title))` when a dispatch was started, `None` when the chain
+/// stops here (auto_dispatch off, no backlog subtask, or a lookup failure).
+/// Never returns an error: a chain problem must not fail the caller.
+///
+/// Implements `AutoDispatchNextSubtask` in `docs/specs/epics.allium`, fired by
+/// `handle_exit_session` as the last thing a session close does.
+pub(super) async fn auto_dispatch_next(
     state: &McpState,
-    id: Option<Value>,
-    _identity: &CallerIdentity,
-    args: Value,
-) -> JsonRpcResponse {
-    let parsed = match parse_args::<DispatchNextArgs>(&id, args) {
-        Ok(a) => a,
-        Err(resp) => return resp,
-    };
-    tracing::info!(epic_id = parsed.epic_id, "MCP dispatch_next");
-
-    // Check auto_dispatch flag before doing any work
-    match state
-        .db
-        .get_epic(crate::models::EpicId(parsed.epic_id))
-        .await
-    {
-        Ok(Some(epic)) if !epic.auto_dispatch => {
-            return JsonRpcResponse::ok(
-                id,
-                json!({"content": [{"type": "text", "text": format!(
-                    "auto dispatch is disabled for epic #{} — dispatch the next task manually",
-                    parsed.epic_id
-                )}]}),
-            );
-        }
+    epic_id: EpicId,
+) -> Option<(TaskId, String)> {
+    match state.db.get_epic(epic_id).await {
+        Ok(Some(epic)) if !epic.auto_dispatch => return None,
         Ok(Some(_)) => {}
         Ok(None) => {
-            return JsonRpcResponse::err(id, -32602, format!("epic #{} not found", parsed.epic_id));
+            tracing::warn!("auto_dispatch_next: epic #{} not found", epic_id.0);
+            return None;
         }
         Err(e) => {
+            // Fail open: a DB hiccup reading the flag must not silently stall
+            // an epic, so treat auto_dispatch as enabled and carry on.
             tracing::warn!(
-                "dispatch_next: failed to fetch epic #{}: {e}",
-                parsed.epic_id
+                "auto_dispatch_next: failed to fetch epic #{}: {e}",
+                epic_id.0
             );
-            // Don't block dispatch on a DB error reading the flag
         }
     }
 
-    let next_task = match state
-        .task_svc
-        .next_backlog_task(EpicId(parsed.epic_id))
-        .await
-    {
+    // Claiming is what makes the selection exclusive: a concurrent close on the
+    // same epic can never win the same subtask.
+    let next_task = match state.task_svc.claim_next_backlog_task(epic_id).await {
         Ok(Some(task)) => task,
-        Ok(None) => {
-            return JsonRpcResponse::ok(
-                id,
-                json!({"content": [{"type": "text", "text": format!(
-                    "no backlog tasks to dispatch for epic #{}",
-                    parsed.epic_id
-                )}]}),
+        Ok(None) => return None,
+        Err(e) => {
+            tracing::warn!(
+                "auto_dispatch_next: failed to claim next subtask of epic #{}: {e}",
+                epic_id.0
             );
+            return None;
         }
-        Err(e) => return service_err_to_response(id, e),
     };
 
     let next_id = next_task.id;
@@ -151,30 +135,32 @@ pub(crate) async fn handle_dispatch_next(
 
         match result {
             Ok(Ok(dispatch_result)) => {
-                // Seed last_pre_tool_use_at so ClassifyAgentActivity treats
-                // the freshly running task as Active until the agent's first
-                // PreToolUse hook fires — otherwise the TUI tick flickers it
-                // into Stale.
+                // The claim already applied Running and seeded
+                // last_pre_tool_use_at, so this patch only records where the
+                // agent actually landed.
                 let params = UpdateTaskParams::for_task(next_id)
-                    .status(TaskStatus::Running)
                     .worktree(FieldUpdate::Set(dispatch_result.worktree_path))
-                    .tmux_window(FieldUpdate::Set(dispatch_result.tmux_window))
-                    .last_pre_tool_use_at(Some(chrono::Utc::now()));
+                    .tmux_window(FieldUpdate::Set(dispatch_result.tmux_window));
                 if let Err(e) = task_svc.update_task(params).await {
                     tracing::warn!(
                         task_id = next_id.0,
-                        "dispatch_next: failed to update task: {e}"
+                        "auto_dispatch_next: failed to update task: {e}"
                     );
                 }
             }
             Ok(Err(e)) => {
-                tracing::warn!(task_id = next_id.0, "dispatch_next: dispatch failed: {e:#}");
+                tracing::warn!(
+                    task_id = next_id.0,
+                    "auto_dispatch_next: dispatch failed: {e:#}"
+                );
+                revert_claim(&task_svc, next_id).await;
             }
             Err(e) => {
                 tracing::warn!(
                     task_id = next_id.0,
-                    "dispatch_next: blocking task panicked: {e}"
+                    "auto_dispatch_next: blocking task panicked: {e}"
                 );
+                revert_claim(&task_svc, next_id).await;
             }
         }
 
@@ -186,13 +172,27 @@ pub(crate) async fn handle_dispatch_next(
         }
     });
 
-    JsonRpcResponse::ok(
-        id,
-        json!({"content": [{"type": "text", "text": format!(
-            "dispatching task #{} '{}'",
-            next_id.0, next_title
-        )}]}),
-    )
+    Some((next_id, next_title))
+}
+
+/// Return a claimed-but-unprovisioned subtask to `Backlog` so a failed chain
+/// leaves it dispatchable exactly as it was before the chain fired.
+async fn revert_claim(
+    task_svc: &std::sync::Arc<dyn crate::service::TaskServiceApi>,
+    task_id: TaskId,
+) {
+    let params = UpdateTaskParams::for_task(task_id)
+        .status(TaskStatus::Backlog)
+        .sub_status(crate::models::SubStatus::default_for(TaskStatus::Backlog))
+        // Also drop the activity timestamp the claim seeded, or the reverted
+        // subtask is not quite "as it was before the chain fired".
+        .last_pre_tool_use_at(None);
+    if let Err(e) = task_svc.update_task(params).await {
+        tracing::warn!(
+            task_id = task_id.0,
+            "auto_dispatch_next: failed to revert claim: {e}"
+        );
+    }
 }
 
 pub(crate) async fn handle_dispatch_task(
@@ -345,4 +345,55 @@ pub(crate) async fn handle_send_message(
             to_task.id.0, to_task.title
         )}]}),
     )
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::auto_dispatch_next;
+    use crate::mcp::{McpDeps, McpState};
+    use crate::models::EpicId;
+    use crate::service::embeddings::EmbeddingService;
+
+    /// Built here rather than reusing `handlers::tests::test_state` — that
+    /// helper is private to the sibling test module.
+    async fn state() -> Arc<McpState> {
+        let db: Arc<dyn crate::db::TaskStore> =
+            Arc::new(crate::db::Database::open_in_memory().await.unwrap());
+        Arc::new(McpState::new(
+            McpDeps {
+                db,
+                runner: crate::process::MockProcessRunner::unused(),
+                embedding_service: EmbeddingService::new_test(),
+                data_dir: std::env::temp_dir(),
+            },
+            None,
+        ))
+    }
+
+    /// An epic that does not resolve stops the chain silently. This is the
+    /// warn-and-skip branch of AutoDispatchNextSubtask: a chain problem must
+    /// never surface as an error, because by the time it runs the session has
+    /// already closed. `tasks.epic_id` carries a foreign key, so this branch is
+    /// only reachable directly — not by wiring a task to a missing epic.
+    #[tokio::test]
+    async fn auto_dispatch_next_returns_none_for_missing_epic() {
+        let state = state().await;
+        assert!(auto_dispatch_next(&state, EpicId(9999)).await.is_none());
+    }
+
+    /// No backlog subtask left — the chain stops, still without an error.
+    #[tokio::test]
+    async fn auto_dispatch_next_returns_none_when_no_backlog_subtask() {
+        let state = state().await;
+        let epic = state.db_write().create_epic("E", "", None).await.unwrap();
+        state
+            .db_write()
+            .patch_epic(epic.id, &crate::db::EpicPatch::new().auto_dispatch(true))
+            .await
+            .unwrap();
+        assert!(auto_dispatch_next(&state, epic.id).await.is_none());
+    }
 }

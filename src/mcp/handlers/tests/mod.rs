@@ -498,7 +498,6 @@ async fn every_tool_with_args_rejects_unknown_field() {
         ("get_epic", json!({"epic_id": 1})),
         ("update_epic", json!({"epic_id": 1})),
         ("wrap_up", json!({"task_id": 1, "action": "rebase"})),
-        ("dispatch_next", json!({"epic_id": 1})),
         ("dispatch_task", json!({"task_id": 1})),
         (
             "send_message",

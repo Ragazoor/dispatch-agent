@@ -556,6 +556,34 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
+    async fn try_claim_backlog_task(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let now = super::format_datetime(now);
+        self.db_call(move |conn| {
+            let running = TaskStatus::Running;
+            let rows = conn
+                .execute(
+                    "UPDATE tasks \
+                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
+                         updated_at = datetime('now') \
+                     WHERE id = ?4 AND status = ?5",
+                    params![
+                        running.as_str(),
+                        SubStatus::default_for(running).as_str(),
+                        now,
+                        id.0,
+                        TaskStatus::Backlog.as_str(),
+                    ],
+                )
+                .context("Failed to claim backlog task")?;
+            Ok(rows == 1)
+        })
+        .await
+    }
+
     async fn batch_patch_sub_status(&self, updates: &[(TaskId, SubStatus)]) -> Result<()> {
         if updates.is_empty() {
             return Ok(());

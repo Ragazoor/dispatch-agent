@@ -334,12 +334,12 @@ rule AugmentDispatchPromptWithLearnings {
         -- build_and_record_injections() (src/dispatch/prompts.rs).
 }
 
-rule WrapUpReflection {
+rule WrapUpRateLearningNudge {
     when: WrapUp(task, action)
 
     requires: action = pr
 
-    ensures: WrapUpReflectionNudged(task: task)
+    ensures: RateLearningNudged(task: task)
 
     @guidance
         -- The MCP wrap_up handler appends a rate_learning nudge to its response
@@ -370,8 +370,8 @@ rule WrapUpReflection {
 -- ExitSessionViaMcp in mcp-task-tools.allium. (The former two-phase
 -- exit_session(task, has_learnings?) reflect-then-close design is gone.)
 -- This file's concern is only the learning-related side effects around the
--- wrap-up sequence: WrapUpReflection above, plus the rate_learning /
--- record_learning nudges described in Dispatch Prompt Augmentation.
+-- wrap-up sequence: WrapUpRateLearningNudge and PrFinalisationReflection above,
+-- plus the injections described in Dispatch Prompt Augmentation.
 
 rule RecordLearningViaMcp {
     when: McpRecordLearning(task, kind, summary, scope, detail?, scope_ref?, tags?)
@@ -544,9 +544,9 @@ rule ReScopeLearningsOnRepoGroupDelete {
 }
 
 rule ArchiveStaleLearning {
-    when: learning: core/Learning.updated_at + config.stale_learning_threshold <= now
+    when: learning: core/Learning.updated_at + core/config.stale_learning_threshold <= now
 
-    requires: config.stale_learning_cleanup_enabled = true
+    requires: core/config.stale_learning_cleanup_enabled = true
     requires: learning.status = approved
     requires: learning.upvote_count <= 0
 

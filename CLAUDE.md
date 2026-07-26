@@ -147,7 +147,7 @@ The `dispatch` MCP server exposes more than task creation. Worth knowing by name
 - **Knowledge base** — the learnings most relevant to your task are already injected into your prompt at dispatch time (the "Validated knowledge for this task" section above); rate each one you act on with `rate_learning` (`helped`/`wrong`) — trajectory data shows this pre-injected set, not a manual query, is how most agents encounter learnings in practice. Call `query_learnings` yourself when you need more than what was surfaced — a different area of the repo, or a question that comes up mid-task. `record_learning` captures a pitfall/convention/tip worth remembering for future agents. See `learnings.allium`.
 - **Your own task** — `get_task` / `update_task` to read or mutate the task you're running as (title, description, status, plan, tag).
 - **Repo search** — `search_docs` for semantic search over an indexed repo; `index_repo` to build the index if missing. See `repo-rag.allium`.
-- **Finishing** — `wrap_up` + `exit_session` to close out a session (see the `/wrap-up` skill); `dispatch_next` to fire the next epic subtask immediately after finishing one.
+- **Finishing** — `wrap_up` + `exit_session` to close out a session (see the `/wrap-up` skill). `exit_session` chains the epic's next backlog subtask automatically when `auto_dispatch` is on; there is no tool for you to call.
 
 `create_task`/`create_epic` matter mainly to orchestrating agents decomposing work, not to an agent executing a single dispatched task. Full tool list and schemas: call `tools/list`, or see `docs/specs/mcp-task-tools.allium`.
 

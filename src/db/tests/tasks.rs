@@ -3386,6 +3386,77 @@ async fn mark_pr_learnings_gate_shown_missing_task_is_false() {
         .unwrap());
 }
 
+// -- try_claim_backlog_task -------------------------------------------------
+
+#[tokio::test]
+async fn try_claim_backlog_task_claims_a_backlog_task_once() {
+    let db = in_memory_db().await;
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "t",
+            description: "",
+            repo_path: "/tmp/r",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+    let now = chrono::Utc::now();
+
+    assert!(db.try_claim_backlog_task(id, now).await.unwrap());
+    let claimed = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(claimed.status, TaskStatus::Running);
+    assert_eq!(
+        claimed.sub_status,
+        SubStatus::default_for(TaskStatus::Running)
+    );
+    assert!(claimed.last_pre_tool_use_at.is_some());
+
+    // Second call loses: the task is no longer in backlog.
+    assert!(!db.try_claim_backlog_task(id, now).await.unwrap());
+}
+
+#[tokio::test]
+async fn try_claim_backlog_task_is_false_for_task_out_of_backlog() {
+    let db = in_memory_db().await;
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "t",
+            description: "",
+            repo_path: "/tmp/r",
+            plan: None,
+            status: TaskStatus::Running,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+
+    assert!(!db
+        .try_claim_backlog_task(id, chrono::Utc::now())
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn try_claim_backlog_task_is_false_for_missing_task() {
+    let db = in_memory_db().await;
+    assert!(!db
+        .try_claim_backlog_task(TaskId(999_999), chrono::Utc::now())
+        .await
+        .unwrap());
+}
+
 #[tokio::test]
 async fn batch_patch_sub_status_updates_all_tasks() {
     let db = in_memory_db().await;

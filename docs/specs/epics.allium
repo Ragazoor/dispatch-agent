@@ -457,44 +457,6 @@ rule SetManagedFeedConfigViaMcp {
         -- shell scripts run via sh -c, matching feed_command on epics).
 }
 
-rule DispatchNextViaMcp {
-    when: McpDispatchNext(epic)
-
-    requires: epic.auto_dispatch = true
-
-    -- Does not require epic.status = backlog: MCP dispatches sequentially
-    -- as agents complete work, so the epic will already be running by the
-    -- time the next subtask is requested.
-
-    ensures:
-        let candidates = epic.active_subtasks where status = backlog
-        let next = sort_by_order(candidates).first
-        if next != null:
-            AgentLaunched(task: next, mode: standard)
-
-    @guidance
-        -- MCP tool for agents to dispatch the next backlog subtask of
-        -- their epic. Routes through the standard single dispatch path:
-        -- build_prompt produces the unified prompt skeleton with the
-        -- appropriate addendum based on has_plan.
-        -- Only active subtasks (Task) are dispatch candidates, ordered by
-        -- sort_order ascending (nulls treated as the task id).
-        -- The task is transitioned to running with a provisioned worktree
-        -- and tmux window; the parent epic's status is recalculated after
-        -- the dispatch completes.
-        -- Sub-epics are not auto-dispatched by this tool: only direct
-        -- Task children with status = backlog are considered. If an
-        -- epic's remaining work is nested inside a sub-epic, the human
-        -- operator must dispatch the sub-epic explicitly from the TUI.
-        -- When no backlog subtasks remain, returns an informational
-        -- message without error.
-        -- When auto_dispatch = false, returns an informational message
-        -- ("auto dispatch is disabled") without dispatching.
-        -- The response is returned immediately; the dispatch itself
-        -- runs on a background task, and a refresh notification is
-        -- sent to the TUI when it completes.
-}
-
 rule ReparentEpicFromTui {
     when: ReparentEpic(epic, new_parent?)
 
@@ -547,11 +509,124 @@ rule ToggleAutoDispatch {
         -- Triggered by pressing U in the epic detail view (i.e. while
         -- ViewMode::Epic is active). The key is a no-op outside that
         -- view.
-        -- Flips the auto_dispatch flag. When false, the MCP
-        -- dispatch_next tool returns an informational message
-        -- instead of dispatching the next backlog subtask.
+        -- Flips the auto_dispatch flag. When false, closing a subtask's
+        -- agent session no longer chains: AutoDispatchNextSubtask leaves
+        -- the epic untouched and the next subtask is dispatched by the
+        -- human from the TUI.
         -- The new value is persisted to the database and reflected
         -- immediately in the header indicator (green = auto, muted = manual).
+}
+
+-- == Automatic Subtask Chaining ==
+
+rule AutoDispatchNextSubtask {
+    when: SessionClosed(task)
+
+    -- Deliberately no requires. A chain that stops is a normal outcome, not a
+    -- violated precondition, so every guard lives inside the ensures below:
+    -- no epic, auto_dispatch = false, or no backlog subtask each leave the
+    -- epic untouched rather than rejecting the trigger.
+    let epic = task.epic
+
+    ensures:
+        if epic != null and epic.auto_dispatch:
+            -- First backlog subtask, ordered by sort_order (nulls fall back to
+            -- the task id), then by id.
+            let next = first_by_order(epic.subtasks where status = backlog)
+            if next != null:
+                DispatchTask(next)
+
+    @guidance
+        -- Server-side epic chaining. SessionClosed is emitted last by the MCP
+        -- session-close flow (see ExitSessionViaMcp in mcp-task-tools.allium
+        -- and ExitSession in pr-workflow.allium), so the next subtask's
+        -- worktree is always cut from a base_branch that already contains the
+        -- finished subtask's work.
+        --
+        -- There is no agent-facing tool for this. The former dispatch_next MCP
+        -- tool is gone precisely because, alongside automatic chaining, an
+        -- agent that called it and then exited fired TWO subtasks — one of them
+        -- from a base that predated its own commits, which is the bug this rule
+        -- exists to remove.
+        --
+        -- Ordering guarantee. Every database write that determines the next
+        -- subtask's starting base is complete before selection happens: the
+        -- rebase / fast-forward of base_branch (WrapUpRebase) and the closing
+        -- task's terminal status patch both precede this rule. The one thing
+        -- still in flight is the closing task's tmux window teardown, which is
+        -- detached and may overlap the new window's creation; window names are
+        -- keyed by task id, so the closing and opening windows cannot collide.
+        -- The guarantee is about database state, not OS-level teardown.
+        --
+        -- Three ways the chain stops, all normal outcomes: the closed task has
+        -- no epic; the epic has auto_dispatch = false (see ToggleAutoDispatch);
+        -- or the epic has no backlog subtask left. In each case the epic is
+        -- untouched and the close reports a plain "session closed" response,
+        -- and the human dispatches the next subtask from the TUI — the same
+        -- recovery path auto_dispatch = false already produces.
+        --
+        -- Candidate selection. Only direct Task children are candidates,
+        -- ordered by sort_order ascending with the task id both as the fallback
+        -- for nulls and as the tiebreaker. Sub-epics are NEVER auto-dispatched:
+        -- if an epic's remaining work is nested inside a sub-epic, the human
+        -- operator must dispatch that sub-epic explicitly from the TUI.
+        -- Follow-up tasks created between wrap_up and the close (e.g. by the
+        -- /retro skill) carry no sort_order, so their fallback key is their own
+        -- — always larger — id: they sort after every planned subtask and are
+        -- only ever chosen once the planned subtasks are exhausted.
+        --
+        -- At most one agent is launched per closed session, even under
+        -- concurrent closes. Selection is exclusive: the chosen subtask is
+        -- claimed by a single conditional write that succeeds only while the
+        -- task is still in backlog (implementation: UPDATE ... WHERE status =
+        -- 'backlog', serialised through the single writer connection), and a
+        -- caller that loses the claim re-selects. Two sessions closing on the
+        -- same epic in the same instant therefore launch two DIFFERENT
+        -- subtasks, never two agents for one subtask. The claim is a mechanism
+        -- rather than domain behaviour, so it is recorded here instead of being
+        -- modelled as a rule — but the exclusivity it buys is normative.
+        -- Re-selection after a lost claim is bounded (currently 5 attempts) so a
+        -- pathological contention storm cannot spin; exhausting the budget just
+        -- stops the chain, which is one of the normal outcomes above.
+        -- Scope of that exclusivity: it holds between chains, and between a
+        -- chain and DispatchTaskViaMcp (whose backlog guard the claim
+        -- invalidates). The TUI dispatch key does not claim, so a human
+        -- dispatching the exact subtask a chain is claiming, in the same
+        -- instant, can still double-dispatch it; that window is pre-existing and
+        -- closing it means putting the TUI path on the same claim.
+        -- Consequence: the status half of DispatchTask's postcondition (backlog
+        -- -> running with the default running sub_status, and a seeded
+        -- last_pre_tool_use_at) is applied synchronously at selection time,
+        -- ahead of worktree provisioning, so a chained subtask is briefly
+        -- running with worktree = null. Both crash detection and activity
+        -- classification filter on tmux_window != null, so that window
+        -- produces no spurious Stale or Crashed (see agent-health.allium), and
+        -- is_wrappable requires a worktree, so the subtask cannot be wrapped up
+        -- before it is provisioned.
+        --
+        -- The dispatch itself runs on a background task through the standard
+        -- single-dispatch path, and a refresh notification is sent to the TUI
+        -- when it completes. The ensures above emits DispatchTask, matching
+        -- every other launch site in the specs (DispatchTaskViaMcp,
+        -- JumpToAgentWindow); routing by tag is owned by dispatch.allium, so a
+        -- plan-less research-tagged subtask reaches DispatchResearchTask
+        -- instead. If the dispatch fails, the subtask is
+        -- reverted to backlog with the default backlog sub_status and a warning
+        -- is logged, leaving it dispatchable exactly as before the chain fired.
+        --
+        -- No chain failure can fail the close. By the time this rule runs the
+        -- closing task has already reached its terminal status and its session
+        -- has been torn down, so reporting an error here would tell the agent
+        -- its session failed to close when it did not. A missing epic, a lost
+        -- claim, a claim error and a failed dispatch are each logged at warn and
+        -- nothing more. A DB error while READING auto_dispatch is fail-open —
+        -- the flag is treated as true — so a transient hiccup does not silently
+        -- stall an epic.
+        --
+        -- The TUI finish path (W then r, FinishTaskSuccess in
+        -- pr-workflow.allium) does not emit SessionClosed and therefore does
+        -- not chain. Adding chaining to human-driven finishes is a separate
+        -- decision.
 }
 
 -- == Feed Task Identity Invariant ==
@@ -639,7 +714,7 @@ rule RegroupEpic {
         -- in the correct sub-epic is a no-op for each task.
         -- Dispatching a grouped epic operates per sub-epic, not on the
         -- parent directly: only direct Task children are dispatch
-        -- candidates (see DispatchNextViaMcp), so the human selects a
+        -- candidates (see AutoDispatchNextSubtask), so the human selects a
         -- sub-epic to dispatch. Sub-epics are one level deep — sub-epics
         -- of repo-group sub-epics are not created.
         --

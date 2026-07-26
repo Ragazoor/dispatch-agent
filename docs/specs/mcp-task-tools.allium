@@ -1,8 +1,8 @@
 -- allium: 3
 -- mcp-task-tools.allium
 --
--- Scope: MCP tools for task management (create, update, list, claim, dispatch,
---        send-message, subscribe/unsubscribe-to-task, query-usage,
+-- Scope: MCP tools for task management (create, get, update, list, claim,
+--        dispatch, send-message, subscribe/unsubscribe-to-task, query-usage,
 --        set-verify-command) and the CLI plan-attachment surface.
 -- Excludes: Task lifecycle (see tasks.allium); dispatch/retry (see dispatch.allium);
 --           MCP epic tools (see epics.allium); learnings tools (see learnings.allium);
@@ -28,7 +28,7 @@ rule UpdateTaskViaMcp {
               or sort_order != null or epic_id != null
               or url != null or tag != null
               or base_branch != null
-              or wrap_up_mode != null
+              or wrap_up_mode != omitted
               or auto_run_plan != null
 
     -- Typed-url validation contract. The url string and its type travel
@@ -80,7 +80,9 @@ rule UpdateTaskViaMcp {
     ensures:
         if base_branch != null: task.base_branch = base_branch
     ensures:
-        if wrap_up_mode != null: task.wrap_up_mode = wrap_up_mode
+        -- wrap_up_mode supports three states: omitted (no change), one of
+        -- WrapUpMode's literals (set), or explicit null (clear to NULL).
+        if wrap_up_mode != omitted: task.wrap_up_mode = wrap_up_mode
     ensures:
         if auto_run_plan != null: task.auto_run_plan = auto_run_plan
     ensures: task.updated_at = now
@@ -212,7 +214,7 @@ rule CreateTaskViaMcp {
         epic: effective_epic,
         tag: tag,
         sort_order: sort_order,
-        base_branch: base_branch ?? config.default_branch,
+        base_branch: base_branch ?? core/config.default_branch,
         wrap_up_mode: wrap_up_mode,
         auto_run_plan: auto_run_plan ?? false,
         created_at: now,
@@ -265,6 +267,35 @@ rule CreateTaskViaMcp {
         -- repo_path is expanded through expand_tilde before being
         -- stored (so "~/proj" becomes "$HOME/proj"), matching
         -- UpdateTaskViaMcp.
+}
+
+rule GetTaskViaMcp {
+    when: McpGetTask(task_id)
+
+    requires: core/Task.exists(task_id)
+
+    -- Read-only. Returns the task detail view for task_id; no state changes.
+    ensures: TaskRetrieved(task_id)
+
+    @guidance
+        -- get_task takes only task_id and is the tool a dispatched agent uses
+        -- to read its own task (title, description, plan, tag, wrap_up_mode).
+        -- Caller identity is not consulted: any caller may read any task, and
+        -- there is no auto-scoping or self-exclusion as in ListTasksViaMcp.
+        -- Detail lines, in render order. Always present:
+        --   Task <id>: <title> | Status | Repo | Description | Sub-status
+        --   Base branch, Created, Updated
+        -- Present only when the field is set:
+        --   Epic (as "<title> (#<id>)", or "#<id>" when the title cannot be
+        --   resolved), Tag, Plan, <url label>: <url> (the typed label derived
+        --   from url.url_type), Worktree, Tmux window, Sort order,
+        --   Wrap-up mode.
+        -- Not surfaced at all: labels, external_id, auto_run_plan, origin, and
+        -- the hook timestamps (last_pre_tool_use_at, last_notification_at,
+        -- pr_learnings_gate_shown_at).
+        -- An unknown task_id returns a -32602 validation error via
+        -- ServiceError::NotFound.
+        -- Handled by handle_get_task in src/mcp/handlers/tasks/crud.rs.
 }
 
 rule ListTasksViaMcp {
@@ -365,36 +396,6 @@ rule QueryUsageViaMcp {
         -- Handled by handle_query_usage in src/mcp/handlers/tasks/crud.rs.
 }
 
-rule DispatchNextViaMcp {
-    when: McpDispatchNext(epic)
-
-    -- Select the first backlog subtask of the epic, ordered by
-    -- sort_order (nulls fall back to id), then by id.
-    let next = first_by_order(epic.subtasks where status = backlog)
-
-    ensures:
-        if not epic.auto_dispatch:
-            UserInformed(about: auto_dispatch_disabled, epic: epic)
-        else if next = null:
-            UserInformed(about: no_backlog_tasks, epic: epic)
-        else:
-            DispatchTask(next)
-
-    @guidance
-        -- When epic.auto_dispatch is false, the call returns an
-        -- informational message without dispatching. Otherwise the
-        -- next backlog subtask is chosen deterministically: sort_order
-        -- ascending with id tiebreaker, nulls using id as fallback.
-        -- If no backlog subtasks remain, the call is a no-op with an
-        -- informational message. A DB error reading auto_dispatch does
-        -- not block dispatch; the flag defaults to treated-as-true on
-        -- read failure (fail-open). Returns success immediately; the
-        -- dispatch runs in the background via spawn_blocking.
-        -- Internally delegates to the same dispatch logic as DispatchTaskViaMcp:
-        -- a single DispatchTask call, since the unified prompt skeleton
-        -- handles both has_plan branches without tag-based routing.
-}
-
 rule DispatchTaskViaMcp {
     when: McpDispatchTask(task)
 
@@ -407,8 +408,13 @@ rule DispatchTaskViaMcp {
         -- A single DispatchTask call covers both has_plan = true
         -- (with-plan prompt) and has_plan = false (brainstorm-or-plan
         -- prompt) variants — the prompt builder branches internally.
-        -- Unlike DispatchNextViaMcp, this call is synchronous: it waits for
-        -- worktree creation and agent launch to complete before returning.
+        -- dispatch_task is the only remaining MCP dispatch tool: it stays the
+        -- explicit "dispatch this specific task" call, while epic chaining is
+        -- automatic on session close (AutoDispatchNextSubtask in
+        -- epics.allium). Unlike that chain, this call is synchronous: it waits
+        -- for worktree creation and agent launch to complete before returning.
+        -- Its backlog guard above is also what stops a task already claimed by
+        -- a chain from being dispatched a second time through this tool.
         -- On success, the worktree path and tmux window are returned to the caller.
         -- On failure (e.g. worktree creation or tmux launch error), the error is
         -- returned immediately and the task remains in backlog status.
@@ -516,15 +522,30 @@ rule AttachPlanViaCli {
 -- @guidance: Other CLI subcommands (operator/diagnostic surfaces; not
 -- modeled as separate rules because they do not mutate task domain state
 -- beyond what existing rules already cover):
---   • `dispatch tui [--port] [--inactivity-timeout]` — primary entry
---     point launching the TUI (src/main.rs Commands::Tui).
+--   • `dispatch tui [--port]` — primary entry point launching the TUI
+--     (src/main.rs Commands::Tui). --port also reads the DISPATCH_PORT env
+--     var and defaults to core/config.mcp_port.
 --   • `dispatch list [--status <status>]` — diagnostic listing of tasks,
 --     optionally filtered by status (src/main.rs Commands::List). Read-only.
+--   • `dispatch setup [--port] [--yes]` — writes the Claude Code MCP
+--     configuration (see CreateTaskViaMcp guidance for the headersHelper it
+--     installs).
 --   • `dispatch uninstall [--yes] [--purge]` — destructive: removes the
 --     dispatch MCP configuration from Claude Code; with `--purge` also
 --     deletes the database and log files (src/main.rs Commands::Uninstall).
 --     Operator-only — never invoked by agents or hooks.
+--   • `dispatch repo set-verify <path> <command>` /
+--     `dispatch repo clear-verify <path>` / `dispatch repo list` — operator
+--     equivalents of SetVerifyCommandViaMcp, writing the same
+--     core/SavedRepoPath.verify_command. set-verify creates the path entry
+--     when it does not exist yet.
+--   • `dispatch prune-repo-paths` — drops core/SavedRepoPath rows whose path
+--     no longer exists on the filesystem. Operator-only housekeeping.
 --   • `dispatch update <id> <status> ...` — see HookNotification in agent-health.allium.
+--   • `dispatch hook <id> <kind> [--kind K]` — see HookNotification in agent-health.allium.
+--   • `dispatch pr-gate <id>` — see PrLearningsGate in pr-workflow.allium.
+--   • `dispatch caller-headers` — see CreateTaskViaMcp guidance.
+--   • `dispatch doctor ...` — see doctor.allium.
 --   • `dispatch verify-feed <command>` — see VerifyFeed in feeds.allium.
 
 -- == MCP Wrap-Up and Exit Tools ==
@@ -592,6 +613,11 @@ rule ExitSessionViaMcp {
             task.sub_status = core/SubStatus.default_for(done)
         task.updated_at = now
 
+    -- Emitted last, after every mutation above and after the session teardown,
+    -- so an epic chain keyed on it (AutoDispatchNextSubtask in epics.allium)
+    -- sees the closed task in its terminal state.
+    ensures: SessionClosed(task: task)
+
     @guidance
         -- Single-call session close for all three wrap-up actions. The old
         -- two-phase behaviour (first call showed a reflection prompt and set
@@ -631,6 +657,19 @@ rule ExitSessionViaMcp {
         -- review with a pr-typed url until the exact same call that also nulls
         -- tmux_window, so PollPrStatus (which filters on status = review and
         -- url.url_type = pr) can never observe it mid-session.
+        -- SessionClosed is emitted last, after the terminal patch, the
+        -- task/epic-changed notifications and the tmux teardown. It is what
+        -- drives automatic epic chaining (AutoDispatchNextSubtask in
+        -- epics.allium), and it is fire-and-forget: a chain that stops, or
+        -- fails, never turns a successful close into an error. All three
+        -- actions emit it — for action = pr the finished work sits on a PR
+        -- branch rather than base_branch, so the chained subtask still will not
+        -- see it, but that is inherent to choosing the PR path rather than
+        -- something this close does wrong. When a chain does fire, the response
+        -- text names the subtask it dispatched; otherwise it is the plain
+        -- session-closed message. There is no agent-facing tool to dispatch the
+        -- next subtask — the tool description says so explicitly, so an agent
+        -- reading tools/list does not go looking for one.
 }
 
 rule SetVerifyCommandViaMcp {
@@ -657,6 +696,11 @@ rule SetVerifyCommandViaMcp {
         -- A command containing "\n" or "\r" is rejected at the handler
         -- with JSON-RPC -32602 (invalid params) before reaching the DB,
         -- which would otherwise surface the constraint as -32603.
+        -- Nothing nudges an agent to call this tool: exit_session carries no
+        -- prompt about it, and wrap_up only echoes an already-recorded command
+        -- back as its "Verify before exiting" line (see WrapUpRebase in
+        -- pr-workflow.allium). Recording a verify command is an explicit act by
+        -- an agent or operator (see the `dispatch repo set-verify` CLI above).
         -- Handled by handle_set_verify_command in
         -- src/mcp/handlers/tasks/verify.rs.
 }

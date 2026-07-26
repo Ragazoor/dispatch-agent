@@ -31,7 +31,7 @@ rule CreateTask {
         epic: epic,
         tag: tag,
         sort_order: sort_order,
-        base_branch: base_branch ?? config.default_branch,
+        base_branch: base_branch ?? core/config.default_branch,
         wrap_up_mode: wrap_up_mode,
         auto_run_plan: auto_run_plan ?? false,
         created_at: now,

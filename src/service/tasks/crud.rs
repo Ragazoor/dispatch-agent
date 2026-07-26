@@ -17,6 +17,12 @@ use super::params::{ClaimTaskParams, CreateTaskParams, ListTasksFilter, UpdateTa
 use super::validators::build_task_patch;
 use crate::service::UrlUpdate;
 
+/// How many times [`TaskService::claim_next_backlog_task`] re-selects after
+/// losing a row to a concurrent claim. Bounded so a pathological contention
+/// storm cannot spin: giving up simply stops the chain, which is a normal
+/// outcome (see `AutoDispatchNextSubtask` in `docs/specs/epics.allium`).
+const CLAIM_MAX_ATTEMPTS: usize = 5;
+
 /// Result of [`TaskService::update_task`]. Carries the updated task id plus
 /// presentation-relevant transition flags so MCP handlers can format their
 /// response without re-reading the DB.
@@ -685,5 +691,43 @@ impl TaskService {
         backlog.sort_by_key(|t| (t.sort_order.unwrap_or(t.id.0), t.id.0));
 
         Ok(backlog.into_iter().next())
+    }
+
+    /// Select and atomically claim the epic's next backlog subtask.
+    ///
+    /// Returns the claimed task with its `Running` status applied, or `Ok(None)`
+    /// when no backlog subtask remains. The selection is exclusive: a losing
+    /// claim means a concurrent caller won that row, so this re-selects. Two
+    /// concurrent callers therefore claim two *different* subtasks, never the
+    /// same one — the guarantee `AutoDispatchNextSubtask` in
+    /// `docs/specs/epics.allium` depends on.
+    ///
+    /// Claiming moves the `Running` transition ahead of worktree provisioning,
+    /// so the returned task has `worktree = None` until the dispatch completes.
+    pub async fn claim_next_backlog_task(
+        &self,
+        epic_id: EpicId,
+    ) -> Result<Option<Task>, ServiceError> {
+        for _ in 0..CLAIM_MAX_ATTEMPTS {
+            let Some(candidate) = self.next_backlog_task(epic_id).await? else {
+                return Ok(None);
+            };
+            let now = self.clock.now();
+            if !self.db.try_claim_backlog_task(candidate.id, now).await? {
+                // Lost the row to a concurrent claim — re-select.
+                continue;
+            }
+            self.recalculate_epic(epic_id).await;
+            let mut claimed = candidate;
+            claimed.status = TaskStatus::Running;
+            claimed.sub_status = SubStatus::default_for(TaskStatus::Running);
+            claimed.last_pre_tool_use_at = Some(now);
+            return Ok(Some(claimed));
+        }
+        tracing::warn!(
+            epic_id = epic_id.0,
+            "claim_next_backlog_task: gave up after {CLAIM_MAX_ATTEMPTS} contended attempts"
+        );
+        Ok(None)
     }
 }

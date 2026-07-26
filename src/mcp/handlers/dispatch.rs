@@ -35,7 +35,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2024-11-05"];
 /// Register all MCP tools in one place. Expands to:
 /// - `fn tool_definitions() -> Value` — the JSON tool list
 /// - `async fn dispatch_tool(...)` — the match dispatch
-/// - `pub const TOOL_NAMES: &[&str]` — flat list of names (used by setup.rs)
+/// - `pub const TOOL_NAMES: &[&str]` — flat list of names
 macro_rules! mcp_tools {
     (
         $(
@@ -342,19 +342,6 @@ the resulting URL to exit_session (not to wrap_up).",
             "required": ["task_id", "action"]
         };
 
-    async "dispatch_next" => tasks::handle_dispatch_next,
-        "Dispatch the next backlog subtask for an epic. Creates a worktree from the task's base_branch (origin/<base_branch> when reachable) and launches a tmux session. Returns success even if there are no backlog tasks remaining.",
-        {
-            "type": "object",
-            "properties": {
-                "epic_id": {
-                    "type": "integer",
-                    "description": "The epic ID to dispatch the next subtask for"
-                }
-            },
-            "required": ["epic_id"]
-        };
-
     async "dispatch_task" => tasks::handle_dispatch_task,
         "Dispatch a backlog task by ID. Creates a worktree from the task's base branch and launches a tmux session. Waits for the dispatch to complete and returns success with worktree path and tmux window, or an error if the task is not in backlog status or the dispatch fails.",
         {
@@ -550,7 +537,10 @@ Pass command=null to clear it.",
         "Close your agent session in a single call — run the /retro skill before calling this, it is \
 the mandatory reflection step. Applies the terminal mutation atomically with clearing the tmux \
 window: 'rebase'/'done' move the task to Done; 'pr' moves it to Review and sets the PR url. The \
-action must match the action passed to wrap_up, or the call is rejected.",
+action must match the action passed to wrap_up, or the call is rejected. \
+If the task belongs to an epic with auto_dispatch enabled, closing it automatically dispatches \
+that epic's next backlog subtask — there is no tool for you to call, and you must not try to \
+dispatch it yourself.",
         {
             "type": "object",
             "properties": {

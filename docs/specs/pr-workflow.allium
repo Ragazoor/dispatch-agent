@@ -345,6 +345,11 @@ rule ExitSession {
             task.sub_status = core/SubStatus.default_for(done)
         task.updated_at = now
 
+    -- Emitted last, after every mutation above and after the session teardown,
+    -- so an epic chain keyed on it (AutoDispatchNextSubtask in epics.allium)
+    -- sees the closed task in its terminal state.
+    ensures: SessionClosed(task: task)
+
     @guidance
         -- Single-call session close. The old two-phase behaviour (first call
         -- returned a reflection prompt and set token.reflected, second call
@@ -399,6 +404,18 @@ rule ExitSession {
         -- the exact same call that also nulls tmux_window, so PollPrStatus can
         -- never observe it mid-session — the review-visible state and the
         -- session-ended state become true in the same instant.
+        --
+        -- SessionClosed fires last, after the terminal mutation, the
+        -- task/epic-changed notifications and the tmux teardown, and it is
+        -- fire-and-forget. Its only consumer today is automatic epic chaining
+        -- (AutoDispatchNextSubtask in epics.allium): if the closed task belongs
+        -- to an epic with auto_dispatch = true, the epic's next backlog subtask
+        -- is dispatched — so a subtask's successor always starts from a
+        -- base_branch that already contains this task's work. A chain that
+        -- stops, or fails, must never turn a successful close into an error;
+        -- there is deliberately no agent-facing tool for triggering it.
+        -- The TUI finish path (W then r) completes via FinishTaskSuccess, not
+        -- this rule, so it emits no SessionClosed and does not chain.
 }
 
 -- == Finish (Merge) ==

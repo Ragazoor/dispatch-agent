@@ -379,8 +379,22 @@ pub(crate) async fn handle_exit_session(
             let _ = crate::tmux::kill_window(window, &*runner);
         }
     });
-    JsonRpcResponse::ok(
-        id,
-        json!({"content": [{"type": "text", "text": "Session closed."}]}),
-    )
+
+    // SessionClosed fires last — after the terminal patch, the change
+    // notifications and the window teardown — so the next subtask's worktree is
+    // cut from a base_branch that already contains this task's work. See
+    // AutoDispatchNextSubtask in docs/specs/epics.allium. Never fails the close:
+    // `auto_dispatch_next` swallows every chain problem.
+    let next = match task.epic_id {
+        Some(epic_id) => super::dispatch::auto_dispatch_next(state, epic_id).await,
+        None => None,
+    };
+    let text = match next {
+        Some((next_id, next_title)) => format!(
+            "Session closed. Dispatching next epic subtask #{} '{next_title}'.",
+            next_id.0
+        ),
+        None => "Session closed.".to_string(),
+    };
+    JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
 }

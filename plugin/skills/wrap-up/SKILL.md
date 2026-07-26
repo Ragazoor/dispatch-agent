@@ -98,12 +98,6 @@ If the user cancels or says no, exit without calling any tool.
 
 The task is automatically moved to "done" (rebase or done) or "review" (PR) on success. Do not update the task status manually except as described below for the PR path.
 
-### Dispatch next epic subtask
-
-If the task has an `epic_id`, call the `dispatch` MCP tool `dispatch_next` with that `epic_id`. This fires the next agent in the epic immediately, while you complete the steps below.
-
-If the task does not have an `epic_id`, skip this.
-
 ### If rebase:
 
 This is a **two-call** sequence, with the retro skill run in between. Both calls are mandatory.
@@ -128,6 +122,8 @@ If `wrap_up` returns an error (e.g. rebase conflict, repo not on `{base_branch}`
 - `action`: `"rebase"` — must match the action passed to `wrap_up`
 
 This single call closes the session: it marks the task Done, clears the tmux window, and consumes the token. There is no separate reflection round-trip anymore.
+
+If this task belongs to an epic with auto-dispatch on, `exit_session` also dispatches the epic's next backlog subtask, after the rebase has landed. That is automatic and server-side — do not try to dispatch the next subtask yourself.
 
 Do NOT stop between Call 1 and Call 2. Skipping `exit_session` leaves the tmux window alive and the task stuck.
 
@@ -250,6 +246,8 @@ If `wrap_up` returns an error, show the user the exact error message.
 
 This single call moves the task to Review, sets the PR url, clears the tmux window, and starts PR status polling — all atomically. **Do NOT call `exit_session` again after this succeeds** — there's no second call for the pr action; this closes the loop.
 
+If this task belongs to an epic with auto-dispatch on, `exit_session` also dispatches the epic's next backlog subtask. That is automatic and server-side — do not try to dispatch the next subtask yourself.
+
 If `exit_session` returns an error:
 - Missing/empty `pr_url` — pass the URL captured in 5c.
 - `"has no active session"` — something else already tore the session down (e.g. the PR was merged/closed before you got here). Treat this as already wrapped up, not a failure — do not retry, and do not re-create the PR.
@@ -279,6 +277,8 @@ If `wrap_up` returns an error, show the user the exact error message. Do not cal
 - `action`: `"done"` — must match the action passed to `wrap_up`
 
 This single call marks the task Done and kills the tmux window.
+
+If this task belongs to an epic with auto-dispatch on, `exit_session` also dispatches the epic's next backlog subtask. That is automatic and server-side — do not try to dispatch the next subtask yourself.
 
 **If `exit_session` errors:**
 - `"has no active session"` — something else already tore the session down. Treat this as already wrapped up, not a failure — do not retry.

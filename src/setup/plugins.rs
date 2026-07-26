@@ -507,6 +507,20 @@ mod tests {
         );
     }
 
+    /// The embedded copy of the wrap-up skill is what agents actually read, so
+    /// it is the only thing that catches a regression here: epic chaining is a
+    /// server-side effect of `exit_session` and there is no `dispatch_next` tool
+    /// left for the skill to name.
+    #[test]
+    fn wrap_up_skill_does_not_instruct_calling_dispatch_next() {
+        let content = skill_body("wrap-up");
+        assert!(
+            !content.contains("dispatch_next"),
+            "wrap-up skill must not tell the agent to call dispatch_next — \
+             exit_session chains the next epic subtask automatically"
+        );
+    }
+
     /// Read an embedded skill's `SKILL.md` by skill name, for tests that assert
     /// on skill copy.
     fn skill_body(skill: &str) -> &'static str {

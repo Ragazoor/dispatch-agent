@@ -2721,67 +2721,9 @@ async fn update_task_with_base_branch_updates_it() {
     assert_eq!(task.base_branch, "release/2.0");
 }
 
-#[tokio::test]
-async fn dispatch_next_returns_disabled_when_auto_dispatch_off() {
-    let state = test_state().await;
-
-    // Create epic with auto_dispatch = false
-    let epic = state
-        .db_write()
-        .create_epic("E", "desc", None)
-        .await
-        .unwrap();
-    state
-        .db_write()
-        .patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(false))
-        .await
-        .unwrap();
-
-    // Create a backlog subtask linked to the epic
-    let task_id = state
-        .db_write()
-        .create_task(CreateTaskRequest {
-            title: "Sub",
-            description: "desc",
-            repo_path: "/repo",
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    state
-        .db_write()
-        .set_task_epic_id(task_id, Some(epic.id))
-        .await
-        .unwrap();
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_next",
-            "arguments": { "epic_id": epic.id.0 }
-        })),
-    )
-    .await;
-
-    // Should return informational message, not dispatch
-    let text = extract_response_text(&resp);
-    assert!(
-        text.contains("auto dispatch is disabled"),
-        "Expected disabled message, got: {text}"
-    );
-
-    // Task must still be in backlog — not dispatched
-    let task_after = state.db.get_task(task_id).await.unwrap().unwrap();
-    assert_eq!(task_after.status, TaskStatus::Backlog);
-}
+// `dispatch_next_returns_disabled_when_auto_dispatch_off` moved to
+// tests/tasks/dispatch.rs as `exit_session_does_not_chain_when_auto_dispatch_off`
+// — the auto_dispatch flag is now read by the session-close chain, not by a tool.
 
 // -- list_tasks: header-based caller identity ---------------------------------
 

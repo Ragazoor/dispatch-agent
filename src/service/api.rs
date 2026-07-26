@@ -245,6 +245,15 @@ macro_rules! task_service_api {
                 epic_id: $crate::models::EpicId
             ) -> Result<Option<$crate::models::Task>, $crate::service::ServiceError>;
 
+            /// Select and atomically claim the epic's next backlog subtask,
+            /// moving it to `Running` before any provisioning happens. Exclusive
+            /// under concurrency — see `AutoDispatchNextSubtask` in
+            /// `docs/specs/epics.allium`.
+            async fn claim_next_backlog_task(
+                &self,
+                epic_id: $crate::models::EpicId
+            ) -> Result<Option<$crate::models::Task>, $crate::service::ServiceError>;
+
             async fn subscribe_to_task(
                 &self,
                 watcher_task_id: $crate::models::TaskId,

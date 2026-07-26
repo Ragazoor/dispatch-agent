@@ -132,6 +132,17 @@ rule DispatchTask {
     ensures: AgentLaunched(task: task, mode: standard)
 
     @guidance
+        -- Precondition timing on the epic-chaining path. AutoDispatchNextSubtask
+        -- (epics.allium) selects its subtask with an atomic claim that already
+        -- applies the status half of the postcondition below (backlog -> running,
+        -- default running sub_status, seeded last_pre_tool_use_at) before
+        -- emitting DispatchTask. The backlog precondition is therefore evaluated
+        -- against the pre-claim state — the claim IS the guard on that path —
+        -- and a chained subtask is briefly running with worktree = null while
+        -- provisioning runs. Every other launch site (the TUI dispatch key,
+        -- DispatchTaskViaMcp) checks backlog and applies the whole postcondition
+        -- after provisioning succeeds.
+        --
         -- Before creating the worktree, `git fetch origin <base_branch>` is
         -- run in the repo root to update the remote-tracking ref. This fetch
         -- runs unconditionally — even when the worktree directory already

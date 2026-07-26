@@ -1,37 +1,74 @@
--- todo.allium — Personal TODO overlay domain spec.
--- Extracted from core.allium; extends it with linked task/epic references.
+-- allium: 3
+-- todo.allium
+--
+-- Scope: Personal TODO overlay — a lightweight checklist, separate from the
+--        kanban board. Extracted from core.allium; extends it with linked
+--        task/epic references.
+-- Excludes: Task and Epic lifecycle (see tasks.allium, epics.allium); the
+--           shared domain model (see core.allium).
 
--- A Todo is a lightweight personal checklist item, separate from the kanban board.
--- sort_order gives an explicit user-controllable ordering; done marks completion.
--- The view sorts done items below open ones.
--- linked associates a todo with exactly one task or epic (at most one of
---   task_id / epic_id is non-null in the DB; the domain exposes TodoLink).
--- parent_id nests a todo one level under another (a "root") todo. Nesting is
---   limited to a single level: a child cannot itself have children.
+use "./core.allium" as core
 
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- A Todo is a lightweight personal checklist item, separate from the kanban
+-- board. sort_order gives an explicit user-controllable ordering; done marks
+-- completion. The view sorts done items below open ones.
 entity Todo {
-    id: Integer
     title: String
-    done: Boolean
-    sort_order: Integer
-    -- linked: at most one of task_id / epic_id is non-null.
-    -- None means no association; Task(id) or Epic(id) links to a board item.
-    linked: Option<TodoLink>
-    -- parent_id: None means this is a root todo; Some(id) means it is a child
-    --   nested under the root todo with that id. Nesting depth is limited to 1
-    --   (no grandchildren) — a todo whose parent_id is set may not be the parent
-    --   of any other todo. Deleting a parent promotes its children to roots
-    --   rather than cascading the delete: each child's parent_id is cleared
-    --   (the DB foreign key is ON DELETE SET NULL). References another Todo's
-    --   id (an Integer, mirroring the id field above).
-    parent_id: Integer?
+    done: Boolean = false
+    sort_order: Integer = 0
+
+    -- Link to exactly one board item, or neither. At most one of linked_task /
+    -- linked_epic is set; both null means the todo is unlinked. The domain layer
+    -- exposes the pair as a single discriminated reference (TodoLink, which is
+    -- either a Task link or an Epic link) — the two fields here mirror how the
+    -- link is stored, and the discriminated form is what rules and the UI see.
+    linked_task: core/Task?
+    linked_epic: core/Epic?
+
+    -- null means this is a root todo; set means it is a child nested under that
+    -- root. Nesting is limited to a single level (no grandchildren) — a todo
+    -- whose parent is set may not itself be the parent of any other todo.
+    -- Deleting a parent promotes its children to roots rather than cascading the
+    -- delete: each child's parent is cleared.
+    parent: Todo?
+
     created_at: Timestamp
 
+    -- Relationships
+    children: Todo with parent = this
+
+    -- Derived
+    is_root: parent = null
+
+    invariant AtMostOneLink {
+        not (linked_task != null and linked_epic != null)
+    }
+
+    invariant NestingDepthOne {
+        parent != null implies children.count = 0
+    }
+
     @guidance
+        -- AtMostOneLink is upheld by the domain type (the discriminated
+        -- TodoLink), not by a database constraint: SQLite's ALTER TABLE ADD
+        -- COLUMN cannot add a table-level CHECK, so both columns were added
+        -- unconstrained. The read path is defensive rather than strict — a row
+        -- carrying both links resolves to the task link and the epic link is
+        -- silently dropped.
+        --
+        -- NestingDepthOne is enforced by the two nesting actions (NestTodo
+        -- refuses to nest under a child, and refuses to re-nest a child), not by
+        -- a constraint. Deleting a parent clears its children's parent rather
+        -- than deleting them.
+        --
         -- CreateTodo: a new Todo is appended at the end of the list. Its
         --   sort_order is strictly greater than every existing Todo's
-        --   sort_order (e.g. max(sort_order) + 1), and done is false.
-        --   The optional linked field is set at creation time (auto-linked
+        --   sort_order (max(sort_order) + 1), and done is false.
+        --   The optional link is set at creation time (auto-linked
         --   from the board selection when using quick-add).
         --
         -- ToggleTodoDone: toggling flips done (false -> true, true -> false).
@@ -40,9 +77,9 @@ entity Todo {
         -- Display order: the overlay renders todos hierarchically, not by raw
         --   sort_order. Roots come first (open roots before done roots), and
         --   each root is immediately followed by its children (open children
-        --   before done children). Orphans — children whose parent is missing —
-        --   sort to the end. Children render indented two spaces under their
-        --   parent.
+        --   before done children). Orphans — children whose parent is missing
+        --   from the rendered set — sort to the end. Children render indented
+        --   two spaces under their parent.
         --
         -- ReorderTodo: reordering swaps a Todo's sort_order with that of its
         --   nearest sibling in the desired direction, where "sibling" is scoped
@@ -55,29 +92,22 @@ entity Todo {
         -- ClearDoneTodos: clearing removes every Todo whose done is true.
         --   Open Todos (done = false) are untouched.
         --
-        -- LinkTodo: sets linked on an existing todo. Replaces any previous
+        -- LinkTodo: sets the link on an existing todo. Replaces any previous
         --   link. The user picks the target by browsing the board in
         --   InputMode::LinkTodoToTask; only Task and Epic items are linkable.
         --
-        -- UnlinkTodo: clears linked on an existing todo (sets both DB columns
-        --   to NULL). The todo remains; only the association is removed.
+        -- UnlinkTodo: clears the link on an existing todo (clears both linked
+        --   fields). The todo remains; only the association is removed.
         --
         -- NestTodo: bound to Tab on the selected todo. Nests the selected todo
         --   under the todo immediately above it in display order, setting
-        --   parent_id to that todo's id. Preconditions: the todo above must be
-        --   a root (parent_id = None), since nesting is limited to one level;
+        --   parent to that todo. Preconditions: the todo above must be
+        --   a root (parent = null), since nesting is limited to one level;
         --   and the selected todo must itself be a root (a child cannot be
         --   re-nested under a different parent via Tab). If there is no todo
         --   above, or the todo above is already a child, this is a no-op.
         --
         -- UnnestTodo: bound to Shift+Tab on the selected todo. Promotes a child
-        --   todo back to a root by clearing its parent_id (sets it to None).
+        --   todo back to a root by clearing its parent.
         --   A no-op when the selected todo is already a root.
-}
-
--- TodoLink — discriminated reference to either a task or an epic.
--- Invariant: in the DB, at most one of task_id / epic_id is non-null.
-enum TodoLink {
-    Task(TaskId)
-    Epic(EpicId)
 }

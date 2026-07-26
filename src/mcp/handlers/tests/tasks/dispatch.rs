@@ -659,369 +659,568 @@ async fn send_message_target_no_tmux_window() {
         "Error should mention no tmux window: {msg}"
     );
 }
-// -- dispatch_next tests ------------------------------------------------------
+// -- automatic epic chaining on exit_session ---------------------------------
+//
+// Epic chaining is a server-side side effect of closing a session, not a tool
+// an agent calls: `AutoDispatchNextSubtask` in docs/specs/epics.allium is keyed
+// on the `SessionClosed(task)` event that `ExitSessionViaMcp` emits last. The
+// old `dispatch_next` MCP tool is gone, so every test below drives the real
+// close path instead.
 
-#[tokio::test]
-async fn dispatch_next_epic_not_found_returns_error() {
-    let state = test_state().await;
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_next",
-            "arguments": { "epic_id": 9999 }
-        })),
-    )
-    .await;
-    assert_error(&resp, "not found");
+/// Wiring shared by the chaining tests: a temp repo, an in-memory DB, an
+/// `McpState` with a notification channel, and a runner with a generous queue
+/// of successes covering the closing task's detached `tmux kill-window` plus a
+/// full worktree provisioning for the chained subtask.
+struct ChainFixture {
+    _dir: tempfile::TempDir,
+    repo_path: String,
+    db: Arc<dyn db::TaskStore>,
+    state: Arc<McpState>,
+    notify_rx: tokio::sync::mpsc::UnboundedReceiver<crate::mcp::McpEvent>,
 }
 
-#[tokio::test]
-async fn dispatch_next_no_backlog_returns_success_noop() {
-    let state = test_state().await;
-    let epic = state
-        .db_write()
-        .create_epic("Test Epic", "desc", None)
-        .await
-        .unwrap();
-    state
-        .db_write()
-        .patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(true))
-        .await
-        .unwrap();
+impl ChainFixture {
+    async fn new() -> Self {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
 
-    // Add a task that's already Running (not Backlog)
-    let task_id = state
-        .db_write()
-        .create_task(CreateTaskRequest {
-            title: "Running Task",
-            description: "desc",
-            repo_path: "/repo",
-            plan: None,
-            status: TaskStatus::Running,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    state
-        .db_write()
-        .set_task_epic_id(task_id, Some(epic.id))
-        .await
-        .unwrap();
+        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
+        // The kill-window teardown and the chained dispatch race by design, and
+        // MockProcessRunner pops a shared FIFO, so queue uniform successes
+        // rather than a command-ordered script.
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(
+            (0..24).map(|_| MockProcessRunner::ok()).collect(),
+        ));
+        let state = Arc::new(McpState::new(
+            McpDeps {
+                db: db.clone(),
+                runner,
+                embedding_service: EmbeddingService::new_test(),
+                data_dir: std::env::temp_dir(),
+            },
+            Some(notify_tx),
+        ));
+        Self {
+            _dir: dir,
+            repo_path,
+            db,
+            state,
+            notify_rx,
+        }
+    }
 
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_next",
-            "arguments": { "epic_id": epic.id.0 }
-        })),
-    )
-    .await;
+    async fn epic(&self, auto_dispatch: bool) -> crate::models::EpicId {
+        let epic = self
+            .db
+            .create_epic("Chained Epic", "desc", None)
+            .await
+            .unwrap();
+        self.db
+            .patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(auto_dispatch))
+            .await
+            .unwrap();
+        epic.id
+    }
 
-    let text = extract_response_text(&resp);
-    assert!(
-        text.contains("no backlog tasks"),
-        "Expected noop message, got: {text}"
-    );
+    /// A backlog subtask that a chain can pick up. `repo_path` defaults to the
+    /// fixture's temp repo; pass an override to make provisioning fail.
+    async fn backlog_subtask(
+        &self,
+        epic_id: Option<crate::models::EpicId>,
+        title: &str,
+        sort_order: Option<i64>,
+        repo_path: Option<&str>,
+    ) -> crate::models::TaskId {
+        let id = self
+            .db
+            .create_task(CreateTaskRequest {
+                title,
+                description: "",
+                repo_path: repo_path.unwrap_or(&self.repo_path),
+                plan: Some("docs/plan.md"),
+                status: TaskStatus::Backlog,
+                base_branch: "main",
+                epic_id,
+                sort_order,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+            })
+            .await
+            .unwrap();
+        // Mocked git never creates the worktree directory; pre-create it so
+        // provisioning takes the "reuse existing worktree" branch.
+        std::fs::create_dir_all(
+            std::path::Path::new(&self.repo_path)
+                .join(".worktrees")
+                .join(format!("{}-{}", id.0, crate::models::slugify(title))),
+        )
+        .unwrap();
+        id
+    }
+
+    /// The task whose session is about to close: Running with a worktree and a
+    /// tmux window, which is what `is_wrappable` and `exit_session` demand.
+    async fn closing_subtask(
+        &self,
+        epic_id: Option<crate::models::EpicId>,
+    ) -> crate::models::TaskId {
+        let id = self
+            .db
+            .create_task(CreateTaskRequest {
+                title: "Closing Subtask",
+                description: "",
+                repo_path: &self.repo_path,
+                plan: None,
+                status: TaskStatus::Running,
+                base_branch: "main",
+                epic_id,
+                sort_order: Some(0),
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+            })
+            .await
+            .unwrap();
+        let worktree = format!("{}/.worktrees/{}-closing-subtask", self.repo_path, id.0);
+        let window = format!("task-{}", id.0);
+        self.db
+            .patch_task(
+                id,
+                &db::TaskPatch::new()
+                    .worktree(Some(worktree.as_str()))
+                    .tmux_window(Some(window.as_str())),
+            )
+            .await
+            .unwrap();
+        id
+    }
+
+    /// Close `task_id`'s session with `action`, seeding the exit token the same
+    /// way `wrap_up` would.
+    async fn close(
+        &self,
+        task_id: crate::models::TaskId,
+        action: crate::mcp::handlers::tasks::WrapUpAction,
+    ) -> JsonRpcResponse {
+        self.state.exit_tokens.write().unwrap().insert(
+            task_id,
+            crate::mcp::ExitToken {
+                token: "tok".to_string(),
+                action,
+            },
+        );
+        let mut arguments = json!({
+            "task_id": task_id.0,
+            "token": "tok",
+            "action": action.as_str(),
+        });
+        if action == crate::mcp::handlers::tasks::WrapUpAction::Pr {
+            arguments["pr_url"] = json!("https://github.com/acme/repo/pull/1");
+        }
+        call(
+            &self.state,
+            "tools/call",
+            Some(json!({ "name": "exit_session", "arguments": arguments })),
+        )
+        .await
+    }
 }
 
+/// Migrated from `dispatch_next_picks_first_backlog_subtask`: closing a subtask
+/// dispatches the epic's first backlog subtask and leaves the rest alone.
 #[tokio::test]
-async fn dispatch_next_picks_first_backlog_subtask() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo_path = dir.path().to_str().unwrap().to_string();
-    std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
+async fn exit_session_dispatches_first_backlog_subtask() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let first = fx
+        .backlog_subtask(Some(epic_id), "Task 1", Some(10), None)
+        .await;
+    let second = fx
+        .backlog_subtask(Some(epic_id), "Task 2", Some(20), None)
+        .await;
 
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l (literal text)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
-    ]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        Some(notify_tx),
-    ));
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    assert!(resp.error.is_none(), "close must succeed: {:?}", resp.error);
 
-    let epic = db.create_epic("Test Epic", "desc", None).await.unwrap();
-    db.patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(true))
-        .await
-        .unwrap();
-    let task1_id = db
-        .create_task(CreateTaskRequest {
-            title: "Task 1",
-            description: "first",
-            repo_path: &repo_path,
-            plan: Some("docs/plan.md"),
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    let task2_id = db
-        .create_task(CreateTaskRequest {
-            title: "Task 2",
-            description: "second",
-            repo_path: &repo_path,
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    db.set_task_epic_id(task1_id, Some(epic.id)).await.unwrap();
-    db.set_task_epic_id(task2_id, Some(epic.id)).await.unwrap();
+    wait_for_task_changed(&mut fx.notify_rx, first).await;
 
-    // Pre-create the worktree directory (mocked git won't create it)
-    std::fs::create_dir_all(
-        dir.path()
-            .join(".worktrees")
-            .join(format!("{}-task-1", task1_id.0)),
-    )
-    .unwrap();
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_next",
-            "arguments": { "epic_id": epic.id.0 }
-        })),
-    )
-    .await;
-
-    let text = extract_response_text(&resp);
+    let dispatched = fx.db.get_task(first).await.unwrap().unwrap();
+    assert_eq!(dispatched.status, TaskStatus::Running);
+    assert!(dispatched.worktree.is_some());
+    assert!(dispatched.tmux_window.is_some());
     assert!(
-        text.contains(&format!("#{}", task1_id.0)),
-        "Expected first task ID in response, got: {text}"
-    );
-
-    wait_for_task_changed(&mut notify_rx, task1_id).await;
-
-    // Verify the task was dispatched
-    let task1 = db.get_task(task1_id).await.unwrap().unwrap();
-    assert_eq!(task1.status, TaskStatus::Running);
-    assert!(task1.worktree.is_some());
-    assert!(task1.tmux_window.is_some());
-    assert!(
-        task1.last_pre_tool_use_at.is_some(),
+        dispatched.last_pre_tool_use_at.is_some(),
         "last_pre_tool_use_at should be seeded so the tick classifier does not flicker the task to Stale"
     );
 
-    // task2 should still be Backlog
-    let task2 = db.get_task(task2_id).await.unwrap().unwrap();
-    assert_eq!(task2.status, TaskStatus::Backlog);
+    let untouched = fx.db.get_task(second).await.unwrap().unwrap();
+    assert_eq!(
+        untouched.status,
+        TaskStatus::Backlog,
+        "only one subtask may be chained per closed session"
+    );
+    assert!(untouched.worktree.is_none());
+}
+
+/// The chained subtask is reported in the response text so the closing agent
+/// can see what it handed off to.
+#[tokio::test]
+async fn exit_session_response_names_the_chained_subtask() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Wire up the widget", Some(10), None)
+        .await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    let text = extract_response_text(&resp);
+    assert_eq!(
+        text,
+        format!(
+            "Session closed. Dispatching next epic subtask #{} 'Wire up the widget'.",
+            next.0
+        ),
+    );
+
+    wait_for_task_changed(&mut fx.notify_rx, next).await;
+}
+
+/// Migrated from `dispatch_next_respects_sort_order`: selection is by
+/// `sort_order` ascending, not creation order.
+#[tokio::test]
+async fn exit_session_chain_respects_sort_order() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    // Created first, but sorts last.
+    let later = fx
+        .backlog_subtask(Some(epic_id), "Task A", Some(20), None)
+        .await;
+    let earlier = fx
+        .backlog_subtask(Some(epic_id), "Task B", Some(10), None)
+        .await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    let text = extract_response_text(&resp);
+    assert!(
+        text.contains(&format!("#{}", earlier.0)),
+        "expected the lower sort_order subtask to be chained, got: {text}"
+    );
+
+    wait_for_task_changed(&mut fx.notify_rx, earlier).await;
+    assert_eq!(
+        fx.db.get_task(later).await.unwrap().unwrap().status,
+        TaskStatus::Backlog
+    );
+}
+
+/// Migrated from `dispatch_next_respects_tag_routing`: the chained dispatch
+/// still routes through `DispatchMode::for_task`.
+#[tokio::test]
+async fn exit_session_chain_respects_tag_routing() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Research Task", Some(10), None)
+        .await;
+    // Research + no plan routes to the research agent rather than the standard
+    // dispatch agent.
+    fx.db
+        .patch_task(
+            next,
+            &db::TaskPatch::new()
+                .plan_path(None)
+                .tag(Some(crate::models::TaskTag::Research)),
+        )
+        .await
+        .unwrap();
+    let task = fx.db.get_task(next).await.unwrap().unwrap();
+    assert_eq!(
+        crate::models::DispatchMode::for_task(&task),
+        crate::models::DispatchMode::Research,
+        "fixture must exercise the research routing branch"
+    );
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    assert!(resp.error.is_none(), "{:?}", resp.error);
+
+    wait_for_task_changed(&mut fx.notify_rx, next).await;
+    assert_eq!(
+        fx.db.get_task(next).await.unwrap().unwrap().status,
+        TaskStatus::Running
+    );
+}
+
+/// Migrated from `dispatch_next_no_backlog_returns_success_noop`: closing the
+/// epic's last subtask closes cleanly and chains nothing.
+#[tokio::test]
+async fn exit_session_with_no_backlog_subtask_closes_without_chaining() {
+    let fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    assert_eq!(extract_response_text(&resp), "Session closed.");
+    assert_eq!(
+        fx.db.get_task(closing).await.unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+}
+
+// Migrated from `dispatch_next_epic_not_found_returns_error`, with the
+// assertion inverted: an unresolvable epic is warn-and-skip, not an error. It
+// cannot be driven from here — `tasks.epic_id` carries a foreign key onto
+// `epics(id)` and `PRAGMA foreign_keys=ON`, so a dangling reference is not a
+// reachable database state. The branch is covered directly instead by
+// `auto_dispatch_next_returns_none_for_missing_epic`, inline in
+// src/mcp/handlers/tasks/dispatch.rs.
+
+/// Migrated from `dispatch_next_returns_disabled_when_auto_dispatch_off`
+/// (previously in tests/tasks/crud.rs): `auto_dispatch = false` closes the
+/// session and chains nothing.
+#[tokio::test]
+async fn exit_session_does_not_chain_when_auto_dispatch_off() {
+    let fx = ChainFixture::new().await;
+    let epic_id = fx.epic(false).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Task 1", Some(10), None)
+        .await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    assert_eq!(extract_response_text(&resp), "Session closed.");
+
+    // The claim is synchronous and completes before exit_session returns, so a
+    // subtask still in Backlog here was never claimed and can never transition.
+    let untouched = fx.db.get_task(next).await.unwrap().unwrap();
+    assert_eq!(untouched.status, TaskStatus::Backlog);
+    assert!(untouched.worktree.is_none());
+}
+
+/// A task with no epic closes cleanly and chains nothing.
+#[tokio::test]
+async fn exit_session_without_epic_closes_without_chaining() {
+    let fx = ChainFixture::new().await;
+    let closing = fx.closing_subtask(None).await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    assert_eq!(extract_response_text(&resp), "Session closed.");
+    assert_eq!(
+        fx.db.get_task(closing).await.unwrap().unwrap().status,
+        TaskStatus::Done
+    );
+}
+
+/// The regression guard for this change: by the time the next subtask is
+/// running with a worktree, the closed subtask is already terminal with its
+/// tmux window cleared. The old skill-driven ordering violated exactly this.
+#[tokio::test]
+async fn exit_session_chain_starts_only_after_the_closing_task_is_terminal() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Successor", Some(10), None)
+        .await;
+
+    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    wait_for_task_changed(&mut fx.notify_rx, next).await;
+
+    let successor = fx.db.get_task(next).await.unwrap().unwrap();
+    assert_eq!(successor.status, TaskStatus::Running);
+    assert!(
+        successor.worktree.is_some(),
+        "successor should be provisioned by the time TaskChanged fires"
+    );
+
+    let predecessor = fx.db.get_task(closing).await.unwrap().unwrap();
+    assert_eq!(
+        predecessor.status,
+        TaskStatus::Done,
+        "the closed subtask must already be terminal before its successor is provisioned"
+    );
+    assert!(
+        predecessor.tmux_window.is_none(),
+        "the closed subtask's window must already be cleared"
+    );
+}
+
+/// All three wrap-up actions chain, matching the behaviour the skill had when
+/// it fired `dispatch_next` regardless of action.
+#[tokio::test]
+async fn exit_session_chains_for_rebase_action() {
+    assert_action_chains(crate::mcp::handlers::tasks::WrapUpAction::Rebase).await;
 }
 
 #[tokio::test]
-async fn dispatch_next_respects_sort_order() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo_path = dir.path().to_str().unwrap().to_string();
-    std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
+async fn exit_session_chains_for_done_action() {
+    assert_action_chains(crate::mcp::handlers::tasks::WrapUpAction::Done).await;
+}
 
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l (literal text)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
-    ]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        None,
-    ));
+#[tokio::test]
+async fn exit_session_chains_for_pr_action() {
+    assert_action_chains(crate::mcp::handlers::tasks::WrapUpAction::Pr).await;
+}
 
-    let epic = db.create_epic("Test Epic", "desc", None).await.unwrap();
-    db.patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(true))
-        .await
-        .unwrap();
+async fn assert_action_chains(action: crate::mcp::handlers::tasks::WrapUpAction) {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Successor", Some(10), None)
+        .await;
 
-    // task1 has higher ID but lower sort_order — should be picked second
-    let task1_id = db
-        .create_task(CreateTaskRequest {
-            title: "Task A",
-            description: "first by id",
-            repo_path: &repo_path,
-            plan: Some("docs/plan.md"),
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    let task2_id = db
-        .create_task(CreateTaskRequest {
-            title: "Task B",
-            description: "second by id",
-            repo_path: &repo_path,
-            plan: Some("docs/plan.md"),
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    db.set_task_epic_id(task1_id, Some(epic.id)).await.unwrap();
-    db.set_task_epic_id(task2_id, Some(epic.id)).await.unwrap();
+    let resp = fx.close(closing, action).await;
+    let text = extract_response_text(&resp);
+    assert!(
+        text.contains(&format!("#{}", next.0)),
+        "action {:?} must chain, got: {text}",
+        action
+    );
 
-    // Give task2 a lower sort_order so it should be picked first
-    db.patch_task(task2_id, &db::TaskPatch::new().sort_order(Some(1)))
-        .await
-        .unwrap();
-    db.patch_task(task1_id, &db::TaskPatch::new().sort_order(Some(2)))
-        .await
-        .unwrap();
+    wait_for_task_changed(&mut fx.notify_rx, next).await;
+    assert_eq!(
+        fx.db.get_task(next).await.unwrap().unwrap().status,
+        TaskStatus::Running
+    );
+}
 
-    // Pre-create worktree dir for task2 (the one that should be dispatched)
-    std::fs::create_dir_all(
-        dir.path()
-            .join(".worktrees")
-            .join(format!("{}-task-b", task2_id.0)),
+/// A failed dispatch reverts the claim, leaving the subtask dispatchable
+/// exactly as it was before the chain fired.
+#[tokio::test]
+async fn exit_session_chain_reverts_claim_when_dispatch_fails() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    // A repo path that does not exist fails provisioning before any subprocess
+    // runs, so the failure is deterministic.
+    let next = fx
+        .backlog_subtask(
+            Some(epic_id),
+            "Doomed",
+            Some(10),
+            Some("/nonexistent/dispatch-chain-repo"),
+        )
+        .await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    assert!(
+        resp.error.is_none(),
+        "a failed chain must not fail the close: {:?}",
+        resp.error
+    );
+
+    wait_for_task_changed(&mut fx.notify_rx, next).await;
+
+    let reverted = fx.db.get_task(next).await.unwrap().unwrap();
+    assert_eq!(
+        reverted.status,
+        TaskStatus::Backlog,
+        "a failed dispatch must return the subtask to backlog"
+    );
+    assert_eq!(
+        reverted.sub_status,
+        SubStatus::default_for(TaskStatus::Backlog)
+    );
+    assert!(reverted.worktree.is_none());
+    assert!(
+        reverted.last_pre_tool_use_at.is_none(),
+        "the revert must also drop the activity timestamp the claim seeded, or the \
+         subtask is not left exactly as it was before the chain fired"
+    );
+}
+
+/// The full agent-facing sequence — `wrap_up(action="done")` then
+/// `exit_session` with the issued token — chains without the agent asking for
+/// it. There is no `dispatch_next` tool to call any more.
+#[tokio::test]
+async fn wrap_up_then_exit_session_chains_without_an_agent_tool_call() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Successor", Some(10), None)
+        .await;
+
+    let wrap = call(
+        &fx.state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": closing.0, "action": "done" }
+        })),
     )
-    .unwrap();
+    .await;
+    assert!(wrap.error.is_none(), "wrap_up failed: {:?}", wrap.error);
+    let token = fx
+        .state
+        .exit_tokens
+        .read()
+        .unwrap()
+        .get(&closing)
+        .unwrap()
+        .token
+        .clone();
 
+    let resp = call(
+        &fx.state,
+        "tools/call",
+        Some(json!({
+            "name": "exit_session",
+            "arguments": { "task_id": closing.0, "token": token, "action": "done" }
+        })),
+    )
+    .await;
+    let text = extract_response_text(&resp);
+    assert!(
+        text.contains(&format!("#{}", next.0)),
+        "the close itself must chain, got: {text}"
+    );
+
+    wait_for_task_changed(&mut fx.notify_rx, next).await;
+    assert_eq!(
+        fx.db.get_task(next).await.unwrap().unwrap().status,
+        TaskStatus::Running
+    );
+}
+
+/// `dispatch_next` is gone: an agent calling it gets an unknown-tool error.
+#[tokio::test]
+async fn dispatch_next_tool_no_longer_exists() {
+    let state = test_state().await;
     let resp = call(
         &state,
         "tools/call",
         Some(json!({
             "name": "dispatch_next",
-            "arguments": { "epic_id": epic.id.0 }
+            "arguments": { "epic_id": 1 }
         })),
     )
     .await;
-
-    let text = extract_response_text(&resp);
-    assert!(
-        text.contains(&format!("#{}", task2_id.0)),
-        "Expected task2 (lower sort_order) to be dispatched, got: {text}"
-    );
-}
-
-#[tokio::test]
-async fn dispatch_next_respects_tag_routing() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo_path = dir.path().to_str().unwrap().to_string();
-    std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
-
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l (literal text)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
-    ]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        Some(notify_tx),
-    ));
-
-    let epic = db.create_epic("Test Epic", "desc", None).await.unwrap();
-    db.patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(true))
-        .await
-        .unwrap();
-
-    // Create a feature-tagged task with no plan — should use Plan mode
-    let task_id = db
-        .create_task(CreateTaskRequest {
-            title: "Feature Task",
-            description: "a feature",
-            repo_path: &repo_path,
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    db.set_task_epic_id(task_id, Some(epic.id)).await.unwrap();
-    db.patch_task(
-        task_id,
-        &db::TaskPatch::new().tag(Some(crate::models::TaskTag::Feature)),
-    )
-    .await
-    .unwrap();
-
-    // Pre-create worktree dir
-    std::fs::create_dir_all(
-        dir.path()
-            .join(".worktrees")
-            .join(format!("{}-feature-task", task_id.0)),
-    )
-    .unwrap();
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_next",
-            "arguments": { "epic_id": epic.id.0 }
-        })),
-    )
-    .await;
-
-    let text = extract_response_text(&resp);
-    assert!(
-        text.contains(&format!("#{}", task_id.0)),
-        "Expected feature task to be dispatched, got: {text}"
-    );
-
-    wait_for_task_changed(&mut notify_rx, task_id).await;
-
-    let task = db.get_task(task_id).await.unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Running);
+    assert_error(&resp, "Unknown tool");
 }
 
 #[tokio::test]
