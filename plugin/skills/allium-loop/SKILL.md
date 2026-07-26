@@ -26,6 +26,15 @@ rebase/tend/implement/verify/weed work itself.
      `runs_completed` or `retry_count`).
    - **Abandon** — delete the state file and continue with a fresh kickoff below.
    - **Cancel** — stop here, do nothing further.
+
+   An `active: true` file does **not** mean the loop is dead. Because iteration dispatch is
+   asynchronous, the far more likely explanation is that another session/terminal is still
+   legitimately driving this loop and simply waiting on an in-flight iteration's result. Say this
+   explicitly in the question, and ask the user to confirm that no other session is currently
+   driving this same loop before choosing **Resume** — resuming while another driver is live
+   dispatches a second concurrent agent into the same worktree, producing racing rebases and
+   commits. If the user is unsure, recommend **Cancel** (wait, then check back) over Resume.
+
    Never silently overwrite an active state file.
 
 2. **Resolve the input design/spec document**, in priority order:
@@ -70,6 +79,7 @@ active: true
 runs_completed: 0
 max_iterations: MAX_ITERATIONS
 retry_count: 0
+consecutive_no_change_runs: 0
 design_doc: "DESIGN_DOC_PATH"
 base_branch: "BASE_BRANCH"
 verify_command: "VERIFY_COMMAND"
@@ -77,8 +87,7 @@ started_at: "TIMESTAMP"
 ---
 ```
 
-   Get the timestamp with `date -u +%Y-%m-%dT%H:%M:%SZ`. Leave `iteration_start_sha` unset for
-   now — the first iteration reports its own.
+   Get the timestamp with `date -u +%Y-%m-%dT%H:%M:%SZ`.
 
 8. **Tell the user** the loop is active (naming the design doc, verify command, base branch, and
    `max_iterations` — noting it can be raised by asking), then dispatch iteration 1 immediately
@@ -87,8 +96,9 @@ started_at: "TIMESTAMP"
 ### Each Iteration
 
 1. Substitute `{{DESIGN_DOC}}`, `{{VERIFY_COMMAND}}`, `{{BASE_BRANCH}}`, and
-   `{{ITERATION_NUMBER}}` (the next unused iteration number, 1-indexed) into the prompt content
-   read in kickoff step 6.
+   `{{ITERATION_NUMBER}}` into the prompt content read in kickoff step 6. The iteration number is
+   1-indexed and always derived from the state file as `runs_completed + 1` — so it is correct
+   after a resume or a context compaction, not only on a clean run.
 
 2. Dispatch it: call the Agent tool with a **fresh subagent** (do not pass `subagent_type:
    "fork"`) and this filled-in prompt as its task.
@@ -96,22 +106,36 @@ started_at: "TIMESTAMP"
 3. When that call's result arrives (a task-notification, per the Agent tool's async dispatch
    model — this may land in a different turn than the one that dispatched it):
 
-   - **The subagent errored, was skipped, or its final message has no parseable `CONVERGED:`
-     line**: read `retry_count` from the state file.
+   - **The subagent errored, was skipped, or returned an unparseable report** — treat a report as
+     unparseable if it is missing EITHER required label (`CONVERGED:` or `SUMMARY:`), not just
+     `CONVERGED:`; a partial or malformed report is an error, not a result. Read `retry_count` from
+     the state file.
      - If `retry_count == 0`: set it to `1`, keep `{{ITERATION_NUMBER}}` unchanged, and
        re-dispatch the same iteration (repeat step 2 above).
      - If `retry_count` was already `1`: delete the state file and tell the user this iteration
        failed twice and the loop has stopped — do not retry indefinitely or silently treat this
        as "no progress."
-   - **A real report was returned**: increment `runs_completed` in the state file by exactly 1,
-     reset `retry_count` to `0`, and store the reported `ITERATION_START_SHA` as
-     `iteration_start_sha`.
+   - **A real report was returned** (both labels present): increment `runs_completed` in the state
+     file by exactly 1 and reset `retry_count` to `0`. Then update `consecutive_no_change_runs`: if
+     this run's `SUMMARY` reports no changes, increment it by 1; otherwise reset it to `0`. A
+     `SUMMARY` starting with `BLOCKED —` resets it to `0` — the loop is not stuck, it is waiting on
+     an answer you are about to supply.
      - **`CONVERGED: yes`**: delete `.claude/allium-loop-state.local.md` and report success to
        the user, including the final `SUMMARY`.
-     - **`CONVERGED: no`** and NOT (`runs_completed >= max_iterations`, or this run's and the
-       previous run's `SUMMARY` both reported no changes): dispatch the next iteration (repeat
-       step 1 above, with `{{ITERATION_NUMBER}}` incremented by one).
-     - **`CONVERGED: no`** and either `runs_completed >= max_iterations`, or this run's and the
-       previous run's `SUMMARY` both reported no changes: delete the state file, summarize to the
-       user exactly what's unresolved and why, and stop. Never emit a false convergence claim to
-       exit early.
+     - **`CONVERGED: no`** and either `runs_completed >= max_iterations` or
+       `consecutive_no_change_runs >= 2`: delete the state file, summarize to the user exactly
+       what's unresolved and why, and stop. Never emit a false convergence claim to exit early.
+       This budget check wins over the `BLOCKED —` handling below — never dispatch past the budget
+       just because a question is outstanding; surface the unanswered question in the summary
+       instead.
+     - **`CONVERGED: no`**, budget remains, and `SUMMARY` starts with `BLOCKED —`: the iteration
+       hit a question it could not put to the user itself. You are the interactive session, so ask
+       the carried question directly via AskUserQuestion, then dispatch the next iteration (repeat
+       step 1 above) with the user's answer appended to the substituted prompt as a
+       `**Answer to previous question:** <answer>` line — so that iteration can act on it and commit
+       the resolution into the spec per the prompt's open-questions-persistence rule.
+     - **`CONVERGED: no`** and budget remains (any other summary): dispatch the next iteration
+       (repeat step 1 above).
+
+   In both dispatch cases the iteration number advances on its own: `runs_completed` was just
+   incremented, and step 1 derives the number as `runs_completed + 1`.
