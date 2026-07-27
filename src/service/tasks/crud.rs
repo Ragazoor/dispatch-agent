@@ -8,8 +8,8 @@ use std::sync::Arc;
 
 use crate::db::{self, CreateTaskRequest, TaskPatch};
 use crate::models::{
-    classify_agent_activity, EpicId, HookEventKind, NotificationBehavior, SubStatus, Task, TaskId,
-    TaskStatus, DEFAULT_BASE_BRANCH,
+    classify_agent_activity, sort_order_for_status_transition, EpicId, HookEventKind,
+    NotificationBehavior, SubStatus, Task, TaskId, TaskStatus, DEFAULT_BASE_BRANCH,
 };
 use crate::service::ServiceError;
 
@@ -94,22 +94,19 @@ impl TaskService {
         let expanded_repo_path = params.repo_path.as_deref().map(crate::models::expand_tilde);
         let validated_sub_status = self.validate_sub_status(task_id, &params).await?;
 
-        let patch = build_task_patch(&params, expanded_repo_path.as_deref(), validated_sub_status);
+        let mut patch =
+            build_task_patch(&params, expanded_repo_path.as_deref(), validated_sub_status);
 
-        // Snapshot the task before the patch so we can detect the
-        // null-url → PR-set transition without an extra round-trip later.
-        // Skip the read entirely unless this update both moves to Review
-        // and sets a PR-typed url — the only shape that can be a finalisation —
-        // or relinks the task to a different epic (also wants the prior).
+        // Snapshot the task before the patch. Needed whenever `epic_id` is
+        // relinked (existing reason), whenever `status` changes and sets a
+        // PR-typed url (existing PR-finalisation check), and now whenever
+        // `status` changes at all — to detect a transition into/out of Done
+        // for the sort_order-on-completion rule below.
         let is_pr_url_set = matches!(
             params.url.as_ref(),
             Some(UrlUpdate::Set(u)) if u.is_pr()
         );
-        let is_finishing_status =
-            matches!(params.status, Some(TaskStatus::Done | TaskStatus::Archived));
-        let needs_prior = params.epic_id.is_some()
-            || (params.status == Some(TaskStatus::Review) && is_pr_url_set)
-            || is_finishing_status;
+        let needs_prior = params.epic_id.is_some() || params.status.is_some();
         let prior = if needs_prior {
             self.db.get_task(task_id).await?
         } else {
@@ -118,6 +115,21 @@ impl TaskService {
         let was_pr_finalisation = params.status == Some(TaskStatus::Review)
             && is_pr_url_set
             && prior.as_ref().is_some_and(|t| t.url.is_none());
+
+        // The Done-transition rule must win over anything the caller's
+        // params already set for sort_order — exec_persist_task
+        // (src/runtime/tasks.rs) unconditionally forwards whatever
+        // sort_order is sitting on the in-memory Task struct alongside a
+        // status change, so a defensive-only override would leave a task
+        // that just left Done permanently pinned to the top of whatever
+        // column it lands in next.
+        if let (Some(new_status), Some(p)) = (params.status, prior.as_ref()) {
+            if let Some(so) =
+                sort_order_for_status_transition(p.status, new_status, self.clock.now())
+            {
+                patch = patch.sort_order(so);
+            }
+        }
 
         // Resolve grouping target for an explicit epic relink (before the write).
         let routed_epic_id = if params.epic_id.is_some() {
