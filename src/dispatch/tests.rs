@@ -1831,6 +1831,7 @@ fn finish_task_rebase_conflict() {
             stdout: b"".to_vec(),
             stderr: b"CONFLICT (content): Merge conflict in src/main.rs\nerror: could not apply abc1234\n".to_vec(),
         }),
+        MockProcessRunner::ok_with_stdout(b"UU src/main.rs\n"), // status --porcelain (mid-rebase, conflicted)
         MockProcessRunner::ok(),                             // git rebase --abort
     ]);
 

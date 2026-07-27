@@ -877,7 +877,8 @@ async fn wrap_up_rebase_conflict_returns_error() {
         MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::fail("CONFLICT (content): Merge conflict in foo.rs"), // git rebase
-        MockProcessRunner::ok(),                      // git rebase --abort
+        MockProcessRunner::ok_with_stdout(b"UU foo.rs\n"), // git status --porcelain (mid-rebase, conflicted)
+        MockProcessRunner::ok(),                           // git rebase --abort
     ]));
     let state = Arc::new(McpState::new(
         McpDeps {

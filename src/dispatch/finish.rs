@@ -39,48 +39,49 @@ impl std::fmt::Display for FinishError {
                 files.join(", ")
             ),
             FinishError::RebaseConflict { branch, files } => {
-                if files.is_empty() {
-                    write!(f, "Rebase conflict on {branch} — resolve and try again")
+                let location = if files.is_empty() {
+                    String::new()
                 } else {
-                    write!(
-                        f,
-                        "Rebase conflict on {branch} in {} — resolve and try again",
-                        files.join(", ")
-                    )
-                }
+                    format!(" in {}", files.join(", "))
+                };
+                write!(f, "Rebase conflict on {branch}{location} — resolve and try again")
             }
             FinishError::Other(msg) => write!(f, "{msg}"),
         }
     }
 }
 
-/// Parses non-empty `git status --porcelain` lines into their file paths
-/// (stripping the two-character status code prefix and the following space).
-/// Takes the raw `Output` rather than a pre-trimmed string: the leading
-/// status-code column can itself be a space (e.g. `" M"`), which a
-/// whole-buffer `.trim()` on the first line would incorrectly eat.
-fn parse_porcelain_files(output: &std::process::Output) -> Vec<String> {
+/// Splits every `git status --porcelain` line into its two-character status
+/// code and the path that follows (after the status code and its separating
+/// space). Operates on the raw `Output` rather than a pre-trimmed string:
+/// the leading status-code column can itself be a space (e.g. `" M"`), which
+/// a whole-buffer `.trim()` on the first line would incorrectly eat.
+fn porcelain_entries(output: &std::process::Output) -> Vec<(String, String)> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| line.get(3..).unwrap_or(line).trim_end().to_string())
+        .filter(|line| line.len() >= 3)
+        .map(|line| (line[0..2].to_string(), line[3..].trim_end().to_string()))
         .collect()
 }
 
-/// Parses conflicted file paths out of a failed rebase's combined
-/// stdout+stderr, e.g. "CONFLICT (content): Merge conflict in src/main.rs".
-/// Returns an empty vec if no parseable conflict line is found — callers
-/// fall back to a generic message in that case.
-fn parse_conflicted_files(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if !line.starts_with("CONFLICT") {
-                return None;
-            }
-            line.rsplit_once(" in ")
-                .map(|(_, path)| path.trim().to_string())
-        })
+/// Every dirty/untracked path from a `git status --porcelain` run.
+fn parse_porcelain_files(output: &std::process::Output) -> Vec<String> {
+    porcelain_entries(output)
+        .into_iter()
+        .map(|(_, path)| path)
+        .collect()
+}
+
+/// Just the unmerged (conflicted) paths from a `git status --porcelain` run
+/// — status codes `UU`, `AA`, `DD`, or any code containing `U` (added/deleted
+/// by us/them). Structural and locale-independent, unlike parsing conflict
+/// file names out of rebase's English stdout/stderr prose (which breaks on
+/// rename/delete conflicts, whose message doesn't end in "... in <path>").
+fn parse_unmerged_files(output: &std::process::Output) -> Vec<String> {
+    porcelain_entries(output)
+        .into_iter()
+        .filter(|(code, _)| code == "AA" || code == "DD" || code.contains('U'))
+        .map(|(_, path)| path)
         .collect()
 }
 
@@ -179,13 +180,24 @@ pub fn finish_task(
         let stdout = stdout_str(&output);
         let is_conflict = is_rebase_conflict(&stdout, &stderr);
 
+        // Read the conflicted file(s) out of the worktree's own status
+        // while the rebase is still mid-flight — `rebase --abort` below
+        // clears this state, so it must be gathered first.
+        let conflicted_files = if is_conflict {
+            runner
+                .run("git", &["-C", worktree, "status", "--porcelain"])
+                .map(|o| parse_unmerged_files(&o))
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+
         let _ = runner.run("git", &["-C", worktree, "rebase", "--abort"]);
 
         if is_conflict {
-            let files = parse_conflicted_files(&format!("{stdout}\n{stderr}"));
             return Err(FinishError::RebaseConflict {
                 branch: branch.to_string(),
-                files,
+                files: conflicted_files,
             });
         }
         return Err(FinishError::Other(format!("Rebase failed: {}", stderr)));
@@ -294,7 +306,9 @@ mod tests {
     }
 
     // Rebase detects conflict via stdout CONFLICT marker (stderr is empty),
-    // and the conflicted file name is parsed into the error.
+    // and the conflicted file name is read from the worktree's own porcelain
+    // status (queried before the abort clears it) rather than parsed out of
+    // git's English rebase prose.
     #[test]
     fn finish_task_rebase_conflict_in_stdout_returns_rebase_conflict() {
         let mock = MockProcessRunner::new(vec![
@@ -306,7 +320,8 @@ mod tests {
                 stdout: b"CONFLICT (content): Merge conflict in lib.rs\n".to_vec(),
                 stderr: vec![],
             }),
-            MockProcessRunner::ok(), // git rebase --abort
+            MockProcessRunner::ok_with_stdout(b"UU lib.rs\n"), // status --porcelain (mid-rebase, conflicted)
+            MockProcessRunner::ok(),                           // git rebase --abort
         ]);
 
         let err = finish_task(&fctx("main", None), &mock).unwrap_err();

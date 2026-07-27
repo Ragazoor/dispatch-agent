@@ -1077,7 +1077,8 @@ async fn exec_finish_conflict_sends_failed() {
                 b"CONFLICT (content): Merge conflict in file.rs\nerror: could not apply abc1234\n"
                     .to_vec(),
         }),
-        MockProcessRunner::ok(), // git rebase --abort
+        MockProcessRunner::ok_with_stdout(b"UU file.rs\n"), // status --porcelain (mid-rebase, conflicted)
+        MockProcessRunner::ok(),                            // git rebase --abort
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 
