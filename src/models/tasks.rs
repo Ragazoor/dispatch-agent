@@ -85,6 +85,32 @@ define_str_enum!(TaskStatus, "status" {
     Archived => "archived",
 });
 
+/// Decides what a status transition should do to `sort_order`, expressed as
+/// an instruction for `TaskPatch`/`EpicPatch`'s nullable `.sort_order()`
+/// setter: `None` = don't touch it, `Some(v)` = write `v` (where `v` may
+/// itself be `None` to clear, or `Some(ts)` to set).
+///
+/// The value on entering Done is the negated Unix timestamp in
+/// **milliseconds** (not seconds): the existing ascending `sort_by_key`
+/// comparators used throughout the Done column already put the most
+/// negative (= most recent) value first, with no comparator changes needed.
+/// Millisecond precision (rather than the more obvious seconds) shrinks the
+/// same-tick tie window for bulk actions (multi-select "confirm done", the
+/// PR-poller detecting several merges in one 30s tick) — a same-millisecond
+/// tie is still possible in principle and degrades gracefully to the
+/// existing id tie-break, rather than being eliminated outright.
+pub fn sort_order_for_status_transition(
+    prior: TaskStatus,
+    next: TaskStatus,
+    now: DateTime<Utc>,
+) -> Option<Option<i64>> {
+    match (prior == TaskStatus::Done, next == TaskStatus::Done) {
+        (false, true) => Some(Some(-now.timestamp_millis())),
+        (true, false) => Some(None),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TipsShowMode
 // ---------------------------------------------------------------------------
@@ -1726,5 +1752,69 @@ mod property_tests {
 
             prop_assert_eq!(mode, expected, "tag={:?} has_plan={}", tag, has_plan);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn ts(seconds: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(seconds, 0).unwrap()
+    }
+
+    #[test]
+    fn entering_done_sets_negative_millis_timestamp() {
+        let now = ts(1_700_000_000);
+        let result = sort_order_for_status_transition(TaskStatus::Review, TaskStatus::Done, now);
+        assert_eq!(result, Some(Some(-now.timestamp_millis())));
+    }
+
+    #[test]
+    fn leaving_done_clears_to_none() {
+        let now = ts(1_700_000_000);
+        let result = sort_order_for_status_transition(TaskStatus::Done, TaskStatus::Review, now);
+        assert_eq!(result, Some(None));
+    }
+
+    #[test]
+    fn staying_in_done_is_untouched() {
+        let now = ts(1_700_000_000);
+        let result = sort_order_for_status_transition(TaskStatus::Done, TaskStatus::Done, now);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn staying_outside_done_is_untouched() {
+        let now = ts(1_700_000_000);
+        let result =
+            sort_order_for_status_transition(TaskStatus::Backlog, TaskStatus::Running, now);
+        assert_eq!(result, None);
+        let result =
+            sort_order_for_status_transition(TaskStatus::Running, TaskStatus::Archived, now);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn entering_done_value_is_negative_and_more_recent_sorts_first() {
+        let earlier = sort_order_for_status_transition(
+            TaskStatus::Review,
+            TaskStatus::Done,
+            ts(1_700_000_000),
+        )
+        .unwrap()
+        .unwrap();
+        let later = sort_order_for_status_transition(
+            TaskStatus::Review,
+            TaskStatus::Done,
+            ts(1_700_000_100),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            later < earlier,
+            "a more recent completion must sort before ({later}) an older one ({earlier}) under ascending sort_by_key"
+        );
     }
 }
