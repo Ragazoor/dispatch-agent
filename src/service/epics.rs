@@ -88,7 +88,10 @@ type TasksByEpic<'a> = std::collections::HashMap<EpicId, Vec<&'a Task>>;
 /// (done, total) over a task slice, counting `TaskStatus::Done` as done.
 fn count_progress(tasks: &[&Task]) -> (usize, usize) {
     (
-        tasks.iter().filter(|t| t.status == TaskStatus::Done).count(),
+        tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Done)
+            .count(),
         tasks.len(),
     )
 }

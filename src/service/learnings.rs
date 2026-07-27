@@ -293,11 +293,10 @@ impl LearningService {
         &self,
         params: QueryLearningsParams,
     ) -> Result<Vec<Learning>, ServiceError> {
-        let task = self
-            .db
-            .get_task(params.task_id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(format!("task {} not found", params.task_id)))?;
+        let task =
+            self.db.get_task(params.task_id).await?.ok_or_else(|| {
+                ServiceError::NotFound(format!("task {} not found", params.task_id))
+            })?;
 
         let query_text = params
             .query
@@ -352,7 +351,9 @@ mod learning_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use std::sync::Arc;
 
-    use super::{CreateLearningParams, LearningService, QueryLearningsParams, UpdateLearningParams};
+    use super::{
+        CreateLearningParams, LearningService, QueryLearningsParams, UpdateLearningParams,
+    };
     use crate::db::{CreateTaskRequest, Database, TaskStore};
     use crate::models::{
         LearningId, LearningKind, LearningScope, LearningStatus, LearningVerdict, RetrievalSource,

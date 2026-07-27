@@ -534,8 +534,11 @@ async fn every_tool_with_args_rejects_unknown_field() {
     ];
 
     let no_arg_tools = ["list_epics", "get_managed_feed_config"];
-    let covered: std::collections::BTreeSet<&str> =
-        payloads.iter().map(|(n, _)| *n).chain(no_arg_tools).collect();
+    let covered: std::collections::BTreeSet<&str> = payloads
+        .iter()
+        .map(|(n, _)| *n)
+        .chain(no_arg_tools)
+        .collect();
     let all_tools: std::collections::BTreeSet<&str> =
         super::dispatch::TOOL_NAMES.iter().copied().collect();
     assert_eq!(

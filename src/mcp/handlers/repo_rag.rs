@@ -6,7 +6,9 @@ use crate::mcp::McpState;
 use crate::service::repo_index::{RepoIndexService, BATCH_SIZE};
 use crate::service::ServiceError;
 
-use super::types::{fetch_caller_task, parse_args, service_err_to_response, tool_error, JsonRpcResponse};
+use super::types::{
+    fetch_caller_task, parse_args, service_err_to_response, tool_error, JsonRpcResponse,
+};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

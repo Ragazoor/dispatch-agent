@@ -399,7 +399,10 @@ mod tests {
             db.get_reviews_feed_command().await.unwrap().as_deref(),
             Some(REVIEWS)
         );
-        assert_eq!(db.get_reviews_feed_interval_secs().await.unwrap(), Some(300));
+        assert_eq!(
+            db.get_reviews_feed_interval_secs().await.unwrap(),
+            Some(300)
+        );
         assert_eq!(
             db.get_cve_feed_command().await.unwrap().as_deref(),
             Some("/existing.sh"),
