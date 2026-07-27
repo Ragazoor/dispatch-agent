@@ -312,6 +312,23 @@ rule SplitAgentTreePaneOnAgentLaunch {
         -- pane on their own. Whether the toggle can create one on demand in
         -- such a window is unresolved — see the ToggleTargetResolution open
         -- question.
+        --
+        -- == IMPLEMENTED ==
+        -- The size-and-command split helper described above is
+        -- tmux::split_window_horizontal_running (src/tmux.rs), a sibling of the
+        -- board's 40%-hardcoded split_window_horizontal, which is untouched.
+        -- spawn_agent_tree_pane (src/dispatch/agents.rs) calls it at
+        -- config.agent_tree_pane_percent and is wired into dispatch_with_prompt
+        -- — covering fresh dispatch, research dispatch and quick dispatch, and
+        -- through them epic auto-dispatch — and into resume_agent, covering
+        -- resume and retry-resume. In both cases the call sits immediately
+        -- after the existing send-keys of the agent command, which is the
+        -- "after the agent command has been sent" timing above.
+        --
+        -- Soft-fail, deliberately: a split that fails is logged at warn level
+        -- and the dispatch or resume call still succeeds. No agent fails to
+        -- launch because its companion pane could not open — consistent with
+        -- BindAgentTreeToggle's best-effort binding.
 }
 
 rule SplitAgentTreePaneOnMainSession {
@@ -344,6 +361,25 @@ rule SplitAgentTreePaneOnMainSession {
         --
         -- The main-session window is also not covered by either pane-teardown
         -- rule below: both key off a Task, and this pane has none.
+        --
+        -- == NOT IMPLEMENTED — DEFERRED ==
+        -- Stated intent, not shipped behaviour. While
+        -- SplitAgentTreePaneOnAgentLaunch is now live, nothing satisfies this
+        -- rule: create_main_session (src/dispatch/agents.rs) is deliberately
+        -- left unsplit and untouched.
+        --
+        -- The blocker is a contract mismatch, not an oversight. The companion
+        -- pane runs `dispatch agent-tree <task_id>`, whose CLI
+        -- (src/cli/agent_tree.rs) takes a REQUIRED task id, resolves the task
+        -- and errors when no such task exists. The main session has no task, so
+        -- there is no id to pass and no renderer that can be launched for it.
+        --
+        -- A future subtask picking this up should resolve MainSessionPaneScope
+        -- first: that question decides whether the main session is dropped from
+        -- the split (retiring this rule) or whether capture learns a non-task
+        -- log (which would also give the renderer something to key off).
+        -- Building this rule as written, ahead of that answer, would ship an
+        -- always-empty pane on top of a CLI contract that cannot express it.
 }
 
 rule HideAgentTreePane {

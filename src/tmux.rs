@@ -323,6 +323,43 @@ pub fn split_window_horizontal(target_pane: &str, runner: &dyn ProcessRunner) ->
     )
 }
 
+/// Create a horizontal split (right pane) at `size_pct`% width, running the
+/// given command as separate argv elements (no shell wrapping) in the new
+/// pane, following the same "create + immediately run a command" shape
+/// [`new_window_running`] establishes for window creation. Keeps focus on
+/// the target pane. Returns the new pane's ID.
+///
+/// Sibling of [`split_window_horizontal`] (hardcoded 40%, no command, used
+/// by the board's own split-pane feature) — this one is for spawning a
+/// companion process (e.g. `dispatch agent-tree <task_id>`) narrower than
+/// that split, since the target pane's own output still needs the room.
+pub fn split_window_horizontal_running(
+    target_pane: &str,
+    size_pct: u8,
+    command: &[&str],
+    runner: &dyn ProcessRunner,
+) -> Result<String> {
+    if command.is_empty() {
+        bail!("split_window_horizontal_running: command must not be empty");
+    }
+    let size_arg = format!("{size_pct}%");
+    let mut args: Vec<&str> = vec![
+        "split-window",
+        "-h",
+        "-d",
+        "-l",
+        &size_arg,
+        "-t",
+        target_pane,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+    ];
+    args.extend(command.iter().copied());
+    run_checked_stdout(runner, &args, "split-window")
+}
+
 /// Move a tmux window into the current window as a right pane (40% width).
 /// Returns the new pane's ID.
 pub fn join_pane(
@@ -1005,6 +1042,71 @@ mod tests {
     fn split_window_horizontal_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no target pane")]);
         let err = split_window_horizontal("%1", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("split-window failed"),
+            "got: {err}"
+        );
+    }
+
+    // --- split_window_horizontal_running ---
+
+    #[test]
+    fn split_window_horizontal_running_issues_correct_args() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%9\n")]);
+        let pane_id =
+            split_window_horizontal_running("%1", 30, &["dispatch", "agent-tree", "42"], &mock)
+                .unwrap();
+        assert_eq!(pane_id, "%9");
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tmux");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "split-window",
+                "-h",
+                "-d",
+                "-l",
+                "30%",
+                "-t",
+                "%1",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "dispatch",
+                "agent-tree",
+                "42",
+            ]
+        );
+    }
+
+    #[test]
+    fn split_window_horizontal_running_keeps_argv_elements_separate() {
+        // A path with spaces must stay one argv element via the `--` exec
+        // form, not get joined into a single shell string.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%9\n")]);
+        split_window_horizontal_running("%1", 30, &["vim", "/tmp/dir with spaces/file.md"], &mock)
+            .unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls[0].1.last().unwrap(), "/tmp/dir with spaces/file.md");
+        assert_eq!(calls[0].1[calls[0].1.len() - 3], "--");
+        assert_eq!(calls[0].1[calls[0].1.len() - 2], "vim");
+    }
+
+    #[test]
+    fn split_window_horizontal_running_rejects_empty_command() {
+        let mock = MockProcessRunner::new(vec![]);
+        let err = split_window_horizontal_running("%1", 30, &[], &mock).unwrap_err();
+        assert!(err.to_string().contains("command must not be empty"));
+    }
+
+    #[test]
+    fn split_window_horizontal_running_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no target pane")]);
+        let err =
+            split_window_horizontal_running("%1", 30, &["dispatch", "agent-tree", "42"], &mock)
+                .unwrap_err();
         assert!(
             err.to_string().contains("split-window failed"),
             "got: {err}"

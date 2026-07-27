@@ -13,6 +13,37 @@ use super::prompts::{
 };
 use super::worktree::provision_worktree;
 
+/// Width of the `dispatch agent-tree` companion pane, as a percentage of the
+/// agent window — narrower than [`tmux::split_window_horizontal`]'s 40%
+/// (the board's own split-pane feature), since the agent's own `claude` CLI
+/// output needs the room. Matches `agent_tree_pane_percent` in
+/// docs/specs/agent-tree.allium.
+const AGENT_TREE_PANE_PERCENT: u8 = 30;
+
+/// Split the agent's tmux window and launch `dispatch agent-tree <task_id>`
+/// in the new pane, right after the agent's own command has been sent (see
+/// docs/specs/agent-tree.allium's `SplitAgentTreePaneOnAgentLaunch`).
+///
+/// Best-effort: the companion pane is a decorative side view, not the
+/// critical path — a failure here is logged and does not fail the caller's
+/// dispatch/resume operation.
+fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn ProcessRunner) {
+    let id_arg = task_id.0.to_string();
+    if let Err(e) = tmux::split_window_horizontal_running(
+        tmux_window,
+        AGENT_TREE_PANE_PERCENT,
+        &["dispatch", "agent-tree", &id_arg],
+        runner,
+    ) {
+        tracing::warn!(
+            task_id = task_id.0,
+            %tmux_window,
+            error = %e,
+            "failed to open agent-tree companion pane"
+        );
+    }
+}
+
 /// Provision worktree, build the prompt, write the prompt file, launch Claude
 /// via tmux.
 ///
@@ -94,6 +125,8 @@ fn dispatch_with_prompt(
     );
     tmux::send_keys(&provision.tmux_window, &claude_cmd, runner)
         .context("failed to send keys to tmux window")?;
+
+    spawn_agent_tree_pane(&provision.tmux_window, task.id, runner);
 
     tracing::info!(task_id = task.id.0, worktree = %provision.worktree_path, "agent dispatched");
 
@@ -208,6 +241,8 @@ pub fn resume_agent(
         runner,
     )
     .context("failed to send resume keys to tmux window")?;
+
+    spawn_agent_tree_pane(&tmux_window, task_id, runner);
 
     tracing::info!(task_id = task_id.0, %tmux_window, "agent resumed");
 
