@@ -512,9 +512,15 @@ config {
     aging_threshold: Duration = 7.days
     weeks_threshold: Duration = 14.days
 
-    -- When true, the MCP wrap_up response includes a nudge asking the agent
-    -- to propose learnings before finishing. Prompt encouragement only;
-    -- agents may wrap up without proposing. (see learnings.allium: WrapUpReflection)
+    -- When true, the MCP update_task response carries a nudge asking the agent
+    -- to call record_learning if it discovered anything non-obvious — but only
+    -- when that single update_task call performs "PR finalisation": it sets
+    -- status = review AND a pr-typed url, on a task that had no url before the
+    -- call. Prompt encouragement only: the nudge is appended to the response
+    -- text and never gates the update itself. No other tool reads this flag —
+    -- in particular the wrap_up response does not (its rate_learning nudge is
+    -- unconditional; see learnings.allium: WrapUpReflection).
+    -- (see mcp-task-tools.allium: PrFinalisationReflectionNudge)
     learning_reflection_enabled: Boolean = true
 
     -- Stale-learning cleanup: when enabled, a background job archives approved

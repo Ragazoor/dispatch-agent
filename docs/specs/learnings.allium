@@ -177,8 +177,8 @@ use "./core.allium" as core
 -- wrap_up(task_id)
 --   The wrap_up tool (defined in dispatch.allium) no longer accepts learning
 --   verdicts. Rating is performed exclusively via rate_learning during the task.
---   The wrap_up response nudges the agent to rate any retrieved-but-unrated
---   learning before finishing (see Dispatch Prompt Augmentation below).
+--   For action = pr only, the wrap_up response nudges the agent to rate any
+--   surfaced-but-unrated learning before finishing (see Wrap-up nudge below).
 
 ------------------------------------------------------------
 -- Dispatch Prompt Augmentation
@@ -199,17 +199,21 @@ use "./core.allium" as core
 --      core/Retrieval row with source = prompt_injection — see Retrievals &
 --      Verdicts below.
 --
--- Wrap-up nudge (WrapUpReflection): the MCP wrap_up response for action = pr
--- appends a nudge asking the agent to call rate_learning on any learning that was
--- retrieved for this task but not yet rated. The agent may proceed without doing
--- so — it is a nudge, not a gate. This nudge is ungated: it fires for pr
--- regardless of config.learning_reflection_enabled, and never for done or rebase.
+-- Wrap-up nudge (WrapUpReflection): for action = pr, and only that action, the
+-- MCP wrap_up response appends a nudge asking the agent to call rate_learning
+-- (helped | wrong) on any learning that was surfaced to it this session but not
+-- yet rated. This nudge is unconditional — no config parameter gates it — and it
+-- says nothing about record_learning. The rebase and done actions append nothing.
+-- The agent may proceed to exit_session without rating anything; it is a nudge,
+-- not a gate.
 --
--- Reflection itself is not part of wrap_up or exit_session. The /retro skill
--- (plugin/skills/retro/SKILL.md) is run by the /wrap-up skill between wrap_up and
--- exit_session, for all three actions. wrap_up emits no record_learning nudge; a
--- separate, config-gated record_learning nudge fires from a different trigger
--- (see WrapUpReflection's @guidance for the follow-up note).
+-- The config-gated record_learning nudge is a separate behaviour on a separate
+-- tool: an update_task call that performs PR finalisation (status = review plus a
+-- pr-typed url on a task that had no url) appends it when
+-- core/config.learning_reflection_enabled = true. See mcp-task-tools.allium:
+-- PrFinalisationReflectionNudge. Because the wrap_up → exit_session path mutates
+-- status and url through the service layer rather than the update_task tool, that
+-- nudge never appears in the normal wrap-up flow.
 
 ------------------------------------------------------------
 -- Retrievals & Verdicts
@@ -339,27 +343,26 @@ rule WrapUpReflection {
 
     @guidance
         -- The MCP wrap_up handler appends a rate_learning nudge to its response
-        -- for the pr action only. done and rebase get no nudge at all.
-        -- The nudge asks the agent to call rate_learning (helped | wrong) on any
-        -- learning that was surfaced to it during this task and not yet rated.
-        -- wrap_up itself no longer accepts verdicts.
-        -- The nudge is UNGATED: config.learning_reflection_enabled has no effect
-        -- on it. Confirmed by the test
+        -- text for the pr action only; rebase and done append nothing. The nudge
+        -- asks the agent to rate (helped | wrong) any knowledge base entry that
+        -- was surfaced to it this session and not yet rated, and states that only
+        -- surfaced learnings can be rated (see RateLearningViaMcp for the
+        -- retrieval precondition that enforces this). wrap_up itself no longer
+        -- accepts verdicts.
+        -- Unconditional: no config parameter gates it. In particular it is NOT
+        -- gated by core/config.learning_reflection_enabled, and it never mentions
+        -- record_learning. Confirmed by the test
         -- wrap_up_rebase_omits_reflection_nudge_regardless_of_setting in
-        -- src/mcp/handlers/tests/tasks/wrap_up.rs.
+        -- src/mcp/handlers/tests/tasks/wrap_up.rs. The config-gated
+        -- record_learning nudge is a different behaviour on a different tool —
+        -- see mcp-task-tools.allium: PrFinalisationReflectionNudge.
         -- This rule covers only the wrap_up-time rate_learning nudge. Reflection
         -- proper is the /retro skill (plugin/skills/retro/SKILL.md), which the
         -- /wrap-up skill runs between wrap_up and exit_session for all three
         -- actions — it is not driven by wrap_up or exit_session.
-        -- Implemented in finish_wrap_up_simple (the rate_learning_nudge match) in
-        -- src/mcp/handlers/tasks/wrap_up.rs.
-        --
-        -- SPEC GAP (follow-up): a distinct record_learning nudge exists
-        -- (reflection_nudge in src/mcp/handlers/tasks/mod.rs), gated by
-        -- config.learning_reflection_enabled and fired from a different trigger
-        -- entirely — update_task PR-finalisation, src/mcp/handlers/tasks/crud.rs:111-115
-        -- (was_pr_finalisation). It is unspecified and warrants its own rule in a
-        -- future pass.
+        -- Implemented in finish_wrap_up_simple() (src/mcp/handlers/tasks/wrap_up.rs),
+        -- which also emits the verify and exit-token lines documented in
+        -- pr-workflow.allium: WrapUpPr.
 }
 
 -- exit_session is not specified here. Its current contract is a single call —

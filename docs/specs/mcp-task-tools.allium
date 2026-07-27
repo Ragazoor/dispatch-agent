@@ -102,7 +102,11 @@ rule UpdateTaskViaMcp {
         -- them; see src/service/tasks/params.rs). The runtime uses that
         -- path for detach and claim flows. They are intentionally
         -- unreachable from MCP because the MCP handler does not parse
-        -- those fields (src/mcp/handlers/tasks.rs).
+        -- those fields: the UpdateTaskArgs struct that defines the accepted
+        -- argument set (src/mcp/handlers/tasks/mod.rs) has no worktree or
+        -- tmux_window field, so handle_update_task
+        -- (src/mcp/handlers/tasks/crud.rs) can never carry them into
+        -- UpdateTaskParams.
         -- The typed url is carried by two params: `url` (the string) and
         -- `url_type` (one of pr | security_alert | issue | other). A non-empty
         -- `url` REQUIRES `url_type`; an unknown `url_type` is rejected. An
@@ -124,6 +128,54 @@ rule UpdateTaskViaMcp {
         -- task belongs to a grouped parent, reroute_on_repo_change is
         -- called to move the task to the correct sub-epic for the new
         -- repo_path.
+}
+
+rule PrFinalisationReflectionNudge {
+    when: McpUpdateTask(task, status?, sub_status?, plan?, title?, description?,
+                        repo_path?, sort_order?, url?, url_type?, tag?, epic_id?,
+                        base_branch?, wrap_up_mode?, auto_run_plan?)
+
+    -- "PR finalisation": this one call both moves the task to review and
+    -- attaches a pr-typed url, on a task that carried no url at all before the
+    -- call. Preconditions read pre-call state, so task.url = null is the
+    -- first-time-a-PR-is-linked condition, not a post-update assertion.
+    requires: status = review
+    requires: url != null and url != "" and url_type = pr
+    requires: task.url = null
+
+    requires: core/config.learning_reflection_enabled = true
+
+    ensures: ReflectionNudgeAppended(task: task)
+
+    @guidance
+        -- The sole consumer of core/config.learning_reflection_enabled. The
+        -- nudge is a sentence appended to the update_task success response
+        -- text, asking the agent whether it discovered anything non-obvious
+        -- about the repo or task and, if so, to call record_learning with a
+        -- brief summary. It never gates or alters the update: UpdateTaskViaMcp
+        -- applies its mutations regardless, and when the flag is false the
+        -- response text is simply shorter.
+        --
+        -- Layering: the finalisation shape is computed in the service layer as
+        -- was_pr_finalisation (src/service/tasks/crud.rs) — status = review AND
+        -- a pr-typed url AND the pre-write task had url = None — and returned on
+        -- UpdateTaskResult. handle_update_task (src/mcp/handlers/tasks/crud.rs)
+        -- consults it and only then calls reflection_nudge
+        -- (src/mcp/handlers/tasks/mod.rs), which reads the setting and returns
+        -- the empty string when it is false.
+        --
+        -- IMPORTANT — this nudge does NOT fire on the normal wrap-up path.
+        -- ExitSessionViaMcp (below) performs an equivalent mutation for
+        -- action = pr (status -> review plus a pr-typed url, set
+        -- unconditionally regardless of any prior url), but handle_exit_session
+        -- (src/mcp/handlers/tasks/wrap_up.rs) calls
+        -- state.task_svc.update_task(...) directly at the service layer and
+        -- discards the returned was_pr_finalisation; it never calls
+        -- reflection_nudge. So the nudge only appears when a caller invokes the
+        -- update_task MCP tool directly to link a PR, bypassing
+        -- wrap_up/exit_session entirely. The wrap_up response carries a
+        -- different, unconditional nudge about rate_learning (see
+        -- learnings.allium: WrapUpReflection).
 }
 
 rule CreateTaskViaMcp {
@@ -170,7 +222,7 @@ rule CreateTaskViaMcp {
     -- NOTE: allium parser does not support `let` bindings or nested
     -- if/then/else expressions inside this rule, so the effective-value
     -- derivation is documented here in pseudo-code. The behaviour is
-    -- enforced by handle_create_task in src/mcp/handlers/tasks.rs:
+    -- enforced by handle_create_task in src/mcp/handlers/tasks/crud.rs:
     --   effective_epic =
     --       if epic_id is set: Epic.find(epic_id) (or null when epic_id = null)
     --       else if caller is Task(t): Task.find(t).epic
@@ -243,7 +295,7 @@ rule ListTasksViaMcp {
         --     / "Security Alert" / "Link"
         --   | Goal: <plan goal>  (from **Goal:** line in plan file; falls back to
         --                         description preview ≤200 chars when plan absent/unreadable)
-        -- Implemented in src/mcp/handlers/tasks.rs.
+        -- Implemented in handle_list_tasks (src/mcp/handlers/tasks/crud.rs).
 }
 
 rule ClaimTaskViaMcp {

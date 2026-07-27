@@ -281,6 +281,10 @@ rule WrapUpPr {
         -- instruction. When verify_command is null, that line is omitted. (This
         -- verify line was previously claimed here but missing from the PR
         -- branch's response; it is added as part of this consolidation.)
+        --
+        -- The same response also carries an unconditional rate_learning nudge,
+        -- specified in learnings.allium: WrapUpReflection (not repeated
+        -- here).
 }
 
 rule WrapUpDone {
