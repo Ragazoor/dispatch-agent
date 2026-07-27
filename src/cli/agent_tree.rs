@@ -24,7 +24,7 @@ use crossterm::terminal::{
 };
 use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders};
 use ratatui::{Frame, Terminal};
@@ -32,51 +32,38 @@ use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::agent_tree::{build_tree, FileOperation, TreeNode, TreeNodeKind};
 use crate::db::{Database, TaskRead};
-use crate::file_events::FILE_EVENTS_SUBDIR;
+use crate::file_events::file_events_path;
 use crate::models::TaskId;
+use crate::tui::ui::palette::{BLUE, FG, YELLOW};
 
 /// Redraw cadence — see `docs/specs/agent-tree.allium`'s
 /// `config.agent_tree_refresh_interval`. Doubles as the crossterm event
 /// poll timeout, so a key press and a plain timer tick share one wait.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
-const MODIFIED_COLOR: Color = Color::Rgb(224, 175, 104);
-const READ_COLOR: Color = Color::Rgb(122, 162, 247);
-const DIR_COLOR: Color = Color::Rgb(192, 202, 245);
-
 fn node_label(node: &TreeNode) -> Line<'static> {
-    match node.badge {
-        None => Line::from(Span::styled(
-            node.name.clone(),
-            Style::default().fg(DIR_COLOR),
-        )),
-        Some(FileOperation::Modified) => Line::from(vec![
-            Span::raw(format!("{} ", node.name)),
-            Span::styled(
-                "[Modified]",
-                Style::default()
-                    .fg(MODIFIED_COLOR)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Some(FileOperation::Read) => Line::from(vec![
-            Span::raw(format!("{} ", node.name)),
-            Span::styled("[Read]", Style::default().fg(READ_COLOR)),
-        ]),
-    }
+    let (badge, style) = match node.badge {
+        None => return Line::from(Span::styled(node.name.clone(), Style::default().fg(FG))),
+        Some(FileOperation::Modified) => (
+            "[Modified]",
+            Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
+        ),
+        Some(FileOperation::Read) => ("[Read]", Style::default().fg(BLUE)),
+    };
+    Line::from(vec![
+        Span::raw(format!("{} ", node.name)),
+        Span::styled(badge, style),
+    ])
 }
 
-fn node_to_item(node: &TreeNode, prefix: &str) -> Option<TreeItem<'static, String>> {
-    let id = if prefix.is_empty() {
-        node.name.clone()
-    } else {
-        format!("{prefix}/{}", node.name)
-    };
+fn node_to_item(node: &TreeNode, path: &mut Vec<String>) -> Option<TreeItem<'static, String>> {
+    path.push(node.name.clone());
+    let id = path.join("/");
     let label = node_label(node);
-    match node.kind {
+    let item = match node.kind {
         TreeNodeKind::File => Some(TreeItem::new_leaf(id, label)),
         TreeNodeKind::Directory => {
-            let children = to_items(&node.children, &id);
+            let children = to_items(&node.children, path);
             match TreeItem::new(id.clone(), label, children) {
                 Ok(item) => Some(item),
                 Err(e) => {
@@ -89,21 +76,25 @@ fn node_to_item(node: &TreeNode, prefix: &str) -> Option<TreeItem<'static, Strin
                 }
             }
         }
-    }
+    };
+    path.pop();
+    item
 }
 
-fn to_items(children: &[TreeNode], prefix: &str) -> Vec<TreeItem<'static, String>> {
+fn to_items(children: &[TreeNode], path: &mut Vec<String>) -> Vec<TreeItem<'static, String>> {
     children
         .iter()
-        .filter_map(|node| node_to_item(node, prefix))
+        .filter_map(|node| node_to_item(node, path))
         .collect()
 }
 
 /// Convert subtask 3's touched-paths tree into `tui_tree_widget` items.
 /// The root node itself is not rendered as a wrapping item — its children
-/// become the top-level list, like a normal file browser.
+/// become the top-level list, like a normal file browser. Uses the same
+/// `Vec<String>` path representation `RenderState::sync_expansion` walks
+/// with, joined into a `/`-separated identifier per node.
 pub fn build_tree_items(root: &TreeNode) -> Vec<TreeItem<'static, String>> {
-    to_items(&root.children, "")
+    to_items(&root.children, &mut Vec::new())
 }
 
 /// Tree-widget navigation/expansion state, plus tracking of which
@@ -210,43 +201,69 @@ fn worktree_title(root: &Path) -> String {
         .unwrap_or_else(|| root.to_string_lossy().into_owned())
 }
 
+/// `(len, modified)` for the events file, or `None` if it doesn't exist yet.
+/// Used to skip re-reading and re-parsing the log on a poll tick where
+/// nothing has actually landed — the log is append-only and only grows for
+/// the life of the task, so a size/mtime match means "no new lines."
+fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    Some((meta.len(), modified))
+}
+
+fn rebuild(root: &Path, events_path: &Path, state: &mut RenderState) -> TreeNode {
+    let tree = build_tree(root, &read_events_file(events_path));
+    state.sync_expansion(&tree);
+    tree
+}
+
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, root: &Path, events_path: &Path) -> Result<()> {
     let title = worktree_title(root);
     let mut state = RenderState::new();
+    let mut tree = rebuild(root, events_path, &mut state);
+    let mut last_stamp = file_stamp(events_path);
+
     loop {
-        let jsonl = read_events_file(events_path);
-        let tree = build_tree(root, &jsonl);
-        state.sync_expansion(&tree);
         terminal.draw(|frame| render(frame, frame.area(), &tree, &mut state, &title))?;
 
         if event::poll(REFRESH_INTERVAL)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') => return Ok(()),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(())
-                    }
-                    KeyCode::Up => {
-                        state.tree_state.key_up();
-                    }
-                    KeyCode::Down => {
-                        state.tree_state.key_down();
-                    }
-                    KeyCode::Left => {
-                        state.tree_state.key_left();
-                    }
-                    KeyCode::Right => {
-                        state.tree_state.key_right();
-                    }
-                    KeyCode::Char(' ') | KeyCode::Enter => {
-                        state.tree_state.toggle_selected();
-                    }
-                    _ => {}
-                }
+            let Event::Key(key) = event::read()? else {
+                continue;
+            };
+            if key.kind != KeyEventKind::Press {
+                continue;
             }
+            match key.code {
+                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(())
+                }
+                KeyCode::Up => {
+                    state.tree_state.key_up();
+                }
+                KeyCode::Down => {
+                    state.tree_state.key_down();
+                }
+                KeyCode::Left => {
+                    state.tree_state.key_left();
+                }
+                KeyCode::Right => {
+                    state.tree_state.key_right();
+                }
+                KeyCode::Char(' ') | KeyCode::Enter => {
+                    state.tree_state.toggle_selected();
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        // Poll timed out with no key event: the ~1s timer tick. Only
+        // re-read and rebuild the tree if the file actually changed.
+        let stamp = file_stamp(events_path);
+        if stamp != last_stamp {
+            last_stamp = stamp;
+            tree = rebuild(root, events_path, &mut state);
         }
     }
 }
@@ -267,9 +284,7 @@ pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
     let root = PathBuf::from(worktree);
 
     let data_dir = db_path.parent().unwrap_or_else(|| Path::new("."));
-    let events_path = data_dir
-        .join(FILE_EVENTS_SUBDIR)
-        .join(format!("{task_id}.jsonl"));
+    let events_path = file_events_path(data_dir, task_id);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -297,6 +312,16 @@ mod tests {
         PathBuf::from("/repo")
     }
 
+    /// One JSONL line for a file-event, varying only `path`/`operation`.
+    /// `schema_version`/`timestamp`/`task_id`/`tool` don't affect tree-
+    /// building (only `path` and `operation` do — see subtask 3's
+    /// `agent_tree::build_tree`), so fixed placeholders are fine here.
+    fn event(path: &str, operation: &str) -> String {
+        format!(
+            r#"{{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"{path}","operation":"{operation}"}}"#
+        )
+    }
+
     #[test]
     fn empty_tree_produces_no_items() {
         let tree = build_tree(&root(), "");
@@ -306,8 +331,7 @@ mod tests {
 
     #[test]
     fn touched_file_becomes_a_leaf_item_named_by_relative_path() {
-        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/a.rs","operation":"read"}"#;
-        let tree = build_tree(&root(), jsonl);
+        let tree = build_tree(&root(), &event("/repo/a.rs", "read"));
         let items = build_tree_items(&tree);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].identifier(), "a.rs");
@@ -316,8 +340,7 @@ mod tests {
 
     #[test]
     fn touched_dir_becomes_a_non_leaf_item() {
-        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/src/a.rs","operation":"read"}"#;
-        let tree = build_tree(&root(), jsonl);
+        let tree = build_tree(&root(), &event("/repo/src/a.rs", "read"));
         let items = build_tree_items(&tree);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].identifier(), "src");
@@ -326,8 +349,7 @@ mod tests {
 
     #[test]
     fn nested_file_identifier_is_slash_joined_path() {
-        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/a/b/c.rs","operation":"read"}"#;
-        let tree = build_tree(&root(), jsonl);
+        let tree = build_tree(&root(), &event("/repo/a/b/c.rs", "read"));
         let items = build_tree_items(&tree);
         let a = &items[0];
         assert_eq!(a.identifier(), "a");
@@ -341,8 +363,8 @@ mod tests {
     fn two_touched_roots_produce_two_top_level_items_sorted_by_name() {
         let jsonl = format!(
             "{}\n{}",
-            r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/z.rs","operation":"read"}"#,
-            r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/a.rs","operation":"read"}"#
+            event("/repo/z.rs", "read"),
+            event("/repo/a.rs", "read")
         );
         let tree = build_tree(&root(), &jsonl);
         let items = build_tree_items(&tree);
@@ -353,8 +375,7 @@ mod tests {
 
     #[test]
     fn sync_expansion_opens_newly_touched_directory() {
-        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/src/a.rs","operation":"read"}"#;
-        let tree = build_tree(&root(), jsonl);
+        let tree = build_tree(&root(), &event("/repo/src/a.rs", "read"));
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
         assert!(state.tree_state.opened().contains(&vec!["src".to_string()]));
@@ -362,8 +383,8 @@ mod tests {
 
     #[test]
     fn sync_expansion_does_not_reopen_a_manually_closed_directory() {
-        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/src/a.rs","operation":"read"}"#;
-        let tree = build_tree(&root(), jsonl);
+        let jsonl = event("/repo/src/a.rs", "read");
+        let tree = build_tree(&root(), &jsonl);
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
         assert!(state.tree_state.close(&["src".to_string()]));
@@ -371,24 +392,20 @@ mod tests {
         // Rebuild the same tree (as a fresh poll of an unchanged file would)
         // and sync again: "src" was already auto-expanded once, so the
         // manual close must survive.
-        let tree_again = build_tree(&root(), jsonl);
+        let tree_again = build_tree(&root(), &jsonl);
         state.sync_expansion(&tree_again);
         assert!(!state.tree_state.opened().contains(&vec!["src".to_string()]));
     }
 
     #[test]
     fn sync_expansion_opens_a_newly_touched_sibling_without_reopening_a_closed_one() {
-        let first_event = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/src/a.rs","operation":"read"}"#;
+        let first_event = event("/repo/src/a.rs", "read");
         let mut state = RenderState::new();
-        state.sync_expansion(&build_tree(&root(), first_event));
+        state.sync_expansion(&build_tree(&root(), &first_event));
         assert!(state.tree_state.close(&["src".to_string()]));
 
         // A second poll picks up a brand-new touch under a different directory.
-        let jsonl = format!(
-            "{}\n{}",
-            first_event,
-            r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:01Z","task_id":"1","tool":"read","path":"/repo/docs/b.md","operation":"read"}"#
-        );
+        let jsonl = format!("{}\n{}", first_event, event("/repo/docs/b.md", "read"));
         state.sync_expansion(&build_tree(&root(), &jsonl));
 
         assert!(
@@ -406,8 +423,7 @@ mod tests {
 
     #[test]
     fn sync_expansion_opens_nested_ancestor_directories() {
-        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"/repo/a/b/c.rs","operation":"read"}"#;
-        let tree = build_tree(&root(), jsonl);
+        let tree = build_tree(&root(), &event("/repo/a/b/c.rs", "read"));
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
         assert!(state.tree_state.opened().contains(&vec!["a".to_string()]));
@@ -456,8 +472,8 @@ mod tests {
     fn snapshot_modified_and_read_badges() {
         let jsonl = format!(
             "{}\n{}",
-            r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"write","path":"/repo/src/lib.rs","operation":"modified"}"#,
-            r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:01Z","task_id":"1","tool":"read","path":"/repo/README.md","operation":"read"}"#
+            event("/repo/src/lib.rs", "modified"),
+            event("/repo/README.md", "read")
         );
         let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
         insta::assert_snapshot!(rendered);
@@ -465,8 +481,8 @@ mod tests {
 
     #[test]
     fn snapshot_nested_directories_auto_expanded() {
-        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"write","path":"/repo/a/b/c.rs","operation":"modified"}"#;
-        let rendered = render_to_string(jsonl, "dispatch", 50, 12);
+        let jsonl = event("/repo/a/b/c.rs", "modified");
+        let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
         insta::assert_snapshot!(rendered);
     }
 }

@@ -1,7 +1,7 @@
 mod input_form;
 mod kanban;
 pub mod learnings;
-mod palette;
+pub(crate) mod palette;
 mod shared;
 pub mod todos;
 

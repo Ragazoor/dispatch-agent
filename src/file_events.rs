@@ -7,13 +7,23 @@
 //! `models::HookEventKind` / `record_hook_event` — this module never touches
 //! `TaskService` or the database, it only appends to a file.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 
 pub const FILE_EVENTS_SUBDIR: &str = "file-events";
+
+/// Path to a task's file-events JSONL log: `<data_dir>/file-events/<task_id>.jsonl`.
+/// The one place this layout is defined — both the writer (`append_file_event`)
+/// and the `dispatch agent-tree` reader (`src/cli/agent_tree.rs`) call this
+/// rather than re-deriving the join themselves.
+pub fn file_events_path(data_dir: &Path, task_id: i64) -> PathBuf {
+    data_dir
+        .join(FILE_EVENTS_SUBDIR)
+        .join(format!("{task_id}.jsonl"))
+}
 
 const SCHEMA_VERSION: &str = "1.0.0";
 
@@ -82,7 +92,7 @@ pub async fn append_file_event(data_dir: &Path, task_id: i64, tool: &str, path: 
         tracing::warn!(error = ?e, path = %dir.display(), "failed to create file-events dir");
         return;
     }
-    let file_path = dir.join(format!("{task_id}.jsonl"));
+    let file_path = file_events_path(data_dir, task_id);
     let mut file = match tokio::fs::OpenOptions::new()
         .append(true)
         .create(true)
