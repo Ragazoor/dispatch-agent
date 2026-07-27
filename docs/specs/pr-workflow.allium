@@ -333,22 +333,40 @@ rule ExitSession {
     requires:
         if action = pr: pr_url != null and pr_url != ""
 
+    -- Bound before the ensures below so the teardown still names the window
+    -- after task.tmux_window has been cleared.
+    let window = task.tmux_window
+
+    -- The terminal write — status, sub_status, url and the cleared
+    -- tmux_window reference, applied as one patch — can fail at the
+    -- persistence layer. Whether it took effect gates the terminal mutation
+    -- and the SessionClosed emission below; consuming the exit token and
+    -- tearing the tmux session down happen either way.
+    let close_persisted = terminal_close_persisted(task)
+
     ensures:
-        task.tmux_window = null
         ExitTokenConsumed(task: task)
-        if action = pr:
-            task.status = review
-            task.sub_status = core/SubStatus.default_for(review)
-            task.url = core/TaskUrl{url: pr_url, url_type: pr}
-        else:
-            task.status = done
-            task.sub_status = core/SubStatus.default_for(done)
-        task.updated_at = now
+        -- Unconditional: the agent is exiting regardless, and a surviving
+        -- window is a dead prompt in the user's tmux.
+        not exists window
+        if close_persisted:
+            task.tmux_window = null
+            if action = pr:
+                task.status = review
+                task.sub_status = core/SubStatus.default_for(review)
+                task.url = core/TaskUrl{url: pr_url, url_type: pr}
+            else:
+                task.status = done
+                task.sub_status = core/SubStatus.default_for(done)
+            task.updated_at = now
 
     -- Emitted last, after every mutation above and after the session teardown,
     -- so an epic chain keyed on it (AutoDispatchNextSubtask in epics.allium)
-    -- sees the closed task in its terminal state.
-    ensures: SessionClosed(task: task)
+    -- sees the closed task in its terminal state. Conditional on the same
+    -- write: a close that did not take effect must not chain.
+    ensures:
+        if close_persisted:
+            SessionClosed(task: task)
 
     @guidance
         -- Single-call session close. The old two-phase behaviour (first call
@@ -395,6 +413,34 @@ rule ExitSession {
         -- triggers EpicStatusRecalculation on the parent epic. Killing the tmux
         -- window is unchanged.
         --
+        -- When the terminal write does NOT take effect (close_persisted =
+        -- false — the single patch that carries status, sub_status, url and the
+        -- cleared tmux_window failed at the persistence layer):
+        --   • the failure is logged at warn;
+        --   • the tmux window is still killed. The agent is exiting whatever
+        --     happens, and leaving the window alive would leave a dead prompt
+        --     in the user's tmux;
+        --   • the task keeps the status, sub_status, url and tmux_window it had.
+        --     The close simply did not happen, so the task stays visible in its
+        --     current column for a manual retry (from the TUI, or by the human
+        --     moving it) rather than silently appearing finished;
+        --   • SessionClosed is NOT emitted, so no epic chain fires — see
+        --     AutoDispatchNextSubtask in epics.allium for why compounding a
+        --     broken close into a fresh dispatch is worse than the broken close
+        --     alone;
+        --   • the call still SUCCEEDS. The exit token was already consumed by
+        --     this point, so returning an error would strand the agent with no
+        --     retry path; instead the response text reports that the close did
+        --     not take effect, so both the agent and the human reading the board
+        --     learn about it. ExitSessionViaMcp in mcp-task-tools.allium owns the
+        --     concrete response wording.
+        -- Consequence of keeping tmux_window while the window itself is gone:
+        -- the task is left in the shape crash detection looks for, so a running
+        -- task whose close failed is picked up by DetectCrashedAgent
+        -- (agent-health.allium) on a later tick and flagged crashed. That is a
+        -- true statement about the task — its agent is no longer there — and it
+        -- is a second, board-level signal that the close needs redoing.
+        --
         -- Why this closes the PR-merge race (not merely narrows it): previously
         -- wrap_up("pr") set status = review with a pr-typed url immediately,
         -- which armed PollPrStatus (it filters on status = review and
@@ -406,8 +452,10 @@ rule ExitSession {
         -- session-ended state become true in the same instant.
         --
         -- SessionClosed fires last, after the terminal mutation, the
-        -- task/epic-changed notifications and the tmux teardown, and it is
-        -- fire-and-forget. Its only consumer today is automatic epic chaining
+        -- task/epic-changed notifications and the tmux teardown, and only when
+        -- that terminal mutation took effect (see the failed-write path above).
+        -- It is fire-and-forget. Its only consumer today is automatic epic
+        -- chaining
         -- (AutoDispatchNextSubtask in epics.allium): if the closed task belongs
         -- to an epic with auto_dispatch = true, the epic's next backlog subtask
         -- is dispatched — so a subtask's successor always starts from a
@@ -472,3 +520,9 @@ rule FinishTaskConflict {
         -- PR review polling skips overwriting conflict sub_status.
         -- Wrap-up rebase clears conflict optimistically before rebasing.
 }
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "FailedCloseVisibility: when ExitSession's terminal write does not take effect, the only report is the MCP response text the exiting agent receives. On the board the task keeps its old status and a tmux_window pointing at a killed window, so it surfaces as sub_status = crashed via DetectCrashedAgent — indistinguishable from an agent that genuinely died. Should a failed close carry its own board-level signal (a distinct sub_status, a UserInformed notification, or at minimum a status-bar message) so a human who never reads the agent's transcript learns the task still needs closing?"

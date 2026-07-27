@@ -543,6 +543,19 @@ rule AutoDispatchNextSubtask {
         -- worktree is always cut from a base_branch that already contains the
         -- finished subtask's work.
         --
+        -- SessionClosed does not follow every attempted close, only the ones
+        -- that took effect. The close is a single write carrying the terminal
+        -- status and the cleared tmux_window; when that write fails, the
+        -- session-close rules deliberately withhold SessionClosed and this rule
+        -- never runs. That is intentional, not a gap: the closing subtask is
+        -- still sitting in its old status with its work unrecorded, and adding a
+        -- freshly launched successor on top of that is strictly harder for a
+        -- human to notice than the failed close on its own — the successor would
+        -- also branch from a base whose fast-forward state the failed close says
+        -- nothing about. The epic simply waits, exactly as it does for the three
+        -- normal stopping conditions below, and the human closes the subtask by
+        -- hand and dispatches the next one from the TUI.
+        --
         -- There is no agent-facing tool for this. The former dispatch_next MCP
         -- tool is gone precisely because, alongside automatic chaining, an
         -- agent that called it and then exited fired TWO subtasks — one of them
@@ -563,7 +576,10 @@ rule AutoDispatchNextSubtask {
         -- or the epic has no backlog subtask left. In each case the epic is
         -- untouched and the close reports a plain "session closed" response,
         -- and the human dispatches the next subtask from the TUI — the same
-        -- recovery path auto_dispatch = false already produces.
+        -- recovery path auto_dispatch = false already produces. (A close whose
+        -- terminal write failed also leaves the epic untouched, but that is a
+        -- failure rather than a normal outcome and its response text says so;
+        -- see above.)
         --
         -- Candidate selection. Only direct Task children are candidates,
         -- ordered by sort_order ascending with the task id both as the fallback

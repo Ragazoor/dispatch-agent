@@ -681,6 +681,18 @@ struct ChainFixture {
 
 impl ChainFixture {
     async fn new() -> Self {
+        Self::build(None).await
+    }
+
+    /// Like [`ChainFixture::new`], but with a `task_svc` whose `update_task`
+    /// always fails, so `exit_session`'s terminal close patch cannot land. This
+    /// is the `close_persisted = false` branch of `ExitSession` /
+    /// `ExitSessionViaMcp`.
+    async fn with_failing_close() -> Self {
+        Self::build(Some(Arc::new(FailingUpdateTaskService))).await
+    }
+
+    async fn build(task_svc_override: Option<Arc<dyn crate::service::TaskServiceApi>>) -> Self {
         let dir = tempfile::TempDir::new().unwrap();
         let repo_path = dir.path().to_str().unwrap().to_string();
         std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
@@ -693,7 +705,7 @@ impl ChainFixture {
         let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(
             (0..24).map(|_| MockProcessRunner::ok()).collect(),
         ));
-        let state = Arc::new(McpState::new(
+        let mut state = McpState::new(
             McpDeps {
                 db: db.clone(),
                 runner,
@@ -701,12 +713,15 @@ impl ChainFixture {
                 data_dir: std::env::temp_dir(),
             },
             Some(notify_tx),
-        ));
+        );
+        if let Some(task_svc) = task_svc_override {
+            state.task_svc = task_svc;
+        }
         Self {
             _dir: dir,
             repo_path,
             db,
-            state,
+            state: Arc::new(state),
             notify_rx,
         }
     }
@@ -1150,6 +1165,182 @@ async fn exit_session_chain_reverts_claim_when_dispatch_fails() {
         reverted.last_pre_tool_use_at.is_none(),
         "the revert must also drop the activity timestamp the claim seeded, or the \
          subtask is not left exactly as it was before the chain fired"
+    );
+}
+
+// -- a close whose terminal write does not take effect -----------------------
+//
+// `ExitSession` (docs/specs/pr-workflow.allium) and `ExitSessionViaMcp`
+// (docs/specs/mcp-task-tools.allium) gate both the terminal mutation and the
+// `SessionClosed(task)` emission on `close_persisted` — whether the single patch
+// carrying status, sub_status, url and the cleared tmux_window actually landed.
+// Consuming the exit token and destroying the tmux window are unconditional.
+// The tests below drive the `close_persisted = false` branch.
+
+/// A task service whose `update_task` always fails, so `exit_session`'s
+/// terminal close patch cannot land. Every other method inherits the panicking
+/// default from `TaskServiceApiStub` — which is itself an assertion: if the
+/// chain ever fired on this path it would panic on `claim_next_backlog_task`
+/// rather than pass quietly.
+struct FailingUpdateTaskService;
+
+#[async_trait::async_trait]
+impl crate::service::TaskServiceApiStub for FailingUpdateTaskService {
+    async fn update_task(
+        &self,
+        _params: crate::service::UpdateTaskParams,
+    ) -> Result<crate::service::UpdateTaskResult, crate::service::ServiceError> {
+        Err(crate::service::ServiceError::Internal(anyhow::anyhow!(
+            "simulated persistence failure"
+        )))
+    }
+}
+
+crate::task_service_api!(service_api_stub_bridge, FailingUpdateTaskService);
+
+/// The terminal mutation is withheld: the task keeps the status, sub_status and
+/// tmux_window it had, so it stays visible in its current column for a manual
+/// retry instead of silently appearing finished.
+#[tokio::test]
+async fn exit_session_failed_close_leaves_the_task_unchanged() {
+    let fx = ChainFixture::with_failing_close().await;
+    let closing = fx.closing_subtask(None).await;
+    let before = fx.db.get_task(closing).await.unwrap().unwrap();
+
+    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+
+    let after = fx.db.get_task(closing).await.unwrap().unwrap();
+    assert_eq!(
+        after.status, before.status,
+        "a close that did not persist must not move the task"
+    );
+    assert_eq!(after.sub_status, before.sub_status);
+    assert_eq!(
+        after.tmux_window, before.tmux_window,
+        "the task's record of its window is only cleared when the write lands"
+    );
+}
+
+/// The pr branch of the same gate: neither the Review transition nor the
+/// pr-typed url is recorded when the write fails.
+#[tokio::test]
+async fn exit_session_failed_close_records_no_pr_url() {
+    let fx = ChainFixture::with_failing_close().await;
+    let closing = fx.closing_subtask(None).await;
+
+    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Pr)
+        .await;
+
+    let after = fx.db.get_task(closing).await.unwrap().unwrap();
+    assert_eq!(after.status, TaskStatus::Running);
+    assert!(
+        after.url.is_none(),
+        "the pr url is part of the same patch, so it must not appear on its own"
+    );
+}
+
+/// Still a successful JSON-RPC response — the exit token is already consumed by
+/// this point, so an error would strand the agent with no retry path — but the
+/// text must not claim the session closed.
+#[tokio::test]
+async fn exit_session_failed_close_returns_success_reporting_the_failure() {
+    let fx = ChainFixture::with_failing_close().await;
+    let closing = fx.closing_subtask(None).await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+
+    assert!(
+        resp.error.is_none(),
+        "must not be a JSON-RPC error: {:?}",
+        resp.error
+    );
+    assert!(
+        !is_error(&resp),
+        "must not be an isError tools/call result either"
+    );
+    let text = extract_response_text(&resp);
+    assert!(
+        !text.contains("Session closed"),
+        "the response must not claim the session closed, got: {text}"
+    );
+    assert!(
+        text.contains(&format!("#{}", closing.0)),
+        "the response must name the task whose close failed, got: {text}"
+    );
+}
+
+/// The exit token is consumed either way, so a naive retry cannot re-enter the
+/// close path — it hits the "call wrap_up first" branch instead.
+#[tokio::test]
+async fn exit_session_failed_close_still_consumes_the_exit_token() {
+    let fx = ChainFixture::with_failing_close().await;
+    let closing = fx.closing_subtask(None).await;
+
+    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+
+    assert!(
+        fx.state.exit_tokens.read().unwrap().get(&closing).is_none(),
+        "consuming the token is unconditional"
+    );
+}
+
+/// `SessionClosed` is withheld, so `AutoDispatchNextSubtask` never runs: a
+/// broken close must not be compounded by a freshly launched successor.
+#[tokio::test]
+async fn exit_session_failed_close_does_not_chain() {
+    let fx = ChainFixture::with_failing_close().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Successor", Some(10), None)
+        .await;
+
+    let resp = fx
+        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+    let text = extract_response_text(&resp);
+    assert!(
+        !text.contains("Dispatching next epic subtask"),
+        "a failed close must not report a chain, got: {text}"
+    );
+
+    // The claim is synchronous and completes before exit_session returns, so a
+    // subtask still in Backlog here was never claimed and can never transition.
+    let untouched = fx.db.get_task(next).await.unwrap().unwrap();
+    assert_eq!(untouched.status, TaskStatus::Backlog);
+    assert!(untouched.worktree.is_none());
+}
+
+/// `ExitSessionViaMcp` guidance in docs/specs/mcp-task-tools.allium says the
+/// agent must not treat the failure response as a completed close. The tool
+/// description is the only surface guaranteed to be in front of the agent at the
+/// moment it calls `exit_session` — an agent can reach the tool without the
+/// /wrap-up skill loaded — so it is what has to carry that instruction.
+#[tokio::test]
+async fn exit_session_tool_description_warns_about_a_close_that_did_not_take_effect() {
+    let state = test_state().await;
+    let resp = call(&state, "tools/list", None).await;
+    let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
+    let description = tools
+        .iter()
+        .find(|t| t["name"] == "exit_session")
+        .expect("exit_session must be registered")["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    assert!(
+        description.contains("did not take effect"),
+        "description must name the failure the response can report, got: {description}"
+    );
+    assert!(
+        description.contains("not treat"),
+        "description must tell the agent not to treat that response as a completed close, \
+         got: {description}"
     );
 }
 

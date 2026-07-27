@@ -540,7 +540,10 @@ window: 'rebase'/'done' move the task to Done; 'pr' moves it to Review and sets 
 action must match the action passed to wrap_up, or the call is rejected. \
 If the task belongs to an epic with auto_dispatch enabled, closing it automatically dispatches \
 that epic's next backlog subtask — there is no tool for you to call, and you must not try to \
-dispatch it yourself.",
+dispatch it yourself. \
+Read the response text: on rare occasions it reports that the close did not take effect, meaning \
+the task was NOT moved and no subtask was dispatched. Do not treat that as a completed close — \
+tell the user the task still needs closing by hand.",
         {
             "type": "object",
             "properties": {

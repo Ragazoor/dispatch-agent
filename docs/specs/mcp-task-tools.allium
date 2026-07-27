@@ -410,8 +410,10 @@ rule DispatchTaskViaMcp {
         -- prompt) variants — the prompt builder branches internally.
         -- dispatch_task is the only remaining MCP dispatch tool: it stays the
         -- explicit "dispatch this specific task" call, while epic chaining is
-        -- automatic on session close (AutoDispatchNextSubtask in
-        -- epics.allium). Unlike that chain, this call is synchronous: it waits
+        -- automatic on a session close that takes effect
+        -- (AutoDispatchNextSubtask in epics.allium, keyed on the SessionClosed
+        -- that ExitSessionViaMcp withholds when its terminal write fails).
+        -- Unlike that chain, this call is synchronous: it waits
         -- for worktree creation and agent launch to complete before returning.
         -- Its backlog guard above is also what stops a task already claimed by
         -- a chain from being dispatched a second time through this tool.
@@ -601,22 +603,41 @@ rule ExitSessionViaMcp {
     requires:
         if action = pr: pr_url != null and pr_url != ""
 
+    -- Bound before the ensures below so the teardown still names the window
+    -- after task.tmux_window has been cleared.
+    let window = task.tmux_window
+
+    -- The terminal write — status, sub_status, url and the cleared
+    -- tmux_window reference, applied as one patch — can fail at the
+    -- persistence layer. Whether it took effect gates the terminal mutation
+    -- and the SessionClosed emission below; consuming the exit token and
+    -- tearing the tmux session down happen either way. Same condition as
+    -- ExitSession in pr-workflow.allium.
+    let close_persisted = terminal_close_persisted(task)
+
     ensures:
         consume_exit_token(task)
-        task.tmux_window = null
-        if action = pr:
-            task.status = review
-            task.sub_status = core/SubStatus.default_for(review)
-            task.url = core/TaskUrl{url: pr_url, url_type: pr}
-        else:
-            task.status = done
-            task.sub_status = core/SubStatus.default_for(done)
-        task.updated_at = now
+        -- Unconditional: the agent is exiting regardless, and a surviving
+        -- window is a dead prompt in the user's tmux.
+        not exists window
+        if close_persisted:
+            task.tmux_window = null
+            if action = pr:
+                task.status = review
+                task.sub_status = core/SubStatus.default_for(review)
+                task.url = core/TaskUrl{url: pr_url, url_type: pr}
+            else:
+                task.status = done
+                task.sub_status = core/SubStatus.default_for(done)
+            task.updated_at = now
 
     -- Emitted last, after every mutation above and after the session teardown,
     -- so an epic chain keyed on it (AutoDispatchNextSubtask in epics.allium)
-    -- sees the closed task in its terminal state.
-    ensures: SessionClosed(task: task)
+    -- sees the closed task in its terminal state. Conditional on the same
+    -- write: a close that did not take effect must not chain.
+    ensures:
+        if close_persisted:
+            SessionClosed(task: task)
 
     @guidance
         -- Single-call session close for all three wrap-up actions. The old
@@ -653,13 +674,29 @@ rule ExitSessionViaMcp {
         -- patch flow (src/service/tasks/crud.rs) triggers EpicStatusRecalculation
         -- on the parent epic. Handled by handle_exit_session in
         -- src/mcp/handlers/tasks/wrap_up.rs.
+        -- When that terminal patch FAILS (close_persisted = false), the call is
+        -- still a successful tools/call response, NOT a JSON-RPC error: the exit
+        -- token has already been consumed by this point, so an error would
+        -- strand the agent with no retry path and no session. What changes is
+        -- the response text — instead of the session-closed message (with or
+        -- without a chained-subtask sentence) the response states that the
+        -- session was torn down but the task could not be moved to its terminal
+        -- status, names the task, and tells the agent the close needs redoing by
+        -- hand. The agent must not treat that response as a completed close.
+        -- Everything else on that path: the failure is logged at warn, the tmux
+        -- window is still killed, the task keeps its status, sub_status, url and
+        -- tmux_window, and SessionClosed is not emitted so no epic chain fires.
+        -- ExitSession in pr-workflow.allium carries the full rationale,
+        -- including why the abandoned tmux_window reference later surfaces as a
+        -- crashed agent on the board.
         -- Why the pr path closes the PR-merge race: a PR task never enters
         -- review with a pr-typed url until the exact same call that also nulls
         -- tmux_window, so PollPrStatus (which filters on status = review and
         -- url.url_type = pr) can never observe it mid-session.
         -- SessionClosed is emitted last, after the terminal patch, the
-        -- task/epic-changed notifications and the tmux teardown. It is what
-        -- drives automatic epic chaining (AutoDispatchNextSubtask in
+        -- task/epic-changed notifications and the tmux teardown, and only when
+        -- that patch took effect. It is what drives automatic epic
+        -- chaining (AutoDispatchNextSubtask in
         -- epics.allium), and it is fire-and-forget: a chain that stops, or
         -- fails, never turns a successful close into an error. All three
         -- actions emit it — for action = pr the finished work sits on a PR

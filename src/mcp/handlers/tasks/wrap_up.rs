@@ -362,12 +362,20 @@ pub(crate) async fn handle_exit_session(
             params.status(TaskStatus::Done)
         }
     };
-    if let Err(e) = state.task_svc.update_task(params).await {
-        tracing::warn!(
-            task_id = task_id.0,
-            "exit_session: failed to apply closing patch: {e}"
-        );
-    }
+    // `close_persisted` in `ExitSession` (docs/specs/pr-workflow.allium): the
+    // terminal mutation and the trailing SessionClosed emission are both gated on
+    // this single write landing. Consuming the token (already done above) and
+    // tearing the tmux session down (below) happen either way.
+    let close_persisted = match state.task_svc.update_task(params).await {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.0,
+                "exit_session: failed to apply closing patch: {e}"
+            );
+            false
+        }
+    };
     state.notify_task_changed(task_id);
     if let Some(epic_id) = task.epic_id {
         state.notify_epic_changed(epic_id);
@@ -384,17 +392,31 @@ pub(crate) async fn handle_exit_session(
     // notifications and the window teardown — so the next subtask's worktree is
     // cut from a base_branch that already contains this task's work. See
     // AutoDispatchNextSubtask in docs/specs/epics.allium. Never fails the close:
-    // `auto_dispatch_next` swallows every chain problem.
-    let next = match task.epic_id {
-        Some(epic_id) => super::dispatch::auto_dispatch_next(state, epic_id).await,
-        None => None,
+    // `auto_dispatch_next` swallows every chain problem. Withheld entirely when
+    // the close did not persist: compounding a broken close into a second
+    // dispatch is strictly harder for a human to notice than the broken close.
+    let next = match (close_persisted, task.epic_id) {
+        (true, Some(epic_id)) => super::dispatch::auto_dispatch_next(state, epic_id).await,
+        _ => None,
     };
-    let text = match next {
-        Some((next_id, next_title)) => format!(
-            "Session closed. Dispatching next epic subtask #{} '{next_title}'.",
-            next_id.0
-        ),
-        None => "Session closed.".to_string(),
+    // Still a successful response even when the close did not persist: the exit
+    // token was consumed above, so an error would strand the agent with no retry
+    // path and no session. The text is what carries the failure.
+    let text = if !close_persisted {
+        format!(
+            "Session torn down, but task #{} could NOT be moved to its terminal status — \
+             the close did not take effect. Do not treat this as a completed close: the task \
+             is still in its previous status and needs closing by hand.",
+            task_id.0
+        )
+    } else {
+        match next {
+            Some((next_id, next_title)) => format!(
+                "Session closed. Dispatching next epic subtask #{} '{next_title}'.",
+                next_id.0
+            ),
+            None => "Session closed.".to_string(),
+        }
     };
     JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
 }
