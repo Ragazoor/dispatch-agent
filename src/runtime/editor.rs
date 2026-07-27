@@ -25,6 +25,40 @@ use crate::{models, tmux};
 /// Interval between `has_window` polls while waiting for the editor to exit.
 const POLL_INTERVAL: Duration = Duration::from_millis(300);
 
+/// Consecutive tmux query failures [`window_alive_with_bounded_retry`]
+/// tolerates before giving up and reporting "not alive".
+///
+/// `tmux::has_window_or_assume_present` (query failure -> alive) is the right
+/// default for the other liveness call sites (`main_session_window_alive`,
+/// `exec_check_window`) because those are periodic re-checks — a false
+/// "alive" there just delays detection by one tick. `watch_editor`'s loop
+/// below has no other exit condition, so treating a *permanently* broken
+/// tmux as alive forever would hang it indefinitely; bounding the retries
+/// keeps the "don't overreact to one blip" behaviour while still
+/// terminating on a sustained failure.
+const MAX_CONSECUTIVE_QUERY_FAILURES: u32 = 5;
+
+/// Liveness check for [`watch_editor`]'s poll loop. On a successful query,
+/// reports the real state and resets `consecutive_failures`. On a query
+/// error, assumes "still alive" for up to [`MAX_CONSECUTIVE_QUERY_FAILURES`]
+/// in a row, then gives up and reports "not alive".
+fn window_alive_with_bounded_retry(
+    window: &str,
+    runner: &dyn ProcessRunner,
+    consecutive_failures: &mut u32,
+) -> bool {
+    match tmux::has_window(window, runner) {
+        Ok(alive) => {
+            *consecutive_failures = 0;
+            alive
+        }
+        Err(_) => {
+            *consecutive_failures += 1;
+            *consecutive_failures < MAX_CONSECUTIVE_QUERY_FAILURES
+        }
+    }
+}
+
 /// Message shown when a second editor is requested while one is already open.
 pub const EDITOR_ALREADY_OPEN_MSG: &str = "Editor already open — close it first";
 
@@ -220,8 +254,9 @@ impl TuiRuntime {
         let path = temp_path;
         let kind_for_result = kind;
         tokio::task::spawn_blocking(move || {
+            let mut consecutive_failures = 0;
             let outcome = watch_editor(
-                || tmux::has_window(&window, &*runner).unwrap_or(false),
+                || window_alive_with_bounded_retry(&window, &*runner, &mut consecutive_failures),
                 || std::thread::sleep(POLL_INTERVAL),
                 || std::fs::read_to_string(&path),
             );
@@ -763,6 +798,87 @@ mod tests {
         // Single check, no sleeps.
         assert_eq!(iterations.get(), 1);
         assert_eq!(sleep_calls.get(), 0);
+    }
+
+    // --- window_alive_with_bounded_retry ---
+
+    #[test]
+    fn window_alive_with_bounded_retry_true_when_present() {
+        use crate::process::MockProcessRunner;
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"task-42\n")]);
+        let mut failures = 0;
+        assert!(window_alive_with_bounded_retry(
+            "task-42",
+            &mock,
+            &mut failures
+        ));
+        assert_eq!(failures, 0);
+    }
+
+    #[test]
+    fn window_alive_with_bounded_retry_false_when_absent() {
+        use crate::process::MockProcessRunner;
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"other\n")]);
+        let mut failures = 0;
+        assert!(!window_alive_with_bounded_retry(
+            "task-42",
+            &mock,
+            &mut failures
+        ));
+        assert_eq!(failures, 0);
+    }
+
+    #[test]
+    fn window_alive_with_bounded_retry_true_on_transient_failure() {
+        use crate::process::MockProcessRunner;
+        let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("tmux: command not found"))]);
+        let mut failures = 0;
+        assert!(
+            window_alive_with_bounded_retry("task-42", &mock, &mut failures),
+            "a single query failure should not be treated as the window closing"
+        );
+        assert_eq!(failures, 1);
+    }
+
+    #[test]
+    fn window_alive_with_bounded_retry_gives_up_after_max_consecutive_failures() {
+        use crate::process::MockProcessRunner;
+        let mock = MockProcessRunner::new(
+            (0..MAX_CONSECUTIVE_QUERY_FAILURES)
+                .map(|_| Err(anyhow::anyhow!("tmux: command not found")))
+                .collect(),
+        );
+        let mut failures = 0;
+        for _ in 0..MAX_CONSECUTIVE_QUERY_FAILURES - 1 {
+            assert!(window_alive_with_bounded_retry("task-42", &mock, &mut failures));
+        }
+        assert!(
+            !window_alive_with_bounded_retry("task-42", &mock, &mut failures),
+            "a permanently broken tmux must eventually be treated as closed, \
+             or watch_editor's loop would hang forever"
+        );
+    }
+
+    #[test]
+    fn window_alive_with_bounded_retry_resets_count_after_success() {
+        use crate::process::MockProcessRunner;
+        let mock = MockProcessRunner::new(vec![
+            Err(anyhow::anyhow!("tmux: command not found")),
+            MockProcessRunner::ok_with_stdout(b"task-42\n"),
+        ]);
+        let mut failures = 0;
+        assert!(window_alive_with_bounded_retry(
+            "task-42",
+            &mock,
+            &mut failures
+        ));
+        assert_eq!(failures, 1);
+        assert!(window_alive_with_bounded_retry(
+            "task-42",
+            &mock,
+            &mut failures
+        ));
+        assert_eq!(failures, 0, "a successful query should reset the counter");
     }
 
     #[tokio::test]

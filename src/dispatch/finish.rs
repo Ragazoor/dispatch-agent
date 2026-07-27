@@ -2,6 +2,7 @@ use crate::models::expand_tilde;
 use crate::process::ProcessRunner;
 use crate::tmux;
 
+use super::git_output::is_rebase_conflict;
 use super::{stderr_str, stdout_str};
 
 /// Errors from the finish (rebase + cleanup) operation.
@@ -108,10 +109,7 @@ pub fn finish_task(
     if !output.status.success() {
         let stderr = stderr_str(&output);
         let stdout = stdout_str(&output);
-        let is_conflict = stderr.contains("CONFLICT")
-            || stdout.contains("CONFLICT")
-            || stderr.contains("could not apply")
-            || stderr.contains("Merge conflict");
+        let is_conflict = is_rebase_conflict(&stdout, &stderr);
 
         let _ = runner.run("git", &["-C", worktree, "rebase", "--abort"]);
 
@@ -134,16 +132,8 @@ pub fn finish_task(
 
     // 5. Kill tmux window (worktree is preserved for later archival)
     if let Some(window) = tmux_window {
-        match tmux::has_window(window, runner) {
-            Ok(true) => {
-                tmux::kill_window(window, runner)
-                    .map_err(|e| FinishError::Other(format!("Failed to kill tmux window: {e}")))?;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!("could not check tmux window during finish: {e}");
-            }
-        }
+        tmux::kill_window_if_present(window, runner)
+            .map_err(|e| FinishError::Other(format!("Failed to kill tmux window: {e}")))?;
     }
 
     Ok(())

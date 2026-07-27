@@ -91,18 +91,47 @@ pub fn send_keys(window: &str, keys: &str, runner: &dyn ProcessRunner) -> Result
     Ok(())
 }
 
-/// Return true if a tmux window with the given name currently exists.
+/// Return true if a tmux window with the given name currently exists,
+/// searching across all sessions. Built on [`list_all_window_names`], which
+/// issues the identical `list-windows -a` query — same `-a` rationale: works
+/// whether the caller is inside or outside tmux, and finds windows living in
+/// a session other than the current/attached one.
 pub fn has_window(window: &str, runner: &dyn ProcessRunner) -> Result<bool> {
-    let output = runner
-        .run("tmux", &["list-windows", "-F", "#{window_name}"])
-        .context("failed to run tmux list-windows")?;
-    // list-windows exits non-zero when there are no windows / no session;
-    // treat that as "window not found" rather than a hard error.
-    if !output.status.success() {
-        return Ok(false);
+    Ok(list_all_window_names(runner)?.iter().any(|n| n == window))
+}
+
+/// Whether `window` should be treated as alive: `true` when [`has_window`]
+/// finds it, but also `true` when the query itself fails.
+///
+/// A query failure (tmux not reachable, transient error) is deliberately
+/// mapped to "present" rather than "absent" — the callers of this helper use
+/// the result to decide whether to treat a task's agent as crashed or the
+/// main session as gone, and a false "absent" would trigger a spurious
+/// re-dispatch or crash notification from a hiccup that has nothing to do
+/// with the window's actual state. See `has_window`'s other callers
+/// (`kill_window_if_present`) for the opposite default, which applies where
+/// the gated action is itself destructive.
+pub fn has_window_or_assume_present(window: &str, runner: &dyn ProcessRunner) -> bool {
+    has_window(window, runner).unwrap_or(true)
+}
+
+/// Kill `window` if a live check finds it present.
+///
+/// Unlike [`has_window_or_assume_present`], a query failure here is logged
+/// and treated as "nothing to kill" rather than propagated or assumed
+/// present — attempting a `kill-window` against a query we couldn't
+/// validate risks a hard failure that would abort the rest of the
+/// caller's cleanup (e.g. removing the git worktree). Skipping the kill is
+/// the safe choice when we can't tell whether the window still exists.
+pub fn kill_window_if_present(window: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    match has_window(window, runner) {
+        Ok(true) => kill_window(window, runner),
+        Ok(false) => Ok(()),
+        Err(e) => {
+            tracing::warn!("could not check tmux window '{window}' before kill: {e}");
+            Ok(())
+        }
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text.lines().any(|line| line.trim() == window))
 }
 
 /// List the names of all tmux windows across all sessions.
@@ -505,6 +534,83 @@ mod tests {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no sessions")]);
         let result = has_window("task-42", &mock).unwrap();
         assert!(!result);
+    }
+
+    // --- has_window_or_assume_present ---
+
+    #[test]
+    fn has_window_or_assume_present_true_when_present() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"task-42\n")]);
+        assert!(has_window_or_assume_present("task-42", &mock));
+    }
+
+    #[test]
+    fn has_window_or_assume_present_false_when_absent() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"other\n")]);
+        assert!(!has_window_or_assume_present("task-42", &mock));
+    }
+
+    #[test]
+    fn has_window_or_assume_present_true_when_query_fails() {
+        let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("tmux: command not found"))]);
+        assert!(has_window_or_assume_present("task-42", &mock));
+    }
+
+    // --- kill_window_if_present ---
+
+    #[test]
+    fn kill_window_if_present_kills_when_present() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window
+            MockProcessRunner::ok(),                         // kill-window
+        ]);
+        kill_window_if_present("task-42", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].1[0], "kill-window");
+    }
+
+    #[test]
+    fn kill_window_if_present_skips_when_absent() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"other\n")]);
+        kill_window_if_present("task-42", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1, "kill-window should not be called");
+    }
+
+    #[test]
+    fn kill_window_if_present_skips_and_succeeds_when_query_fails() {
+        let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("tmux: command not found"))]);
+        kill_window_if_present("task-42", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1, "kill-window should not be attempted");
+    }
+
+    #[test]
+    fn kill_window_if_present_propagates_kill_failure() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window
+            MockProcessRunner::fail("no such window"),       // kill-window fails
+        ]);
+        let err = kill_window_if_present("task-42", &mock).unwrap_err();
+        assert!(err.to_string().contains("kill-window failed"), "got: {err}");
+    }
+
+    #[test]
+    fn has_window_queries_across_all_sessions() {
+        // has_window is used for cross-session liveness checks (main session,
+        // cleanup, finish, editor, staleness) — without -a, list-windows scopes
+        // to the current/attached session only and misses windows living in
+        // another session, producing a false "not found".
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"task-42\n")]);
+        let _ = has_window("task-42", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tmux");
+        assert_eq!(
+            calls[0].1,
+            vec!["list-windows", "-a", "-F", "#{window_name}"]
+        );
     }
 
     #[test]

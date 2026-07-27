@@ -7,6 +7,7 @@ use crate::models::{expand_tilde, slugify, Task};
 use crate::process::ProcessRunner;
 use crate::tmux;
 
+use super::git_output::WORKTREE_ALREADY_REMOVED;
 use super::prompts::build_tmux_window_name;
 use super::stderr_str;
 
@@ -213,16 +214,8 @@ pub fn cleanup_task(
     tracing::info!(worktree_path, "cleaning up task");
 
     if let Some(window) = tmux_window {
-        match tmux::has_window(window, runner) {
-            Ok(true) => {
-                tmux::kill_window(window, runner)
-                    .context("failed to kill tmux window during cleanup")?;
-            }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!("could not check tmux window during cleanup: {e}");
-            }
-        }
+        tmux::kill_window_if_present(window, runner)
+            .context("failed to kill tmux window during cleanup")?;
     }
 
     let repo = expand_tilde(repo_path);
@@ -235,7 +228,7 @@ pub fn cleanup_task(
     if !output.status.success() {
         let stderr = stderr_str(&output);
         // If the worktree is already gone (manually removed or pruned), treat as success.
-        if stderr.contains("is not a working tree") {
+        if stderr.contains(WORKTREE_ALREADY_REMOVED) {
             tracing::info!(worktree_path, "worktree already removed, skipping");
         } else {
             anyhow::bail!(
@@ -245,12 +238,9 @@ pub fn cleanup_task(
         }
     }
 
-    if let Some(branch) = std::path::Path::new(worktree_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-    {
+    if let Some(branch) = branch_from_worktree(worktree_path) {
         // Best-effort: ignore errors (branch may not exist).
-        let _ = runner.run("git", &["-C", &repo, "branch", "-D", branch]);
+        let _ = runner.run("git", &["-C", &repo, "branch", "-D", &branch]);
     }
 
     Ok(())

@@ -418,7 +418,9 @@ rule OpenMainSession {
         -- reconfiguration happens implicitly on every open while no window is
         -- alive. Because the window name is a fixed constant,
         -- `main_session_window_alive` performs a live tmux check rather than
-        -- consulting a persisted window reference.
+        -- consulting a persisted window reference. A tmux query failure (e.g.
+        -- a transient error) maps to window_alive = true, not false, so a
+        -- tmux hiccup never sends the user to the reconfigure flow.
 }
 
 rule ConfigureMainSessionDir {

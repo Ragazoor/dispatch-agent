@@ -5,6 +5,7 @@ use crate::process::ProcessRunner;
 
 mod agents;
 mod finish;
+pub(crate) mod git_output;
 mod prompts;
 mod trust;
 mod worktree;

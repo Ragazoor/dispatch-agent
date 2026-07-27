@@ -708,6 +708,28 @@ async fn exec_check_window_sends_nothing_when_present() {
 }
 
 #[tokio::test]
+async fn exec_check_window_sends_nothing_when_query_fails() {
+    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    // The runner itself errors (e.g. tmux binary missing) — a transient
+    // failure must not be mistaken for the window (and therefore the agent)
+    // being gone.
+    let mock = Arc::new(MockProcessRunner::new(vec![Err(anyhow::anyhow!(
+        "failed to run tmux"
+    ))]));
+    let rt = make_runtime(db.clone(), tx, mock).await;
+
+    rt.exec_check_window(TaskId(1), "task-1".to_string())
+        .await
+        .unwrap();
+
+    assert!(
+        rx.try_recv().is_err(),
+        "a tmux query failure must not send WindowGone"
+    );
+}
+
+#[tokio::test]
 async fn exec_batch_check_windows_sends_window_gone_only_for_absent() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let (tx, mut rx) = mpsc::unbounded_channel();

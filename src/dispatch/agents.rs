@@ -224,12 +224,14 @@ pub fn is_wrappable(task: &Task) -> bool {
 pub const MAIN_SESSION_WINDOW: &str = "dispatch-main";
 
 /// Whether the fixed main-session window is currently alive: a live tmux check
-/// on [`MAIN_SESSION_WINDOW`], never a persisted reference. A tmux error maps to
-/// "not alive". Shared by the `:` open path and the status-bar liveness poll so
-/// both agree on one definition. See docs/specs/dispatch.allium:
+/// on [`MAIN_SESSION_WINDOW`], never a persisted reference. A tmux query error
+/// maps to "alive" (see `tmux::has_window_or_assume_present`) rather than
+/// "not alive", so a transient tmux hiccup never presents as the main session
+/// having disappeared. Shared by the `:` open path and the status-bar
+/// liveness poll so both agree on one definition. See docs/specs/dispatch.allium:
 /// MainSessionIndicator / OpenMainSession.
 pub fn main_session_window_alive(runner: &dyn ProcessRunner) -> bool {
-    tmux::has_window(MAIN_SESSION_WINDOW, runner).unwrap_or(false)
+    tmux::has_window_or_assume_present(MAIN_SESSION_WINDOW, runner)
 }
 
 /// Launch a plain interactive `claude` session in a new tmux window.
@@ -257,6 +259,18 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::process::MockProcessRunner;
+
+    #[test]
+    fn main_session_window_alive_delegates_to_has_window_or_assume_present() {
+        // main_session_window_alive is a pure delegation to
+        // tmux::has_window_or_assume_present — the present/absent/query-failed
+        // branch logic itself is fully covered by that function's own tests
+        // in src/tmux.rs. This just confirms the query-failure default
+        // (assume alive) carries through the wrapper, since a false "gone"
+        // here would send the user to the reconfigure flow over a hiccup.
+        let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("tmux: command not found"))]);
+        assert!(main_session_window_alive(&mock));
+    }
 
     #[test]
     fn create_main_session_creates_tmux_window_in_given_dir() {

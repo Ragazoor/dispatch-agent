@@ -318,7 +318,10 @@ impl TuiRuntime {
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            if let Ok(false) = tmux::has_window(&window, &*runner) {
+            // A tmux query failure is treated as "still present" (see
+            // `has_window_or_assume_present`) so a transient hiccup never
+            // fires WindowGone and gets mistaken for a crashed agent.
+            if !tmux::has_window_or_assume_present(&window, &*runner) {
                 let _ = tx.send(Message::Task(
                     crate::tui::messages::TaskMessage::WindowGone(id),
                 ));
