@@ -450,6 +450,39 @@ pub fn select_pane(pane_id: &str, runner: &dyn ProcessRunner) -> Result<()> {
     Ok(())
 }
 
+/// Return the pane ID of the window's inactive pane, if there is exactly one.
+///
+/// Every split helper in this module (`split_window_horizontal`,
+/// `split_window_horizontal_running`, `join_pane`) passes `-d`, which keeps
+/// focus on the source/target pane — so a freshly-split companion pane is
+/// always the *inactive* one, regardless of what index tmux assigns it.
+/// Deliberately does not target a pane by index: tmux's `pane-base-index`
+/// option can shift which index the "first" pane gets, so an index-based
+/// target could hit the wrong pane under a customised setting.
+///
+/// Returns `None` for a single-pane window (nothing is inactive) and,
+/// defensively, for a window with more than one inactive pane — ambiguous,
+/// and this function must not guess.
+pub fn inactive_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Option<String>> {
+    let out = run_checked_stdout(
+        runner,
+        &[
+            "list-panes",
+            "-t",
+            window,
+            "-F",
+            "#{pane_active} #{pane_id}",
+        ],
+        "list-panes",
+    )?;
+    let mut inactive = out.lines().filter_map(|line| line.strip_prefix("0 "));
+    let first = inactive.next();
+    if inactive.next().is_some() {
+        return Ok(None);
+    }
+    Ok(first.map(str::to_string))
+}
+
 /// Check whether a tmux pane with the given ID still exists.
 pub fn pane_exists(pane_id: &str, runner: &dyn ProcessRunner) -> bool {
     runner
@@ -1317,5 +1350,49 @@ mod tests {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such pane")]);
         let err = select_pane("%42", &mock).unwrap_err();
         assert!(err.to_string().contains("select-pane failed"), "got: {err}");
+    }
+
+    // --- inactive_pane_id ---
+
+    #[test]
+    fn inactive_pane_id_finds_the_inactive_pane() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n0 %7\n")]);
+        let pane_id = inactive_pane_id("task-42", &mock).unwrap();
+        assert_eq!(pane_id, Some("%7".to_string()));
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "list-panes",
+                "-t",
+                "task-42",
+                "-F",
+                "#{pane_active} #{pane_id}",
+            ]
+        );
+    }
+
+    #[test]
+    fn inactive_pane_id_returns_none_for_single_pane_window() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n")]);
+        assert_eq!(inactive_pane_id("task-42", &mock).unwrap(), None);
+    }
+
+    #[test]
+    fn inactive_pane_id_returns_none_when_ambiguous() {
+        // Should never occur given OneCompanionPanePerAgentWindow, but the
+        // function must not guess which of several inactive panes to target.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"0 %3\n0 %7\n1 %9\n",
+        )]);
+        assert_eq!(inactive_pane_id("task-42", &mock).unwrap(), None);
+    }
+
+    #[test]
+    fn inactive_pane_id_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")]);
+        let err = inactive_pane_id("task-42", &mock).unwrap_err();
+        assert!(err.to_string().contains("list-panes failed"), "got: {err}");
     }
 }

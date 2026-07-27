@@ -8,8 +8,8 @@ use crate::tmux;
 
 use super::prompts::{
     build_prompt, build_quick_dispatch_prompt, build_research_prompt, build_tmux_window_name,
-    pr_rebase_preamble, rebase_preamble, EpicContext, LearningInjections, PromptContext,
-    DISPATCH_PLUGIN_DIR,
+    parse_tmux_window_task_id, pr_rebase_preamble, rebase_preamble, EpicContext,
+    LearningInjections, PromptContext, DISPATCH_PLUGIN_DIR,
 };
 use super::worktree::provision_worktree;
 
@@ -41,6 +41,28 @@ fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn Proces
             error = %e,
             "failed to open agent-tree companion pane"
         );
+    }
+}
+
+/// Toggle the companion agent-tree pane in the given tmux window: kill it if
+/// currently shown, re-split and relaunch `dispatch agent-tree <task_id>` if
+/// hidden. `window` is a tmux window name (e.g. "task-42"), resolved by
+/// tmux's own `#{window_name}` expansion at the moment the global toggle key
+/// was pressed — see docs/specs/agent-tree.allium's ToggleAgentTreePane
+/// rules.
+///
+/// A no-op (not an error) for any window that isn't a task-agent window —
+/// pressing the toggle key in the board TUI's own window does nothing.
+pub fn toggle_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let Some(task_id) = parse_tmux_window_task_id(window) else {
+        return Ok(());
+    };
+    match tmux::inactive_pane_id(window, runner)? {
+        Some(pane_id) => tmux::kill_pane(&pane_id, runner),
+        None => {
+            spawn_agent_tree_pane(window, task_id, runner);
+            Ok(())
+        }
     }
 }
 

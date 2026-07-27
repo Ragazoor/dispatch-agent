@@ -7,7 +7,7 @@ use tracing_subscriber::EnvFilter;
 use dispatch_tui::db::{SettingsStore, TaskRead};
 use dispatch_tui::models::expand_tilde;
 use dispatch_tui::tui::ui::truncate;
-use dispatch_tui::{db, models, runtime, service};
+use dispatch_tui::{db, dispatch, models, runtime, service};
 
 #[derive(Parser)]
 #[command(name = "dispatch")]
@@ -149,6 +149,14 @@ enum Commands {
         /// Explicitly request detection-only mode; overrides --repair if both are set.
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Toggle the companion agent-tree pane in a tmux window. Invoked by the
+    /// global toggle keybinding's bound run-shell command; not meant to be
+    /// run by hand.
+    ToggleAgentTreePane {
+        /// tmux window name (e.g. "task-42"), supplied by tmux's own
+        /// #{window_name} expansion at the moment the toggle key was pressed.
+        window: String,
     },
 }
 
@@ -670,6 +678,20 @@ async fn cmd_doctor(
     Ok(())
 }
 
+/// Toggle the companion agent-tree pane in `window`. Best-effort: this runs
+/// detached via the global keybinding's `run-shell -b`, so a failure has
+/// nowhere useful to surface — it's logged to app.log and swallowed rather
+/// than returned, matching `spawn_agent_tree_pane`'s own best-effort stance.
+fn cmd_toggle_agent_tree_pane(db: &std::path::Path, window: String) -> Result<()> {
+    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
+    let _ = init_app_log_subscriber(data_dir);
+    let runner = dispatch_tui::process::RealProcessRunner;
+    if let Err(e) = dispatch::toggle_agent_tree_pane(&window, &runner) {
+        tracing::warn!(%window, error = %e, "failed to toggle agent-tree companion pane");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // main — thin dispatcher
 // ---------------------------------------------------------------------------
@@ -712,6 +734,9 @@ async fn main() -> Result<()> {
             dry_run,
         } => cmd_doctor(&cli.db, check, json, dry_run).await?,
         Commands::Plan { id, path } => cmd_plan(&cli.db, id, path).await?,
+        Commands::ToggleAgentTreePane { window } => {
+            cmd_toggle_agent_tree_pane(&cli.db, window)?;
+        }
     }
 
     Ok(())

@@ -1174,3 +1174,32 @@ async fn doctor_repair_force_clears_db_orphan_worktree() {
         task.worktree
     );
 }
+
+// ---------------------------------------------------------------------------
+// toggle-agent-tree-pane
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn toggle_agent_tree_pane_never_fails_without_a_real_tmux_session() {
+    // This process has no real tmux session (or, if it happens to run inside
+    // one, "task-999999999" doesn't name a real window in it either way).
+    // The command must swallow the resulting tmux failure and exit 0 —
+    // best-effort, matching the companion pane's decorative, non-critical
+    // role everywhere else it's touched.
+    let db = NamedTempFile::new().unwrap();
+    let out = binary()
+        .args([
+            "--db",
+            db.path().to_str().unwrap(),
+            "toggle-agent-tree-pane",
+            "task-999999999",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

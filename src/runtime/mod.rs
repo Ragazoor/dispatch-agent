@@ -31,6 +31,20 @@ const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// Name used for the TUI's tmux window (visible in tmux status bar).
 const TUI_WINDOW_NAME: &str = "TUI";
 
+/// Key (after the tmux prefix) that toggles a companion agent-tree pane's
+/// visibility in whichever agent window it's pressed in. Matches
+/// config.agent_tree_toggle_key in docs/specs/agent-tree.allium.
+const AGENT_TREE_TOGGLE_KEY: &str = "e";
+
+/// Command bound to [`AGENT_TREE_TOGGLE_KEY`]. `#{window_name}` is expanded
+/// by tmux itself, before invoking the shell, to the name of whichever window
+/// was focused when the key was pressed — so `dispatch toggle-agent-tree-pane`
+/// is handed the target window without this process ever having to ask tmux
+/// which window is focused. `-b` backgrounds the shell job so the keypress
+/// doesn't block the tmux client.
+const AGENT_TREE_TOGGLE_COMMAND: &str =
+    "run-shell -b \"dispatch toggle-agent-tree-pane '#{window_name}'\"";
+
 use crate::db::{SettingsStore, TaskRead};
 use crate::models::TaskId;
 use crate::process::{ProcessRunner, RealProcessRunner};
@@ -74,11 +88,13 @@ fn setup_tmux_for_tui(runner: &dyn ProcessRunner) {
         &format!("select-window -t {TUI_WINDOW_NAME}"),
         runner,
     );
+    let _ = tmux::bind_key(AGENT_TREE_TOGGLE_KEY, AGENT_TREE_TOGGLE_COMMAND, runner);
 }
 
-/// Tear down tmux TUI state: unbind the key and restore the original window name.
+/// Tear down tmux TUI state: unbind the keys and restore the original window name.
 fn teardown_tmux_for_tui(original_name: Option<&str>, runner: &dyn ProcessRunner) {
     let _ = tmux::unbind_key("space", runner);
+    let _ = tmux::unbind_key(AGENT_TREE_TOGGLE_KEY, runner);
     if let Some(name) = original_name {
         let _ = tmux::rename_window(TUI_WINDOW_NAME, name, runner);
     }

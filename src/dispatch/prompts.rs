@@ -42,6 +42,13 @@ pub(super) fn build_tmux_window_name(task_id: TaskId) -> String {
     format!("task-{task_id}")
 }
 
+/// Inverse of [`build_tmux_window_name`]: recover the task id from a tmux
+/// window name, or `None` for any window that isn't a task-agent window
+/// (the board's own TUI window, the main-session window, anything else).
+pub(super) fn parse_tmux_window_task_id(window: &str) -> Option<TaskId> {
+    window.strip_prefix("task-")?.parse().ok()
+}
+
 pub(super) fn rebase_preamble(target: &str) -> String {
     format!(
         "Before starting work, fetch and rebase your branch onto the latest {target}:\n\

@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::prompts::{
     allium_instruction, build_prompt, build_quick_dispatch_prompt, build_tmux_window_name,
-    epic_preamble, mcp_tools_instruction, plan_and_attach_instruction, rebase_preamble, task_block,
-    tdd_instruction, wrap_up_instruction, EpicContext, LearningInjections, PromptContext,
+    epic_preamble, mcp_tools_instruction, parse_tmux_window_task_id, plan_and_attach_instruction,
+    rebase_preamble, task_block, tdd_instruction, wrap_up_instruction, EpicContext,
+    LearningInjections, PromptContext,
 };
 use super::worktree::provision_worktree;
 use super::*;
@@ -413,6 +414,20 @@ fn validate_repo_path_not_a_dir() {
 fn resume_window_name_matches_dispatch() {
     // The resume window name should use the same naming convention as dispatch
     assert_eq!(build_tmux_window_name(TaskId(42)), "task-42");
+}
+
+#[test]
+fn parse_tmux_window_task_id_roundtrips_with_build_tmux_window_name() {
+    let name = build_tmux_window_name(TaskId(42));
+    assert_eq!(parse_tmux_window_task_id(&name), Some(TaskId(42)));
+}
+
+#[test]
+fn parse_tmux_window_task_id_rejects_non_task_windows() {
+    assert_eq!(parse_tmux_window_task_id("TUI"), None);
+    assert_eq!(parse_tmux_window_task_id("dispatch-main"), None);
+    assert_eq!(parse_tmux_window_task_id("task-"), None);
+    assert_eq!(parse_tmux_window_task_id("task-abc"), None);
 }
 
 #[test]
@@ -2803,4 +2818,65 @@ fn resume_agent_propagates_new_window_failure() {
         msg.contains("failed to create tmux window for resume"),
         "expected resume context in error chain, got: {msg}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// toggle_agent_tree_pane
+// ---------------------------------------------------------------------------
+
+#[test]
+fn toggle_agent_tree_pane_is_noop_for_non_task_window() {
+    let mock = MockProcessRunner::new(vec![]);
+    toggle_agent_tree_pane("TUI", &mock).unwrap();
+    assert_eq!(mock.recorded_calls().len(), 0, "should issue no tmux calls");
+}
+
+#[test]
+fn toggle_agent_tree_pane_hides_when_companion_pane_present() {
+    // The inactive pane's id deliberately doesn't look like a positional
+    // index, proving the kill target comes from the discovered pane id, not
+    // an assumed index.
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"1 %3\n0 %77\n"), // list-panes
+        MockProcessRunner::ok(),                             // kill-pane
+    ]);
+    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    let calls = mock.recorded_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%77"]);
+}
+
+#[test]
+fn toggle_agent_tree_pane_shows_when_no_companion_pane() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"1 %3\n"), // list-panes: single pane
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // split-window
+    ]);
+    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    let calls = mock.recorded_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[1].0, "tmux");
+    assert_eq!(calls[1].1[0], "split-window");
+    assert!(
+        calls[1].1.iter().any(|a| a == "30%"),
+        "companion pane should use the 30% size, got: {:?}",
+        calls[1].1
+    );
+    assert_eq!(
+        calls[1].1[calls[1].1.len() - 3..],
+        vec![
+            "dispatch".to_string(),
+            "agent-tree".to_string(),
+            "42".to_string(),
+        ],
+        "companion pane should run `dispatch agent-tree <task_id>`, got: {:?}",
+        calls[1].1
+    );
+}
+
+#[test]
+fn toggle_agent_tree_pane_propagates_list_panes_query_failure() {
+    let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")]);
+    let err = toggle_agent_tree_pane("task-42", &mock).unwrap_err();
+    assert!(err.to_string().contains("list-panes failed"), "got: {err}");
 }

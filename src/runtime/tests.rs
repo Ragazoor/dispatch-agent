@@ -20,11 +20,12 @@ async fn setup_tmux_for_tui_renames_window_and_binds_key() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok(), // current_pane_id (display-message)
         MockProcessRunner::ok(), // rename_window
-        MockProcessRunner::ok(), // bind_key
+        MockProcessRunner::ok(), // bind_key (space)
+        MockProcessRunner::ok(), // bind_key (agent-tree toggle)
     ]);
     setup_tmux_for_tui(&mock);
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 4);
     assert_eq!(calls[0].1, vec!["display-message", "-p", "#{pane_id}"]);
     assert_eq!(calls[1].1, vec!["rename-window", "-t", "", TUI_WINDOW_NAME]);
     assert_eq!(
@@ -35,20 +36,26 @@ async fn setup_tmux_for_tui_renames_window_and_binds_key() {
             &format!("select-window -t {TUI_WINDOW_NAME}")
         ]
     );
+    assert_eq!(
+        calls[3].1,
+        vec!["bind-key", AGENT_TREE_TOGGLE_KEY, AGENT_TREE_TOGGLE_COMMAND]
+    );
 }
 
 #[tokio::test]
 async fn teardown_tmux_for_tui_unbinds_and_restores_name() {
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // unbind_key
+        MockProcessRunner::ok(), // unbind_key (space)
+        MockProcessRunner::ok(), // unbind_key (agent-tree toggle)
         MockProcessRunner::ok(), // rename_window
     ]);
     teardown_tmux_for_tui(Some("my-shell"), &mock);
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 2);
+    assert_eq!(calls.len(), 3);
     assert_eq!(calls[0].1, vec!["unbind-key", "space"]);
+    assert_eq!(calls[1].1, vec!["unbind-key", AGENT_TREE_TOGGLE_KEY]);
     assert_eq!(
-        calls[1].1,
+        calls[2].1,
         vec!["rename-window", "-t", TUI_WINDOW_NAME, "my-shell"]
     );
 }
@@ -56,12 +63,14 @@ async fn teardown_tmux_for_tui_unbinds_and_restores_name() {
 #[tokio::test]
 async fn teardown_tmux_for_tui_skips_rename_when_no_original_name() {
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // unbind_key
+        MockProcessRunner::ok(), // unbind_key (space)
+        MockProcessRunner::ok(), // unbind_key (agent-tree toggle)
     ]);
     teardown_tmux_for_tui(None, &mock);
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1);
+    assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].1, vec!["unbind-key", "space"]);
+    assert_eq!(calls[1].1, vec!["unbind-key", AGENT_TREE_TOGGLE_KEY]);
 }
 
 async fn make_runtime(
