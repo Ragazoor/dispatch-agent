@@ -126,7 +126,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (68, migrate_v68_add_todo_links),
     (69, migrate_v69_add_epic_origin),
     (70, migrate_v70_add_todo_parent_id),
-    (71, migrate_v71_backup_and_dedup_role_subtree_tasks),
+    (71, migrate_v71_dedup_role_subtree_tasks),
     (72, migrate_v72_add_feed_task_subtree_unique_triggers),
     (73, migrate_v73_needs_review_to_approved),
     (74, migrate_v74_drop_learning_verdicts),
@@ -244,12 +244,12 @@ fn migrate_v4_add_needs_input_drop_epic_plan(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN needs_input INTEGER NOT NULL DEFAULT 0");
 
     // SQLite doesn't support DROP COLUMN before 3.35.0; recreate the table.
-    // Disable FK checks so DROP TABLE succeeds when tasks reference epics,
-    // and wrap in a transaction for atomicity.
+    // FK checks and transaction boundaries around this DDL are the caller's
+    // responsibility (see `apply_pending_migrations` in `src/db/mod.rs`) —
+    // `PRAGMA foreign_keys` is a no-op mid-transaction, so it can't be
+    // toggled from inside a migration body that runs inside one.
     conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-        BEGIN;
-        CREATE TABLE epics_new (
+        "CREATE TABLE epics_new (
             id          INTEGER PRIMARY KEY,
             title       TEXT NOT NULL,
             description TEXT NOT NULL,
@@ -261,9 +261,7 @@ fn migrate_v4_add_needs_input_drop_epic_plan(conn: &Connection) -> Result<()> {
         INSERT INTO epics_new (id, title, description, repo_path, done, created_at, updated_at)
             SELECT id, title, description, repo_path, done, created_at, updated_at FROM epics;
         DROP TABLE epics;
-        ALTER TABLE epics_new RENAME TO epics;
-        COMMIT;
-        PRAGMA foreign_keys = ON;",
+        ALTER TABLE epics_new RENAME TO epics;",
     )
     .context("Failed to migrate epics (drop plan column)")
 }
@@ -421,9 +419,7 @@ fn migrate_v16_add_status_check_constraint(conn: &Connection) -> Result<()> {
     );
 
     conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         BEGIN;
-         CREATE TABLE tasks_new (
+        "CREATE TABLE tasks_new (
              id          INTEGER PRIMARY KEY,
              title       TEXT NOT NULL,
              description TEXT NOT NULL,
@@ -452,9 +448,7 @@ fn migrate_v16_add_status_check_constraint(conn: &Connection) -> Result<()> {
                     epic_id, sub_status, pr_url, tag, sort_order, created_at, updated_at
              FROM tasks;
          DROP TABLE tasks;
-         ALTER TABLE tasks_new RENAME TO tasks;
-         COMMIT;
-         PRAGMA foreign_keys = ON;",
+         ALTER TABLE tasks_new RENAME TO tasks;",
     )
     .context("Failed to rebuild tasks table with CHECK constraint")
 }
@@ -462,9 +456,7 @@ fn migrate_v16_add_status_check_constraint(conn: &Connection) -> Result<()> {
 fn migrate_v17_add_conflict_sub_status(conn: &Connection) -> Result<()> {
     // Add 'conflict' as a valid running sub_status. Rebuild table to update the CHECK constraint.
     conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         BEGIN;
-         CREATE TABLE tasks_new (
+        "CREATE TABLE tasks_new (
              id          INTEGER PRIMARY KEY,
              title       TEXT NOT NULL,
              description TEXT NOT NULL,
@@ -493,9 +485,7 @@ fn migrate_v17_add_conflict_sub_status(conn: &Connection) -> Result<()> {
                     epic_id, sub_status, pr_url, tag, sort_order, created_at, updated_at
              FROM tasks;
          DROP TABLE tasks;
-         ALTER TABLE tasks_new RENAME TO tasks;
-         COMMIT;
-         PRAGMA foreign_keys = ON;",
+         ALTER TABLE tasks_new RENAME TO tasks;",
     )
     .context("Failed to rebuild tasks table for migration 17 (add conflict sub_status)")
 }
@@ -551,9 +541,7 @@ fn migrate_v19_add_review_pr_columns(conn: &Connection) -> Result<()> {
 fn migrate_v20_epic_status_enum(conn: &Connection) -> Result<()> {
     // Replace epic `done` boolean with `status` enum.
     conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         BEGIN;
-         CREATE TABLE epics_new (
+        "CREATE TABLE epics_new (
              id          INTEGER PRIMARY KEY,
              title       TEXT NOT NULL,
              description TEXT NOT NULL,
@@ -570,9 +558,7 @@ fn migrate_v20_epic_status_enum(conn: &Connection) -> Result<()> {
                     plan, sort_order, created_at, updated_at
              FROM epics;
          DROP TABLE epics;
-         ALTER TABLE epics_new RENAME TO epics;
-         COMMIT;
-         PRAGMA foreign_keys = ON;",
+         ALTER TABLE epics_new RENAME TO epics;",
     )
     .context("Failed to rebuild epics table for migration 20 (status enum)")?;
 
@@ -700,9 +686,7 @@ fn migrate_v27_add_agent_status(conn: &Connection) -> Result<()> {
 fn migrate_v30_allow_conflict_for_review(conn: &Connection) -> Result<()> {
     // Allow 'conflict' sub_status for review tasks (rebase conflicts during wrap_up/finish).
     conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         BEGIN;
-         CREATE TABLE tasks_new (
+        "CREATE TABLE tasks_new (
              id          INTEGER PRIMARY KEY,
              title       TEXT NOT NULL,
              description TEXT NOT NULL,
@@ -731,9 +715,7 @@ fn migrate_v30_allow_conflict_for_review(conn: &Connection) -> Result<()> {
                     epic_id, sub_status, pr_url, tag, sort_order, created_at, updated_at
              FROM tasks;
          DROP TABLE tasks;
-         ALTER TABLE tasks_new RENAME TO tasks;
-         COMMIT;
-         PRAGMA foreign_keys = ON;",
+         ALTER TABLE tasks_new RENAME TO tasks;",
     )
     .context("Failed to rebuild tasks table for migration 30 (allow conflict for review)")
 }
@@ -916,9 +898,7 @@ fn migrate_v35_add_self_ref_check(conn: &Connection) -> Result<()> {
     //   id, title, description, repo_path, status, plan_path, sort_order,
     //   created_at, updated_at, auto_dispatch, parent_epic_id
     conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         BEGIN;
-         CREATE TABLE epics_new (
+        "CREATE TABLE epics_new (
              id             INTEGER PRIMARY KEY,
              title          TEXT NOT NULL,
              description    TEXT NOT NULL,
@@ -941,9 +921,7 @@ fn migrate_v35_add_self_ref_check(conn: &Connection) -> Result<()> {
              created_at, updated_at, auto_dispatch, parent_epic_id
          FROM epics;
          DROP TABLE epics;
-         ALTER TABLE epics_new RENAME TO epics;
-         COMMIT;
-         PRAGMA foreign_keys = ON;",
+         ALTER TABLE epics_new RENAME TO epics;",
     )
     .context("Failed to rebuild epics table for migration v35 (self-ref CHECK)")
 }
@@ -977,8 +955,7 @@ fn migrate_v38_feed_epic_columns(conn: &Connection) -> Result<()> {
 
 fn migrate_v39_add_projects(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        "BEGIN;
-        CREATE TABLE IF NOT EXISTS projects (
+        "CREATE TABLE IF NOT EXISTS projects (
             id         INTEGER PRIMARY KEY,
             name       TEXT NOT NULL,
             sort_order INTEGER NOT NULL DEFAULT 0,
@@ -988,8 +965,7 @@ fn migrate_v39_add_projects(conn: &Connection) -> Result<()> {
         ALTER TABLE tasks ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1;
         ALTER TABLE epics ADD COLUMN project_id INTEGER NOT NULL DEFAULT 1;
         CREATE INDEX idx_tasks_project_id ON tasks(project_id);
-        CREATE INDEX idx_epics_project_id ON epics(project_id);
-        COMMIT;",
+        CREATE INDEX idx_epics_project_id ON epics(project_id);",
     )
     .context("Failed to add projects table (migration v39)")
 }
@@ -1621,15 +1597,17 @@ fn migrate_v69_add_epic_origin(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Back up the database, then remove duplicate feed tasks from role sub-epic
-/// subtrees. A "duplicate" is a task in a repo-group sub-epic whose
-/// `external_id` also appears directly on the parent role sub-epic. The copy
-/// on the role sub-epic is kept; the repo-group copy is deleted.
+/// Back up the database ahead of the v71 dedup migration below, via
+/// `VACUUM INTO` (atomic and consistent). Skipped for in-memory databases
+/// (empty path string from `PRAGMA database_list`) and a no-op if the backup
+/// file already exists.
 ///
-/// The backup uses `VACUUM INTO` so it is atomic and consistent. Skipped for
-/// in-memory databases (empty path string from `PRAGMA database_list`).
-pub(super) fn migrate_v71_backup_and_dedup_role_subtree_tasks(conn: &Connection) -> Result<()> {
-    // Backup (skip for in-memory / :memory: databases).
+/// Called separately from — and *before* — `apply_pending_migrations`'s
+/// migration transaction (`src/db/mod.rs`): SQLite refuses to `VACUUM`
+/// inside an open transaction, so this can't live inside
+/// `migrate_v71_dedup_role_subtree_tasks` itself once that runs
+/// transactionally.
+pub(super) fn migrate_v71_create_backup(conn: &Connection) -> Result<()> {
     let db_path: String = conn
         .query_row(
             "SELECT file FROM pragma_database_list WHERE name = 'main'",
@@ -1646,7 +1624,17 @@ pub(super) fn migrate_v71_backup_and_dedup_role_subtree_tasks(conn: &Connection)
                 .context("v71: failed to create database backup")?;
         }
     }
+    Ok(())
+}
 
+/// Remove duplicate feed tasks from role sub-epic subtrees. A "duplicate" is
+/// a task in a repo-group sub-epic whose `external_id` also appears directly
+/// on the parent role sub-epic. The copy on the role sub-epic is kept; the
+/// repo-group copy is deleted.
+///
+/// The pre-migration backup (`migrate_v71_create_backup`) must run before
+/// this, outside any transaction — see that function's doc comment.
+pub(super) fn migrate_v71_dedup_role_subtree_tasks(conn: &Connection) -> Result<()> {
     // Remove repo-group-sub-epic task copies that are shadowed by a copy
     // on the parent role sub-epic (matched by external_id).
     // Guard: skip if required columns are absent (minimal-schema migration tests).

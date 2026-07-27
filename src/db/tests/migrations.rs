@@ -3157,7 +3157,7 @@ async fn v71_dedup_removes_repo_sub_epic_shadow_tasks() {
     .await
     .unwrap();
 
-    db.db_call(|conn| crate::db::migrations::migrate_v71_backup_and_dedup_role_subtree_tasks(conn))
+    db.db_call(|conn| crate::db::migrations::migrate_v71_dedup_role_subtree_tasks(conn))
         .await
         .unwrap();
 
@@ -3208,7 +3208,7 @@ async fn v71_dedup_preserves_solo_repo_sub_epic_tasks() {
     .await
     .unwrap();
 
-    db.db_call(|conn| crate::db::migrations::migrate_v71_backup_and_dedup_role_subtree_tasks(conn))
+    db.db_call(|conn| crate::db::migrations::migrate_v71_dedup_role_subtree_tasks(conn))
         .await
         .unwrap();
 
@@ -3543,4 +3543,67 @@ fn migrate_v78_task_watchers_unique_constraint_rejects_duplicate_pair() {
         )
         .unwrap_err();
     assert!(format!("{err}").to_lowercase().contains("unique"));
+}
+
+/// Regression test for the race described in task #3724: `init_schema_sync`
+/// used to run a migration's DDL and its `user_version` bump as two separate
+/// statements, with no shared transaction and no cross-process lock around
+/// the pair. Two processes opening the same DB file concurrently could both
+/// observe the old `user_version` and both apply the same migration.
+///
+/// This exercises the extracted `apply_pending_migrations` helper directly
+/// with a synthetic, deliberately non-idempotent migration (an unconditional
+/// INSERT, mirroring the real `migrate_v39_add_projects`'s unguarded
+/// `INSERT INTO projects ... VALUES ('Default', ...)`), racing two real
+/// file-backed connections on two OS threads. This is not timing-flaky: the
+/// pre-fix bug is a structural check-then-act race (both threads decide
+/// "pending" from a version read taken before either one starts writing),
+/// not a narrow window — so it reproduces deterministically without the fix,
+/// and is deterministically fixed once each migration is applied inside a
+/// single `BEGIN IMMEDIATE` transaction that re-checks the version before
+/// running the migration body.
+#[test]
+fn concurrent_open_applies_pending_migration_exactly_once() {
+    fn insert_marker(conn: &rusqlite::Connection) -> anyhow::Result<()> {
+        conn.execute("INSERT INTO marker DEFAULT VALUES", [])?;
+        Ok(())
+    }
+    const TEST_MIGRATIONS: &[crate::db::migrations::Migration] = &[(1, insert_marker)];
+
+    let temp = tempfile::NamedTempFile::new().unwrap();
+    {
+        let setup = rusqlite::Connection::open(temp.path()).unwrap();
+        setup
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE marker (id INTEGER PRIMARY KEY);",
+            )
+            .unwrap();
+    }
+
+    let run = |path: std::path::PathBuf| {
+        std::thread::spawn(move || {
+            let conn = rusqlite::Connection::open(path).unwrap();
+            conn.busy_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            crate::db::apply_pending_migrations(&conn, TEST_MIGRATIONS).unwrap();
+        })
+    };
+    let a = run(temp.path().to_path_buf());
+    let b = run(temp.path().to_path_buf());
+    a.join().unwrap();
+    b.join().unwrap();
+
+    let conn = rusqlite::Connection::open(temp.path()).unwrap();
+    let marker_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM marker", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        marker_count, 1,
+        "migration must apply exactly once even when two connections race to apply it"
+    );
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 1);
 }

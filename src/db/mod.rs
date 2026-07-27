@@ -948,16 +948,89 @@ fn init_schema_sync(conn: &Connection) -> Result<()> {
     )
     .context("Failed to create schema")?;
 
-    // Versioned migrations using PRAGMA user_version
+    // v71's dedup migration is destructive (deletes task rows), so it takes
+    // an on-disk backup first via `VACUUM INTO` — but `VACUUM` can't run
+    // inside a transaction, so that has to happen here, before
+    // `apply_pending_migrations` opens its transaction. The file-existence
+    // check inside `migrate_v71_create_backup` keeps this a no-op on every
+    // open after the first. Kept out of the generic `apply_pending_migrations`
+    // (rather than being version-gated there) so that helper stays
+    // reusable/testable without baking in a specific migration's version
+    // number. (Re-reading `user_version` here and again in
+    // `apply_pending_migrations` is deliberate, not an oversight — the two
+    // functions are independently callable, e.g. from tests.)
     let current_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if current_version < 71 {
+        migrations::migrate_v71_create_backup(conn).context("Failed to create pre-v71 backup")?;
+    }
 
-    for &(version, migrate_fn) in migrations::MIGRATIONS {
-        if current_version < version {
-            migrate_fn(conn)?;
-            conn.pragma_update(None, "user_version", version)
-                .with_context(|| format!("Failed to update schema version to {version}"))?;
+    apply_pending_migrations(conn, migrations::MIGRATIONS)
+}
+
+/// Applies every migration in `migrations` whose version exceeds the current
+/// `user_version`, atomically with the `user_version` bump: the whole
+/// catch-up (every pending migration's DDL, plus the final version) runs
+/// inside one `BEGIN IMMEDIATE` transaction, which re-reads the version once
+/// it has the write lock. `BEGIN IMMEDIATE` acquires that lock up front, so
+/// if a second connection reaches this function concurrently it blocks (per
+/// `busy_timeout`) until the first transaction commits, then finds the
+/// version already caught up and applies nothing — closing the race
+/// described in task #3724, where a bare `migrate_fn(conn)?` followed by a
+/// separate `pragma_update` let two connections both observe the old version
+/// and both apply the same migration.
+///
+/// Uses raw `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK` via `execute_batch` (the
+/// same idiom as `delete_epic` in `src/db/queries/epics.rs`) rather than
+/// rusqlite's `Transaction` wrapper, so this — and `migrate_fn` — keep taking
+/// a plain `&Connection` instead of forcing `&mut Connection` up through
+/// every caller.
+///
+/// `PRAGMA foreign_keys` is a no-op once a transaction is open, and `BEGIN`
+/// inside an already-open transaction is a SQLite error — so the toggle (used
+/// by migrations that rebuild a table to work around SQLite's lack of `DROP
+/// COLUMN`) has to bracket this transaction rather than live inside
+/// `migrate_fn`, which is why it's unconditional here rather than owned by
+/// individual migration bodies.
+fn apply_pending_migrations(conn: &Connection, migrations: &[migrations::Migration]) -> Result<()> {
+    let current_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if migrations
+        .iter()
+        .all(|&(version, _)| current_version >= version)
+    {
+        return Ok(());
+    }
+
+    conn.execute_batch("PRAGMA foreign_keys = OFF")
+        .context("Failed to disable foreign keys for migrations")?;
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .context("Failed to start migration transaction")?;
+
+    let result = (|| -> Result<()> {
+        let current_version: i64 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        for &(version, migrate_fn) in migrations {
+            if current_version < version {
+                migrate_fn(conn)
+                    .with_context(|| format!("Migration to version {version} failed"))?;
+                conn.pragma_update(None, "user_version", version)
+                    .with_context(|| format!("Failed to update schema version to {version}"))?;
+            }
+        }
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => conn
+            .execute_batch("COMMIT")
+            .context("Failed to commit migrations")?,
+        Err(e) => {
+            conn.execute_batch("ROLLBACK").ok(); // ignore rollback error; preserves and returns the original error
+            return Err(e);
         }
     }
+
+    conn.execute_batch("PRAGMA foreign_keys = ON")
+        .context("Failed to re-enable foreign keys after migrations")?;
 
     Ok(())
 }
