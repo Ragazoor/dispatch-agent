@@ -144,7 +144,7 @@ Consult the relevant spec before changing core behavior. Use `allium:tend` and `
 
 The `dispatch` MCP server exposes more than task creation. Worth knowing by name:
 
-- **Knowledge base** — call `query_learnings` before guessing or asking when something is unclear; `record_learning` to capture a pitfall/convention/tip worth remembering; `rate_learning` (`helped`/`wrong`) after acting on an entry surfaced to you. See `learnings.allium`.
+- **Knowledge base** — the learnings most relevant to your task are already injected into your prompt at dispatch time (the "Validated knowledge for this task" section above); rate each one you act on with `rate_learning` (`helped`/`wrong`) — trajectory data shows this pre-injected set, not a manual query, is how most agents encounter learnings in practice. Call `query_learnings` yourself when you need more than what was surfaced — a different area of the repo, or a question that comes up mid-task. `record_learning` captures a pitfall/convention/tip worth remembering for future agents. See `learnings.allium`.
 - **Your own task** — `get_task` / `update_task` to read or mutate the task you're running as (title, description, status, plan, tag).
 - **Repo search** — `search_docs` for semantic search over an indexed repo; `index_repo` to build the index if missing. See `repo-rag.allium`.
 - **Finishing** — `wrap_up` + `exit_session` to close out a session (see the `/wrap-up` skill); `dispatch_next` to fire the next epic subtask immediately after finishing one.
