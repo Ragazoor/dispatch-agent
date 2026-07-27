@@ -598,8 +598,6 @@ rule SetVerifyCommandViaMcp {
         -- A command containing "\n" or "\r" is rejected at the handler
         -- with JSON-RPC -32602 (invalid params) before reaching the DB,
         -- which would otherwise surface the constraint as -32603.
-        -- The exit_session reflection prompt nudges agents to record the
-        -- repo's verify command via this tool.
         -- Handled by handle_set_verify_command in
         -- src/mcp/handlers/tasks/verify.rs.
 }

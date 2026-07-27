@@ -199,11 +199,17 @@ use "./core.allium" as core
 --      core/Retrieval row with source = prompt_injection — see Retrievals &
 --      Verdicts below.
 --
--- Wrap-up nudge (WrapUpReflection): when config.learning_reflection_enabled = true,
--- the MCP wrap_up response appends a nudge asking the agent to (a) call record_learning
--- if it discovered anything non-obvious, and (b) call rate_learning on any learning
--- that was retrieved for this task but not yet rated. The agent may proceed without
--- doing either — both are nudges, not gates.
+-- Wrap-up nudge (WrapUpReflection): the MCP wrap_up response for action = pr
+-- appends a nudge asking the agent to call rate_learning on any learning that was
+-- retrieved for this task but not yet rated. The agent may proceed without doing
+-- so — it is a nudge, not a gate. This nudge is ungated: it fires for pr
+-- regardless of config.learning_reflection_enabled, and never for done or rebase.
+--
+-- Reflection itself is not part of wrap_up or exit_session. The /retro skill
+-- (plugin/skills/retro/SKILL.md) is run by the /wrap-up skill between wrap_up and
+-- exit_session, for all three actions. wrap_up emits no record_learning nudge; a
+-- separate, config-gated record_learning nudge fires from a different trigger
+-- (see WrapUpReflection's @guidance for the follow-up note).
 
 ------------------------------------------------------------
 -- Retrievals & Verdicts
@@ -327,65 +333,42 @@ rule AugmentDispatchPromptWithLearnings {
 rule WrapUpReflection {
     when: WrapUp(task, action)
 
-    requires: config.learning_reflection_enabled = true
     requires: action = pr
 
     ensures: WrapUpReflectionNudged(task: task)
 
     @guidance
-        -- The MCP wrap_up handler appends a reflection nudge to its response for
-        -- the PR action only. For the rebase action, reflection is delegated to
-        -- ExitSession (see below).
-        -- The nudge reminds the agent to (a) record_learning for anything
-        -- non-obvious, and (b) rate_learning on any learning retrieved for this
-        -- task that was not yet rated. wrap_up itself no longer accepts verdicts.
-        -- Gated by config.learning_reflection_enabled (default: true).
-        -- Implemented in handle_wrap_up() (src/mcp/handlers/tasks.rs).
+        -- The MCP wrap_up handler appends a rate_learning nudge to its response
+        -- for the pr action only. done and rebase get no nudge at all.
+        -- The nudge asks the agent to call rate_learning (helped | wrong) on any
+        -- learning that was surfaced to it during this task and not yet rated.
+        -- wrap_up itself no longer accepts verdicts.
+        -- The nudge is UNGATED: config.learning_reflection_enabled has no effect
+        -- on it. Confirmed by the test
+        -- wrap_up_rebase_omits_reflection_nudge_regardless_of_setting in
+        -- src/mcp/handlers/tests/tasks/wrap_up.rs.
+        -- This rule covers only the wrap_up-time rate_learning nudge. Reflection
+        -- proper is the /retro skill (plugin/skills/retro/SKILL.md), which the
+        -- /wrap-up skill runs between wrap_up and exit_session for all three
+        -- actions — it is not driven by wrap_up or exit_session.
+        -- Implemented in finish_wrap_up_simple (the rate_learning_nudge match) in
+        -- src/mcp/handlers/tasks/wrap_up.rs.
+        --
+        -- SPEC GAP (follow-up): a distinct record_learning nudge exists
+        -- (reflection_nudge in src/mcp/handlers/tasks/mod.rs), gated by
+        -- config.learning_reflection_enabled and fired from a different trigger
+        -- entirely — update_task PR-finalisation, src/mcp/handlers/tasks/crud.rs:111-115
+        -- (was_pr_finalisation). It is unspecified and warrants its own rule in a
+        -- future pass.
 }
 
-rule ExitSession {
-    when: ExitSession(task, has_learnings?)
-
-    ensures:
-        if has_learnings = null:
-            ExitSessionAskedAboutLearnings(task: task)
-        else if has_learnings = true:
-            ExitSessionRecordPromptSent(task: task)
-        else:
-            ExitSessionCompleted(task: task)
-            TmuxWindowKilled(task: task)
-            task.status = done
-            task.sub_status = core/SubStatus.default_for(done)
-            task.tmux_window = null
-            task.updated_at = now
-
-    @guidance
-        -- Stateless three-way dispatch driven by `has_learnings`:
-        --
-        -- has_learnings = null (omitted):
-        --   Returns the structured reflection question (pitfall / convention /
-        --   tool-tip categories), also reminds the agent to rate_learning any
-        --   retrieved-but-unrated learning, and instructs the agent to call
-        --   again with has_learnings=true or has_learnings=false.
-        --
-        -- has_learnings = true:
-        --   Returns the record_learning prompt listing kind / summary / scope
-        --   parameters. The session remains open; the agent records each
-        --   finding via record_learning, then calls exit_session(has_learnings=false)
-        --   to close.
-        --
-        -- has_learnings = false:
-        --   Closes the session: status=done, sub_status=default_for(done),
-        --   tmux_window=null, kills the tmux window.
-        --
-        -- Epic status is recalculated after the close patch when task.epic_id is set.
-        --
-        -- No server-side state is kept between calls — every call's branch is
-        -- determined purely by the parameter. Re-dispatch needs no special
-        -- cleanup.
-        --
-        -- Implemented in handle_exit_session() (src/mcp/handlers/tasks.rs).
-}
+-- exit_session is not specified here. Its current contract is a single call —
+-- exit_session(task, token, action, pr_url?) — specified by rule
+-- ExitSessionViaMcp in mcp-task-tools.allium. (The former two-phase
+-- exit_session(task, has_learnings?) reflect-then-close design is gone.)
+-- This file's concern is only the learning-related side effects around the
+-- wrap-up sequence: WrapUpReflection above, plus the rate_learning /
+-- record_learning nudges described in Dispatch Prompt Augmentation.
 
 rule RecordLearningViaMcp {
     when: McpRecordLearning(task, kind, summary, scope, detail?, scope_ref?, tags?)
