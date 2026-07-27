@@ -371,9 +371,12 @@ rule RetryResume {
     ensures: AgentLaunched(task: task, mode: resume)
 
     @guidance
-        -- If the task already has a tmux window (e.g. a crashed or stale
-        -- session), the existing window is killed before creating a fresh
-        -- one. This tears down the old process cleanly.
+        -- If the task still references a tmux window (e.g. a stale session
+        -- whose window is alive but idle), that window is killed before a
+        -- fresh one is created. This tears down the old process cleanly.
+        -- The kill is conditional because a crashed task has no window
+        -- reference left: DetectCrashedAgent (agent-health.allium) clears
+        -- tmux_window when it observes the window is gone.
 }
 
 rule RetryFresh {

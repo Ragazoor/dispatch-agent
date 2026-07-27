@@ -165,13 +165,27 @@ rule WrapUpRebase {
 
     let branch = task.worktree.branch
 
+    -- Bound before the ensures below because an `if` guard inside ensures reads
+    -- the RESULTING state: testing task.sub_status there would read the value
+    -- the branch itself writes. The handler tests the sub_status the task had on
+    -- entry, so the pre-state is what the guard must name.
+    let was_conflict = task.sub_status = conflict
+
     ensures:
-        if task.sub_status = conflict:
+        if was_conflict:
             task.sub_status = core/SubStatus.default_for(task.status)
+            task.updated_at = now
     ensures: BranchRebased(branch: branch, onto: task.base_branch)
-    ensures: task.updated_at = now
 
     @guidance
+        -- wrap_up(action="rebase") writes to the task ONLY on the branch that
+        -- clears a conflict sub_status; that is the sole reason updated_at is
+        -- asserted inside the conflict branch rather than unconditionally. When
+        -- the task is not in conflict the handler performs no task write at all
+        -- — it runs the rebase, mints an in-memory exit token and returns prose.
+        -- The terminal write belongs to ExitSession. Do not re-add an
+        -- unconditional updated_at assertion here.
+        --
         -- WrapUpRebase is the rebase mechanic only — it does NOT change
         -- task.status or kill the tmux window. The Done transition for
         -- the MCP path is owned by ExitSession (the agent must call
@@ -225,7 +239,10 @@ rule WrapUpRebase {
         -- RAG index as a detached background task iff an index already
         -- exists at <repo_path>/.dispatch/rag.db. It never creates a new
         -- index. The re-index loops index_repo until files_remaining reaches
-        -- zero. This is fire-and-forget: it does not block the exit-token
+        -- zero, stopping early (with a warning) if a batch indexes nothing while
+        -- files still remain — those files cannot be embedded, and the loop runs
+        -- detached with no timeout, so it must not spin.
+        -- This is fire-and-forget: it does not block the exit-token
         -- response, does not change task status, and a failure is logged
         -- but never surfaced to the agent. The TUI Finish path (W+r) does
         -- not trigger a re-index.
@@ -239,10 +256,15 @@ rule WrapUpPr {
     requires: task.status = review or task.status = running
     requires: task.worktree != null
 
-    ensures: task.updated_at = now
     ensures: PrCreated(base: task.base_branch, head: task.worktree.branch)
 
     @guidance
+        -- wrap_up(action="pr") performs no task write whatsoever: it mints an
+        -- in-memory exit token and returns prose. Nothing here touches
+        -- updated_at, and no updated_at assertion belongs on this rule — the
+        -- terminal write (status, url, cleared tmux_window, updated_at) is
+        -- ExitSession's.
+        --
         -- Agent-driven PR creation. wrap_up(action="pr") no longer takes a
         -- pr_url and no longer mutates task.status or task.url. It leaves the
         -- task in status = running (its session is still alive) and issues an
@@ -294,9 +316,14 @@ rule WrapUpDone {
     requires: task.status = review or task.status = running
     requires: task.worktree != null
 
-    ensures: task.updated_at = now
-
     @guidance
+        -- This rule deliberately has no ensures clause: wrap_up(action="done")
+        -- performs no task write at all. It mints an in-memory exit token and
+        -- returns prose, so there is nothing observable to assert about the task
+        -- here — in particular no updated_at. The whole terminal write (status,
+        -- sub_status, cleared tmux_window, updated_at) is ExitSession's. Do not
+        -- re-add an updated_at assertion.
+        --
         -- Closes a task without any git operations (no rebase, no push, no
         -- PR creation). Useful for tasks whose work requires no branch
         -- integration: research tasks, planning tasks, tasks that edit
@@ -333,32 +360,30 @@ rule ExitSession {
     requires:
         if action = pr: pr_url != null and pr_url != ""
 
-    -- Bound before the ensures below so the teardown still names the window
-    -- after task.tmux_window has been cleared.
+    -- Bound before the ensures below so the conditional teardown there still
+    -- names the window after task.tmux_window has been cleared in the same
+    -- branch.
     let window = task.tmux_window
 
     -- The terminal write — status, sub_status, url and the cleared
     -- tmux_window reference, applied as one patch — can fail at the
-    -- persistence layer. Whether it took effect gates the terminal mutation
-    -- and the SessionClosed emission below; consuming the exit token and
-    -- tearing the tmux session down happen either way.
+    -- persistence layer. Whether it took effect gates the terminal mutation,
+    -- the tmux teardown and the SessionClosed emission below; only consuming
+    -- the exit token happens either way.
     -- When it did NOT take effect, the task keeps the status it had (running,
     -- or review when the agent's Stop hook landed between wrap_up and this
-    -- call) and its tmux_window, while the window that reference names has
-    -- already been killed by the unconditional teardown below. From running
-    -- that is exactly the shape DetectCrashedAgent (agent-health.allium)
-    -- matches, so the failed close surfaces on the board as sub_status =
-    -- crashed on a later tick; from review nothing matches it and the failure
-    -- is silent. The guidance below records both cases and why no distinct
-    -- signal is modelled.
+    -- call), its sub_status, its url and its tmux_window — and the window that
+    -- reference names is still alive, still hosting a live agent, because
+    -- nothing killed it. The guidance below records how that reads on the board.
     let close_persisted = terminal_close_persisted(task)
 
     ensures:
         ExitTokenConsumed(task: task)
-        -- Unconditional: the agent is exiting regardless, and a surviving
-        -- window is a dead prompt in the user's tmux.
-        not exists window
+        -- The teardown is conditional on the same write as the terminal
+        -- mutation, so a task whose close did not persist keeps both its live
+        -- window and its tmux_window reference — the two can never disagree.
         if close_persisted:
+            not exists window
             task.tmux_window = null
             if action = pr:
                 task.status = review
@@ -420,72 +445,56 @@ rule ExitSession {
         -- done and pr status/url mutations moved out of wrap_up into this single
         -- closing mutation). The underlying patch flow (src/service/tasks/crud.rs)
         -- triggers EpicStatusRecalculation on the parent epic. Killing the tmux
-        -- window is unchanged.
+        -- window is gated on that same write — see below.
         --
         -- When the terminal write does NOT take effect (close_persisted =
         -- false — the single patch that carries status, sub_status, url and the
         -- cleared tmux_window failed at the persistence layer):
         --   • the failure is logged at warn;
-        --   • the tmux window is still killed. The agent is exiting whatever
-        --     happens, and leaving the window alive would leave a dead prompt
-        --     in the user's tmux;
-        --   • the task keeps the status, sub_status, url and tmux_window it had.
-        --     The close simply did not happen, so the task stays visible in its
-        --     current column for a manual retry (from the TUI, or by the human
-        --     moving it) rather than silently appearing finished;
+        --   • the task/epic-changed notification is still sent — it is issued
+        --     unconditionally after the patch attempt, so the board redraws from
+        --     the row as it actually stands rather than from an assumed close;
+        --   • no kill-window is issued at all. The window survives and still
+        --     hosts a live agent, so the human can attach to it and retry the
+        --     close directly. The "a surviving window is a dead prompt in the
+        --     user's tmux" objection to a conditional teardown does not apply,
+        --     precisely because nothing killed the window;
+        --   • the task keeps the status, sub_status, url AND tmux_window it had.
+        --     Because tmux_window is still set, the task never satisfies
+        --     is_detached, so it can never drift into the awaiting-merge
+        --     rendering — neither from running nor from review;
+        --   • nothing looks finished. A running task stays in Running and,
+        --     receiving no further PreToolUse hooks, is classified stale by the
+        --     normal tick path (ClassifyAgentActivity in agent-health.allium).
+        --     A review task stays in Review with a live window. Either way the
+        --     board still shows work outstanding;
         --   • SessionClosed is NOT emitted, so no epic chain fires — see
         --     AutoDispatchNextSubtask in epics.allium for why compounding a
         --     broken close into a fresh dispatch is worse than the broken close
         --     alone;
-        --   • the call still SUCCEEDS. The exit token was already consumed by
-        --     this point, so returning an error would strand the agent with no
-        --     retry path; instead the response text reports that the close did
-        --     not take effect, so both the agent and the human reading the board
-        --     learn about it. ExitSessionViaMcp in mcp-task-tools.allium owns the
-        --     concrete response wording.
-        -- How a failed close surfaces on the board (settled, not an
-        -- unmodelled gap):
-        --   • the task retains the status it had, together with its
-        --     sub_status, url and tmux_window;
-        --   • the tmux window that tmux_window names has nonetheless been
-        --     killed, unconditionally;
-        --   • when that retained status is running — the ordinary case, since
-        --     the agent is mid-turn while it calls exit_session — the task is
-        --     left in exactly the shape DetectCrashedAgent
-        --     (agent-health.allium) matches — running, with a tmux_window
-        --     pointing at a window that is gone — and on a later tick it
-        --     becomes sub_status = crashed and fires the usual urgent crash
-        --     notification.
-        --   • when that retained status is review, there is no crash signal.
-        --     A task can be in review here because wrap_up is available from
-        --     review as well as running, so an agent whose Stop hook fired
-        --     between wrap_up and exit_session closes from review.
-        --     DetectCrashedAgent requires status = running, so the window-gone
-        --     tick instead takes its non-running branch: tmux_window is
-        --     cleared with no sub_status change and no notification. The task
-        --     stays in review and, being worktree-without-window, reads as
-        --     is_detached — i.e. it renders as awaiting merge rather than as a
-        --     failure. This case is NOT covered by the decision recorded
-        --     below: that decision turned on an urgent notification firing and
-        --     the task visibly not being done, and neither holds here. Only the
-        --     MCP response text and the warn log identify it. See the
-        --     FailedCloseFromReviewVisibility open question.
-        -- The crashed signal is the ACCEPTED, intended board-level report of
-        -- a failed close from running. It is indistinguishable from an agent
-        -- that genuinely died, and that is deliberate:
-        --   • the human is not left in the dark — an urgent notification fires
-        --     and the task visibly is not done;
-        --   • the recovery is the same either way — retry the task — so a
-        --     distinct signal would not change what the human does next;
-        --   • the path requires the terminal write to fail at one specific
-        --     moment, so it is rare.
-        -- Deliberately NOT modelled: a dedicated close_failed sub_status (a new
-        -- board-visible state would have to be carried through core.allium,
-        -- persistence, rendering and every sub_status branch — disproportionate
-        -- to this path), and a separate failure-time notification. Beyond the
-        -- crashed signal, the only report of the real cause is the MCP response
-        -- text the exiting agent receives (ExitSessionViaMcp in
-        -- mcp-task-tools.allium) and the warn-level log line.
+        --   • the exit token is still consumed and the call still SUCCEEDS. The
+        --     token was consumed before this point, so returning an error would
+        --     strand the agent with no retry path; instead the response text
+        --     reports that the close did not take effect — without claiming the
+        --     session was torn down, because the session is still alive.
+        --     ExitSessionViaMcp in mcp-task-tools.allium owns the concrete
+        --     response wording.
+        -- Because the window is left alive, WindowGone never fires for a failed
+        -- close, so DetectCrashedAgent (agent-health.allium) is never reached: a
+        -- failed close is never reported as a crashed agent.
+        -- Considered and REJECTED as the failed-close signal:
+        --   • a dedicated close_failed sub_status — a new board-visible state
+        --     would have to be carried through core.allium, persistence,
+        --     rendering and every sub_status branch, disproportionate to a path
+        --     that already leaves visible outstanding work;
+        --   • a separate failure-time notification — the retained status plus
+        --     the live window already show the work is not done;
+        --   • widening DetectCrashedAgent to review — it would break the
+        --     deliberate quiet detach of review tasks that legitimately lose
+        --     their window;
+        --   • rejecting exit_session from review outright — the Stop hook can
+        --     move a task to review through no fault of the agent, which would
+        --     then be unable to close at all.
         --
         -- Why this closes the PR-merge race (not merely narrows it): previously
         -- wrap_up("pr") set status = review with a pr-typed url immediately,
@@ -566,9 +575,3 @@ rule FinishTaskConflict {
         -- PR review polling skips overwriting conflict sub_status.
         -- Wrap-up rebase clears conflict optimistically before rebasing.
 }
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
-open question "FailedCloseFromReviewVisibility: the decision to accept sub_status = crashed as the board-level report of a failed close (see rule ExitSession) turned on two things being true — an urgent notification fires, and the task visibly is not done. Both hold when the failed close leaves the task in running. Neither holds when it leaves the task in review, which happens whenever the agent's Stop hook fires between wrap_up and exit_session, because DetectCrashedAgent requires status = running: the window-gone tick silently clears tmux_window with no sub_status change and no notification, and the task then reads as is_detached and renders as awaiting merge — looking more finished than it is, not less. Should this path get a signal (widening DetectCrashedAgent to review, or requiring status = running on ExitSession so a review close is rejected outright), or is a silent failure acceptable here on the grounds that it is rarer still?"

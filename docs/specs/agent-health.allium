@@ -79,6 +79,7 @@ rule DetectCrashedAgent {
     requires: task.status = running
 
     ensures: task.sub_status = crashed
+    ensures: task.tmux_window = null
     ensures:
         if notifications_enabled:
             DesktopNotification(
@@ -90,11 +91,15 @@ rule DetectCrashedAgent {
     @guidance
         -- Triggered by the WindowGone message, which is sent when the
         -- runtime detects that the task's tmux window no longer exists.
-        -- The tmux_window field is NOT cleared for crashed tasks, so that
-        -- the window name remains available for the ConfirmRetry prompt.
-        -- Recovery from Crashed happens via RetryResume, which kills the
-        -- old window, dispatches a fresh agent, and resets sub_status to
-        -- active. ClassifyAgentActivity intentionally skips Crashed and
+        -- The tmux_window reference is cleared by the same write that sets
+        -- crashed: the window it named is gone by definition, and keeping the
+        -- reference would only make the next tick re-check (and re-report) a
+        -- window that cannot come back. Nothing downstream needs the name — the
+        -- ConfirmRetry prompt labels itself from sub_status (crashed vs stale),
+        -- and RetryResume kills an old window only when one is still referenced.
+        -- Recovery from Crashed happens via RetryResume, which dispatches a
+        -- fresh agent and resets sub_status to active.
+        -- ClassifyAgentActivity intentionally skips Crashed and
         -- Conflict so the human-actionable state is not silently masked
         -- by stale hook timestamps.
         -- For non-running tasks (e.g. review tasks), window closure

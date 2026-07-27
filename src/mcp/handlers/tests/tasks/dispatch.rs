@@ -677,6 +677,9 @@ struct ChainFixture {
     db: Arc<dyn db::TaskStore>,
     state: Arc<McpState>,
     notify_rx: tokio::sync::mpsc::UnboundedReceiver<crate::mcp::McpEvent>,
+    /// The same runner the state holds, kept concrete so a test can inspect
+    /// which commands the close path actually issued.
+    runner: Arc<MockProcessRunner>,
 }
 
 impl ChainFixture {
@@ -702,13 +705,13 @@ impl ChainFixture {
         // The kill-window teardown and the chained dispatch race by design, and
         // MockProcessRunner pops a shared FIFO, so queue uniform successes
         // rather than a command-ordered script.
-        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(
+        let runner = Arc::new(MockProcessRunner::new(
             (0..24).map(|_| MockProcessRunner::ok()).collect(),
         ));
         let mut state = McpState::new(
             McpDeps {
                 db: db.clone(),
-                runner,
+                runner: runner.clone() as Arc<dyn ProcessRunner>,
                 embedding_service: EmbeddingService::new_test(),
                 data_dir: std::env::temp_dir(),
             },
@@ -723,7 +726,19 @@ impl ChainFixture {
             db,
             state: Arc::new(state),
             notify_rx,
+            runner,
         }
+    }
+
+    /// Every `tmux kill-window` the close path issued, in order.
+    fn kill_window_calls(&self) -> Vec<(String, Vec<String>)> {
+        self.runner
+            .recorded_calls()
+            .into_iter()
+            .filter(|(program, args)| {
+                program == "tmux" && args.first().is_some_and(|a| a == "kill-window")
+            })
+            .collect()
     }
 
     async fn epic(&self, auto_dispatch: bool) -> crate::models::EpicId {
@@ -1171,11 +1186,11 @@ async fn exit_session_chain_reverts_claim_when_dispatch_fails() {
 // -- a close whose terminal write does not take effect -----------------------
 //
 // `ExitSession` (docs/specs/pr-workflow.allium) and `ExitSessionViaMcp`
-// (docs/specs/mcp-task-tools.allium) gate both the terminal mutation and the
-// `SessionClosed(task)` emission on `close_persisted` — whether the single patch
-// carrying status, sub_status, url and the cleared tmux_window actually landed.
-// Consuming the exit token and destroying the tmux window are unconditional.
-// The tests below drive the `close_persisted = false` branch.
+// (docs/specs/mcp-task-tools.allium) gate the terminal mutation, the tmux
+// teardown (`not exists window`) and the `SessionClosed(task)` emission on
+// `close_persisted` — whether the single patch carrying status, sub_status, url
+// and the cleared tmux_window actually landed. Only consuming the exit token is
+// unconditional. The tests below drive the `close_persisted = false` branch.
 
 /// A task service whose `update_task` always fails, so `exit_session`'s
 /// terminal close patch cannot land. Every other method inherits the panicking
@@ -1222,6 +1237,35 @@ async fn exit_session_failed_close_leaves_the_task_unchanged() {
     );
 }
 
+/// The teardown is inside `if close_persisted:`, so a close that did not persist
+/// issues no `tmux kill-window` at all: the window survives, still hosting a live
+/// agent the human can attach to in order to retry the close. Leaving the task's
+/// `tmux_window` pointing at a killed window is what used to make the failure
+/// read as `crashed` from running and as awaiting-merge (via `is_detached`) from
+/// review.
+///
+/// The negative assertion is deterministic rather than a timing snapshot: on this
+/// branch nothing is spawned, so no pending task exists that could still issue a
+/// kill after the call returns. (The positive counterpart — a persisting close
+/// DOES kill the window — is not asserted anywhere: the teardown is a detached,
+/// never-joined `spawn_blocking` with no completion signal, and waiting for it
+/// would be exactly the timing-dependent pattern `scripts/check-no-test-sleep.sh`
+/// exists to reject.)
+#[tokio::test]
+async fn exit_session_failed_close_issues_no_kill_window() {
+    let fx = ChainFixture::with_failing_close().await;
+    let closing = fx.closing_subtask(None).await;
+
+    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
+        .await;
+
+    let kills = fx.kill_window_calls();
+    assert!(
+        kills.is_empty(),
+        "a close that did not persist must leave the tmux window alive, but it ran: {kills:?}"
+    );
+}
+
 /// The pr branch of the same gate: neither the Review transition nor the
 /// pr-typed url is recorded when the write fails.
 #[tokio::test]
@@ -1265,6 +1309,11 @@ async fn exit_session_failed_close_returns_success_reporting_the_failure() {
     assert!(
         !text.contains("Session closed"),
         "the response must not claim the session closed, got: {text}"
+    );
+    assert!(
+        !text.contains("torn down"),
+        "the teardown is gated on the same write, so the response must not claim the \
+         session was torn down — it is still alive, got: {text}"
     );
     assert!(
         text.contains(&format!("#{}", closing.0)),

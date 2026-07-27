@@ -282,19 +282,19 @@ rule GetTaskViaMcp {
         -- to read its own task (title, description, plan, tag, wrap_up_mode).
         -- Caller identity is not consulted: any caller may read any task, and
         -- there is no auto-scoping or self-exclusion as in ListTasksViaMcp.
-        -- Detail lines, in render order. Always present:
-        --   Task <id>: <title> | Status | Repo | Description | Sub-status
-        --   Base branch, Created, Updated
-        -- Present only when the field is set:
-        --   Epic (as "<title> (#<id>)", or "#<id>" when the title cannot be
-        --   resolved), Tag, Plan, <url label>: <url> (the typed label derived
-        --   from url.url_type), Worktree, Tmux window, Sort order,
-        --   Wrap-up mode.
+        -- Detail lines, in render order (lines in [brackets] appear only when
+        -- the field is set):
+        --   Task <id>: <title>, Status, Repo, Description, Sub-status,
+        --   [Epic (as "<title> (#<id>)", or "#<id>" when the title cannot be
+        --   resolved)], [Tag], [Plan], [<url label>: <url> — the typed label
+        --   derived from url.url_type], [Worktree], Base branch,
+        --   [Tmux window], [Sort order], [Wrap-up mode], Created, Updated.
         -- Not surfaced at all: labels, external_id, auto_run_plan, origin, and
         -- the hook timestamps (last_pre_tool_use_at, last_notification_at,
         -- pr_learnings_gate_shown_at).
-        -- An unknown task_id returns a -32602 validation error via
-        -- ServiceError::NotFound.
+        -- An unknown task_id is a not-found condition, not a validation one:
+        -- ServiceError::NotFound surfaces as the -32001 not-found code, the
+        -- same mapping every other NotFound uses (see CreateTaskViaMcp).
         -- Handled by handle_get_task in src/mcp/handlers/tasks/crud.rs.
 }
 
@@ -603,24 +603,26 @@ rule ExitSessionViaMcp {
     requires:
         if action = pr: pr_url != null and pr_url != ""
 
-    -- Bound before the ensures below so the teardown still names the window
-    -- after task.tmux_window has been cleared.
+    -- Bound before the ensures below so the conditional teardown there still
+    -- names the window after task.tmux_window has been cleared in the same
+    -- branch.
     let window = task.tmux_window
 
     -- The terminal write — status, sub_status, url and the cleared
     -- tmux_window reference, applied as one patch — can fail at the
-    -- persistence layer. Whether it took effect gates the terminal mutation
-    -- and the SessionClosed emission below; consuming the exit token and
-    -- tearing the tmux session down happen either way. Same condition as
-    -- ExitSession in pr-workflow.allium.
+    -- persistence layer. Whether it took effect gates the terminal mutation,
+    -- the tmux teardown and the SessionClosed emission below; only consuming
+    -- the exit token happens either way. Same condition as ExitSession in
+    -- pr-workflow.allium.
     let close_persisted = terminal_close_persisted(task)
 
     ensures:
         consume_exit_token(task)
-        -- Unconditional: the agent is exiting regardless, and a surviving
-        -- window is a dead prompt in the user's tmux.
-        not exists window
+        -- The teardown is conditional on the same write as the terminal
+        -- mutation, so a task whose close did not persist keeps both its live
+        -- window and its tmux_window reference — the two can never disagree.
         if close_persisted:
+            not exists window
             task.tmux_window = null
             if action = pr:
                 task.status = review
@@ -677,18 +679,21 @@ rule ExitSessionViaMcp {
         -- When that terminal patch FAILS (close_persisted = false), the call is
         -- still a successful tools/call response, NOT a JSON-RPC error: the exit
         -- token has already been consumed by this point, so an error would
-        -- strand the agent with no retry path and no session. What changes is
-        -- the response text — instead of the session-closed message (with or
-        -- without a chained-subtask sentence) the response states that the
-        -- session was torn down but the task could not be moved to its terminal
-        -- status, names the task, and tells the agent the close needs redoing by
-        -- hand. The agent must not treat that response as a completed close.
-        -- Everything else on that path: the failure is logged at warn, the tmux
-        -- window is still killed, the task keeps its status, sub_status, url and
-        -- tmux_window, and SessionClosed is not emitted so no epic chain fires.
-        -- ExitSession in pr-workflow.allium carries the full rationale,
-        -- including why the abandoned tmux_window reference later surfaces as a
-        -- crashed agent on the board.
+        -- strand the agent with no retry path. What changes is the response text
+        -- — instead of the session-closed message (with or without a
+        -- chained-subtask sentence) the response states that the task could not
+        -- be moved to its terminal status, that the tmux session is still alive,
+        -- names the task, and tells the agent the close needs redoing by hand.
+        -- It must NOT claim the session was torn down, because it was not: the
+        -- agent must not treat that response as a completed close.
+        -- Everything else on that path: the failure is logged at warn, no
+        -- kill-window is issued so the window survives and still hosts a live
+        -- agent the human can attach to, the task keeps its status, sub_status,
+        -- url and tmux_window (so it never satisfies is_detached and cannot
+        -- drift into the awaiting-merge rendering), and SessionClosed is not
+        -- emitted so no epic chain fires. ExitSession in pr-workflow.allium
+        -- carries the full rationale, including the signals that were considered
+        -- and rejected.
         -- Why the pr path closes the PR-merge race: a PR task never enters
         -- review with a pr-typed url until the exact same call that also nulls
         -- tmux_window, so PollPrStatus (which filters on status = review and

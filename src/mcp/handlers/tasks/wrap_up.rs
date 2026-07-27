@@ -363,9 +363,9 @@ pub(crate) async fn handle_exit_session(
         }
     };
     // `close_persisted` in `ExitSession` (docs/specs/pr-workflow.allium): the
-    // terminal mutation and the trailing SessionClosed emission are both gated on
-    // this single write landing. Consuming the token (already done above) and
-    // tearing the tmux session down (below) happen either way.
+    // terminal mutation, the tmux teardown and the trailing SessionClosed
+    // emission are all gated on this single write landing. Only consuming the
+    // token (already done above) happens either way.
     let close_persisted = match state.task_svc.update_task(params).await {
         Ok(_) => true,
         Err(e) => {
@@ -380,13 +380,21 @@ pub(crate) async fn handle_exit_session(
     if let Some(epic_id) = task.epic_id {
         state.notify_epic_changed(epic_id);
     }
-    let tmux_window = task.tmux_window;
-    let runner = state.runner.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Some(window) = &tmux_window {
-            let _ = crate::tmux::kill_window(window, &*runner);
-        }
-    });
+    // Tearing the session down is gated on the same write as the terminal
+    // mutation, so the two can never disagree: a task whose close did not persist
+    // keeps both its live window and the `tmux_window` reference naming it. That
+    // window still hosts a live agent, so the human can attach to it and retry
+    // the close — and because `tmux_window` stays set, the task never satisfies
+    // `is_detached` and cannot drift into the awaiting-merge rendering.
+    if close_persisted {
+        let tmux_window = task.tmux_window;
+        let runner = state.runner.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(window) = &tmux_window {
+                let _ = crate::tmux::kill_window(window, &*runner);
+            }
+        });
+    }
 
     // SessionClosed fires last — after the terminal patch, the change
     // notifications and the window teardown — so the next subtask's worktree is
@@ -404,9 +412,9 @@ pub(crate) async fn handle_exit_session(
     // path and no session. The text is what carries the failure.
     let text = if !close_persisted {
         format!(
-            "Session torn down, but task #{} could NOT be moved to its terminal status — \
-             the close did not take effect. Do not treat this as a completed close: the task \
-             is still in its previous status and needs closing by hand.",
+            "Task #{} could NOT be moved to its terminal status — the close did not take \
+             effect, and your tmux session is still alive. Do not treat this as a completed \
+             close: the task is still in its previous status and needs closing by hand.",
             task_id.0
         )
     } else {
