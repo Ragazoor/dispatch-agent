@@ -342,6 +342,13 @@ rule ExitSession {
     -- persistence layer. Whether it took effect gates the terminal mutation
     -- and the SessionClosed emission below; consuming the exit token and
     -- tearing the tmux session down happen either way.
+    -- When it did NOT take effect, the task keeps status = running and its
+    -- tmux_window while the window that reference names has already been
+    -- killed by the unconditional teardown below. That is exactly the shape
+    -- DetectCrashedAgent (agent-health.allium) matches, so the failed close
+    -- surfaces on the board as sub_status = crashed on a later tick. That
+    -- crashed signal IS the board-level report of a failed close; the
+    -- guidance below records why no distinct signal is modelled.
     let close_persisted = terminal_close_persisted(task)
 
     ensures:
@@ -434,12 +441,33 @@ rule ExitSession {
         --     not take effect, so both the agent and the human reading the board
         --     learn about it. ExitSessionViaMcp in mcp-task-tools.allium owns the
         --     concrete response wording.
-        -- Consequence of keeping tmux_window while the window itself is gone:
-        -- the task is left in the shape crash detection looks for, so a running
-        -- task whose close failed is picked up by DetectCrashedAgent
-        -- (agent-health.allium) on a later tick and flagged crashed. That is a
-        -- true statement about the task — its agent is no longer there — and it
-        -- is a second, board-level signal that the close needs redoing.
+        -- How a failed close surfaces on the board (settled, not an
+        -- unmodelled gap):
+        --   • the task retains the status it had (running), together with its
+        --     sub_status, url and tmux_window;
+        --   • the tmux window that tmux_window names has nonetheless been
+        --     killed, unconditionally;
+        --   • so the task is left in exactly the shape DetectCrashedAgent
+        --     (agent-health.allium) matches — running, with a tmux_window
+        --     pointing at a window that is gone — and on a later tick it
+        --     becomes sub_status = crashed and fires the usual urgent crash
+        --     notification.
+        -- That crashed signal is the ACCEPTED, intended board-level report of
+        -- a failed close. It is indistinguishable from an agent that genuinely
+        -- died, and that is deliberate:
+        --   • the human is not left in the dark — an urgent notification fires
+        --     and the task visibly is not done;
+        --   • the recovery is the same either way — retry the task — so a
+        --     distinct signal would not change what the human does next;
+        --   • the path requires the terminal write to fail at one specific
+        --     moment, so it is rare.
+        -- Deliberately NOT modelled: a dedicated close_failed sub_status (a new
+        -- board-visible state would have to be carried through core.allium,
+        -- persistence, rendering and every sub_status branch — disproportionate
+        -- to this path), and a separate failure-time notification. Beyond the
+        -- crashed signal, the only report of the real cause is the MCP response
+        -- text the exiting agent receives (ExitSessionViaMcp in
+        -- mcp-task-tools.allium) and the warn-level log line.
         --
         -- Why this closes the PR-merge race (not merely narrows it): previously
         -- wrap_up("pr") set status = review with a pr-typed url immediately,
@@ -520,9 +548,3 @@ rule FinishTaskConflict {
         -- PR review polling skips overwriting conflict sub_status.
         -- Wrap-up rebase clears conflict optimistically before rebasing.
 }
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
-open question "FailedCloseVisibility: when ExitSession's terminal write does not take effect, the only report is the MCP response text the exiting agent receives. On the board the task keeps its old status and a tmux_window pointing at a killed window, so it surfaces as sub_status = crashed via DetectCrashedAgent — indistinguishable from an agent that genuinely died. Should a failed close carry its own board-level signal (a distinct sub_status, a UserInformed notification, or at minimum a status-bar message) so a human who never reads the agent's transcript learns the task still needs closing?"
