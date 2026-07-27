@@ -12,15 +12,33 @@
 //! fuller scan should skip) remains unresolved and out of scope here.
 
 use std::collections::HashSet;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use anyhow::{Context, Result};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders};
-use ratatui::Frame;
+use ratatui::{Frame, Terminal};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
-use crate::agent_tree::{FileOperation, TreeNode, TreeNodeKind};
+use crate::agent_tree::{build_tree, FileOperation, TreeNode, TreeNodeKind};
+use crate::db::{Database, TaskRead};
+use crate::file_events::FILE_EVENTS_SUBDIR;
+use crate::models::TaskId;
+
+/// Redraw cadence — see `docs/specs/agent-tree.allium`'s
+/// `config.agent_tree_refresh_interval`. Doubles as the crossterm event
+/// poll timeout, so a key press and a plain timer tick share one wait.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 const MODIFIED_COLOR: Color = Color::Rgb(224, 175, 104);
 const READ_COLOR: Color = Color::Rgb(122, 162, 247);
@@ -142,7 +160,13 @@ impl Default for RenderState {
 
 /// Render subtask 3's tree, with `[Modified]`/`[Read]` badges, into `area`.
 /// Pure — used by both the real polling loop and snapshot tests.
-pub fn render(frame: &mut Frame, area: Rect, root: &TreeNode, state: &mut RenderState, title: &str) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    root: &TreeNode,
+    state: &mut RenderState,
+    title: &str,
+) {
     let items = build_tree_items(root);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -163,6 +187,103 @@ pub fn render(frame: &mut Frame, area: Rect, root: &TreeNode, state: &mut Render
             frame.render_widget(block, area);
         }
     }
+}
+
+fn read_events_file(path: &Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                path = %path.display(),
+                "agent-tree: failed to read file-events log, showing empty tree"
+            );
+            String::new()
+        }
+    }
+}
+
+fn worktree_title(root: &Path) -> String {
+    root.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| root.to_string_lossy().into_owned())
+}
+
+fn run_loop<B: Backend>(terminal: &mut Terminal<B>, root: &Path, events_path: &Path) -> Result<()> {
+    let title = worktree_title(root);
+    let mut state = RenderState::new();
+    loop {
+        let jsonl = read_events_file(events_path);
+        let tree = build_tree(root, &jsonl);
+        state.sync_expansion(&tree);
+        terminal.draw(|frame| render(frame, frame.area(), &tree, &mut state, &title))?;
+
+        if event::poll(REFRESH_INTERVAL)? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                match key.code {
+                    KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        return Ok(())
+                    }
+                    KeyCode::Up => {
+                        state.tree_state.key_up();
+                    }
+                    KeyCode::Down => {
+                        state.tree_state.key_down();
+                    }
+                    KeyCode::Left => {
+                        state.tree_state.key_left();
+                    }
+                    KeyCode::Right => {
+                        state.tree_state.key_right();
+                    }
+                    KeyCode::Char(' ') | KeyCode::Enter => {
+                        state.tree_state.toggle_selected();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Entry point for `dispatch agent-tree <task_id>`. Standalone ratatui loop
+/// — not part of the board TUI's `App`/message loop (see the module-level
+/// doc comment). Resolves the task's worktree from the DB once, then polls
+/// `<data_dir>/file-events/<task_id>.jsonl` on a 1-second timer.
+pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
+    let database = Database::open(db_path).await?;
+    let task = database
+        .get_task(TaskId(task_id))
+        .await?
+        .with_context(|| format!("task {task_id} not found"))?;
+    let worktree = task
+        .worktree
+        .with_context(|| format!("task {task_id} has no worktree"))?;
+    let root = PathBuf::from(worktree);
+
+    let data_dir = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let events_path = data_dir
+        .join(FILE_EVENTS_SUBDIR)
+        .join(format!("{task_id}.jsonl"));
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    let result = run_loop(&mut terminal, &root, &events_path);
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    terminal.show_cursor()?;
+
+    result
 }
 
 #[cfg(test)]
@@ -275,7 +396,10 @@ mod tests {
             "manually closed dir must stay closed"
         );
         assert!(
-            state.tree_state.opened().contains(&vec!["docs".to_string()]),
+            state
+                .tree_state
+                .opened()
+                .contains(&vec!["docs".to_string()]),
             "newly touched dir must auto-open"
         );
     }

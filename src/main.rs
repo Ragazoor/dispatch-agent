@@ -106,6 +106,14 @@ enum Commands {
         #[arg(long)]
         path: String,
     },
+    /// Render a standalone companion file-tree pane for one task's agent,
+    /// fed by its file-events JSONL log (see docs/specs/agent-tree.allium).
+    /// A small ratatui loop — deliberately not part of the board TUI's
+    /// App/message loop; runs as its own process in a tmux pane.
+    AgentTree {
+        /// Task ID whose file-events log to render
+        task_id: i64,
+    },
     /// Gate `gh pr create`: block the first attempt for a task with a reminder
     /// to consult PR learnings, then allow subsequent attempts. Exits 2 to
     /// block (Claude Code PreToolUse block signal), 0 to allow.
@@ -336,6 +344,10 @@ async fn cmd_hook_file_event(
     init_app_log_subscriber(data_dir)?;
     dispatch_tui::file_events::append_file_event(data_dir, id, &tool, &path).await;
     Ok(())
+}
+
+async fn cmd_agent_tree(db: &std::path::Path, task_id: i64) -> Result<()> {
+    dispatch_tui::cli::agent_tree::run(db, task_id).await
 }
 
 async fn cmd_list(db: &std::path::Path, status: Option<String>) -> Result<()> {
@@ -683,6 +695,7 @@ async fn main() -> Result<()> {
         Commands::HookFileEvent { id, tool, path } => {
             cmd_hook_file_event(&cli.db, id, tool, path).await?
         }
+        Commands::AgentTree { task_id } => cmd_agent_tree(&cli.db, task_id).await?,
         Commands::PrGate { id } => cmd_pr_gate(&cli.db, id).await?,
         Commands::List { status } => cmd_list(&cli.db, status).await?,
         Commands::Setup { port, yes } => {
