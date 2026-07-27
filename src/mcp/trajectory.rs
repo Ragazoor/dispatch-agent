@@ -3,7 +3,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 pub const TRAJECTORIES_SUBDIR: &str = "trajectories";
 
@@ -26,7 +26,7 @@ pub async fn append_entry(data_dir: &Path, entry: &TrajectoryEntry) {
         return;
     }
     let path = trajectories_dir.join(format!("{}.jsonl", entry.task_id));
-    let mut file = match tokio::fs::OpenOptions::new()
+    let file = match tokio::fs::OpenOptions::new()
         .append(true)
         .create(true)
         .open(&path)
@@ -51,14 +51,24 @@ pub async fn append_entry(data_dir: &Path, entry: &TrajectoryEntry) {
     match serde_json::to_string(&payload) {
         Ok(mut line) => {
             line.push('\n');
-            if let Err(e) = file.write_all(line.as_bytes()).await {
-                tracing::warn!(error = ?e, path = %path.display(), "failed to write trajectory entry");
+            if let Err(e) = write_and_flush(file, line.as_bytes()).await {
+                tracing::warn!(error = ?e, path = %path.display(), "failed to write or flush trajectory entry");
             }
         }
         Err(e) => {
             tracing::warn!(error = ?e, "failed to serialize trajectory entry");
         }
     }
+}
+
+/// Writes `line` and flushes before returning. `tokio::fs::File::write_all`
+/// completing does not mean the bytes reached the OS — the write can still
+/// be sitting in an internal buffer, and `File`'s `Drop` only best-effort
+/// (un-awaited) flushes it, racing with anything that reads the file next.
+/// An explicit, awaited `flush()` closes that window.
+async fn write_and_flush<W: AsyncWrite + Unpin>(mut writer: W, line: &[u8]) -> std::io::Result<()> {
+    writer.write_all(line).await?;
+    writer.flush().await
 }
 
 #[cfg(test)]
@@ -110,6 +120,70 @@ mod tests {
         assert_eq!(lines.len(), 2);
         let _: Value = serde_json::from_str(lines[0]).unwrap();
         let _: Value = serde_json::from_str(lines[1]).unwrap();
+    }
+
+    // `write_all` completing is not proof the data is durable — only
+    // `flush` is. This writer distinguishes the two so the test can assert
+    // on the property that actually matters, deterministically, instead of
+    // racing real OS thread scheduling (which is what made the original
+    // regression only reproduce under full-suite load).
+    struct MockWriter {
+        flushed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        flush_error: Option<&'static str>,
+    }
+
+    impl AsyncWrite for MockWriter {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            src: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            std::task::Poll::Ready(Ok(src.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            self.flushed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            match self.flush_error {
+                Some(msg) => std::task::Poll::Ready(Err(std::io::Error::other(msg))),
+                None => std::task::Poll::Ready(Ok(())),
+            }
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn write_and_flush_flushes_before_returning() {
+        let flushed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = MockWriter {
+            flushed: flushed.clone(),
+            flush_error: None,
+        };
+        write_and_flush(writer, b"{}\n").await.unwrap();
+        assert!(
+            flushed.load(std::sync::atomic::Ordering::SeqCst),
+            "append_entry must flush before returning, or a buffered write can be lost \
+             when the file is dropped and reopened elsewhere"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_and_flush_propagates_flush_error_even_though_write_succeeded() {
+        let writer = MockWriter {
+            flushed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            flush_error: Some("flush failed"),
+        };
+        let err = write_and_flush(writer, b"{}\n").await.unwrap_err();
+        assert_eq!(err.to_string(), "flush failed");
     }
 
     #[tokio::test]

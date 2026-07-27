@@ -121,8 +121,13 @@ rule TrajectoryAppend {
         -- dispatch_data_dir is the parent directory of the SQLite database
         -- (e.g. ~/.local/share/dispatch/). It is not task-specific.
         -- append_jsonl opens the file in append mode (O_APPEND | O_CREAT),
-        -- writes one JSON-encoded TrajectoryEntry followed by "\n", and closes
-        -- the file. The trajectories/ subdirectory is created with
+        -- writes one JSON-encoded TrajectoryEntry followed by "\n", flushes,
+        -- and closes the file. The flush is required, not incidental: the
+        -- underlying async file write can report success while the bytes
+        -- are still in-process and not yet visible to a subsequent
+        -- open/read of the same path — an un-awaited flush would let entries
+        -- disappear under concurrent load with no error anywhere. The
+        -- trajectories/ subdirectory is created with
         -- create_dir_all if absent — unlike the old worktree-relative path,
         -- the parent directory is auto-created so there is no noop-on-missing-
         -- dir behaviour.
@@ -155,7 +160,9 @@ rule TrajectoryWriteFailureIsSilent {
         -- the error is forwarded to tracing::warn (target: "trajectory")
         -- with the task_id and error message, and the handler proceeds to
         -- return its normal response. There is no retry, no buffering, no
-        -- dead-letter file.
+        -- dead-letter file. A flush failure after a successful write is
+        -- warned the same way as a write failure — the entry is still lost,
+        -- and the caller is still not told.
         -- TrajectoryWriteWarning is observable via the standard tracing
         -- subscriber; it has no entity representation in this spec.
 }
