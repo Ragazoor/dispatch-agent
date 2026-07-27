@@ -1,0 +1,16 @@
+---
+source: src/cli/agent_tree.rs
+expression: rendered
+---
+┌ dispatch ──────────────────────────────────────┐
+│  README.md [Read]                              │
+│▼ src                                           │
+│    lib.rs [Modified]                           │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+└────────────────────────────────────────────────┘

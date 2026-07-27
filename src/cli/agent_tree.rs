@@ -13,9 +13,12 @@
 
 use std::collections::HashSet;
 
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use tui_tree_widget::{TreeItem, TreeState};
+use ratatui::widgets::{Block, Borders};
+use ratatui::Frame;
+use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::agent_tree::{FileOperation, TreeNode, TreeNodeKind};
 
@@ -134,6 +137,31 @@ impl RenderState {
 impl Default for RenderState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Render subtask 3's tree, with `[Modified]`/`[Read]` badges, into `area`.
+/// Pure — used by both the real polling loop and snapshot tests.
+pub fn render(frame: &mut Frame, area: Rect, root: &TreeNode, state: &mut RenderState, title: &str) {
+    let items = build_tree_items(root);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {title} "));
+
+    match Tree::new(&items) {
+        Ok(tree) => {
+            let tree = tree
+                .block(block)
+                .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+            frame.render_stateful_widget(tree, area, &mut state.tree_state);
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                "agent-tree: duplicate identifiers building tree, rendering title only"
+            );
+            frame.render_widget(block, area);
+        }
     }
 }
 
@@ -263,5 +291,58 @@ mod tests {
             .tree_state
             .opened()
             .contains(&vec!["a".to_string(), "b".to_string()]));
+    }
+
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn buffer_to_string(buf: &Buffer) -> String {
+        let area = buf.area();
+        let mut lines = Vec::with_capacity(area.height as usize);
+        for y in area.top()..area.bottom() {
+            let mut line = String::with_capacity(area.width as usize);
+            for x in area.left()..area.right() {
+                line.push_str(buf[(x, y)].symbol());
+            }
+            line.truncate(line.trim_end().len());
+            lines.push(line);
+        }
+        lines.join("\n")
+    }
+
+    fn render_to_string(jsonl: &str, title: &str, width: u16, height: u16) -> String {
+        let tree = build_tree(&root(), jsonl);
+        let mut state = RenderState::new();
+        state.sync_expansion(&tree);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, frame.area(), &tree, &mut state, title))
+            .expect("draw");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    #[test]
+    fn snapshot_empty_tree_shows_bare_title() {
+        let rendered = render_to_string("", "dispatch", 50, 10);
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn snapshot_modified_and_read_badges() {
+        let jsonl = format!(
+            "{}\n{}",
+            r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"write","path":"/repo/src/lib.rs","operation":"modified"}"#,
+            r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:01Z","task_id":"1","tool":"read","path":"/repo/README.md","operation":"read"}"#
+        );
+        let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn snapshot_nested_directories_auto_expanded() {
+        let jsonl = r#"{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"write","path":"/repo/a/b/c.rs","operation":"modified"}"#;
+        let rendered = render_to_string(jsonl, "dispatch", 50, 12);
+        insta::assert_snapshot!(rendered);
     }
 }
