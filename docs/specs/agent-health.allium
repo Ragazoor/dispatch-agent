@@ -53,12 +53,16 @@ rule ClassifyAgentActivity {
         -- driven entirely by fresh PreToolUse hook timestamps (and
         -- Notification timestamps for needs_input); there is no separate
         -- in-memory activity timer.
-        -- Ownership invariant: only hook events (PreToolUse / Stop) and the
-        -- "transition into Running" seeds write last_pre_tool_use_at. Generic
-        -- in-memory persists from the TUI (sort_order swaps, tick sub_status
-        -- updates, editor saves) MUST NOT include this column — a stale
-        -- in-memory snapshot would otherwise overwrite a fresher hook write
-        -- and flick the task into Stale on the next tick.
+        -- Ownership invariant: only hook events (PreToolUse / Stop), the
+        -- "transition into Running" seeds, and the reverse of one of those
+        -- seeds (the epic chain returning a claimed-but-unprovisioned subtask
+        -- to Backlog clears the stamp its own claim wrote — see
+        -- AutoDispatchNextSubtask in epics.allium) write
+        -- last_pre_tool_use_at. Generic in-memory persists from the TUI
+        -- (sort_order swaps, tick sub_status updates, editor saves) MUST NOT
+        -- include this column — a stale in-memory snapshot would otherwise
+        -- overwrite a fresher hook write and flick the task into Stale on the
+        -- next tick.
         -- Card label: when sub_status = stale, the card renders the idle
         -- time as "stale · Xm" where X = now - last_pre_tool_use_at. If
         -- last_pre_tool_use_at is null (legacy pre-v50 rows, or a transient
@@ -101,6 +105,11 @@ rule DetectCrashedAgent {
         -- window exists) is never treated as the window being gone: WindowGone
         -- is only emitted on a definitive absence, so a tmux hiccup can never
         -- trigger DetectCrashedAgent.
+        -- The split-pinned task is exempt: while the split pane is active
+        -- its window has been absorbed into the pane by join-pane, so it
+        -- is no longer a standalone window. Both the tick that collects
+        -- windows to check and this rule's entry point skip that task, so
+        -- pinning never produces a spurious crash (see split-pane.allium).
 }
 
 -- == Notifications ==

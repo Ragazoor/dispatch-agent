@@ -342,13 +342,15 @@ rule ExitSession {
     -- persistence layer. Whether it took effect gates the terminal mutation
     -- and the SessionClosed emission below; consuming the exit token and
     -- tearing the tmux session down happen either way.
-    -- When it did NOT take effect, the task keeps status = running and its
-    -- tmux_window while the window that reference names has already been
-    -- killed by the unconditional teardown below. That is exactly the shape
-    -- DetectCrashedAgent (agent-health.allium) matches, so the failed close
-    -- surfaces on the board as sub_status = crashed on a later tick. That
-    -- crashed signal IS the board-level report of a failed close; the
-    -- guidance below records why no distinct signal is modelled.
+    -- When it did NOT take effect, the task keeps the status it had (running,
+    -- or review when the agent's Stop hook landed between wrap_up and this
+    -- call) and its tmux_window, while the window that reference names has
+    -- already been killed by the unconditional teardown below. From running
+    -- that is exactly the shape DetectCrashedAgent (agent-health.allium)
+    -- matches, so the failed close surfaces on the board as sub_status =
+    -- crashed on a later tick; from review nothing matches it and the failure
+    -- is silent. The guidance below records both cases and why no distinct
+    -- signal is modelled.
     let close_persisted = terminal_close_persisted(task)
 
     ensures:
@@ -443,18 +445,34 @@ rule ExitSession {
         --     concrete response wording.
         -- How a failed close surfaces on the board (settled, not an
         -- unmodelled gap):
-        --   • the task retains the status it had (running), together with its
+        --   • the task retains the status it had, together with its
         --     sub_status, url and tmux_window;
         --   • the tmux window that tmux_window names has nonetheless been
         --     killed, unconditionally;
-        --   • so the task is left in exactly the shape DetectCrashedAgent
+        --   • when that retained status is running — the ordinary case, since
+        --     the agent is mid-turn while it calls exit_session — the task is
+        --     left in exactly the shape DetectCrashedAgent
         --     (agent-health.allium) matches — running, with a tmux_window
         --     pointing at a window that is gone — and on a later tick it
         --     becomes sub_status = crashed and fires the usual urgent crash
         --     notification.
-        -- That crashed signal is the ACCEPTED, intended board-level report of
-        -- a failed close. It is indistinguishable from an agent that genuinely
-        -- died, and that is deliberate:
+        --   • when that retained status is review, there is no crash signal.
+        --     A task can be in review here because wrap_up is available from
+        --     review as well as running, so an agent whose Stop hook fired
+        --     between wrap_up and exit_session closes from review.
+        --     DetectCrashedAgent requires status = running, so the window-gone
+        --     tick instead takes its non-running branch: tmux_window is
+        --     cleared with no sub_status change and no notification. The task
+        --     stays in review and, being worktree-without-window, reads as
+        --     is_detached — i.e. it renders as awaiting merge rather than as a
+        --     failure. This case is NOT covered by the decision recorded
+        --     below: that decision turned on an urgent notification firing and
+        --     the task visibly not being done, and neither holds here. Only the
+        --     MCP response text and the warn log identify it. See the
+        --     FailedCloseFromReviewVisibility open question.
+        -- The crashed signal is the ACCEPTED, intended board-level report of
+        -- a failed close from running. It is indistinguishable from an agent
+        -- that genuinely died, and that is deliberate:
         --   • the human is not left in the dark — an urgent notification fires
         --     and the task visibly is not done;
         --   • the recovery is the same either way — retry the task — so a
@@ -548,3 +566,9 @@ rule FinishTaskConflict {
         -- PR review polling skips overwriting conflict sub_status.
         -- Wrap-up rebase clears conflict optimistically before rebasing.
 }
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "FailedCloseFromReviewVisibility: the decision to accept sub_status = crashed as the board-level report of a failed close (see rule ExitSession) turned on two things being true — an urgent notification fires, and the task visibly is not done. Both hold when the failed close leaves the task in running. Neither holds when it leaves the task in review, which happens whenever the agent's Stop hook fires between wrap_up and exit_session, because DetectCrashedAgent requires status = running: the window-gone tick silently clears tmux_window with no sub_status change and no notification, and the task then reads as is_detached and renders as awaiting merge — looking more finished than it is, not less. Should this path get a signal (widening DetectCrashedAgent to review, or requiring status = running on ExitSession so a review close is rejected outright), or is a silent failure acceptable here on the grounds that it is rarer still?"

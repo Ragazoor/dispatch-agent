@@ -627,8 +627,13 @@ rule AutoDispatchNextSubtask {
         -- JumpToAgentWindow); routing by tag is owned by dispatch.allium, so a
         -- plan-less research-tagged subtask reaches DispatchResearchTask
         -- instead. If the dispatch fails, the subtask is
-        -- reverted to backlog with the default backlog sub_status and a warning
+        -- reverted to backlog with the default backlog sub_status, the
+        -- last_pre_tool_use_at the claim seeded is cleared again, and a warning
         -- is logged, leaving it dispatchable exactly as before the chain fired.
+        -- That clear is the one sanctioned exception to the
+        -- last_pre_tool_use_at ownership invariant in agent-health.allium: it
+        -- unwinds a stamp this same flow wrote moments earlier, rather than
+        -- overwriting a hook's.
         --
         -- No chain failure can fail the close. By the time this rule runs the
         -- closing task has already reached its terminal status and its session
