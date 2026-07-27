@@ -373,14 +373,21 @@ rule SendMessageViaMcp {
     ensures: MessageDelivered(
         from: from_task,
         to: to_task,
-        path: to_task.worktree + "/.claude-messages/" + from_task.id + "-" + timestamp_ms() + ".md"
+        path: to_task.worktree + "/.claude-messages/" + from_task.id + "-" + timestamp_ms() + "-" + next_message_seq() + ".md"
     )
     ensures: TmuxNotificationSent(to: to_task, about: message_received)
 
     @guidance
         -- Inter-agent messaging. An agent writes a message file into the
         -- target agent's worktree under .claude-messages/, using a
-        -- filename of `<from_task.id>-<unix_epoch_millis>.md`. The file
+        -- filename of `<from_task.id>-<unix_epoch_millis>-<seq>.md`, where
+        -- `<seq>` is a process-wide monotonic counter incremented on every
+        -- message-file write. The timestamp alone is not unique: two writes
+        -- landing in the same millisecond (concurrent sends, or a watcher
+        -- notification racing a send) would collide and the second write
+        -- would silently overwrite the first. No caller parses the
+        -- filename — it is passed back opaquely in the tmux nudge — so the
+        -- counter segment is purely a uniqueness guarantee. The file
         -- contents begin with `[Message from task <id>: "<title>"]`
         -- followed by the body text.
         -- After writing the file, a tmux notification is injected via

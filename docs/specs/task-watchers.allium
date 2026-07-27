@@ -244,8 +244,10 @@ rule DeliverWatcherNotification {
 
     @guidance
         -- Reuses the exact same delivery primitives SendMessageViaMcp uses
-        -- (see mcp-task-tools.allium): a timestamped file written under
-        -- <watcher_task.worktree>/.claude-messages/, followed by a
+        -- (see mcp-task-tools.allium): a timestamped, uniquely-suffixed file
+        -- written under <watcher_task.worktree>/.claude-messages/ (the
+        -- filename formula, including the collision-safe counter segment,
+        -- is owned by mcp-task-tools.allium), followed by a
         -- tmux send-keys nudge pointing at it. The shared primitives are
         -- write_message_file and notify_tmux (src/notify.rs), called from
         -- both handle_send_message and this rule's own

@@ -2,22 +2,39 @@
 //! worktree and injects a tmux nudge pointing at it. Used by both the
 //! `send_message` MCP tool and task-watcher completion/deletion notices.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use crate::process::ProcessRunner;
+
+/// Process-wide counter appended to message filenames so two `deliver()`
+/// calls landing in the same millisecond (concurrent `send_message` calls,
+/// or a watcher completion racing a send) don't collide and silently
+/// overwrite each other.
+static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Writes `body` to a uniquely-named markdown file under
 /// `<worktree>/.claude-messages/` and returns the filename (not the full
 /// path) so callers can reference it in a tmux notification.
 pub fn write_message_file(worktree: &str, file_prefix: &str, body: &str) -> Result<String, String> {
-    let messages_dir = format!("{worktree}/.claude-messages");
-    std::fs::create_dir_all(&messages_dir)
-        .map_err(|e| format!("failed to create messages dir: {e}"))?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let filename = format!("{file_prefix}-{timestamp}.md");
+    write_message_file_at(worktree, file_prefix, body, timestamp)
+}
+
+fn write_message_file_at(
+    worktree: &str,
+    file_prefix: &str,
+    body: &str,
+    timestamp: u128,
+) -> Result<String, String> {
+    let messages_dir = format!("{worktree}/.claude-messages");
+    std::fs::create_dir_all(&messages_dir)
+        .map_err(|e| format!("failed to create messages dir: {e}"))?;
+    let counter = NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed);
+    let filename = format!("{file_prefix}-{timestamp}-{counter}.md");
     let path = format!("{messages_dir}/{filename}");
     std::fs::write(&path, body).map_err(|e| format!("failed to write message file: {e}"))?;
     Ok(filename)
@@ -82,6 +99,26 @@ mod tests {
         let content =
             std::fs::read_to_string(format!("{worktree}/.claude-messages/{filename}")).unwrap();
         assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn write_message_file_at_produces_unique_filenames_for_the_same_timestamp() {
+        let tmp = tempfile::tempdir().unwrap();
+        let worktree = tmp.path().to_str().unwrap();
+
+        let first = write_message_file_at(worktree, "prefix", "a", 1_000).unwrap();
+        let second = write_message_file_at(worktree, "prefix", "b", 1_000).unwrap();
+
+        assert_ne!(
+            first, second,
+            "two calls landing in the same millisecond must not collide on filename"
+        );
+        let content_a =
+            std::fs::read_to_string(format!("{worktree}/.claude-messages/{first}")).unwrap();
+        let content_b =
+            std::fs::read_to_string(format!("{worktree}/.claude-messages/{second}")).unwrap();
+        assert_eq!(content_a, "a");
+        assert_eq!(content_b, "b");
     }
 
     #[test]
