@@ -686,7 +686,7 @@ impl TuiRuntime {
                     ));
                 }
                 Err(e) => {
-                    let is_conflict = matches!(e, dispatch::FinishError::RebaseConflict(_));
+                    let is_conflict = matches!(e, dispatch::FinishError::RebaseConflict { .. });
                     let _ = tx.send(Message::Task(
                         crate::tui::messages::TaskMessage::FinishFailed {
                             id,

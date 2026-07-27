@@ -199,11 +199,18 @@ rule WrapUpRebase {
         -- rebase runs in the background.
         -- Steps (all via finish_task in dispatch.rs):
         --   1. Verify the repo root is on task.base_branch; abort if not.
-        --   2. If origin remote exists, `git pull origin <base_branch>`
+        --   2. Check the repo root's working tree is clean (`git status
+        --      --porcelain`). If it has uncommitted changes, abort with
+        --      DirtyPrimaryWorktree — this is checked upfront, before any
+        --      pull/rebase/merge is attempted, so a dirty primary worktree
+        --      never masquerades as a rebase conflict.
+        --   3. If origin remote exists, `git pull origin <base_branch>`
         --      in the repo root (skipped when no remote is configured).
-        --   3. `git rebase <base_branch>` from the task's worktree.
-        --      On conflict: abort the rebase and emit RebaseConflict.
-        --   4. `git merge --ff-only <branch>` in the repo root to
+        --   4. `git rebase <base_branch>` from the task's worktree.
+        --      On conflict: abort the rebase and emit RebaseConflict,
+        --      naming the actual conflicted file(s) parsed from git's
+        --      output when present.
+        --   5. `git merge --ff-only <branch>` in the repo root to
         --      fast-forward the base branch to the rebased branch.
         -- The worktree is preserved after a successful rebase (cleaned
         -- up only on archive). The MCP wrap_up handler calls finish_task
@@ -574,4 +581,13 @@ rule FinishTaskConflict {
         -- re-evaluated for inactivity).
         -- PR review polling skips overwriting conflict sub_status.
         -- Wrap-up rebase clears conflict optimistically before rebasing.
+        --
+        -- This rule fires only for a genuine textual rebase conflict
+        -- (finish_task's RebaseConflict error). A dirty primary worktree
+        -- is a distinct failure mode (DirtyPrimaryWorktree) detected as a
+        -- preflight check before any rebase is attempted — it is returned
+        -- as an error to the caller without touching sub_status, since
+        -- there is nothing to mark "conflicted": the task's own work
+        -- never entered a rebase, so it is safe to simply retry once the
+        -- primary worktree is clean.
 }

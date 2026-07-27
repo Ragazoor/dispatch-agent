@@ -1019,6 +1019,7 @@ async fn exec_finish_happy_path_sends_complete() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
         MockProcessRunner::fail(""),                  // remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main (from worktree)
         MockProcessRunner::ok(),                      // git merge --ff-only (fast-forward)
@@ -1067,6 +1068,7 @@ async fn exec_finish_conflict_sends_failed() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
         MockProcessRunner::fail(""),                  // remote get-url (no remote)
         Ok(Output {
             status: exit_fail(),

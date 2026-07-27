@@ -224,7 +224,7 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
             )
         }
         Err(e) => {
-            if matches!(e, dispatch::FinishError::RebaseConflict(_)) {
+            if matches!(e, dispatch::FinishError::RebaseConflict { .. }) {
                 let patch = UpdateTaskParams::for_task(task_id).sub_status(SubStatus::Conflict);
                 if let Err(e) = state.task_svc.update_task(patch).await {
                     tracing::warn!(

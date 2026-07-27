@@ -1462,6 +1462,7 @@ async fn wrap_up_rebase_preserves_tmux_window() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main
         MockProcessRunner::ok(),                      // git merge --ff-only
@@ -1534,6 +1535,7 @@ async fn wrap_up_rebase_conflict_sets_conflict_substatus() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::fail("CONFLICT (content): Merge conflict in foo.rs"), // git rebase
         MockProcessRunner::ok(),                      // git rebase --abort

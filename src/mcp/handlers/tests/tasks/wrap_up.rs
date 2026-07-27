@@ -59,6 +59,7 @@ async fn wrap_up_accepts_running_blocked_task() {
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         // task.base_branch = "main" is passed explicitly to finish_task; no symbolic-ref call
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main
         MockProcessRunner::ok(),                      // git merge --ff-only
@@ -121,6 +122,7 @@ async fn wrap_up_accepts_running_active_task() {
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         // task.base_branch = "main" is passed explicitly to finish_task; no symbolic-ref call
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main
         MockProcessRunner::ok(),                      // git merge --ff-only
@@ -184,6 +186,7 @@ async fn wrap_up_rebase_response_demands_exit_session_imperatively() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main
         MockProcessRunner::ok(),                      // git merge --ff-only
@@ -343,6 +346,7 @@ async fn wrap_up_rebase_returns_started() {
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         // task.base_branch = "main" is passed explicitly to finish_task; no symbolic-ref call
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main
         MockProcessRunner::ok(),                      // git merge --ff-only
@@ -402,6 +406,7 @@ async fn wrap_up_rebase_returns_exit_token() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"),
+        MockProcessRunner::ok_with_stdout(b""),
         MockProcessRunner::fail(""),
         MockProcessRunner::ok(),
         MockProcessRunner::ok(),
@@ -692,6 +697,7 @@ async fn make_state_with_runner(
 fn rebase_ok_runner() -> Arc<dyn ProcessRunner> {
     Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // remote get-url
         MockProcessRunner::ok(),                      // git rebase
         MockProcessRunner::ok(),                      // git merge --ff-only
@@ -868,6 +874,7 @@ async fn wrap_up_rebase_conflict_returns_error() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::fail("CONFLICT (content): Merge conflict in foo.rs"), // git rebase
         MockProcessRunner::ok(),                      // git rebase --abort
@@ -916,11 +923,85 @@ async fn wrap_up_rebase_conflict_returns_error() {
     .await;
 
     assert_error(&resp, "conflict");
+    assert_error(&resp, "foo.rs");
     let task = db.get_task(task_id).await.unwrap().unwrap();
     assert_eq!(
         task.status,
         TaskStatus::Review,
         "Task should remain Review on rebase conflict"
+    );
+}
+
+#[tokio::test]
+async fn wrap_up_rebase_dirty_primary_worktree_returns_error() {
+    // A dirty primary worktree must be reported as its own distinct error —
+    // not conflated with a rebase conflict — and must not flip the task's
+    // sub_status to Conflict, since no rebase was ever attempted.
+    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
+    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse HEAD
+        MockProcessRunner::ok_with_stdout(b" M unrelated.rs\n"), // git status --porcelain (dirty)
+    ]));
+    let state = Arc::new(McpState::new(
+        McpDeps {
+            db: db.clone(),
+            runner,
+            embedding_service: EmbeddingService::new_test(),
+            data_dir: std::env::temp_dir(),
+        },
+        None,
+    ));
+
+    let task_id = db
+        .create_task(CreateTaskRequest {
+            title: "Dirty Primary Task",
+            description: "desc",
+            repo_path: "/repo",
+            plan: None,
+            status: TaskStatus::Review,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().worktree(Some("/repo/.worktrees/1-dirty-primary-task")),
+    )
+    .await
+    .unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": task_id.0, "action": "rebase" }
+        })),
+    )
+    .await;
+
+    assert_error(&resp, "uncommitted");
+    assert_error(&resp, "/repo");
+    let error_text = error_message(&resp);
+    assert!(
+        !error_text.to_lowercase().contains("rebase conflict"),
+        "dirty primary worktree must not be reported as a rebase conflict, got: {error_text}"
+    );
+    let task = db.get_task(task_id).await.unwrap().unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "Task should remain Review on dirty primary worktree"
+    );
+    assert_ne!(
+        task.sub_status,
+        SubStatus::Conflict,
+        "dirty primary worktree must not set the Conflict sub_status"
     );
 }
 
@@ -1163,6 +1244,7 @@ async fn make_rebase_state() -> (Arc<dyn db::TaskStore>, Arc<McpState>) {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main
         MockProcessRunner::ok(),                      // git merge --ff-only
@@ -1516,6 +1598,7 @@ async fn exit_session_full_flow_rebase() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"),
+        MockProcessRunner::ok_with_stdout(b""),
         MockProcessRunner::fail(""),
         MockProcessRunner::ok(),
         MockProcessRunner::ok(),
@@ -1577,11 +1660,13 @@ async fn wrap_up_second_call_overwrites_token() {
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         // First rebase
         MockProcessRunner::ok_with_stdout(b"main\n"),
+        MockProcessRunner::ok_with_stdout(b""),
         MockProcessRunner::fail(""),
         MockProcessRunner::ok(),
         MockProcessRunner::ok(),
         // Second rebase
         MockProcessRunner::ok_with_stdout(b"main\n"),
+        MockProcessRunner::ok_with_stdout(b""),
         MockProcessRunner::fail(""),
         MockProcessRunner::ok(),
         MockProcessRunner::ok(),
@@ -1991,6 +2076,7 @@ async fn wrap_up_then_exit_session_end_to_end() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
+        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
         MockProcessRunner::fail(""),                  // git remote get-url (no remote)
         MockProcessRunner::ok(),                      // git rebase main
         MockProcessRunner::ok(),                      // git merge --ff-only
