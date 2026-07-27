@@ -366,65 +366,59 @@ pub(crate) async fn handle_exit_session(
     // terminal mutation, the tmux teardown and the trailing SessionClosed
     // emission are all gated on this single write landing. Only consuming the
     // token (already done above) happens either way.
-    let close_persisted = match state.task_svc.update_task(params).await {
-        Ok(_) => true,
-        Err(e) => {
-            tracing::warn!(
-                task_id = task_id.0,
-                "exit_session: failed to apply closing patch: {e}"
-            );
-            false
-        }
-    };
+    let close_result = state.task_svc.update_task(params).await;
     state.notify_task_changed(task_id);
     if let Some(epic_id) = task.epic_id {
         state.notify_epic_changed(epic_id);
     }
-    // Tearing the session down is gated on the same write as the terminal
-    // mutation, so the two can never disagree: a task whose close did not persist
-    // keeps both its live window and the `tmux_window` reference naming it. That
-    // window still hosts a live agent, so the human can attach to it and retry
-    // the close — and because `tmux_window` stays set, the task never satisfies
-    // `is_detached` and cannot drift into the awaiting-merge rendering.
-    if close_persisted {
-        let tmux_window = task.tmux_window;
-        let runner = state.runner.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Some(window) = &tmux_window {
-                let _ = crate::tmux::kill_window(window, &*runner);
-            }
-        });
+
+    if let Err(e) = close_result {
+        tracing::warn!(
+            task_id = task_id.0,
+            "exit_session: failed to apply closing patch: {e}"
+        );
+        // Still a successful response: the exit token was consumed above, so an
+        // error would strand the agent with no retry path and no session. The
+        // text is what carries the failure. Neither the teardown nor the chain
+        // runs — the task keeps its live window and its `tmux_window` reference,
+        // so it never satisfies `is_detached` and cannot drift into the
+        // awaiting-merge rendering, and a broken close is never compounded into
+        // a second dispatch.
+        return JsonRpcResponse::ok(
+            id,
+            json!({"content": [{"type": "text", "text": format!(
+                "Task #{} could NOT be moved to its terminal status — the close did not take \
+                 effect, and your tmux session is still alive. Do not treat this as a completed \
+                 close: the task is still in its previous status and needs closing by hand.",
+                task_id.0
+            )}]}),
+        );
     }
+
+    // Past this point the close persisted, so both of the following are
+    // unconditional.
+    let tmux_window = task.tmux_window;
+    let runner = state.runner.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Some(window) = &tmux_window {
+            let _ = crate::tmux::kill_window(window, &*runner);
+        }
+    });
 
     // SessionClosed fires last — after the terminal patch, the change
     // notifications and the window teardown — so the next subtask's worktree is
     // cut from a base_branch that already contains this task's work. See
     // AutoDispatchNextSubtask in docs/specs/epics.allium. Never fails the close:
-    // `auto_dispatch_next` swallows every chain problem. Withheld entirely when
-    // the close did not persist: compounding a broken close into a second
-    // dispatch is strictly harder for a human to notice than the broken close.
-    let next = match (close_persisted, task.epic_id) {
-        (true, Some(epic_id)) => super::dispatch::auto_dispatch_next(state, epic_id).await,
-        _ => None,
-    };
-    // Still a successful response even when the close did not persist: the exit
-    // token was consumed above, so an error would strand the agent with no retry
-    // path and no session. The text is what carries the failure.
-    let text = if !close_persisted {
-        format!(
-            "Task #{} could NOT be moved to its terminal status — the close did not take \
-             effect, and your tmux session is still alive. Do not treat this as a completed \
-             close: the task is still in its previous status and needs closing by hand.",
-            task_id.0
-        )
-    } else {
-        match next {
+    // `auto_dispatch_next` swallows every chain problem.
+    let text = match task.epic_id {
+        Some(epic_id) => match super::dispatch::auto_dispatch_next(state, epic_id).await {
             Some((next_id, next_title)) => format!(
                 "Session closed. Dispatching next epic subtask #{} '{next_title}'.",
                 next_id.0
             ),
             None => "Session closed.".to_string(),
-        }
+        },
+        None => "Session closed.".to_string(),
     };
     JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": text}]}))
 }

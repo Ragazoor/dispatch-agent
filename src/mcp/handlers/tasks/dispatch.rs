@@ -72,25 +72,30 @@ pub(crate) async fn handle_claim_task(
 ///
 /// Implements `AutoDispatchNextSubtask` in `docs/specs/epics.allium`, fired by
 /// `handle_exit_session` as the last thing a session close does.
-pub(super) async fn auto_dispatch_next(
+pub(in crate::mcp::handlers) async fn auto_dispatch_next(
     state: &McpState,
     epic_id: EpicId,
 ) -> Option<(TaskId, String)> {
-    match state.db.get_epic(epic_id).await {
-        Ok(Some(epic)) if !epic.auto_dispatch => return None,
-        Ok(Some(_)) => {}
+    // Fail closed: nothing *requested* this chain, so a DB hiccup must not
+    // launch an agent on an epic whose operator turned chaining off. Every
+    // non-dispatch outcome here is indistinguishable from the documented
+    // normal stops.
+    let epic = match state.db.get_epic(epic_id).await {
+        Ok(Some(epic)) => epic,
         Ok(None) => {
             tracing::warn!("auto_dispatch_next: epic #{} not found", epic_id.0);
             return None;
         }
         Err(e) => {
-            // Fail open: a DB hiccup reading the flag must not silently stall
-            // an epic, so treat auto_dispatch as enabled and carry on.
             tracing::warn!(
                 "auto_dispatch_next: failed to fetch epic #{}: {e}",
                 epic_id.0
             );
+            return None;
         }
+    };
+    if !epic.auto_dispatch {
+        return None;
     }
 
     // Claiming is what makes the selection exclusive: a concurrent close on the
@@ -109,27 +114,29 @@ pub(super) async fn auto_dispatch_next(
 
     let next_id = next_task.id;
     let next_title = next_task.title.clone();
-    let next_epic_id = next_task.epic_id;
-    let epic_ctx = dispatch::EpicContext::from_db(&next_task, &*state.db).await;
+    // The epic row is already in hand, so skip `EpicContext::from_db`'s
+    // re-read. The claim selects only from this epic's subtasks, so the
+    // context is always this epic.
+    let epic_ctx = Some(dispatch::EpicContext {
+        epic_id,
+        epic_title: epic.title,
+    });
     let db = state.db.clone();
     let task_svc = state.task_svc.clone();
     let runner = state.runner.clone();
     let notify_tx = state.notify_tx.clone();
-
-    let injected =
-        dispatch::build_and_record_injections(&*db, &next_task, &state.embedding_service).await;
-    let verify_command = dispatch::fetch_verify_command(&*db, &next_task.repo_path).await;
+    let embedding_service = state.embedding_service.clone();
 
     tokio::spawn(async move {
-        let next_task_for_blocking = next_task.clone();
+        // Injection building runs a local embedding inference and several
+        // writes; keep it off the caller's request path — `exit_session` only
+        // needs the id and title, both already known.
+        let injected =
+            dispatch::build_and_record_injections(&*db, &next_task, &embedding_service).await;
+        let verify_command = dispatch::fetch_verify_command(&*db, &next_task.repo_path).await;
+
         let result = tokio::task::spawn_blocking(move || {
-            do_dispatch(
-                &next_task_for_blocking,
-                &*runner,
-                epic_ctx,
-                &injected,
-                verify_command,
-            )
+            do_dispatch(&next_task, &*runner, epic_ctx, &injected, verify_command)
         })
         .await;
 
@@ -153,22 +160,20 @@ pub(super) async fn auto_dispatch_next(
                     task_id = next_id.0,
                     "auto_dispatch_next: dispatch failed: {e:#}"
                 );
-                revert_claim(&task_svc, next_id).await;
+                release_claim(&*task_svc, next_id).await;
             }
             Err(e) => {
                 tracing::warn!(
                     task_id = next_id.0,
                     "auto_dispatch_next: blocking task panicked: {e}"
                 );
-                revert_claim(&task_svc, next_id).await;
+                release_claim(&*task_svc, next_id).await;
             }
         }
 
         if let Some(tx) = notify_tx {
             let _ = tx.send(crate::mcp::McpEvent::TaskChanged(next_id));
-            if let Some(epic_id) = next_epic_id {
-                let _ = tx.send(crate::mcp::McpEvent::EpicChanged(epic_id));
-            }
+            let _ = tx.send(crate::mcp::McpEvent::EpicChanged(epic_id));
         }
     });
 
@@ -177,21 +182,22 @@ pub(super) async fn auto_dispatch_next(
 
 /// Return a claimed-but-unprovisioned subtask to `Backlog` so a failed chain
 /// leaves it dispatchable exactly as it was before the chain fired.
-async fn revert_claim(
-    task_svc: &std::sync::Arc<dyn crate::service::TaskServiceApi>,
-    task_id: TaskId,
-) {
-    let params = UpdateTaskParams::for_task(task_id)
-        .status(TaskStatus::Backlog)
-        .sub_status(crate::models::SubStatus::default_for(TaskStatus::Backlog))
-        // Also drop the activity timestamp the claim seeded, or the reverted
-        // subtask is not quite "as it was before the chain fired".
-        .last_pre_tool_use_at(None);
-    if let Err(e) = task_svc.update_task(params).await {
-        tracing::warn!(
+///
+/// Delegates to [`crate::service::TaskServiceApi::release_claim`], which is
+/// conditional on the task still being claimed-and-unprovisioned — provisioning
+/// can take a `git fetch`'s worth of wall time, and an unconditional revert
+/// would stomp anything that touched the task meanwhile.
+async fn release_claim(task_svc: &dyn crate::service::TaskServiceApi, task_id: TaskId) {
+    match task_svc.release_claim(task_id).await {
+        Ok(true) => {}
+        Ok(false) => tracing::info!(
             task_id = task_id.0,
-            "auto_dispatch_next: failed to revert claim: {e}"
-        );
+            "auto_dispatch_next: claim already released or task moved on; left as-is"
+        ),
+        Err(e) => tracing::warn!(
+            task_id = task_id.0,
+            "auto_dispatch_next: failed to release claim: {e}"
+        ),
     }
 }
 
@@ -345,55 +351,4 @@ pub(crate) async fn handle_send_message(
             to_task.id.0, to_task.title
         )}]}),
     )
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use std::sync::Arc;
-
-    use super::auto_dispatch_next;
-    use crate::mcp::{McpDeps, McpState};
-    use crate::models::EpicId;
-    use crate::service::embeddings::EmbeddingService;
-
-    /// Built here rather than reusing `handlers::tests::test_state` — that
-    /// helper is private to the sibling test module.
-    async fn state() -> Arc<McpState> {
-        let db: Arc<dyn crate::db::TaskStore> =
-            Arc::new(crate::db::Database::open_in_memory().await.unwrap());
-        Arc::new(McpState::new(
-            McpDeps {
-                db,
-                runner: crate::process::MockProcessRunner::unused(),
-                embedding_service: EmbeddingService::new_test(),
-                data_dir: std::env::temp_dir(),
-            },
-            None,
-        ))
-    }
-
-    /// An epic that does not resolve stops the chain silently. This is the
-    /// warn-and-skip branch of AutoDispatchNextSubtask: a chain problem must
-    /// never surface as an error, because by the time it runs the session has
-    /// already closed. `tasks.epic_id` carries a foreign key, so this branch is
-    /// only reachable directly — not by wiring a task to a missing epic.
-    #[tokio::test]
-    async fn auto_dispatch_next_returns_none_for_missing_epic() {
-        let state = state().await;
-        assert!(auto_dispatch_next(&state, EpicId(9999)).await.is_none());
-    }
-
-    /// No backlog subtask left — the chain stops, still without an error.
-    #[tokio::test]
-    async fn auto_dispatch_next_returns_none_when_no_backlog_subtask() {
-        let state = state().await;
-        let epic = state.db_write().create_epic("E", "", None).await.unwrap();
-        state
-            .db_write()
-            .patch_epic(epic.id, &crate::db::EpicPatch::new().auto_dispatch(true))
-            .await
-            .unwrap();
-        assert!(auto_dispatch_next(&state, epic.id).await.is_none());
-    }
 }

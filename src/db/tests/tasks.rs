@@ -3457,6 +3457,88 @@ async fn try_claim_backlog_task_is_false_for_missing_task() {
         .unwrap());
 }
 
+// -- try_release_backlog_claim ----------------------------------------------
+
+/// Helper: a backlog task, claimed, ready to have its claim released.
+async fn claimed_task(db: &Database) -> TaskId {
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "t",
+            description: "",
+            repo_path: "/tmp/r",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+    assert!(db
+        .try_claim_backlog_task(id, chrono::Utc::now())
+        .await
+        .unwrap());
+    id
+}
+
+#[tokio::test]
+async fn try_release_backlog_claim_undoes_an_unprovisioned_claim() {
+    let db = in_memory_db().await;
+    let id = claimed_task(&db).await;
+
+    assert!(db.try_release_backlog_claim(id).await.unwrap());
+    let released = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(released.status, TaskStatus::Backlog);
+    assert_eq!(
+        released.sub_status,
+        SubStatus::default_for(TaskStatus::Backlog)
+    );
+    // The stamp the claim seeded is cleared, or the task is not quite "as it
+    // was before the chain fired".
+    assert!(released.last_pre_tool_use_at.is_none());
+}
+
+#[tokio::test]
+async fn try_release_backlog_claim_spares_a_provisioned_task() {
+    let db = in_memory_db().await;
+    let id = claimed_task(&db).await;
+    // Provisioning landed: the dispatch succeeded and recorded a worktree.
+    db.patch_task(id, &TaskPatch::new().worktree(Some("/tmp/wt")))
+        .await
+        .unwrap();
+
+    // The release must not stomp a task that is genuinely running.
+    assert!(!db.try_release_backlog_claim(id).await.unwrap());
+    let kept = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(kept.status, TaskStatus::Running);
+    assert_eq!(kept.worktree.as_deref(), Some("/tmp/wt"));
+}
+
+#[tokio::test]
+async fn try_release_backlog_claim_spares_a_task_moved_out_of_running() {
+    let db = in_memory_db().await;
+    let id = claimed_task(&db).await;
+    // A human moved it on while provisioning was still in flight.
+    db.patch_task(id, &TaskPatch::new().status(TaskStatus::Review))
+        .await
+        .unwrap();
+
+    assert!(!db.try_release_backlog_claim(id).await.unwrap());
+    assert_eq!(
+        db.get_task(id).await.unwrap().unwrap().status,
+        TaskStatus::Review
+    );
+}
+
+#[tokio::test]
+async fn try_release_backlog_claim_is_false_for_missing_task() {
+    let db = in_memory_db().await;
+    assert!(!db.try_release_backlog_claim(TaskId(999_999)).await.unwrap());
+}
+
 #[tokio::test]
 async fn batch_patch_sub_status_updates_all_tasks() {
     let db = in_memory_db().await;

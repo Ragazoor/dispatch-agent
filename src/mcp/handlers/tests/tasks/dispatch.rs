@@ -1,6 +1,25 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+use crate::mcp::handlers::tasks::WrapUpAction;
+
+/// An epic that does not resolve stops the chain silently. This is the
+/// warn-and-skip branch of `AutoDispatchNextSubtask`: a chain problem must never
+/// surface as an error, because by the time it runs the session has already
+/// closed. `tasks.epic_id` carries a foreign key, so this branch is only
+/// reachable by calling the chain directly — not by wiring a task to a missing
+/// epic and closing it.
+#[tokio::test]
+async fn auto_dispatch_next_returns_none_for_missing_epic() {
+    let state = test_state().await;
+    assert!(crate::mcp::handlers::tasks::dispatch::auto_dispatch_next(
+        &state,
+        crate::models::EpicId(9999)
+    )
+    .await
+    .is_none());
+}
+
 async fn wait_for_task_changed(
     rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::mcp::McpEvent>,
     expected_id: crate::models::TaskId,
@@ -847,7 +866,7 @@ impl ChainFixture {
             "token": "tok",
             "action": action.as_str(),
         });
-        if action == crate::mcp::handlers::tasks::WrapUpAction::Pr {
+        if action == WrapUpAction::Pr {
             arguments["pr_url"] = json!("https://github.com/acme/repo/pull/1");
         }
         call(
@@ -873,9 +892,7 @@ async fn exit_session_dispatches_first_backlog_subtask() {
         .backlog_subtask(Some(epic_id), "Task 2", Some(20), None)
         .await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     assert!(resp.error.is_none(), "close must succeed: {:?}", resp.error);
 
     wait_for_task_changed(&mut fx.notify_rx, first).await;
@@ -909,9 +926,7 @@ async fn exit_session_response_names_the_chained_subtask() {
         .backlog_subtask(Some(epic_id), "Wire up the widget", Some(10), None)
         .await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     let text = extract_response_text(&resp);
     assert_eq!(
         text,
@@ -939,9 +954,7 @@ async fn exit_session_chain_respects_sort_order() {
         .backlog_subtask(Some(epic_id), "Task B", Some(10), None)
         .await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     let text = extract_response_text(&resp);
     assert!(
         text.contains(&format!("#{}", earlier.0)),
@@ -983,9 +996,7 @@ async fn exit_session_chain_respects_tag_routing() {
         "fixture must exercise the research routing branch"
     );
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     assert!(resp.error.is_none(), "{:?}", resp.error);
 
     wait_for_task_changed(&mut fx.notify_rx, next).await;
@@ -1003,9 +1014,7 @@ async fn exit_session_with_no_backlog_subtask_closes_without_chaining() {
     let epic_id = fx.epic(true).await;
     let closing = fx.closing_subtask(Some(epic_id)).await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     assert_eq!(extract_response_text(&resp), "Session closed.");
     assert_eq!(
         fx.db.get_task(closing).await.unwrap().unwrap().status,
@@ -1033,9 +1042,7 @@ async fn exit_session_does_not_chain_when_auto_dispatch_off() {
         .backlog_subtask(Some(epic_id), "Task 1", Some(10), None)
         .await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     assert_eq!(extract_response_text(&resp), "Session closed.");
 
     // The claim is synchronous and completes before exit_session returns, so a
@@ -1051,9 +1058,7 @@ async fn exit_session_without_epic_closes_without_chaining() {
     let fx = ChainFixture::new().await;
     let closing = fx.closing_subtask(None).await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     assert_eq!(extract_response_text(&resp), "Session closed.");
     assert_eq!(
         fx.db.get_task(closing).await.unwrap().unwrap().status,
@@ -1073,8 +1078,7 @@ async fn exit_session_chain_starts_only_after_the_closing_task_is_terminal() {
         .backlog_subtask(Some(epic_id), "Successor", Some(10), None)
         .await;
 
-    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    fx.close(closing, WrapUpAction::Done).await;
     wait_for_task_changed(&mut fx.notify_rx, next).await;
 
     let successor = fx.db.get_task(next).await.unwrap().unwrap();
@@ -1100,20 +1104,20 @@ async fn exit_session_chain_starts_only_after_the_closing_task_is_terminal() {
 /// it fired `dispatch_next` regardless of action.
 #[tokio::test]
 async fn exit_session_chains_for_rebase_action() {
-    assert_action_chains(crate::mcp::handlers::tasks::WrapUpAction::Rebase).await;
+    assert_action_chains(WrapUpAction::Rebase).await;
 }
 
 #[tokio::test]
 async fn exit_session_chains_for_done_action() {
-    assert_action_chains(crate::mcp::handlers::tasks::WrapUpAction::Done).await;
+    assert_action_chains(WrapUpAction::Done).await;
 }
 
 #[tokio::test]
 async fn exit_session_chains_for_pr_action() {
-    assert_action_chains(crate::mcp::handlers::tasks::WrapUpAction::Pr).await;
+    assert_action_chains(WrapUpAction::Pr).await;
 }
 
-async fn assert_action_chains(action: crate::mcp::handlers::tasks::WrapUpAction) {
+async fn assert_action_chains(action: WrapUpAction) {
     let mut fx = ChainFixture::new().await;
     let epic_id = fx.epic(true).await;
     let closing = fx.closing_subtask(Some(epic_id)).await;
@@ -1154,9 +1158,7 @@ async fn exit_session_chain_reverts_claim_when_dispatch_fails() {
         )
         .await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     assert!(
         resp.error.is_none(),
         "a failed chain must not fail the close: {:?}",
@@ -1222,8 +1224,7 @@ async fn exit_session_failed_close_leaves_the_task_unchanged() {
     let closing = fx.closing_subtask(None).await;
     let before = fx.db.get_task(closing).await.unwrap().unwrap();
 
-    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    fx.close(closing, WrapUpAction::Done).await;
 
     let after = fx.db.get_task(closing).await.unwrap().unwrap();
     assert_eq!(
@@ -1256,8 +1257,7 @@ async fn exit_session_failed_close_issues_no_kill_window() {
     let fx = ChainFixture::with_failing_close().await;
     let closing = fx.closing_subtask(None).await;
 
-    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    fx.close(closing, WrapUpAction::Done).await;
 
     let kills = fx.kill_window_calls();
     assert!(
@@ -1273,8 +1273,7 @@ async fn exit_session_failed_close_records_no_pr_url() {
     let fx = ChainFixture::with_failing_close().await;
     let closing = fx.closing_subtask(None).await;
 
-    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Pr)
-        .await;
+    fx.close(closing, WrapUpAction::Pr).await;
 
     let after = fx.db.get_task(closing).await.unwrap().unwrap();
     assert_eq!(after.status, TaskStatus::Running);
@@ -1292,9 +1291,7 @@ async fn exit_session_failed_close_returns_success_reporting_the_failure() {
     let fx = ChainFixture::with_failing_close().await;
     let closing = fx.closing_subtask(None).await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
 
     assert!(
         resp.error.is_none(),
@@ -1328,8 +1325,7 @@ async fn exit_session_failed_close_still_consumes_the_exit_token() {
     let fx = ChainFixture::with_failing_close().await;
     let closing = fx.closing_subtask(None).await;
 
-    fx.close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    fx.close(closing, WrapUpAction::Done).await;
 
     assert!(
         fx.state.exit_tokens.read().unwrap().get(&closing).is_none(),
@@ -1348,9 +1344,7 @@ async fn exit_session_failed_close_does_not_chain() {
         .backlog_subtask(Some(epic_id), "Successor", Some(10), None)
         .await;
 
-    let resp = fx
-        .close(closing, crate::mcp::handlers::tasks::WrapUpAction::Done)
-        .await;
+    let resp = fx.close(closing, WrapUpAction::Done).await;
     let text = extract_response_text(&resp);
     assert!(
         !text.contains("Dispatching next epic subtask"),

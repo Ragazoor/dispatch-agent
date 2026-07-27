@@ -604,12 +604,13 @@ rule AutoDispatchNextSubtask {
         -- Re-selection after a lost claim is bounded (currently 5 attempts) so a
         -- pathological contention storm cannot spin; exhausting the budget just
         -- stops the chain, which is one of the normal outcomes above.
-        -- Scope of that exclusivity: it holds between chains, and between a
-        -- chain and DispatchTaskViaMcp (whose backlog guard the claim
-        -- invalidates). The TUI dispatch key does not claim, so a human
-        -- dispatching the exact subtask a chain is claiming, in the same
-        -- instant, can still double-dispatch it; that window is pre-existing and
-        -- closing it means putting the TUI path on the same claim.
+        -- Scope of that exclusivity: it holds BETWEEN CHAINS, and nowhere else.
+        -- Neither DispatchTaskViaMcp nor the TUI dispatch key claims: both read
+        -- the task's status, then provision, then write running, so a claim that
+        -- lands inside that window changes nothing they re-check and the same
+        -- subtask is provisioned twice. Those windows are pre-existing and
+        -- closing them means routing every dispatch entry point through the
+        -- claim.
         -- Consequence: the status half of DispatchTask's postcondition (backlog
         -- -> running with the default running sub_status, and a seeded
         -- last_pre_tool_use_at) is applied synchronously at selection time,
@@ -630,19 +631,27 @@ rule AutoDispatchNextSubtask {
         -- reverted to backlog with the default backlog sub_status, the
         -- last_pre_tool_use_at the claim seeded is cleared again, and a warning
         -- is logged, leaving it dispatchable exactly as before the chain fired.
-        -- That clear is the one sanctioned exception to the
-        -- last_pre_tool_use_at ownership invariant in agent-health.allium: it
-        -- unwinds a stamp this same flow wrote moments earlier, rather than
-        -- overwriting a hook's.
+        -- That release is itself conditional, mirroring the claim: it applies
+        -- only while the subtask is still running with no worktree, so a task
+        -- that was provisioned or moved on during the dispatch attempt is left
+        -- alone rather than stomped back to backlog. A release that does not
+        -- apply is logged and otherwise ignored.
+        -- The last_pre_tool_use_at clear is the one sanctioned exception to the
+        -- ownership invariant in agent-health.allium: it unwinds a stamp this
+        -- same flow wrote moments earlier, rather than overwriting a hook's.
         --
         -- No chain failure can fail the close. By the time this rule runs the
         -- closing task has already reached its terminal status and its session
         -- has been torn down, so reporting an error here would tell the agent
         -- its session failed to close when it did not. A missing epic, a lost
         -- claim, a claim error and a failed dispatch are each logged at warn and
-        -- nothing more. A DB error while READING auto_dispatch is fail-open —
-        -- the flag is treated as true — so a transient hiccup does not silently
-        -- stall an epic.
+        -- nothing more. A DB error while READING auto_dispatch is fail-CLOSED —
+        -- the chain simply stops, indistinguishable from the normal stops above.
+        -- Nothing requested this chain, so the conservative default is to launch
+        -- no agent: failing open would start an agent on an epic whose operator
+        -- may have turned chaining off. (The predecessor dispatch_next tool
+        -- failed open, which was right for an explicit agent request; that
+        -- reasoning does not transfer to an automatic trigger.)
         --
         -- The TUI finish path (W then r, FinishTaskSuccess in
         -- pr-workflow.allium) does not emit SessionClosed and therefore does

@@ -584,6 +584,28 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
+    async fn try_release_backlog_claim(&self, id: TaskId) -> Result<bool> {
+        self.db_call(move |conn| {
+            let backlog = TaskStatus::Backlog;
+            let rows = conn
+                .execute(
+                    "UPDATE tasks \
+                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = NULL, \
+                         updated_at = datetime('now') \
+                     WHERE id = ?3 AND status = ?4 AND worktree IS NULL",
+                    params![
+                        backlog.as_str(),
+                        SubStatus::default_for(backlog).as_str(),
+                        id.0,
+                        TaskStatus::Running.as_str(),
+                    ],
+                )
+                .context("Failed to release backlog claim")?;
+            Ok(rows == 1)
+        })
+        .await
+    }
+
     async fn batch_patch_sub_status(&self, updates: &[(TaskId, SubStatus)]) -> Result<()> {
         if updates.is_empty() {
             return Ok(());

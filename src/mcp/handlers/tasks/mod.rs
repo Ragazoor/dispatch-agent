@@ -13,7 +13,10 @@ pub(super) use super::types::{
 };
 
 mod crud;
-mod dispatch;
+// `pub(super)` so the handler tests under `handlers::tests` can reach
+// `auto_dispatch_next` directly for the one branch `exit_session` cannot drive
+// (a task whose epic_id does not resolve — blocked by a foreign key).
+pub(super) mod dispatch;
 mod verify;
 mod watch;
 mod wrap_up;

@@ -718,16 +718,31 @@ impl TaskService {
                 continue;
             }
             self.recalculate_epic(epic_id).await;
-            let mut claimed = candidate;
-            claimed.status = TaskStatus::Running;
-            claimed.sub_status = SubStatus::default_for(TaskStatus::Running);
-            claimed.last_pre_tool_use_at = Some(now);
-            return Ok(Some(claimed));
+            // Re-read rather than mirroring the claim's SET list here: the row
+            // is the truth, and hand-copying it silently drifts (the DB also
+            // stamps `updated_at`, which no in-memory copy would carry).
+            return Ok(self.db.get_task(candidate.id).await?);
         }
         tracing::warn!(
             epic_id = epic_id.0,
             "claim_next_backlog_task: gave up after {CLAIM_MAX_ATTEMPTS} contended attempts"
         );
         Ok(None)
+    }
+
+    /// Undo a claim on a subtask that was never provisioned, returning it to
+    /// `Backlog` with the claim's activity stamp cleared.
+    ///
+    /// Conditional, mirroring [`Self::claim_next_backlog_task`]: it only fires
+    /// while the task is still `Running` with no worktree. Provisioning can take
+    /// a `git fetch`'s worth of wall time, so an unconditional revert would
+    /// stomp a task a human moved, or one that `claim_task` legitimately took,
+    /// back to `Backlog`. Returns whether the release applied.
+    pub async fn release_claim(&self, task_id: TaskId) -> Result<bool, ServiceError> {
+        let released = self.db.try_release_backlog_claim(task_id).await?;
+        if released {
+            self.recalculate_epic_for_task(task_id).await;
+        }
+        Ok(released)
     }
 }

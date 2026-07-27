@@ -191,6 +191,12 @@ pub trait TaskCrud: TaskRead {
         id: TaskId,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool>;
+    /// The inverse of [`Self::try_claim_backlog_task`]: return a claimed but
+    /// still-unprovisioned task to `Backlog` and clear the activity stamp the
+    /// claim seeded. Conditional on `status = running AND worktree IS NULL`, so
+    /// it cannot stomp a task that has since been provisioned or moved by
+    /// someone else. Returns whether the release applied.
+    async fn try_release_backlog_claim(&self, id: TaskId) -> Result<bool>;
     /// Upsert tasks from a feed. Inserts new tasks; on conflict (epic_id, external_id)
     /// updates title and description only — status and other user-managed fields are preserved.
     ///

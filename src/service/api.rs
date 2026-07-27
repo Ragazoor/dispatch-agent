@@ -240,19 +240,26 @@ macro_rules! task_service_api {
                 kind: $crate::models::HookEventKind
             ) -> Result<(), $crate::service::ServiceError>;
 
-            async fn next_backlog_task(
-                &self,
-                epic_id: $crate::models::EpicId
-            ) -> Result<Option<$crate::models::Task>, $crate::service::ServiceError>;
-
             /// Select and atomically claim the epic's next backlog subtask,
             /// moving it to `Running` before any provisioning happens. Exclusive
             /// under concurrency — see `AutoDispatchNextSubtask` in
             /// `docs/specs/epics.allium`.
+            ///
+            /// Deliberately the only selection method on this seam: a
+            /// non-atomic "find the next backlog task" sibling would be an easy
+            /// way to reintroduce the double-dispatch this replaced.
             async fn claim_next_backlog_task(
                 &self,
                 epic_id: $crate::models::EpicId
             ) -> Result<Option<$crate::models::Task>, $crate::service::ServiceError>;
+
+            /// Undo an unprovisioned claim, returning the subtask to `Backlog`.
+            /// Conditional on the task still being claimed-and-unprovisioned;
+            /// returns whether it applied.
+            async fn release_claim(
+                &self,
+                task_id: $crate::models::TaskId
+            ) -> Result<bool, $crate::service::ServiceError>;
 
             async fn subscribe_to_task(
                 &self,
