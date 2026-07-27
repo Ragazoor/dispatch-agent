@@ -44,16 +44,32 @@ fn sort_order_for_status_transition(
     now: DateTime<Utc>,
 ) -> Option<Option<i64>> {
     match (prior == TaskStatus::Done, next == TaskStatus::Done) {
-        (false, true) => Some(Some(-now.timestamp())), // entering Done
-        (true, false) => Some(None),                    // leaving Done
-        _ => None,                                      // no transition
+        (false, true) => Some(Some(-now.timestamp_millis())), // entering Done
+        (true, false) => Some(None),                          // leaving Done
+        _ => None,                                            // no transition
     }
 }
 ```
 
-The value is the *negated* Unix timestamp (seconds) so that the existing
-ascending `sort_by_key` comparators used everywhere already put the most
-negative (= most recent) value first, with no comparator changes.
+The value is the *negated* Unix timestamp in **milliseconds** (not seconds)
+so that the existing ascending `sort_by_key` comparators used everywhere
+already put the most negative (= most recent) value first, with no
+comparator changes. Millisecond precision is a deliberate choice, not the
+obvious default: two tasks marked Done in the same wall-clock *second* are a
+real, reachable case (bulk multi-select "confirm done", or the PR-poller
+detecting several merges in the same 30s tick) and would otherwise tie and
+silently fall back to the id-order tie-break — exactly the default this
+feature replaces. Millisecond precision shrinks that window enormously
+without any schema change (still a plain `i64`). A true tie is still
+possible in principle and is an accepted residual gap: `column_items_for_*`
+already tie-breaks on id as a second sort key, so a same-millisecond tie
+degrades gracefully to id order rather than crashing or panicking.
+
+Wherever the rule returns `Some(v)`, the caller **must apply it
+unconditionally** — overwriting any `sort_order` already present in the
+patch being built, not just filling in an unset field. This is not
+defensive plumbing; see the `exec_persist_task` finding below for why it's
+load-bearing.
 
 This function is the one piece of new domain logic; everything else is
 plumbing it into the places that already decide a task's/epic's next
@@ -70,14 +86,38 @@ editor, MCP tools — ultimately calls one of these):
 - `TaskService::update_task` (`src/service/tasks/crud.rs:83-162`)
 - `TaskService::cli_update_task` (`src/service/tasks/crud.rs:318-361`)
 
-Both already read the prior task via `self.db.get_task(...)` when the
-target status needs inspecting (the existing PR-finalisation check is the
-precedent for this shape). In both methods, after resolving `prior.status`
-and the requested `next_status`, call `sort_order_for_status_transition` and
-fold its result into the `TaskPatch` being built — overriding whatever
-`sort_order` the caller-supplied params already set for that field (no
-existing caller sets both `status` and `sort_order` in the same call, so
-there's no real conflict to arbitrate).
+**Correction from the adversarial review**: neither method fetches the
+prior task unconditionally today. Both compute
+`is_finishing_status = matches!(status, Some(Done | Archived))` and only
+fetch `prior` when the *target* is Done/Archived (for the existing
+PR-finalisation check) — which covers *entering* Done but never *leaving*
+it. Detecting "was this task Done a moment ago" requires the prior task
+regardless of what the target status is. The fix: widen the fetch
+condition in both methods to fire whenever `params.status.is_some()`, not
+only when the target is a finishing status. This is a genuine new
+always-on-status-change DB read (via `db_call_read`, the read-pool
+connection — not serialized behind the single writer, so it doesn't
+contend with the mutation-boundary performance model in
+`docs/conventions.md`), not free reuse of existing logic.
+
+Given `prior.status` and the requested `next_status`, call
+`sort_order_for_status_transition` and **unconditionally** overwrite
+`sort_order` on the `TaskPatch` being built whenever it returns `Some(v)` —
+this must win over anything the caller-supplied params already set for that
+field. This is not a defensive no-op: `exec_persist_task`
+(`src/runtime/tasks.rs:163-192`), the funnel every TUI status-change
+handler goes through, unconditionally forwards whatever `sort_order`
+happens to be sitting on the in-memory `Task` struct alongside the status
+change (`if let Some(so) = task.sort_order { p = p.sort_order(so); }`).
+Concretely: `handle_move_task`'s backward branch
+(`src/tui/update/lifecycle.rs:9-72`) moves a task Done→Review without
+touching `sort_order` on the in-memory struct; if the "leaving Done" clear
+isn't applied unconditionally, the stale large-negative `sort_order` value
+rides along into Review/Backlog/Running and permanently pins the task to
+the top of whatever column it lands in (since `sort_order.unwrap_or(id)`
+always prefers a very negative number over any id). The implementation
+must apply the transition rule *after* building the patch from params, as
+a final override step, not merged into the params-to-patch translation.
 
 `UpdateTaskParams`/`build_task_patch` has no way to express "clear
 `sort_order`" today (it only supports "set"). Rather than add
@@ -99,9 +139,12 @@ Epic status transitions are **not** funneled through one place — two
 independent chokepoints both need the rule:
 
 - `EpicService::update_epic` (`src/service/epics.rs:275-341`) — manual
-  TUI column-move and MCP `update_epic` path. Same shape as the task
-  version: read prior epic, compute the transition, fold into the
-  `EpicPatch` alongside `status`.
+  TUI column-move and MCP `update_epic` path. **Correction**: this method
+  has *no* existing prior-fetch to reuse (its only conditional
+  `self.db.get_epic(...)` call is for an unrelated RepoGroup-reparent
+  guard) — a prior-fetch gated on `params.status.is_some()` needs to be
+  added from scratch here, then the same unconditional-override logic as
+  the task side applied to the `EpicPatch` before calling `db.patch_epic`.
 - `recalculate_epic_status_inner` (`src/db/queries/epics.rs:376-457`) — the
   automatic "all subtasks done → epic done" (and regression back to
   Backlog) rollup. This runs synchronously against a raw `rusqlite`
@@ -121,7 +164,11 @@ ranking, e.g. the CVE feed). Left unguarded, a feed re-poll of a task that
 has since been completed would silently overwrite its completion-order
 value back to a severity rank. Fix: change that one `SET` clause to a
 `CASE` that only applies `excluded.sort_order` when the row's current
-`status != 'done'`, leaving a Done task's `sort_order` alone on re-poll.
+`status != 'done'`, leaving a Done task's `sort_order` alone on re-poll —
+qualified as `tasks.status` in the `CASE`, matching the existing qualified
+`CASE` style already used two lines above for `tasks.url`/`tasks.url_type`
+in the same statement (`src/db/queries/tasks.rs`), rather than an
+unqualified `status` reference.
 
 ### Migration
 
@@ -133,6 +180,16 @@ completion timestamp exists for historical data. Rows that already have a
 non-null `sort_order` (e.g. previously manually reordered) are left
 untouched.
 
+Note the backfill is deliberately **seconds**-scale (matching `updated_at`'s
+storage precision) while live transitions going forward are
+**milliseconds**-scale (per the core rule above) — these two scales are not
+directly comparable magnitude-for-magnitude, but this is not a bug: any
+live (post-migration) completion is ~1000x more negative than any
+backfilled value regardless of how soon after the migration it happens,
+which correctly places the entire "completed after this feature shipped"
+set above the entire "completed before, approximated" set. Ordering within
+each set independently is correct (same units throughout).
+
 ## Testing plan (TDD — tests before implementation)
 
 - **Core rule**: table-driven unit test enumerating all four
@@ -141,16 +198,29 @@ untouched.
   recalculation) and "neither Done" cases returning `None`.
 - **`TaskService::update_task`**: entering Done from Review/Running/Backlog
   sets a negative-timestamp `sort_order`; leaving Done to any other status
-  clears it to `None`; Done→Done (e.g. an unrelated field edit while
-  already Done) leaves `sort_order` untouched.
+  clears it to `None` **even when the caller's params carry a stale
+  `sort_order` alongside the status change** (the `exec_persist_task`
+  scenario — construct params exactly as that funnel does, with both
+  `status` and a non-`None` `sort_order` set, and assert the clear still
+  wins); Done→Done (e.g. an unrelated field edit while already Done) leaves
+  `sort_order` untouched.
 - **`TaskService::cli_update_task`**: same three cases via the CLI funnel.
+- **Task editor un-archive path**: an Archived task has `sort_order = None`
+  (already cleared when it left Done); editing its STATUS field back to
+  `backlog` goes through `update_task` and must not error or produce a
+  surprising `sort_order` — regression test confirming this reachable
+  (if unvalidated) transition behaves correctly, since the design's
+  reasoning here relies on `sort_order` already being `None` by the time a
+  task leaves Done, not on restore-from-archive being unreachable.
 - **`recalculate_epic_status_inner`**: all-subtasks-done transition sets
   `sort_order`; regression back to Backlog (per the existing
   `..._done_regresses_to_backlog_when_running_task_added` test) clears it;
   already-Done no-op recalculation (per
   `..._all_done_stays_done_when_already_done`) leaves it untouched.
 - **`EpicService::update_epic`**: manual status set to Done sets
-  `sort_order`; manual status set away from Done clears it.
+  `sort_order`; manual status set away from Done clears it (this method has
+  no prior-fetch today — the added fetch, gated on `params.status.is_some()`,
+  needs its own dedicated test coverage, not just reuse of an existing one).
 - **Feed upsert**: re-poll of an existing Done-status feed task does not
   change its `sort_order`; re-poll of a non-Done feed task still updates
   `sort_order` from the feed item as before.
