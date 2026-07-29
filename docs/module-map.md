@@ -69,6 +69,7 @@ to look.
 | `src/dispatch/worktree.rs` | Worktree creation/teardown, `.dispatch/` directory + gitignore bootstrap |
 | `src/dispatch/trust.rs` | Reads and writes Claude Code's per-project trust flag in `~/.claude.json` so a fresh worktree doesn't stall on the trust prompt |
 | `src/dispatch/finish.rs` | Rebase + fast-forward branch onto base branch, kill tmux window (`finish_task`); defines `FinishError` |
+| `src/dispatch/split_panes.rs` | Multi-step tmux sequences behind the board's split-pane feature: `join_task_window_into_pane` (pin, killing the leftover agent-tree companion) and `swap_task_window_into_pane` (swap + rename/kill + companion resync). Lives here rather than in `src/tmux.rs` because it carries policy and calls `resync_agent_tree_pane`; `src/runtime/split.rs` keeps only the `spawn_blocking` + message emission |
 | `src/feed/mod.rs` | `FeedRunner` struct, poll loop, `tick()` orchestration — composes exec/parse/ingest; re-exports `resolve_base_branches` |
 | `src/feed/exec.rs` | `resolve_base_branches()` (cached per-path git lookup), `exec_feed_command()` (async shell spawn + stdout capture) |
 | `src/feed/parse.rs` | `parse_feed_items()` — JSON → `Vec<FeedItem>` deserialization |

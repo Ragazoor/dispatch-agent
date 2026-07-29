@@ -134,21 +134,30 @@ pub fn kill_window_if_present(window: &str, runner: &dyn ProcessRunner) -> Resul
     }
 }
 
+/// Run a server-wide `list-*` query and collect its non-empty output lines.
+///
+/// Shared by [`list_all_window_names`] and [`list_all_pane_ids`] so the
+/// non-obvious half of the contract — a failed call means "no server running",
+/// not an error — lives in one place.
+fn list_all(args: &[&str], runner: &dyn ProcessRunner) -> Result<Vec<String>> {
+    let output = runner.run("tmux", args)?;
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+    let lines = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(lines)
+}
+
 /// List the names of all tmux windows across all sessions.
 ///
 /// Uses `-a` so the query works whether the caller is inside or outside tmux.
 /// Returns an empty vec (not an error) when no tmux server is running.
 pub fn list_all_window_names(runner: &dyn ProcessRunner) -> Result<Vec<String>> {
-    let output = runner.run("tmux", &["list-windows", "-a", "-F", "#{window_name}"])?;
-    if !output.status.success() {
-        return Ok(vec![]);
-    }
-    let names = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    Ok(names)
+    list_all(&["list-windows", "-a", "-F", "#{window_name}"], runner)
 }
 
 /// Kill the tmux window with the given name.
@@ -448,12 +457,23 @@ pub fn respawn_pane(pane_id: &str, runner: &dyn ProcessRunner) -> Result<()> {
 }
 
 /// Get the pane ID for a window's first pane.
+///
+/// Errors when `window` does not exist. That check has to be explicit: like
+/// [`pane_exists`]' old implementation, `display-message -t <unknown>` exits 0
+/// and prints an empty string rather than failing, so a missing window would
+/// otherwise resolve to `Ok("")` — and `swap-pane -s ''` also exits 0, so the
+/// empty id propagates silently until some later command in the sequence fails
+/// with a misleading message. Verified against tmux 3.5a.
 pub fn pane_id_for_window(window: &str, runner: &dyn ProcessRunner) -> Result<String> {
-    run_checked_stdout(
+    let pane_id = run_checked_stdout(
         runner,
         &["display-message", "-p", "-t", window, "#{pane_id}"],
         "display-message",
-    )
+    )?;
+    if pane_id.is_empty() {
+        bail!("no tmux window named '{window}'");
+    }
+    Ok(pane_id)
 }
 
 /// Atomically swap the contents of two panes without changing the layout.
@@ -514,18 +534,10 @@ pub fn inactive_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Opti
 /// List the ids of all tmux panes across all sessions.
 ///
 /// The pane-level sibling of [`list_all_window_names`], with the same `-a`
-/// rationale and the same "no server running" handling.
-pub fn list_all_pane_ids(runner: &dyn ProcessRunner) -> Result<Vec<String>> {
-    let output = runner.run("tmux", &["list-panes", "-a", "-F", "#{pane_id}"])?;
-    if !output.status.success() {
-        return Ok(vec![]);
-    }
-    let ids = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect();
-    Ok(ids)
+/// rationale and the same "no server running" handling. Private: only
+/// [`pane_exists`] needs it.
+fn list_all_pane_ids(runner: &dyn ProcessRunner) -> Result<Vec<String>> {
+    list_all(&["list-panes", "-a", "-F", "#{pane_id}"], runner)
 }
 
 /// Check whether a tmux pane with the given ID still exists.
@@ -1309,6 +1321,19 @@ mod tests {
         assert_eq!(
             calls[0].1,
             vec!["display-message", "-p", "-t", "task-42", "#{pane_id}"]
+        );
+    }
+
+    #[test]
+    fn pane_id_for_window_fails_on_empty_output() {
+        // The case real tmux actually produces for a missing window: exit 0 with
+        // no output. Without the explicit emptiness check this returned Ok(""),
+        // and `swap-pane -s ''` exits 0 too, so the bad id propagated silently.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"\n")]);
+        let err = pane_id_for_window("task-999", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-999'"),
+            "got: {err}"
         );
     }
 

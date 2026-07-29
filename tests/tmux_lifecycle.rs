@@ -1,30 +1,25 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! Real-tmux integration tests for the window/pane topology dispatch builds.
+//! Real-tmux integration tests for the **topology** dispatch builds: which
+//! windows and panes exist after an operation, on which side of a split, and
+//! with which resolved cwd.
 //!
-//! # What this file observes, and why a real server is needed
+//! These drive the production entry points (`dispatch_agent`, `resume_agent`,
+//! `join_task_window_into_pane`, …) against a real tmux server and then ask the
+//! server what it actually built. Windows created by production run the default
+//! shell — `tmux::new_window` takes no command — so their panes resolve stub
+//! `claude` / `dispatch` binaries that report their own cwd, pane and argv.
 //!
-//! `MockProcessRunner` records argv, so a mock test can prove *"we asked tmux
-//! for a split"* but not *"the split landed in the right window, on the right
-//! side, with the right cwd"*. Task #3781 was exactly that class of bug and its
-//! mock test stayed green. So these tests drive the production entry points
-//! (`dispatch_agent`, `resume_agent`, `join_task_window_into_pane`, …) against a
-//! real tmux server and then ask the server what it actually built.
-//!
-//! # Relationship to tests/tmux_split_hook.rs
-//!
-//! That file is the *routing* microscope: every pane runs `cat > log`, so it can
-//! see which pane a keystroke reached. It can only do that for panes it creates
-//! itself. This file covers windows **production** creates — where
-//! `tmux::new_window` starts the default shell and takes no command — so panes
-//! run the real shell and resolve stub `claude` / `dispatch` binaries that report
-//! their own cwd, pane and argv. Between them: routing and topology.
+//! Its sibling `tests/tmux_split_hook.rs` covers the complementary question,
+//! *routing*: which pane a keystroke reached, observed with capture panes it
+//! creates itself.
 //!
 //! The board window is ours in both files, so the invariant that **no keystroke
 //! ever reaches the board** is assertable throughout. It matters because the
 //! board is a TUI: a stray `cd <path>` is read as keybindings (`c` opens Copy
 //! Task), which is precisely what #3781 did to users.
 //!
-//! Shared rig, stub mechanism and isolation rationale: tests/tmux_harness/mod.rs.
+//! Why a real server is needed at all, plus the stub and isolation mechanisms:
+//! tests/tmux_harness/mod.rs.
 
 mod tmux_harness;
 
@@ -36,7 +31,7 @@ use dispatch_tui::tmux;
 
 use tmux_harness::{
     await_stub_line, capture_cmd, install_stubs, read_now, stub_lines, tmux_available_or_skip,
-    TmuxServer,
+    StubLine, TmuxServer,
 };
 
 /// The board TUI window. Created first so it is the session's active window —
@@ -198,6 +193,54 @@ impl Fixture {
         .expect("dispatch_agent")
     }
 
+    /// Resume a task whose worktree exists but whose window does not.
+    fn resume(&self, id: i64, worktree: &Path) -> dispatch_tui::models::ResumeResult {
+        dispatch::resume_agent(
+            TaskId(id),
+            worktree.to_str().unwrap(),
+            &self.server.runner(),
+        )
+        .expect("resume_agent")
+    }
+
+    /// Pin `window`'s agent pane into the board window. Returns the pinned pane.
+    fn pin(&self, window: &str) -> String {
+        dispatch::join_task_window_into_pane(window, &self.board_pane(), &self.server.runner())
+            .expect("join_task_window_into_pane")
+    }
+
+    /// Swap `into_window`'s task into the already-pinned `pane`, renaming the
+    /// displaced window back to `old_window`.
+    fn swap(&self, into_window: &str, pane: &str, old_window: Option<&str>) -> String {
+        dispatch::swap_task_window_into_pane(into_window, pane, old_window, &self.server.runner())
+            .expect("swap_task_window_into_pane")
+    }
+
+    /// An agent window with no companion pane — the state after the user toggles
+    /// the tree pane off. Its pane holds open on `cat` so it cannot vanish
+    /// mid-assertion.
+    fn bare_agent_window(&self, id: i64) -> String {
+        let window = self.window(id);
+        self.server
+            .tmux_ok(&["new-window", "-d", "-n", &window, "--", "sh", "-c", "cat"]);
+        window
+    }
+
+    /// Block until the companion pane for `id` has started and logged itself.
+    ///
+    /// Doubles as the happens-before anchor for negative assertions: the
+    /// companion split is what fires the `after-split-window` hook, so once this
+    /// returns, anything the hook misrouted has already been written too.
+    fn await_companion(&self, id: i64) -> StubLine {
+        let want = format!("agent-tree {id}");
+        await_stub_line(&self.server, |l| l.args == want).unwrap_or_else(|| {
+            panic!(
+                "companion pane for task {id} never ran `{want}`; log: {:?}",
+                stub_lines(&self.server)
+            )
+        })
+    }
+
     /// Provision a worktree without dispatching — the state a detached task is
     /// in (worktree on disk, no live window), which is what `resume_agent`
     /// expects. Done with git directly rather than by dispatching and killing
@@ -247,30 +290,14 @@ impl Fixture {
     }
 }
 
-/// Find the stub line for `binary` (`claude` / `dispatch`), waiting for it.
-fn stub_for(fx: &Fixture, binary: &str) -> String {
-    await_stub_line(&fx.server, |l| l.starts_with(binary)).unwrap_or_else(|| {
+/// Wait for the invocation of `binary` (`claude` / `dispatch`).
+fn stub_for(fx: &Fixture, binary: &str) -> StubLine {
+    await_stub_line(&fx.server, |l| l.name == binary).unwrap_or_else(|| {
         panic!(
             "no `{binary}` stub invocation recorded; log was: {:?}",
             stub_lines(&fx.server)
         )
     })
-}
-
-/// Pull one field out of a stub line, which has the fixed shape
-/// `<name> pane=%N cwd=/some/path args=whatever follows`.
-fn field(line: &str, key: &str) -> String {
-    let rest = match line.split_once(&format!("{key}=")) {
-        Some((_, rest)) => rest,
-        None => return String::new(),
-    };
-    // Fields are terminated by the next field's marker; `args` runs to the end.
-    for terminator in [" cwd=", " args="] {
-        if let Some((value, _)) = rest.split_once(terminator) {
-            return value.trim().to_string();
-        }
-    }
-    rest.trim().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +313,11 @@ fn harness_ignores_the_developers_tmux_config() {
     if !tmux_available_or_skip() {
         return;
     }
+    // Called even though this test never launches a stub, so that every test in
+    // the binary reaches the `PATH` mutation through the same OnceLock before it
+    // spawns any process — `std::env::set_var` is not thread-safe against a
+    // concurrent `Command::spawn` reading the environment.
+    install_stubs();
     let server = TmuxServer::start();
     server.tmux_ok(&["new-session", "-d", "-s", "t", "-n", "w"]);
 
@@ -348,13 +380,13 @@ fn dispatch_launches_claude_in_the_worktree() {
 
     let line = stub_for(&fx, "claude");
     assert_eq!(
-        canonical(&field(&line, "cwd")),
+        canonical(&line.cwd),
         canonical(&result.worktree_path),
-        "claude must run from the worktree; line: {line}"
+        "claude must run from the worktree; line: {line:?}"
     );
     assert!(
-        line.contains("--plugin-dir"),
-        "claude must be launched with the dispatch plugin dir; line: {line}"
+        line.args.contains("--plugin-dir"),
+        "claude must be launched with the dispatch plugin dir; line: {line:?}"
     );
 }
 
@@ -364,11 +396,7 @@ fn dispatch_opens_the_companion_agent_tree_pane() {
 
     fx.dispatch(TASK_ID);
 
-    let line = stub_for(&fx, "dispatch");
-    assert!(
-        line.contains(&format!("args=agent-tree {TASK_ID}")),
-        "companion pane must run `dispatch agent-tree {TASK_ID}`; line: {line}"
-    );
+    fx.await_companion(TASK_ID);
     assert_eq!(
         fx.server.pane_count(&fx.window(TASK_ID)),
         2,
@@ -385,12 +413,11 @@ fn dispatch_companion_pane_is_on_the_left() {
 
     fx.dispatch(TASK_ID);
     let window = fx.window(TASK_ID);
-    let companion_line = stub_for(&fx, "dispatch");
-    let companion_pane = field(&companion_line, "pane");
+    let companion = fx.await_companion(TASK_ID);
 
     assert_eq!(
         fx.server.leftmost_pane_id(&window).as_deref(),
-        Some(companion_pane.as_str()),
+        Some(companion.pane.as_str()),
         "companion pane should be leftmost; panes: {:?}",
         fx.server.pane_lefts(&window)
     );
@@ -417,10 +444,7 @@ fn dispatch_never_types_into_the_board_window() {
     let Some(fx) = setup_or_skip() else { return };
 
     fx.dispatch(TASK_ID);
-    // Anchor on the companion pane having started, so the hook (which fires on
-    // that split) has demonstrably run and anything it misrouted is already
-    // written.
-    stub_for(&fx, "dispatch");
+    fx.await_companion(TASK_ID);
 
     fx.assert_board_untouched();
 }
@@ -435,12 +459,7 @@ fn resume_creates_a_new_window_for_a_worktree_without_one() {
     let worktree = fx.add_worktree(TASK_ID);
     assert!(!fx.server.has_window(&fx.window(TASK_ID)));
 
-    let result = dispatch::resume_agent(
-        TaskId(TASK_ID),
-        worktree.to_str().unwrap(),
-        &fx.server.runner(),
-    )
-    .expect("resume_agent");
+    let result = fx.resume(TASK_ID, &worktree);
 
     assert_eq!(result.tmux_window, fx.window(TASK_ID));
     assert!(fx.server.has_window(&fx.window(TASK_ID)));
@@ -454,26 +473,21 @@ fn resume_reaches_the_agent_pane_with_continue() {
     let Some(fx) = setup_or_skip() else { return };
     let worktree = fx.add_worktree(TASK_ID);
 
-    dispatch::resume_agent(
-        TaskId(TASK_ID),
-        worktree.to_str().unwrap(),
-        &fx.server.runner(),
-    )
-    .expect("resume_agent");
+    fx.resume(TASK_ID, &worktree);
 
     let line = stub_for(&fx, "claude");
     assert!(
-        line.contains("--continue"),
-        "resume must launch claude with --continue; line: {line}"
+        line.args.contains("--continue"),
+        "resume must launch claude with --continue; line: {line:?}"
     );
     assert_eq!(
-        canonical(&field(&line, "cwd")),
+        canonical(&line.cwd),
         canonical(worktree.to_str().unwrap()),
-        "claude must continue from inside the worktree; line: {line}"
+        "claude must continue from inside the worktree; line: {line:?}"
     );
     assert_eq!(
         fx.server.active_pane_id(&fx.window(TASK_ID)).as_deref(),
-        Some(field(&line, "pane").as_str()),
+        Some(line.pane.as_str()),
         "--continue must reach the agent's own pane, not the companion"
     );
 }
@@ -483,19 +497,9 @@ fn resume_opens_the_companion_pane() {
     let Some(fx) = setup_or_skip() else { return };
     let worktree = fx.add_worktree(TASK_ID);
 
-    dispatch::resume_agent(
-        TaskId(TASK_ID),
-        worktree.to_str().unwrap(),
-        &fx.server.runner(),
-    )
-    .expect("resume_agent");
+    fx.resume(TASK_ID, &worktree);
 
-    let line = await_stub_line(&fx.server, |l| l.contains("args=agent-tree"))
-        .unwrap_or_else(|| panic!("no companion pane; log: {:?}", stub_lines(&fx.server)));
-    assert!(
-        line.contains(&format!("args=agent-tree {TASK_ID}")),
-        "{line}"
-    );
+    fx.await_companion(TASK_ID);
     assert_eq!(fx.server.pane_count(&fx.window(TASK_ID)), 2);
 }
 
@@ -504,14 +508,8 @@ fn resume_never_types_into_the_board_window() {
     let Some(fx) = setup_or_skip() else { return };
     let worktree = fx.add_worktree(TASK_ID);
 
-    dispatch::resume_agent(
-        TaskId(TASK_ID),
-        worktree.to_str().unwrap(),
-        &fx.server.runner(),
-    )
-    .expect("resume_agent");
-    // Anchor: the companion split is what fires the hook.
-    await_stub_line(&fx.server, |l| l.contains("args=agent-tree"));
+    fx.resume(TASK_ID, &worktree);
+    fx.await_companion(TASK_ID);
 
     fx.assert_board_untouched();
 }
@@ -530,15 +528,13 @@ fn pin_joins_the_agent_pane_and_kills_the_leftover_companion() {
     fx.dispatch(TASK_ID);
     let window = fx.window(TASK_ID);
     // Wait for the companion, so the pin genuinely has one to clean up.
-    await_stub_line(&fx.server, |l| l.contains("args=agent-tree"));
+    fx.await_companion(TASK_ID);
     let companion = tmux::inactive_pane_id(&window, &fx.server.runner())
         .expect("companion lookup")
         .expect("companion pane should exist before pinning");
     let agent_pane = fx.server.active_pane_id(&window).expect("agent pane");
 
-    let joined =
-        dispatch::join_task_window_into_pane(&window, &fx.board_pane(), &fx.server.runner())
-            .expect("join");
+    let joined = fx.pin(&window);
 
     assert_eq!(
         joined, agent_pane,
@@ -558,16 +554,10 @@ fn pin_joins_the_agent_pane_and_kills_the_leftover_companion() {
 #[test]
 fn pin_of_a_task_without_a_companion_pane_joins_cleanly() {
     let Some(fx) = setup_or_skip() else { return };
-    // A bare agent window, no companion — the state after the user toggles the
-    // tree pane off.
-    let window = fx.window(TASK_ID);
-    fx.server
-        .tmux_ok(&["new-window", "-d", "-n", &window, "--", "sh", "-c", "cat"]);
+    let window = fx.bare_agent_window(TASK_ID);
     let agent_pane = fx.server.active_pane_id(&window).expect("agent pane");
 
-    let joined =
-        dispatch::join_task_window_into_pane(&window, &fx.board_pane(), &fx.server.runner())
-            .expect("join");
+    let joined = fx.pin(&window);
 
     assert_eq!(joined, agent_pane);
     assert_eq!(fx.server.pane_count(BOARD_WINDOW), 2);
@@ -583,33 +573,18 @@ fn swap_replaces_the_pinned_task_and_resyncs_the_companion() {
     let (a, b) = (TASK_ID, TASK_ID + 1);
     fx.dispatch(a);
     fx.dispatch(b);
-    await_stub_line(&fx.server, |l| l.contains(&format!("agent-tree {b}")));
+    fx.await_companion(b);
 
     // Pin A, then swap B in over it.
-    let pinned =
-        dispatch::join_task_window_into_pane(&fx.window(a), &fx.board_pane(), &fx.server.runner())
-            .expect("pin A");
+    let pinned = fx.pin(&fx.window(a));
     fx.clear_stub_log();
 
-    dispatch::swap_task_window_into_pane(
-        &fx.window(b),
-        &pinned,
-        Some(&fx.window(a)),
-        &fx.server.runner(),
-    )
-    .expect("swap B in");
+    fx.swap(&fx.window(b), &pinned, Some(&fx.window(a)));
 
     // The window holding the outgoing content is renamed to A, and its companion
-    // must be relaunched for A. Poll: the resync kills and re-splits, which is
-    // asynchronous relative to the call returning.
-    let line = await_stub_line(&fx.server, |l| l.contains(&format!("agent-tree {a}")))
-        .unwrap_or_else(|| {
-            panic!(
-                "companion should be resynced to task {a}; log: {:?}",
-                stub_lines(&fx.server)
-            )
-        });
-    assert!(line.contains(&format!("args=agent-tree {a}")), "{line}");
+    // must be relaunched for A. Polls, because the resync kills and re-splits
+    // asynchronously relative to the call returning.
+    fx.await_companion(a);
     assert!(
         fx.server.has_window(&fx.window(a)),
         "the outgoing task's window should exist under its own name again; got {:?}",
@@ -632,30 +607,19 @@ fn swap_works_when_pane_base_index_is_1() {
     let (a, b) = (TASK_ID, TASK_ID + 1);
     fx.dispatch(a);
     fx.dispatch(b);
-    await_stub_line(&fx.server, |l| l.contains(&format!("agent-tree {b}")));
+    fx.await_companion(b);
 
-    let pinned =
-        dispatch::join_task_window_into_pane(&fx.window(a), &fx.board_pane(), &fx.server.runner())
-            .expect("pin A");
+    let pinned = fx.pin(&fx.window(a));
 
-    dispatch::swap_task_window_into_pane(
-        &fx.window(b),
-        &pinned,
-        Some(&fx.window(a)),
-        &fx.server.runner(),
-    )
-    .expect("swap must not depend on a pane living at index 0");
+    // Panics with "can't find pane: 0" if the swap source is ever an index again.
+    fx.swap(&fx.window(b), &pinned, Some(&fx.window(a)));
 }
 
 #[test]
 fn unpin_breaks_the_pane_back_into_its_own_window() {
     let Some(fx) = setup_or_skip() else { return };
-    let window = fx.window(TASK_ID);
-    fx.server
-        .tmux_ok(&["new-window", "-d", "-n", &window, "--", "sh", "-c", "cat"]);
-    let pinned =
-        dispatch::join_task_window_into_pane(&window, &fx.board_pane(), &fx.server.runner())
-            .expect("pin");
+    let window = fx.bare_agent_window(TASK_ID);
+    let pinned = fx.pin(&window);
     assert!(!fx.server.has_window(&window), "window consumed by the pin");
 
     tmux::break_pane_to_window(&pinned, &window, &fx.server.runner()).expect("unpin");
@@ -682,11 +646,9 @@ fn split_operations_never_type_into_the_board_window() {
     let Some(fx) = setup_or_skip() else { return };
     let window = fx.window(TASK_ID);
     fx.dispatch(TASK_ID);
-    await_stub_line(&fx.server, |l| l.contains("args=agent-tree"));
+    fx.await_companion(TASK_ID);
 
-    let pinned =
-        dispatch::join_task_window_into_pane(&window, &fx.board_pane(), &fx.server.runner())
-            .expect("pin");
+    let pinned = fx.pin(&window);
     tmux::break_pane_to_window(&pinned, &window, &fx.server.runner()).expect("unpin");
 
     // The board's pane is the one that would absorb a mistargeted keystroke,
@@ -703,7 +665,7 @@ fn killing_the_agent_window_removes_all_its_panes() {
     let Some(fx) = setup_or_skip() else { return };
     fx.dispatch(TASK_ID);
     let window = fx.window(TASK_ID);
-    await_stub_line(&fx.server, |l| l.contains("args=agent-tree"));
+    fx.await_companion(TASK_ID);
     let panes = fx.server.pane_ids(&window);
     assert_eq!(panes.len(), 2, "expected agent + companion");
 
@@ -744,8 +706,9 @@ fn killing_the_agent_window_leaves_the_worktree_intact() {
 
 /// The main session deliberately gets no companion agent-tree pane: it has no
 /// task id and no worktree, so the tree would be permanently empty, and the
-/// window is covered by neither teardown rule. See
-/// docs/specs/agent-tree.allium's `MainSessionPaneScope`.
+/// window is covered by neither teardown rule. Specified in
+/// docs/specs/agent-tree.allium's `SplitAgentTreePaneOnAgentLaunch`
+/// ("Resolves MainSessionPaneScope").
 #[test]
 fn main_session_window_has_a_single_pane() {
     let Some(fx) = setup_or_skip() else { return };

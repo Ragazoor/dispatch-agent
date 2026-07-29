@@ -2,13 +2,15 @@
 //! window into the board window as a pane ("pin"), and swapping a different
 //! task's window into an already-pinned pane.
 //!
-//! These live here rather than in `src/runtime/split.rs` because they are
-//! domain logic — multi-step tmux sequences with agent-tree companion panes to
-//! account for — while the runtime's job is `spawn_blocking` and message
-//! emission (see the Message→Command split in docs/architecture.md). Keeping
-//! them here also puts them next to `resync_agent_tree_pane`, which the swap
-//! path calls, and makes them reachable from the real-tmux integration tests in
-//! tests/tmux_lifecycle.rs — a sequence whose correctness is entirely about
+//! These live here rather than in `src/runtime/split.rs` because they are domain
+//! logic — multi-step sequences carrying policy, not raw tmux verbs — while the
+//! runtime's job is `spawn_blocking` and message emission (the Message→Command
+//! split in docs/architecture.md). And here rather than in `src/tmux.rs` because
+//! the swap path calls `resync_agent_tree_pane`; putting them in `tmux.rs` would
+//! invert that dependency.
+//!
+//! Being reachable from tests/tmux_lifecycle.rs falls out of the same placement,
+//! and matters because the correctness of these sequences is entirely about
 //! tmux's own pane semantics, which the mock layer cannot observe.
 //!
 //! See docs/specs/split-pane.allium and docs/specs/agent-tree.allium's

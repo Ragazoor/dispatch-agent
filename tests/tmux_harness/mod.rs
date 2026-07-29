@@ -190,6 +190,9 @@ impl TmuxServer {
             .collect()
     }
 
+    /// Every window name on the server. Independent of
+    /// `tmux::list_all_window_names` for the same reason as [`Self::pane_exists`]:
+    /// these are the oracles for windows production creates and kills.
     pub fn window_names(&self) -> Vec<String> {
         self.tmux_stdout(&["list-windows", "-a", "-F", "#{window_name}"])
             .lines()
@@ -197,16 +200,21 @@ impl TmuxServer {
             .collect()
     }
 
+    /// Exact-name membership — deliberately not `-t <name>`, which tmux
+    /// prefix-matches (`-t task-4` resolves to `task-42`).
     pub fn has_window(&self, window: &str) -> bool {
         self.window_names().iter().any(|n| n == window)
     }
 
     /// Whether `pane_id` still exists anywhere on the server.
     ///
-    /// A membership test, deliberately — `display-message -t <pane> -p ''`
-    /// succeeds even for a pane that never existed, because tmux falls back to
-    /// the current pane instead of failing. That is a real bug this harness found
-    /// in production's `tmux::pane_exists`; see its doc comment.
+    /// Deliberately its own implementation rather than a call to
+    /// `tmux::pane_exists`, even though the two now agree: this is the *oracle*
+    /// for assertions about panes production was supposed to kill, and an oracle
+    /// that calls the function under test cannot catch a regression in it. This
+    /// diff is the case in point — production's version was blind (it used
+    /// `display-message`, which succeeds for a pane that never existed) and an
+    /// independent oracle is what exposed it.
     pub fn pane_exists(&self, pane_id: &str) -> bool {
         self.tmux_stdout(&["list-panes", "-a", "-F", "#{pane_id}"])
             .lines()
@@ -312,12 +320,11 @@ pub fn capture_cmd(path: &Path) -> String {
 /// Poll until `path` is non-empty or the deadline expires, returning its
 /// contents (empty on timeout).
 pub fn read_when_written(path: &Path) -> String {
-    let mut contents = String::new();
-    poll_until(|| {
-        contents = read_now(path);
-        !contents.trim().is_empty()
-    });
-    contents
+    poll_for(|| {
+        let contents = read_now(path);
+        (!contents.trim().is_empty()).then_some(contents)
+    })
+    .unwrap_or_default()
 }
 
 /// Snapshot a file without waiting. Only meaningful once the operation under
@@ -326,69 +333,86 @@ pub fn read_now(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Poll `pred` until it returns true or [`DELIVERY_DEADLINE`] expires. Returns
-/// whether it became true.
+/// Poll `f` until it yields a value or [`DELIVERY_DEADLINE`] expires.
 ///
 /// Bounded `std::thread::sleep`, which is the right tool for waiting on
 /// asynchronous tmux delivery and is permitted by
 /// `scripts/check-no-test-sleep.sh` (which bans only `tokio::time::sleep`).
-pub fn poll_until(mut pred: impl FnMut() -> bool) -> bool {
+/// `f` is evaluated before the first sleep, so an already-satisfied condition
+/// costs nothing, and only the failure path pays the deadline in full.
+pub fn poll_for<T>(mut f: impl FnMut() -> Option<T>) -> Option<T> {
     let start = Instant::now();
     loop {
-        if pred() {
-            return true;
+        if let Some(value) = f() {
+            return Some(value);
         }
         if start.elapsed() >= DELIVERY_DEADLINE {
-            return false;
+            return None;
         }
         std::thread::sleep(POLL_STEP);
     }
 }
 
+/// [`poll_for`] for conditions with no value to carry out.
+pub fn poll_until(mut pred: impl FnMut() -> bool) -> bool {
+    poll_for(|| pred().then_some(())).is_some()
+}
+
 // ---------------------------------------------------------------------------
 // Stub binaries
+//
+// Production hardcodes the binary names it launches — `claude` inside a `bash -c`
+// string, and `dispatch agent-tree <id>` as argv (src/dispatch/agents.rs) — so
+// there is no seam to inject a fake through. These tests substitute them by name
+// instead, which takes three cooperating pieces:
+//
+// 1. `PATH` on THIS PROCESS. A tmux pane inherits the environment of the client
+//    that created it — not the server's, and not the session environment. `tmux
+//    set-environment` (global or session, before or after session creation) never
+//    reaches a later-created pane; verified against tmux 3.5a. `SocketRunner`
+//    spawns tmux from this process, so this process is that client.
+//
+// 2. A no-rc pane shell ([`TmuxServer::isolate_pane_shell`]). PATH suffices for
+//    the `--` argv forms, which `execvp` directly. It does NOT suffice for
+//    `send-keys`, because tmux runs a pane's shell as a *login* shell, which
+//    sources the user's rc files and prepends directories ahead of the inherited
+//    PATH. A stub whose name nothing else provides still wins; `claude` and
+//    `dispatch`, which do exist there on a dev machine, lose.
+//
+// 3. Two guards ([`install_stubs`]), because piece 2 was learned the hard way:
+//    before it, the stub `dispatch` won while the REAL `claude` launched and sat
+//    on its trust prompt. A real `claude` spawns a live agent, hits the network
+//    and can hang the test on stdin; a real `dispatch` opens a database. The
+//    in-pane guard is the one that would have caught it. `DISPATCH_DB` is
+//    overridden as well so that even a defeated guard cannot be destructive.
+//
+// The deeper fix is for production to accept the binary identities alongside the
+// `ProcessRunner` it already threads everywhere, which would retire all three
+// pieces. Tracked separately; see the plan doc.
 // ---------------------------------------------------------------------------
 
 /// Directory holding the stub `claude` / `dispatch` binaries, created once per
-/// test process and prepended to `PATH`.
+/// test process and prepended to `PATH`. See the section comment above for why
+/// PATH is set here and why it is not sufficient on its own.
 ///
-/// # Why PATH on the test process
-///
-/// A tmux pane inherits the environment of the **client that created it** — not
-/// the server's, and not the session environment. `tmux set-environment` (global
-/// or session scope, before or after session creation) never reaches a
-/// subsequently created pane; verified against tmux 3.5a. Since [`SocketRunner`]
-/// spawns `tmux` from this process, this process *is* the creating client, so
-/// setting `PATH` here reaches every window and pane production creates.
-///
-/// # PATH alone is not enough
-///
-/// It is enough for the `--` argv forms (`new-window --`, `split-window --`),
-/// which `execvp` directly against the client environment. It is **not** enough
-/// for `send-keys`, the path dispatch uses to launch `claude`: with an empty
-/// `default-command` tmux runs the pane's shell as a *login* shell, which sources
-/// `~/.bashrc` / `~/.profile`, and those typically prepend directories
-/// (`~/.local/bin`, a version manager, `~/.claude/plugins/.../bin`) ahead of
-/// whatever `PATH` it inherited. A stub whose name nothing else provides still
-/// wins; `claude` and `dispatch` — which do exist there on a real dev machine —
-/// lose, and the *real* binary runs.
-///
-/// Observed exactly that: the stub `dispatch` won (spawned via `split-window --`)
-/// while the real `claude` launched and sat on its trust prompt. So the pane
-/// shell is pinned to a no-rc shell via [`TmuxServer::isolate_pane_shell`], and
-/// the guard in [`install_stubs`] verifies resolution *inside a pane*, not merely
-/// in this process.
-///
-/// Done once behind a `OnceLock` rather than per test: every test wants
-/// identical stubs, so there is no per-test env mutation to race on.
+/// Done once behind a `OnceLock` rather than per test: every test wants identical
+/// stubs, so there is no per-test env mutation to race on.
 fn stub_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        // Leaked deliberately: the stubs must outlive every test in the process,
-        // and panes hold their cwd/argv references until their server is killed.
-        let dir = Box::leak(Box::new(tempfile::tempdir().expect("create stub bin dir")))
-            .path()
-            .to_path_buf();
+        // The stubs must outlive every test in the process, so the TempDir's
+        // destructor must not run. `Box::leak` and a `static OnceLock<TempDir>`
+        // are equivalent here — neither drops — and libtest offers no
+        // process-exit hook, so the directory does survive the run. It is a few
+        // KB under the system temp dir; the prefix makes the strays identifiable.
+        let dir = Box::leak(Box::new(
+            tempfile::Builder::new()
+                .prefix("dispatch-tmux-stubs-")
+                .tempdir()
+                .expect("create stub bin dir"),
+        ))
+        .path()
+        .to_path_buf();
         let logs = dir.join("logs");
         std::fs::create_dir_all(&logs).expect("create stub log dir");
 
@@ -423,11 +447,14 @@ fn stub_dir() -> &'static Path {
 /// through a process-global `PATH`.
 fn write_stub(dir: &Path, name: &str, logs: &Path) {
     let path = dir.join(name);
+    // Tab-separated, because a tab cannot appear in a `%N` pane id, a tempdir
+    // path, or the argv these tests produce — so [`StubLine::parse`] needs no
+    // escaping and no field-order coupling.
     let script = format!(
         r#"#!/bin/sh
 sock=$(printf '%s' "${{TMUX:-unknown}}" | cut -d, -f1)
 log="{logs}/$(basename "$sock").log"
-printf '%s pane=%s cwd=%s args=%s\n' "{name}" "${{TMUX_PANE:-none}}" "$PWD" "$*" >> "$log"
+printf '%s\t%s\t%s\t%s\n' "{name}" "${{TMUX_PANE:-none}}" "$PWD" "$*" >> "$log"
 exec cat >> "$log"
 "#,
         logs = logs.display(),
@@ -439,18 +466,11 @@ exec cat >> "$log"
         .expect("chmod stub");
 }
 
-/// Install the stubs and assert they really shadow the real binaries — both in
-/// this process and, once per process, inside a real tmux pane.
+/// Install the stubs and refuse to run unless they really shadow the real
+/// binaries — checked in this process, and once per process inside a real pane.
+/// See the section comment above for the threat this guards against.
 ///
-/// **This guard is load-bearing, not a sanity check.** Real `claude` and
-/// `dispatch` binaries exist on a normal developer PATH. If stub injection ever
-/// broke, these tests would execute the real ones — a real `claude` spawning a
-/// live agent that hits the network and may hang the test on stdin, and a real
-/// `dispatch` opening a database. The `claude` case was observed before the
-/// pane-shell fix landed. Failing loudly here is strictly better.
-///
-/// The database is separately neutralised by the `DISPATCH_DB` override in
-/// [`stub_dir`], so a defeated guard cannot be destructive even if it is missed.
+/// Every test must call this before touching tmux.
 pub fn install_stubs() -> &'static Path {
     let dir = stub_dir();
     for name in ["claude", "dispatch"] {
@@ -468,14 +488,13 @@ pub fn install_stubs() -> &'static Path {
     dir
 }
 
-/// Prove, inside a real pane, that a `send-keys`-launched command resolves to
-/// the stubs. Run once per test process on its own throwaway server, applying
-/// exactly the setup every fixture applies, so a pass here generalises to every
-/// later server.
+/// The guard that actually matters: proves inside a real pane that a
+/// `send-keys`-launched command resolves to the stubs. The process-level check
+/// passed while the real `claude` was running in a pane, because the pane's login
+/// shell re-resolved `PATH` after sourcing the user's rc files.
 ///
-/// This is the check that actually matters: [`install_stubs`]'s process-level
-/// check passed while the real `claude` was running in a pane, because the pane's
-/// login shell re-resolved `PATH` after sourcing the user's rc files.
+/// Runs once per test process on its own throwaway server, applying exactly the
+/// setup every fixture applies, so a pass generalises to every later server.
 fn verify_pane_resolution_once(dir: &Path) {
     static DONE: OnceLock<()> = OnceLock::new();
     DONE.get_or_init(|| {
@@ -534,32 +553,56 @@ fn is_executable(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// The log file the stubs write to for `server`. Lines look like:
-/// `claude pane=%3 cwd=/path/to/worktree args=--plugin-dir ... --continue`
+/// One recorded stub invocation: which binary ran, in which pane, from which
+/// directory, with which arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StubLine {
+    /// `claude` or `dispatch`.
+    pub name: String,
+    /// `$TMUX_PANE` as seen by the stub, e.g. `%3`.
+    pub pane: String,
+    /// `$PWD` as seen by the stub — the cwd tmux actually resolved for the pane.
+    pub cwd: String,
+    /// The argv the stub was called with, space-joined.
+    pub args: String,
+}
+
+impl StubLine {
+    fn parse(line: &str) -> Option<Self> {
+        let mut parts = line.split('\t');
+        Some(Self {
+            name: parts.next()?.to_string(),
+            pane: parts.next()?.to_string(),
+            cwd: parts.next()?.to_string(),
+            args: parts.next().unwrap_or_default().to_string(),
+        })
+    }
+}
+
+/// The log file the stubs write to for `server`. One tab-separated record per
+/// invocation; see [`StubLine`].
 pub fn stub_log_path(server: &TmuxServer) -> PathBuf {
     let dir = install_stubs();
     dir.join("logs").join(format!("{}.log", server.socket()))
 }
 
-/// All stub invocations recorded for `server`, one per line.
-pub fn stub_lines(server: &TmuxServer) -> Vec<String> {
+/// All stub invocations recorded for `server`.
+pub fn stub_lines(server: &TmuxServer) -> Vec<StubLine> {
     read_now(&stub_log_path(server))
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(str::to_string)
+        .filter_map(StubLine::parse)
         .collect()
 }
 
-/// Wait for a stub line matching `pred`, returning it. `None` on timeout.
+/// Wait for a recorded invocation matching `pred`. `None` on timeout.
 ///
 /// Stub delivery is asynchronous — the pane's shell has to start, resolve the
 /// stub and run it — so every positive assertion about stub output must poll
 /// rather than snapshot.
-pub fn await_stub_line(server: &TmuxServer, mut pred: impl FnMut(&str) -> bool) -> Option<String> {
-    let mut found = None;
-    poll_until(|| {
-        found = stub_lines(server).into_iter().find(|l| pred(l));
-        found.is_some()
-    });
-    found
+pub fn await_stub_line(
+    server: &TmuxServer,
+    mut pred: impl FnMut(&StubLine) -> bool,
+) -> Option<StubLine> {
+    poll_for(|| stub_lines(server).into_iter().find(|l| pred(l)))
 }

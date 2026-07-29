@@ -2,25 +2,19 @@
 //! Real-tmux integration test for the `after-split-window` hook that keeps new
 //! panes in their agent's worktree (`ensure_split_hook` / `set_window_dispatch_dir`).
 //!
-//! # Why this needs a real tmux server
-//!
-//! The mock layer structurally cannot catch the bug these tests guard against.
-//! `MockProcessRunner` records argv, so a mock test can assert *"we handed tmux
-//! this string"* but never *"tmux did what we meant"* — the defect was purely a
-//! matter of tmux's own targeting semantics, and the pre-existing mock test
-//! asserted the broken hook string verbatim and stayed green throughout. So the
-//! assertions below are about **pane routing**, observed through a real server:
-//! the `cd` must reach the newly created pane, and must not reach the board TUI
-//! pane or the agent's own pane, both of which consume keystrokes as user input.
+//! Every pane here runs `cat > log`, so this file observes **routing**: which
+//! pane a keystroke reaches. The `cd` must reach the newly created pane, and must
+//! not reach the board TUI pane or the agent's own pane, both of which consume
+//! keystrokes as user input. Task #3781's defect was purely a matter of tmux's
+//! own targeting semantics, and its mock test asserted the broken hook string
+//! verbatim and stayed green throughout.
 //!
 //! See `ensure_split_hook` in src/tmux.rs for why the hook needs an explicit
 //! `-t #{pane_id}` target, and why the hook exists at all.
 //!
-//! Every pane here runs `cat > log`, so this file observes *routing*: which pane
-//! a keystroke reaches. Its sibling `tests/tmux_lifecycle.rs` takes the
-//! complementary view — windows created by production code, panes running the
-//! real shell — and observes *topology*. The shared rig lives in
-//! `tests/tmux_harness/mod.rs`, which also documents why a real server is needed.
+//! Its sibling `tests/tmux_lifecycle.rs` covers the complementary question,
+//! *topology*, on windows production creates. Why a real server is needed at all,
+//! plus the shared rig: tests/tmux_harness/mod.rs.
 
 mod tmux_harness;
 
