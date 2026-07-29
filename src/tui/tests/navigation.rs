@@ -352,11 +352,26 @@ fn move_forward_to_done_enters_confirm_mode() {
 
     // Should enter confirmation mode, not move immediately
     assert!(cmds.is_empty());
-    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(5))));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(5)).unwrap();
     assert_eq!(task.status, TaskStatus::Review);
     // Worktree preserved — not taken during confirmation
     assert!(task.worktree.is_some());
+}
+
+/// The single-task Done prompt records its task in `select.pending_done`, the
+/// same place the batch prompt uses — that is why `InputMode::ConfirmDone`
+/// carries no payload.
+#[test]
+fn single_move_to_done_records_the_task_in_pending_done() {
+    let mut app = App::new(vec![make_task(5, TaskStatus::Review)]);
+
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
+        id: TaskId(5),
+        direction: MoveDirection::Forward,
+    }));
+
+    assert_eq!(app.select.pending_done, vec![TaskId(5)]);
 }
 
 #[test]
@@ -373,7 +388,8 @@ fn move_forward_to_done_with_live_window_enters_confirm_mode() {
 
     // Should enter confirmation mode, not move immediately
     assert!(cmds.is_empty());
-    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(5))));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
+    assert_eq!(app.select.pending_done, vec![TaskId(5)]);
 }
 
 #[test]
@@ -822,7 +838,8 @@ fn move_review_to_done_enters_confirm_mode() {
 
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('L'))));
     assert!(cmds.is_empty());
-    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(1))));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
+    assert_eq!(app.select.pending_done, vec![TaskId(1)]);
     assert!(app.status.message.as_deref().unwrap().contains("Done"));
 }
 
@@ -870,7 +887,8 @@ fn batch_move_mixed_statuses_moves_non_review_immediately() {
     // Review→Done waiting for confirmation
     let t2 = app.board.tasks.iter().find(|t| t.id == TaskId(2)).unwrap();
     assert_eq!(t2.status, TaskStatus::Review); // not moved yet
-    assert!(matches!(app.input.mode, InputMode::ConfirmDone(_)));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
+    assert_eq!(app.select.pending_done, vec![TaskId(2)]);
 }
 
 #[test]

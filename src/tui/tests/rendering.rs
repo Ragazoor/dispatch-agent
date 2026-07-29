@@ -578,7 +578,7 @@ async fn stress_rapid_status_transitions() {
     }
     // Should be at Review (blocked by Done confirmation)
     assert_eq!(app.board.tasks[0].status, TaskStatus::Review);
-    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(1))));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
 
     // Confirm the Done transition
     app.update(Message::Input(

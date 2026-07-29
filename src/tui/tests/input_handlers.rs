@@ -1029,7 +1029,7 @@ fn x_key_with_selection_shows_count_in_move_to_done_confirm() {
     ));
 
     app.handle_key(make_key(KeyCode::Char('x')));
-    assert!(matches!(app.input.mode, InputMode::ConfirmDone(_)));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
     assert_eq!(
         app.status.message.as_deref(),
         Some("Move 2 tasks to Done? [y/n]")

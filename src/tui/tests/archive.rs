@@ -31,7 +31,8 @@ fn x_key_on_backlog_task_enters_confirm_done_not_archive() {
     // make_app() starts at Backlog (nav col 1) — no need to set_column.
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('x'))));
     assert!(cmds.is_empty());
-    assert_eq!(app.input.mode, InputMode::ConfirmDone(TaskId(1)));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
+    assert_eq!(app.select.pending_done, vec![TaskId(1)]);
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
     assert_eq!(
         task.status,
@@ -58,7 +59,8 @@ fn x_key_on_running_task_moves_to_done_and_preserves_worktree() {
     app.selection_mut().set_column(2); // Running (nav col 2)
 
     app.handle_key(make_key(KeyCode::Char('x')));
-    assert_eq!(app.input.mode, InputMode::ConfirmDone(TaskId(1)));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
+    assert_eq!(app.select.pending_done, vec![TaskId(1)]);
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('y'))));
 
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
@@ -84,7 +86,8 @@ fn x_key_on_review_task_enters_confirm_done_not_archive() {
     app.selection_mut().set_column(3); // Review (nav col 3)
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('x'))));
     assert!(cmds.is_empty());
-    assert_eq!(app.input.mode, InputMode::ConfirmDone(TaskId(1)));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
+    assert_eq!(app.select.pending_done, vec![TaskId(1)]);
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
     assert_eq!(
         task.status,
@@ -118,8 +121,9 @@ fn x_key_on_all_review_selection_enters_confirm_done_not_archive() {
 
     app.handle_key(make_key(KeyCode::Char('x')));
 
-    assert!(
-        matches!(app.input.mode, InputMode::ConfirmDone(_)),
+    assert_eq!(
+        app.input.mode,
+        InputMode::ConfirmDone,
         "expected ConfirmDone, got {:?}",
         app.input.mode
     );
@@ -142,8 +146,9 @@ fn x_key_on_mixed_status_selection_moves_non_done_to_done() {
     ));
 
     app.handle_key(make_key(KeyCode::Char('x')));
-    assert!(
-        matches!(app.input.mode, InputMode::ConfirmDone(_)),
+    assert_eq!(
+        app.input.mode,
+        InputMode::ConfirmDone,
         "expected ConfirmDone, got {:?}",
         app.input.mode
     );

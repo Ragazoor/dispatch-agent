@@ -105,7 +105,7 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::QuickDispatch => hint("Quick dispatch: select repo path", Color::Yellow),
         InputMode::ConfirmRetry(_) => hint("[r] Resume  [f] Fresh start  [Esc] Cancel", Color::Red),
         InputMode::ConfirmArchive(_) => hint("Archive task? [y/n]", Color::Yellow),
-        InputMode::ConfirmDone(_) => hint_text(app, "Move to Done? [y/n]", Color::Yellow),
+        InputMode::ConfirmDone => hint_text(app, "Move to Done? [y/n]", Color::Yellow),
         InputMode::InputEpicTitle => hint("Creating epic: enter title", Color::Magenta),
         InputMode::InputEpicDescription => hint(
             "Creating epic: opening $EDITOR for description",

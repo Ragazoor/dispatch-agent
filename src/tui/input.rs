@@ -84,7 +84,7 @@ impl App {
                 InputMode::ConfirmDeleteEpic => self.handle_key_confirm_delete_epic(key),
                 InputMode::ConfirmArchiveEpic => self.handle_key_confirm_archive_epic(key),
 
-                InputMode::ConfirmDone(_) => self.handle_key_confirm_done(key),
+                InputMode::ConfirmDone => self.handle_key_confirm_done(key),
                 InputMode::ConfirmWrapUp(_) => self.handle_key_confirm_wrap_up(key),
                 InputMode::ConfirmEpicWrapUp(_) => self.handle_key_confirm_epic_wrap_up(key),
                 InputMode::ConfirmDetachTmux(_) => self.handle_key_confirm_detach_tmux(key),

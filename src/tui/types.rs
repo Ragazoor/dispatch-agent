@@ -281,7 +281,10 @@ pub enum InputMode {
     /// `Some(id)` = single-task archive (ID captured when 'x' was pressed).
     /// `None` = batch archive (uses the current multi-selection set).
     ConfirmArchive(Option<TaskId>),
-    ConfirmDone(TaskId),
+    /// Review → Done confirmation. The tasks awaiting confirmation live in
+    /// `select.pending_done` (one entry for a single move, N for a batch),
+    /// which is why the variant carries no payload.
+    ConfirmDone,
     ConfirmWrapUp(TaskId),
     ConfirmDetachTmux(Vec<TaskId>),
     // Epic input modes

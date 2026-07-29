@@ -71,36 +71,35 @@ impl App {
 
     /// Open the "move to Done" confirmation for `ids`.
     ///
-    /// Shared by the single-task and batch paths — `handle_confirm_done`
-    /// already reads `select.pending_done` first, so both cases go through
-    /// the same list. No-op on an empty list.
+    /// The pending ids live in `select.pending_done` — the single source of
+    /// truth that `handle_confirm_done` drains — so `InputMode::ConfirmDone`
+    /// needs no payload. Shared by the single-task and batch paths. A no-op on
+    /// an empty list: there is nothing to confirm, and entering the mode would
+    /// strand the user in a prompt whose `y` does nothing.
     pub(in crate::tui) fn prompt_move_to_done(&mut self, ids: Vec<TaskId>) {
-        let Some(&first) = ids.first() else {
+        if ids.is_empty() {
             return;
-        };
-        let status = if ids.len() == 1 {
-            let title = self
-                .find_task(first)
-                .map(|t| truncate_title(&t.title, TITLE_DISPLAY_LENGTH))
-                .unwrap_or_default();
-            format!("Move {title} to Done? [y/n]")
-        } else {
-            format!("Move {} tasks to Done? [y/n]", ids.len())
+        }
+        let status = match ids.as_slice() {
+            [single] => {
+                let title = self
+                    .find_task(*single)
+                    .map(|t| truncate_title(&t.title, TITLE_DISPLAY_LENGTH))
+                    .unwrap_or_default();
+                format!("Move {title} to Done? [y/n]")
+            }
+            _ => format!("Move {} tasks to Done? [y/n]", ids.len()),
         };
         self.select.pending_done = ids;
-        self.input.mode = InputMode::ConfirmDone(first);
+        self.input.mode = InputMode::ConfirmDone;
         self.set_status(status);
     }
 
     pub(in crate::tui) fn handle_confirm_done(&mut self) -> Vec<Command> {
-        let ids = if !self.select.pending_done.is_empty() {
-            std::mem::take(&mut self.select.pending_done)
-        } else {
-            match self.input.mode {
-                InputMode::ConfirmDone(id) => vec![id],
-                _ => return vec![],
-            }
-        };
+        let ids = std::mem::take(&mut self.select.pending_done);
+        if ids.is_empty() {
+            return vec![];
+        }
         self.input.mode = InputMode::Normal;
         self.clear_status();
 

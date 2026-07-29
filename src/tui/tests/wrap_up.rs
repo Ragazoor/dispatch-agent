@@ -77,7 +77,7 @@ fn confirm_done_y_moves_task() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Review)]);
     app.selection_mut().set_column(3);
 
-    app.input.mode = InputMode::ConfirmDone(TaskId(1));
+    app.prompt_move_to_done(vec![TaskId(1)]);
     let cmds = app.handle_key(make_key(KeyCode::Char('y')));
     assert_eq!(app.input.mode, InputMode::Normal);
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
@@ -93,7 +93,7 @@ fn confirm_done_n_cancels() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Review)]);
     app.selection_mut().set_column(3);
 
-    app.input.mode = InputMode::ConfirmDone(TaskId(1));
+    app.prompt_move_to_done(vec![TaskId(1)]);
     let cmds = app.handle_key(make_key(KeyCode::Char('n')));
     assert_eq!(app.input.mode, InputMode::Normal);
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
@@ -116,7 +116,7 @@ fn confirm_done_kills_tmux_but_preserves_worktree() {
         id: TaskId(1),
         direction: MoveDirection::Forward,
     }));
-    assert!(matches!(app.input.mode, InputMode::ConfirmDone(TaskId(1))));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
 
     let cmds = app.update(Message::Input(
         crate::tui::messages::InputMessage::ConfirmDone,
@@ -520,7 +520,7 @@ fn handle_key_confirm_done_yes() {
         .find(|t| t.id == TaskId(3))
         .unwrap();
     task_3.status = TaskStatus::Review;
-    app.input.mode = InputMode::ConfirmDone(TaskId(3));
+    app.prompt_move_to_done(vec![TaskId(3)]);
 
     let cmds = app.handle_key(make_key(KeyCode::Char('y')));
     assert_eq!(*app.mode(), InputMode::Normal);
@@ -530,7 +530,7 @@ fn handle_key_confirm_done_yes() {
 #[test]
 fn handle_key_confirm_done_cancel() {
     let mut app = make_app();
-    app.input.mode = InputMode::ConfirmDone(TaskId(3));
+    app.prompt_move_to_done(vec![TaskId(3)]);
     app.handle_key(make_key(KeyCode::Char('n')));
     assert_eq!(*app.mode(), InputMode::Normal);
 }
@@ -577,7 +577,7 @@ fn handle_key_confirm_wrap_up_esc_cancels() {
 #[test]
 fn render_status_bar_confirm_done() {
     let mut app = make_app();
-    app.input.mode = InputMode::ConfirmDone(TaskId(1));
+    app.input.mode = InputMode::ConfirmDone;
     let buf = render_to_buffer(&mut app, 120, 30);
     assert!(
         buffer_contains(&buf, "Done?"),
@@ -690,7 +690,7 @@ fn handle_key_normal_wrap_up_on_empty_is_noop() {
 #[test]
 fn handle_key_confirm_done_routes_correctly() {
     let mut app = make_app();
-    app.input.mode = InputMode::ConfirmDone(TaskId(1));
+    app.prompt_move_to_done(vec![TaskId(1)]);
     // 'n' cancels
     let cmds = app.handle_key(make_key(KeyCode::Char('n')));
     assert!(cmds.is_empty());
