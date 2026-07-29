@@ -349,9 +349,74 @@ rule SwapSplitPane {
         -- question for the swap half of the gap.
 }
 
+-- == Splits Inside an Agent Window Start in the Task's Worktree ==
+--
+-- Distinct from the board's own split pane above: this is about any new pane
+-- created *inside* an agent's tmux window — by the user pressing a tmux split
+-- binding, or by dispatch itself opening the agent-tree companion pane (see
+-- agent-tree.allium: SplitAgentTreePaneOnAgentLaunch).
+--
+-- Whoever caused the split, the new pane must start in that task's worktree.
+-- The correction is delivered to the newly created pane and to no other pane.
+-- Any other target is a correctness bug, not a cosmetic imprecision: the board
+-- TUI and the agent's own Claude session both interpret keystrokes as input.
+
+rule AgentWindowSplitStartsInTaskWorktree {
+    when: TmuxWindowSplit(window, new_pane)
+
+    -- The window being split is a dispatched task's agent window.
+    let task = core/Task{tmux_window: window}
+
+    requires: exists task
+    requires: task.worktree != null
+
+    ensures: PaneWorkingDirectorySet(
+        pane: new_pane,
+        directory: task.worktree.path
+    )
+
+    @guidance
+        -- Mechanism. Each agent window carries its worktree path in a
+        -- per-window tmux user option, @dispatch_dir, set when the window is
+        -- created. A single session-level after-split-window hook tests whether
+        -- the split window has @dispatch_dir set and, if so, sends `cd <that
+        -- dir>` + Enter to the new pane. The hook must name its target
+        -- explicitly (send-keys -t #{pane_id}): inside run-shell -bC the target
+        -- context is lost and tmux falls back to the session's *active* pane,
+        -- which during a background split is whatever the user is looking at —
+        -- typically the board. An untargeted send-keys therefore typed
+        -- `cd <worktree>` into the kanban board, where `c` fired the Copy-Task
+        -- binding and the remainder landed in the resulting text field.
+        --
+        -- This mechanism is load-bearing and cannot simply be deleted. tmux
+        -- does not give worktree-relative splits for free: for a split-window
+        -- invoked by an external CLI client — which is how dispatch, or any
+        -- script, shells out to tmux — tmux resolves the new pane's start
+        -- directory from the *invoking client's* cwd, not from the pane being
+        -- split. Verified empirically. Without the option-plus-hook every split
+        -- inside an agent window lands in the dispatch process's cwd. That was
+        -- issue #231, fixed by commit 8bf36803, which replaced an earlier
+        -- unconditional session-level hook (all splits landed in the most
+        -- recently dispatched worktree) with the per-window @dispatch_dir option
+        -- plus conditional hook described here. Any future refactor that removes
+        -- the hook must first replace this guarantee by other means.
+        --
+        -- Accepted side effect. Dispatch's own agent-tree companion pane is
+        -- created by splitting the agent window, so it receives these
+        -- keystrokes too. That pane treats Space and Enter as "toggle selected
+        -- node", so the `cd` line produces two cancelling toggles and no net
+        -- state change. This is knowingly accepted as cosmetic, not overlooked.
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
+
+-- SplitDirectoryTargetsNewPaneOnly: The worktree `cd` that follows a split
+-- inside an agent window is delivered to the newly created pane and to no
+-- other pane — never to the board TUI pane, and never to the agent's own
+-- Claude pane. Both of those consume keystrokes as user input, so a mistargeted
+-- delivery is an unintended command, not a harmless echo.
 
 -- SplitPaneStability: When split mode is active, the pane must never be
 -- destroyed and recreated in response to task lifecycle events. Pane content

@@ -31,6 +31,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # tests/tmux_split_hook.rs drives a real tmux server (on its own private
+      # socket) because the mock layer cannot observe which pane tmux delivers
+      # keystrokes to. Without tmux those tests skip, so install it explicitly
+      # rather than relying on whatever the runner image happens to ship.
+      - name: Install tmux
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
+
       - name: Run tests
         run: cargo test --target x86_64-unknown-linux-gnu
 
@@ -81,6 +88,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      # Same reason as the test job: tarpaulin runs the suite, and without tmux
+      # the real-tmux tests skip, understating coverage.
+      - name: Install tmux
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
 
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
