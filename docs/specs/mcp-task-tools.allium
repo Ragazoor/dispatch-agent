@@ -43,6 +43,17 @@ rule UpdateTaskViaMcp {
     -- Cannot set status to done or archived via MCP. This restriction
     -- is enforced at the MCP handler boundary, not in the service layer.
     -- Rationale: agents manage running work, humans mark completion.
+    --
+    -- These two guards are the ONLY status constraint on this path, and
+    -- they constrain the TARGET status only — task.status is never read
+    -- to validate the move. This rule is therefore exempt from
+    -- core/Task's status transition graph (see core.allium:
+    -- Task.transitions status): any status other than done and archived
+    -- is accepted from any current status, with no edge check, including
+    -- out of the graph's terminal `archived` state. Deliberate: agents
+    -- legitimately re-open and re-queue their own work
+    -- (`review -> backlog`, `done -> backlog`), which the graph does not
+    -- declare.
     requires: status != done
     requires: status != archived
 

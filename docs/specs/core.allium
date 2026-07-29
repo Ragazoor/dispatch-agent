@@ -263,18 +263,27 @@ entity Task {
         terminal: archived
     }
     -- This graph governs the move-based status changes only (MoveTask,
-    -- ConfirmDone, Archive, dispatch/PR-driven transitions). Two
-    -- human-operator paths are intentionally exempt from it and may set
-    -- any TaskStatus from any other, including moving a task back out of
-    -- the terminal `archived` state:
+    -- ConfirmDone, Archive, dispatch/PR-driven transitions). Three
+    -- operator paths are intentionally exempt from it:
     --   - EditTask, the tmux task editor (see tasks.allium: EditTask) —
-    --     reachable from the archive view as well as the main board.
+    --     reachable from the archive view as well as the main board. May
+    --     set any TaskStatus from any other, including moving a task
+    --     back out of the terminal `archived` state.
     --   - `dispatch update <id> <status>`, the CLI operator path
-    --     (see task-watchers.allium).
-    -- Both are deliberate power-user escape hatches for manual
-    -- correction, not edges of the lifecycle, so they are not declared
-    -- above. Every automatic and keyboard-move transition does obey the
-    -- graph.
+    --     (see task-watchers.allium). Same unrestricted range.
+    --   - MCP `update_task` (see mcp-task-tools.allium:
+    --     UpdateTaskViaMcp), the agent path. Partially restricted: it
+    --     refuses `done` and `archived` as TARGET statuses, but applies
+    --     no edge check at all beyond that, and does not constrain the
+    --     SOURCE status. So an agent can drive `review -> backlog`,
+    --     `backlog -> review` and `done -> backlog` — none declared
+    --     above — and can also leave the terminal `archived` state for
+    --     backlog/running/review, since only the target is checked.
+    -- All three are deliberate escape hatches — manual correction for
+    -- the first two, re-opening or re-queueing work for the third — not
+    -- edges of the lifecycle, so they are not declared above. Every
+    -- other status change, whether automatic or a keyboard move, does
+    -- obey the graph.
 
     -- Derived
     has_plan: plan_path != null
