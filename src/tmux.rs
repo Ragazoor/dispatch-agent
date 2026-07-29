@@ -200,16 +200,14 @@ pub fn set_window_dispatch_dir(
 ///
 /// # Why this hook exists (do not delete it)
 ///
-/// It is load-bearing, not a convenience. tmux does not give worktree-relative
-/// splits for free: for a `split-window` invoked by an *external CLI client* —
-/// which is how dispatch, or any script, shells out to tmux — tmux resolves the
-/// new pane's start directory to the **invoking client's** cwd, not the split
-/// pane's directory. Without this hook every split inside an agent window would
-/// land in the dispatch process's cwd (issue #231, commit 8bf36803, which
-/// replaced an earlier unconditional session hook that made all splits land in
-/// the most recently dispatched worktree). Any refactor that removes the hook
-/// must first replace that guarantee. Specified as
-/// `AgentWindowSplitStartsInTaskWorktree` in docs/specs/split-pane.allium.
+/// It is load-bearing, not a convenience: tmux resolves the start directory of a
+/// `split-window` invoked by an *external CLI client* — which is how dispatch, or
+/// any script, shells out to tmux — to the **invoking client's** cwd, not the
+/// split pane's directory. Without this hook every split inside an agent window
+/// lands in the dispatch process's cwd. Any refactor that removes the hook must
+/// first replace that guarantee by other means. Full history (issue #231, commit
+/// 8bf36803) and the behavioural contract live in the
+/// `AgentWindowSplitStartsInTaskWorktree` rule in docs/specs/split-pane.allium.
 ///
 /// # Why `send-keys` must carry `-t #{pane_id}`
 ///
@@ -218,12 +216,10 @@ pub fn set_window_dispatch_dir(
 /// session's **active** pane. Because dispatch opens the agent-tree companion
 /// pane by splitting the agent window in the background (`spawn_agent_tree_pane`)
 /// while the board is still focused, an untargeted hook typed `cd <worktree>`
-/// into the board TUI, where `c` fired the Copy-Task keybinding and the rest was
-/// typed into the resulting field. Splitting while an agent window was focused
-/// typed it into that agent's Claude prompt instead. `#{pane_id}` is expanded in
-/// the hook's own context — the newly created pane — before `run-shell` runs.
-/// Real-tmux coverage lives in tests/tmux_split_hook.rs; the mock-level test in
-/// this file cannot observe pane routing and previously pinned the broken form.
+/// into the board TUI, where `c` fired the Copy-Task keybinding. `#{pane_id}` is
+/// expanded in the hook's own context — the newly created pane. Pane routing is
+/// only observable against a real tmux server, so it is covered by
+/// tests/tmux_split_hook.rs rather than by this file's mock-level test.
 pub fn ensure_split_hook(runner: &dyn ProcessRunner) -> Result<()> {
     // if-shell -F only format-expands its test argument, NOT the branch
     // command.  send-keys doesn't expand formats either, so we wrap it in
@@ -739,6 +735,13 @@ mod tests {
         assert!(err.to_string().contains("multiple tmux windows"));
     }
 
+    /// Pins the hook string, including its `-t #{pane_id}` target. Note what this
+    /// test can and cannot do: it proves the argv we hand tmux, not what tmux
+    /// then does with it. The target's *behaviour* — that keystrokes reach the
+    /// new pane and not the board — is only observable against a real server, so
+    /// it is asserted in tests/tmux_split_hook.rs. A mock-level test of this hook
+    /// asserted the untargeted string verbatim and stayed green while the board
+    /// was being typed into.
     #[test]
     fn ensure_split_hook_issues_correct_tmux_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
@@ -753,33 +756,6 @@ mod tests {
                 "after-split-window",
                 "if-shell -F '#{@dispatch_dir}' 'run-shell -bC \"send-keys -t #{pane_id} \\\"cd #{@dispatch_dir}\\\" Enter\"'",
             ]
-        );
-    }
-
-    /// The `-t #{pane_id}` target is the whole point of the hook: without it,
-    /// `run-shell -bC` loses the enclosing target and `send-keys` falls back to
-    /// the session's *active* pane — which, when dispatch splits a background
-    /// agent window to open the companion pane, is the board TUI. The board then
-    /// receives `cd <worktree>` as real keystrokes. Asserted separately from the
-    /// full-string check above so a future edit cannot drop the target while
-    /// still producing a plausible-looking hook. See
-    /// tests/tmux_split_hook.rs for the real-tmux proof.
-    #[test]
-    fn ensure_split_hook_targets_the_new_pane_explicitly() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
-        ensure_split_hook(&mock).unwrap();
-        let calls = mock.recorded_calls();
-        let hook = &calls[0].1[2];
-        assert!(
-            hook.contains("send-keys -t #{pane_id} "),
-            "hook must target the newly created pane, got: {hook}"
-        );
-        // The target has to precede the payload, or it would be read as text.
-        let target_at = hook.find("-t #{pane_id}").expect("target present");
-        let cd_at = hook.find("cd #{@dispatch_dir}").expect("payload present");
-        assert!(
-            target_at < cd_at,
-            "target must come before the cd payload, got: {hook}"
         );
     }
 
