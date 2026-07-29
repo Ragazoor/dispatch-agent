@@ -850,7 +850,11 @@ mod tests {
         );
         let mut failures = 0;
         for _ in 0..MAX_CONSECUTIVE_QUERY_FAILURES - 1 {
-            assert!(window_alive_with_bounded_retry("task-42", &mock, &mut failures));
+            assert!(window_alive_with_bounded_retry(
+                "task-42",
+                &mock,
+                &mut failures
+            ));
         }
         assert!(
             !window_alive_with_bounded_retry("task-42", &mock, &mut failures),
