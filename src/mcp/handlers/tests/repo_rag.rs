@@ -344,6 +344,58 @@ async fn search_docs_after_indexing_returns_results() {
 }
 
 #[tokio::test]
+async fn search_docs_limit_zero_is_clamped_to_one_not_empty() {
+    // Regression guard: limit is documented as clamped to [1, max_search_limit],
+    // but the handler only applied an upper clamp (.min(20)) — limit: 0 reached
+    // results.truncate(0), silently returning count: 0, indistinguishable from
+    // "nothing matched".
+    let state = test_state().await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("note.md"),
+        "# Note\n\nContent about escalation patterns.",
+    )
+    .unwrap();
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "index_repo",
+            "arguments": {
+                "repo_path": dir.path().to_str().unwrap()
+            }
+        })),
+    )
+    .await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "search_docs",
+            "arguments": {
+                "query": "escalation",
+                "repo_path": dir.path().to_str().unwrap(),
+                "limit": 0
+            }
+        })),
+    )
+    .await;
+
+    assert!(
+        !is_error(&resp),
+        "unexpected error: {}",
+        error_message(&resp)
+    );
+    let text = extract_response_text(&resp);
+    assert!(
+        parse_count(&text).is_some_and(|n| n > 0),
+        "limit: 0 should be clamped up to 1, not return an empty result set: {text}"
+    );
+}
+
+#[tokio::test]
 async fn search_docs_without_repo_path_uses_task_repo() {
     let state = test_state().await;
     let dir = tempfile::tempdir().unwrap();

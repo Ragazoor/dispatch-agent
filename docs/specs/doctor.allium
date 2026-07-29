@@ -15,7 +15,8 @@ enum FindingStatus { ok | warn | error }
 ------------------------------------------------------------
 
 -- A Finding is one detected condition from a single check run.
--- status drives exit code: any warn or error → exit 1.
+-- status drives the exit code on a plain check run (any warn or error → exit 1),
+-- but the repair paths override that; see the Output contract section.
 entity Finding {
     check:            String     -- which check produced this finding: "worktrees" | "sessions" | "hooks"
     status:           FindingStatus
@@ -30,17 +31,35 @@ entity Finding {
 
 -- `dispatch doctor [SUBCOMMAND] [FLAGS]`
 --
--- Subcommands (all default to --dry-run):
+-- Subcommands (all default to detect-only):
 --   worktrees   compare .worktrees/ dirs against tasks.worktree in the DB
 --   sessions    compare tasks.tmux_window against live tmux windows
 --   hooks       verify git config core.hooksPath = .githooks in each known repo
 --   (none)      run all three checks in sequence
 --
--- Flags (apply to every subcommand):
---   --dry-run   (default) detect and report; never mutate
---   --repair    opt-in: apply available repairs; prints what changed
---   --force     with --repair, skip confirmation prompts
---   --json      emit a JSON array of Finding records; one per check result
+-- "Known repo" (the repo set every check runs over) is the union of the saved
+-- repo paths and the distinct repo_path of every task, in that order.
+--
+-- Flag availability is NOT uniform; each flag exists on specific command forms:
+--   --repair    subcommand forms only (worktrees | sessions | hooks).
+--               Detection stays the default. The bare `dispatch doctor`
+--               all-checks form has no --repair, so it can never repair.
+--               With --force: applies every repair_available finding and prints
+--               one "repaired: {check} {target}" line per success (human mode).
+--               Without --force: applies NOTHING. There is no confirmation
+--               prompt. If at least one finding is repair_available it prints
+--               the findings, then a "would repair" preview to stderr, then
+--               exits 1. If no finding is repair_available it falls through to
+--               the normal output path below.
+--   --force     subcommand forms only. Not a prompt-skip: it is the only way to
+--               actually apply repairs. Has no effect without --repair.
+--   --dry-run   parent `doctor` command only; no per-subcommand form exists.
+--               Forces detection-only by clearing --repair and --force.
+--   --json      declared on both the parent command and each subcommand, with
+--               the subcommand's value taking precedence. Because the
+--               subcommand default is false, `dispatch doctor --json worktrees`
+--               resolves to json = false — the parent flag is discarded.
+--               Emits a JSON array of Finding records; one per check result.
 
 ------------------------------------------------------------
 -- Worktrees check
@@ -55,8 +74,11 @@ entity Finding {
 --   status: warn, repair_available: true
 --   repair: git worktree remove --force <path>
 
--- Consistent: task.worktree is set and path exists, or task has no worktree
---   status: ok, repair_available: false
+-- Healthy state emits no finding at all. The worktrees and sessions checks are
+-- silent-on-healthy: a task whose worktree path exists, a task with no worktree,
+-- and a .worktrees/ dir whose every entry matches a DB row all produce nothing.
+-- Neither check ever constructs an ok finding. Only the hooks check does, and it
+-- emits one finding per known repo unconditionally.
 
 -- Scan error: the {repo_path}/.worktrees/ directory exists but cannot be
 --             enumerated (e.g. permission denied, or the path is not a
@@ -69,15 +91,25 @@ entity Finding {
 -- Sessions check
 ------------------------------------------------------------
 
+-- The check is task-driven, not tmux-driven: it iterates tasks, skips every task
+-- whose tmux_window is unset, and for the rest compares window liveness against
+-- task status. The live window list is only consulted as a membership test for a
+-- window name the task already records.
+
 -- Stale DB claim: task has tmux_window set and status in {running, review}
 --                 but that window no longer exists in any tmux session
 --   status: error, repair_available: true
 --   repair: patch task to clear tmux_window column
 
--- Stale live window: a tmux window named "task-{id}" exists but the
---                    corresponding task has status done or archived
+-- Stale live window: task has tmux_window set, that window is still alive, and
+--                    the task has status done or archived
 --   status: warn, repair_available: true
 --   repair: tmux kill-window -t <window>
+
+-- Known gap: because the check never scans live tmux windows for unrecorded
+-- names, a task row with tmux_window = null alongside a genuinely-live
+-- "task-{id}" window is invisible to it — precisely the orphan a live-window
+-- scan would catch.
 
 ------------------------------------------------------------
 -- Hooks check
@@ -97,8 +129,18 @@ entity Finding {
 -- Default (human) output: one line per Finding
 --   "{status}  {check}  {target}  {message}"
 --   where status is padded to 5 chars: "ok   " | "warn " | "error"
+--   When the finding list is empty, the literal line "all checks passed" is
+--   printed instead. This substitution is human-mode only; --json emits an
+--   empty array rather than that line.
 --
 -- --json output: a flat JSON array; one object per Finding
 --   [{"check":"...","status":"...","target":"...","message":"...","repair_available":...}]
 --
--- Exit code: 0 when all findings are ok; 1 when any finding is warn or error.
+-- Exit code has three distinct modes:
+--   plain check run (no --repair, or --repair with nothing repairable):
+--     0 when no finding is warn or error; 1 when any finding is warn or error.
+--   --repair --force: 0 as long as every attempted repair succeeded, even when
+--     the original findings included errors — the errors are what was repaired.
+--     1 only when a repair itself fails.
+--   --repair without --force (preview path): 1 whenever at least one finding is
+--     repair_available, regardless of severity, since nothing was resolved.

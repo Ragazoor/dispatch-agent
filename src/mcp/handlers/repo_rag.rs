@@ -106,7 +106,7 @@ pub(super) async fn handle_search_docs(
         Err(e) => return e,
     };
 
-    let limit = parsed.limit.unwrap_or(5).min(20);
+    let limit = parsed.limit.unwrap_or(5).clamp(1, 20);
     let svc = RepoIndexService::new(state.embedding_service.clone());
 
     match svc.search_docs(&repo_path, &parsed.query, limit).await {

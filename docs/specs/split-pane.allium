@@ -63,6 +63,77 @@ rule BatchDetachTmux {
         -- filtered out before the prompt.
 }
 
+-- == Toggle Split Mode ([s] key) ==
+--
+-- [s] is the only way in or out of split mode; every other rule in this file
+-- presupposes that split mode already exists. Entry auto-pins the selected
+-- task when it has a live agent window, so a single [s] on a running or
+-- reviewable task both opens the pane and pins that agent — no separate [S]
+-- step is needed. Exit returns a pinned agent to a standalone tmux window:
+-- the agent's session survives, only the split-pane UI goes away.
+
+rule ToggleSplitMode {
+    when: UserAction("s", task)
+
+    ensures:
+        if split_pane.active = true:
+            ExitSplitMode()
+        else if task.tmux_window != null:
+            -- Auto-pin: the selected task's existing window is joined into
+            -- the dispatch window as the right pane.
+            split_pane.active = true
+            split_pane.pane = task.tmux_window
+            split_pane.pinned_task = task
+            split_pane.focused = true
+        else:
+            -- No agent window to show: open a bare, unpinned shell pane.
+            split_pane.active = true
+            split_pane.pane = FreshShellPane()
+            split_pane.pinned_task = null
+            split_pane.focused = true
+
+    @guidance
+        -- Three-way branch on current state and the selection:
+        --   1. Split active            -> exit (see ExitSplitMode).
+        --   2. Inactive, selected task has a tmux window -> enter and pin it
+        --      in one step via tmux join-pane.
+        --   3. Inactive, no window (or no selection at all) -> enter with a
+        --      fresh shell pane via tmux split-window.
+        --
+        -- Entry is best-effort: outside tmux it fails with a status hint
+        -- ("Split mode requires tmux") and split mode stays inactive.
+        -- focused resets to true on both entry and exit.
+}
+
+rule ExitSplitMode {
+    when: ExitSplitMode()
+
+    requires: split_pane.active = true
+    requires: split_pane.pane != null
+
+    let pinned = split_pane.pinned_task
+
+    ensures: split_pane.active = false
+    ensures: split_pane.pane = null
+    ensures: split_pane.pinned_task = null
+    ensures: split_pane.focused = true
+    ensures:
+        if pinned != null:
+            -- The pinned agent is broken back out to a standalone tmux
+            -- window under its original name. Its session is preserved.
+            TaskWindowRestored(task: pinned, window: pinned.tmux_window)
+
+    @guidance
+        -- Exit destroys the split-pane UI, not the agent. With a task pinned,
+        -- tmux break-pane returns the pane to a standalone window keyed by the
+        -- task's tmux_window name, so the agent remains reachable via [Space].
+        -- Only an unpinned (bare shell) pane is killed outright.
+        --
+        -- Emitted from two places: pressing [s] while split mode is active
+        -- (ToggleSplitMode), and confirming quit — quitting dispatch with a
+        -- task pinned restores that agent rather than ending its session.
+}
+
 -- == Split Pane Lifecycle ==
 --
 -- When a task lifecycle event clears or replaces a task's tmux window,
@@ -426,7 +497,9 @@ rule AgentWindowSplitStartsInTaskWorktree {
 -- SplitPaneStability: When split mode is active, the pane must never be
 -- destroyed and recreated in response to task lifecycle events. Pane content
 -- is replaced in-place (respawn) to avoid visual flicker. The only operations
--- that destroy the pane are explicit user actions: toggling split mode off
--- (s key) or manually closing the pane. Lifecycle events (finish, PR creation)
--- respawn the pane content and clear pinned_task, but keep active=true and
--- pane intact.
+-- that tear down the pane are explicit user actions: toggling split mode off
+-- (s key) or manually closing the pane. Even then it is the split-pane UI that
+-- is torn down, not the agent: ExitSplitMode breaks a pinned task's pane back
+-- out to a standalone tmux window and only kills the pane when nothing was
+-- pinned. Lifecycle events (finish, PR creation) respawn the pane content and
+-- clear pinned_task, but keep active=true and pane intact.

@@ -115,6 +115,12 @@ impl TodoService {
                         }
                         _ => {}
                     }
+                    if todos.iter().any(|t| t.parent_id == Some(id)) {
+                        return Err(ServiceError::Validation(
+                            "cannot nest a todo that already has children (depth limit is 1)"
+                                .into(),
+                        ));
+                    }
                     patch = patch.parent_id(Some(pid.0));
                 }
             }
@@ -387,6 +393,44 @@ mod tests {
         assert!(
             matches!(result, Err(crate::service::ServiceError::Validation(_))),
             "expected Validation error when nesting under a nested todo, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn nesting_a_todo_that_already_has_children_returns_validation_error() {
+        // Regression guard: NestingDepthOne requires parent != null implies
+        // children.count = 0. Root Z, root A with child A1; nesting A under Z
+        // must be rejected — it would leave A.parent != null with A having a
+        // child of its own (A1), violating the one-level-deep invariant even
+        // though neither existing guard (candidate-parent-is-child,
+        // selected-is-already-child) catches it.
+        let svc = make_service().await;
+        let z = svc.create_todo("Z".into(), None).await.unwrap();
+        let a = svc.create_todo("A".into(), None).await.unwrap();
+        let a1 = svc.create_todo("A1".into(), None).await.unwrap();
+        svc.update_todo(
+            a1.id,
+            TodoUpdate {
+                parent_id: Some(Some(a.id)),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let result = svc
+            .update_todo(
+                a.id,
+                TodoUpdate {
+                    parent_id: Some(Some(z.id)),
+                    ..Default::default()
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(crate::service::ServiceError::Validation(_))),
+            "expected Validation error when nesting a todo that already has children, got {result:?}"
         );
     }
 

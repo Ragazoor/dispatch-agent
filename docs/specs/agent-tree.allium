@@ -336,8 +336,10 @@ rule SplitAgentTreePaneOnAgentLaunch {
         --
         -- The new pane runs a standalone tree renderer for this task
         -- (`dispatch agent-tree <task_id>`), not part of the board's App. It
-        -- opens even when the task's log is still empty — the tree simply
-        -- shows the worktree with nothing badged.
+        -- opens even when the task's log is still empty, in which case the tree
+        -- it shows is empty too: only touched paths and their ancestors are
+        -- rendered, so a pane opened before the agent's first file tool call
+        -- shows nothing but the root (see RefreshAgentTree).
         --
         -- NO RETROFIT. Creation is triggered only by window creation, so agent
         -- windows that already existed when this feature shipped never grow a
@@ -646,10 +648,67 @@ rule RefreshAgentTree {
         -- rather than aborting the refresh, so one bad append cannot blank the
         -- tree.
         --
+        -- == NOT IMPLEMENTED — DEFERRED: the worktree_tree traversal ==
+        -- Scoped to the traversal only. The refresh cadence, the file-stamp
+        -- short-circuit, badge precedence and auto-expansion all ship as
+        -- written; what does not ship is walking the worktree.
+        --
+        -- The shipped renderer performs NO filesystem traversal at all. Its
+        -- tree is built purely from the event log (build_tree in
+        -- src/agent_tree.rs, called by src/cli/agent_tree.rs), so it contains
+        -- exactly the touched paths plus the ancestor directories needed to
+        -- reach them. Untouched siblings are absent, not collapsed. Two
+        -- consequences follow, and they are the shipped behaviour:
+        --   * An empty event log renders an EMPTY tree, not the worktree with
+        --     nothing badged.
+        --   * The tree is not a repo browser the user can open into. There is
+        --     nothing under an untouched directory to expand, because untouched
+        --     directories are not rendered.
+        --
+        -- Merging the event-derived tree with a real directory listing was
+        -- deliberately left to a follow-up, and TreeScanExclusions is the
+        -- question that gates it: an unfiltered eager scan of a large repo is
+        -- both slow and mostly noise. Until it is answered, a touched-paths-only
+        -- tree is the honest description of what the pane shows.
+        --
         -- == Implementation notes ==
         -- The renderer is a small standalone ratatui loop reusing the existing
         -- tree widget dependency; it is not part of the board's App and shares
         -- none of its state.
+}
+
+-- == Companion Pane Input ==
+--
+-- Keys pressed inside the companion pane are handled by the renderer process
+-- itself, with no tmux prefix and no involvement from the board TUI. Only the
+-- exit key has a consequence outside the renderer's own view, so only it gets a
+-- rule; the cursor and expansion keys are specified on the
+-- AgentTreeCompanionPane surface (see the AgentTreeViewState open question).
+
+rule ExitAgentTreeRenderer {
+    -- q, or Ctrl-C, stops the renderer. tmux closes a pane when the command
+    -- running in it exits, so the companion pane goes with it. The pane is
+    -- bound by the trigger rather than looked up: the keystroke arrived inside
+    -- one specific renderer, which knows which pane it is running in.
+    when: ExitAgentTreeRenderer(user, pane)
+
+    requires: pane.status = shown
+
+    ensures: pane.status = hidden
+    ensures: pane.tmux_pane = null
+
+    @guidance
+        -- Reaches the same hidden state HideAgentTreePane describes, by a
+        -- different route: the renderer returns from its event loop rather than
+        -- the board issuing kill-pane. Nothing is lost either way, since the
+        -- whole tree is re-derived from the append-only event log.
+        --
+        -- Capture is unaffected. The agent keeps appending FileEvents with no
+        -- pane open, so a renderer started later shows the full history — which
+        -- is the point of decoupling the two halves. But because
+        -- ShowAgentTreePane is deferred and no toggle key is bound, there is
+        -- today no way to start one: exiting the renderer closes the tree for the
+        -- remaining life of that agent window.
 }
 
 ------------------------------------------------------------
@@ -750,14 +809,27 @@ surface AgentTreeCompanionPane {
 
     provides:
         -- The global tmux binding (prefix + config.agent_tree_toggle_key).
-        -- Acts on the pane belonging to the currently focused window.
+        -- Acts on the pane belonging to the currently focused window. See
+        -- HideAgentTreePane / ShowAgentTreePane / BindAgentTreeToggle for the
+        -- implementation.
         ToggleAgentTreePane(user)
 
+        -- Keys handled by the renderer inside the pane itself, unprefixed,
+        -- while the pane has tmux focus. All five act on the view only.
+        ExitAgentTreeRenderer(user, pane)              -- q, Ctrl-C
+        MoveAgentTreeCursorUp(user, pane)              -- Up
+        MoveAgentTreeCursorDown(user, pane)            -- Down
+        CollapseSelectedAgentTreeNode(user, pane)      -- Left
+        ExpandSelectedAgentTreeNode(user, pane)        -- Right
+        ToggleSelectedAgentTreeNode(user, pane)        -- Space, Enter
+
     @guarantee ReadOnlyObservation
-        -- The pane only reads the event log. It never writes to the worktree,
-        -- never mutates the task, and never issues an MCP call. Killing it, or
-        -- never opening it, cannot change what the agent does or what the
-        -- board shows.
+        -- The pane only reads the task's event log. It never writes to the
+        -- worktree, never mutates the task, and never issues an MCP call —
+        -- including under the keyboard actions above, which move a cursor and
+        -- open or close directories in the pane's own view and nothing more.
+        -- Killing it, or never opening it, cannot change what the agent does or
+        -- what the board shows.
 
     @guarantee NoBoardCoupling
         -- The pane is a separate process in a separate window from the board
@@ -771,6 +843,12 @@ surface AgentTreeCompanionPane {
         -- tree already visible. Everything the pane displays is derived from
         -- the event log, so it survives its own restart: toggling off and on
         -- rebuilds the same badges.
+        --
+        -- The cursor position and the user's manual expansions do NOT survive a
+        -- restart. They live in the renderer process and are modelled nowhere in
+        -- this spec — see the AgentTreeViewState open question. What does survive
+        -- a refresh is the manual expansion state within one renderer's life: a
+        -- directory the user collapsed stays collapsed when new events land.
 }
 
 ------------------------------------------------------------
@@ -778,6 +856,8 @@ surface AgentTreeCompanionPane {
 ------------------------------------------------------------
 
 open question "MainSessionPaneScope: the main-session window has no task id and no worktree, so its companion pane renders an always-empty tree (SplitAgentTreePaneOnMainSession) and is covered by neither teardown rule. Should the main session be excluded from the split entirely, or should the capture hook learn to attribute main-session tool calls to some non-task log so the pane earns its space?"
+
+open question "AgentTreeViewState: the renderer's cursor position and the set of directories the user has manually expanded or collapsed are real, observable state — CollapseSelectedAgentTreeNode and friends act on them, and DirectoryExpansionFollowsTouchedDescendants only constrains the first render, not what the user does afterwards. They are currently modelled nowhere. Should AgentTreePane carry them as fields (making the manual-override behaviour rule-expressible and the invariant honest about when it applies), or is per-process view state deliberately below this spec's abstraction line?"
 
 open question "EventLogRetention: <dispatch_data_dir>/<file_events_subdir>/<task_id>.jsonl grows unbounded for the life of a task. A long agent session touching the same files repeatedly writes one line per touch, and nothing truncates, rotates or caps the file — the same gap observability.allium records for trajectory files. Should there be a size cap, a dedup-on-write, or a wrap-up-time truncation?"
 
