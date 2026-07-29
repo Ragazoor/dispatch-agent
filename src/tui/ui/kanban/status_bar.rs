@@ -307,7 +307,10 @@ fn batch_action_hints(count: usize, key_color: Color, has_tasks: bool) -> Vec<Sp
         push_hint("L", "move");
         push_hint("H", "back");
     }
-    push_hint("x", "archive");
+    // 'x' completes tasks that aren't Done yet and archives the rest, so with
+    // tasks selected the label can't commit to one verb. An epics-only
+    // selection always archives.
+    push_hint("x", if has_tasks { "done/archive" } else { "archive" });
     push_hint("a", "select all");
     push_hint("F", "flat");
     push_hint("v", "toggle");

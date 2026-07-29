@@ -246,6 +246,10 @@ entity Task {
         backlog -> running
         running -> review
         running -> backlog
+        -- The archive key ('x') completes a task from wherever it sits, so
+        -- Done is reachable directly from backlog and running, not only
+        -- from review (see tasks.allium: ConfirmDone / ArchiveKeyRouting)
+        backlog -> done
         running -> done
         review -> done
         review -> running

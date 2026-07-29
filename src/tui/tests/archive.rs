@@ -4,9 +4,9 @@ use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
 use crossterm::event::KeyCode;
 
 #[test]
-fn x_key_enters_confirm_archive_mode() {
-    let mut app = make_app();
-    // make_app() starts at Backlog (nav col 1) — no need to set_column.
+fn x_key_on_done_task_enters_confirm_archive_mode() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Done)]);
+    app.selection_mut().set_column(4); // Done (nav col 4)
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('x'))));
     assert!(cmds.is_empty());
     assert!(matches!(app.input.mode, InputMode::ConfirmArchive(Some(_))));
@@ -15,14 +15,67 @@ fn x_key_enters_confirm_archive_mode() {
 
 #[test]
 fn confirm_archive_y_emits_archive_task() {
-    let mut app = make_app();
-    // make_app() starts at Backlog (nav col 1).
+    let mut app = App::new(vec![make_task(1, TaskStatus::Done)]);
+    app.selection_mut().set_column(4); // Done (nav col 4)
     app.handle_key(make_key(KeyCode::Char('x')));
     let _ = app.handle_key(make_key(KeyCode::Char('y')));
     assert_eq!(app.input.mode, InputMode::Normal);
     // Task 1 should now be Archived
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
     assert_eq!(task.status, TaskStatus::Archived);
+}
+
+#[test]
+fn x_key_on_backlog_task_enters_confirm_done_not_archive() {
+    let mut app = make_app();
+    // make_app() starts at Backlog (nav col 1) — no need to set_column.
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('x'))));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::ConfirmDone(TaskId(1)));
+    let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Backlog,
+        "task should not move until confirmed"
+    );
+}
+
+#[test]
+fn confirm_x_on_backlog_task_moves_to_done_not_archived() {
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('x')));
+    app.handle_key(make_key(KeyCode::Char('y')));
+    let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+}
+
+#[test]
+fn x_key_on_running_task_moves_to_done_and_preserves_worktree() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = Some("/wt/1-test".to_string());
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(2); // Running (nav col 2)
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone(TaskId(1)));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('y'))));
+
+    let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert_eq!(
+        task.worktree.as_deref(),
+        Some("/wt/1-test"),
+        "moving to Done must not remove the worktree"
+    );
+    assert!(task.tmux_window.is_none(), "tmux window should be killed");
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup { .. })
+        )),
+        "moving to Done must not emit worktree Cleanup"
+    );
 }
 
 #[test]
@@ -76,9 +129,37 @@ fn x_key_on_all_review_selection_enters_confirm_done_not_archive() {
 }
 
 #[test]
-fn x_key_on_mixed_status_selection_still_archives_all() {
+fn x_key_on_mixed_status_selection_moves_non_done_to_done() {
     let mut app = App::new(vec![
-        make_task(1, TaskStatus::Review),
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Done),
+    ]);
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ToggleSelect(TaskId(1)),
+    ));
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ToggleSelect(TaskId(2)),
+    ));
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert!(
+        matches!(app.input.mode, InputMode::ConfirmDone(_)),
+        "expected ConfirmDone, got {:?}",
+        app.input.mode
+    );
+    app.handle_key(make_key(KeyCode::Char('y')));
+    assert_eq!(app.find_task(TaskId(1)).unwrap().status, TaskStatus::Done);
+    assert_eq!(
+        app.find_task(TaskId(2)).unwrap().status,
+        TaskStatus::Done,
+        "the already-Done task in the selection is left untouched"
+    );
+}
+
+#[test]
+fn x_key_on_all_done_selection_archives() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Done),
         make_task(2, TaskStatus::Done),
     ]);
     app.update(Message::Task(
@@ -103,12 +184,23 @@ fn x_key_on_mixed_status_selection_still_archives_all() {
 
 #[test]
 fn confirm_archive_n_cancels() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Done)]);
+    app.selection_mut().set_column(4); // Done (nav col 4)
+    app.handle_key(make_key(KeyCode::Char('x')));
+    let _ = app.handle_key(make_key(KeyCode::Char('n')));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    // Task 1 still in Done, not archived
+    let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+}
+
+#[test]
+fn confirm_done_n_cancels_and_leaves_task_in_place() {
     let mut app = make_app();
     // make_app() starts at Backlog (nav col 1).
     app.handle_key(make_key(KeyCode::Char('x')));
     let _ = app.handle_key(make_key(KeyCode::Char('n')));
     assert_eq!(app.input.mode, InputMode::Normal);
-    // Task 1 still in Backlog
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
     assert_eq!(task.status, TaskStatus::Backlog);
 }
@@ -320,14 +412,14 @@ fn archived_tasks_not_in_kanban_columns() {
 
 #[test]
 fn full_archive_flow() {
-    // Create a running task with worktree
-    let mut task = make_task(1, TaskStatus::Running);
+    // A Done task still holding its worktree — 'x' archives from Done.
+    let mut task = make_task(1, TaskStatus::Done);
     task.worktree = Some("/wt/1-test".to_string());
     task.tmux_window = Some("dev:1-test".to_string());
     let mut app = App::new(vec![task, make_task(2, TaskStatus::Backlog)]);
 
-    // Navigate to Running column (column 1)
-    app.handle_key(make_key(KeyCode::Right));
+    // Navigate to the Done column (nav col 4)
+    app.selection_mut().set_column(4);
 
     // Press x to archive
     app.handle_key(make_key(KeyCode::Char('x')));

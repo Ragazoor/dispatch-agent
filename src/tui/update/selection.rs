@@ -135,6 +135,9 @@ impl App {
         direction: MoveDirection,
     ) -> Vec<Command> {
         if matches!(direction, MoveDirection::Forward) {
+            // Review is the only status whose forward step lands on Done —
+            // next() saturates, so Done.next() is Done and a literal status
+            // check is what keeps already-Done tasks out of the prompt.
             let review_ids: Vec<TaskId> = ids
                 .iter()
                 .copied()
@@ -153,14 +156,7 @@ impl App {
                     }
                 }
                 // Enter confirmation for Review→Done tasks
-                self.select.pending_done = review_ids;
-                let count = self.select.pending_done.len();
-                self.input.mode = InputMode::ConfirmDone(self.select.pending_done[0]);
-                self.set_status(format!(
-                    "Move {} {} to Done? [y/n]",
-                    count,
-                    if count == 1 { "task" } else { "tasks" }
-                ));
+                self.prompt_move_to_done(review_ids);
                 return cmds;
             }
         }

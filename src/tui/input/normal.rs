@@ -683,27 +683,29 @@ impl App {
         }
     }
 
-    /// `'x'` — archive the selected item or selection.
+    /// `'x'` — complete the selected task(s), or archive them once Done.
+    ///
+    /// Completing is the common case and archiving the exception, so 'x'
+    /// only archives a task that already sits in Done; anything else moves
+    /// straight to Done via the ConfirmDone prompt. Epics always archive,
+    /// including a multi-selection that contains one.
     fn handle_key_archive_item(&mut self) -> Vec<Command> {
         if self.has_selection() {
-            // A selection made up entirely of Review tasks (no epics, no
-            // other statuses) has the same next-step-is-Done semantics as
-            // the single-task case below — route it through the same
-            // batch forward-move split that 'L' uses instead of archiving.
-            if self.select.epics.is_empty()
-                && !self.select.tasks.is_empty()
-                && self.select.tasks.iter().all(|id| {
-                    self.find_task(*id)
-                        .is_some_and(|t| t.status == crate::models::TaskStatus::Review)
-                })
-            {
-                let ids: Vec<_> = self.select.tasks.iter().copied().collect();
-                return self.update(Message::Task(
-                    crate::tui::messages::TaskMessage::BatchMove {
-                        ids,
-                        direction: MoveDirection::Forward,
-                    },
-                ));
+            if self.select.epics.is_empty() {
+                let not_done: Vec<_> = self
+                    .select
+                    .tasks
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        self.find_task(*id)
+                            .is_some_and(|t| t.status != crate::models::TaskStatus::Done)
+                    })
+                    .collect();
+                if !not_done.is_empty() {
+                    self.prompt_move_to_done(not_done);
+                    return vec![];
+                }
             }
             let count = self.select.tasks.len() + self.select.epics.len();
             self.input.mode = InputMode::ConfirmArchive(None);
@@ -717,12 +719,9 @@ impl App {
                 _ => {
                     if let Some(task) = self.selected_task() {
                         let id = task.id;
-                        if task.status == crate::models::TaskStatus::Review {
-                            // A Review task's next status is Done, not
-                            // Archived — route through the same forward-move
-                            // confirmation used by 'L' rather than skipping
-                            // straight to Archive.
-                            return self.handle_key_move(MoveDirection::Forward);
+                        if task.status != crate::models::TaskStatus::Done {
+                            self.prompt_move_to_done(vec![id]);
+                            return vec![];
                         }
                         self.input.mode = InputMode::ConfirmArchive(Some(id));
                         self.set_status("Archive task? [y/n]".to_string());

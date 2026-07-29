@@ -270,7 +270,8 @@ rule MoveTaskBackward {
 rule ConfirmDone {
     when: ConfirmDone(task)
 
-    requires: task.status = review
+    requires: task.status != done
+    requires: task.status != archived
 
     ensures: task.status = done
     ensures: task.sub_status = core/SubStatus.default_for(done)
@@ -279,19 +280,18 @@ rule ConfirmDone {
     ensures: task.sort_order = completion_recency_rank(now)
 
     @guidance
-        -- Confirmation prompt for the review -> done transition. Used by
-        -- both single-task forward moves and BatchMoveForward. Each task
-        -- is individually guarded by review status before transitioning.
+        -- Confirmation prompt for the transition into Done. Used by
+        -- single-task forward moves, BatchMoveForward, and the 'x' key.
+        -- Each task is individually guarded before transitioning: tasks
+        -- already in Done or Archived are skipped rather than re-moved.
+        -- The tmux window is killed but the worktree is preserved —
+        -- unlike ArchiveTask, which removes it. As with MoveTaskForward,
+        -- the task's agent notification/poll tracking flags are cleared.
         --
-        -- Also entered by the archive key ('x') when the selection is a
-        -- single task, or a multi-selection made entirely of tasks (no
-        -- epics) all in Review status: since a Review task's natural next
-        -- step is Done rather than Archived, 'x' on it moves forward
-        -- through this same confirmation (BatchMoveForward's ConfirmDone,
-        -- for a multi-selection) instead of opening ArchiveTask's/
-        -- BatchArchive's confirmation. Backlog/Running/Done tasks, epics,
-        -- and any selection mixing Review with other statuses or epics,
-        -- are unaffected and still archive via ArchiveTask/BatchArchive.
+        -- Reached from forward movement only when the next status is Done
+        -- (i.e. from Review). The 'x' key reaches it from *any* non-Done
+        -- status, moving the task straight to Done rather than one step
+        -- forward — see the ArchiveKeyRouting guidance on ArchiveTask.
         --
         -- completion_recency_rank(now) is a black-box helper: it returns a
         -- value such that more-recently-completed tasks sort first among
@@ -460,12 +460,25 @@ rule ArchiveTask {
         -- If another active task shares the same worktree, the
         -- worktree is detached from this task but not removed
         -- from disk (same shared-worktree logic as FinishTaskSuccess).
-        -- The handler accepts any non-archived task, but the TUI's 'x'
-        -- key does not route a Review task here directly — see the
-        -- ArchiveKeyOnReviewTask guidance on ConfirmDone below.
         -- The task.status = done check reads the pre-archive status
         -- (evaluated before the status = archived assignment below), so
         -- only a task that was actually Done has its sort_order cleared.
+        --
+        -- ArchiveKeyRouting: the handler accepts any non-archived task,
+        -- but the TUI's 'x' key only routes *Done* tasks here. On a task
+        -- in any other status 'x' moves it straight to Done through
+        -- ConfirmDone instead, since completing is the common case and
+        -- archiving the exception. Concretely, for the 'x' key:
+        --   * single task in Done -> ArchiveTask confirmation
+        --   * single task in any other status -> ConfirmDone
+        --   * multi-selection of tasks only, all in Done -> BatchArchive
+        --   * multi-selection of tasks only, at least one not in Done ->
+        --     ConfirmDone over the non-Done tasks; the already-Done ones
+        --     in the selection are left untouched
+        --   * any selection containing an epic, and a single selected
+        --     epic -> BatchArchive / ArchiveEpic as before
+        -- 'x' pressed in the archive panel is unrelated: it deletes (see
+        -- DeleteTask).
 }
 
 rule BatchArchive {
@@ -485,10 +498,12 @@ rule BatchArchive {
                 ArchiveEpic(epic)
 
     @guidance
-        -- Triggered from the TUI (x key) when tasks or epics are
-        -- multi-selected. Shows a count-based confirmation prompt before
-        -- proceeding. Skipped epics (those with non-done subtasks) are
-        -- reported in the status bar.
+        -- Triggered from the TUI (x key) when epics are multi-selected,
+        -- or when the multi-selection is tasks that are all already in
+        -- Done — otherwise 'x' routes to ConfirmDone (see the
+        -- ArchiveKeyRouting guidance on ArchiveTask). Shows a count-based
+        -- confirmation prompt before proceeding. Skipped epics (those with
+        -- non-done subtasks) are reported in the status bar.
 }
 
 rule DeleteTask {

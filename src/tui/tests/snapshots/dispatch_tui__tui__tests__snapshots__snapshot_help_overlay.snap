@@ -18,7 +18,7 @@ expression: rendered
                         ║  [n] new task   [E] new epic   [N] notifications                     ║
                         ║  [m] reparent epic / move task to epic (tree picker)                 ║
                         ║  [d] dispatch*  [H/L] move task/epic backward/forward                ║
-                        ║  [x] archive    [D] quick dsp  [Space] session/board (gg: top)       ║
+                        ║  [x] done/arch  [D] quick dsp  [Space] session/board (gg: top)       ║
                         ║  [l/→] Archive   [a] select all   [/] search titles                  ║
                         ║  [v] select  [f] filter repos  [A] filter active  [W] wrap up        ║
                         ║  [T] detach tmux panel  (any task with a tmux window, supports batch)║

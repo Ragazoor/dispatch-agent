@@ -996,8 +996,13 @@ fn esc_with_no_selection_is_noop() {
 }
 
 #[test]
-fn x_key_with_selection_shows_count_in_confirm() {
-    let mut app = make_app();
+fn x_key_with_done_selection_shows_count_in_confirm() {
+    // Only an all-Done selection archives — anything short of Done moves
+    // to Done instead.
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Done),
+        make_task(2, TaskStatus::Done),
+    ]);
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::ToggleSelect(TaskId(1)),
     ));
@@ -1010,6 +1015,24 @@ fn x_key_with_selection_shows_count_in_confirm() {
     assert_eq!(
         app.status.message.as_deref(),
         Some("Archive 2 items? [y/n]")
+    );
+}
+
+#[test]
+fn x_key_with_selection_shows_count_in_move_to_done_confirm() {
+    let mut app = make_app();
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ToggleSelect(TaskId(1)),
+    ));
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ToggleSelect(TaskId(2)),
+    ));
+
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert!(matches!(app.input.mode, InputMode::ConfirmDone(_)));
+    assert_eq!(
+        app.status.message.as_deref(),
+        Some("Move 2 tasks to Done? [y/n]")
     );
 }
 

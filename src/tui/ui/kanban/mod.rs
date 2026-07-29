@@ -473,7 +473,7 @@ pub(in crate::tui) fn action_hints(
                 push_hint("Space", space_label);
                 push_hint("e", "edit");
                 push_hint("L", "move");
-                push_hint("x", "archive");
+                push_hint("x", "done");
             }
             TaskStatus::Running => {
                 if task.tmux_window.is_some() {
@@ -484,7 +484,7 @@ pub(in crate::tui) fn action_hints(
                 push_hint("e", "edit");
                 push_hint("L", "move");
                 push_hint("H", "back");
-                push_hint("x", "archive");
+                push_hint("x", "done");
             }
             TaskStatus::Review => {
                 if task.worktree.is_some() {

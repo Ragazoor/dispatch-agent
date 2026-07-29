@@ -94,7 +94,7 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
         ]),
         Line::from(vec![
             Span::styled("  [x]", key),
-            Span::styled(" archive    ", desc),
+            Span::styled(" done/arch  ", desc),
             Span::styled("[D]", key),
             Span::styled(" quick dsp  ", desc),
             Span::styled("[Space]", key),

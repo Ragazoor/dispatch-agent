@@ -30,7 +30,7 @@
 | `Prefix+e` | (tmux global) Show/hide the agent-tree companion pane in whichever agent window you press it in — press your tmux prefix, then `e`. A no-op in windows that aren't agent windows. Like `Prefix+Space`, it is bound while the board TUI runs and unbound when it exits, so the pane can't be toggled with the board closed |
 | `s` | Toggle split view — side-by-side TUI + agent pane |
 | `S` | Swap the selected task into the split pane (in-place) |
-| `x` | Archive task (with confirmation); on a Review task, moves it to Done instead (same confirmation as `Shift+L`) |
+| `x` | Move task to Done (with confirmation); on a task already in Done, archives it instead. On an epic, always archives. In a multi-selection: tasks only, all Done → archive; otherwise the not-yet-Done tasks move to Done |
 | `v` | Toggle select |
 | `a` | Select all in column |
 | `J` / `K` | Reorder task up / down |

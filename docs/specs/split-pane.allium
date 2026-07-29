@@ -147,7 +147,7 @@ rule SplitPaneRespawnOnWindowCleared {
     -- event type. This covers all paths:
     --   - WrapUpRebase / FinishTaskSuccess (rebase completes → Done)
     --   - PrMerged (PR merged on GitHub → Done)
-    --   - ConfirmDone (manual Review → Done)
+    --   - ConfirmDone (manual move into Done from any non-Done status)
     --   - ArchiveTask (any status → Archived)
     --   - RetryResume (old window killed, new dispatch starts)
     --

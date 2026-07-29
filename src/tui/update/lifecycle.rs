@@ -22,9 +22,7 @@ impl App {
 
             // Confirm before moving to Done
             if new_status == TaskStatus::Done {
-                let title = truncate_title(&task.title, TITLE_DISPLAY_LENGTH);
-                self.input.mode = InputMode::ConfirmDone(id);
-                self.set_status(format!("Move {title} to Done? [y/n]"));
+                self.prompt_move_to_done(vec![id]);
                 return vec![];
             }
 
@@ -71,6 +69,29 @@ impl App {
         }
     }
 
+    /// Open the "move to Done" confirmation for `ids`.
+    ///
+    /// Shared by the single-task and batch paths — `handle_confirm_done`
+    /// already reads `select.pending_done` first, so both cases go through
+    /// the same list. No-op on an empty list.
+    pub(in crate::tui) fn prompt_move_to_done(&mut self, ids: Vec<TaskId>) {
+        let Some(&first) = ids.first() else {
+            return;
+        };
+        let status = if ids.len() == 1 {
+            let title = self
+                .find_task(first)
+                .map(|t| truncate_title(&t.title, TITLE_DISPLAY_LENGTH))
+                .unwrap_or_default();
+            format!("Move {title} to Done? [y/n]")
+        } else {
+            format!("Move {} tasks to Done? [y/n]", ids.len())
+        };
+        self.select.pending_done = ids;
+        self.input.mode = InputMode::ConfirmDone(first);
+        self.set_status(status);
+    }
+
     pub(in crate::tui) fn handle_confirm_done(&mut self) -> Vec<Command> {
         let ids = if !self.select.pending_done.is_empty() {
             std::mem::take(&mut self.select.pending_done)
@@ -86,7 +107,10 @@ impl App {
         let mut cmds = Vec::new();
         for id in ids {
             if let Some(task) = self.find_task_mut(id) {
-                if task.status != TaskStatus::Review {
+                // Stale-state guard: callers already filter out terminal
+                // tasks, but a background refresh between the prompt and the
+                // confirmation can move one under us.
+                if matches!(task.status, TaskStatus::Done | TaskStatus::Archived) {
                     continue;
                 }
                 let detach = Self::take_detach(task);
