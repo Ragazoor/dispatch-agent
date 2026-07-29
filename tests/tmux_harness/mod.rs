@@ -55,6 +55,10 @@ use dispatch_tui::process::{ProcessRunner, RealProcessRunner};
 pub const DELIVERY_DEADLINE: Duration = Duration::from_secs(5);
 pub const POLL_STEP: Duration = Duration::from_millis(25);
 
+/// The shell new panes run under test. Explicitly no-rc — see
+/// [`TmuxServer::isolate_pane_shell`] for why that is load-bearing.
+pub const PANE_SHELL: &str = "bash --norc --noprofile";
+
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
@@ -120,6 +124,24 @@ impl TmuxServer {
         }
     }
 
+    /// Pin the shell new panes run to one that does not source the user's rc
+    /// files, and apply it before any pane the test cares about is created.
+    ///
+    /// With `default-command` empty, tmux runs the pane's shell as a **login**
+    /// shell. That sources `~/.bashrc` / `~/.profile`, which rebuild `PATH` and
+    /// typically prepend directories ahead of whatever the pane inherited — so
+    /// the stub `claude` / `dispatch` lose to the real ones and a test silently
+    /// launches production binaries. Verified: without this, a `send-keys`
+    /// dispatch runs the real `claude`.
+    ///
+    /// This is test-environment configuration in the same spirit as
+    /// `-f /dev/null`. It does not change any behaviour under test: production
+    /// never sets `default-command`, and nothing these tests assert depends on
+    /// which shell occupies a pane — only on which pane, which cwd, and what ran.
+    pub fn isolate_pane_shell(&self) {
+        self.tmux_ok(&["set-option", "-g", "default-command", PANE_SHELL]);
+    }
+
     // -- introspection -----------------------------------------------------
 
     /// Pane ids of `window`, in tmux's own listing order (left to right).
@@ -179,10 +201,16 @@ impl TmuxServer {
         self.window_names().iter().any(|n| n == window)
     }
 
+    /// Whether `pane_id` still exists anywhere on the server.
+    ///
+    /// A membership test, deliberately — `display-message -t <pane> -p ''`
+    /// succeeds even for a pane that never existed, because tmux falls back to
+    /// the current pane instead of failing. That is a real bug this harness found
+    /// in production's `tmux::pane_exists`; see its doc comment.
     pub fn pane_exists(&self, pane_id: &str) -> bool {
-        self.tmux(&["display-message", "-t", pane_id, "-p", ""])
-            .status
-            .success()
+        self.tmux_stdout(&["list-panes", "-a", "-F", "#{pane_id}"])
+            .lines()
+            .any(|id| id.trim() == pane_id)
     }
 
     /// The working directory a pane's process actually resolved — the property
@@ -331,9 +359,25 @@ pub fn poll_until(mut pred: impl FnMut() -> bool) -> bool {
 /// or session scope, before or after session creation) never reaches a
 /// subsequently created pane; verified against tmux 3.5a. Since [`SocketRunner`]
 /// spawns `tmux` from this process, this process *is* the creating client, so
-/// setting `PATH` here reaches every window and pane production creates —
-/// through `new-window --`, `split-window --`, and `send-keys` into a pane's
-/// interactive shell alike. No production code has to change.
+/// setting `PATH` here reaches every window and pane production creates.
+///
+/// # PATH alone is not enough
+///
+/// It is enough for the `--` argv forms (`new-window --`, `split-window --`),
+/// which `execvp` directly against the client environment. It is **not** enough
+/// for `send-keys`, the path dispatch uses to launch `claude`: with an empty
+/// `default-command` tmux runs the pane's shell as a *login* shell, which sources
+/// `~/.bashrc` / `~/.profile`, and those typically prepend directories
+/// (`~/.local/bin`, a version manager, `~/.claude/plugins/.../bin`) ahead of
+/// whatever `PATH` it inherited. A stub whose name nothing else provides still
+/// wins; `claude` and `dispatch` — which do exist there on a real dev machine —
+/// lose, and the *real* binary runs.
+///
+/// Observed exactly that: the stub `dispatch` won (spawned via `split-window --`)
+/// while the real `claude` launched and sat on its trust prompt. So the pane
+/// shell is pinned to a no-rc shell via [`TmuxServer::isolate_pane_shell`], and
+/// the guard in [`install_stubs`] verifies resolution *inside a pane*, not merely
+/// in this process.
 ///
 /// Done once behind a `OnceLock` rather than per test: every test wants
 /// identical stubs, so there is no per-test env mutation to race on.
@@ -385,7 +429,8 @@ exec cat >> "$log"
         .expect("chmod stub");
 }
 
-/// Install the stubs and assert they really shadow the real binaries.
+/// Install the stubs and assert they really shadow the real binaries — both in
+/// this process and, once per process, inside a real tmux pane.
 ///
 /// **This guard is load-bearing, not a sanity check.** Real `claude` and
 /// `dispatch` binaries exist on a normal developer PATH. If stub injection ever
@@ -393,7 +438,8 @@ exec cat >> "$log"
 /// the developer's actual `~/.local/share/dispatch/tasks.db` — the test cannot
 /// pass `--db`, because the argv comes from production code — and a real
 /// `claude` spawning a live agent that hits the network and may hang the test on
-/// stdin. Failing loudly here is strictly better than either.
+/// stdin. Both were observed before the pane-shell fix landed. Failing loudly
+/// here is strictly better than either.
 pub fn install_stubs() -> &'static Path {
     let dir = stub_dir();
     for name in ["claude", "dispatch"] {
@@ -407,7 +453,60 @@ pub fn install_stubs() -> &'static Path {
             dir.display()
         );
     }
+    verify_pane_resolution_once(dir);
     dir
+}
+
+/// Prove, inside a real pane, that a `send-keys`-launched command resolves to
+/// the stubs. Run once per test process on its own throwaway server, applying
+/// exactly the setup every fixture applies, so a pass here generalises to every
+/// later server.
+///
+/// This is the check that actually matters: [`install_stubs`]'s process-level
+/// check passed while the real `claude` was running in a pane, because the pane's
+/// login shell re-resolved `PATH` after sourcing the user's rc files.
+fn verify_pane_resolution_once(dir: &Path) {
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        if !tmux_available() {
+            return;
+        }
+        let server = TmuxServer::start();
+        server.tmux_ok(&["new-session", "-d", "-s", "guard", "-n", "w"]);
+        server.isolate_pane_shell();
+
+        let out = dir.join("logs").join("guard.txt");
+        // A second window, created *after* the isolation option, running the
+        // pane shell — the same shape as an agent window.
+        server.tmux_ok(&["new-window", "-d", "-n", "probe"]);
+        for name in ["claude", "dispatch"] {
+            server.tmux_ok(&[
+                "send-keys",
+                "-t",
+                "probe",
+                "-l",
+                &format!("command -v {name} >> {}", out.display()),
+            ]);
+            server.tmux_ok(&["send-keys", "-t", "probe", "Enter"]);
+        }
+
+        let resolved = poll_until(|| read_now(&out).lines().count() >= 2);
+        let got = read_now(&out);
+        assert!(
+            resolved,
+            "could not resolve `claude`/`dispatch` inside a tmux pane at all \
+             (got {got:?}) — the stub rig is not working; refusing to run"
+        );
+        for line in got.lines() {
+            assert!(
+                Path::new(line.trim()).starts_with(dir),
+                "stub injection does not survive into a tmux pane: resolved {line:?} \
+                 instead of a stub under {}. Refusing to run — this would execute \
+                 the real binary. See stub_dir's `PATH alone is not enough` note.",
+                dir.display()
+            );
+        }
+    });
 }
 
 /// First executable named `name` on `PATH`.

@@ -31,10 +31,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # tests/tmux_split_hook.rs drives a real tmux server (on its own private
-      # socket) because the mock layer cannot observe which pane tmux delivers
-      # keystrokes to. Without tmux those tests skip, so install it explicitly
-      # rather than relying on whatever the runner image happens to ship.
+      # tests/tmux_split_hook.rs and tests/tmux_lifecycle.rs drive a real tmux
+      # server (each on its own private socket) because the mock layer cannot
+      # observe which pane tmux delivers keystrokes to, which cwd a pane
+      # resolves, or how many panes a window ends up with. Without tmux those
+      # tests skip, so install it explicitly rather than relying on whatever the
+      # runner image happens to ship. They fail rather than skip when CI is set,
+      # so dropping this step cannot quietly turn them into a no-op.
       - name: Install tmux
         run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
 
@@ -90,7 +93,8 @@ jobs:
             ${{ runner.os }}-cargo-
 
       # Same reason as the test job: tarpaulin runs the suite, and without tmux
-      # the real-tmux tests skip, understating coverage.
+      # the real-tmux tests (tmux_split_hook, tmux_lifecycle) skip, understating
+      # coverage.
       - name: Install tmux
         run: sudo apt-get update -qq && sudo apt-get install -y -qq tmux
 
