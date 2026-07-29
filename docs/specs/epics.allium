@@ -163,6 +163,7 @@ rule MoveEpicForward {
     ensures: epic.updated_at = now
     ensures:
         if next = done:
+            epic.sort_order = completion_recency_rank(now)
             for task in epic.subtasks where tmux_window != null:
                 task.tmux_window = null
 
@@ -174,6 +175,12 @@ rule MoveEpicForward {
         -- to clean up active agent sessions.
         -- Cleanup is direct-subtasks only, unlike ArchiveEpic which
         -- recurses into sub-epic descendants.
+        -- Unlike MoveTaskForward (which excludes done from forward
+        -- movement entirely), MoveEpicForward allows manual forward
+        -- movement directly into done. completion_recency_rank(now) is
+        -- the same completion-recency helper used by tasks.allium's
+        -- ConfirmDone: more-recently-completed epics sort first among
+        -- Done items.
 }
 
 rule MoveEpicBackward {
@@ -186,11 +193,18 @@ rule MoveEpicBackward {
 
     ensures: epic.status = prev
     ensures: epic.updated_at = now
+    ensures:
+        if prev = review:
+            epic.sort_order = null
 
     @guidance
         -- Uses the same prev() progression as tasks:
         --   done -> review -> running -> backlog.
         -- Backlog and archived are terminal for backward movement.
+        -- prev = review is only reached when the epic's prior status was
+        -- done (the sole backward edge into review), so this is the
+        -- leaving-done case: epic.sort_order is cleared back to null,
+        -- mirroring tasks.allium's MoveTaskBackward.
 }
 
 rule ConfirmArchiveEpic {
@@ -233,6 +247,9 @@ rule ArchiveEpic {
     ensures:
         for sub_epic in epic.sub_epics:
             ArchiveEpic(sub_epic)
+    ensures:
+        if epic.status = done:
+            epic.sort_order = null
     ensures: epic.status = archived
 
     @guidance
@@ -250,6 +267,13 @@ rule ArchiveEpic {
         --
         -- If the currently active view is on the archived epic, the
         -- TUI exits back to the parent view.
+        --
+        -- ArchiveEpic sets epic.status = archived unconditionally (no
+        -- prior-status guard on the rule itself), so the sort_order
+        -- clear is conditional on the pre-archive status instead: the
+        -- epic.status = done check reads the pre-archive status
+        -- (evaluated before the status = archived assignment below), so
+        -- only an epic that was actually Done has its sort_order cleared.
 }
 
 rule DeleteEpic {
@@ -374,6 +398,8 @@ rule UpdateEpicViaMcp {
         if parent_epic_id != omitted and parent_epic_id != null:
             not Epic.ancestor_chain(parent_epic_id).contains(epic.id)
 
+    let prior_status = epic.status
+
     ensures:
         if title != null: epic.title = title
     ensures:
@@ -384,6 +410,16 @@ rule UpdateEpicViaMcp {
         if plan != null: epic.plan_path = plan
     ensures:
         if sort_order != null: epic.sort_order = sort_order
+    ensures:
+        -- Entering/leaving done via the status param overrides an
+        -- explicit sort_order in the same call (this clause runs after
+        -- the sort_order clause above), matching MoveEpicForward /
+        -- MoveEpicBackward's completion-recency semantics.
+        if status != null:
+            if status = done and prior_status != done:
+                epic.sort_order = completion_recency_rank(now)
+            else if prior_status = done and status != done:
+                epic.sort_order = null
     ensures:
         -- feed_command supports three states: omitted (no change), a string
         -- (set), or explicit null (clear to NULL)
@@ -410,6 +446,12 @@ rule UpdateEpicViaMcp {
         -- Cycle detection walks the ancestor chain of the proposed parent;
         -- if the current epic appears anywhere in that chain the update
         -- is rejected with a -32602 validation error.
+        -- completion_recency_rank(now) is the same completion-recency
+        -- helper used by tasks.allium's ConfirmDone and this file's
+        -- MoveEpicForward. Staying in done, staying outside done, or
+        -- omitting status entirely all leave epic.sort_order as set by
+        -- the sort_order clause above (or untouched if sort_order was
+        -- also omitted).
 }
 
 rule GetManagedFeedConfigViaMcp {
@@ -857,6 +899,16 @@ rule ProvisionManagedEpics {
     --
     -- The new status is written only when one of the two auto-transitions
     -- above fires; otherwise the DB row is left untouched.
+    --
+    -- Each of the two auto-transitions also sets/clears epic.sort_order,
+    -- using the identical rule as tasks (see tasks.allium's ConfirmDone
+    -- and MoveTaskBackward): the all-active-children-done => done
+    -- transition sets sort_order to reflect completion recency
+    -- (most-recently-completed sorts first); the done-with-active-non-
+    -- done-children => backlog regression clears sort_order back to
+    -- null. A no-op recalculation (status does not change) never
+    -- touches sort_order, mirroring the "DB row is left untouched" rule
+    -- above.
     --
     -- Trigger points: recalculate_epic_status must be called whenever the
     -- set of active children or their statuses change. This includes:
