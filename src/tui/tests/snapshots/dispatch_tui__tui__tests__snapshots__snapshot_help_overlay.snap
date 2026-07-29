@@ -34,9 +34,9 @@ expression: rendered
                         ║                                                                      ║
                         ║  General                                                             ║
 ────────────────────────║  [?] this help  [N] notify on/off  [q] quit (or exit epic)           ║────────────────────────
+                        ║  Prefix+Space back to board  Prefix+e toggle tree  (tmux)            ║
                         ║                                                                      ║
                         ║  [?] or [Esc] to close                                               ║
-                        ║                                                                      ║
                         ╚══════════════════════════════════════════════════════════════════════╝
 
 

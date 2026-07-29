@@ -283,6 +283,10 @@ rule BindAgentTreeToggle {
         -- ("e") was adopted as-is, unchanged from the design's own rationale
         -- (unbound in tmux's default key table, no collision with
         -- prefix+space).
+        --
+        -- Surfaced in the in-TUI help popup ([?], General section) alongside
+        -- the jump-back binding — otherwise nothing in the TUI hints that a
+        -- companion pane can be toggled at all.
 }
 
 rule UnbindAgentTreeToggle {

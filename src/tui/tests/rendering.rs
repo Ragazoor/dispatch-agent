@@ -495,6 +495,23 @@ async fn render_help_overlay_shows_keybindings_help() {
 }
 
 #[tokio::test]
+async fn render_help_overlay_shows_tmux_global_bindings() {
+    let mut app = App::new(vec![]);
+    app.update(Message::System(
+        crate::tui::messages::SystemMessage::ToggleHelp,
+    ));
+    let buf = render_to_buffer(&mut app, 100, 40);
+    assert!(
+        buffer_contains(&buf, "Prefix+Space"),
+        "help overlay should mention the tmux-global Prefix+Space jump-back binding"
+    );
+    assert!(
+        buffer_contains(&buf, "Prefix+e"),
+        "help overlay should mention the tmux-global Prefix+e agent-tree toggle binding"
+    );
+}
+
+#[tokio::test]
 async fn render_1x1_terminal_does_not_panic() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Running)]);
     let _ = render_to_buffer(&mut app, 1, 1);

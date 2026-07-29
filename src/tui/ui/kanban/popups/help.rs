@@ -171,6 +171,13 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
             Span::styled("[q]", key),
             Span::styled(" quit (or exit epic)", desc),
         ]),
+        Line::from(vec![
+            Span::styled("  Prefix+Space", key),
+            Span::styled(" back to board  ", desc),
+            Span::styled("Prefix+e", key),
+            Span::styled(" toggle tree  ", desc),
+            Span::styled("(tmux)", note),
+        ]),
         Line::from(""),
         Line::from(Span::styled("  [?] or [Esc] to close", note)),
     ];

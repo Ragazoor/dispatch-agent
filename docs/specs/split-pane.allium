@@ -242,6 +242,11 @@ rule JumpBackToTuiWindow {
         -- Implemented in src/runtime/mod.rs (setup_tmux_for_tui /
         -- teardown_tmux_for_tui) via tmux::bind_key / unbind_key.
         -- Best-effort: a failing tmux call does not prevent the TUI starting.
+        --
+        -- Surfaced in the in-TUI help popup ([?], General section) alongside
+        -- the agent-tree toggle (see agent-tree.allium's
+        -- BindAgentTreeToggle) so both tmux-global bindings are discoverable
+        -- without leaving the board.
 }
 
 -- == Pin Task in Split Pane ([S] key) ==
