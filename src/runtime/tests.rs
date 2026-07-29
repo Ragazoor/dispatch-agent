@@ -2684,7 +2684,7 @@ async fn exec_check_split_pane_existing_pane_no_message() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // pane_exists → display-message succeeds
+        MockProcessRunner::ok_with_stdout(b"%1\n%2\n"), // pane_exists → listing contains %2
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 
@@ -2700,7 +2700,10 @@ async fn exec_check_split_pane_gone_sends_closed() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("no pane"), // pane_exists → display-message fails
+        // pane_exists → the listing no longer contains %2. Note this is a
+        // *successful* tmux call: real tmux exits 0 for an unknown pane, which is
+        // why absence has to be detected by membership rather than exit status.
+        MockProcessRunner::ok_with_stdout(b"%1\n%7\n"),
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 

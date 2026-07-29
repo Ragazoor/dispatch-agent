@@ -457,8 +457,12 @@ pub fn pane_id_for_window(window: &str, runner: &dyn ProcessRunner) -> Result<St
 }
 
 /// Atomically swap the contents of two panes without changing the layout.
-/// `source` can be a pane ID or `<window>.0` to reference a window's first pane.
 /// `-d` keeps focus on the current pane.
+///
+/// Pass pane **ids**, not `<window>.<index>` targets: pane indices shift with the
+/// user's `pane-base-index` and are renumbered by a `-b` split, so an index-based
+/// target can miss or hit the wrong pane. Use [`pane_id_for_window`] or
+/// [`inactive_pane_id`] to resolve one.
 pub fn swap_pane(source: &str, target: &str, runner: &dyn ProcessRunner) -> Result<()> {
     run_checked(
         runner,
@@ -507,11 +511,48 @@ pub fn inactive_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Opti
     Ok(first.map(str::to_string))
 }
 
+/// List the ids of all tmux panes across all sessions.
+///
+/// The pane-level sibling of [`list_all_window_names`], with the same `-a`
+/// rationale and the same "no server running" handling.
+pub fn list_all_pane_ids(runner: &dyn ProcessRunner) -> Result<Vec<String>> {
+    let output = runner.run("tmux", &["list-panes", "-a", "-F", "#{pane_id}"])?;
+    if !output.status.success() {
+        return Ok(vec![]);
+    }
+    let ids = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    Ok(ids)
+}
+
 /// Check whether a tmux pane with the given ID still exists.
+///
+/// Implemented as a membership test over [`list_all_pane_ids`], mirroring
+/// [`has_window`], because the obvious-looking alternative does not work:
+/// `display-message -t <pane> -p ''` **succeeds for a pane that has never
+/// existed**. tmux resolves an unknown target by falling back to the current
+/// pane rather than failing, and with an empty format string there is no output
+/// to betray the substitution — so an exit-status check reports every pane as
+/// alive, always. Verified against tmux 3.5a with `-t %999`.
+///
+/// That made this function's only caller — `exec_check_split_pane`, which polls
+/// whether the user has closed the pinned split pane — permanently blind, so a
+/// closed pane left the board in split mode with a dead pane. Found by the
+/// real-tmux harness in tests/tmux_lifecycle.rs; the mock tests could not see it,
+/// and in fact pinned the broken behaviour by asserting a non-zero exit that
+/// real tmux never returns (the same trap as task #3781).
+///
+/// A query failure maps to "gone", which is the pre-existing behaviour and the
+/// conservative choice for the polling caller: it exits split mode rather than
+/// leaving a pane pinned that may no longer be there. Contrast
+/// [`has_window_or_assume_present`], where the gated action is destructive and
+/// the default therefore goes the other way.
 pub fn pane_exists(pane_id: &str, runner: &dyn ProcessRunner) -> bool {
-    runner
-        .run("tmux", &["display-message", "-t", pane_id, "-p", ""])
-        .map(|output| output.status.success())
+    list_all_pane_ids(runner)
+        .map(|ids| ids.iter().any(|id| id == pane_id))
         .unwrap_or(false)
 }
 
@@ -1322,14 +1363,37 @@ mod tests {
     // --- pane_exists ---
 
     #[test]
-    fn pane_exists_returns_true_on_success() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+    fn pane_exists_finds_the_pane_in_the_listing() {
+        let mock =
+            MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1\n%42\n%7\n")]);
         assert!(pane_exists("%42", &mock));
+        assert_eq!(
+            mock.recorded_calls()[0].1,
+            vec!["list-panes", "-a", "-F", "#{pane_id}"],
+            "must query the pane listing, not display-message — see pane_exists' docs"
+        );
     }
 
     #[test]
-    fn pane_exists_returns_false_on_nonzero_exit() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such pane")]);
+    fn pane_exists_is_false_when_the_pane_is_absent_from_the_listing() {
+        // The case the old implementation could never detect: tmux exits 0 for an
+        // unknown pane target, so only a membership test sees a closed pane.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1\n%7\n")]);
+        assert!(!pane_exists("%42", &mock));
+    }
+
+    #[test]
+    fn pane_exists_does_not_match_a_pane_id_prefix() {
+        // `%4` must not satisfy a query for `%42`, nor the reverse.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%4\n")]);
+        assert!(!pane_exists("%42", &mock));
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%42\n")]);
+        assert!(!pane_exists("%4", &mock));
+    }
+
+    #[test]
+    fn pane_exists_returns_false_when_no_server_is_running() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no server running")]);
         assert!(!pane_exists("%42", &mock));
     }
 
