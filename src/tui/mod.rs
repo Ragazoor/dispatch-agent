@@ -1298,6 +1298,12 @@ impl App {
 
         let mut items: Vec<ColumnItem<'_>> = tasks.into_iter().map(ColumnItem::Task).collect();
 
+        // Populated only for Running-parent epics, whose substatus is already
+        // computed below to pick a target column — the sort key reuses that
+        // result instead of recomputing epic_substatus per epic.
+        let mut running_epic_priority: std::collections::HashMap<EpicId, u8> =
+            std::collections::HashMap::new();
+
         let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
         for epic in self.visible_epics_for_effective_view() {
             let epic_parent = epic.status;
@@ -1312,6 +1318,7 @@ impl App {
                     .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
                     .collect();
                 let substatus = epic_substatus(epic, &subtasks, active_merge);
+                running_epic_priority.insert(epic.id, substatus.column_priority());
                 let target_col = if matches!(substatus, EpicSubstatus::Blocked(_)) {
                     2
                 } else {
@@ -1337,17 +1344,7 @@ impl App {
                 // unlike the flat-board sort this priority never needs to
                 // distinguish between epics within the same column — it only
                 // has to share the Task arm's tuple shape.
-                let priority = if e.status == TaskStatus::Running {
-                    let subtasks: Vec<&Task> = self
-                        .board
-                        .tasks
-                        .iter()
-                        .filter(|t| t.epic_id == Some(e.id) && t.status != TaskStatus::Archived)
-                        .collect();
-                    epic_substatus(e, &subtasks, active_merge).column_priority()
-                } else {
-                    0
-                };
+                let priority = running_epic_priority.get(&e.id).copied().unwrap_or(0);
                 (priority, e.sort_order.unwrap_or(e.id.0), e.id.0)
             }
             ColumnItem::EpicHeader(_) | ColumnItem::SubstatusLabel(_) | ColumnItem::OrphanSeparator => {

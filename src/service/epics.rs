@@ -334,13 +334,11 @@ impl EpicService {
             }
         }
 
-        let mut new_parent_for_recalc: Option<EpicId> = None;
         match params.parent_epic_id {
             Some(Some(new_parent_id)) => {
                 let parent = self.get_epic(new_parent_id).await?;
                 self.check_no_cycle(epic_id, &parent).await?;
                 patch = patch.parent_epic_id(Some(new_parent_id));
-                new_parent_for_recalc = Some(new_parent_id);
             }
             Some(None) => {
                 patch = patch.parent_epic_id(None);
@@ -356,11 +354,11 @@ impl EpicService {
         // this epic itself — self-recalc would fight an explicit status
         // write with the children-derived target.
         if let Some(existing) = existing {
-            if params.parent_epic_id.is_some() {
+            if let Some(new_parent) = params.parent_epic_id {
                 if let Some(old_parent) = existing.parent_epic_id {
                     self.recalculate_epic(old_parent).await;
                 }
-                if let Some(new_parent) = new_parent_for_recalc {
+                if let Some(new_parent) = new_parent {
                     self.recalculate_epic(new_parent).await;
                 }
             } else if params.status.is_some() {
