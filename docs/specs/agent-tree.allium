@@ -353,6 +353,13 @@ rule SplitAgentTreePaneOnAgentLaunch {
         -- after the existing send-keys of the agent command, which is the
         -- "after the agent command has been sent" timing above.
         --
+        -- The new pane opens on the LEFT of the agent's own pane (tmux
+        -- split-window's -b/"before" flag), keeping focus (-d) on the agent's
+        -- pane to its right. Unlike the board's own split_window_horizontal
+        -- (no -b, right pane, used by split-pane.allium), the tree reads
+        -- left-to-right the way a file tree conventionally does, with the
+        -- agent's CLI output remaining the wider, focused pane.
+        --
         -- Soft-fail, deliberately: a split that fails is logged at warn level
         -- and the dispatch or resume call still succeeds. No agent fails to
         -- launch because its companion pane could not open — consistent with

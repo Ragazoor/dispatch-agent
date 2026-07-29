@@ -323,7 +323,7 @@ pub fn split_window_horizontal(target_pane: &str, runner: &dyn ProcessRunner) ->
     )
 }
 
-/// Create a horizontal split (right pane) at `size_pct`% width, running the
+/// Create a horizontal split (left pane) at `size_pct`% width, running the
 /// given command as separate argv elements (no shell wrapping) in the new
 /// pane, following the same "create + immediately run a command" shape
 /// [`new_window_running`] establishes for window creation. Keeps focus on
@@ -346,6 +346,7 @@ pub fn split_window_horizontal_running(
     let mut args: Vec<&str> = vec![
         "split-window",
         "-h",
+        "-b",
         "-d",
         "-l",
         &size_arg,
@@ -1098,6 +1099,7 @@ mod tests {
             vec![
                 "split-window",
                 "-h",
+                "-b",
                 "-d",
                 "-l",
                 "30%",
