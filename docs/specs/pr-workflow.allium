@@ -500,6 +500,19 @@ rule ExitSession {
         --     session was torn down, because the session is still alive.
         --     ExitSessionViaMcp in mcp-task-tools.allium owns the concrete
         --     response wording.
+        -- Because that response is a SUCCESS, the agent-facing guidance is the
+        -- only thing standing between it and an agent that reads "no error" as
+        -- "closed". Two surfaces must carry it, and both are test-locked:
+        --   • the exit_session tool description, for an agent that reaches the
+        --     tool without the /wrap-up skill loaded (ExitSessionViaMcp);
+        --   • the /wrap-up skill, which must tell the agent that a successful
+        --     response can still report the close did not take effect, and that
+        --     the reaction is to stop and hand back to the human — NOT to retry
+        --     exit_session, and NOT to take a fresh token from wrap_up. Both
+        --     retries are dead ends: the token was consumed before the terminal
+        --     write, so a retry hits the "call wrap_up first" branch above.
+        -- This mirrors the skill obligation recorded for "has no active session"
+        -- above; a rewrite of either surface must preserve both duties.
         -- Because the window is left alive, WindowGone never fires for a failed
         -- close, so DetectCrashedAgent (agent-health.allium) is never reached: a
         -- failed close is never reported as a crashed agent.

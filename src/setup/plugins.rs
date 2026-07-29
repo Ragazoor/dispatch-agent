@@ -521,6 +521,79 @@ mod tests {
         );
     }
 
+    /// A regression in this guidance is silent: an agent that reads a non-error
+    /// response as a completed close leaves a live tmux window and a task stuck
+    /// in its old status, with no error anywhere to notice.
+    #[test]
+    fn wrap_up_skill_warns_a_successful_exit_session_can_report_a_failed_close() {
+        assert!(
+            failed_close_guidance().contains("success"),
+            "failed-close guidance must say the response is a *successful* one, \
+             not an error — that is the whole trap"
+        );
+    }
+
+    /// The one reaction that must survive any rewording of the failed-close
+    /// guidance: the exit token is consumed before the terminal write is
+    /// attempted, so neither retrying `exit_session` nor taking a fresh token
+    /// from `wrap_up` can work. Asserted positively — a negative "must not
+    /// contain 'retry'" would also pass if the guidance were deleted outright,
+    /// which is the regression that matters.
+    #[test]
+    fn wrap_up_skill_tells_the_agent_not_to_retry_a_failed_close() {
+        let section = failed_close_guidance();
+        assert!(
+            section.contains("not retry") || section.contains("n't retry"),
+            "failed-close guidance must tell the agent not to retry exit_session"
+        );
+        assert!(
+            section.contains("wrap_up")
+                && (section.contains("again") || section.contains("fresh token")),
+            "failed-close guidance must tell the agent not to call wrap_up again \
+             for a fresh token"
+        );
+    }
+
+    /// Regression guard for the stale instruction that survived unnoticed until
+    /// task #3769: the skill told the agent to record the PR URL via
+    /// `update_task`, when the URL actually travels with `exit_session`. It
+    /// drifted precisely because nothing pinned it. Scoped to lines that pair
+    /// `update_task` with a URL, so an unrelated future use of the tool is not
+    /// blocked.
+    #[test]
+    fn wrap_up_skill_does_not_record_the_pr_url_via_update_task() {
+        for line in skill_body("wrap-up").lines() {
+            let lower = line.to_lowercase();
+            assert!(
+                !(lower.contains("update_task") && lower.contains("url")),
+                "wrap-up skill must not tell the agent to record the PR URL via \
+                 update_task — the URL travels with exit_session: {line}"
+            );
+        }
+    }
+
+    /// The wrap-up skill's failed-close guidance block, lowercased: the heading
+    /// section telling the agent that a *successful* `exit_session` response can
+    /// still report that the close did not take effect.
+    ///
+    /// Scoped to that one section deliberately — "do not retry" also appears in
+    /// the neighbouring `exit_session` *errors* section, so a whole-document
+    /// check would still pass with this section's retry guidance deleted. The
+    /// section is anchored on the phrase below and ends at the next heading of
+    /// any depth (so promoting or demoting the heading cannot silently widen it
+    /// to the rest of the file); if you reword the heading, re-anchor it here.
+    fn failed_close_guidance() -> String {
+        let content = skill_body("wrap-up").to_lowercase();
+        let (_, section) = content.split_once("did not take effect").expect(
+            "wrap-up skill must document that a successful exit_session response \
+             can still report the close did not take effect",
+        );
+        section
+            .split_once("\n#")
+            .map_or(section, |(block, _)| block)
+            .to_string()
+    }
+
     /// Read an embedded skill's `SKILL.md` by skill name, for tests that assert
     /// on skill copy.
     fn skill_body(skill: &str) -> &'static str {
