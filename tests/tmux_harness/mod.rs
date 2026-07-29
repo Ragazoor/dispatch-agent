@@ -397,6 +397,16 @@ fn stub_dir() -> &'static Path {
 
         let prev = std::env::var("PATH").unwrap_or_default();
         std::env::set_var("PATH", format!("{}:{prev}", dir.display()));
+
+        // Belt and braces: if stub injection is ever defeated again, a real
+        // `dispatch` must not reach the developer's database. The argv these
+        // tests trigger is built by production code (`dispatch agent-tree <id>`,
+        // spawn_agent_tree_pane) so a test cannot inject a `--db` flag — but that
+        // flag carries `env = "DISPATCH_DB"` (src/main.rs), and panes inherit
+        // this process's environment, so pointing the env var at a throwaway file
+        // redirects it anyway. Costs nothing and removes the only destructive
+        // failure mode the guard is protecting against.
+        std::env::set_var("DISPATCH_DB", dir.join("throwaway-tasks.db"));
         dir
     })
 }
@@ -434,12 +444,13 @@ exec cat >> "$log"
 ///
 /// **This guard is load-bearing, not a sanity check.** Real `claude` and
 /// `dispatch` binaries exist on a normal developer PATH. If stub injection ever
-/// broke, these tests would execute the real ones: a real `dispatch` mutating
-/// the developer's actual `~/.local/share/dispatch/tasks.db` — the test cannot
-/// pass `--db`, because the argv comes from production code — and a real
-/// `claude` spawning a live agent that hits the network and may hang the test on
-/// stdin. Both were observed before the pane-shell fix landed. Failing loudly
-/// here is strictly better than either.
+/// broke, these tests would execute the real ones — a real `claude` spawning a
+/// live agent that hits the network and may hang the test on stdin, and a real
+/// `dispatch` opening a database. The `claude` case was observed before the
+/// pane-shell fix landed. Failing loudly here is strictly better.
+///
+/// The database is separately neutralised by the `DISPATCH_DB` override in
+/// [`stub_dir`], so a defeated guard cannot be destructive even if it is missed.
 pub fn install_stubs() -> &'static Path {
     let dir = stub_dir();
     for name in ["claude", "dispatch"] {
