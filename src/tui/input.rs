@@ -54,6 +54,9 @@ impl App {
     /// to set dirty themselves. The `frame_ready` 16ms cap already bounds the cost of
     /// redrawing on a true no-op, so unconditionally marking dirty is both correct and cheap.
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<Command> {
+        // TEMPORARY: debugging a copy-task overlay that reportedly appears
+        // without a 'c' keypress. Remove once root-caused.
+        tracing::debug!(code = ?key.code, modifiers = ?key.modifiers, mode = ?self.input.mode, "handle_key");
         let cmds = if self.status.error_popup.is_some() {
             self.update(Message::System(
                 crate::tui::messages::SystemMessage::DismissError,
