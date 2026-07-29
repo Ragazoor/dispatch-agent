@@ -339,6 +339,31 @@ async fn update_task_status_change_within_done_leaves_sort_order_untouched() {
 }
 
 #[tokio::test]
+async fn update_task_non_done_status_change_preserves_sort_order() {
+    // The complement of the two leaving-Done tests above: when neither the
+    // prior nor the new status is Done, sort_order_for_status_transition
+    // returns None and an explicitly-set sort_order must survive the status
+    // change untouched. Distinct from
+    // update_task_status_change_within_done_leaves_sort_order_untouched,
+    // which covers a no-status-change edit on an already-Done task.
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).sort_order(7))
+        .await
+        .unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Running))
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert_eq!(task.sort_order, Some(7));
+}
+
+#[tokio::test]
 async fn update_task_archived_to_backlog_is_unaffected_by_done_rule() {
     // The task editor's freeform STATUS field can retype an Archived task's
     // status back to any value (no transition-legality validation), which

@@ -52,6 +52,8 @@ rule UpdateTaskViaMcp {
             let effective_status = if status != null: status else: task.status
             sub_status.is_valid_for(effective_status)
 
+    let prior_status = task.status
+
     ensures:
         if status != null: task.status = status
     ensures:
@@ -67,6 +69,16 @@ rule UpdateTaskViaMcp {
         if repo_path != null: task.repo_path = expand_tilde(repo_path)
     ensures:
         if sort_order != null: task.sort_order = sort_order
+    ensures:
+        -- Leaving done via the status param clears the completion-recency
+        -- rank, overriding an explicit sort_order in the same call (this
+        -- clause runs after the sort_order clause above). Mirrors
+        -- tasks/MoveTaskBackward's leaving-done clear and
+        -- epics/UpdateEpicViaMcp's status-driven override. Only the clearing
+        -- half appears here: `requires: status != done` already rules out
+        -- the entering-done set that tasks/ConfirmDone performs.
+        if status != null and prior_status = done:
+            task.sort_order = null
     ensures:
         if url != null:
             if url = "":
@@ -115,6 +127,13 @@ rule UpdateTaskViaMcp {
         -- empty-string `url` clears task.url and its type (maps to
         -- FieldUpdate::Clear); any non-empty `url` sets task.url to a
         -- core/TaskUrl{url, url_type} value.
+        -- The leaving-done sort_order clear is not MCP-specific: it lives in
+        -- TaskService::update_task (src/service/tasks/crud.rs), which reads
+        -- the pre-write status and consults
+        -- sort_order_for_status_transition (src/models/tasks.rs), applying
+        -- the result on top of the patch built from the caller's params. MCP
+        -- is simply one of the callers that can reach it — the one that can
+        -- reach only its clearing half, since it cannot set status = done.
         -- When status or epic_id changes, the parent epic's status is
         -- recalculated (if a parent epic exists). Re-assigning a task
         -- from one epic to another triggers recalculation on both the

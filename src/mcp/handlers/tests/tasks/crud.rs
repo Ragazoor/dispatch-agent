@@ -97,6 +97,55 @@ async fn update_task_still_allows_other_statuses() {
     }
 }
 
+/// The done-status rejection above is one-directional: it blocks moving a task
+/// INTO done, but not out of it. So every destination this tool accepts is
+/// reachable from a done task, and each one hits the leaving-done sort_order
+/// clear in `TaskService::update_task` — the completion-recency rank must not
+/// survive into the destination column, where its large negative value would
+/// pin the card to the top. The clear itself is covered at the service layer
+/// (`update_task_leaving_done_clears_sort_order`); what this asserts is that
+/// the MCP gate does not stand between a done task and that clear.
+/// Spec: `UpdateTaskViaMcp` in docs/specs/mcp-task-tools.allium.
+#[tokio::test]
+async fn update_task_done_rejection_does_not_block_leaving_done() {
+    let state = test_state().await;
+
+    for status in &["backlog", "running", "review"] {
+        let task_id = create_task_fixture(&state).await;
+
+        // Seed a done task holding a rank. The value only has to be non-null
+        // for the assertion below — its encoding is owned by
+        // sort_order_for_status_transition, not by this test.
+        state
+            .db_write()
+            .patch_task(
+                task_id,
+                &db::TaskPatch::new()
+                    .status(TaskStatus::Done)
+                    .sort_order(Some(-1_700_000_000_000)),
+            )
+            .await
+            .unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_task",
+                "arguments": { "task_id": task_id.0, "status": status }
+            })),
+        )
+        .await;
+        assert!(!is_error(&resp), "status={status}: {:?}", resp);
+
+        let task = state.db.get_task(task_id).await.unwrap().unwrap();
+        assert_eq!(
+            task.sort_order, None,
+            "leaving done -> {status} must clear sort_order"
+        );
+    }
+}
+
 #[tokio::test]
 async fn update_task_missing_args() {
     let state = test_state().await;
