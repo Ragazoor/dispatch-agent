@@ -2,7 +2,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::models::{DispatchMode, TaskId};
+use crate::models::{DispatchMode, EpicId, TaskId};
 
 use super::super::types::*;
 use super::super::{App, PendingAction};
@@ -240,6 +240,24 @@ impl App {
             KeyCode::Char('y') | KeyCode::Char('Y') => self.update(Message::Task(
                 crate::tui::messages::TaskMessage::TrustAndDispatch { id: task_id, mode },
             )),
+            _ => vec![],
+        }
+    }
+
+    pub(in crate::tui) fn handle_key_confirm_trust_repo_quick_dispatch(
+        &mut self,
+        key: KeyEvent,
+        draft: TaskDraft,
+        epic_id: Option<EpicId>,
+    ) -> Vec<Command> {
+        self.input.mode = InputMode::Normal;
+        self.clear_status();
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                vec![Command::Task(
+                    crate::tui::commands::TaskCommand::TrustAndQuickDispatch { draft, epic_id },
+                )]
+            }
             _ => vec![],
         }
     }

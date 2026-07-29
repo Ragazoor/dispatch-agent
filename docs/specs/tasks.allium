@@ -82,8 +82,62 @@ rule SetWrapUpMode {
         -- can be updated at any point in the task lifecycle.
 }
 
-rule CreateQuickTask {
+-- Quick dispatch is gated on repo trust before anything is created. The
+-- gate exists for the same reason DispatchTask's does (see dispatch.allium,
+-- rule DispatchTask): a fresh worktree launched into a repo Claude Code does
+-- not trust stalls on Claude Code's own interactive trust prompt, which
+-- silently defeats quick dispatch's unattended, immediate contract.
+
+rule QuickDispatchTrustGate {
     when: QuickDispatch(repo_path, epic_id?)
+
+    ensures:
+        if is_repo_trusted(repo_path):
+            QuickDispatchTrusted(repo_path: repo_path, epic_id: epic_id)
+        else:
+            ConfirmTrustRepoQuickDispatch(repo_path: repo_path, epic_id: epic_id)
+
+    @guidance
+        -- is_repo_trusted(repo_path) is the same black-box trust check
+        -- DispatchTask uses; it reads Claude Code's own per-project trust
+        -- record, keyed on the REPO path (not the worktree path). Trust on
+        -- the repo path is what makes the worktree under
+        -- <repo_path>/.worktrees/... launchable, the same granularity the
+        -- DispatchTask gate relies on.
+        -- The check runs before any Task is created: on the untrusted
+        -- branch nothing is persisted, only a confirmation prompt is
+        -- raised ("Repo '<path>' not trusted by Claude Code — trust
+        -- it? [y/N]"). The pending creation parameters are held in the
+        -- prompt itself (there is no task id to key on yet), which is the
+        -- one structural difference from DispatchTask's gate.
+        -- Declining (any key other than y/Y) dismisses the prompt and
+        -- creates nothing — same cancel semantics as DispatchTask's trust
+        -- prompt.
+        -- If the trust check itself errors (unreadable trust record), the
+        -- error is surfaced through the status bar and neither branch is
+        -- taken: no prompt, no task.
+}
+
+rule TrustRepoForQuickDispatch {
+    when: TrustAndQuickDispatch(repo_path, epic_id?)
+
+    ensures: RepoTrustGranted(repo_path: repo_path)
+    ensures: QuickDispatchTrusted(repo_path: repo_path, epic_id: epic_id)
+
+    @guidance
+        -- Accepting the ConfirmTrustRepoQuickDispatch prompt (y/Y).
+        -- Trust is granted on repo_path, after which the held creation
+        -- parameters proceed exactly as the trusted branch of
+        -- QuickDispatchTrustGate would have.
+        -- RepoTrustGranted makes is_repo_trusted(repo_path) true for
+        -- every later dispatch into that repo, quick or standard — the
+        -- two entry points share one trust record.
+        -- If granting trust fails (the trust record cannot be written),
+        -- the failure is surfaced as an error and no task is created.
+}
+
+rule CreateQuickTask {
+    when: QuickDispatchTrusted(repo_path, epic_id?)
 
     ensures:
         let task = core/Task.created(
@@ -100,7 +154,12 @@ rule CreateQuickTask {
         AgentLaunched(task: task, mode: quick)
 
     @guidance
-        -- Triggered by the Shift+D (capital D) TUI key. When exactly
+        -- Reached only through QuickDispatchTrustGate, i.e. once the repo
+        -- is trusted — either it already was, or the user just granted
+        -- trust via TrustRepoForQuickDispatch. Nothing is created on the
+        -- untrusted path.
+        -- The originating stimulus is the Shift+D (capital D) TUI key,
+        -- which emits QuickDispatch. When exactly
         -- one saved repo path exists, it is used directly. Otherwise
         -- (zero or multiple saved paths), a picker
         -- (InputMode::QuickDispatch) is shown, which renders the shared
@@ -120,9 +179,15 @@ rule CreateQuickTask {
         -- refs/remotes/origin/HEAD` against repo_path, falling back to
         -- "main" when origin/HEAD is unavailable. This prevents
         -- dispatch failures on repos whose default branch is not main.
-        -- AgentLaunched fires immediately after creation; the task
-        -- transitions through the same dispatch path as DispatchTask
-        -- (Backlog -> Running, worktree and tmux window provisioned).
+        -- AgentLaunched fires immediately after creation: the task goes
+        -- Backlog -> Running with a worktree and tmux window provisioned,
+        -- and — since QuickDispatchTrustGate — behind the same repo-trust
+        -- gate DispatchTask applies. It is still NOT the DispatchTask rule:
+        -- quick dispatch has no backlog/tag preconditions (the task it just
+        -- created is trivially backlog and untagged), no base-branch history
+        -- recording (see CreateTask guidance), and its own prompt variant
+        -- (build_quick_dispatch_prompt, mode: quick). Trust is the one gate
+        -- the two entry points share.
 }
 
 -- == Status Movement ==

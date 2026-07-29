@@ -107,6 +107,9 @@ impl App {
                 InputMode::ConfirmTrustRepo { task_id, mode } => {
                     self.handle_key_confirm_trust_repo(key, task_id, mode)
                 }
+                InputMode::ConfirmTrustRepoQuickDispatch { draft, epic_id } => {
+                    self.handle_key_confirm_trust_repo_quick_dispatch(key, draft, epic_id)
+                }
             }
         };
 

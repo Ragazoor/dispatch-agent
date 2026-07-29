@@ -305,7 +305,51 @@ async fn dispatch_task(
             vec![]
         }
         QuickDispatch { draft, epic_id } => {
-            rt.exec_quick_dispatch(app, draft, epic_id).await;
+            // Mirrors CheckTrustAndDispatch: a fresh worktree launched into an
+            // untrusted repo would otherwise stall on Claude Code's own
+            // interactive trust prompt (see src/dispatch/trust.rs), silently
+            // defeating "quick" dispatch's unattended, immediate contract.
+            let repo_path = draft.repo_path.clone();
+            let trust_result =
+                tokio::task::spawn_blocking(move || crate::dispatch::is_repo_trusted(&repo_path))
+                    .await
+                    .unwrap_or_else(|e| Err(anyhow::anyhow!("is_repo_trusted panicked: {e}")));
+            match trust_result {
+                Ok(true) => {
+                    rt.exec_quick_dispatch(app, draft, epic_id).await;
+                    vec![]
+                }
+                Ok(false) => app.update(crate::tui::Message::Task(
+                    crate::tui::messages::TaskMessage::TrustCheckUntrustedForQuickDispatch {
+                        draft,
+                        epic_id,
+                    },
+                )),
+                Err(e) => app.update(crate::tui::Message::System(
+                    crate::tui::messages::SystemMessage::StatusInfo(format!(
+                        "Trust check failed: {e}"
+                    )),
+                )),
+            }
+        }
+        TrustAndQuickDispatch { draft, epic_id } => {
+            let repo_path = draft.repo_path.clone();
+            let trust_result =
+                tokio::task::spawn_blocking(move || crate::dispatch::trust_repo(&repo_path))
+                    .await
+                    .unwrap_or_else(|e| Err(anyhow::anyhow!("trust_repo panicked: {e}")));
+            match trust_result {
+                Ok(()) => {
+                    rt.exec_quick_dispatch(app, draft, epic_id).await;
+                }
+                Err(e) => {
+                    app.update(crate::tui::Message::System(
+                        crate::tui::messages::SystemMessage::Error(format!(
+                            "Failed to trust repo: {e:#}"
+                        )),
+                    ));
+                }
+            }
             vec![]
         }
         KillTmuxWindow { window } => {

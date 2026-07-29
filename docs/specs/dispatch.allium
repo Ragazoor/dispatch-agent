@@ -143,6 +143,24 @@ rule DispatchTask {
         -- DispatchTaskViaMcp) checks backlog and applies the whole postcondition
         -- after provisioning succeeds.
         --
+        -- == Repo-trust pre-gate ==
+        -- Every launch of a worktree agent from the TUI is gated on Claude
+        -- Code trusting the repo: an untrusted repo makes the freshly created
+        -- worktree stall on Claude Code's own interactive trust prompt, so
+        -- the agent never starts. The gate runs before this rule fires, not
+        -- inside it: the TUI checks trust on task.repo_path and, when
+        -- untrusted, shows a confirmation prompt (ConfirmTrustRepo, "trust
+        -- it? [y/N]") whose accept branch grants trust and then emits
+        -- DispatchTask; declining dispatches nothing. Trust is keyed on the
+        -- REPO path, which is what makes the worktree beneath
+        -- <repo_path>/.worktrees/... launchable.
+        -- Quick dispatch shares this gate — see QuickDispatchTrustGate and
+        -- TrustRepoForQuickDispatch in tasks.allium, which apply the same
+        -- check to the still-pending creation parameters (no task exists yet
+        -- at that point) and write to the same trust record. Trust is the
+        -- only gate the two entry points share; the rest of quick dispatch
+        -- is its own path (see CreateQuickTask).
+        --
         -- Before creating the worktree, `git fetch origin <base_branch>` is
         -- run in the repo root to update the remote-tracking ref. This fetch
         -- runs unconditionally — even when the worktree directory already

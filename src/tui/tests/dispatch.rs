@@ -1659,6 +1659,82 @@ fn trust_check_untrusted_ignored_if_already_dispatching() {
     assert_eq!(app.input.mode, InputMode::Help);
 }
 
+#[test]
+fn confirm_y_in_trust_mode_emits_trust_and_quick_dispatch() {
+    let mut app = make_app();
+    let draft = TaskDraft {
+        title: DEFAULT_QUICK_TASK_TITLE.to_string(),
+        repo_path: "/my/repo".to_string(),
+        ..Default::default()
+    };
+    app.input.mode = InputMode::ConfirmTrustRepoQuickDispatch {
+        draft: draft.clone(),
+        epic_id: None,
+    };
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('y'))));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::TrustAndQuickDispatch {
+                draft: d,
+                epic_id: None,
+            }) if d.repo_path == draft.repo_path
+        )),
+        "expected TrustAndQuickDispatch command, got {cmds:?}"
+    );
+}
+
+#[test]
+fn confirm_n_in_trust_mode_for_quick_dispatch_returns_to_normal() {
+    let mut app = make_app();
+    let draft = TaskDraft {
+        title: DEFAULT_QUICK_TASK_TITLE.to_string(),
+        repo_path: "/my/repo".to_string(),
+        ..Default::default()
+    };
+    app.input.mode = InputMode::ConfirmTrustRepoQuickDispatch {
+        draft,
+        epic_id: None,
+    };
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(
+        cmds.iter().all(|c| !matches!(c, Command::Task(_))),
+        "expected no task command on cancel"
+    );
+}
+
+#[test]
+fn trust_check_untrusted_for_quick_dispatch_enters_confirm_mode() {
+    // What the runtime sends back when the QuickDispatch command's
+    // spawn_blocking read of ~/.claude.json finds the repo untrusted.
+    let mut app = make_app();
+    let draft = TaskDraft {
+        title: DEFAULT_QUICK_TASK_TITLE.to_string(),
+        repo_path: "/my/repo".to_string(),
+        ..Default::default()
+    };
+    let cmds = without_usage(app.update(Message::Task(
+        crate::tui::messages::TaskMessage::TrustCheckUntrustedForQuickDispatch {
+            draft: draft.clone(),
+            epic_id: None,
+        },
+    )));
+    assert!(cmds.is_empty());
+    assert!(
+        matches!(
+            &app.input.mode,
+            InputMode::ConfirmTrustRepoQuickDispatch { draft: d, epic_id: None }
+            if d.repo_path == draft.repo_path
+        ),
+        "expected ConfirmTrustRepoQuickDispatch mode, got {:?}",
+        app.input.mode
+    );
+    let msg = app.status.message.as_deref().expect("status set");
+    assert!(msg.contains("/my/repo"), "got: {msg}");
+}
+
 // ---------------------------------------------------------------------------
 // Unified Space "activate task" behavior (docs/specs/split-pane.allium:
 // JumpToAgentWindow). Space jumps to a live window when one exists; otherwise

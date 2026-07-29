@@ -1,6 +1,6 @@
 //! Task lifecycle handlers: move, dispatch, create, delete, detail, flatten, done.
 
-use crate::models::{DispatchMode, SubStatus, Task, TaskId, TaskStatus};
+use crate::models::{DispatchMode, EpicId, SubStatus, Task, TaskId, TaskStatus};
 
 use super::super::types::*;
 use super::super::{truncate_title, App, TITLE_DISPLAY_LENGTH};
@@ -193,6 +193,23 @@ impl App {
         self.set_status(format!(
             "Repo '{expanded}' not trusted by Claude Code — trust it? [y/N]"
         ));
+        vec![]
+    }
+
+    /// Result of `QuickDispatch`'s trust check finding the repo untrusted:
+    /// enter the quick-dispatch trust-confirmation prompt. Mirrors
+    /// `handle_trust_check_untrusted`, but keyed on the pending `TaskDraft`
+    /// since no task exists yet.
+    pub(in crate::tui) fn handle_trust_check_untrusted_for_quick_dispatch(
+        &mut self,
+        draft: TaskDraft,
+        epic_id: Option<EpicId>,
+    ) -> Vec<Command> {
+        let expanded = crate::models::expand_tilde(&draft.repo_path);
+        self.set_status(format!(
+            "Repo '{expanded}' not trusted by Claude Code — trust it? [y/N]"
+        ));
+        self.input.mode = InputMode::ConfirmTrustRepoQuickDispatch { draft, epic_id };
         vec![]
     }
 

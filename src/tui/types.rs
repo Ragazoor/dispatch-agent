@@ -312,6 +312,14 @@ pub enum InputMode {
         task_id: TaskId,
         mode: DispatchMode,
     },
+    /// Quick-dispatch's equivalent of `ConfirmTrustRepo`: entered when
+    /// `TaskCommand::QuickDispatch`'s trust check finds the repo untrusted.
+    /// No `Task`/`TaskId` exists yet at this point, so the pending draft is
+    /// carried directly instead.
+    ConfirmTrustRepoQuickDispatch {
+        draft: TaskDraft,
+        epic_id: Option<EpicId>,
+    },
     InputBaseBranch,
     InputWrapUpMode,
     MainSessionDir,
@@ -351,7 +359,7 @@ impl InputMode {
 // TaskDraft
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskDraft {
     pub title: String,
     pub description: String,

@@ -2,7 +2,7 @@
 
 use crate::models::{DispatchMode, EpicId, Task, TaskId};
 
-use super::super::types::{Command, MoveDirection, TaskEdit, TreeNav};
+use super::super::types::{Command, MoveDirection, TaskDraft, TaskEdit, TreeNav};
 use crate::tui::App;
 
 /// Messages targeting the task domain.
@@ -59,6 +59,12 @@ pub enum TaskMessage {
         id: TaskId,
         mode: DispatchMode,
         repo_path: String,
+    },
+    /// Emitted by the runtime once `QuickDispatch`'s trust check finds the
+    /// repo untrusted: enters the quick-dispatch trust-confirmation prompt.
+    TrustCheckUntrustedForQuickDispatch {
+        draft: TaskDraft,
+        epic_id: Option<EpicId>,
     },
     RetryResume(TaskId),
     RetryFresh(TaskId),
@@ -123,6 +129,9 @@ impl TaskMessage {
                 mode,
                 repo_path,
             } => app.handle_trust_check_untrusted(id, mode, repo_path),
+            TaskMessage::TrustCheckUntrustedForQuickDispatch { draft, epic_id } => {
+                app.handle_trust_check_untrusted_for_quick_dispatch(draft, epic_id)
+            }
             TaskMessage::RetryResume(id) => app.handle_retry_resume(id),
             TaskMessage::RetryFresh(id) => app.handle_retry_fresh(id),
             TaskMessage::Archive(id) => app.handle_archive_task(id),

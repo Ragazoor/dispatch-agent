@@ -200,7 +200,7 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
             "Navigate to a task or epic and press Enter to link — Esc to cancel",
             Color::Cyan,
         ),
-        InputMode::ConfirmTrustRepo { .. } => {
+        InputMode::ConfirmTrustRepo { .. } | InputMode::ConfirmTrustRepoQuickDispatch { .. } => {
             hint_text(app, "Repo not trusted — trust it? [y/N]", Color::Yellow)
         }
     }

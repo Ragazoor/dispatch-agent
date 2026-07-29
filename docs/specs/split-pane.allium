@@ -195,7 +195,11 @@ rule JumpToAgentWindow {
         --      * Backlog        -> DispatchTask (dispatch.allium). The
         --        repo-trust confirmation (ConfirmTrustRepo) is preserved: an
         --        untrusted repo first shows the trust prompt, which on accept
-        --        proceeds to dispatch. Tag-based routing (research ->
+        --        proceeds to dispatch. The gate itself is specified in
+        --        dispatch.allium (DispatchTask, "Repo-trust pre-gate"), and
+        --        quick dispatch goes through the same gate via
+        --        QuickDispatchTrustGate in tasks.allium.
+        --        Tag-based routing (research ->
         --        DispatchResearchTask) lives in dispatch.allium, not here.
         --      * Running/Review/Done, Stale or Crashed -> open the
         --        kill-and-retry dialog (ConfirmRetry: [r] resume / [f] fresh

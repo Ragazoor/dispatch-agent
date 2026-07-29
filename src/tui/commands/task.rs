@@ -67,6 +67,13 @@ pub enum TaskCommand {
         draft: TaskDraft,
         epic_id: Option<EpicId>,
     },
+    /// Confirmed-trust follow-up to `QuickDispatch`: `trust_repo` the draft's
+    /// repo, then proceed exactly as `QuickDispatch` would have. Mirrors
+    /// `TrustAndDispatch`.
+    TrustAndQuickDispatch {
+        draft: TaskDraft,
+        epic_id: Option<EpicId>,
+    },
     KillTmuxWindow {
         window: String,
     },
