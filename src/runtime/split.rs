@@ -154,36 +154,8 @@ impl TuiRuntime {
                 }
             };
 
-            // Capture any companion pane before the join — join_pane moves
-            // only the agent's own (active) pane out of the window, so a
-            // companion left behind becomes the window's sole remaining
-            // pane, indistinguishable from "hidden" to the agent-tree
-            // toggle (docs/specs/agent-tree.allium:
-            // ToggleVsSplitPaneInteraction). Checking after the join would
-            // be too late to tell the two apart.
-            let companion_pane_id = match tmux::inactive_pane_id(&window, &*runner) {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!(
-                        %window,
-                        error = %e,
-                        "failed to check for companion pane before join-pane"
-                    );
-                    None
-                }
-            };
-
-            match tmux::join_pane(&window, &dispatch_pane, &*runner) {
+            match dispatch::join_task_window_into_pane(&window, &dispatch_pane, &*runner) {
                 Ok(pane_id) => {
-                    if let Some(companion_id) = companion_pane_id {
-                        if let Err(e) = tmux::kill_pane(&companion_id, &*runner) {
-                            tracing::warn!(
-                                %window,
-                                error = %e,
-                                "failed to kill leftover companion pane after join-pane"
-                            );
-                        }
-                    }
                     let _ = tx.send(Message::Split(
                         crate::tui::messages::SplitMessage::PaneOpened {
                             pane_id,
@@ -247,53 +219,26 @@ impl TuiRuntime {
                 return;
             };
 
-            // 1. Get the new task's pane ID before swapping.
-            let new_pane_id = match tmux::pane_id_for_window(&new_window, &*runner) {
-                Ok(id) => id,
+            match dispatch::swap_task_window_into_pane(
+                &new_window,
+                &right_pane,
+                old_window.as_deref(),
+                &*runner,
+            ) {
+                Ok(new_pane_id) => {
+                    let _ = tx.send(Message::Split(
+                        crate::tui::messages::SplitMessage::PaneOpened {
+                            pane_id: new_pane_id,
+                            task_id: Some(task_id),
+                        },
+                    ));
+                }
                 Err(e) => {
                     let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
-                        format!("Cannot get pane ID: {e:#}"),
+                        format!("Swap failed: {e:#}"),
                     )));
-                    return;
                 }
-            };
-
-            // 2. Atomically swap pane contents.
-            let source = format!("{new_window}.0");
-            if let Err(e) = tmux::swap_pane(&source, &right_pane, &*runner) {
-                let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
-                    format!("Swap pane failed: {e:#}"),
-                )));
-                return;
             }
-
-            // 3. Rename or kill the standalone window that now holds the old content.
-            if let Some(old_name) = old_window {
-                if let Err(e) = tmux::rename_window(&new_window, &old_name, &*runner) {
-                    let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
-                        format!("Rename window failed: {e:#}"),
-                    )));
-                    return;
-                }
-                // swap-pane only exchanged pane 0's content — the renamed
-                // window's companion pane (if any) still renders the
-                // previous occupant's tree. Resync it to the task the
-                // window's new name implies (see
-                // docs/specs/agent-tree.allium: ToggleVsSplitPaneInteraction).
-                dispatch::resync_agent_tree_pane(&old_name, &*runner);
-            } else if let Err(e) = tmux::kill_window(&new_window, &*runner) {
-                let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
-                    format!("Kill window failed: {e:#}"),
-                )));
-                return;
-            }
-
-            let _ = tx.send(Message::Split(
-                crate::tui::messages::SplitMessage::PaneOpened {
-                    pane_id: new_pane_id,
-                    task_id: Some(task_id),
-                },
-            ));
         })
     }
 

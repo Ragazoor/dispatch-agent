@@ -7,6 +7,7 @@ mod agents;
 mod finish;
 pub(crate) mod git_output;
 mod prompts;
+mod split_panes;
 mod trust;
 mod worktree;
 
@@ -17,6 +18,7 @@ pub use agents::{
 };
 pub use finish::{finish_task, FinishContext, FinishError};
 pub use prompts::{build_and_record_injections, EpicContext, LearningInjections};
+pub use split_panes::{join_task_window_into_pane, swap_task_window_into_pane};
 pub use trust::{is_repo_trusted, trust_repo};
 pub use worktree::{branch_from_worktree, cleanup_task, validate_repo_path};
 pub(crate) use worktree::{ensure_dispatch_dir_and_gitignore, DISPATCH_DIR};
