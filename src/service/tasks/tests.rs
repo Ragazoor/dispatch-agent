@@ -2907,6 +2907,79 @@ async fn cli_update_task_updates_status_unconditionally() {
 }
 
 #[tokio::test]
+async fn cli_update_task_entering_done_sets_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.cli_update_task(id, TaskStatus::Done, None, None)
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert!(
+        task.sort_order.is_some_and(|so| so < 0),
+        "expected a negative sort_order on entering Done, got {:?}",
+        task.sort_order
+    );
+}
+
+#[tokio::test]
+async fn cli_update_task_leaving_done_clears_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.cli_update_task(id, TaskStatus::Done, None, None)
+        .await
+        .unwrap();
+    assert!(svc.get_task(id).await.unwrap().sort_order.is_some());
+
+    svc.cli_update_task(id, TaskStatus::Backlog, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(svc.get_task(id).await.unwrap().sort_order, None);
+}
+
+#[tokio::test]
+async fn cli_update_task_only_if_not_matching_does_not_touch_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    // Precondition doesn't match (task is Backlog, not Running) — the
+    // conditional write must be a full no-op, including sort_order.
+    let updated = svc
+        .cli_update_task(id, TaskStatus::Done, Some(TaskStatus::Running), None)
+        .await
+        .unwrap();
+
+    assert!(!updated);
+    assert_eq!(svc.get_task(id).await.unwrap().sort_order, None);
+}
+
+#[tokio::test]
+async fn cli_update_task_only_if_matching_entering_done_sets_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    let updated = svc
+        .cli_update_task(id, TaskStatus::Done, Some(TaskStatus::Backlog), None)
+        .await
+        .unwrap();
+
+    assert!(updated);
+    assert!(svc
+        .get_task(id)
+        .await
+        .unwrap()
+        .sort_order
+        .is_some_and(|so| so < 0));
+}
+
+#[tokio::test]
 async fn cli_update_task_with_only_if_matching_returns_true_and_updates() {
     let db = test_db().await;
     let svc = task_svc(&db);

@@ -334,12 +334,13 @@ impl TaskService {
         only_if: Option<TaskStatus>,
         sub_status: Option<SubStatus>,
     ) -> Result<bool, ServiceError> {
-        let is_finishing_status = matches!(new_status, TaskStatus::Done | TaskStatus::Archived);
-        let prior = if is_finishing_status {
-            self.db.get_task(task_id).await?
-        } else {
-            None
-        };
+        // Always fetched (not just for finishing statuses): needed to
+        // detect a transition away from Done regardless of what the new
+        // status is, per sort_order_for_status_transition.
+        let prior = self.db.get_task(task_id).await?;
+        let sort_order_override = prior
+            .as_ref()
+            .and_then(|p| sort_order_for_status_transition(p.status, new_status, self.clock.now()));
 
         let updated = if let Some(expected) = only_if {
             let changed = self
@@ -347,10 +348,15 @@ impl TaskService {
                 .update_status_if(task_id, new_status, expected)
                 .await?;
             if changed {
+                let mut patch = crate::db::TaskPatch::new();
                 if let Some(ss) = sub_status {
-                    self.db
-                        .patch_task(task_id, &crate::db::TaskPatch::new().sub_status(ss))
-                        .await?;
+                    patch = patch.sub_status(ss);
+                }
+                if let Some(so) = sort_order_override {
+                    patch = patch.sort_order(so);
+                }
+                if patch.has_changes() {
+                    self.db.patch_task(task_id, &patch).await?;
                 }
             }
             changed
@@ -358,6 +364,9 @@ impl TaskService {
             let mut patch = crate::db::TaskPatch::new().status(new_status);
             if let Some(ss) = sub_status {
                 patch = patch.sub_status(ss);
+            }
+            if let Some(so) = sort_order_override {
+                patch = patch.sort_order(so);
             }
             self.db.patch_task(task_id, &patch).await?;
             true
