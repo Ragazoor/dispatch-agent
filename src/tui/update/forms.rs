@@ -140,8 +140,12 @@ impl App {
         &mut self,
         mode: Option<WrapUpMode>,
     ) -> Vec<Command> {
-        if let Some(ref mut draft) = self.input.task_draft {
-            draft.wrap_up_mode = mode;
+        // `mode == None` means Enter was pressed without an explicit r/p/d
+        // pick — leave the draft's existing value untouched rather than
+        // clearing it, so CopyTask's prefilled source-task mode survives an
+        // Enter-to-skip instead of being silently dropped.
+        if let (Some(ref mut draft), Some(m)) = (self.input.task_draft.as_mut(), mode) {
+            draft.wrap_up_mode = Some(m);
         }
         let repo_path = self
             .input

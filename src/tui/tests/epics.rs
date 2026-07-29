@@ -5,6 +5,32 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier};
 
 #[test]
+fn epic_edited_splices_all_fields_including_feed_settings() {
+    // Regression guard: handle_epic_edited previously only copied
+    // title/description/updated_at into the in-memory board row, dropping
+    // feed_command/feed_interval_secs until the next DB refresh (~10s). In
+    // that window the 'r' feed-refresh key checks the stale in-memory value.
+    let mut app = App::new(vec![]);
+    app.board.epics.push(make_epic(1));
+
+    let mut edited = make_epic(1);
+    edited.title = "New Title".to_string();
+    edited.description = "New description".to_string();
+    edited.feed_command = Some("gh api repos/x/pulls".to_string());
+    edited.feed_interval_secs = Some(300);
+
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Edited(
+        edited.clone(),
+    )));
+
+    let spliced = app.board.epics.iter().find(|e| e.id == EpicId(1)).unwrap();
+    assert_eq!(spliced.feed_command, edited.feed_command);
+    assert_eq!(spliced.feed_interval_secs, edited.feed_interval_secs);
+    assert_eq!(spliced.title, "New Title");
+    assert_eq!(spliced.description, "New description");
+}
+
+#[test]
 fn toggle_flattened_message_flips_state() {
     let mut app = App::new(vec![]);
     assert!(!app.board.flattened);

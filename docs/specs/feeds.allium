@@ -140,10 +140,12 @@ value FeedItem {
                               -- security alerts). Missing or unknown tag
                               -- causes parse failure in verify-feed and the
                               -- FeedRunner.
-    labels: Set<String> = {}  -- optional free-form labels copied to Task.labels
-                              -- on insert and re-applied on every conflict update
+    labels: List<String> = [] -- optional free-form labels copied to Task.labels
+                              -- on insert and re-applied on every conflict update.
+                              -- Ordered: the JSON array order is preserved through
+                              -- to badge rendering order on the card
                               -- (feed-controlled, not user-editable). Defaults
-                              -- to empty set when the script omits the field,
+                              -- to the empty list when the script omits the field,
                               -- preserving wire compatibility with scripts
                               -- written before this field existed.
     sort_order: Integer?      -- optional ordering hint copied to Task.sort_order;

@@ -138,6 +138,13 @@ impl EpicService {
             .create_epic(&params.title, &params.description, params.parent_epic_id)
             .await?;
 
+        // A new sub-epic changes the parent's active_sub_epics set, so the
+        // parent must be recalculated immediately (e.g. a Done parent with a
+        // freshly-attached Backlog child regresses right away).
+        if let Some(parent_id) = params.parent_epic_id {
+            self.recalculate_epic(parent_id).await;
+        }
+
         // The insert above only carries title/description/parent, so anything
         // else the caller supplied needs a follow-up write.
         let patch = EpicPatch {
@@ -282,6 +289,9 @@ impl EpicService {
             ));
         }
 
+        let epic_id = params.epic_id;
+        let existing = self.db.get_epic(epic_id).await?;
+
         let mut patch = EpicPatch::new();
         if let Some(ref t) = params.title {
             patch = patch.title(t);
@@ -315,7 +325,7 @@ impl EpicService {
         // Some(Some(_)) (reparent) and Some(None) (detach to root) would
         // orphan an auto-created sub-epic outside its grouping root.
         if matches!(params.parent_epic_id, Some(Some(_)) | Some(None)) {
-            if let Some(epic) = self.db.get_epic(params.epic_id).await? {
+            if let Some(ref epic) = existing {
                 if epic.origin == crate::models::EpicOrigin::RepoGroup {
                     return Err(ServiceError::Validation(
                         "Cannot reparent an auto-created repo-group sub-epic".into(),
@@ -324,11 +334,13 @@ impl EpicService {
             }
         }
 
+        let mut new_parent_for_recalc: Option<EpicId> = None;
         match params.parent_epic_id {
             Some(Some(new_parent_id)) => {
                 let parent = self.get_epic(new_parent_id).await?;
-                self.check_no_cycle(params.epic_id, &parent).await?;
+                self.check_no_cycle(epic_id, &parent).await?;
                 patch = patch.parent_epic_id(Some(new_parent_id));
+                new_parent_for_recalc = Some(new_parent_id);
             }
             Some(None) => {
                 patch = patch.parent_epic_id(None);
@@ -336,10 +348,39 @@ impl EpicService {
             None => {}
         }
 
-        let epic_id = params.epic_id;
         self.db.patch_epic(epic_id, &patch).await?;
 
+        // recalculate_epic_status must run whenever a sub-epic's status
+        // changes or its parent membership changes, since either mutates a
+        // parent's active_sub_epics rollup. Recalculate the *parent*, not
+        // this epic itself — self-recalc would fight an explicit status
+        // write with the children-derived target.
+        if let Some(existing) = existing {
+            if params.parent_epic_id.is_some() {
+                if let Some(old_parent) = existing.parent_epic_id {
+                    self.recalculate_epic(old_parent).await;
+                }
+                if let Some(new_parent) = new_parent_for_recalc {
+                    self.recalculate_epic(new_parent).await;
+                }
+            } else if params.status.is_some() {
+                if let Some(parent) = existing.parent_epic_id {
+                    self.recalculate_epic(parent).await;
+                }
+            }
+        }
+
         Ok(epic_id)
+    }
+
+    /// Recalculate the given epic, logging any database error.
+    async fn recalculate_epic(&self, epic_id: EpicId) {
+        if let Err(err) = self.db.recalculate_epic_status(epic_id).await {
+            tracing::warn!(
+                "failed to recalculate epic status for epic {}: {err}",
+                epic_id.0
+            );
+        }
     }
 
     /// Walk the ancestor chain of `proposed_parent` and return a Validation error
@@ -600,6 +641,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_sub_epic_recalculates_done_parent() {
+        // Regression guard: attaching a new (backlog) sub-epic to a Done
+        // parent must regress the parent to Backlog immediately, not wait
+        // for some unrelated task write to trigger a recalc.
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let svc = EpicService::new(db.clone());
+        let parent = db.create_epic("Parent", "", None).await.unwrap();
+        db.patch_epic(parent.id, &EpicPatch::new().status(TaskStatus::Done))
+            .await
+            .unwrap();
+
+        svc.create_epic(CreateEpicParams {
+            title: "Sub".into(),
+            description: "".into(),
+            sort_order: None,
+            parent_epic_id: Some(parent.id),
+            feed_command: None,
+            feed_interval_secs: None,
+        })
+        .await
+        .unwrap();
+
+        let parent = db.get_epic(parent.id).await.unwrap().unwrap();
+        assert_eq!(parent.status, TaskStatus::Backlog);
+    }
+
+    #[tokio::test]
     async fn create_sub_epic_missing_parent_returns_not_found() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
         let svc = EpicService::new(db.clone());
@@ -667,6 +735,91 @@ mod tests {
         .unwrap();
         let updated = db.get_epic(child.id).await.unwrap().unwrap();
         assert_eq!(updated.parent_epic_id, Some(parent.id), "parent unchanged");
+    }
+
+    #[tokio::test]
+    async fn update_epic_reparent_recalculates_old_and_new_parent() {
+        // Regression guard: reparenting a sub-epic changes both parents'
+        // active_sub_epics set, so both must be recalculated immediately.
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let svc = EpicService::new(db.clone());
+        let old_parent = db.create_epic("Old", "", None).await.unwrap();
+        let new_parent = db.create_epic("New", "", None).await.unwrap();
+        let child = db
+            .create_epic("Child", "", Some(old_parent.id))
+            .await
+            .unwrap();
+        // A second, still-Running child stays behind on old_parent after the
+        // reparent below, so a correct recalc must regress old_parent from
+        // its manually-forced Done — proving recalc actually ran rather than
+        // old_parent merely keeping an unrelated status.
+        let sibling = db
+            .create_epic("Sibling", "", Some(old_parent.id))
+            .await
+            .unwrap();
+        db.patch_epic(sibling.id, &EpicPatch::new().status(TaskStatus::Running))
+            .await
+            .unwrap();
+        db.patch_epic(old_parent.id, &EpicPatch::new().status(TaskStatus::Done))
+            .await
+            .unwrap();
+        db.patch_epic(new_parent.id, &EpicPatch::new().status(TaskStatus::Done))
+            .await
+            .unwrap();
+
+        svc.update_epic(UpdateEpicParams {
+            parent_epic_id: Some(Some(new_parent.id)),
+            ..base_params(child.id)
+        })
+        .await
+        .unwrap();
+
+        let old_parent = db.get_epic(old_parent.id).await.unwrap().unwrap();
+        let new_parent = db.get_epic(new_parent.id).await.unwrap().unwrap();
+        assert_eq!(
+            old_parent.status,
+            TaskStatus::Backlog,
+            "old parent still has a Running child and should regress from its stale Done"
+        );
+        assert_eq!(
+            new_parent.status,
+            TaskStatus::Backlog,
+            "new parent gains a backlog child and should regress from done"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_epic_status_change_recalculates_parent() {
+        // Regression guard: explicitly setting a sub-epic's status changes
+        // its parent's active_sub_epics rollup and must recalculate it.
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let svc = EpicService::new(db.clone());
+        let parent = db.create_epic("Parent", "", None).await.unwrap();
+        let child = db
+            .create_epic("Child", "", Some(parent.id))
+            .await
+            .unwrap();
+
+        svc.update_epic(UpdateEpicParams {
+            status: Some(TaskStatus::Done),
+            ..base_params(child.id)
+        })
+        .await
+        .unwrap();
+        let parent_after_child_done = db.get_epic(parent.id).await.unwrap().unwrap();
+        assert_eq!(parent_after_child_done.status, TaskStatus::Done);
+
+        // Regress the child back to Running — parent must be recalculated
+        // immediately, not left stale at Done.
+        svc.update_epic(UpdateEpicParams {
+            status: Some(TaskStatus::Running),
+            ..base_params(child.id)
+        })
+        .await
+        .unwrap();
+
+        let parent = db.get_epic(parent.id).await.unwrap().unwrap();
+        assert_eq!(parent.status, TaskStatus::Backlog);
     }
 
     #[tokio::test]

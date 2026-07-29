@@ -343,9 +343,11 @@ rule ListEpicsViaMcp {
     ensures: EpicsListed()
 
     @guidance
-        -- Takes no arguments. Returns every epic in the database
-        -- (including archived) along with done/total subtask counts
-        -- for each. The response is one line per epic with title,
+        -- Takes no arguments. Returns every NON-ARCHIVED epic in the
+        -- database along with done/total subtask counts for each;
+        -- archived epics are filtered out of this list entirely (an
+        -- agent cannot see them through list_epics, only through
+        -- get_epic by id). The response is one line per epic with title,
         -- status indicator (when not backlog), plan indicator (when
         -- a plan is attached), and the progress fraction.
         -- An empty database returns an informational "No epics found"
@@ -354,12 +356,14 @@ rule ListEpicsViaMcp {
 
 rule UpdateEpicViaMcp {
     when: McpUpdateEpic(epic, title?, description?, status?, plan?, sort_order?,
-                        feed_command?, feed_interval_secs?, parent_epic_id?)
+                        feed_command?, feed_interval_secs?, group_by_repo?,
+                        parent_epic_id?)
 
     requires: title != null or description != null or status != null
               or plan != null or sort_order != null
               or feed_command != omitted
-              or feed_interval_secs != omitted or parent_epic_id != omitted
+              or feed_interval_secs != omitted or group_by_repo != null
+              or parent_epic_id != omitted
 
     -- Cannot set status to archived via MCP. The agent receives a
     -- validation error instructing them to ask the human operator to
@@ -373,6 +377,15 @@ rule UpdateEpicViaMcp {
     requires:
         if parent_epic_id != omitted and parent_epic_id != null:
             not Epic.ancestor_chain(parent_epic_id).contains(epic.id)
+
+    -- An auto-created repo-group sub-epic cannot be moved out of its
+    -- grouping root. This covers BOTH reparenting (a new parent) and
+    -- detaching (parent_epic_id = null): any non-omitted parent_epic_id on
+    -- such an epic is rejected with a validation error, "Cannot reparent an
+    -- auto-created repo-group sub-epic".
+    requires:
+        if parent_epic_id != omitted:
+            epic.origin != repo_group
 
     ensures:
         if title != null: epic.title = title
@@ -393,6 +406,11 @@ rule UpdateEpicViaMcp {
         -- integer (set), or explicit null (clear to NULL)
         if feed_interval_secs != omitted: epic.feed_interval_secs = feed_interval_secs
     ensures:
+        -- group_by_repo is a plain boolean set (absent = no change). Note
+        -- that setting it here flips the flag ONLY — no task migration is
+        -- performed. See the guidance below.
+        if group_by_repo != null: epic.group_by_repo = group_by_repo
+    ensures:
         -- parent_epic_id uses triple-state semantics: omitted = no change,
         -- integer = reparent under that epic, null = make this a root epic.
         if parent_epic_id != omitted: epic.parent_epic_id = parent_epic_id
@@ -410,6 +428,26 @@ rule UpdateEpicViaMcp {
         -- Cycle detection walks the ancestor chain of the proposed parent;
         -- if the current epic appears anywhere in that chain the update
         -- is rejected with a -32602 validation error.
+        --
+        -- group_by_repo is a FLAG FLIP ONLY over MCP — intentional, but
+        -- consequential. The regroup/flatten task migration (RegroupEpic /
+        -- FlattenEpic) fires only from the TUI toggle path
+        -- (ToggleGroupByRepo, the `R` key), which deliberately inlines
+        -- update-then-migrate rather than reusing this patch path. An agent
+        -- that turns group_by_repo ON here leaves every existing task sitting
+        -- directly on the epic, unrouted into per-repo sub-epics; turning it
+        -- OFF here leaves tasks stranded inside the repo-group sub-epics
+        -- rather than pulled back to the parent. The epic reports the new
+        -- flag and the board renders accordingly, so the mismatch is not
+        -- obviously visible. Reconciliation requires either a manual TUI
+        -- toggle (which runs the migration) or, for feed epics, the next feed
+        -- sync (GroupedFeedUpsert / FlatFeedReconcile in feeds.allium, which
+        -- self-heal in both directions).
+        --
+        -- An epic with origin = repo_group cannot have its parent changed by
+        -- this tool at all — neither reparented nor detached to root (see the
+        -- requires above). This keeps auto-created per-repo sub-epics inside
+        -- the grouping root that owns them.
 }
 
 rule GetManagedFeedConfigViaMcp {
@@ -469,6 +507,12 @@ rule ReparentEpicFromTui {
             not Epic.ancestor_chain(new_parent).contains(epic)
             and new_parent != epic
 
+    -- An auto-created repo-group sub-epic cannot be moved, in either
+    -- direction: both a new parent and a null new_parent (detach to root)
+    -- are rejected with the validation error "Cannot reparent an
+    -- auto-created repo-group sub-epic".
+    requires: epic.origin != repo_group
+
     ensures: epic.parent_epic_id = new_parent
     ensures: epic.updated_at = now
 
@@ -495,6 +539,12 @@ rule ReparentEpicFromTui {
         -- have the target epic anywhere in its ancestor chain, and the epic
         -- cannot be its own parent. The UI tree already excludes ineligible
         -- targets, so these guards are a defensive backstop.
+        --
+        -- The repo-group guard is NOT a UI-layer concern: this flow patches
+        -- the epic through the same service path as UpdateEpicViaMcp, so an
+        -- attempt to move an origin = repo_group sub-epic fails there and the
+        -- TUI reports the error. The picker does not pre-filter on origin, so
+        -- a repo-group sub-epic can be selected and only then rejected.
         -- updated_at is refreshed automatically by the database layer on
         -- any patch_epic call; the assertion above documents the intent.
 }
@@ -748,14 +798,14 @@ rule RegroupEpic {
         -- sub-epic to dispatch. Sub-epics are one level deep — sub-epics
         -- of repo-group sub-epics are not created.
         --
-        -- TUI progress aggregation: the TUI's epic-status indicator (●N
-        -- counts by status column) aggregates across all active_children
-        -- (tasks + sub-epics) recursively, so the grouped root shows
-        -- progress of all descendant tasks. MCP tools (GetEpicViaMcp,
-        -- ListEpicsViaMcp) compute progress from direct subtasks only
-        -- (done_count / total_count from direct Task children) — this is
-        -- an intentional divergence: agents see direct task counts, the
-        -- TUI shows the rolled-up view.
+        -- Progress aggregation agrees across surfaces: the TUI's
+        -- epic-status indicator (●N counts by status column) aggregates
+        -- across all active_children (tasks + sub-epics) recursively, and
+        -- the MCP tools (GetEpicViaMcp, ListEpicsViaMcp) share one rollup
+        -- that likewise aggregates every descendant sub-epic's tasks for a
+        -- group_by_repo epic (direct subtasks only for any other epic). A
+        -- grouped root whose tasks all live in per-repo sub-epics therefore
+        -- reports the real totals to agents and to the board alike.
 }
 
 rule FlattenEpic {
@@ -794,9 +844,11 @@ rule ProvisionManagedEpics {
     -- reviews/CVE feed configuration, AND whenever the config is saved via
     -- the in-app config popup (the `C`-key surface above). Running it
     -- repeatedly converges on the same tree without
-    -- creating duplicates: every managed epic is matched by feed_role,
-    -- NEVER by title, so a user who renames any managed epic keeps that
-    -- rename across re-runs.
+    -- creating duplicates: every managed epic is matched by the PAIR
+    -- (feed_role, expected parent) — NEVER by title, so a user who renames
+    -- any managed epic keeps that rename across re-runs. The parent half of
+    -- that key means recognition is position-sensitive; see the reparenting
+    -- caveat in the guidance below.
     --
     -- Two independent subtrees, each provisioned ONLY when its command
     -- is configured (opt-in):
@@ -818,11 +870,14 @@ rule ProvisionManagedEpics {
     -- exists, leave it archived (do NOT resurrect), warn, and create
     -- nothing. Otherwise create the epic and stamp its feed_role.
     --
-    -- active_epic_for_role / archived_epic_for_role are black-box lookups:
-    -- each returns the single Epic with the given feed_role in the given
-    -- state, or null when none exists. Singularity is guaranteed by
-    -- core/Epic.UniqueFeedRolePerParent (at most one epic per
-    -- (parent, feed_role)).
+    -- active_epic_for_role / archived_epic_for_role are black-box lookups
+    -- SCOPED TO THE EXPECTED PARENT for that role (null for the two root
+    -- roles, the reviews_parent root for the three review sub-roles): each
+    -- returns the single Epic with the given feed_role AND that parent, in
+    -- the given state, or null when none exists. Singularity is guaranteed
+    -- by core/Epic.UniqueFeedRolePerParent (at most one epic per
+    -- (parent, feed_role)). An epic carrying the role under some OTHER
+    -- parent does not satisfy the lookup.
 
     ensures:
         -- Reviews subtree — opt-in on reviews_feed_command.
@@ -904,7 +959,7 @@ rule ProvisionManagedEpics {
         -- bucket concurrently — the race this guard exists to prevent.
         --
         -- Rename-stable, archived-not-resurrected. Managed epics are
-        -- matched by feed_role, never by title, so a user rename of any
+        -- matched by (feed_role, parent), never by title, so a user rename of any
         -- managed epic (root or sub) survives every re-run — only the
         -- command-carrying roles (reviews_parent, cve) ever have their
         -- feed_command/feed_interval_secs reconciled, and titles are
@@ -920,14 +975,31 @@ rule ProvisionManagedEpics {
         -- Clearing a command does NOT delete an already-provisioned
         -- subtree — teardown is a separate, explicit user action.
         --
-        -- Idempotency & race-safety. Re-running creates no duplicates:
-        -- each role is matched by feed_role, and the
+        -- Idempotency & race-safety, and its limit. Re-running creates no
+        -- duplicates AS LONG AS the managed epics still sit where
+        -- provisioning expects them: each role is looked up as
+        -- (feed_role, expected parent), and the
         -- core/Epic.UniqueFeedRolePerParent invariant (a partial unique
         -- index on (parent, feed_role) WHERE feed_role != none) makes a
-        -- duplicate physically impossible. Two instances starting up
-        -- concurrently therefore cannot both insert the same role
+        -- duplicate AT THAT SAME PARENT physically impossible. Two instances
+        -- starting up concurrently therefore cannot both insert the same role
         -- sub-epic — the second insert loses to the unique index and is
         -- a no-op rather than a duplicate.
+        --
+        -- Reparenting caveat (known consequence of the parent half of the
+        -- key). Idempotency is NOT position-independent. If a user reparents
+        -- a managed epic — moving a role sub-epic out from under the
+        -- reviews_parent root, or making the reviews_parent root itself a
+        -- child of something — the next provisioning run does not recognise
+        -- it, because its parent no longer matches the expected one. The run
+        -- then creates a FRESH epic for that role, which the unique index
+        -- permits (the parent differs), leaving two epics carrying the same
+        -- feed_role. The moved epic keeps its tasks; the new one starts
+        -- empty. Recovering means reparenting the original back into place
+        -- and deleting the duplicate by hand. Matching on feed_role alone
+        -- would remove this hazard but would also make the (parent, role)
+        -- index non-authoritative; the trade-off is unresolved (see the open
+        -- question below).
         --
         -- managed_role_title(role) supplies the default display title for
         -- a freshly-created sub-epic (e.g. my_reviews -> "My Reviews",
@@ -994,3 +1066,9 @@ rule ProvisionManagedEpics {
     -- Epic cards show colored status indicators (●N) for each non-zero
     -- child count by parent status, using the column palette colors.
     -- Sub-epic children are counted alongside task children in the indicators.
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+open question "Managed-epic role lookup keys on (feed_role, parent), so reparenting a managed epic makes the next ProvisionManagedEpics run create a duplicate epic for that role. Should the lookup fall back to feed_role alone, should managed epics be reparent-blocked the way repo-group sub-epics are, or is the duplicate an acceptable cost of a user moving them?"

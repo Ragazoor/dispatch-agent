@@ -426,7 +426,12 @@ fn recalculate_epic_status_inner(
     let all_statuses: Vec<TaskStatus> =
         task_statuses.into_iter().chain(sub_epic_statuses).collect();
 
-    let target = if all_statuses.is_empty() {
+    let target = if epic.status == TaskStatus::Archived {
+        // Archived is terminal for this recalculation: an archived epic must
+        // never be flipped back to `Done` just because a newly-attached
+        // child happens to be all-done.
+        epic.status
+    } else if all_statuses.is_empty() {
         epic.status
     } else if all_statuses.iter().all(|s| *s == TaskStatus::Done) {
         TaskStatus::Done

@@ -225,7 +225,10 @@ entity Task {
     url: TaskUrl?    -- subsumes the former pr_url: the single typed URL attached to this task
     tag: TaskTag?
     sort_order: Integer?  -- shared namespace for feed-driven and user-set ordering; lower sorts first via COALESCE(sort_order, id) ASC
-    labels: Set<String> = {}  -- free-form badges rendered on the card's second line; set by feed scripts via FeedItem.labels or by future TUI editors
+    labels: List<String> = []  -- free-form badges rendered on the card's second line; set by feed scripts via FeedItem.labels or by future TUI editors.
+                               -- Ordered, and the order is load-bearing: badges render in
+                               -- declaration order so a feed script controls which label
+                               -- appears first on the card. Duplicates are retained.
     base_branch: String = "main" -- the branch this task rebases onto / targets for PRs
     external_id: String?  -- stable identifier for tasks sourced from a feed epic (see feeds.allium); null for hand-created tasks. Unique per (epic, external_id) when set.
     last_pre_tool_use_at: Timestamp?  -- wallclock of the most recent PreToolUse hook; null when the agent has never tooled (or after Stop)
@@ -255,6 +258,19 @@ entity Task {
         review -> archived
         terminal: archived
     }
+    -- This graph governs the move-based status changes only (MoveTask,
+    -- ConfirmDone, Archive, dispatch/PR-driven transitions). Two
+    -- human-operator paths are intentionally exempt from it and may set
+    -- any TaskStatus from any other, including moving a task back out of
+    -- the terminal `archived` state:
+    --   - EditTask, the tmux task editor (see tasks.allium: EditTask) —
+    --     reachable from the archive view as well as the main board.
+    --   - `dispatch update <id> <status>`, the CLI operator path
+    --     (see task-watchers.allium).
+    -- Both are deliberate power-user escape hatches for manual
+    -- correction, not edges of the lifecycle, so they are not declared
+    -- above. Every automatic and keyboard-move transition does obey the
+    -- graph.
 
     -- Derived
     has_plan: plan_path != null

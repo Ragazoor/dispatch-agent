@@ -208,10 +208,19 @@ rule MoveTaskForward {
     ensures: task.updated_at = now
 
     @guidance
-        -- Manual movement (forward or backward) clears agent health
-        -- tracking state (tmux output, crash detection,
-        -- notification flags) for the task.
+        -- Manual movement (forward or backward) clears the task's agent
+        -- notification/poll tracking flags: the review-notified and
+        -- needs-input-notified markers, the last PR-poll timestamp, and the
+        -- card message flash. Nothing else is cleared — there is no
+        -- separate tmux-output or crash-detection state.
         -- sub_status is always reset to the default for the new status.
+        -- Any manual-move transition into Running (not just Review ->
+        -- Running) also stamps last_pre_tool_use_at = now, so
+        -- ClassifyAgentActivity does not immediately report the task Stale
+        -- (see agent-health.allium). This includes Backlog -> Running, which
+        -- provisions no worktree; the seed is harmless there because both
+        -- the classifier and crash detection only consider tasks with a
+        -- tmux_window.
         -- Supports batch operation on multi-selected tasks. Batch forward
         -- splits when the selection includes Review tasks: non-Review
         -- tasks move immediately, Review tasks are collected for a single
@@ -233,9 +242,11 @@ rule MoveTaskBackward {
     ensures: task.updated_at = now
 
     @guidance
-        -- Manual movement (forward or backward) clears agent health
-        -- tracking state (tmux output, crash detection,
-        -- notification flags) for the task.
+        -- Manual movement (forward or backward) clears the task's agent
+        -- notification/poll tracking flags: the review-notified and
+        -- needs-input-notified markers, the last PR-poll timestamp, and the
+        -- card message flash. Nothing else is cleared — there is no
+        -- separate tmux-output or crash-detection state.
         -- sub_status is always reset to the default for the new status.
         -- The worktree is preserved so the task can be resumed later
         -- via ResumeTask.
@@ -492,13 +503,26 @@ rule CopyTask {
     @guidance
         -- Copies a subset of fields from the source task, including the
         -- wrap_up_mode preference. Fields that are NOT copied: plan,
-        -- worktree, tmux_window, url, epic, sort_order.
+        -- worktree, tmux_window, url, epic, sort_order, base_branch.
         -- auto_run_plan is NOT copied — like plan_path, it's tied to a
         -- specific (unshared) plan file, and this field is set by skills
         -- (decompose-review) rather than being a human TUI preference.
         -- The new task is a clean backlog item with no agent history.
-        -- The user is prompted to confirm or edit the repo_path before the
-        -- task is created (the source's repo_path is pre-filled as default).
+        --
+        -- The copy flow runs the tail of the manual creation form:
+        -- InputRepoPath -> InputBaseBranch -> InputWrapUpMode. The user is
+        -- prompted to confirm or edit the repo_path before the task is
+        -- created (the source's repo_path is pre-filled as default).
+        -- base_branch is NOT copied from the source task and is NOT taken
+        -- from config.default_branch either: the flow re-prompts through the
+        -- same BaseBranchPicker surface as task creation (see
+        -- dispatch.allium), prefilled with the most-recently-used branch
+        -- for the confirmed repo_path and falling back to
+        -- config.default_branch when that repo has no history yet.
+        -- The source's wrap_up_mode seeds the draft, but the
+        -- InputWrapUpMode prompt that follows records whatever the user
+        -- answers there (Enter = no preference), so the copied value only
+        -- survives if the user re-picks it.
 }
 
 -- == Editor ==
@@ -514,9 +538,17 @@ rule EditTask {
     -- WRAP_UP_MODE, URL, URL_TYPE).
     -- The user edits the file; on save, fields are parsed back.
     -- Empty title/description/repo_path retain their previous values.
-    -- Empty plan or tag clears the field. Status parses to the
-    -- previous value on invalid input. Empty base_branch retains the
+    -- Empty plan or tag clears the field. Empty base_branch retains the
     -- previous value. Empty wrap_up_mode clears the preference.
+    --
+    -- The enum-ish sections (STATUS, TAG, WRAP_UP_MODE, URL_TYPE) all share
+    -- one parse rule: an empty section and an unparseable section are
+    -- treated identically — the section yields no value. Unparseable input
+    -- additionally records a parse error, and all accumulated errors are
+    -- surfaced together as a status message ("Edit accepted with parse
+    -- errors — ..."); the edit is still applied. What "no value" means is
+    -- per-field: STATUS retains the previous status, TAG and WRAP_UP_MODE
+    -- clear the field, and URL_TYPE falls back as described below.
     --
     -- url is computed from the URL and URL_TYPE sections, then diffed
     -- against the task's prior url; the field is only touched when it
@@ -565,7 +597,13 @@ rule EditTask {
         -- preconditions. The user can set any valid TaskStatus
         -- regardless of the current status or the transitions
         -- declared on Task. This is intentional: the editor is a
-        -- power-user escape hatch for manual corrections.
+        -- power-user escape hatch for manual corrections, and
+        -- core.allium's Task.status graph records it as exempt.
+        -- The exemption includes `archived`, which the graph marks
+        -- terminal: the archive view binds the same editor key, so an
+        -- archived task can be edited back to backlog, running, review
+        -- or done. The CLI path (`dispatch update <id> <status>`) is
+        -- exempt on the same terms.
         -- Sub_status is auto-reset to the default for the new status
         -- when status changes, per the SubStatusAutoreset invariant.
         -- The editor opens in a separate tmux window; tmux focus
@@ -609,9 +647,18 @@ rule EditTask {
 
 -- SubStatusAutoreset: Whenever task.status changes, task.sub_status is
 -- reset to SubStatus.default_for(new_status). This ensures no invalid
--- (status, sub_status) combinations are ever persisted. Every rule that
--- changes status must also reset sub_status. Exception: rules that set a
--- specific sub_status override the default (e.g., HookNotification keeps
--- status=running and sets sub_status=needs_input; FinishTaskConflict
--- keeps the parent status and sets sub_status=conflict).
+-- (status, sub_status) combinations are ever persisted.
+-- This is a single centrally-enforced invariant, not an obligation on each
+-- individual rule: the write path derives the effective sub_status for
+-- every task write as "the explicitly supplied sub_status, else
+-- SubStatus.default_for(the supplied status)". A rule that changes status
+-- without mentioning sub_status therefore gets the reset for free, and the
+-- sub_status assertions written out in the rules above document the
+-- resulting state rather than adding a per-rule duty. A write supplying an
+-- explicit (status, sub_status) pair that is invalid is rejected before it
+-- reaches the store, and a database constraint backs the invariant up.
+-- Exception: writes that set a specific sub_status override the default
+-- (e.g., HookNotification keeps status=running and sets
+-- sub_status=needs_input; FinishTaskConflict keeps the parent status and
+-- sets sub_status=conflict).
 

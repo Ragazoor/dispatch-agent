@@ -43,9 +43,14 @@ rule ClassifyAgentActivity {
         -- independent — it decorates card ages.
         -- Every transition into running stamps last_pre_tool_use_at = now
         -- (DispatchTask on Backlog→Running, ResumeTask on resume, and the
-        -- manual move handler on Review→Running) so this classifier returns
+        -- manual move handler on any transition into Running — Review→Running
+        -- and Backlog→Running alike) so this classifier returns
         -- Active through the active_threshold window before the agent's first
-        -- real PreToolUse hook fires. Without seeding on the manual Review→
+        -- real PreToolUse hook fires. The manual-move seed is deliberately
+        -- unconditional on the source status: a manual Backlog→Running move
+        -- provisions no worktree, so the stamp has no observable effect there
+        -- (both this classifier and DetectCrashedAgent only consider tasks
+        -- with a tmux_window). Without seeding on the manual Review→
         -- Running path, a task whose Stop hook cleared the timestamp would
         -- be classified Stale on the very next tick — and because the card
         -- derives its minute label from the same timestamp, it would render

@@ -2590,6 +2590,45 @@ fn wrap_up_mode_enter_skips_and_creates_task_with_no_mode() {
     }
 }
 
+#[test]
+fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
+    // Regression guard: CopyTask prefills wrap_up_mode from the source task,
+    // but the picker's Enter previously always submitted None, silently
+    // clearing it. Enter (no explicit r/p/d pick) must keep whatever the
+    // draft already carries.
+    let mut app = make_app();
+    app.input.mode = InputMode::InputWrapUpMode;
+    app.input.task_draft = Some(TaskDraft {
+        title: "Copy of: T".to_string(),
+        repo_path: "/repo".to_string(),
+        base_branch: "main".into(),
+        wrap_up_mode: Some(crate::models::WrapUpMode::Pr),
+        ..Default::default()
+    });
+
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+
+    let insert_cmd = cmds.iter().find(|c| {
+        matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Insert { .. })
+        )
+    });
+    assert!(
+        insert_cmd.is_some(),
+        "expected Insert command, got {:?}",
+        cmds
+    );
+    if let Some(Command::Task(crate::tui::commands::TaskCommand::Insert { draft, .. })) = insert_cmd
+    {
+        assert_eq!(
+            draft.wrap_up_mode,
+            Some(crate::models::WrapUpMode::Pr),
+            "Enter should keep the copied wrap_up_mode, not clear it"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Normal-mode handler coverage for extracted methods
 // ---------------------------------------------------------------------------

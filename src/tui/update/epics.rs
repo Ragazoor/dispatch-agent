@@ -203,10 +203,8 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_epic_edited(&mut self, epic: Epic) -> Vec<Command> {
-        if let Some(e) = self.board.epics.iter_mut().find(|e| e.id == epic.id) {
-            e.title = epic.title;
-            e.description = epic.description;
-            e.updated_at = chrono::Utc::now();
+        if let Some(slot) = self.board.epics.iter_mut().find(|e| e.id == epic.id) {
+            *slot = epic;
         }
         vec![]
     }

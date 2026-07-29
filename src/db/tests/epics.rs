@@ -757,6 +757,29 @@ async fn recalculate_epic_status_done_epic_stays_done_when_all_tasks_archived() 
 }
 
 #[tokio::test]
+async fn recalculate_epic_status_leaves_archived_epic_unchanged_even_when_children_all_done() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    db.patch_epic(epic.id, &EpicPatch::new().status(TaskStatus::Archived))
+        .await
+        .unwrap();
+
+    // A non-archived, all-done child attached to an archived epic must not
+    // flip the epic's status to done — archived is terminal.
+    let task = create_task_returning(&db, "T1", "", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
+    db.patch_task(task.id, &TaskPatch::new().status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    db.recalculate_epic_status(epic.id).await.unwrap();
+    let epic = db.get_epic(epic.id).await.unwrap().unwrap();
+    assert_eq!(epic.status, TaskStatus::Archived);
+}
+
+#[tokio::test]
 async fn recalculate_epic_status_all_done_stays_done_when_already_done() {
     let db = in_memory_db().await;
     let epic = db.create_epic("E", "", None).await.unwrap();
