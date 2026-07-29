@@ -78,6 +78,21 @@ pub struct EditorSession {
     cleanup_runner: Option<Arc<dyn ProcessRunner>>,
 }
 
+#[cfg(test)]
+impl EditorSession {
+    /// Test-only constructor for an *occupied* session slot: no tempfile and no
+    /// cleanup runner, so `Drop` is a no-op. Lets tests outside this module
+    /// (notably `runtime::tests`) exercise the "one editor at a time" guard in
+    /// `exec_pop_out_editor` without spawning a real editor window.
+    pub(super) fn occupied_for_test(window_name: &str) -> Self {
+        Self {
+            window_name: window_name.to_string(),
+            temp_path: None,
+            cleanup_runner: None,
+        }
+    }
+}
+
 impl Drop for EditorSession {
     fn drop(&mut self) {
         if let Some(path) = self.temp_path.take() {

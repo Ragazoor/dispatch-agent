@@ -45,43 +45,21 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::db::Database;
-    use crate::service::embeddings::EmbeddingService;
     use crate::service::todos::TodoUpdate;
     use crate::tui::ViewMode;
 
-    fn make_runtime(db: std::sync::Arc<Database>) -> TuiRuntime {
+    /// Thin wrapper over `runtime::tests::make_runtime` (the canonical fixture,
+    /// which shares one `Database` between every service) with the runner and
+    /// message channel these tests never look at. `unused()` panics on the first
+    /// shell-out, so an accidental one fails loudly.
+    async fn make_runtime(db: std::sync::Arc<Database>) -> TuiRuntime {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let (feed_tx, _) = mpsc::unbounded_channel();
-        let db_arc: std::sync::Arc<dyn crate::db::TaskStore> = db.clone();
-        let runner: std::sync::Arc<dyn crate::process::ProcessRunner> =
-            std::sync::Arc::new(crate::process::MockProcessRunner::new(vec![]));
-        TuiRuntime {
-            task_svc: std::sync::Arc::new(crate::service::TaskService::new(
-                db_arc.clone(),
-                runner.clone(),
-            )),
-            epic_svc: std::sync::Arc::new(crate::service::EpicService::new(db_arc.clone())),
-            todo_svc: std::sync::Arc::new(crate::service::TodoService::new(db.clone())),
-            learning_svc: std::sync::Arc::new(crate::service::MockLearningService),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db_arc.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
-            feed_invalidate_tx: None,
-            feed_db: db_arc.clone(),
-            database: db_arc,
-            msg_tx: tx,
-            runner,
-            editor_session: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-        }
+        super::super::tests::make_runtime(db, tx, crate::process::MockProcessRunner::unused()).await
     }
 
     #[tokio::test]
     async fn todo_open_is_two_phase_load_then_show() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
+        let db = super::super::tests::test_db().await;
         // Insert a todo via the service
         let todo_svc = crate::service::TodoService::new(db.clone());
         todo_svc
@@ -89,7 +67,7 @@ mod tests {
             .await
             .unwrap();
 
-        let rt = make_runtime(db.clone());
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         // Simulate the two-phase open: Open -> Load command -> exec_load_todos -> Show
@@ -109,8 +87,8 @@ mod tests {
     async fn q_restores_previous_view() {
         // This test verifies the Close message restores the prior view (Board).
         // The input routing (q -> Close) is tested via handle_key_todos at the TUI layer.
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         // Open the todos view
@@ -131,8 +109,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_create_todo_persists_to_db() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         rt.exec_create_todo(&mut app, "buy milk".to_string(), None, false)
@@ -145,8 +123,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_create_todo_reopen_false_updates_count() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         rt.exec_create_todo(&mut app, "task one".to_string(), None, false)
@@ -168,8 +146,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_create_todo_reopen_true_opens_todos_view() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         rt.exec_create_todo(&mut app, "task two".to_string(), None, true)
@@ -185,8 +163,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_update_todo_persists_to_db() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         rt.exec_create_todo(&mut app, "original title".to_string(), None, false)
@@ -212,8 +190,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_delete_todo_removes_from_db() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         rt.exec_create_todo(&mut app, "to delete".to_string(), None, false)
@@ -229,8 +207,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_clear_done_removes_done_from_db() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         rt.exec_create_todo(&mut app, "keep me".to_string(), None, false)
@@ -260,8 +238,8 @@ mod tests {
 
     #[tokio::test]
     async fn exec_load_todo_count_emits_count_updated() {
-        let db = std::sync::Arc::new(Database::open_in_memory().await.unwrap());
-        let rt = make_runtime(db.clone());
+        let db = super::super::tests::test_db().await;
+        let rt = make_runtime(db.clone()).await;
         let mut app = App::new(vec![]);
 
         rt.exec_create_todo(&mut app, "one".to_string(), None, false)

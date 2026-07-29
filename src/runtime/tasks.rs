@@ -3,7 +3,10 @@ use super::*;
 /// Spawn a blocking dispatch call, sending `Dispatched`/`DispatchFailed`/`Error`
 /// back via `msg_tx`. Handles `catch_unwind` and panic-string extraction so
 /// callers only supply the label, `switch_focus` flag, and the dispatch closure.
-fn run_blocking_dispatch(
+///
+/// `pub(super)` so `runtime::tests` can drive all three arms — in particular the
+/// `Err(panic)` arm, which no production caller can trigger on demand.
+pub(super) fn run_blocking_dispatch(
     id: TaskId,
     label: &'static str,
     switch_focus: bool,
@@ -426,6 +429,26 @@ impl TuiRuntime {
     /// Runs the board DB reads (tasks + epics) and sends results via `tx`.
     /// Shared by `spawn_refresh_from_db` and the `None` fallback paths in
     /// `spawn_refresh_task`/`spawn_refresh_epic`.
+    ///
+    /// # Why this is the *unguarded* twin of [`Self::exec_refresh_from_db`]
+    ///
+    /// Both functions do the same two reads, but they sit on opposite sides of
+    /// the render thread and are reached for opposite reasons:
+    ///
+    /// - `exec_refresh_from_db` is the **command-queue** path. It runs inline on
+    ///   the render thread (see the command-queue section of
+    ///   `docs/architecture.md`) and fires speculatively — every 5 ticks as a
+    ///   catch-all, whether or not anything changed. Its `get_total_changes`
+    ///   watermark exists to make that speculative case free: skipping the read
+    ///   is worth two extra writer round-trips.
+    /// - `do_full_board_refresh` is the **detached** path, always reached from a
+    ///   `tokio::spawn` and only *after* something already told us the board
+    ///   moved (an MCP notification, or a targeted refresh whose task/epic had
+    ///   vanished). A watermark check here would cost the same two writer
+    ///   round-trips to answer a question we already know the answer to.
+    ///
+    /// So the guard is deliberately not unified: it is a property of *why* the
+    /// refresh was requested, not of the reads themselves.
     async fn do_full_board_refresh(
         db: Arc<dyn crate::db::TaskReadStore>,
         tx: tokio::sync::mpsc::UnboundedSender<Message>,
@@ -535,6 +558,9 @@ impl TuiRuntime {
         })
     }
 
+    /// Full board refresh on the command-queue path, i.e. inline on the render
+    /// thread. See [`Self::do_full_board_refresh`] for why that twin has no
+    /// watermark guard and this one does.
     pub(super) async fn exec_refresh_from_db(&self, app: &mut App) -> Vec<Command> {
         // Watermark guard: skip the full DB read when nothing has changed since
         // the last tick-driven refresh. The change counter is the cumulative
