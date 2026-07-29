@@ -71,17 +71,45 @@ impl TuiRuntime {
         .await;
     }
 
+    /// Routing chokepoint for `exec_persist_epic`, `exec_toggle_epic_auto_dispatch`,
+    /// and `exec_reparent_epic`. Writes any service-computed `sort_order` (the
+    /// Done-transition rule in `EpicService::update_epic`) back into the
+    /// in-memory board immediately, via the same `EpicMessage::Updated` splice
+    /// `spawn_refresh_epic` uses — not a direct `App.board` mutation, since only
+    /// `crate::tui` code may touch that field (see docs/conventions.md
+    /// "Visibility convention").
     async fn exec_patch_epic(
         &self,
         app: &mut App,
         params: crate::service::UpdateEpicParams,
         context: &str,
     ) {
-        if let Err(e) = self.epic_svc.update_epic(params).await {
-            app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                Self::db_error(context, e),
-            )));
+        match self.epic_svc.update_epic(params).await {
+            Ok(result) => self.write_back_epic_sort_order(app, result),
+            Err(e) => {
+                app.update(Message::System(crate::tui::messages::SystemMessage::Error(
+                    Self::db_error(context, e),
+                )));
+            }
         }
+    }
+
+    /// If `result` carries a written `sort_order`, splice an updated copy of
+    /// the in-memory epic into `App.board.epics` immediately (rather than
+    /// waiting for the next DB refresh). No-op when `sort_order_after_write`
+    /// is `None` (this call's patch didn't touch it) or the epic isn't
+    /// currently in memory.
+    fn write_back_epic_sort_order(&self, app: &mut App, result: crate::service::UpdateEpicResult) {
+        let Some(new_sort_order) = result.sort_order_after_write else {
+            return;
+        };
+        let Some(mut epic) = app.epics().iter().find(|e| e.id == result.epic_id).cloned() else {
+            return;
+        };
+        epic.sort_order = new_sort_order;
+        app.update(Message::Epic(crate::tui::messages::EpicMessage::Updated(
+            epic,
+        )));
     }
 
     pub(super) async fn exec_toggle_epic_auto_dispatch(
@@ -129,11 +157,14 @@ impl TuiRuntime {
             group_by_repo: Some(group_by_repo),
             parent_epic_id: None,
         };
-        if let Err(e) = self.epic_svc.update_epic(params).await {
-            app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                Self::db_error("toggling group by repo", e),
-            )));
-            return;
+        match self.epic_svc.update_epic(params).await {
+            Ok(result) => self.write_back_epic_sort_order(app, result),
+            Err(e) => {
+                app.update(Message::System(crate::tui::messages::SystemMessage::Error(
+                    Self::db_error("toggling group by repo", e),
+                )));
+                return;
+            }
         }
         // Deliberately inlines update + migrate + single board refresh instead
         // of delegating to exec_patch_epic: exec_patch_epic does not trigger

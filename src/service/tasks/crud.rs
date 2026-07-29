@@ -26,6 +26,17 @@ pub struct UpdateTaskResult {
     /// `true` when the same call set a PR-typed `url` on a task that
     /// previously had no url AND moved its status to Review.
     pub was_pr_finalisation: bool,
+    /// Whether this call wrote `sort_order`, and to what.
+    ///
+    /// `None` means this call's patch didn't touch `sort_order` at all (the
+    /// in-memory value the caller already holds is still current). `Some(v)`
+    /// means the patch wrote `sort_order`, where `v` is exactly what was
+    /// written — `Some(None)` for a clear, `Some(Some(x))` for a set to `x`.
+    /// Callers that hold their own in-memory copy of the task (the TUI's
+    /// `App.board.tasks`) use this to learn a value they could not have
+    /// computed themselves: `sort_order_for_status_transition` runs inside
+    /// this method, not at the call site.
+    pub sort_order_after_write: Option<Option<i64>>,
 }
 
 pub struct TaskService {
@@ -142,6 +153,11 @@ impl TaskService {
             None
         };
 
+        // Captured before the write so the caller can learn what this call
+        // wrote to sort_order (including the Done-transition override just
+        // above) without a second DB round-trip. See `UpdateTaskResult`.
+        let sort_order_after_write = patch.sort_order;
+
         self.db.patch_task(task_id, &patch).await?;
 
         self.notify_watchers_after_status_write(prior.as_ref(), params.status)
@@ -170,6 +186,7 @@ impl TaskService {
         Ok(UpdateTaskResult {
             task_id,
             was_pr_finalisation,
+            sort_order_after_write,
         })
     }
 

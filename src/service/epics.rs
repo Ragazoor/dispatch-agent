@@ -65,6 +65,21 @@ impl UpdateEpicParams {
     }
 }
 
+/// Result of [`EpicService::update_epic`]. Mirrors
+/// [`UpdateTaskResult`](crate::service::UpdateTaskResult) — same
+/// capture-before-write shape, same reason: the service (not the caller)
+/// computes `sort_order` on a Done-transition, so a caller holding its own
+/// in-memory copy of the epic (the TUI's `App.board.epics`) needs a way to
+/// learn that value without a second DB round-trip.
+#[derive(Debug, Clone)]
+pub struct UpdateEpicResult {
+    pub epic_id: EpicId,
+    /// `None` = this call's patch didn't touch `sort_order`. `Some(v)` = it
+    /// did, where `v` is exactly what was written (`Some(None)` for a clear,
+    /// `Some(Some(x))` for a set to `x`).
+    pub sort_order_after_write: Option<Option<i64>>,
+}
+
 // ---------------------------------------------------------------------------
 // CreateEpicParams
 // ---------------------------------------------------------------------------
@@ -88,7 +103,10 @@ type TasksByEpic<'a> = std::collections::HashMap<EpicId, Vec<&'a Task>>;
 /// (done, total) over a task slice, counting `TaskStatus::Done` as done.
 fn count_progress(tasks: &[&Task]) -> (usize, usize) {
     (
-        tasks.iter().filter(|t| t.status == TaskStatus::Done).count(),
+        tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Done)
+            .count(),
         tasks.len(),
     )
 }
@@ -284,7 +302,10 @@ impl EpicService {
         Ok(result)
     }
 
-    pub async fn update_epic(&self, params: UpdateEpicParams) -> Result<EpicId, ServiceError> {
+    pub async fn update_epic(
+        &self,
+        params: UpdateEpicParams,
+    ) -> Result<UpdateEpicResult, ServiceError> {
         if !params.has_any_field() {
             return Err(ServiceError::Validation(
                 "At least one field must be provided".into(),
@@ -363,9 +384,16 @@ impl EpicService {
         }
 
         let epic_id = params.epic_id;
+        // Captured before the write so the caller can learn what this call
+        // wrote to sort_order (including the Done-transition override
+        // above) without a second DB round-trip. See `UpdateEpicResult`.
+        let sort_order_after_write = patch.sort_order;
         self.db.patch_epic(epic_id, &patch).await?;
 
-        Ok(epic_id)
+        Ok(UpdateEpicResult {
+            epic_id,
+            sort_order_after_write,
+        })
     }
 
     /// Walk the ancestor chain of `proposed_parent` and return a Validation error

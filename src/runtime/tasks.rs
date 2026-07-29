@@ -182,12 +182,33 @@ impl TuiRuntime {
         if let Some(so) = task.sort_order {
             p = p.sort_order(so);
         }
-        if let Err(e) = self.task_svc.update_task(p).await {
-            app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                Self::db_error("persisting task", e),
-            )));
-        } else {
-            app.dirty_since_refresh = true;
+        match self.task_svc.update_task(p).await {
+            Ok(result) => {
+                app.dirty_since_refresh = true;
+                // The service (not this handler) computes sort_order on a
+                // Done-transition (sort_order_for_status_transition, run
+                // inside update_task). Without this, the in-memory board
+                // keeps whatever sort_order `task` already had — stale/None
+                // — until the next DB refresh (~2s later), rendering a
+                // freshly-completed task at the bottom of Done instead of
+                // the top. Route the write-back through the same
+                // `TaskMessage::Updated` splice `spawn_refresh_task` already
+                // uses, rather than reaching into `App.board` directly: see
+                // the "Visibility convention" in docs/conventions.md — only
+                // `crate::tui` code may mutate `App.board`.
+                if let Some(new_sort_order) = result.sort_order_after_write {
+                    let mut updated = task;
+                    updated.sort_order = new_sort_order;
+                    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+                        updated,
+                    )));
+                }
+            }
+            Err(e) => {
+                app.update(Message::System(crate::tui::messages::SystemMessage::Error(
+                    Self::db_error("persisting task", e),
+                )));
+            }
         }
     }
 
