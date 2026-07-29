@@ -71,8 +71,11 @@ rm src/dispatch/snapshots/*.snap.new                 # always clean up
 | Full task/epic lifecycle | `tests/` (integration tests) |
 | Domain-type invariants | inline in the owning module |
 | Agent prompt rendering (all variants) | `src/dispatch/prompts_snapshots.rs` |
+| Agent-facing skill copy (`plugin/skills/*/SKILL.md`) | `mod tests` in `src/setup/plugins.rs` (via `skill_body`) |
 
 Property tests live alongside unit tests in a nested `mod property_tests` block.
+
+Skill copy is asserted with targeted `contains` checks (not snapshots) so that deleting a specific instruction reads as a regression rather than an edit. Scope each assertion to the instruction's heading section — sibling sections repeat phrases, so a whole-document `contains` can still pass after the instruction is gone.
 
 Inline test modules (`mod tests`, `mod property_tests`) must have `#[allow(clippy::unwrap_used, clippy::expect_used)]` at the top — the workspace `-D warnings` policy otherwise rejects bare `unwrap()`/`expect()` calls. See `src/db/tests/mod.rs` for the canonical pattern.
 
