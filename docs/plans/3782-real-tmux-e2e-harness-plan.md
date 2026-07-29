@@ -259,14 +259,50 @@ silent-no-op failure mode the CI hard-fail guard exists to prevent. Update the
 Socket names already embed pid and thread id, so concurrent `cargo test` runs
 can't collide, and the drop guard kills each server even on panic.
 
-## Anticipated production changes
+## Production changes
 
 Everything else is additive test code.
 
-1. `src/runtime/split.rs` → extract `join_task_window_into_pane` /
-   `swap_task_window_into_pane`, plus the `pub use` in `src/runtime/mod.rs`.
-2. Swap-source fix: `<window>.0` → the already-fetched pane id (test 15).
-3. `docs/specs/agent-tree.allium` main-session rules (Step 5).
+1. **The seam** — `join_task_window_into_pane` / `swap_task_window_into_pane`
+   extracted out of `TuiRuntime`. Landed in `src/dispatch/split_panes.rs`, not
+   `src/runtime/split.rs` as planned: `dispatch` is already a `pub` module and
+   already owns `resync_agent_tree_pane`, which the swap path calls, so the two
+   functions are reachable without exposing anything new about `runtime`. The
+   `pub use` the plan called for is on `src/dispatch/mod.rs` instead.
+2. **Swap-source fix** — `<window>.0` → the already-fetched pane id (test 15).
+3. **`pane_exists` fix** — see below. Not anticipated; found while implementing.
+4. `docs/specs/agent-tree.allium` main-session rules (Step 5).
+
+### `tmux::pane_exists` was permanently blind
+
+Found by tests 18/19 failing. `display-message -t <pane> -p ''` **succeeds for a
+pane that never existed** — tmux resolves an unknown target by falling back to the
+current pane, and an empty format string leaves no output to betray it. Verified
+with `-t %999`. So the old exit-status check reported every pane as alive, always,
+which made `exec_check_split_pane` unable to notice that the user had closed the
+pinned split pane.
+
+Fixed as a membership test over a new `list_all_pane_ids`, mirroring `has_window`.
+The mock tests had pinned the broken behaviour by asserting a non-zero exit that
+real tmux never returns — the same trap as #3781, in a second place.
+
+The harness had copied the same broken technique, which is why the two teardown
+tests appeared to fail: the panes were being cleaned up correctly all along and
+the probe was lying.
+
+### The stub rig needed more than PATH
+
+`PATH` on the test process is enough for the `--` argv forms, which `execvp`
+directly. It is **not** enough for `send-keys`, because tmux runs a pane's shell
+as a *login* shell, which sources the user's rc files and prepends directories
+ahead of the inherited `PATH`. On this machine that meant the stub `dispatch` won
+(spawned via `split-window --`) while the **real `claude` launched and sat on its
+trust prompt** — precisely the hazard the review flagged, reached despite the
+process-level guard passing.
+
+Fixed by pinning the pane shell (`default-command 'bash --norc --noprofile'`) and
+moving the guard inside a real pane. Recorded here because the process-level check
+alone reads as sufficient and is not.
 
 ## Verification
 

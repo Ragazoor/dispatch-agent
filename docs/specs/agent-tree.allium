@@ -98,13 +98,14 @@ entity AgentTreePane {
     -- (see OneCompanionPanePerAgentWindow).
     window: core/TmuxWindow
 
-    -- The task whose event log feeds this pane. Null for the main-session
-    -- window, which has no task context (see the MainSessionPaneScope open
-    -- question).
-    task: core/Task?
+    -- The task whose event log feeds this pane. Required: a companion pane
+    -- exists only for a task-agent window. The main-session window has no task
+    -- and gets no pane at all — see SplitAgentTreePaneOnAgentLaunch's
+    -- "Resolves MainSessionPaneScope" note.
+    task: core/Task
 
-    -- Absolute directory the tree is rooted at: the task's worktree path when
-    -- task != null, otherwise the main session's chosen directory.
+    -- Absolute directory the tree is rooted at: always the task's worktree path
+    -- (see TaskPaneRootIsTaskWorktree).
     root: String
 
     status: shown | hidden
@@ -307,10 +308,10 @@ rule UnbindAgentTreeToggle {
 }
 
 rule SplitAgentTreePaneOnAgentLaunch {
-    -- Every agent window gets a companion pane the moment it is created. One
-    -- rule covers every launch path because they all emit AgentLaunched:
-    -- fresh dispatch, research dispatch, quick dispatch, epic auto-dispatch,
-    -- resume and retry-resume.
+    -- Every agent window gets a companion pane the moment it is created, and
+    -- only an agent window does. One rule covers every launch path because they
+    -- all emit AgentLaunched: fresh dispatch, research dispatch, quick dispatch,
+    -- epic auto-dispatch, resume and retry-resume.
     when: AgentLaunched(task, mode)
 
     requires: task.tmux_window != null
@@ -372,57 +373,30 @@ rule SplitAgentTreePaneOnAgentLaunch {
         -- and the dispatch or resume call still succeeds. No agent fails to
         -- launch because its companion pane could not open — consistent with
         -- BindAgentTreeToggle's best-effort binding.
-}
-
-rule SplitAgentTreePaneOnMainSession {
-    -- The main session (a task-independent interactive Claude window rooted at
-    -- a user-chosen directory) is split for consistency with agent windows,
-    -- even though it has no task and therefore no event log.
-    when: CreateMainSession(user, dir)
-
-    requires: dir != ""
-
-    ensures: AgentTreePane.created(
-        window: core/TmuxWindow.created(name: "dispatch-main"),
-        task: null,
-        root: dir,
-        status: shown,
-        tmux_pane: core/TmuxPane.created(),
-        last_rendered_at: now
-    )
-
-    @guidance
-        -- DEGENERATE BY CONSTRUCTION, and known to be so. The capture hook
-        -- derives its task id from the worktree's numeric branch/directory
-        -- prefix; the main session has neither, so it exits before capturing
-        -- anything. This pane therefore renders the session directory with no
-        -- badges and no auto-expansion, forever. It is specified this way
-        -- because the design called for all three window-creation paths to
-        -- behave alike, not because an always-empty tree is useful — see the
-        -- MainSessionPaneScope open question, which asks whether this path
-        -- should be dropped instead.
         --
-        -- The main-session window is also not covered by either pane-teardown
-        -- rule below: both key off a Task, and this pane has none.
+        -- Resolves MainSessionPaneScope: the main-session window is EXCLUDED
+        -- from the split, so AgentLaunched is the only trigger that ever creates
+        -- a companion pane, and AgentTreePane.task is required rather than
+        -- optional. The main session has no task and no worktree, so its pane
+        -- would render an always-empty tree forever: the capture hook derives its
+        -- task id from the worktree's numeric branch prefix and would exit
+        -- without capturing anything, and `dispatch agent-tree` takes a REQUIRED
+        -- task id (src/cli/agent_tree.rs) so there is no id to launch it with.
+        -- Such a pane would also be covered by neither pane-teardown rule below,
+        -- since both key off a Task. Consistency across the three
+        -- window-creation paths was the original motivation and is not worth a
+        -- permanently empty pane that nothing can tear down.
         --
-        -- == NOT IMPLEMENTED — DEFERRED ==
-        -- Stated intent, not shipped behaviour. While
-        -- SplitAgentTreePaneOnAgentLaunch is now live, nothing satisfies this
-        -- rule: create_main_session (src/dispatch/agents.rs) is deliberately
-        -- left unsplit and untouched.
+        -- The alternative the question also offered — teaching capture to
+        -- attribute main-session tool calls to a non-task log — is not merely
+        -- deferred but rejected: it would require a second log identity, a
+        -- renderer that accepts no task, and teardown rules keyed off something
+        -- other than a Task, to earn a tree of a directory the user is already
+        -- looking at.
         --
-        -- The blocker is a contract mismatch, not an oversight. The companion
-        -- pane runs `dispatch agent-tree <task_id>`, whose CLI
-        -- (src/cli/agent_tree.rs) takes a REQUIRED task id, resolves the task
-        -- and errors when no such task exists. The main session has no task, so
-        -- there is no id to pass and no renderer that can be launched for it.
-        --
-        -- A future subtask picking this up should resolve MainSessionPaneScope
-        -- first: that question decides whether the main session is dropped from
-        -- the split (retiring this rule) or whether capture learns a non-task
-        -- log (which would also give the renderer something to key off).
-        -- Building this rule as written, ahead of that answer, would ship an
-        -- always-empty pane on top of a CLI contract that cannot express it.
+        -- Asserted in tests/tmux_lifecycle.rs
+        -- (main_session_window_has_a_single_pane), so the absence is covered
+        -- rather than merely unimplemented.
 }
 
 rule HideAgentTreePane {
@@ -761,11 +735,13 @@ invariant OneCompanionPanePerAgentWindow {
             a != b implies a.window != b.window
 }
 
--- A task-bound pane is always rooted at that task's worktree — never at the
--- parent repo, and never at another task's worktree.
+-- A pane is always rooted at its task's worktree — never at the parent repo,
+-- and never at another task's worktree. This is what the real-tmux harness
+-- observes directly: a pane whose resolved cwd is the parent repo is the #231
+-- failure mode the split hook exists to prevent.
 invariant TaskPaneRootIsTaskWorktree {
     for p in AgentTreePanes:
-        p.task != null implies p.root = p.task?.worktree?.path
+        p.root = p.task.worktree?.path
 }
 
 -- Modified beats Read: no node may show a Read badge while a modifying event
@@ -854,8 +830,6 @@ surface AgentTreeCompanionPane {
 ------------------------------------------------------------
 -- Open Questions
 ------------------------------------------------------------
-
-open question "MainSessionPaneScope: the main-session window has no task id and no worktree, so its companion pane renders an always-empty tree (SplitAgentTreePaneOnMainSession) and is covered by neither teardown rule. Should the main session be excluded from the split entirely, or should the capture hook learn to attribute main-session tool calls to some non-task log so the pane earns its space?"
 
 open question "AgentTreeViewState: the renderer's cursor position and the set of directories the user has manually expanded or collapsed are real, observable state — CollapseSelectedAgentTreeNode and friends act on them, and DirectoryExpansionFollowsTouchedDescendants only constrains the first render, not what the user does afterwards. They are currently modelled nowhere. Should AgentTreePane carry them as fields (making the manual-override behaviour rule-expressible and the invariant honest about when it applies), or is per-process view state deliberately below this spec's abstraction line?"
 
