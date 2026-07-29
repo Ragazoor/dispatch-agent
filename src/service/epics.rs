@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::db::{self, EpicPatch};
-use crate::models::{Epic, EpicId, Task, TaskStatus};
+use crate::models::{sort_order_for_status_transition, Epic, EpicId, Task, TaskStatus};
 
 use super::{FieldUpdate, ServiceError};
 
@@ -99,11 +99,23 @@ fn count_progress(tasks: &[&Task]) -> (usize, usize) {
 
 pub struct EpicService {
     pub db: Arc<dyn db::TaskAndEpicStore>,
+    clock: Arc<dyn crate::service::Clock>,
 }
 
 impl EpicService {
     pub fn new(db: Arc<dyn db::TaskAndEpicStore>) -> Self {
-        Self { db }
+        Self {
+            db,
+            clock: Arc::new(crate::service::SystemClock),
+        }
+    }
+
+    /// Override the clock used for the Done-transition sort_order rule.
+    /// Tests inject a `FixedClock` for determinism; mirrors
+    /// `TaskService::with_clock`.
+    pub fn with_clock(mut self, clock: Arc<dyn crate::service::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Materialise the managed feed-epic tree from already-read settings.
@@ -306,6 +318,23 @@ impl EpicService {
         }
         if let Some(gbr) = params.group_by_repo {
             patch = patch.group_by_repo(gbr);
+        }
+
+        // Fetch the prior epic whenever status changes, to detect a
+        // transition into/out of Done for the sort_order-on-completion
+        // rule. This method has no other prior-fetch to reuse (the
+        // RepoGroup-reparent guard below does its own, gated on a
+        // different condition).
+        if let Some(new_status) = params.status {
+            if let Some(prior_epic) = self.db.get_epic(params.epic_id).await? {
+                if let Some(so) = sort_order_for_status_transition(
+                    prior_epic.status,
+                    new_status,
+                    self.clock.now(),
+                ) {
+                    patch = patch.sort_order(so);
+                }
+            }
         }
 
         // Prevent reparenting or detaching a RepoGroup sub-epic: both
@@ -575,6 +604,91 @@ mod tests {
         .unwrap();
         let updated = db.get_epic(epic.id).await.unwrap().unwrap();
         assert!(updated.group_by_repo);
+    }
+
+    fn epic_svc_with_clock(
+        db: Arc<Database>,
+        clock: Arc<dyn crate::service::Clock>,
+    ) -> EpicService {
+        EpicService::new(db).with_clock(clock)
+    }
+
+    #[tokio::test]
+    async fn update_epic_entering_done_sets_sort_order() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Test", "", None).await.unwrap();
+        let clock = Arc::new(crate::service::FixedClock::new(chrono::Utc::now()));
+        let svc = epic_svc_with_clock(db.clone(), clock);
+
+        svc.update_epic(UpdateEpicParams {
+            status: Some(TaskStatus::Done),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+
+        let updated = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(
+            updated.sort_order.is_some_and(|so| so < 0),
+            "expected a negative sort_order on entering Done, got {:?}",
+            updated.sort_order
+        );
+    }
+
+    #[tokio::test]
+    async fn update_epic_leaving_done_clears_sort_order() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Test", "", None).await.unwrap();
+        let svc = EpicService::new(db.clone());
+
+        svc.update_epic(UpdateEpicParams {
+            status: Some(TaskStatus::Done),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+        assert!(db
+            .get_epic(epic.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .sort_order
+            .is_some());
+
+        svc.update_epic(UpdateEpicParams {
+            status: Some(TaskStatus::Backlog),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+
+        let updated = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(updated.sort_order, None);
+    }
+
+    #[tokio::test]
+    async fn update_epic_unrelated_field_edit_while_done_leaves_sort_order_untouched() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Test", "", None).await.unwrap();
+        let svc = EpicService::new(db.clone());
+
+        svc.update_epic(UpdateEpicParams {
+            status: Some(TaskStatus::Done),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+        let sort_order_after_entry = db.get_epic(epic.id).await.unwrap().unwrap().sort_order;
+
+        svc.update_epic(UpdateEpicParams {
+            title: Some("Renamed".to_string()),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+
+        let updated = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(updated.sort_order, sort_order_after_entry);
     }
 
     #[tokio::test]
