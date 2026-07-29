@@ -48,6 +48,12 @@ rule EditEpic {
     -- value. For feed_command and feed_interval_secs, an empty field
     -- clears the value (sets it to null) — this is how feeds are turned
     -- off from the editor.
+    -- FEED_INTERVAL_SECS follows the same parse rule as EditTask's enum-ish
+    -- sections: an empty section and an unparseable (non-numeric) section
+    -- are treated identically — the section yields no value, so the field
+    -- is cleared. Unparseable input additionally records a parse error, and
+    -- all accumulated errors are surfaced together as a status message
+    -- ("Edit accepted with parse errors — ..."); the edit is still applied.
     -- Status, plan_path, sort_order and auto_dispatch are not editable
     -- via the epic editor.
 
@@ -302,9 +308,6 @@ rule CreateEpicViaMcp {
         -- accepts them, the handler hardcodes them to null. Feeds are
         -- configured after creation either from the TUI (via the epic
         -- editor, EditEpic) or via UpdateEpicViaMcp.
-        -- Unlike the TUI CreateEpic flow, this rule does not fire
-        -- RecordRepoPathFromEpic — MCP epic creation skips repo path
-        -- persistence into SavedRepoPath.
 }
 
 rule GetEpicViaMcp {
@@ -347,9 +350,12 @@ rule ListEpicsViaMcp {
         -- database along with done/total subtask counts for each;
         -- archived epics are filtered out of this list entirely (an
         -- agent cannot see them through list_epics, only through
-        -- get_epic by id). The response is one line per epic with title,
-        -- status indicator (when not backlog), plan indicator (when
-        -- a plan is attached), and the progress fraction.
+        -- get_epic by id). The response is one line per epic carrying the
+        -- epic id, the title, the progress fraction, then a plan indicator
+        -- (when a plan is attached) followed by a status indicator (when
+        -- the status is not backlog), and finally the description. The id
+        -- is included because it is how the caller addresses the epic in
+        -- follow-up calls (get_epic, update_epic, create_task).
         -- An empty database returns an informational "No epics found"
         -- message rather than an error.
 }
@@ -1019,6 +1025,11 @@ rule ProvisionManagedEpics {
     -- and active_sub_epics (Epic). Each child contributes its .status value.
     --
     -- Derivation logic:
+    --   epic is archived => no change (highest-priority case: archived is
+    --     terminal for this recalculation, so an archived epic never flips
+    --     back to done just because a newly-attached child happens to be
+    --     all-done — ArchiveEpic archives a whole subtree and then
+    --     recalculates ancestors)
     --   all active children done (≥1 active child) => done
     --   epic is done AND has active non-done children => backlog  (regression)
     --   otherwise => no change (epic stays in current status)

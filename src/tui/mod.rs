@@ -1325,15 +1325,34 @@ impl App {
             }
         }
 
-        items.sort_by_key(|item| {
-            let (sort_order, id) = match item {
-                ColumnItem::Task(t) => (t.sort_order, t.id.0),
-                ColumnItem::Epic(e) => (e.sort_order, e.id.0),
-                ColumnItem::EpicHeader(_) | ColumnItem::SubstatusLabel(_) | ColumnItem::OrphanSeparator => {
-                    unreachable!("EpicHeader/SubstatusLabel/OrphanSeparator never produced by column_items_for_visual_column")
-                }
-            };
-            (sort_order.unwrap_or(i64::MAX), id)
+        items.sort_by_key(|item| match item {
+            ColumnItem::Task(t) => (
+                display_column_priority(t.sub_status, t.is_detached()),
+                t.sort_order.unwrap_or(t.id.0),
+                t.id.0,
+            ),
+            ColumnItem::Epic(e) => {
+                // A visual column already filters epics to a single substatus
+                // bucket (see the Running-parent target_col split above), so
+                // unlike the flat-board sort this priority never needs to
+                // distinguish between epics within the same column — it only
+                // has to share the Task arm's tuple shape.
+                let priority = if e.status == TaskStatus::Running {
+                    let subtasks: Vec<&Task> = self
+                        .board
+                        .tasks
+                        .iter()
+                        .filter(|t| t.epic_id == Some(e.id) && t.status != TaskStatus::Archived)
+                        .collect();
+                    epic_substatus(e, &subtasks, active_merge).column_priority()
+                } else {
+                    0
+                };
+                (priority, e.sort_order.unwrap_or(e.id.0), e.id.0)
+            }
+            ColumnItem::EpicHeader(_) | ColumnItem::SubstatusLabel(_) | ColumnItem::OrphanSeparator => {
+                unreachable!("EpicHeader/SubstatusLabel/OrphanSeparator never produced by column_items_for_visual_column")
+            }
         });
         items
     }

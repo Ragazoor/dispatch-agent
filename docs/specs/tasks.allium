@@ -39,6 +39,13 @@ rule CreateTask {
     )
 
     @guidance
+        -- tag is chosen in the TUI creation form's tag-picker step, a
+        -- single-keypress picker. The accepted keys are: b -> Bug,
+        -- f -> Feature, c -> Chore, p -> PrReview, r -> Research,
+        -- x -> Fix. Enter means no tag; Esc cancels creation. Any other
+        -- key is silently ignored and the picker stays open. Note the
+        -- picker's on-screen hint text currently advertises a different,
+        -- smaller key set than the handler accepts.
         -- base_branch is set from user input during TUI task creation
         -- (InputBaseBranch step). That step renders the BaseBranchPicker
         -- surface (see dispatch.allium): a fuzzy picker over the branches
@@ -632,9 +639,12 @@ rule EditTask {
 -- DispatchMcpToolsAreTransparent: Dispatch MCP tool calls (get_task,
 -- wrap_up, update_task, etc.) must not trigger automatic status
 -- transitions. They are management operations, not implementation work.
--- The PreToolUse hook filters them out to prevent clobbering review
--- status during wrap-up. However, non-MCP tools (Bash, Read, etc.)
--- still fire PreToolUse and can set a review task to running. The
+-- The PreToolUse hook filters them out before `dispatch hook` is even
+-- called. Non-MCP tools (Bash, Read, etc.) do reach the hook, but they
+-- cannot move a review task either: HookPreToolUse is gated to tasks
+-- already in running, so a review task's PreToolUse is a no-op (see
+-- agent-health.allium). Review -> Running happens only via
+-- HookUserPromptSubmit, i.e. when the human sends a new prompt. The
 -- wrap_up handler accepts any running or review task with a worktree.
 
 -- SubStatusConsistency: A task's sub_status must always be valid for

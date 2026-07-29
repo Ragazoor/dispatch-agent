@@ -177,7 +177,8 @@ rule NotifyReview {
 rule HookPreToolUse {
     when: PreToolUse(task) or PostToolUse(task)
 
-    ensures: task.status = running
+    requires: task.status = running
+
     ensures: task.sub_status = core/SubStatus.default_for(running)
     ensures: task.last_pre_tool_use_at = now
 
@@ -195,11 +196,13 @@ rule HookPreToolUse {
         -- between invocations even if a single sub-agent runs longer than
         -- ACTIVE_THRESHOLD.
         --
-        -- The unconditional transition is correct: backlog -> running on
-        -- first dispatch, review -> running on session resume, running ->
-        -- running is a no-op. Only done/archived tasks should not be
-        -- modified, but agents are never dispatched into done/archived
-        -- worktrees.
+        -- This rule never writes task.status. It is gated to tasks that
+        -- are already Running, and is a complete no-op for a task in any
+        -- other status — a PreToolUse reaching a Backlog, Review, Done or
+        -- Archived task changes nothing at all. Status movement is the
+        -- responsibility of other rules: backlog -> running on dispatch
+        -- (see dispatch.allium: DispatchTask) and review -> running on
+        -- session resume (see HookUserPromptSubmit below).
         -- The sub_status reset to active (default for running) also
         -- clears needs_input when the agent resumes after a notification.
         -- Filtering of dispatch MCP calls (mcp__dispatch__*) happens in

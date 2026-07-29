@@ -39,11 +39,10 @@ rule RecordRepoPath {
     )
 
     @guidance
-        -- Fires whenever a repo path is used to create a task or epic
+        -- Fires whenever a repo path is used to create or edit a task
         -- through the TUI:
         --   - TUI task creation (after InputBaseBranch submission)
         --   - TUI quick-dispatch (Shift+D)
-        --   - TUI epic creation
         --   - TUI task edit (EditTask) when repo_path changes to a
         --     non-empty value, so sibling feed items (e.g. other
         --     Dependabot PRs in the same repo) can be auto-resolved
@@ -334,7 +333,9 @@ rule DispatchResearchTask {
         -- description by reading code, docs, and external resources.
         -- It presents findings to the user and waits for instructions.
         -- The agent makes no code changes and does not wrap up autonomously.
-        -- Uses --permission-mode plan (same as other task dispatches).
+        -- Uses --permission-mode plan — the sole exception among task
+        -- dispatches; every other task agent launches with no
+        -- --permission-mode flag.
         -- Prompt note: build_research_prompt emits a stripped-down
         -- trailing block — only {mcp_tools_instruction}, no tdd,
         -- allium, learning_tools, or wrap_up. The research agent

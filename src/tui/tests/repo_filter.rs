@@ -1,5 +1,5 @@
 use super::*;
-use crate::models::{Epic, EpicId, TaskId, TaskStatus};
+use crate::models::{Epic, EpicId, SubStatus, TaskId, TaskStatus};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
@@ -217,6 +217,36 @@ fn repo_filter_applies_to_epics_in_visual_column_items() {
     // vcol_idx 0 is the Backlog visual column (VisualColumn::parent_group_start).
     let items = app.column_items_for_visual_column(0);
     assert_eq!(items.len(), 1); // only epic A
+}
+
+#[test]
+fn visual_column_sorts_by_sub_status_urgency_before_id() {
+    // Regression guard: column_items_for_visual_column previously sorted only
+    // by (sort_order.unwrap_or(MAX), id), ignoring sub-status urgency. In a
+    // mixed visual column (vcol 3 = Stale/Crashed/Conflict) a lower-id Stale
+    // task must not outrank a higher-id Conflict task — Conflict is more
+    // urgent and must sort first, matching the flat-board builder.
+    let mut app = App::new(vec![]);
+    let mut stale_task = make_task(1, TaskStatus::Running);
+    stale_task.sub_status = SubStatus::Stale;
+    let mut conflict_task = make_task(2, TaskStatus::Running);
+    conflict_task.sub_status = SubStatus::Conflict;
+    app.board.tasks = vec![stale_task, conflict_task];
+
+    // vcol_idx 3 is the "Stale" visual column (Stale/Crashed/Conflict).
+    let items = app.column_items_for_visual_column(3);
+    let ids: Vec<i64> = items
+        .iter()
+        .filter_map(|item| match item {
+            ColumnItem::Task(t) => Some(t.id.0),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        ids,
+        vec![2, 1],
+        "Conflict (id 2) must sort before Stale (id 1) by urgency, not id"
+    );
 }
 
 #[test]

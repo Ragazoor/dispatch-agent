@@ -64,7 +64,10 @@ impl App {
                 wrap_up_mode: None,
             });
             self.input.mode = InputMode::InputTag;
-            self.set_status("Tag: [b]ug  [f]eature  [c]hore  [e]pic  [Enter] none".to_string());
+            self.set_status(
+                "Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none"
+                    .to_string(),
+            );
         }
         vec![]
     }

@@ -223,7 +223,7 @@ fn enter_with_title_advances_to_tag() {
     assert_eq!(app.input.task_draft.as_ref().unwrap().title, "My Task");
     assert_eq!(
         app.status.message.as_deref(),
-        Some("Tag: [b]ug  [f]eature  [c]hore  [e]pic  [Enter] none")
+        Some("Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none")
     );
 }
 
@@ -540,7 +540,7 @@ fn submit_title_with_text_advances_to_tag() {
     assert_eq!(app.input.task_draft.as_ref().unwrap().title, "My Task");
     assert_eq!(
         app.status.message.as_deref(),
-        Some("Tag: [b]ug  [f]eature  [c]hore  [e]pic  [Enter] none")
+        Some("Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none")
     );
 }
 
