@@ -66,6 +66,44 @@ pub fn toggle_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) -> Resul
     }
 }
 
+/// Resync a tmux window's companion pane to the task its own name implies:
+/// kill whatever is currently running there and relaunch
+/// `dispatch agent-tree <task_id>` for the correct task.
+///
+/// Used after `swap-pane` rewrites a window's task identity (via rename)
+/// without touching its companion pane — left alone, that pane would keep
+/// rendering the previous occupant's file tree under the window's new name
+/// (see docs/specs/agent-tree.allium's ToggleVsSplitPaneInteraction).
+///
+/// A no-op for any window that isn't a task-agent window, or that carries no
+/// companion pane to begin with — best-effort throughout, like every other
+/// agent-tree pane operation.
+pub fn resync_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) {
+    let Some(task_id) = parse_tmux_window_task_id(window) else {
+        return;
+    };
+    match tmux::inactive_pane_id(window, runner) {
+        Ok(Some(pane_id)) => {
+            if let Err(e) = tmux::kill_pane(&pane_id, runner) {
+                tracing::warn!(
+                    %window,
+                    error = %e,
+                    "failed to kill stale agent-tree companion pane before resync"
+                );
+            }
+            spawn_agent_tree_pane(window, task_id, runner);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(
+                %window,
+                error = %e,
+                "failed to check for companion pane before resync"
+            );
+        }
+    }
+}
+
 /// Provision worktree, build the prompt, write the prompt file, launch Claude
 /// via tmux.
 ///
@@ -316,6 +354,64 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::process::MockProcessRunner;
+
+    #[test]
+    fn resync_agent_tree_pane_noop_for_non_task_window() {
+        let mock = MockProcessRunner::new(vec![]);
+        resync_agent_tree_pane("dispatch-main", &mock);
+        assert!(
+            mock.recorded_calls().is_empty(),
+            "no tmux calls expected for a non-task window name"
+        );
+    }
+
+    #[test]
+    fn resync_agent_tree_pane_noop_when_no_companion_pane() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"1 %1\n"), // list-panes: no companion
+        ]);
+        resync_agent_tree_pane("task-5", &mock);
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1, "only the companion check should run");
+    }
+
+    #[test]
+    fn resync_agent_tree_pane_kills_and_respawns_companion() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %9\n"), // list-panes: companion is %9
+            MockProcessRunner::ok(),                            // kill-pane %9
+            MockProcessRunner::ok_with_stdout(b"%20\n"),        // split-window relaunch
+        ]);
+        resync_agent_tree_pane("task-5", &mock);
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%9"]);
+        assert!(calls[2].1.contains(&"split-window".to_string()));
+        assert!(calls[2].1.contains(&"task-5".to_string()));
+        assert!(calls[2].1.contains(&"5".to_string()));
+        assert!(calls[2].1.contains(&"agent-tree".to_string()));
+    }
+
+    #[test]
+    fn resync_agent_tree_pane_soft_fails_when_companion_check_errors() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("list-panes error")]);
+        resync_agent_tree_pane("task-5", &mock);
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1, "no further calls after a failed check");
+    }
+
+    #[test]
+    fn resync_agent_tree_pane_still_respawns_when_kill_fails() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %9\n"),
+            MockProcessRunner::fail("kill-pane error"),
+            MockProcessRunner::ok_with_stdout(b"%20\n"),
+        ]);
+        resync_agent_tree_pane("task-5", &mock);
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 3, "a respawn is still attempted");
+        assert!(calls[2].1.contains(&"split-window".to_string()));
+    }
 
     #[test]
     fn main_session_window_alive_delegates_to_has_window_or_assume_present() {

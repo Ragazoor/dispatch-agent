@@ -465,9 +465,23 @@ rule HideAgentTreePane {
         -- which index the agent's own pane gets, so an index-based target
         -- (e.g. always killing index 1) would be wrong under a customised
         -- `pane-base-index` and risks killing the live agent session instead
-        -- of the companion. See the ToggleVsSplitPaneInteraction open
-        -- question for a related gap this same active/inactive resolution
-        -- does not cover.
+        -- of the companion.
+        --
+        -- == RESOLVED: ToggleVsSplitPaneInteraction ==
+        -- The former open question here asked whether the board's
+        -- split-pane join/swap operations (split-pane.allium: `join_pane`,
+        -- `exec_swap_split_pane`) needed to become companion-pane-aware,
+        -- since both predate every agent window carrying a companion pane.
+        -- Resolved in favour of fixing the mutation side rather than this
+        -- rule's own active/inactive resolution: `join_pane` now drains any
+        -- companion pane left behind when it moves the agent's own pane out
+        -- (see split-pane.allium's PinTaskInSplitPane guidance), and
+        -- `exec_swap_split_pane` resyncs a renamed window's companion pane
+        -- to the task the new name implies (see SwapSplitPane's guidance).
+        -- HideAgentTreePane/ShowAgentTreePane's own state-reading is
+        -- unchanged — it was already correct; the gap was that the other
+        -- feature's mutations could leave tmux state it couldn't
+        -- distinguish from "hidden".
         --
         -- A window name that doesn't parse as `task-<id>` (the inverse of
         -- build_tmux_window_name — the board's own TUI window, the
@@ -760,8 +774,6 @@ surface AgentTreeCompanionPane {
 ------------------------------------------------------------
 
 open question "MainSessionPaneScope: the main-session window has no task id and no worktree, so its companion pane renders an always-empty tree (SplitAgentTreePaneOnMainSession) and is covered by neither teardown rule. Should the main session be excluded from the split entirely, or should the capture hook learn to attribute main-session tool calls to some non-task log so the pane earns its space?"
-
-open question "ToggleVsSplitPaneInteraction: the board's own split-pane feature (split-pane.allium: join_pane, exec_swap_split_pane in src/runtime/split.rs) was designed before every agent window carried a second (companion) pane, and assumes exactly one pane per agent window. join_pane moves the agent's own (active) pane out of its window to sit next to the board, which can leave the companion pane as the window's sole remaining pane — indistinguishable, from live tmux state alone, from ShowAgentTreePane/HideAgentTreePane's own 'hidden' reading. exec_swap_split_pane renames a window to a different task's name after swapping only pane 0's content, so a renamed window's companion pane (if any) can end up rendering the previous occupant's tree, mismatched with the window's new name-derived task id. Neither HideAgentTreePane, ShowAgentTreePane nor split-pane.allium's rules account for the other feature's pane. Should split-pane.allium's join/swap operations become companion-pane-aware (e.g. always taking the *active* pane specifically, or killing/recreating the companion pane as part of the swap), or should the toggle refuse to act on a window it can't positively identify as agent-owned?"
 
 open question "EventLogRetention: <dispatch_data_dir>/<file_events_subdir>/<task_id>.jsonl grows unbounded for the life of a task. A long agent session touching the same files repeatedly writes one line per touch, and nothing truncates, rotates or caps the file — the same gap observability.allium records for trajectory files. Should there be a size cap, a dedup-on-write, or a wrap-up-time truncation?"
 

@@ -269,6 +269,28 @@ rule PinTaskInSplitPane {
         --
         -- Outside split mode [S] shows a status hint ("Split view not active —
         -- press s to open") and emits no split commands.
+        --
+        -- == IMPLEMENTED: companion-pane draining ==
+        -- The empty-pane case (no task currently pinned) reaches this via
+        -- `exec_enter_split_mode_with_task` (src/runtime/split.rs), which
+        -- calls `tmux::join_pane` (src/tmux.rs) to move only the agent's own
+        -- (active) pane out of its window. If that window also carries an
+        -- agent-tree companion pane (docs/specs/agent-tree.allium), the
+        -- companion is now the window's sole remaining pane —
+        -- indistinguishable, from live tmux state alone, from the companion
+        -- being toggled hidden. `exec_enter_split_mode_with_task` captures
+        -- the companion pane's ID (via `tmux::inactive_pane_id`) *before*
+        -- calling `join_pane` and kills it once the join succeeds, so the
+        -- source window is fully drained either way, restoring the "the
+        -- window no longer exists" assumption
+        -- `SplitPaneRespawnOnWindowCleared`'s guidance relies on. Both the
+        -- check and the kill are best-effort: a failure is logged, never
+        -- propagated, since the companion pane is decorative. `join_pane`
+        -- itself stays a plain tmux wrapper with no companion-pane
+        -- awareness — that orchestration lives at the call site, alongside
+        -- the equivalent resync in SwapSplitPane's guidance below. Resolves
+        -- agent-tree.allium's ToggleVsSplitPaneInteraction open question for
+        -- the join half of the gap.
 }
 
 rule SwapSplitPane {
@@ -298,6 +320,33 @@ rule SwapSplitPane {
         -- tmux swap-pane and returned to the standalone window list.
         -- tmux focus is NOT transferred — the TUI pane retains focus
         -- throughout the swap.
+        --
+        -- == IMPLEMENTED: companion-pane resync ==
+        -- `exec_swap_split_pane` (src/runtime/split.rs) uses `swap-pane` to
+        -- atomically exchange pane *content* between the previously-pinned
+        -- task's pane and the new task's pane 0 — panes keep their window
+        -- membership; only the running process each one displays changes.
+        -- It then renames the window (formerly the new task's) to the old
+        -- task's window name. Neither step touches pane 1: a renamed
+        -- window's agent-tree companion pane (docs/specs/agent-tree.allium),
+        -- if any, keeps running `dispatch agent-tree <new_task_id>` under a
+        -- window now named (and considered to belong to) the old task —
+        -- silently rendering the wrong agent's tree.
+        --
+        -- After a successful rename, `dispatch::resync_agent_tree_pane`
+        -- (src/dispatch/agents.rs) parses the task id back out of the
+        -- window's own new name (the same `task-<id>` inverse
+        -- `toggle_agent_tree_pane` already uses) and, if the window carries
+        -- a companion pane, kills it and relaunches
+        -- `dispatch agent-tree <task_id>` for that correct task. A no-op for
+        -- a non-task window name or a window with no companion pane at all.
+        -- Best-effort throughout: failures are logged, never propagated.
+        --
+        -- The `old_task = null` branch (no previously-pinned task) needs no
+        -- equivalent fix: `tmux::kill_window` there destroys the whole
+        -- window, companion pane included, so nothing is left to desync.
+        -- Resolves agent-tree.allium's ToggleVsSplitPaneInteraction open
+        -- question for the swap half of the gap.
 }
 
 ------------------------------------------------------------
