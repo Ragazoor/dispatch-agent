@@ -793,10 +793,7 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
         let svc = EpicService::new(db.clone());
         let parent = db.create_epic("Parent", "", None).await.unwrap();
-        let child = db
-            .create_epic("Child", "", Some(parent.id))
-            .await
-            .unwrap();
+        let child = db.create_epic("Child", "", Some(parent.id)).await.unwrap();
 
         svc.update_epic(UpdateEpicParams {
             status: Some(TaskStatus::Done),
