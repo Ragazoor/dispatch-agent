@@ -73,8 +73,10 @@ value FileEvent {
 }
 
 -- One row of the rendered tree. Nodes are derived, not stored: they are
--- recomputed from the worktree's directory structure plus the task's FileEvent
--- log on every refresh, so a node carries no identity of its own.
+-- recomputed from the task's FileEvent log on every refresh, so a node
+-- carries no identity of its own. A node exists only for a touched path or an
+-- ancestor directory of one — an untouched file or directory never gets a
+-- node, rather than appearing collapsed (see RefreshAgentTree).
 value AgentTreeNode {
     pane_root: String            -- the pane root this node was rendered under
     path:      String            -- path relative to pane_root
@@ -576,7 +578,7 @@ rule RefreshAgentTree {
 
     ensures: pane.last_rendered_at = now
     ensures:
-        for entry in worktree_tree(pane.root):
+        for entry in touched_tree(events):
             AgentTreeNodeRendered(
                 pane: pane,
                 node: AgentTreeNode {
@@ -604,31 +606,32 @@ rule RefreshAgentTree {
         --   1. ROOT. The tree is rooted at the pane's root — the task's
         --      worktree, never the parent repo. Node paths are relative to it;
         --      the log stores absolute paths, so relativisation happens here.
+        --      A node exists only for a touched path or an ancestor directory
+        --      of one; an untouched sibling never gets a node at all, so the
+        --      tree is a projection of the event log, not the filesystem.
         --   2. BADGES. Write, Edit and NotebookEdit produce Modified; Read
         --      produces Read; a file with both shows Modified. Modified wins
         --      because "this agent changed this file" is the fact the user is
         --      scanning for, and it is strictly the more consequential of the
         --      two.
-        --   3. EXPANSION. Directories containing a touched file are expanded;
-        --      untouched subtrees stay collapsed. Collapsed nodes are still
-        --      part of the tree, so the user can open them manually — the
-        --      expansion state computed here is the initial state, not a
-        --      filter. A manual expand/collapse is not overwritten by the next
-        --      refresh; only newly-touched directories open on their own.
+        --   3. EXPANSION. Every directory node is, by construction, an
+        --      ancestor of a touched path, so every directory that appears is
+        --      expanded — there is no untouched, collapsed directory to
+        --      reveal. A manual collapse is not overwritten by the next
+        --      refresh; only newly-touched paths add new nodes.
         --
         -- == Black boxes ==
-        -- worktree_tree(root) enumerates the directory structure under root as
-        -- (path, kind) entries. events_for_path / has_touched_descendant /
-        -- file_events_under are pure lookups over the already-loaded event set.
-        -- A malformed line in the log is skipped rather than aborting the
-        -- refresh, so one bad append cannot blank the tree.
+        -- touched_tree(events) derives (path, kind) entries for every distinct
+        -- touched path and each of its ancestor directories, deduplicated.
+        -- events_for_path / has_touched_descendant are pure lookups over the
+        -- already-loaded event set. A malformed line in the log is skipped
+        -- rather than aborting the refresh, so one bad append cannot blank the
+        -- tree.
         --
         -- == Implementation notes ==
         -- The renderer is a small standalone ratatui loop reusing the existing
         -- tree widget dependency; it is not part of the board's App and shares
-        -- none of its state. Whether the directory scan is eager or lazy for
-        -- collapsed subtrees is an implementation choice — see the
-        -- TreeScanExclusions open question for what it should skip either way.
+        -- none of its state.
 }
 
 ------------------------------------------------------------
@@ -733,10 +736,10 @@ surface AgentTreeCompanionPane {
         ToggleAgentTreePane(user)
 
     @guarantee ReadOnlyObservation
-        -- The pane only reads: the event log, and the worktree's directory
-        -- structure. It never writes to the worktree, never mutates the task,
-        -- and never issues an MCP call. Killing it, or never opening it, cannot
-        -- change what the agent does or what the board shows.
+        -- The pane only reads the event log. It never writes to the worktree,
+        -- never mutates the task, and never issues an MCP call. Killing it, or
+        -- never opening it, cannot change what the agent does or what the
+        -- board shows.
 
     @guarantee NoBoardCoupling
         -- The pane is a separate process in a separate window from the board
@@ -759,8 +762,6 @@ surface AgentTreeCompanionPane {
 open question "MainSessionPaneScope: the main-session window has no task id and no worktree, so its companion pane renders an always-empty tree (SplitAgentTreePaneOnMainSession) and is covered by neither teardown rule. Should the main session be excluded from the split entirely, or should the capture hook learn to attribute main-session tool calls to some non-task log so the pane earns its space?"
 
 open question "ToggleVsSplitPaneInteraction: the board's own split-pane feature (split-pane.allium: join_pane, exec_swap_split_pane in src/runtime/split.rs) was designed before every agent window carried a second (companion) pane, and assumes exactly one pane per agent window. join_pane moves the agent's own (active) pane out of its window to sit next to the board, which can leave the companion pane as the window's sole remaining pane — indistinguishable, from live tmux state alone, from ShowAgentTreePane/HideAgentTreePane's own 'hidden' reading. exec_swap_split_pane renames a window to a different task's name after swapping only pane 0's content, so a renamed window's companion pane (if any) can end up rendering the previous occupant's tree, mismatched with the window's new name-derived task id. Neither HideAgentTreePane, ShowAgentTreePane nor split-pane.allium's rules account for the other feature's pane. Should split-pane.allium's join/swap operations become companion-pane-aware (e.g. always taking the *active* pane specifically, or killing/recreating the companion pane as part of the swap), or should the toggle refuse to act on a window it can't positively identify as agent-owned?"
-
-open question "TreeScanExclusions: worktree_tree enumerates the directory structure under the pane root. Which subtrees should it skip — .git, gitignored paths, build output (target/, node_modules/) — and is the scan eager or lazy for collapsed directories? An unfiltered eager scan of a large repo is both slow and useless, since none of those paths will ever carry a badge."
 
 open question "EventLogRetention: <dispatch_data_dir>/<file_events_subdir>/<task_id>.jsonl grows unbounded for the life of a task. A long agent session touching the same files repeatedly writes one line per touch, and nothing truncates, rotates or caps the file — the same gap observability.allium records for trajectory files. Should there be a size cap, a dedup-on-write, or a wrap-up-time truncation?"
 
