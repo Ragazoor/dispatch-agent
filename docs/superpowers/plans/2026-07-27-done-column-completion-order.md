@@ -1198,10 +1198,13 @@ Add to `src/tui/tests/rendering.rs`, near `reorder_task_up_swaps_sort_order` (af
 #[tokio::test]
 async fn reorder_task_down_swaps_sort_order_within_done_column() {
     let mut app = make_app();
+    // t1's sort_order is more negative (= more recent), so it renders at
+    // row 0; t2 renders at row 1. This must hold for the cursor position
+    // below to actually land on t1 before the move.
     let mut t1 = make_task(1, TaskStatus::Done);
-    t1.sort_order = Some(-1_700_000_000_000);
+    t1.sort_order = Some(-1_700_000_100_000);
     let mut t2 = make_task(2, TaskStatus::Done);
-    t2.sort_order = Some(-1_700_000_100_000);
+    t2.sort_order = Some(-1_700_000_000_000);
     app.board.tasks = vec![t1, t2];
     app.selection_mut().set_column(4); // Done column
     app.selection_mut().set_row(4, 0);
