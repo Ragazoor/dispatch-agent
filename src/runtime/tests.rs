@@ -2280,6 +2280,59 @@ async fn exec_persist_epic_writes_back_done_transition_sort_order_immediately() 
     );
 }
 
+/// The clear direction of the same rule, epic side:
+/// `sort_order_for_status_transition(Done, <non-Done>)` returns
+/// `Some(None)`, so `write_back_epic_sort_order` must clear the in-memory
+/// epic's `sort_order` — not skip the write-back because the new value is
+/// `None`. Asserts on `app.epics()` with no `exec_refresh_epics_from_db`
+/// call in between.
+#[tokio::test]
+async fn exec_persist_epic_writes_back_leaving_done_sort_order_clear_immediately() {
+    let (rt, mut app) = test_runtime().await;
+    let epic = rt
+        .db_write()
+        .create_epic("Epic", "desc", None)
+        .await
+        .unwrap();
+    // Put the epic in Done with a completion-recency sort_order, the state a
+    // just-completed epic is in before it gets moved back out of Done.
+    rt.db_write()
+        .patch_epic(
+            epic.id,
+            &db::EpicPatch::new()
+                .status(models::TaskStatus::Done)
+                .sort_order(Some(-1234)),
+        )
+        .await
+        .unwrap();
+    // Load that state into the in-memory board.
+    rt.exec_refresh_epics_from_db(&mut app).await;
+    assert_eq!(
+        app.epics()
+            .iter()
+            .find(|e| e.id == epic.id)
+            .unwrap()
+            .sort_order,
+        Some(-1234),
+        "precondition: in-memory epic carries the Done sort_order"
+    );
+
+    rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Review), None)
+        .await;
+
+    let in_memory = app.epics().iter().find(|e| e.id == epic.id).unwrap();
+    assert_eq!(
+        in_memory.sort_order, None,
+        "leaving Done must clear the in-memory epic's sort_order immediately"
+    );
+
+    let db_epic = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+    assert_eq!(
+        db_epic.sort_order, None,
+        "in-memory clear must match what was actually persisted"
+    );
+}
+
 #[tokio::test]
 async fn exec_persist_managed_feed_config_writes_all_settings() {
     let (rt, mut app) = test_runtime().await;
