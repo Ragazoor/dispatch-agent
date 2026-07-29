@@ -1142,16 +1142,6 @@ pub(super) fn migrate_v78_create_task_watchers(conn: &Connection) -> Result<()> 
 /// precision — see the design doc for why mixing scales here is correct,
 /// not a bug.
 pub(super) fn migrate_v79_backfill_done_sort_order(conn: &Connection) -> Result<()> {
-    // Skip if tables or columns don't exist yet (e.g. in tests that build
-    // minimal schemas without running v9 which adds sort_order).
-    if !table_exists(conn, "tasks")
-        || !column_exists(conn, "tasks", "sort_order")
-        || !column_exists(conn, "tasks", "updated_at")
-        || !column_exists(conn, "tasks", "status")
-    {
-        return Ok(());
-    }
-
     let tasks_updated = conn
         .execute(
             "UPDATE tasks SET sort_order = -CAST(strftime('%s', updated_at) AS INTEGER)
@@ -1161,15 +1151,6 @@ pub(super) fn migrate_v79_backfill_done_sort_order(conn: &Connection) -> Result<
         .context("Failed to backfill sort_order for Done tasks (migration v79)")?;
     if tasks_updated > 0 {
         tracing::info!("Migration v79: backfilled sort_order for {tasks_updated} Done task(s)");
-    }
-
-    // Skip epics migration if the table or columns don't exist.
-    if !table_exists(conn, "epics")
-        || !column_exists(conn, "epics", "sort_order")
-        || !column_exists(conn, "epics", "updated_at")
-        || !column_exists(conn, "epics", "status")
-    {
-        return Ok(());
     }
 
     let epics_updated = conn

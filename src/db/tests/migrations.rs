@@ -2124,15 +2124,27 @@ async fn migration_v38_feed_epic_columns() {
     conn.execute_batch(
         "PRAGMA foreign_keys=OFF;
          PRAGMA user_version=37;
-         CREATE TABLE epics (
-             id INTEGER PRIMARY KEY,
-             title TEXT NOT NULL,
-             description TEXT NOT NULL DEFAULT ''
-         );
          CREATE TABLE tasks (
              id INTEGER PRIMARY KEY,
              title TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             repo_path TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog',
+             sub_status TEXT NOT NULL DEFAULT 'none',
+             base_branch TEXT NOT NULL DEFAULT 'main',
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
              epic_id INTEGER
+         );
+         CREATE TABLE epics (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             status TEXT NOT NULL DEFAULT 'backlog',
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
          );",
     )
     .unwrap();
@@ -2580,14 +2592,30 @@ async fn migration_v52_adds_verify_command_to_repo_paths() {
     {
         let conn = rusqlite::Connection::open(temp.path()).unwrap();
         conn.execute_batch(
-            "CREATE TABLE repo_paths (
-                id        INTEGER PRIMARY KEY,
-                path      TEXT NOT NULL UNIQUE,
-                last_used TEXT NOT NULL DEFAULT (datetime('now'))
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                repo_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'backlog',
+                sub_status TEXT NOT NULL DEFAULT 'none',
+                base_branch TEXT NOT NULL DEFAULT 'main',
+                sort_order INTEGER,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE epics (
                 id INTEGER PRIMARY KEY,
-                title TEXT NOT NULL DEFAULT ''
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'backlog',
+                sort_order INTEGER,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE repo_paths (
+                id        INTEGER PRIMARY KEY,
+                path      TEXT NOT NULL UNIQUE,
+                last_used TEXT NOT NULL DEFAULT (datetime('now'))
             );",
         )
         .unwrap();
