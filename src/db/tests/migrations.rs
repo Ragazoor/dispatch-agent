@@ -3544,3 +3544,74 @@ fn migrate_v78_task_watchers_unique_constraint_rejects_duplicate_pair() {
         .unwrap_err();
     assert!(format!("{err}").to_lowercase().contains("unique"));
 }
+
+#[tokio::test]
+async fn v79_backfills_sort_order_for_done_tasks_and_epics() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL,
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE epics (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL,
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL
+         );
+         INSERT INTO tasks (title, status, sort_order, updated_at) VALUES
+           ('done-no-sort-order', 'done', NULL, '2026-01-15 12:00:00'),
+           ('done-already-sorted', 'done', -999, '2026-01-15 12:00:00'),
+           ('not-done', 'backlog', NULL, '2026-01-15 12:00:00');
+         INSERT INTO epics (title, status, sort_order, updated_at) VALUES
+           ('epic-done-no-sort-order', 'done', NULL, '2026-02-01 08:30:00'),
+           ('epic-not-done', 'running', NULL, '2026-02-01 08:30:00');",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v79_backfill_done_sort_order(&conn).unwrap();
+
+    let mut stmt = conn
+        .prepare("SELECT title, sort_order FROM tasks ORDER BY title")
+        .unwrap();
+    let task_rows: Vec<(String, Option<i64>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(task_rows[0].0, "done-already-sorted");
+    assert_eq!(
+        task_rows[0].1,
+        Some(-999),
+        "an already-set sort_order must not be overwritten"
+    );
+    assert_eq!(task_rows[1].0, "done-no-sort-order");
+    assert!(
+        task_rows[1].1.is_some_and(|so| so < 0),
+        "a null sort_order on a Done task must be backfilled to a negative value, got {:?}",
+        task_rows[1].1
+    );
+    assert_eq!(task_rows[2].0, "not-done");
+    assert_eq!(
+        task_rows[2].1, None,
+        "a non-Done task's null sort_order must be left alone"
+    );
+
+    let mut estmt = conn
+        .prepare("SELECT title, sort_order FROM epics ORDER BY title")
+        .unwrap();
+    let epic_rows: Vec<(String, Option<i64>)> = estmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(epic_rows[0].0, "epic-done-no-sort-order");
+    assert!(epic_rows[0].1.is_some_and(|so| so < 0));
+    assert_eq!(epic_rows[1].0, "epic-not-done");
+    assert_eq!(epic_rows[1].1, None);
+}
