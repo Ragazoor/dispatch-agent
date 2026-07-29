@@ -16,29 +16,19 @@
 //! See `ensure_split_hook` in src/tmux.rs for why the hook needs an explicit
 //! `-t #{pane_id}` target, and why the hook exists at all.
 //!
-//! # Isolation
-//!
-//! Every test gets its own tmux server on a unique `-L` socket, killed via a drop
-//! guard, so a failing assertion or panic cannot leak a server and the
-//! developer's own tmux session is never touched. Per-test servers also keep the
-//! tests parallel: they cannot share one session, because they mutate
-//! session-global state (the active window, and the session-level hook itself).
+//! Every pane here runs `cat > log`, so this file observes *routing*: which pane
+//! a keystroke reaches. Its sibling `tests/tmux_lifecycle.rs` takes the
+//! complementary view — windows created by production code, panes running the
+//! real shell — and observes *topology*. The shared rig lives in
+//! `tests/tmux_harness/mod.rs`, which also documents why a real server is needed.
+
+mod tmux_harness;
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{Duration, Instant};
 
-use dispatch_tui::process::{ProcessRunner, RealProcessRunner};
 use dispatch_tui::tmux;
 
-/// How long to wait for the hook's keystrokes to land. The hook fires
-/// `run-shell -b`, which is asynchronous, so the write is not visible the
-/// instant `split-window` returns. This is a *deadline* for condition polling,
-/// never a fixed sleep — see `scripts/check-no-test-sleep.sh` and the
-/// "No `tokio::time::sleep` in tests" section of docs/conventions.md. Only the
-/// failure path ever pays it in full.
-const DELIVERY_DEADLINE: Duration = Duration::from_secs(5);
-const POLL_STEP: Duration = Duration::from_millis(25);
+use tmux_harness::{capture_cmd, read_now, read_when_written, tmux_available_or_skip, TmuxServer};
 
 /// The agent window under test, named the way dispatch names them (`task-<id>`).
 const AGENT_WINDOW: &str = "task-42";
@@ -48,115 +38,6 @@ const BOARD_WINDOW: &str = "board";
 /// `src/dispatch/agents.rs`; the exact percentage is irrelevant to pane routing,
 /// which is what these tests assert.
 const PANE_PERCENT: u8 = 30;
-
-/// Owns a private tmux server and kills it on drop, including on panic.
-struct TmuxServer {
-    socket: String,
-}
-
-impl TmuxServer {
-    fn start() -> Self {
-        // Unique per process AND per thread, so these tests run concurrently
-        // (cargo runs them on separate threads by default) without sharing a
-        // session. Because the name embeds the pid, it is also guaranteed not to
-        // collide with a server left behind by an earlier `cargo test` run.
-        let socket = format!(
-            "dispatch-test-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        );
-        Self { socket }
-    }
-
-    /// Run a tmux command against this server, returning its raw output.
-    /// Failures are not asserted here — callers that need that use [`Self::tmux_ok`].
-    fn tmux(&self, args: &[&str]) -> std::process::Output {
-        // Routed through the same runner the production calls use, so the
-        // `-L <socket>` scoping rule lives in exactly one place.
-        self.runner()
-            .run("tmux", args)
-            .expect("failed to invoke tmux")
-    }
-
-    /// Run a tmux command and assert it succeeded.
-    fn tmux_ok(&self, args: &[&str]) {
-        let out = self.tmux(args);
-        assert!(
-            out.status.success(),
-            "tmux {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    /// A `ProcessRunner` that routes production tmux calls to this test server,
-    /// by prepending `-L <socket>` to every argument list. This keeps the tests
-    /// exercising the real `tmux::*` functions rather than hand-copied command
-    /// strings, so they cannot drift from what actually ships.
-    fn runner(&self) -> SocketRunner {
-        SocketRunner {
-            socket: self.socket.clone(),
-            inner: RealProcessRunner,
-        }
-    }
-}
-
-impl Drop for TmuxServer {
-    fn drop(&mut self) {
-        self.tmux(&["kill-server"]);
-    }
-}
-
-struct SocketRunner {
-    socket: String,
-    inner: RealProcessRunner,
-}
-
-impl ProcessRunner for SocketRunner {
-    fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<std::process::Output> {
-        if program != "tmux" {
-            return self.inner.run(program, args);
-        }
-        let mut full: Vec<&str> = vec!["-L", &self.socket];
-        full.extend_from_slice(args);
-        self.inner.run(program, &full)
-    }
-}
-
-/// Whether tmux is usable in this environment.
-fn tmux_available() -> bool {
-    Command::new("tmux")
-        .arg("-V")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Spawn a pane command that records everything typed into the pane to `path`.
-/// `cat` reads the pane's tty, so any `send-keys` payload lands in the file once
-/// a newline (the hook's `Enter`) flushes the line.
-fn capture_cmd(path: &Path) -> String {
-    format!("cat > {}", path.display())
-}
-
-/// Poll until `path` is non-empty or the deadline expires, returning its
-/// contents (empty on timeout).
-fn read_when_written(path: &Path) -> String {
-    let start = Instant::now();
-    loop {
-        let contents = std::fs::read_to_string(path).unwrap_or_default();
-        if !contents.trim().is_empty() || start.elapsed() >= DELIVERY_DEADLINE {
-            return contents;
-        }
-        std::thread::sleep(POLL_STEP);
-    }
-}
-
-/// Snapshot a capture file without waiting. Only meaningful once the hook has
-/// been observed to fire — see [`Fixture::split_agent_window_and_await_hook`].
-fn read_now(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
-}
 
 struct Fixture {
     // Declared before `dir` on purpose: fields drop in declaration order, so the
@@ -174,23 +55,10 @@ struct Fixture {
 
 /// Build the fixture, or skip when tmux is unavailable. Folding the guard into
 /// construction means a later test cannot forget it and hard-fail on a developer
-/// machine without tmux.
-///
-/// Under CI the missing binary is a hard failure instead. Skipping there would be
-/// a silent pass — `eprintln!` is swallowed by the default test harness — which
-/// would let a dropped `Install tmux` step or a changed runner image quietly turn
-/// this whole file into a no-op, taking the only real coverage of the hook's pane
-/// routing with it. This is what makes the CI install step an invariant rather
-/// than a convention.
+/// machine without tmux. In CI the guard fails instead of skipping — see
+/// `tmux_available_or_skip`.
 fn setup_or_skip() -> Option<Fixture> {
-    if !tmux_available() {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "tmux is required in CI but was not found on PATH — the workflow's \
-             `Install tmux` step must run before `cargo test` (see \
-             .github/workflows/ci.yml). Refusing to skip and report green."
-        );
-        eprintln!("skipping: tmux not available on PATH");
+    if !tmux_available_or_skip() {
         return None;
     }
     Some(setup())
