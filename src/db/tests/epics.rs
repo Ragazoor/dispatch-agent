@@ -458,6 +458,91 @@ async fn recalculate_epic_status_all_done() {
 }
 
 #[tokio::test]
+async fn recalculate_epic_status_all_done_sets_sort_order() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let t1 = create_task_returning(&db, "T1", "", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    db.set_task_epic_id(t1.id, Some(epic.id)).await.unwrap();
+    db.patch_task(t1.id, &TaskPatch::new().status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    let before = chrono::Utc::now().timestamp_millis();
+    db.recalculate_epic_status(epic.id).await.unwrap();
+    let after = chrono::Utc::now().timestamp_millis();
+
+    let epic = db.get_epic(epic.id).await.unwrap().unwrap();
+    assert_eq!(epic.status, TaskStatus::Done);
+    let sort_order = epic
+        .sort_order
+        .expect("sort_order should be set on entering Done");
+    assert!(
+        (-after..=-before).contains(&sort_order),
+        "sort_order {sort_order} should be -now_millis, within [{}, {}]",
+        -after,
+        -before
+    );
+}
+
+#[tokio::test]
+async fn recalculate_epic_status_done_regression_clears_sort_order() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    db.patch_epic(
+        epic.id,
+        &EpicPatch::new()
+            .status(TaskStatus::Done)
+            .sort_order(Some(-1)),
+    )
+    .await
+    .unwrap();
+
+    let task = create_task_returning(&db, "T1", "", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
+    db.patch_task(task.id, &TaskPatch::new().status(TaskStatus::Running))
+        .await
+        .unwrap();
+
+    db.recalculate_epic_status(epic.id).await.unwrap();
+
+    let epic = db.get_epic(epic.id).await.unwrap().unwrap();
+    assert_eq!(epic.status, TaskStatus::Backlog);
+    assert_eq!(epic.sort_order, None);
+}
+
+#[tokio::test]
+async fn recalculate_epic_status_already_done_noop_leaves_sort_order_untouched() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let task = create_task_returning(&db, "T1", "", "/repo", None, TaskStatus::Done)
+        .await
+        .unwrap();
+    db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
+    db.patch_epic(
+        epic.id,
+        &EpicPatch::new()
+            .status(TaskStatus::Done)
+            .sort_order(Some(-42)),
+    )
+    .await
+    .unwrap();
+
+    db.recalculate_epic_status(epic.id).await.unwrap();
+
+    let epic = db.get_epic(epic.id).await.unwrap().unwrap();
+    assert_eq!(epic.status, TaskStatus::Done);
+    assert_eq!(
+        epic.sort_order,
+        Some(-42),
+        "a no-op recalculation (already Done, still all-done) must not touch sort_order"
+    );
+}
+
+#[tokio::test]
 async fn recalculate_epic_status_mixed_review_done_leaves_epic_in_backlog() {
     let db = in_memory_db().await;
     let epic = db.create_epic("E", "", None).await.unwrap();
