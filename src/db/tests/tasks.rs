@@ -1637,9 +1637,14 @@ async fn upsert_feed_tasks_preserves_sort_order_when_task_is_done() {
 
     let mut updated_item = make_feed_item("ext-1", "Original Title");
     updated_item.sort_order = Some(1); // feed severity rank
-    db.upsert_feed_tasks(epic.id, &[updated_item], &["/repo".to_string()], &main_branches(1))
-        .await
-        .unwrap();
+    db.upsert_feed_tasks(
+        epic.id,
+        &[updated_item],
+        &["/repo".to_string()],
+        &main_branches(1),
+    )
+    .await
+    .unwrap();
 
     let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
     assert_eq!(tasks.len(), 1);
@@ -1662,9 +1667,14 @@ async fn upsert_feed_tasks_still_updates_sort_order_when_task_is_not_done() {
 
     let mut updated_item = make_feed_item("ext-1", "Original Title");
     updated_item.sort_order = Some(7);
-    db.upsert_feed_tasks(epic.id, &[updated_item], &["/repo".to_string()], &main_branches(1))
-        .await
-        .unwrap();
+    db.upsert_feed_tasks(
+        epic.id,
+        &[updated_item],
+        &["/repo".to_string()],
+        &main_branches(1),
+    )
+    .await
+    .unwrap();
 
     let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
     assert_eq!(tasks[0].sort_order, Some(7));
