@@ -246,6 +246,128 @@ async fn update_task_invalid_substatus_for_status() {
 }
 
 #[tokio::test]
+async fn update_task_entering_done_sets_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Review))
+        .await
+        .unwrap();
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert!(
+        task.sort_order.is_some_and(|so| so < 0),
+        "expected a negative sort_order on entering Done, got {:?}",
+        task.sort_order
+    );
+}
+
+#[tokio::test]
+async fn update_task_leaving_done_clears_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+    assert!(svc.get_task(id).await.unwrap().sort_order.is_some());
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Review))
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Review);
+    assert_eq!(task.sort_order, None);
+}
+
+#[tokio::test]
+async fn update_task_leaving_done_clears_sort_order_even_with_stale_caller_sort_order() {
+    // Reproduces the exec_persist_task shape: a caller sends both a status
+    // change AND a stale sort_order left over from when the task entered
+    // Done, exactly as exec_persist_task (src/runtime/tasks.rs) forwards
+    // whatever sort_order is sitting on the in-memory Task struct. The
+    // "leaving Done" clear must win over this caller-supplied value.
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+    let stale_sort_order = svc.get_task(id).await.unwrap().sort_order.unwrap();
+
+    svc.update_task(
+        UpdateTaskParams::for_task(id)
+            .status(TaskStatus::Review)
+            .sort_order(stale_sort_order),
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.sort_order, None,
+        "the leaving-Done clear must win over a caller-supplied stale sort_order"
+    );
+}
+
+#[tokio::test]
+async fn update_task_status_change_within_done_leaves_sort_order_untouched() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+    let sort_order_after_entry = svc.get_task(id).await.unwrap().sort_order;
+
+    // An unrelated field edit while already Done (no status change at all).
+    svc.update_task(UpdateTaskParams::for_task(id).title("Renamed".to_string()))
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.sort_order, sort_order_after_entry);
+}
+
+#[tokio::test]
+async fn update_task_archived_to_backlog_is_unaffected_by_done_rule() {
+    // The task editor's freeform STATUS field can retype an Archived task's
+    // status back to any value (no transition-legality validation), which
+    // routes through this same update_task — a reachable "un-archive" path.
+    // sort_order is already None by the time a task reaches Archived (it
+    // was cleared on the Done -> Archived leg), so Archived -> Backlog must
+    // be a no-op for sort_order and must not error.
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Archived))
+        .await
+        .unwrap();
+    assert_eq!(svc.get_task(id).await.unwrap().sort_order, None);
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Backlog))
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Backlog);
+    assert_eq!(task.sort_order, None);
+}
+
+#[tokio::test]
 async fn claim_task_success() {
     let db = test_db().await;
     let svc = task_svc(&db);
@@ -2909,6 +3031,79 @@ async fn cli_update_task_updates_status_unconditionally() {
 
     assert!(updated);
     assert_eq!(svc.get_task(id).await.unwrap().status, TaskStatus::Running);
+}
+
+#[tokio::test]
+async fn cli_update_task_entering_done_sets_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.cli_update_task(id, TaskStatus::Done, None, None)
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert!(
+        task.sort_order.is_some_and(|so| so < 0),
+        "expected a negative sort_order on entering Done, got {:?}",
+        task.sort_order
+    );
+}
+
+#[tokio::test]
+async fn cli_update_task_leaving_done_clears_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.cli_update_task(id, TaskStatus::Done, None, None)
+        .await
+        .unwrap();
+    assert!(svc.get_task(id).await.unwrap().sort_order.is_some());
+
+    svc.cli_update_task(id, TaskStatus::Backlog, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(svc.get_task(id).await.unwrap().sort_order, None);
+}
+
+#[tokio::test]
+async fn cli_update_task_only_if_not_matching_does_not_touch_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    // Precondition doesn't match (task is Backlog, not Running) — the
+    // conditional write must be a full no-op, including sort_order.
+    let updated = svc
+        .cli_update_task(id, TaskStatus::Done, Some(TaskStatus::Running), None)
+        .await
+        .unwrap();
+
+    assert!(!updated);
+    assert_eq!(svc.get_task(id).await.unwrap().sort_order, None);
+}
+
+#[tokio::test]
+async fn cli_update_task_only_if_matching_entering_done_sets_sort_order() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    let updated = svc
+        .cli_update_task(id, TaskStatus::Done, Some(TaskStatus::Backlog), None)
+        .await
+        .unwrap();
+
+    assert!(updated);
+    assert!(svc
+        .get_task(id)
+        .await
+        .unwrap()
+        .sort_order
+        .is_some_and(|so| so < 0));
 }
 
 #[tokio::test]

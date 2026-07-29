@@ -482,7 +482,7 @@ impl super::super::TaskCrud for Database {
                          description = excluded.description,
                          tag         = excluded.tag,
                          labels      = excluded.labels,
-                         sort_order  = excluded.sort_order,
+                         sort_order  = CASE WHEN tasks.status != 'done' THEN excluded.sort_order ELSE tasks.sort_order END,
                          url      = CASE WHEN tasks.url IS NOT NULL THEN tasks.url      ELSE excluded.url      END,
                          url_type = CASE WHEN tasks.url IS NOT NULL THEN tasks.url_type ELSE excluded.url_type END,
                          updated_at  = datetime('now')",

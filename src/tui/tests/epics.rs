@@ -954,6 +954,34 @@ fn column_items_null_sort_order_uses_id() {
 }
 
 #[test]
+fn done_column_sorts_by_completion_recency_via_sort_order() {
+    let mut app = make_app();
+    // sort_order values as the service layer would set them: negative
+    // milliseconds, more negative = more recently completed.
+    let mut older = make_task(1, TaskStatus::Done);
+    older.title = "Completed first".to_string();
+    older.sort_order = Some(-1_700_000_000_000);
+    let mut newer = make_task(2, TaskStatus::Done);
+    newer.title = "Completed second".to_string();
+    newer.sort_order = Some(-1_700_000_100_000);
+    app.board.tasks = vec![older, newer];
+
+    let items = app.column_items_for_status(TaskStatus::Done);
+    assert_eq!(items.len(), 2);
+    match &items[0] {
+        ColumnItem::Task(t) => assert_eq!(
+            t.title, "Completed second",
+            "the more recently completed task must render first"
+        ),
+        _ => panic!("expected task"),
+    }
+    match &items[1] {
+        ColumnItem::Task(t) => assert_eq!(t.title, "Completed first"),
+        _ => panic!("expected task"),
+    }
+}
+
+#[test]
 fn handle_key_normal_new_epic() {
     let mut app = make_app();
     app.handle_key(make_key(KeyCode::Char('E')));

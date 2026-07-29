@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 
 use crate::set_field;
 
-use crate::models::{EpicId, TaskId, TaskStatus};
+use crate::models::{sort_order_for_status_transition, EpicId, TaskId, TaskStatus};
 
 use super::super::{Database, EpicPatch};
 use super::{row_to_epic, row_to_task, EPIC_COLUMNS, TASK_COLUMNS};
@@ -443,12 +444,21 @@ fn recalculate_epic_status_inner(
     };
 
     if target != epic.status {
-        let rows = conn
-            .execute(
-                "UPDATE epics SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
-                params![target.as_str(), epic_id.0],
-            )
-            .context("Failed to update epic status (recalc)")?;
+        let now = Utc::now();
+        let rows = match sort_order_for_status_transition(epic.status, target, now) {
+            Some(sort_order) => conn
+                .execute(
+                    "UPDATE epics SET status = ?1, sort_order = ?2, updated_at = datetime('now') WHERE id = ?3",
+                    params![target.as_str(), sort_order, epic_id.0],
+                )
+                .context("Failed to update epic status (recalc)")?,
+            None => conn
+                .execute(
+                    "UPDATE epics SET status = ?1, updated_at = datetime('now') WHERE id = ?2",
+                    params![target.as_str(), epic_id.0],
+                )
+                .context("Failed to update epic status (recalc)")?,
+        };
         if rows == 0 {
             anyhow::bail!("Epic {epic_id} not found");
         }

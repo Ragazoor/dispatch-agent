@@ -294,6 +294,68 @@ async fn exec_persist_task_does_not_overwrite_last_pre_tool_use_at() {
     );
 }
 
+/// Regression for the whole-branch review finding: `exec_persist_task` must
+/// write the service-computed `sort_order` into the in-memory board itself,
+/// not just the DB — otherwise a freshly-completed task renders at the
+/// bottom of Done (stale/`None` sort_order) until the next ~2s DB refresh,
+/// the exact inverse of the completion-recency ordering this feature
+/// promises. Drives the actual `exec_persist_task` runtime path (not a pure
+/// sort function) and asserts on the in-memory board with no
+/// `exec_refresh_from_db` call in between, to prove the write-back is
+/// immediate.
+#[tokio::test]
+async fn exec_persist_task_writes_back_done_transition_sort_order_immediately() {
+    let (rt, mut app) = test_runtime().await;
+    rt.exec_insert_task(
+        &mut app,
+        tui::TaskDraft {
+            title: "Finish me".into(),
+            description: "Desc".into(),
+            repo_path: "/repo".into(),
+            ..Default::default()
+        },
+        None,
+    )
+    .await;
+    let id = app.tasks()[0].id;
+
+    // Put the task in Review in the DB (the state a task is normally in
+    // right before ConfirmDone), without refreshing the in-memory board —
+    // mirrors how the service fetches "prior" independently of what the TUI
+    // happens to hold in memory.
+    rt.db_write()
+        .patch_task(id, &db::TaskPatch::new().status(models::TaskStatus::Review))
+        .await
+        .unwrap();
+
+    // Simulate handle_confirm_done: the handler flips the in-memory task to
+    // Done and hands the clone straight to exec_persist_task. sort_order is
+    // still None — only the service computes it, inside update_task.
+    let mut task = app.tasks()[0].clone();
+    task.status = models::TaskStatus::Done;
+    assert_eq!(task.sort_order, None, "precondition: no sort_order yet");
+
+    rt.exec_persist_task(&mut app, task).await;
+
+    // Assert on the in-memory board directly — no exec_refresh_from_db call
+    // in between — to prove the write-back is immediate, not deferred to
+    // the next refresh.
+    let in_memory = app.tasks().iter().find(|t| t.id == id).unwrap();
+    assert_eq!(in_memory.status, models::TaskStatus::Done);
+    assert!(
+        in_memory.sort_order.is_some_and(|so| so < 0),
+        "expected a negative completion-recency sort_order written back to \
+         the in-memory board immediately, got {:?}",
+        in_memory.sort_order
+    );
+
+    let db_task = rt.database.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        in_memory.sort_order, db_task.sort_order,
+        "in-memory sort_order must match what was actually persisted"
+    );
+}
+
 /// SeedActivity writes only `last_pre_tool_use_at`, leaving every other
 /// column untouched.
 #[tokio::test]
@@ -1969,6 +2031,55 @@ async fn exec_persist_epic_noop_when_nothing_to_update() {
     // Should return early without error
     rt.exec_persist_epic(&mut app, epic.id, None, None).await;
     assert!(app.error_popup().is_none());
+}
+
+/// Regression for the whole-branch review finding, epic side:
+/// `exec_persist_epic` (routed through `exec_patch_epic`, the shared
+/// chokepoint) must write the service-computed `sort_order` into the
+/// in-memory board itself, not just the DB. Drives the actual
+/// `exec_persist_epic` runtime path and asserts on `app.epics()` with no
+/// `exec_refresh_epics_from_db` call in between, to prove the write-back is
+/// immediate.
+#[tokio::test]
+async fn exec_persist_epic_writes_back_done_transition_sort_order_immediately() {
+    let (rt, mut app) = test_runtime().await;
+    let epic = rt
+        .db_write()
+        .create_epic("Epic", "desc", None)
+        .await
+        .unwrap();
+    // Load the epic into the in-memory board (mirrors what a real session
+    // would already have from a prior refresh).
+    rt.exec_refresh_epics_from_db(&mut app).await;
+    assert_eq!(
+        app.epics()
+            .iter()
+            .find(|e| e.id == epic.id)
+            .unwrap()
+            .sort_order,
+        None,
+        "precondition: no sort_order yet"
+    );
+
+    rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Done), None)
+        .await;
+
+    // Assert on the in-memory board directly — no
+    // exec_refresh_epics_from_db call in between — to prove the write-back
+    // is immediate.
+    let in_memory = app.epics().iter().find(|e| e.id == epic.id).unwrap();
+    assert!(
+        in_memory.sort_order.is_some_and(|so| so < 0),
+        "expected a negative completion-recency sort_order written back to \
+         the in-memory board immediately, got {:?}",
+        in_memory.sort_order
+    );
+
+    let db_epic = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+    assert_eq!(
+        in_memory.sort_order, db_epic.sort_order,
+        "in-memory sort_order must match what was actually persisted"
+    );
 }
 
 #[tokio::test]

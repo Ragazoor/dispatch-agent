@@ -111,6 +111,7 @@ rule PrMerged {
     ensures: task.sub_status = core/SubStatus.default_for(done)
     ensures: task.tmux_window = null
     ensures: task.updated_at = now
+    ensures: task.sort_order = completion_recency_rank(now)
     ensures:
         if notifications_enabled:
             DesktopNotification(task: task, urgency: normal, about: pr_merged)
@@ -123,6 +124,9 @@ rule PrMerged {
         -- Like other status-changing rules, the underlying patch flow
         -- (src/service/tasks/crud.rs) triggers EpicStatusRecalculation on
         -- the parent epic when the task belongs to one.
+        -- completion_recency_rank(now) is the same completion-recency
+        -- helper used by ConfirmDone (tasks.allium): more-recently-completed
+        -- tasks sort first among Done items.
 }
 
 rule PrClosed {
@@ -134,6 +138,7 @@ rule PrClosed {
     ensures: task.sub_status = core/SubStatus.default_for(done)
     ensures: task.tmux_window = null
     ensures: task.updated_at = now
+    ensures: task.sort_order = completion_recency_rank(now)
     ensures:
         if notifications_enabled:
             DesktopNotification(task: task, urgency: normal, about: pr_closed)
@@ -152,6 +157,9 @@ rule PrClosed {
         -- Like other status-changing rules, the underlying patch flow
         -- (src/service/tasks/crud.rs) triggers EpicStatusRecalculation on
         -- the parent epic when the task belongs to one.
+        -- completion_recency_rank(now) is the same completion-recency
+        -- helper used by ConfirmDone (tasks.allium): more-recently-completed
+        -- tasks sort first among Done items.
 }
 
 -- == Wrap Up ==
@@ -400,6 +408,7 @@ rule ExitSession {
             else:
                 task.status = done
                 task.sub_status = core/SubStatus.default_for(done)
+                task.sort_order = completion_recency_rank(now)
             task.updated_at = now
 
     -- Emitted last, after every mutation above and after the session teardown,
@@ -445,9 +454,13 @@ rule ExitSession {
         --     rebase and done.
         --
         -- Terminal mutation, applied atomically with clearing tmux_window:
-        --   • rebase / done → task.status = done
+        --   • rebase / done → task.status = done, task.sort_order =
+        --                      completion_recency_rank(now) (same
+        --                      completion-recency helper as ConfirmDone,
+        --                      tasks.allium)
         --   • pr            → task.status = review, task.url = TaskUrl(pr_url,
-        --                      url_type = pr)
+        --                      url_type = pr) — this branch does not enter
+        --                      done, so task.sort_order is untouched
         -- The token is consumed and task/epic-changed is notified for all three
         -- actions (this notify previously existed only for the rebase path; the
         -- done and pr status/url mutations moved out of wrap_up into this single
@@ -548,6 +561,7 @@ rule FinishTaskSuccess {
     ensures: task.status = done
     ensures: task.sub_status = core/SubStatus.default_for(done)
     ensures: task.updated_at = now
+    ensures: task.sort_order = completion_recency_rank(now)
 
     @guidance
         -- Same finish_task path as WrapUpRebase. The implementation
@@ -558,6 +572,9 @@ rule FinishTaskSuccess {
         -- when the task is archived. If another active task shares the
         -- same worktree, the worktree is detached from this task but
         -- not removed from disk (same shared-worktree logic as FinishTaskSuccess).
+        -- completion_recency_rank(now) is the same completion-recency
+        -- helper used by ConfirmDone (tasks.allium): more-recently-completed
+        -- tasks sort first among Done items.
 }
 
 rule FinishTaskConflict {

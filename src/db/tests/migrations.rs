@@ -2124,15 +2124,27 @@ async fn migration_v38_feed_epic_columns() {
     conn.execute_batch(
         "PRAGMA foreign_keys=OFF;
          PRAGMA user_version=37;
-         CREATE TABLE epics (
-             id INTEGER PRIMARY KEY,
-             title TEXT NOT NULL,
-             description TEXT NOT NULL DEFAULT ''
-         );
          CREATE TABLE tasks (
              id INTEGER PRIMARY KEY,
              title TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             repo_path TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog',
+             sub_status TEXT NOT NULL DEFAULT 'none',
+             base_branch TEXT NOT NULL DEFAULT 'main',
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now')),
              epic_id INTEGER
+         );
+         CREATE TABLE epics (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             description TEXT NOT NULL DEFAULT '',
+             status TEXT NOT NULL DEFAULT 'backlog',
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+             created_at TEXT NOT NULL DEFAULT (datetime('now'))
          );",
     )
     .unwrap();
@@ -2580,14 +2592,30 @@ async fn migration_v52_adds_verify_command_to_repo_paths() {
     {
         let conn = rusqlite::Connection::open(temp.path()).unwrap();
         conn.execute_batch(
-            "CREATE TABLE repo_paths (
-                id        INTEGER PRIMARY KEY,
-                path      TEXT NOT NULL UNIQUE,
-                last_used TEXT NOT NULL DEFAULT (datetime('now'))
+            "CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                repo_path TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'backlog',
+                sub_status TEXT NOT NULL DEFAULT 'none',
+                base_branch TEXT NOT NULL DEFAULT 'main',
+                sort_order INTEGER,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE epics (
                 id INTEGER PRIMARY KEY,
-                title TEXT NOT NULL DEFAULT ''
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'backlog',
+                sort_order INTEGER,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE repo_paths (
+                id        INTEGER PRIMARY KEY,
+                path      TEXT NOT NULL UNIQUE,
+                last_used TEXT NOT NULL DEFAULT (datetime('now'))
             );",
         )
         .unwrap();
@@ -3606,4 +3634,75 @@ fn concurrent_open_applies_pending_migration_exactly_once() {
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
     assert_eq!(version, 1);
+}
+
+#[tokio::test]
+async fn v79_backfills_sort_order_for_done_tasks_and_epics() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL,
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL
+         );
+         CREATE TABLE epics (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL,
+             sort_order INTEGER,
+             updated_at TEXT NOT NULL
+         );
+         INSERT INTO tasks (title, status, sort_order, updated_at) VALUES
+           ('done-no-sort-order', 'done', NULL, '2026-01-15 12:00:00'),
+           ('done-already-sorted', 'done', -999, '2026-01-15 12:00:00'),
+           ('not-done', 'backlog', NULL, '2026-01-15 12:00:00');
+         INSERT INTO epics (title, status, sort_order, updated_at) VALUES
+           ('epic-done-no-sort-order', 'done', NULL, '2026-02-01 08:30:00'),
+           ('epic-not-done', 'running', NULL, '2026-02-01 08:30:00');",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v79_backfill_done_sort_order(&conn).unwrap();
+
+    let mut stmt = conn
+        .prepare("SELECT title, sort_order FROM tasks ORDER BY title")
+        .unwrap();
+    let task_rows: Vec<(String, Option<i64>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(task_rows[0].0, "done-already-sorted");
+    assert_eq!(
+        task_rows[0].1,
+        Some(-999),
+        "an already-set sort_order must not be overwritten"
+    );
+    assert_eq!(task_rows[1].0, "done-no-sort-order");
+    assert!(
+        task_rows[1].1.is_some_and(|so| so < 0),
+        "a null sort_order on a Done task must be backfilled to a negative value, got {:?}",
+        task_rows[1].1
+    );
+    assert_eq!(task_rows[2].0, "not-done");
+    assert_eq!(
+        task_rows[2].1, None,
+        "a non-Done task's null sort_order must be left alone"
+    );
+
+    let mut estmt = conn
+        .prepare("SELECT title, sort_order FROM epics ORDER BY title")
+        .unwrap();
+    let epic_rows: Vec<(String, Option<i64>)> = estmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(epic_rows[0].0, "epic-done-no-sort-order");
+    assert!(epic_rows[0].1.is_some_and(|so| so < 0));
+    assert_eq!(epic_rows[1].0, "epic-not-done");
+    assert_eq!(epic_rows[1].1, None);
 }

@@ -235,7 +235,8 @@ pub(super) async fn handle_update_epic(
         .collect();
 
     match state.epic_svc.update_epic(params).await {
-        Ok(epic_id) => {
+        Ok(result) => {
+            let epic_id = result.epic_id;
             state.notify_epic_changed(epic_id);
             JsonRpcResponse::ok(
                 id,

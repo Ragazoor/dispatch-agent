@@ -247,6 +247,9 @@ rule MoveTaskBackward {
     ensures: task.sub_status = core/SubStatus.default_for(prev)
     ensures: task.tmux_window = null
     ensures: task.updated_at = now
+    ensures:
+        if prev = review:
+            task.sort_order = null
 
     @guidance
         -- Manual movement (forward or backward) clears the task's agent
@@ -258,6 +261,10 @@ rule MoveTaskBackward {
         -- The worktree is preserved so the task can be resumed later
         -- via ResumeTask.
         -- Supports batch operation on multi-selected tasks.
+        -- prev = review is only reached when the task's prior status was
+        -- done (the sole backward edge into review), so this is the
+        -- leaving-done case: task.sort_order is cleared back to null,
+        -- mirroring ConfirmDone's entering-done set.
 }
 
 rule ConfirmDone {
@@ -269,6 +276,7 @@ rule ConfirmDone {
     ensures: task.sub_status = core/SubStatus.default_for(done)
     ensures: task.tmux_window = null
     ensures: task.updated_at = now
+    ensures: task.sort_order = completion_recency_rank(now)
 
     @guidance
         -- Confirmation prompt for the review -> done transition. Used by
@@ -284,6 +292,17 @@ rule ConfirmDone {
         -- BatchArchive's confirmation. Backlog/Running/Done tasks, epics,
         -- and any selection mixing Review with other statuses or epics,
         -- are unaffected and still archive via ArchiveTask/BatchArchive.
+        --
+        -- completion_recency_rank(now) is a black-box helper: it returns a
+        -- value such that more-recently-completed tasks sort first among
+        -- Done items (implementation detail: the negated current
+        -- timestamp in milliseconds, so lower Integer values are more
+        -- recent). The identical mechanism sets task.sort_order at every
+        -- other transition into done: PrMerged, PrClosed,
+        -- FinishTaskSuccess, and ExitSession's non-pr branch (all in
+        -- pr-workflow.allium), and epics.allium's MoveEpicForward when
+        -- entering done. Leaving done (MoveTaskBackward, ArchiveTask when
+        -- the task was done) clears task.sort_order back to null.
 }
 
 -- == Batch Status Movement ==
@@ -424,6 +443,9 @@ rule ArchiveTask {
 
     requires: task.status != archived
 
+    ensures:
+        if task.status = done:
+            task.sort_order = null
     ensures: task.status = archived
     ensures:
         if task.worktree != null:
@@ -441,6 +463,9 @@ rule ArchiveTask {
         -- The handler accepts any non-archived task, but the TUI's 'x'
         -- key does not route a Review task here directly — see the
         -- ArchiveKeyOnReviewTask guidance on ConfirmDone below.
+        -- The task.status = done check reads the pre-archive status
+        -- (evaluated before the status = archived assignment below), so
+        -- only a task that was actually Done has its sort_order cleared.
 }
 
 rule BatchArchive {
@@ -574,6 +599,8 @@ rule EditTask {
     --     empty-URL_TYPE fallback applies (preserve prior type if the
     --     url string is unchanged, else infer from the string).
 
+    let prior = task.status
+
     ensures:
         let edited = EditorSession(task)
         if edited.title != "": task.title = edited.title
@@ -582,6 +609,16 @@ rule EditTask {
         if edited.status != null:
             task.status = edited.status
             task.sub_status = core/SubStatus.default_for(edited.status)
+            -- Entering/leaving done via the STATUS field carries the same
+            -- completion-recency sort_order side effect as ConfirmDone /
+            -- MoveTaskBackward, and UpdateEpicViaMcp's mirror of it on the
+            -- epic side (epics.allium): the editor is a freeform status
+            -- setter, but it still routes through update_task, which does
+            -- not special-case "how" the status changed.
+            if edited.status = done and prior != done:
+                task.sort_order = completion_recency_rank(now)
+            else if prior = done and edited.status != done:
+                task.sort_order = null
         if edited.plan != "": task.plan_path = edited.plan
         else: task.plan_path = null
         if edited.tag != "": task.tag = edited.tag
@@ -621,6 +658,14 @@ rule EditTask {
         -- editor is already open is a no-op with a status message.
         -- A confirmation prompt (ConfirmEditTask) is shown before
         -- the editor is invoked.
+        -- The sort_order side effect mirrors ConfirmDone's entering-done
+        -- set and MoveTaskBackward's leaving-done clear (both in this
+        -- file), and UpdateEpicViaMcp's entering/leaving-done clause in
+        -- epics.allium. This was a spec-only gap: the code already
+        -- implements and tests it (sort_order_for_status_transition, run
+        -- inside TaskService::update_task; see
+        -- update_task_archived_to_backlog_is_unaffected_by_done_rule in
+        -- src/service/tasks/tests.rs).
 }
 
 ------------------------------------------------------------

@@ -137,6 +137,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     ),
     (77, migrate_v77_add_auto_run_plan),
     (78, migrate_v78_create_task_watchers),
+    (79, migrate_v79_backfill_done_sort_order),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1103,6 +1104,42 @@ pub(super) fn migrate_v78_create_task_watchers(conn: &Connection) -> Result<()> 
         );",
     )
     .context("v78: failed to create task_watchers table")?;
+    Ok(())
+}
+
+/// Backfills `sort_order` for tasks and epics already sitting in `Done`
+/// status, using their existing `updated_at` as an approximation of
+/// completion time (no real completion timestamp exists for historical
+/// data — see the Done-column completion-order design doc). Only fills in
+/// `NULL` values; never overwrites an already-set `sort_order` (e.g. one
+/// set by a prior manual reorder). Going forward, live transitions use
+/// millisecond precision (`sort_order_for_status_transition`); this
+/// backfill is deliberately seconds-scale, matching `updated_at`'s storage
+/// precision — see the design doc for why mixing scales here is correct,
+/// not a bug.
+pub(super) fn migrate_v79_backfill_done_sort_order(conn: &Connection) -> Result<()> {
+    let tasks_updated = conn
+        .execute(
+            "UPDATE tasks SET sort_order = -CAST(strftime('%s', updated_at) AS INTEGER)
+             WHERE status = 'done' AND sort_order IS NULL",
+            [],
+        )
+        .context("Failed to backfill sort_order for Done tasks (migration v79)")?;
+    if tasks_updated > 0 {
+        tracing::info!("Migration v79: backfilled sort_order for {tasks_updated} Done task(s)");
+    }
+
+    let epics_updated = conn
+        .execute(
+            "UPDATE epics SET sort_order = -CAST(strftime('%s', updated_at) AS INTEGER)
+             WHERE status = 'done' AND sort_order IS NULL",
+            [],
+        )
+        .context("Failed to backfill sort_order for Done epics (migration v79)")?;
+    if epics_updated > 0 {
+        tracing::info!("Migration v79: backfilled sort_order for {epics_updated} Done epic(s)");
+    }
+
     Ok(())
 }
 

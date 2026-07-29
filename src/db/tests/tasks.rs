@@ -1613,6 +1613,74 @@ async fn upsert_feed_tasks_preserves_status() {
 }
 
 #[tokio::test]
+async fn upsert_feed_tasks_preserves_sort_order_when_task_is_done() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let items = vec![make_feed_item("ext-1", "Original Title")];
+
+    db.upsert_feed_tasks(epic.id, &items, &["/repo".to_string()], &main_branches(1))
+        .await
+        .unwrap();
+
+    // Simulate the task completing and getting a completion-order
+    // sort_order, then the feed re-polling with its own severity-rank
+    // sort_order — the completion value must survive.
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    db.patch_task(
+        tasks[0].id,
+        &TaskPatch::new()
+            .status(TaskStatus::Done)
+            .sort_order(Some(-1_700_000_000_000)),
+    )
+    .await
+    .unwrap();
+
+    let mut updated_item = make_feed_item("ext-1", "Original Title");
+    updated_item.sort_order = Some(1); // feed severity rank
+    db.upsert_feed_tasks(
+        epic.id,
+        &[updated_item],
+        &["/repo".to_string()],
+        &main_branches(1),
+    )
+    .await
+    .unwrap();
+
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        tasks[0].sort_order,
+        Some(-1_700_000_000_000),
+        "re-poll must not clobber a Done task's completion-order sort_order"
+    );
+}
+
+#[tokio::test]
+async fn upsert_feed_tasks_still_updates_sort_order_when_task_is_not_done() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let items = vec![make_feed_item("ext-1", "Original Title")];
+
+    db.upsert_feed_tasks(epic.id, &items, &["/repo".to_string()], &main_branches(1))
+        .await
+        .unwrap();
+
+    let mut updated_item = make_feed_item("ext-1", "Original Title");
+    updated_item.sort_order = Some(7);
+    db.upsert_feed_tasks(
+        epic.id,
+        &[updated_item],
+        &["/repo".to_string()],
+        &main_branches(1),
+    )
+    .await
+    .unwrap();
+
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    assert_eq!(tasks[0].sort_order, Some(7));
+}
+
+#[tokio::test]
 async fn upsert_feed_tasks_adds_new_items() {
     let db = in_memory_db().await;
     let epic = db.create_epic("E", "", None).await.unwrap();

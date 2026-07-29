@@ -330,7 +330,7 @@ macro_rules! epic_service_api {
             async fn update_epic(
                 &self,
                 params: $crate::service::UpdateEpicParams
-            ) -> Result<$crate::models::EpicId, $crate::service::ServiceError>;
+            ) -> Result<$crate::service::UpdateEpicResult, $crate::service::ServiceError>;
 
             async fn delete_epic(
                 &self,

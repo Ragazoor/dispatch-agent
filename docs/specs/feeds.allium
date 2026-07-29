@@ -465,11 +465,19 @@ rule UpsertFeedTasks {
     --     values.
     --     updated_at is
     --     bumped. labels and sort_order are feed-controlled (never
-    --     user-editable in this iteration), so they are always replaced.
+    --     user-editable in this iteration), so they are always replaced —
+    --     EXCEPT when the existing task's status is done: the re-poll
+    --     sort_order update is skipped in that case, so a completion-order
+    --     value already on the task (set by ConfirmDone/PrMerged/PrClosed/
+    --     FinishTaskSuccess/ExitSession — see tasks.allium and
+    --     pr-workflow.allium) is never clobbered by the feed's severity-
+    --     rank re-poll. Only newly-inserted tasks, or re-polls of a
+    --     non-done task, take the feed's sort_order.
     --     This means a user who manually fixes the repo_path on a feed
     --     task (via 'e') keeps that correction across subsequent feed
     --     refreshes, while the feed-owned tag, labels, and sort_order
-    --     stay in sync with the script output.
+    --     stay in sync with the script output (subject to the done
+    --     exception above).
     --
     -- Tasks present locally that are NOT in the latest emission are
     -- removed. The dispatch runtime treats the feed as the source of
@@ -521,7 +529,11 @@ rule UpsertFeedTasks {
                 existing.description = item.description
                 existing.tag = item.tag
                 existing.labels = item.labels
-                existing.sort_order = item.sort_order
+                -- Re-poll sort_order update is skipped when the task is
+                -- already done, so a completion-order value is never
+                -- clobbered by the feed's severity-rank re-poll.
+                if existing.status != done:
+                    existing.sort_order = item.sort_order
                 -- url backfilled from item.url when existing.url is null,
                 -- with the same explicit-wins url_type precedence as
                 -- insert; existing non-null url is preserved.
