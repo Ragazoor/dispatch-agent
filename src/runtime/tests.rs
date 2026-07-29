@@ -345,12 +345,16 @@ async fn exec_persist_task_writes_back_done_transition_sort_order_immediately() 
         .await
         .unwrap();
 
-    // Simulate handle_confirm_done: the handler flips the in-memory task to
-    // Done and hands the clone straight to exec_persist_task. sort_order is
-    // still None — only the service computes it, inside update_task.
+    // Simulate handle_confirm_done: the handler flips the *in-memory board*
+    // task to Done (via find_task_mut) and hands a clone straight to
+    // exec_persist_task. sort_order is still None — only the service computes
+    // it, inside update_task.
     let mut task = app.tasks()[0].clone();
     task.status = models::TaskStatus::Done;
     assert_eq!(task.sort_order, None, "precondition: no sort_order yet");
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+        task.clone(),
+    )));
 
     rt.exec_persist_task(&mut app, task).await;
 
@@ -371,6 +375,183 @@ async fn exec_persist_task_writes_back_done_transition_sort_order_immediately() 
         in_memory.sort_order, db_task.sort_order,
         "in-memory sort_order must match what was actually persisted"
     );
+}
+
+/// The write-back's other direction: leaving Done clears `sort_order` back to
+/// `None` (`sort_order_for_status_transition` returns `Some(None)`), and that
+/// clear must reach the in-memory board immediately too — otherwise a task
+/// moved Done→Review keeps its negative completion rank and stays pinned to
+/// the top of Review until the next ~2s DB refresh. The entering-Done tests
+/// (task and epic side) only cover the set direction.
+#[tokio::test]
+async fn exec_persist_task_writes_back_leaving_done_sort_order_clear_immediately() {
+    let (rt, mut app) = test_runtime().await;
+    rt.exec_insert_task(
+        &mut app,
+        tui::TaskDraft {
+            title: "Un-finish me".into(),
+            description: "Desc".into(),
+            repo_path: "/repo".into(),
+            ..Default::default()
+        },
+        None,
+    )
+    .await;
+    let id = app.tasks()[0].id;
+
+    // Put the task in Done *with* a completion-recency sort_order, then load
+    // that state into the board — the state a task is in right before a
+    // MoveTaskBackward out of Done.
+    rt.db_write()
+        .patch_task(
+            id,
+            &db::TaskPatch::new()
+                .status(models::TaskStatus::Done)
+                .sort_order(Some(-1_700_000_000_000)),
+        )
+        .await
+        .unwrap();
+    rt.exec_refresh_from_db(&mut app).await;
+    assert_eq!(
+        app.tasks()[0].sort_order,
+        Some(-1_700_000_000_000),
+        "precondition: board holds the completion-recency sort_order"
+    );
+
+    // Simulate handle_move_task_backward: mutate the board task to Review
+    // (status + the default sub_status for it, as the handler does), then hand
+    // a clone to exec_persist_task. The snapshot still carries the stale
+    // negative sort_order — only the service knows to clear it.
+    let mut task = app.tasks()[0].clone();
+    task.status = models::TaskStatus::Review;
+    task.sub_status = models::SubStatus::default_for(models::TaskStatus::Review);
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+        task.clone(),
+    )));
+
+    rt.exec_persist_task(&mut app, task).await;
+
+    // No exec_refresh_from_db in between — the clear must be immediate.
+    let in_memory = app.tasks().iter().find(|t| t.id == id).unwrap();
+    assert_eq!(
+        in_memory.sort_order, None,
+        "leaving Done must clear the in-memory sort_order, not leave the \
+         stale completion rank in place"
+    );
+
+    let db_task = rt.database.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        in_memory.sort_order, db_task.sort_order,
+        "in-memory sort_order must match what was actually persisted"
+    );
+}
+
+/// The write-back must patch only `sort_order` onto the *live* board task, not
+/// splice the caller's whole snapshot into the board. Splicing would re-impose
+/// every field the snapshot holds — including `last_pre_tool_use_at`, which
+/// hooks own — reintroducing in memory exactly the clobber `exec_persist_task`
+/// already avoids on the DB write, and flipping the task to Stale on the next
+/// tick.
+#[tokio::test]
+async fn exec_persist_task_write_back_does_not_clobber_fresher_board_fields() {
+    let (rt, mut app) = test_runtime().await;
+    rt.exec_insert_task(
+        &mut app,
+        tui::TaskDraft {
+            title: "Hook race, in memory".into(),
+            description: "Desc".into(),
+            repo_path: "/repo".into(),
+            ..Default::default()
+        },
+        None,
+    )
+    .await;
+    let id = app.tasks()[0].id;
+
+    // A hook wrote a fresh PreToolUse stamp and a refresh has already brought
+    // it into the board.
+    let hook_ts = chrono::Utc::now();
+    rt.db_write()
+        .patch_task(
+            id,
+            &db::TaskPatch::new()
+                .status(models::TaskStatus::Review)
+                .last_pre_tool_use_at(Some(hook_ts)),
+        )
+        .await
+        .unwrap();
+    rt.exec_refresh_from_db(&mut app).await;
+    // Read the stamp back off the board rather than reusing `hook_ts`: the
+    // column round-trips through SQLite at second precision.
+    let board_stamp = app.tasks()[0].last_pre_tool_use_at;
+    assert!(
+        board_stamp.is_some(),
+        "precondition: board holds the hook-written stamp"
+    );
+
+    // The board moves to Done; the snapshot handed to the persist is stale on
+    // last_pre_tool_use_at (e.g. it was cloned before the hook refresh).
+    let mut board_task = app.tasks()[0].clone();
+    board_task.status = models::TaskStatus::Done;
+    board_task.sub_status = models::SubStatus::default_for(models::TaskStatus::Done);
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+        board_task.clone(),
+    )));
+    let mut stale = board_task;
+    stale.last_pre_tool_use_at = None;
+
+    rt.exec_persist_task(&mut app, stale).await;
+
+    let in_memory = app.tasks().iter().find(|t| t.id == id).unwrap();
+    assert_eq!(
+        in_memory.last_pre_tool_use_at, board_stamp,
+        "the sort_order write-back spliced the caller's stale snapshot and \
+         clobbered the board's hook-written last_pre_tool_use_at"
+    );
+    assert!(
+        in_memory.sort_order.is_some_and(|so| so < 0),
+        "the write-back must still deliver the new sort_order, got {:?}",
+        in_memory.sort_order
+    );
+}
+
+/// A task absent from the in-memory board must not be re-inserted by the
+/// write-back. `handle_task_updated` pushes when the id isn't found, so
+/// without a guard a persist racing a delete/archive would resurrect a ghost
+/// card. Mirrors the guard `write_back_epic_sort_order` already has.
+#[tokio::test]
+async fn exec_persist_task_write_back_does_not_resurrect_task_absent_from_board() {
+    let (rt, mut app) = test_runtime().await;
+    let task = create_task_returning(
+        &**rt.db_write(),
+        "Ghost",
+        "Desc",
+        "/repo",
+        None,
+        models::TaskStatus::Review,
+    )
+    .await
+    .unwrap();
+    // Never loaded into the board — stands in for a task deleted from the
+    // board while this persist was in flight.
+    assert!(
+        app.tasks().iter().all(|t| t.id != task.id),
+        "precondition: task is not in the board"
+    );
+
+    let mut done = task.clone();
+    done.status = models::TaskStatus::Done;
+    done.sub_status = models::SubStatus::default_for(models::TaskStatus::Done);
+    rt.exec_persist_task(&mut app, done).await;
+
+    assert!(
+        app.tasks().iter().all(|t| t.id != task.id),
+        "write-back re-inserted a task that is not on the board"
+    );
+    // The DB write itself still lands — only the in-memory splice is skipped.
+    let db_task = rt.database.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(db_task.status, models::TaskStatus::Done);
+    assert!(db_task.sort_order.is_some_and(|so| so < 0));
 }
 
 /// SeedActivity writes only `last_pre_tool_use_at`, leaving every other

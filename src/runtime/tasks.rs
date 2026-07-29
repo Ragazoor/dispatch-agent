@@ -188,24 +188,7 @@ impl TuiRuntime {
         match self.task_svc.update_task(p).await {
             Ok(result) => {
                 app.dirty_since_refresh = true;
-                // The service (not this handler) computes sort_order on a
-                // Done-transition (sort_order_for_status_transition, run
-                // inside update_task). Without this, the in-memory board
-                // keeps whatever sort_order `task` already had — stale/None
-                // — until the next DB refresh (~2s later), rendering a
-                // freshly-completed task at the bottom of Done instead of
-                // the top. Route the write-back through the same
-                // `TaskMessage::Updated` splice `spawn_refresh_task` already
-                // uses, rather than reaching into `App.board` directly: see
-                // the "Visibility convention" in docs/conventions.md — only
-                // `crate::tui` code may mutate `App.board`.
-                if let Some(new_sort_order) = result.sort_order_after_write {
-                    let mut updated = task;
-                    updated.sort_order = new_sort_order;
-                    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-                        updated,
-                    )));
-                }
+                self.write_back_task_sort_order(app, result);
             }
             Err(e) => {
                 app.update(Message::System(crate::tui::messages::SystemMessage::Error(
@@ -213,6 +196,42 @@ impl TuiRuntime {
                 )));
             }
         }
+    }
+
+    /// If `result` carries a written `sort_order`, patch that one field onto
+    /// the in-memory task immediately. The service — not the caller — computes
+    /// it on a Done transition (`sort_order_for_status_transition`, run inside
+    /// `update_task`), so without this the board keeps whatever the caller's
+    /// snapshot held until the next refresh ~2s later: a freshly-completed
+    /// task renders at the *bottom* of Done, and one that just left Done stays
+    /// pinned to the top of the column it landed in.
+    ///
+    /// The task twin of `write_back_epic_sort_order` (src/runtime/epics.rs),
+    /// and identical in the two details that matter. It clones the **live
+    /// board task**, not the caller's snapshot: `TaskMessage::Updated`
+    /// replaces the board slot wholesale, so splicing a snapshot would
+    /// re-impose every field it holds — including hook-owned
+    /// `last_pre_tool_use_at` — reintroducing in memory the clobber
+    /// `exec_persist_task` deliberately avoids on the DB write. And it bails
+    /// when the task is absent from the board, because `handle_task_updated`
+    /// *pushes* an unknown id, which would resurrect a ghost card for a task
+    /// deleted or archived while this write was in flight.
+    ///
+    /// Routed through `TaskMessage::Updated` — the same splice
+    /// `spawn_refresh_task` uses — rather than reaching into `App.board`
+    /// directly: see the "Visibility convention" in docs/conventions.md, only
+    /// `crate::tui` code may mutate `App.board`.
+    fn write_back_task_sort_order(&self, app: &mut App, result: crate::service::UpdateTaskResult) {
+        let Some(new_sort_order) = result.sort_order_after_write else {
+            return;
+        };
+        let Some(mut task) = app.tasks().iter().find(|t| t.id == result.task_id).cloned() else {
+            return;
+        };
+        task.sort_order = new_sort_order;
+        app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+            task,
+        )));
     }
 
     /// Write `last_pre_tool_use_at` for a freshly running task. Used after

@@ -68,6 +68,18 @@ rule ClassifyAgentActivity {
         -- include this column — a stale in-memory snapshot would otherwise
         -- overwrite a fresher hook write and flick the task into Stale on the
         -- next tick.
+        -- This is field ownership, not a database-only rule: it binds both
+        -- directions of a persist. When such a persist writes a value the
+        -- caller could not compute itself (the completion-recency sort_order
+        -- the service derives on a done transition — see ConfirmDone in
+        -- tasks.allium) and reflects it straight back into the in-memory
+        -- board, it must patch that one field onto the board's current copy
+        -- of the task, never re-impose the snapshot it submitted. Re-imposing
+        -- the snapshot would carry its stale last_pre_tool_use_at along and
+        -- produce the same Stale flick in memory that omitting the column
+        -- from the write prevents in the database. Such a write-back is also
+        -- a no-op for a task no longer on the board, so it cannot resurrect
+        -- one that was deleted or archived while the write was in flight.
         -- Card label: when sub_status = stale, the card renders the idle
         -- time as "stale · Xm" where X = now - last_pre_tool_use_at. If
         -- last_pre_tool_use_at is null (legacy pre-v50 rows, or a transient
