@@ -345,9 +345,10 @@ rule WrapUpDone {
         -- the old asymmetry where done flipped to Done immediately while
         -- rebase deferred to exit_session.
         --
-        -- TUI path: W then d finishes directly via handle_finish_complete —
-        -- the task moves to Done and the tmux window is killed in one step,
-        -- with no exit-token round trip. This mirrors how the TUI rebase path
+        -- TUI path: W then d finishes directly via handle_wrap_up_done —
+        -- the task moves to Done and the tmux window is killed in one step
+        -- (via take_detach, the same helper ConfirmDone uses), with no
+        -- exit-token round trip. This mirrors how the TUI rebase path
         -- (W then r) completes via FinishTaskSuccess rather than ExitSession;
         -- the running -> done transition for the MCP path is owned by
         -- ExitSession.

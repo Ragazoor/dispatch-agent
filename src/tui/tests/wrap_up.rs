@@ -756,6 +756,35 @@ fn confirm_wrap_up_d_marks_task_done_no_git_command() {
     assert_eq!(app.input.mode, InputMode::Normal);
 }
 
+#[test]
+fn confirm_wrap_up_d_kills_tmux_window_and_clears_reference() {
+    let mut app = App::new(vec![{
+        let mut t = make_task(1, TaskStatus::Running);
+        t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+        t.tmux_window = Some("task-1".to_string());
+        t
+    }]);
+    app.input.mode = InputMode::ConfirmWrapUp(TaskId(1));
+
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
+
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::KillTmuxWindow { .. })
+        )),
+        "expected KillTmuxWindow command, got {:?}",
+        cmds
+    );
+    let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert!(
+        task.tmux_window.is_none(),
+        "tmux_window should be cleared on the task"
+    );
+    // Worktree is preserved — will be cleaned up during archive
+    assert!(task.worktree.is_some());
+}
+
 /// P key opens the TODO overlay (emits a Todo(Load) command).
 #[test]
 fn p_uppercase_key_opens_todos() {

@@ -146,15 +146,22 @@ impl App {
         };
         self.input.mode = InputMode::Normal;
         if let Some(task) = self.find_task_mut(id) {
+            let detach = Self::take_detach(task);
             task.status = TaskStatus::Done;
             task.sub_status = SubStatus::default_for(TaskStatus::Done);
             let task_clone = task.clone();
             self.clear_agent_tracking(id);
             self.sync_board_selection();
             self.set_status(format!("Task {} marked done", id));
-            vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
+            let mut cmds = Vec::new();
+            if let Some(c) = detach {
+                cmds.push(c);
+            }
+            cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
                 task_clone,
-            ))]
+            )));
+            cmds.extend(self.maybe_respawn_split_pane(id));
+            cmds
         } else {
             vec![]
         }
