@@ -34,6 +34,14 @@ code.
 - State the never-drop invariant: any row carrying a fetch warning emits a
   preamble containing it.
 
+Pre-existing staleness in the block being edited, **out of scope** — note it, do
+not fix it, so `allium:weed` in Step 7 is not confused about what changed:
+`dispatch.allium:214` lists `build_epic_planning_prompt` as one of the prompt
+builders, but no such function exists anywhere in `src/` (only that spec line
+mentions it). Likewise `src/dispatch/worktree.rs:129` still claims
+`provision_worktree` is "shared by both `dispatch_agent` and `brainstorm_agent`",
+and there is no `brainstorm_agent`. Both are separate cleanups.
+
 Use the `allium:tend` skill. Then `./scripts/check-doc-paths.sh`, since the spec
 cites `src/…` paths and `file:NN` line numbers.
 
@@ -152,11 +160,60 @@ asserting the reuse-path prompt starts with the preamble while a
    head as `""` when the preamble is empty, else `format!("{preamble}\n\n")`,
    then `format!("{head}Always work from this worktree folder — …")`.
 
-Watch the borrow: `effective_base` is currently moved out of the `match`. Keep
-`pr_branch` alive (or clone the branch name) so `select_preamble` can still see
-whether this is a PR dispatch after provisioning.
+**The borrow fix, concretely.** Today `match pr_branch { Some(branch) => … }`
+*moves* `pr_branch`, but `select_preamble` needs it after provisioning. Match on
+`&pr_branch` and clone only in the `Some` arm, letting the `None` arm move
+`resolved` (unused thereafter):
+
+```rust
+let effective_base: String = match &pr_branch {
+    Some(branch) => branch.clone(),
+    None => resolved,
+};
+let provision =
+    provision_worktree(task, runner, Some(&effective_base), SUBPROCESS_TIMEOUT)?;
+let preamble = select_preamble(
+    pr_branch.as_deref(),
+    &effective_base,
+    provision.reused_worktree,
+    provision.fetch_warning.as_deref(),
+);
+```
+
+This compiles because `pr_branch` is only ever borrowed. Do not "clone the whole
+`Option`" — that changes ownership semantics for no benefit.
 
 **Checkpoint**: `cargo test dispatch::`.
+
+---
+
+## Step 5a — Real-git coverage of the fresh row (test only)
+
+The fresh row fires on every normal dispatch and rests on a factual claim about
+git, so it must not be covered by unit tests alone.
+
+**Test** (`tests/tmux_lifecycle.rs`) —
+`fresh_dispatch_leaves_branch_at_origin_base`:
+
+- Use the existing fixture: `seed_repo` (`tmux_lifecycle.rs:111-125`) already
+  builds a real repo with a real local `origin` and pushes `main`.
+- `Fixture::dispatch(<unused id>)` (`:184-194`) for a task id whose worktree does
+  not exist, so real `git worktree add` runs and really creates the directory.
+- Assert `git rev-parse <branch>` == `git rev-parse origin/main` in the repo.
+
+This asserts the **premise** — the fact that makes the preamble a no-op — so if
+provisioning ever stops leaving the branch at `origin/<base>`, the no-preamble
+row becomes wrong and this test fails. Reuse the file's existing `git()` helper
+(`:132-150`), which sanitises the git environment.
+
+**Do not** assert the absence of preamble text in `.claude-prompt` here. The
+launch command is `bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt
+&& claude …'` (`src/dispatch/agents.rs:183`); under real tmux that shell runs and
+deletes the file, so reading it back races, and `tokio::time::sleep` is banned in
+tests (`./scripts/check-no-test-sleep.sh`). Prompt text for the fresh row is
+covered by Step 3.
+
+**Checkpoint**: `cargo test --test tmux_lifecycle` (needs a running tmux server).
 
 ---
 
@@ -173,6 +230,27 @@ likely stays — check rather than assume).
 
 Keep `tests.rs:1417` (`"99-prev-task"`) and `:1434` (`"develop"`) —
 `rebase_preamble` itself is unchanged.
+
+**No other existing test should break — audited, and this is the expected
+result.** Every fixture pre-creates the worktree dir, so every existing
+`dispatch_agent` / `research_agent` / `quick_dispatch_agent` test now lands on the
+*reuse* row and receives the reuse wording. They survive because every
+prompt-content assertion uses `.contains(...)`, never `.starts_with(...)` — the
+sole `.starts_with("Before starting work")` is at `tests.rs:559`, inside the test
+this step deletes. Specifically:
+
+- `tests.rs:1015-1048` (reuse + fetch failed) asserts `contains("origin/main")`
+  and `contains("Note:")` — both hold for `reused_rebase_preamble` + `Note:`.
+- `tests.rs:1050-1076` (reuse + fetch ok) asserts only `!contains("Note:")`.
+- `tests.rs:984-1012` (PR review) asserts `contains("git rebase origin/feature-x")`
+  and `!contains("git rebase main")` — holds, since PR rows ignore `reused`.
+- `src/mcp/handlers/tests/tasks/dispatch.rs:1966` (dependabot, pre-created dir)
+  asserts `contains("Your task is:")` — unaffected.
+- Mock call-order/count assertions (`tests.rs:722-755`, `:2710-2738`) are
+  unaffected: `select_preamble` is pure and issues no subprocess calls.
+
+If any of these *does* fail, treat it as a signal the decision table was
+mis-implemented, not as a test to relax.
 
 **Checkpoint**: `cargo test`.
 

@@ -43,7 +43,8 @@ Three cases are the exception, all knowable server-side at provision time:
 
 ### The origin-vs-local base-ref staleness
 
-`wrap_up(rebase)` (`src/dispatch/finish.rs:152-215`) pulls `origin/<base>` into
+The rebase wrap-up path — `finish_task` (`src/dispatch/finish.rs:105`), reached
+via the `/wrap-up` skill's rebase branch — pulls `origin/<base>` into
 the repo root, rebases the task branch onto **local** `<base>`, fast-forwards
 local `<base>` with `merge --ff-only` — and never pushes. Local `main` therefore
 accumulates every finished dispatch's work while `origin/main` lags behind. Both
@@ -175,8 +176,35 @@ Note the mock's limit, which is why the decision table is a pure function: every
 existing `dispatch_agent` test uses `make_test_repo_with_worktree` because
 `fs::write` of `.claude-prompt` needs the directory to exist — but "directory
 pre-exists" *is* the reuse trigger, and `MockProcessRunner` does not create
-directories for `git worktree add`. The fresh path is therefore not drivable
-end-to-end through `dispatch_agent` with a mock.
+directories for `git worktree add`. The comment at `src/dispatch/tests.rs:926-929`
+records this same constraint. The fresh path is therefore not drivable
+end-to-end through `dispatch_agent` **with a mock**.
+
+**`tests/tmux_lifecycle.rs` (real git) — the premise itself.** The mock
+limitation above is not a reason to leave the fresh row covered by unit tests
+alone: it is the row that fires on every normal dispatch, and it rests on a
+factual claim about git. That claim is directly assertable in the real-tmux
+harness, which builds a real repo with a real local `origin` and pushes `main`
+(`seed_repo`, `tests/tmux_lifecycle.rs:111-125` — its doc comment at `:101-110`
+notes the origin exists precisely so `resolve_start_point` returns
+`origin/<base>`), then dispatches through the production entry point
+(`Fixture::dispatch`, `:184-194`) for a task id whose worktree does not yet
+exist. None of those 23 tests are `#[ignore]`d, so this runs in the normal suite.
+
+Assert the **premise**, not the prompt: after a fresh dispatch,
+`git rev-parse <branch>` equals `git rev-parse origin/main`. That is exactly the
+fact that makes the preamble a no-op, so if it ever stops holding, the
+no-preamble row becomes wrong and this test fails.
+
+Deliberately *not* asserted there: the absence of preamble text in
+`.claude-prompt`. The launch command is
+`bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt && claude …'`
+(`src/dispatch/agents.rs:183`), and under real tmux that shell actually runs, so
+the file is deleted shortly after dispatch. Reading it back would race, and the
+repo forbids `tokio::time::sleep` in tests (`./scripts/check-no-test-sleep.sh`,
+pre-push hook), so there is no sanctioned way to wait for it. The prompt text for
+the fresh row is covered by the `select_preamble` unit tests; the git fact behind
+it is covered here.
 
 **Deletion**: `rebase_preamble_prepended_to_all_prompts`
 (`src/dispatch/tests.rs:541-561`) is removed. It hand-assembles the preamble and
