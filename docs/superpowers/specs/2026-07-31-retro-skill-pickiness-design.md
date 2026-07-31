@@ -134,40 +134,48 @@ path has already fast-forwarded `base_branch` and the PR path has already pushed
 An edit made during retro would be orphaned on the branch or land after the PR
 was opened — so the edit licence above cannot work where retro sits today.
 
-Retro moves to **Step 2.6**, immediately after `simplify` (Step 2.5) and before
-Step 3's commit, so its edits are committed with the session's work and flow into
-the rebase or PR naturally. This mirrors the existing `simplify` precedent
-exactly: `simplify` also edits pre-commit and relies on Step 3 to pick the
-changes up.
+Retro moves to sit **after the action choice and before the commit**, and the
+whole skill renumbers into execution order (the `2.5`/`2.6` decimals go away):
 
 ```
-Step 2.5  simplify        (edits code)
-Step 2.6  retro           (reflect, check context, fix small drift, file the rest)
-Step 3    commit          (picks up 2.5 + 2.6 edits)
-Step 4    ask user: rebase / pr / done
-Step 5    A summarize
+Step 1  Get task ID from branch
+Step 2  Get task details
+Step 3  Simplify code changes        (was 2.5)
+Step 4  Ask user: rebase / pr / done (unchanged number, now earlier in the flow)
+Step 5  Run the retro                (was 2.6, after wrap_up before that)
+Step 6  Commit                       (was 3 — picks up steps 3 and 5)
+Step 7  Closing sequence             (was 5)
+          A summarize
           B rate learnings
           C wrap_up(action)
-          D exit_session          <- retro no longer here
+          D exit_session             <- retro no longer here
 ```
 
-Step 5D's `/retro` invocation is removed. Reflection still happens before the
-session closes, which is all the 5D placement was protecting — the constraint
-recorded at `plugin/skills/wrap-up/SKILL.md:243` is against reordering retro to
-*after* the close, not against moving it earlier. That line's stated reason (until
+Retro is now bracketed on both sides, and each bound fixes a distinct defect:
+
+- **Before the commit**, so its edits are committed with the session's work and
+  flow into the rebase or PR. This mirrors the `simplify` precedent, which also
+  edits pre-commit and relies on the commit step to pick the changes up. Its old
+  position (after `wrap_up`) could not work: the rebase path has already
+  fast-forwarded `base_branch` by then and the PR path has already pushed.
+- **After the action choice**, so retro knows whether a fix can reach
+  `base_branch` at all. It cannot on the `done` path — no rebase, no push — so
+  there retro must file rather than fix. Placing retro before the choice would
+  leave it deciding on information that does not exist yet, and the `done` case
+  would silently strand fixes exactly as the old position did.
+
+The old `Step 5D` `/retro` invocation is removed. Reflection still happens before
+the session closes, which is all that placement was protecting — the constraint
+recorded in wrap-up's PR-path closing note is against reordering retro to *after*
+the close, not against moving it earlier. That note's stated reason (until
 `exit_session` runs, no PR-merge polling is armed, so a merge cannot tear the
-session down mid-retro) is strengthened by the move, not weakened: at Step 2.6 the
+session down mid-retro) is strengthened by the move, not weakened: at Step 5 the
 PR does not exist yet.
 
-**Accepted consequence.** Retro now runs before Step 4, where the user may cancel
-the wrap-up — but Step 3 (the commit) runs between retro and that cancel point, so
-by the time the user can cancel, retro's edits are already committed and its filed
-tasks are already on the board. A cancelled wrap-up therefore leaves retro's edits
-committed in the worktree, just not yet merged or pushed anywhere. Both are
-acceptable: the edits are correct regardless of how the session ends, and the
-findings were true when filed. The alternative — placing retro after Step 4 —
-would put it after the user's irreversible choice and back into the ordering trap
-this move exists to escape.
+**A cancel is now clean.** Because the action choice (Step 4) precedes both retro
+and the commit, a user who cancels there leaves the worktree exactly as they found
+it — nothing committed, no findings filed. The earlier draft of this design put
+retro before Step 4 and had to accept the opposite as a consequence.
 
 ## Testing
 

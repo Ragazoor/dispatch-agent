@@ -7,7 +7,7 @@ description: Use to finish a dispatch task and close its session — whenever wo
 
 Wrap up a dispatch worktree. All three paths follow the same shape:
 
-`/retro` (pre-commit) → commit → `wrap_up(action)` → a single `exit_session(token, action, ...)` call that applies the terminal state change and closes the session.
+choose the action → `/retro` → commit → `wrap_up(action)` → a single `exit_session(token, action, ...)` call that applies the terminal state change and closes the session.
 
 **`exit_session` is mandatory on every path.** `wrap_up` alone changes nothing terminal — it issues a token and, for `rebase`, does the git work. The task's status is not moved and the session is not closed until `exit_session` runs. A wrap-up that stops after `wrap_up` leaves the tmux window alive and the task stuck in its old status. Never end your turn between the two calls.
 
@@ -22,7 +22,7 @@ Wrap up a dispatch worktree. All three paths follow the same shape:
 If the skill was invoked with an argument (e.g. `/wrap-up rebase`, `/wrap-up pr`, or `/wrap-up done`):
 - Treat the argument as the chosen action (`rebase`, `pr`, or `done`)
 - Skip Step 4 (AskUserQuestion) entirely
-- After completing Steps 1–3, go straight to Step 5 with that action
+- After completing Steps 1–3, go straight to Step 5 with that action (Step 4 is the only step skipped)
 
 If the argument is anything other than `rebase`, `pr`, or `done`, ignore it and proceed normally (Step 4 will ask).
 
@@ -46,7 +46,7 @@ Call the `dispatch` MCP tool `get_task` with the task ID from Step 1. Read the `
 
 Also read the `wrap_up_mode` field. If it is set (`rebase`, `pr`, or `done`) **and** no argument was provided at invocation, treat it exactly like an argument: skip Step 4 (AskUserQuestion) and proceed to Step 5 with that action.
 
-## Step 2.5: Simplify code changes (conditional)
+## Step 3: Simplify code changes (conditional)
 
 Check whether code was written in this branch — both committed and uncommitted:
 
@@ -61,51 +61,9 @@ If the combined output includes any source code files (`.rs`, `.py`, `.ts`, `.js
 Skill({ skill: "simplify" })
 ```
 
-Wait for the skill to complete before proceeding. If it makes additional changes, those will be picked up in Step 3.
+Wait for the skill to complete before proceeding. If it makes additional changes, those will be picked up in Step 6.
 
 If there are no code file changes, skip this step entirely.
-
-## Step 2.6: Run the retro
-
-Invoke the retro skill:
-
-```
-Skill({ skill: "retro" })
-```
-
-Wait for it to complete before proceeding.
-
-Retro reflects on where this session lost time and may fix small inaccuracies in
-`CLAUDE.md`, a page under `docs/`, or a skill so the next agent dispatched here
-does better. It runs **here, before the commit**, so anything it fixes is
-committed by Step 3. On the rebase and PR paths that commit then travels with
-the rebase or the PR; on the `done` path there is no rebase and no push, so a
-fix would be stranded in the worktree — retro knows to prefer filing a task
-over fixing in place when it can tell this session will end with
-`action="done"`.
-
-Do not defer it to the closing sequence. After `wrap_up` the rebase path has
-already fast-forwarded `{base_branch}`, so a later commit strands those fixes on
-a branch nobody merges, and the PR path has already pushed.
-
-Retro may also file follow-up tasks. That is expected — leave them alone.
-
-## Step 3: Commit uncommitted changes
-
-Run:
-```bash
-git status --porcelain
-```
-
-If there are no changes, skip to Step 4.
-
-If there are changes, commit them inline — run these commands yourself rather than invoking a commit skill or delegating to another tool. A commit skill would re-derive context you already have and can pull in its own conventions; you just watched this work happen, so you can stage and describe it in three commands:
-
-1. `git add` the relevant files (prefer named files over `git add -A`)
-2. `git diff --cached` to review what's staged
-3. `git commit -m "..."` with a short message summarizing the changes
-
-Don't polish the message. This commit exists so no work is lost before the branch is integrated — on the rebase path it lands on `{base_branch}` among your earlier commits, and on the PR path the PR body is where the real explanation goes. Once committed, move straight to Step 4.
 
 ## Step 4: Ask the user to choose
 
@@ -123,9 +81,55 @@ Use the `AskUserQuestion` tool with a question like:
 > **(d)** done — no git operations (use for research, planning, or work already on `{base_branch}`)
 > **(Esc / n)** cancel
 
-If the user cancels or says no, exit without calling any tool.
+If the user cancels or says no, exit without calling any tool. Nothing has been
+committed yet at this point, and the retro has not run — a cancel here leaves the
+worktree exactly as you found it.
 
-## Step 5: The closing sequence
+## Step 5: Run the retro
+
+Invoke the retro skill:
+
+```
+Skill({ skill: "retro" })
+```
+
+Wait for it to complete before proceeding.
+
+Retro reflects on where this session lost time and may fix small inaccuracies in
+`CLAUDE.md`, a page under `docs/`, or a skill so the next agent dispatched here
+does better. Two things about this position are deliberate:
+
+- It runs **after the action is settled** (Step 4), so retro knows whether its
+  fix can reach `{base_branch}` at all. Tell it the action you are wrapping up
+  with. On `done` there is no rebase and no push, so a fix would be stranded in
+  the worktree and retro should file a task instead of editing.
+- It runs **before the commit** (Step 6), so anything it does fix is committed
+  with the session's work and travels with the rebase or the PR.
+
+Do not defer it to the closing sequence. After `wrap_up` the rebase path has
+already fast-forwarded `{base_branch}`, so a later commit strands those fixes on
+a branch nobody merges, and the PR path has already pushed.
+
+Retro may also file follow-up tasks. That is expected — leave them alone.
+
+## Step 6: Commit uncommitted changes
+
+Run:
+```bash
+git status --porcelain
+```
+
+If there are no changes, skip to Step 7.
+
+If there are changes, commit them inline — run these commands yourself rather than invoking a commit skill or delegating to another tool. A commit skill would re-derive context you already have and can pull in its own conventions; you just watched this work happen, so you can stage and describe it in three commands:
+
+1. `git add` the relevant files (prefer named files over `git add -A`)
+2. `git diff --cached` to review what's staged
+3. `git commit -m "..."` with a short message summarizing the changes
+
+Don't polish the message. This commit exists so no work is lost before the branch is integrated — on the rebase path it lands on `{base_branch}` among your earlier commits, and on the PR path the PR body is where the real explanation goes. Once committed, move straight to Step 7.
+
+## Step 7: The closing sequence
 
 Every path ends with the same four steps. Only Step C differs by action, plus the PR path's authoring work which happens *before* this sequence (see *The PR path* below). The task moves to "done" (rebase, done) or "review" (pr) automatically — don't set the status by hand.
 
@@ -185,7 +189,7 @@ Only entries surfaced to you this task can be rated. There is no separate "unuse
 
 ## The PR path: author the PR before the closing sequence
 
-You are creating a real PR with a title and body that reflect the actual work. Dispatch will not do this for you. Do all of the following *before* Step 5, then run the closing sequence with `action="pr"`.
+You are creating a real PR with a title and body that reflect the actual work. Dispatch will not do this for you. Do all of the following *before* Step 7, then run the closing sequence with `action="pr"`.
 
 ### Inspect what changed
 
@@ -263,4 +267,4 @@ If `gh` reports `a pull request for branch '...' already exists`, parse the URL 
 
 ### Then run the closing sequence
 
-Go to Step 5 with `action="pr"`, skipping Step A (the PR body is your summary). The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down between the two calls. Don't reorder to "close first, then finish up".
+Go to Step 7 with `action="pr"`, skipping Step A (the PR body is your summary). The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down between the two calls. Don't reorder to "close first, then finish up".

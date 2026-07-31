@@ -656,24 +656,19 @@ mod tests {
             .unwrap_or_else(|| panic!("{path} must be UTF-8"))
     }
 
-    /// A lowercased section of the retro skill body: from the first occurrence
-    /// of `anchor` up to the next Markdown heading of any depth.
+    /// A lowercased section of the retro skill body, via [`section_after`]:
+    /// from the first occurrence of `anchor` up to the next Markdown heading of
+    /// any depth. Anchors passed here must therefore be lowercase.
     ///
     /// Scoped per-section deliberately. Retro repeats words like "task",
     /// "spec" and "fix" across its steps, so a whole-document `contains` can
-    /// still pass after the instruction under test has been deleted. Ending at
-    /// `\n#` rather than at a fixed depth means promoting or demoting a heading
-    /// cannot silently widen a section to the rest of the file. If you reword
-    /// an anchor heading, re-anchor it here.
+    /// still pass after the instruction under test has been deleted. If you
+    /// reword an anchor heading, re-anchor it here.
     fn retro_section(anchor: &str) -> String {
         let content = skill_body("retro").to_lowercase();
-        let (_, section) = content.split_once(anchor).unwrap_or_else(|| {
+        section_after(&content, anchor).unwrap_or_else(|| {
             panic!("retro skill must contain the section anchored on {anchor:?}")
-        });
-        section
-            .split_once("\n#")
-            .map_or(section, |(block, _)| block)
-            .to_string()
+        })
     }
 
     #[test]
@@ -869,19 +864,31 @@ mod tests {
     }
 
     #[test]
-    fn wrap_up_skill_runs_retro_before_the_commit_step() {
-        // Retro fixes small agent-context drift in place, so it has to run
-        // before the commit that carries those edits. Invoked after wrap_up
-        // instead, its edits are stranded: the rebase path has already
-        // fast-forwarded base_branch, so a later commit sits on a branch
-        // nobody merges, and the PR path has already pushed.
+    fn wrap_up_skill_runs_retro_between_the_action_choice_and_the_commit() {
+        // Retro is bracketed on both sides, and each bound fixes a real defect:
+        //
+        //  • After the action choice, because retro decides fix-vs-file from the
+        //    action. On `done` there is no rebase and no push, so a fix would be
+        //    stranded — and retro cannot know that while the action is unsettled.
+        //  • Before the commit, because that commit is what carries the fixes it
+        //    does make. Invoked after wrap_up instead, they are stranded anyway:
+        //    the rebase path has already fast-forwarded base_branch, so a later
+        //    commit sits on a branch nobody merges, and the PR path has pushed.
         let content = skill_body("wrap-up");
+        let choice_at = content
+            .find("## Step 4: Ask the user to choose")
+            .expect("wrap-up skill must have an action-choice step to anchor retro after");
         let retro_at = content
             .find("Skill({ skill: \"retro\" })")
             .expect("wrap-up skill must invoke the retro skill");
         let commit_at = content
-            .find("## Step 3: Commit uncommitted changes")
+            .find("## Step 6: Commit uncommitted changes")
             .expect("wrap-up skill must have a commit step to anchor retro before");
+        assert!(
+            choice_at < retro_at,
+            "wrap-up must settle the action before invoking retro, so retro can \
+             tell whether a fix it makes can reach the base branch at all"
+        );
         assert!(
             retro_at < commit_at,
             "wrap-up must invoke retro before its commit step, so retro's \

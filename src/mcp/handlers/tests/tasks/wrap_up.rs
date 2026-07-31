@@ -2,6 +2,21 @@
 use super::*;
 use crate::mcp::handlers::tasks::WrapUpAction;
 
+/// Asserts a `wrap_up` response does not tell the agent to run `/retro`.
+///
+/// The `/wrap-up` skill runs retro before its commit step, well ahead of
+/// `wrap_up`. A response that asks for retro here would run it a second time —
+/// after the rebase has already fast-forwarded the base branch, so the edits
+/// land nowhere — and re-file findings it filed minutes earlier. Asserted for
+/// each action separately because they reach the response through two different
+/// handlers (`finish_wrap_up_rebase` and `finish_wrap_up_simple`).
+fn assert_no_retro_instruction(action: &str, text: &str) {
+    assert!(
+        !text.to_lowercase().contains("retro"),
+        "wrap_up({action}) response must not instruct the agent to run /retro; got: {text}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // wrap_up tests
 // ---------------------------------------------------------------------------
@@ -453,10 +468,7 @@ async fn wrap_up_rebase_returns_exit_token() {
         text.contains(&et.token),
         "response text must contain the token; got: {text}"
     );
-    assert!(
-        !text.to_lowercase().contains("retro"),
-        "wrap_up(rebase) response must not instruct the agent to run /retro; got: {text}"
-    );
+    assert_no_retro_instruction("rebase", &text);
 }
 
 #[tokio::test]
@@ -527,10 +539,7 @@ async fn wrap_up_done_returns_exit_token() {
             text.contains(&et.token),
             "response text must contain the token; got: {text}"
         );
-        assert!(
-            !text.to_lowercase().contains("retro"),
-            "wrap_up(done) response must not instruct the agent to run /retro; got: {text}"
-        );
+        assert_no_retro_instruction("done", &text);
     }
 
     let task = state.db.get_task(task_id).await.unwrap().unwrap();
@@ -676,12 +685,7 @@ async fn wrap_up_pr_response_contains_token_and_no_retro_instruction() {
         !text.contains("do not call exit_session") && !text.contains("do not call `exit_session`"),
         "response must no longer tell the agent to skip exit_session; got: {text}"
     );
-    // retro now runs earlier in wrap-up (Step 2.6, before the commit step), so
-    // wrap_up's own response must not tell the agent to run it again here.
-    assert!(
-        !text.to_lowercase().contains("retro"),
-        "wrap_up response must not instruct the agent to run /retro; got: {text}"
-    );
+    assert_no_retro_instruction("pr", &text);
     // PR-action wrap_up still nudges the agent to rate any unrated retrieved learnings.
     assert!(
         text.contains("rate_learning"),
