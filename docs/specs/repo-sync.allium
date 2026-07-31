@@ -333,13 +333,32 @@ rule RefreshRepoSyncStateOnStartup {
 }
 
 rule RefreshRepoSyncStateAfterDispatch {
-    when: AgentLaunched(task, _)
+    when: AgentLaunched(task, mode)
+
+    -- standard, research and quick are the three modes that provision a
+    -- worktree and fetch origin/<base> before AgentLaunched fires. resume
+    -- (ResumeTask / RetryResume) provisions nothing and fetches nothing — the
+    -- task's worktree and tmux window already exist — so a refresh there
+    -- would re-read exactly the refs the previous measurement already read.
+    -- The guard excludes that no-op; it does not narrow which surfaces are
+    -- covered.
+    requires: mode in {standard, research, quick}
 
     ensures: RefreshRepoSyncState(repo_path: task.repo_path, fetch_first: false)
 
     @guidance
         -- No new network cost: provisioning the task's worktree already fetched
         -- origin/<base> for that repository, so this is a local ref read.
+        --
+        -- This obligation is per-event, not per-surface: every AgentLaunched
+        -- emission carrying one of the three provisioning modes must be
+        -- followed by a refresh, whichever surface produced the event. The
+        -- board's own dispatch (DispatchTask), the MCP dispatch_task tool
+        -- (DispatchTaskViaMcp, which ensures DispatchTask) and epic
+        -- auto-dispatch chaining (AutoDispatchNextSubtask, which also ensures
+        -- DispatchTask) all route through the same DispatchTask rule and the
+        -- same AgentLaunched(mode: standard) emission — so from this rule's
+        -- point of view they are indistinguishable, and none may be exempted.
 }
 
 rule RefreshRepoSyncStateAfterRebase {
@@ -809,26 +828,3 @@ surface RepoSyncCli {
         -- preconditions, same failure vocabulary — see the RepoSyncEngine
         -- contract.
 }
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
--- RefreshRepoSyncStateAfterDispatch fires on AgentLaunched(task, _), but only
--- three of the five launch paths currently refresh. Needs an operator decision,
--- because the two gaps are not the same kind of gap:
---
---   * The MCP dispatch_task tool (and the epic auto-dispatch chaining built on
---     it) runs the same provisioning as the board's own dispatch — the worktree
---     is created and origin/<base> fetched — so the rule's stated rationale
---     applies verbatim and the missing refresh reads as a code gap. Closing it
---     needs a repo-sync-shaped MCP notification alongside the existing
---     notify_task_changed, mirroring notify_branch_rebased.
---   * Resume (ResumeTask / RetryResume, mode = resume) provisions no worktree
---     and performs no fetch, so a refresh there would re-read exactly the refs
---     the previous measurement already read. Here it is arguably the `_` mode
---     wildcard that over-claims, and the honest fix is to narrow this rule to
---     the provisioning modes rather than to add a refresh.
---
--- Resolve both together: narrowing the wildcard on its own would silently
--- absolve the MCP gap.
