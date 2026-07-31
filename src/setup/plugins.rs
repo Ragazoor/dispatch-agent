@@ -701,10 +701,12 @@ mod tests {
     }
 
     #[test]
-    fn retro_reflection_feeds_the_context_check() {
-        // Step 1's reflection used to be decorative: printed in Step 4 and
-        // discarded, while Step 2 ran an audit that ignored it. The friction
-        // the agent actually hit is now the input to what gets fixed.
+    fn retro_first_step_asks_where_time_was_lost() {
+        // Step 1 must prompt the agent for concrete moments this session lost
+        // time, and must state that "nothing notable" is a real answer so a
+        // smooth session isn't pressured into inventing findings. (The
+        // Step-1-to-Step-2 linkage is asserted separately, by the
+        // "concrete moment" check in `retro_admission_test_is_next_agent_benefit_not_doc_accuracy`.)
         let section = retro_section("## step 1:");
         assert!(
             section.contains("lost time") || section.contains("lose time"),
@@ -776,9 +778,16 @@ mod tests {
             "retro must name speculative refactors as a non-finding, since that \
              is the shape of every retro task that got archived"
         );
+        // Scoped to the whole skill body, not just this section: the string
+        // this guards against previously lived in Step 3's tag list, a
+        // section this assertion does not otherwise cover. A future agent
+        // restoring "`feature` for an enhancement idea" to Step 3 is the
+        // likeliest regression, and no other section legitimately contains
+        // this string, so widening the scope here is safe.
+        let whole_skill = skill_body("retro").to_lowercase();
         assert!(
-            !section.contains("`feature` for"),
-            "retro must not still describe when to use the feature tag"
+            !whole_skill.contains("`feature` for"),
+            "retro must not still describe when to use the feature tag, in any section"
         );
     }
 
@@ -829,8 +838,9 @@ mod tests {
 
     #[test]
     fn summarize_skill_does_not_claim_unconditional_finality() {
-        // wrap-up invokes summarize mid-flow (before wrap_up/retro/exit_session).
-        // An unconditional "this is always the final step" claim reads as an
+        // wrap-up invokes summarize mid-flow, in its closing sequence: after
+        // retro and before wrap_up/exit_session. An unconditional "this is
+        // always the final step" claim reads as an
         // instruction to stop the whole session right there, which is how
         // wrap-up gets stuck after summarize and never reaches exit_session.
         let content = skill_body("summarize");

@@ -32,7 +32,7 @@ Some MCP tools drive multi-call handshakes via in-memory state on `McpState`. Th
 
 `wrap_up(task_id, action)` issues an `ExitToken { token, action }` (`src/mcp/mod.rs`, keyed by `TaskId` in `McpState::exit_tokens: RwLock<HashMap<TaskId, ExitToken>>`), recording which action (`rebase` | `done` | `pr`) issued it. For `rebase` this call also performs the actual git rebase/fast-forward synchronously; for `done`/`pr` it performs no mutation at all. The task's `status` is unchanged by `wrap_up` in every case — it stays whatever it was (`running`) until the closing call.
 
-Between `wrap_up` and `exit_session`, the agent runs the `/retro` skill (the mandatory reflection step — there is no in-handler reflection prompt anymore).
+The `/retro` skill (the mandatory reflection step — there is no in-handler reflection prompt anymore) does **not** run between these two calls. The `/wrap-up` skill invokes it earlier, before its commit step and ahead of `wrap_up`, so any agent-context fix retro makes is committed with the session's work rather than stranded after the rebase or the push.
 
 `exit_session(task_id, token, action, pr_url?)` is a **single call** that:
 1. Validates the token, and that `action` matches the action recorded on the token (mismatch → error naming both actions, no mutation).

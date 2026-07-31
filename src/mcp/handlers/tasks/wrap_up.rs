@@ -13,13 +13,13 @@ use super::{
 
 const ERR_NO_TOKEN: &str = "no exit token — call wrap_up first";
 
-fn retro_instruction(action: WrapUpAction) -> String {
+fn exit_instruction(action: WrapUpAction) -> String {
     let extra_arg = match action {
         WrapUpAction::Pr => ", and pr_url (the URL returned by `gh pr create`)",
         WrapUpAction::Rebase | WrapUpAction::Done => "",
     };
     format!(
-        "run the /retro skill now, then call `exit_session` with action=\"{}\" and this token{extra_arg}",
+        "call `exit_session` with action=\"{}\" and this token{extra_arg}",
         action.as_str()
     )
 }
@@ -35,8 +35,8 @@ async fn wrap_up_verify_line(db: &dyn crate::db::TaskReadStore, repo_path: &str)
 
 /// Common wrap_up finishing sequence shared by all three actions: fetch the
 /// verify-command line, issue the exit token recording `action`, and build
-/// the retro instruction. Only the surrounding response prose differs per
-/// action.
+/// the exit_session instruction. Only the surrounding response prose differs
+/// per action.
 async fn issue_wrap_up_token(
     state: &McpState,
     task_id: TaskId,
@@ -45,8 +45,8 @@ async fn issue_wrap_up_token(
 ) -> (String, String, String) {
     let verify_line = wrap_up_verify_line(&*state.db, repo_path).await;
     let token = state.issue_exit_token(task_id, action);
-    let retro_line = retro_instruction(action);
-    (verify_line, token, retro_line)
+    let exit_line = exit_instruction(action);
+    (verify_line, token, exit_line)
 }
 
 /// Checks the task is wrappable, returning the JSON-RPC error response to
@@ -102,7 +102,7 @@ async fn finish_wrap_up_simple(
     repo_path: &str,
     action: WrapUpAction,
 ) -> JsonRpcResponse {
-    let (verify_line, token, retro_line) =
+    let (verify_line, token, exit_line) =
         issue_wrap_up_token(state, task_id, repo_path, action).await;
     let no_git_note = match action {
         WrapUpAction::Done => " No git operations performed.",
@@ -122,7 +122,7 @@ async fn finish_wrap_up_simple(
         json!({"content": [{"type": "text", "text": format!(
             "wrap_up complete (task {tid}, action: {action_str}).{no_git_note} \
         The session is NOT yet closed.{verify_line} \
-        Exit token: {token} — {retro_line}. \
+        Exit token: {token} — {exit_line}. \
         You MUST call `exit_session` next as your final action.{rate_learning_nudge}",
             tid = task_id.0,
             action_str = action.as_str(),
@@ -209,13 +209,13 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
             // reflects the merged code.
             reindex_repo_in_background(state, task.repo_path.clone());
             state.notify_task_changed(task_id);
-            let (verify_line, token, retro_line) =
+            let (verify_line, token, exit_line) =
                 issue_wrap_up_token(state, task_id, &task.repo_path, WrapUpAction::Rebase).await;
             JsonRpcResponse::ok(
                 id,
                 json!({"content": [{"type": "text", "text": format!(
                     "wrap_up complete (task {}, action: rebase). The session is NOT yet closed.{verify_line} \
-                Exit token: {token} — {retro_line}. \
+                Exit token: {token} — {exit_line}. \
                 You MUST call `exit_session` next as your final action — without it, the tmux window stays alive \
                 and the task remains in its current status. Do not stop, and do not call any other tool first.",
                     task_id.0

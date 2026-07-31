@@ -59,8 +59,9 @@ slowed by its absence, and filing it buys the next agent nothing.
 
 Fix it yourself, in this session, when **all** of these hold:
 
-- the surface is agent-facing prose — `CLAUDE.md`, a page under `docs/`, or a
-  skill under `plugin/skills/`;
+- the surface is agent-facing prose — `CLAUDE.md`, a page under `docs/` other
+  than `docs/specs/` (Allium specs have their own, narrower carve-out below),
+  or a skill under `plugin/skills/`;
 - your own work this session made it wrong, or this session proved it wrong;
 - the correction is small and self-evident, needing no judgement about intended
   design.
@@ -79,10 +80,23 @@ File a task with `create_task` instead — and do **not** edit — when:
   That is a `spec → tests → code` loop and needs its own dispatch;
 - the fix needs a judgement call about intended design;
 - it is a pre-existing inaccuracy whose history you do not know;
-- it is not small.
+- it is not small;
+- you know this session's wrap-up will end with `action="done"` (see below).
 
 Also file a `bug` for a concrete defect you noticed but could not fix in scope —
 one with an observable wrong behaviour, not a suspicion.
+
+**Know the wrap-up mode before you fix.** Call `get_task` and check
+`wrap_up_mode`. Retro runs before wrap-up's commit step, so a fix you make here
+only reaches the base branch if that commit later gets merged in — which
+happens on the rebase and PR paths, but never on `action="done"` (no rebase, no
+push; the worktree and its commits are simply left behind). If `wrap_up_mode`
+is already `done` — callers such as the `decompose-review` skill and epic
+subtasks pre-set it — a fix cannot reach the base branch, so file instead of
+fixing, even where the rules above would otherwise say "fix it here." If
+`wrap_up_mode` is unset, you cannot know yet: the human chooses the action at
+wrap-up's Step 4, after retro has already run. In that case keep fixing as
+normal per the rules above — do not treat "unset" as if it meant "done."
 
 ### What you may file
 
@@ -126,14 +140,14 @@ Print a structured summary:
 **Went well:**
 - {bullet}
 
-**Could improve:**
+**Lost time on:**
 - {bullet}
 
-**Docs/specs checked:** CLAUDE.md{, docs/specs/<relevant>.allium if applicable}
+**Context fixed in this session:** {what you corrected in place per Step 3, and where}{, or "none needed"}
 **Follow-up tasks created:** #<id> (<tag>: <title>){, or "none needed"}
 ```
 
-This is the last step of the retro skill itself — it is not the end of the session. Retro is almost always invoked as a sub-step of `wrap-up`, just before that skill's commit step — which is what carries any edit you just made. After printing this summary, immediately resume the calling skill's next instruction (the closing `exit_session` call) in the same turn. Do not stop here.
+This is the last step of the retro skill itself — it is not the end of the session. Retro is almost always invoked as a sub-step of `wrap-up`, just before that skill's commit step — which is what carries any edit you just made. After printing this summary, immediately resume the calling skill's next instruction (wrap-up's commit step) in the same turn. Do not stop here.
 
 ## Relationship to other skills
 

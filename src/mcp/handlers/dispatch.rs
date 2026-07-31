@@ -513,8 +513,8 @@ Pass command=null to clear it.",
         };
 
     async "exit_session" => tasks::handle_exit_session,
-        "Close your agent session in a single call — run the /retro skill before calling this, it is \
-the mandatory reflection step. Applies the terminal mutation atomically with clearing the tmux \
+        "Close your agent session in a single call — this is the final step of wrap-up, called after \
+the commit and after any reflection the wrap-up flow has already run. Applies the terminal mutation atomically with clearing the tmux \
 window: 'rebase'/'done' move the task to Done; 'pr' moves it to Review and sets the PR url. The \
 action must match the action passed to wrap_up, or the call is rejected. \
 If the task belongs to an epic with auto_dispatch enabled, closing it automatically dispatches \

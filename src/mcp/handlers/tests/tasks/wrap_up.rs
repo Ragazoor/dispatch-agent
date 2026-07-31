@@ -453,6 +453,10 @@ async fn wrap_up_rebase_returns_exit_token() {
         text.contains(&et.token),
         "response text must contain the token; got: {text}"
     );
+    assert!(
+        !text.to_lowercase().contains("retro"),
+        "wrap_up(rebase) response must not instruct the agent to run /retro; got: {text}"
+    );
 }
 
 #[tokio::test]
@@ -522,6 +526,10 @@ async fn wrap_up_done_returns_exit_token() {
         assert!(
             text.contains(&et.token),
             "response text must contain the token; got: {text}"
+        );
+        assert!(
+            !text.to_lowercase().contains("retro"),
+            "wrap_up(done) response must not instruct the agent to run /retro; got: {text}"
         );
     }
 
@@ -605,7 +613,7 @@ async fn wrap_up_pr_defers_review_and_url_to_exit_session() {
 }
 
 #[tokio::test]
-async fn wrap_up_pr_response_contains_token_and_retro_instruction() {
+async fn wrap_up_pr_response_contains_token_and_no_retro_instruction() {
     let state = test_state().await;
     let task_id = state
         .db_write()
@@ -667,6 +675,12 @@ async fn wrap_up_pr_response_contains_token_and_retro_instruction() {
     assert!(
         !text.contains("do not call exit_session") && !text.contains("do not call `exit_session`"),
         "response must no longer tell the agent to skip exit_session; got: {text}"
+    );
+    // retro now runs earlier in wrap-up (Step 2.6, before the commit step), so
+    // wrap_up's own response must not tell the agent to run it again here.
+    assert!(
+        !text.to_lowercase().contains("retro"),
+        "wrap_up response must not instruct the agent to run /retro; got: {text}"
     );
     // PR-action wrap_up still nudges the agent to rate any unrated retrieved learnings.
     assert!(

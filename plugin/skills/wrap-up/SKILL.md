@@ -78,7 +78,11 @@ Wait for it to complete before proceeding.
 Retro reflects on where this session lost time and may fix small inaccuracies in
 `CLAUDE.md`, a page under `docs/`, or a skill so the next agent dispatched here
 does better. It runs **here, before the commit**, so anything it fixes is
-committed by Step 3 and travels with the rebase or the PR.
+committed by Step 3. On the rebase and PR paths that commit then travels with
+the rebase or the PR; on the `done` path there is no rebase and no push, so a
+fix would be stranded in the worktree — retro knows to prefer filing a task
+over fixing in place when it can tell this session will end with
+`action="done"`.
 
 Do not defer it to the closing sequence. After `wrap_up` the rebase path has
 already fast-forwarded `{base_branch}`, so a later commit strands those fixes on

@@ -395,9 +395,9 @@ Add to `mod tests` in `src/setup/plugins.rs`, after Task 2's tests:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cargo test --lib setup::plugins::tests::retro_skill_does_not_file setup::plugins::tests::retro_skill_requires setup::plugins::tests::retro_skill_states`
+Run: `cargo test --lib setup::plugins::tests::retro_skill_` — `cargo test` accepts only one positional filter, so use this common prefix rather than listing the three test names.
 
-Expected: all three FAIL by panicking in `retro_section` — the `### what you may file` and `### before you file` headings do not exist yet.
+Expected: the three new tests FAIL by panicking in `retro_section` — the `### what you may file` and `### before you file` headings do not exist yet.
 
 - [ ] **Step 3: Rewrite the rest of Step 3**
 

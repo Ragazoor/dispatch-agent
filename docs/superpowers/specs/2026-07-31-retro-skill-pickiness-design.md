@@ -160,12 +160,14 @@ session down mid-retro) is strengthened by the move, not weakened: at Step 2.6 t
 PR does not exist yet.
 
 **Accepted consequence.** Retro now runs before Step 4, where the user may cancel
-the wrap-up. A cancelled wrap-up therefore leaves retro's edits uncommitted in the
-worktree and its filed tasks on the board. Both are acceptable: the edits are
-correct regardless of how the session ends and Step 3 will commit them on the next
-wrap-up attempt, and the findings were true when filed. The alternative — placing
-retro after Step 4 — would put it after the user's irreversible choice and back
-into the ordering trap this move exists to escape.
+the wrap-up — but Step 3 (the commit) runs between retro and that cancel point, so
+by the time the user can cancel, retro's edits are already committed and its filed
+tasks are already on the board. A cancelled wrap-up therefore leaves retro's edits
+committed in the worktree, just not yet merged or pushed anywhere. Both are
+acceptable: the edits are correct regardless of how the session ends, and the
+findings were true when filed. The alternative — placing retro after Step 4 —
+would put it after the user's irreversible choice and back into the ordering trap
+this move exists to escape.
 
 ## Testing
 

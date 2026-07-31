@@ -358,8 +358,8 @@ rule WrapUpRateLearningNudge {
         -- see mcp-task-tools.allium: PrFinalisationReflectionNudge.
         -- This rule covers only the wrap_up-time rate_learning nudge. Reflection
         -- proper is the /retro skill (plugin/skills/retro/SKILL.md), which the
-        -- /wrap-up skill runs between wrap_up and exit_session for all three
-        -- actions — it is not driven by wrap_up or exit_session.
+        -- /wrap-up skill runs before its commit step, ahead of wrap_up, for
+        -- all three actions — it is not driven by wrap_up or exit_session.
         -- Implemented in finish_wrap_up_simple() (src/mcp/handlers/tasks/wrap_up.rs),
         -- which also emits the verify and exit-token lines documented in
         -- pr-workflow.allium: WrapUpPr.
