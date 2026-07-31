@@ -30,10 +30,13 @@ use dispatch_tui::service::{TaskService, UpdateTaskParams};
 async fn subscribe_then_finish_delivers_notification() {
     // 1. Set up an in-memory DB + MockProcessRunner-backed MCP router.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // tmux send-keys -l (notification text)
-        MockProcessRunner::ok(), // tmux send-keys Enter
-    ]));
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // tmux send-keys -l (notification text)
+            MockProcessRunner::ok(), // tmux send-keys Enter
+        ])
+        .with_windows(&["task-watcher"]),
+    );
     let runner: Arc<dyn ProcessRunner> = mock.clone();
 
     let router = dispatch_tui::mcp::router(
@@ -149,8 +152,11 @@ async fn subscribe_then_finish_delivers_notification() {
         "first call should be send-keys -l: {:?}",
         calls[0]
     );
+    // A's window is targeted by its resolved pane ID, not its name — tmux
+    // resolves a bare `-t <name>` by prefix, so every window target goes through
+    // `tmux::window_target` first.
     assert!(
-        calls[0].1.contains(&"task-watcher".to_string()),
+        calls[0].1.contains(&mock.pane_id_of("task-watcher")),
         "first call should target A's tmux window: {:?}",
         calls[0]
     );

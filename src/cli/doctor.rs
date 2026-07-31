@@ -783,14 +783,17 @@ mod tests {
 
         #[tokio::test]
         async fn repair_sessions_stale_window_kills_window() {
-            let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+            let mock =
+                MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&["task-7"]);
             repair_sessions_stale_window("task-7", &mock).unwrap();
             let calls = mock.recorded_calls();
             assert_eq!(calls.len(), 1);
             assert_eq!(calls[0].0, "tmux");
+            // Targeted by the window's resolved pane ID, not its name — see
+            // `tmux::window_target`.
             assert!(
-                calls[0].1.contains(&"task-7".to_string()),
-                "expected window name in tmux args, got: {:?}",
+                calls[0].1.contains(&mock.pane_id_of("task-7")),
+                "expected the resolved pane ID in tmux args, got: {:?}",
                 calls[0].1
             );
         }

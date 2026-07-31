@@ -115,17 +115,53 @@ impl ProcessRunner for RealProcessRunner {
 // Mock implementation — for tests only
 // ---------------------------------------------------------------------------
 
+/// How a [`MockProcessRunner`] answers `tmux::window_target`'s exact-name
+/// window lookup.
+///
+/// # Why this needs a policy at all
+///
+/// Every `tmux::` helper that takes a window *name* resolves it to a pane ID
+/// first, because tmux resolves a bare `-t <name>` by **prefix** and would
+/// otherwise act on a different task's window (see `tmux::window_target`). That
+/// makes the lookup a precondition of nearly every tmux call in the codebase —
+/// so how the mock answers it is a decision worth naming rather than burying.
+enum WindowLookup {
+    /// Resolve whatever name is asked for, assigning pane IDs `%0`, `%1`, … in
+    /// first-seen order. Answered out of band: not taken from the positional
+    /// response queue, and not recorded in [`MockProcessRunner::recorded_calls`].
+    ///
+    /// The default, because for the overwhelming majority of tests the subject
+    /// is the *operation* — that dispatch sends the right claude command, that
+    /// cleanup kills a window — and resolution is infrastructure. Interleaving a
+    /// listing response into every queue and re-numbering every `calls[N]`
+    /// assertion around it would obscure those tests without testing anything
+    /// new. The trade is deliberate: a mock cannot meaningfully verify target
+    /// resolution anyway (it records argv, not tmux's interpretation of it), so
+    /// the real coverage lives in tests/tmux_window_targets.rs against a real
+    /// server, plus the `window_target` unit tests in src/tmux.rs.
+    AnyName(Mutex<Vec<String>>),
+    /// Resolve only these names, in this order; anything else fails as absent.
+    /// Also answered out of band. Use when a test needs a *specific* topology —
+    /// notably a prefix collision (`task-4` alongside `task-42`).
+    OnlyNames(Vec<String>),
+    /// Do not intercept: answer the lookup from the positional queue and record
+    /// it like any other call. Use when the lookup itself is the subject, or
+    /// when no call at all is expected (see [`MockProcessRunner::unused`]).
+    Queued,
+}
+
 pub struct MockProcessRunner {
     calls: Mutex<Vec<(String, Vec<String>)>>,
     responses: Mutex<VecDeque<(Option<Duration>, Result<Output>)>>,
+    window_lookup: WindowLookup,
 }
 
 impl MockProcessRunner {
+    /// Construct a runner. tmux window-name lookups resolve permissively — see
+    /// [`WindowLookup::AnyName`] for why that is the default, and
+    /// [`Self::with_windows`] / [`Self::with_queued_window_lookup`] to change it.
     pub fn new(responses: Vec<Result<Output>>) -> Self {
-        Self {
-            calls: Mutex::new(Vec::new()),
-            responses: Mutex::new(responses.into_iter().map(|r| (None, r)).collect()),
-        }
+        Self::new_with_delays(responses.into_iter().map(|r| (None, r)).collect())
     }
 
     /// Construct a runner whose responses are delivered after a per-response
@@ -134,6 +170,109 @@ impl MockProcessRunner {
         Self {
             calls: Mutex::new(Vec::new()),
             responses: Mutex::new(VecDeque::from(responses)),
+            window_lookup: WindowLookup::AnyName(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Restrict this fake tmux server to exactly these window names, so a name
+    /// that is not listed fails to resolve. Each gets one active pane, `%0`,
+    /// `%1`, … in the order given; [`Self::pane_id_of`] returns the ID a
+    /// resolution will yield.
+    ///
+    /// Use where the topology matters — above all a prefix collision, e.g.
+    /// `with_windows(&["task-42"])` and then an operation on `task-4`, which
+    /// must fail rather than hit `task-42`. See [`WindowLookup::OnlyNames`].
+    pub fn with_windows(mut self, names: &[&str]) -> Self {
+        self.window_lookup =
+            WindowLookup::OnlyNames(names.iter().map(|n| (*n).to_string()).collect());
+        self
+    }
+
+    /// Answer window lookups from the positional response queue and record them,
+    /// instead of resolving them out of band. See [`WindowLookup::Queued`].
+    pub fn with_queued_window_lookup(mut self) -> Self {
+        self.window_lookup = WindowLookup::Queued;
+        self
+    }
+
+    /// The pane ID this fake server resolves `name` to, i.e. the `-t` target the
+    /// helper under test will pass to tmux.
+    ///
+    /// # Panics
+    ///
+    /// Under [`Self::with_windows`], if `name` was not declared — asserting
+    /// against a window this server does not have is a test bug. Under
+    /// [`Self::with_queued_window_lookup`], always: there is no fake server to
+    /// ask.
+    #[allow(clippy::expect_used, clippy::unwrap_used)] // test helper
+    pub fn pane_id_of(&self, name: &str) -> String {
+        let index = match &self.window_lookup {
+            WindowLookup::AnyName(seen) => Self::index_of_or_insert(seen, name),
+            WindowLookup::OnlyNames(names) => names
+                .iter()
+                .position(|n| n == name)
+                .expect("window was not declared via with_windows"),
+            WindowLookup::Queued => {
+                panic!("pane_id_of has no meaning with a queued window lookup")
+            }
+        };
+        format!("%{index}")
+    }
+
+    /// Index of `name` in `seen`, appending it first if absent. Stable within a
+    /// test, so repeated resolutions of one name agree and two names differ.
+    #[allow(clippy::unwrap_used)] // test helper — panics on poisoned mutex
+    fn index_of_or_insert(seen: &Mutex<Vec<String>>, name: &str) -> usize {
+        let mut seen = seen.lock().unwrap();
+        if let Some(i) = seen.iter().position(|n| n == name) {
+            return i;
+        }
+        seen.push(name.to_string());
+        seen.len() - 1
+    }
+
+    /// Answer `tmux::window_target`'s lookup out of band, unless this call is not
+    /// that lookup or the policy is [`WindowLookup::Queued`].
+    ///
+    /// The reply is what a real tmux would print for that lookup's `-f` filter:
+    /// one row per *matching* pane. Under [`WindowLookup::OnlyNames`] the match
+    /// is computed here over the declared windows, so a declared prefix collision
+    /// (`task-4` asked for, only `task-42` declared) yields no rows and the
+    /// production resolver is the thing that turns that into an error.
+    fn answer_window_lookup(&self, program: &str, args: &[&str]) -> Option<Output> {
+        if program != "tmux" {
+            return None;
+        }
+        let wanted = crate::tmux::window_name_in_lookup(args)?;
+        match &self.window_lookup {
+            WindowLookup::Queued => None,
+            WindowLookup::AnyName(seen) => {
+                let index = Self::index_of_or_insert(seen, wanted);
+                Some(Self::listing(&[(index, wanted.to_string())]))
+            }
+            WindowLookup::OnlyNames(names) => {
+                let rows: Vec<(usize, String)> = names
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, name)| name.as_str() == wanted)
+                    .map(|(i, name)| (i, name.clone()))
+                    .collect();
+                Some(Self::listing(&rows))
+            }
+        }
+    }
+
+    /// A `list-panes` listing in `tmux::WINDOW_PANE_FORMAT`: one active pane per
+    /// row, each carrying the pane ID its index implies.
+    fn listing(rows: &[(usize, String)]) -> Output {
+        let stdout: String = rows
+            .iter()
+            .map(|(i, name)| format!("1 %{i} {name}\n"))
+            .collect();
+        Output {
+            status: exit_ok(),
+            stdout: stdout.into_bytes(),
+            stderr: vec![],
         }
     }
 
@@ -146,6 +285,11 @@ impl MockProcessRunner {
     /// Panics if no response is queued — same contract as `run` / `run_with_timeout`.
     #[allow(clippy::unwrap_used)] // test helper — panics on poisoned mutex (programming error)
     fn record_and_pop(&self, program: &str, args: &[&str]) -> (Option<Duration>, Result<Output>) {
+        // Deliberately before the recording: an out-of-band window lookup is
+        // neither queued nor recorded, so `calls[N]` indices stay stable.
+        if let Some(listing) = self.answer_window_lookup(program, args) {
+            return (None, Ok(listing));
+        }
         self.calls.lock().unwrap().push((
             program.to_string(),
             args.iter().map(|s| s.to_string()).collect(),
@@ -164,8 +308,10 @@ impl MockProcessRunner {
     /// Use this wherever a test must supply a `ProcessRunner` but expects no
     /// commands to be run — the mock panics on the first call, so an
     /// accidental shell-out fails the test loudly instead of hitting the host.
+    /// Queued window lookups on purpose: a window lookup is a shell-out too, and
+    /// this runner's whole job is to panic on any of them.
     pub fn unused() -> Arc<dyn ProcessRunner> {
-        Arc::new(Self::new(vec![]))
+        Arc::new(Self::new(vec![]).with_queued_window_lookup())
     }
 
     /// Successful Output with empty stdout/stderr.

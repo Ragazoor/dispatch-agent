@@ -925,7 +925,9 @@ mod tests {
     async fn editor_session_drop_kills_tmux_window_when_runner_set() {
         use crate::process::MockProcessRunner;
 
-        let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::ok()]));
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&["edit-window"]),
+        );
         let session = EditorSession {
             window_name: "edit-window".to_string(),
             temp_path: None,
@@ -935,7 +937,11 @@ mod tests {
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "tmux");
-        assert_eq!(calls[0].1, vec!["kill-window", "-t", "edit-window"]);
+        // Targeted by the window's resolved pane ID — see `tmux::window_target`.
+        assert_eq!(
+            calls[0].1,
+            vec!["kill-window", "-t", &mock.pane_id_of("edit-window")]
+        );
     }
 
     #[test]

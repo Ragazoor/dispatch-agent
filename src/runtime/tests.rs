@@ -30,12 +30,19 @@ async fn setup_tmux_for_tui_renames_window_and_binds_key() {
     assert_eq!(calls.len(), 4);
     assert_eq!(calls[0].1, vec!["display-message", "-p", "#{pane_id}"]);
     assert_eq!(calls[1].1, vec!["rename-window", "-t", "", TUI_WINDOW_NAME]);
+    // `=` anchors the target to an exact name match. This binding is executed by
+    // tmux itself, so it cannot use the pane-ID resolution `tmux::window_target`
+    // applies elsewhere — a pane ID captured at bind time would go stale. tmux's
+    // `=` sigil does work for `select-window` (verified against 3.5a), and
+    // without it a window whose name merely starts with the TUI window's name
+    // could absorb the jump. See the `TmuxWindowTargetedExactly` invariant in
+    // docs/specs/dispatch.allium.
     assert_eq!(
         calls[2].1,
         vec![
             "bind-key",
             "space",
-            &format!("select-window -t {TUI_WINDOW_NAME}")
+            &format!("select-window -t ={TUI_WINDOW_NAME}")
         ]
     );
     assert_eq!(
@@ -50,15 +57,23 @@ async fn teardown_tmux_for_tui_unbinds_and_restores_name() {
         MockProcessRunner::ok(), // unbind_key (space)
         MockProcessRunner::ok(), // unbind_key (agent-tree toggle)
         MockProcessRunner::ok(), // rename_window
-    ]);
+    ])
+    .with_windows(&[TUI_WINDOW_NAME]);
     teardown_tmux_for_tui(Some("my-shell"), &mock);
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 3);
     assert_eq!(calls[0].1, vec!["unbind-key", "space"]);
     assert_eq!(calls[1].1, vec!["unbind-key", AGENT_TREE_TOGGLE_KEY]);
+    // The rename targets the TUI window by its resolved pane ID — see
+    // `tmux::window_target`. Only `my-shell`, the *new* name, stays a name.
     assert_eq!(
         calls[2].1,
-        vec!["rename-window", "-t", TUI_WINDOW_NAME, "my-shell"]
+        vec![
+            "rename-window",
+            "-t",
+            &mock.pane_id_of(TUI_WINDOW_NAME),
+            "my-shell",
+        ]
     );
 }
 
@@ -828,9 +843,12 @@ async fn exec_delete_task_nonexistent_shows_error() {
 async fn exec_jump_to_tmux_calls_select_window() {
     let db = test_db().await;
     let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // for select-window
-    ]));
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // for select-window
+        ])
+        .with_windows(&["my-window"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
     let tasks = db.list_all().await.unwrap();
     let mut app = App::new(tasks);
@@ -840,7 +858,8 @@ async fn exec_jump_to_tmux_calls_select_window() {
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 1);
     assert!(calls[0].1.contains(&"select-window".to_string()));
-    assert!(calls[0].1.contains(&"my-window".to_string()));
+    // Targeted by resolved pane ID, not by name — see `tmux::window_target`.
+    assert!(calls[0].1.contains(&mock.pane_id_of("my-window")));
     assert!(app.error_popup().is_none());
 }
 
@@ -2618,19 +2637,27 @@ async fn exec_enter_split_mode_no_tmux_shows_status() {
 async fn exec_enter_split_mode_with_task_joins_pane() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-        MockProcessRunner::ok_with_stdout(b"1 %1\n"), // inactive_pane_id check: no companion
-        MockProcessRunner::ok_with_stdout(b"%3\n"), // join_pane: display-message for source pane ID
-        MockProcessRunner::ok(),                    // join_pane: join-pane command
-    ]));
+    // join_pane no longer needs its own display-message: resolving the source
+    // window by exact name already yields that window's pane ID, out of band.
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::ok_with_stdout(b"1 %1\n"), // inactive_pane_id check: no companion
+            MockProcessRunner::ok(),                    // join_pane: join-pane command
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    assert!(calls[3].1.contains(&"join-pane".to_string()));
+    assert!(calls[2].1.contains(&"join-pane".to_string()));
+    assert!(
+        calls[2].1.contains(&mock.pane_id_of("task-1")),
+        "the source must be the resolved pane, not the window name"
+    );
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -2656,21 +2683,23 @@ async fn exec_enter_split_mode_with_task_kills_leftover_companion_pane_after_joi
     // (docs/specs/agent-tree.allium: ToggleVsSplitPaneInteraction).
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-        MockProcessRunner::ok_with_stdout(b"1 %1\n0 %2\n"), // inactive_pane_id: companion is %2
-        MockProcessRunner::ok_with_stdout(b"%1\n"), // join_pane: display-message
-        MockProcessRunner::ok(),                    // join_pane: join-pane
-        MockProcessRunner::ok(),                    // kill-pane %2
-    ]));
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %2\n"), // inactive_pane_id: companion is %2
+            MockProcessRunner::ok(),                    // join_pane: join-pane
+            MockProcessRunner::ok(),                    // kill-pane %2
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 5);
-    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%2"]);
+    assert_eq!(calls.len(), 4);
+    assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%2"]);
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -2693,12 +2722,14 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_check_fails(
     // best-effort cleanup, not the primary action.
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n"),
-        MockProcessRunner::fail("list-panes error"),
-        MockProcessRunner::ok_with_stdout(b"%1\n"),
-        MockProcessRunner::ok(),
-    ]));
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::fail("list-panes error"), // inactive_pane_id check
+            MockProcessRunner::ok(),                    // join_pane: join-pane
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
@@ -2707,7 +2738,7 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_check_fails(
     let calls = mock.recorded_calls();
     assert_eq!(
         calls.len(),
-        4,
+        3,
         "no kill-pane attempted after a failed check"
     );
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -2727,13 +2758,15 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_check_fails(
 async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_kill_fails() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n"),
-        MockProcessRunner::ok_with_stdout(b"1 %1\n0 %2\n"),
-        MockProcessRunner::ok_with_stdout(b"%1\n"),
-        MockProcessRunner::ok(),
-        MockProcessRunner::fail("kill-pane error"),
-    ]));
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %2\n"), // inactive_pane_id
+            MockProcessRunner::ok(),                    // join_pane: join-pane
+            MockProcessRunner::fail("kill-pane error"),
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
@@ -2894,25 +2927,29 @@ async fn exec_respawn_split_pane_respawn_fails_sends_closed() {
 async fn exec_swap_split_pane_uses_swap_pane() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%5\n"), // pane_id_for_window (new task)
-        MockProcessRunner::ok(),                    // swap-pane
-        MockProcessRunner::ok(),                    // kill-window (old pane had no task)
-    ]));
+    // pane_id_for_window resolves out of band, so it is not a recorded call.
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // swap-pane
+            MockProcessRunner::ok(), // kill-window (old pane had no task)
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    // 1st call: display-message to get new pane ID
-    assert!(calls[0].1.contains(&"display-message".to_string()));
-    // 2nd call: swap-pane
-    assert!(calls[1].1.contains(&"swap-pane".to_string()));
-    // 3rd call: kill-window (no old task to rename)
-    assert!(calls[2].1.contains(&"kill-window".to_string()));
-    // No 4th call — focus must NOT be transferred
-    assert_eq!(calls.len(), 3, "select-pane must not be called after swap");
+    // 1st call: swap-pane, sourced from the resolved pane ID rather than
+    // `task-1.0` — a `<window>.<index>` target would prefix-match the window
+    // name and depend on pane-base-index.
+    assert!(calls[0].1.contains(&"swap-pane".to_string()));
+    assert!(calls[0].1.contains(&mock.pane_id_of("task-1")));
+    // 2nd call: kill-window (no old task to rename)
+    assert!(calls[1].1.contains(&"kill-window".to_string()));
+    // No 3rd call — focus must NOT be transferred
+    assert_eq!(calls.len(), 2, "select-pane must not be called after swap");
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -2933,35 +2970,38 @@ async fn exec_swap_split_pane_uses_swap_pane() {
 async fn exec_swap_split_pane_renames_old_task_window() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%5\n"), // pane_id_for_window (new task)
-        MockProcessRunner::ok(),                    // swap-pane
-        MockProcessRunner::ok(),                    // rename-window (old task had a window)
-        MockProcessRunner::ok_with_stdout(b"1 %10\n0 %11\n"), // resync: list-panes finds companion
-        MockProcessRunner::ok(),                    // resync: kill-pane %11
-        MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
-    ]));
+    // pane_id_for_window / the resync's own window lookups resolve out of band,
+    // so they are not recorded calls.
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok(),                              // swap-pane
+            MockProcessRunner::ok(), // rename-window (old task had a window)
+            MockProcessRunner::ok_with_stdout(b"1 %10\n0 %11\n"), // resync: list-panes finds companion
+            MockProcessRunner::ok(),                              // resync: kill-pane %11
+            MockProcessRunner::ok_with_stdout(b"%12\n"),          // resync: split-window relaunch
+        ])
+        .with_windows(&["task-3", "task-2"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_swap_split_pane(TaskId(3), "task-3", Some("%2"), Some("task-2"))
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    // 3rd call should be rename-window, not kill-window
-    assert!(calls[2].1.contains(&"rename-window".to_string()));
-    // Verify the rename target and new name
-    assert!(calls[2].1.contains(&"task-3".to_string()));
-    assert!(calls[2].1.contains(&"task-2".to_string()));
+    // 2nd call should be rename-window, not kill-window
+    assert!(calls[1].1.contains(&"rename-window".to_string()));
+    // The rename *target* is the resolved pane ID; the new name stays a name.
+    assert!(calls[1].1.contains(&mock.pane_id_of("task-3")));
+    assert!(calls[1].1.contains(&"task-2".to_string()));
     // Companion pane resync: the renamed window's stale companion (still
     // showing the incoming task's tree) is killed and replaced with one for
     // the correct (old) task.
-    assert!(calls[3].1.contains(&"list-panes".to_string()));
-    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%11"]);
-    assert!(calls[5].1.contains(&"split-window".to_string()));
-    assert!(calls[5].1.contains(&"task-2".to_string()));
-    assert!(calls[5].1.contains(&"2".to_string()));
+    assert!(calls[2].1.contains(&"list-panes".to_string()));
+    assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%11"]);
+    assert!(calls[4].1.contains(&"split-window".to_string()));
+    assert!(calls[4].1.contains(&"2".to_string()));
     // No further call — focus must NOT be transferred
-    assert_eq!(calls.len(), 6, "select-pane must not be called after swap");
+    assert_eq!(calls.len(), 5, "select-pane must not be called after swap");
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -3038,12 +3078,14 @@ async fn exec_enter_split_mode_no_tmux_sends_status_info_via_msg_tx() {
 async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-        MockProcessRunner::ok_with_stdout(b"1 %1\n"), // inactive_pane_id check: no companion
-        MockProcessRunner::ok_with_stdout(b"%3\n"), // join_pane: display-message for source pane ID
-        MockProcessRunner::ok(),                    // join_pane: join-pane command
-    ]));
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::ok_with_stdout(b"1 %1\n"), // inactive_pane_id check: no companion
+            MockProcessRunner::ok(),                    // join_pane: join-pane command
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
@@ -3051,7 +3093,7 @@ async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
         .unwrap();
 
     let calls = mock.recorded_calls();
-    assert!(calls[3].1.contains(&"join-pane".to_string()));
+    assert!(calls[2].1.contains(&"join-pane".to_string()));
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -3124,11 +3166,14 @@ async fn exec_exit_split_mode_without_restore_sends_pane_closed_via_msg_tx() {
 async fn exec_swap_split_pane_kills_old_window_and_sends_pane_opened_via_msg_tx() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%5\n"), // pane_id_for_window (new task)
-        MockProcessRunner::ok(),                    // swap-pane
-        MockProcessRunner::ok(),                    // kill-window (old pane had no task)
-    ]));
+    // pane_id_for_window resolves out of band, so it is not a recorded call.
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // swap-pane
+            MockProcessRunner::ok(), // kill-window (old pane had no task)
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
@@ -3136,8 +3181,8 @@ async fn exec_swap_split_pane_kills_old_window_and_sends_pane_opened_via_msg_tx(
         .unwrap();
 
     let calls = mock.recorded_calls();
-    assert!(calls[1].1.contains(&"swap-pane".to_string()));
-    assert!(calls[2].1.contains(&"kill-window".to_string()));
+    assert!(calls[0].1.contains(&"swap-pane".to_string()));
+    assert!(calls[1].1.contains(&"kill-window".to_string()));
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -3241,9 +3286,12 @@ async fn exec_open_in_browser_calls_xdg_open() {
 async fn exec_kill_tmux_window_calls_kill() {
     let db = test_db().await;
     let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // tmux kill-window
-    ]));
+    let mock = Arc::new(
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // tmux kill-window
+        ])
+        .with_windows(&["task-1"]),
+    );
     let rt = make_runtime(db, tx, mock.clone()).await;
 
     rt.exec_kill_tmux_window("task-1".into()).await.unwrap();
@@ -3251,7 +3299,8 @@ async fn exec_kill_tmux_window_calls_kill() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, "tmux");
     assert!(calls[0].1.contains(&"kill-window".to_string()));
-    assert!(calls[0].1.contains(&"task-1".to_string()));
+    // Targeted by resolved pane ID, not by name — see `tmux::window_target`.
+    assert!(calls[0].1.contains(&mock.pane_id_of("task-1")));
 }
 
 #[tokio::test]

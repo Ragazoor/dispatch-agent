@@ -83,9 +83,17 @@ fn setup_tmux_for_tui(runner: &dyn ProcessRunner) {
     // when the user has a different window active at startup.
     let target = tmux::current_pane_id(runner).unwrap_or_default();
     let _ = tmux::rename_window(&target, TUI_WINDOW_NAME, runner);
+    // `=` anchors the target to an exact name match. tmux otherwise resolves a
+    // `-t <name>` by prefix, so a window whose name merely starts with
+    // TUI_WINDOW_NAME could absorb this jump. Unlike every other window target
+    // in the codebase this one cannot go through `tmux::window_target`: the
+    // binding is a string tmux executes later, and a pane ID captured now would
+    // be stale by then. The sigil does work for `select-window` specifically
+    // (verified against tmux 3.5a; it does not for `send-keys` or
+    // `set-option -w`). See `tmux::window_target` for the full picture.
     let _ = tmux::bind_key(
         "space",
-        &format!("select-window -t {TUI_WINDOW_NAME}"),
+        &format!("select-window -t ={TUI_WINDOW_NAME}"),
         runner,
     );
     let _ = tmux::bind_key(AGENT_TREE_TOGGLE_KEY, AGENT_TREE_TOGGLE_COMMAND, runner);

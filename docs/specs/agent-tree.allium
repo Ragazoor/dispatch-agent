@@ -271,7 +271,7 @@ rule BindAgentTreeToggle {
         --
         -- The bound command is a new pattern for this codebase: a
         -- format-string-parameterized run-shell, not a static tmux command
-        -- like prefix+space's `select-window -t TUI`. tmux itself expands
+        -- like prefix+space's `select-window -t =TUI`. tmux itself expands
         -- #{window_name} into the command line at the moment the key is
         -- pressed, before invoking the shell — so the process this spawns
         -- (`dispatch toggle-agent-tree-pane <window>`) is handed the name of

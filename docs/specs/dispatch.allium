@@ -944,6 +944,49 @@ surface MainSessionIndicator {
 -- task to running without provisioning a worktree. The dispatch flow is the
 -- canonical path; manual moves are overrides.
 
+-- TmuxWindowTargetedExactly: every tmux operation aimed at a named window acts
+-- on that window or fails. It never acts on a different window. This covers all
+-- of them — killing the window, selecting it, renaming it, typing into it (the
+-- agent command, a resume `--continue`, a notification), reading its pane,
+-- joining it into the split pane, splitting a companion pane inside it, and
+-- setting its @dispatch_dir option. It holds for the board and main-session
+-- windows as much as for a task's.
+--
+-- Not a cosmetic imprecision: window names are "task-" + task.id (see
+-- DispatchTask, DispatchResearchTask, ResumeTask, RetryResume), so one task's
+-- name is a prefix of another's whenever one id is a prefix of another id —
+-- task 378 and task 3782 both exist in a repo with ids in the thousands. A
+-- mistargeted keystroke goes into another task's live Claude session as user
+-- input; a mistargeted kill destroys another task's agent.
+--
+-- The failure mode this rules out is specifically the one where the intended
+-- window is absent — killed, crashed, or already cleaned up — and a
+-- longer-named sibling is alive. An operation on a window that no longer
+-- exists must report that it does not exist. Silently doing the thing to
+-- whichever window happens to share the name's prefix is the defect.
+--
+-- Ambiguity is also a failure, not a coin flip: when two windows carry the
+-- same name, the operation is refused rather than applied to an arbitrary one.
+--
+-- Mechanism (implementation note, not the obligation): tmux resolves a
+-- `-t <window-name>` target by exact match first and then by *prefix*, so
+-- passing a name through is unsafe by default. tmux's `=name` exact-match
+-- sigil is not a general answer — it is rejected by the pane-target commands
+-- (`send-keys`) and by `set-option -w`, and `display-message` accepts it while
+-- returning nothing and exiting zero. A pane ID is accepted by every command
+-- dispatch issues and cannot be prefix-matched, so window names are resolved
+-- to the pane ID of the window's active pane by exact-name lookup, and every
+-- target is a pane ID. The lookup itself asks tmux to compare names for
+-- equality, and re-checks the name it gets back, so a name carrying format
+-- metacharacters can only produce a miss, never a match on another window.
+-- Verified against tmux 3.5a.
+--
+-- One exception, by necessity: the prefix+Space keybinding that jumps back to
+-- the board (see JumpBackToTuiWindow in split-pane.allium) is a command string
+-- tmux executes later, so no pane identity resolved at registration time would
+-- still be valid. That one target uses tmux's `=` sigil, which does work for
+-- `select-window`.
+
 -- BranchHistoryCapped: no repo retains more than
 -- config.max_base_branches_per_repo remembered base branches. This is a
 -- property of the write operation (RecordBaseBranch prunes on every write),

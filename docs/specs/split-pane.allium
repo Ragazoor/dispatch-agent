@@ -305,10 +305,18 @@ rule JumpBackToTuiWindow {
     @guidance
         -- Registered at TUI startup as a prefixed tmux keybinding (the tmux
         -- prefix must be pressed first, same as any other tmux binding):
-        --   tmux bind-key space "select-window -t TUI"
+        --   tmux bind-key space "select-window -t =TUI"
         -- The TUI window is renamed to the fixed "TUI" constant at startup so
         -- the binding can target it by name. Both the binding and the rename
         -- are torn down on exit (unbind-key space; rename restored).
+        --
+        -- The leading "=" anchors the target to an exact name match: tmux
+        -- otherwise resolves a name target by prefix, so a window merely
+        -- *starting* with "TUI" could absorb the jump (see the
+        -- TmuxWindowTargetedExactly invariant in dispatch.allium). This is the
+        -- one window target that cannot be resolved to a pane identity up
+        -- front, because the binding is a command tmux runs later and any pane
+        -- identity captured at registration time would be stale by then.
         --
         -- Implemented in src/runtime/mod.rs (setup_tmux_for_tui /
         -- teardown_tmux_for_tui) via tmux::bind_key / unbind_key.

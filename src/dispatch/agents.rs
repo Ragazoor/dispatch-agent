@@ -432,7 +432,10 @@ mod tests {
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%9"]);
         assert!(calls[2].1.contains(&"split-window".to_string()));
-        assert!(calls[2].1.contains(&"task-5".to_string()));
+        // The window being split is targeted by its resolved pane ID, not its
+        // name — otherwise the companion pane could open inside a
+        // prefix-matched sibling's window (see `tmux::window_target`).
+        assert!(calls[2].1.contains(&mock.pane_id_of("task-5")));
         assert!(calls[2].1.contains(&"5".to_string()));
         assert!(calls[2].1.contains(&"agent-tree".to_string()));
     }

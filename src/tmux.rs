@@ -40,6 +40,136 @@ fn run_checked_stdout(runner: &dyn ProcessRunner, args: &[&str], context: &str) 
 }
 
 // ---------------------------------------------------------------------------
+// Exact window-name targeting
+// ---------------------------------------------------------------------------
+
+/// `list-panes` output format for [`window_target`]: fixed-width fields first so
+/// the window name — which may contain spaces — is the parseable remainder.
+pub(crate) const WINDOW_PANE_FORMAT: &str = "#{pane_active} #{pane_id} #{window_name}";
+
+/// Opening of the `-f` filter [`window_filter`] builds. Split out so
+/// [`window_name_in_lookup`] can invert it.
+const WINDOW_FILTER_PREFIX: &str = "#{==:#{window_name},";
+
+/// A `list-panes -f` filter selecting panes whose window name equals `window`.
+/// `#{==:…}` compares in tmux, so no prefix matching is involved.
+fn window_filter(window: &str) -> String {
+    format!("{WINDOW_FILTER_PREFIX}{window}}}")
+}
+
+/// The window name a [`window_target`] lookup is asking about, given its argv —
+/// the inverse of [`window_filter`]. `None` when `args` is not such a lookup.
+///
+/// Exists for `MockProcessRunner`, which answers the lookup without a tmux
+/// server and so needs to know which window is being asked for. Keeping the
+/// construction and the inversion adjacent is what stops them drifting apart.
+pub(crate) fn window_name_in_lookup<'a>(args: &[&'a str]) -> Option<&'a str> {
+    match args {
+        ["list-panes", "-a", "-f", filter, "-F", format] if *format == WINDOW_PANE_FORMAT => {
+            filter.strip_prefix(WINDOW_FILTER_PREFIX)?.strip_suffix('}')
+        }
+        _ => None,
+    }
+}
+
+/// Whether `target` is already unambiguous and must reach tmux untouched:
+/// a pane ID (`%N`), or the empty string, which is tmux's "current window" and
+/// is part of [`rename_window`]'s documented contract.
+///
+/// A pane ID is `%` followed by digits, and nothing else is treated as one: a
+/// window *can* be named `%foo`, and such a name should take the normal lookup
+/// path rather than be passed through as if it were an ID.
+fn is_resolved_target(target: &str) -> bool {
+    if target.is_empty() {
+        return true;
+    }
+    match target.strip_prefix('%') {
+        Some(digits) => !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// Resolve a tmux window *name* to the pane ID of that window's active pane,
+/// matching the name **exactly**. Pane IDs pass through unchanged.
+///
+/// # Why every window target goes through here
+///
+/// tmux resolves a `-t <window-name>` target by exact match and then by
+/// **prefix**. Dispatch names windows `task-<id>`, so once ids reach the
+/// thousands one task's name is a prefix of another's — `task-378` and
+/// `task-3782`. When the intended window is absent (killed, crashed, cleaned
+/// up) and a longer-named sibling is alive, tmux silently redirects the
+/// operation to the sibling: `send-keys` types the agent command into another
+/// task's live Claude session, and `kill-window` destroys another task's agent.
+/// Both are the same class of defect as issue #3781. See the
+/// `TmuxWindowTargetedExactly` invariant in docs/specs/dispatch.allium.
+///
+/// # Why a pane ID rather than tmux's `=` sigil
+///
+/// tmux's documented exact-match sigil (`-t '=task-4'`) is not a general
+/// answer. Verified against tmux 3.5a: `send-keys` rejects it outright
+/// (`can't find pane: =task-42`, even when that window exists), `set-option -w`
+/// rejects it (`no such window`), and `display-message -p` accepts it while
+/// printing nothing and **exiting zero** — the worst outcome, a silently empty
+/// pane ID. It only works for the target-*window* commands. A pane ID, by
+/// contrast, is accepted by every command this module issues and cannot be
+/// prefix-matched, so one mechanism covers all of them.
+///
+/// # Errors
+///
+/// Absent name, or two windows sharing it. Ambiguity is refused rather than
+/// resolved arbitrarily: tmux already refuses it for `kill-window` and
+/// `select-window`, but silently picks one for `set-option -w`. Refusing
+/// uniformly is what [`set_window_dispatch_dir`]'s stderr sniff for
+/// "ambiguous" used to approximate for that one call.
+fn window_target(window: &str, runner: &dyn ProcessRunner) -> Result<String> {
+    if is_resolved_target(window) {
+        return Ok(window.to_string());
+    }
+    // A failed query means there are no windows to match — no server running,
+    // or tmux unreachable. Same soft-fail as `list_all_window_names`, whose
+    // `-a` rationale this shares: works inside or outside tmux, and finds
+    // windows living in a session other than the current one.
+    let filter = window_filter(window);
+    let output = runner.run(
+        "tmux",
+        &["list-panes", "-a", "-f", &filter, "-F", WINDOW_PANE_FORMAT],
+    )?;
+    let listing = if output.status.success() {
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    } else {
+        String::new()
+    };
+
+    // The `name == window` check is not redundant with the `-f` filter: the
+    // filter interpolates the name into a tmux format string, so a name
+    // containing `,` or `}` could confuse `#{==:…}`. Re-comparing here makes
+    // correctness independent of that — a crafted name can at worst produce a
+    // miss (which fails safe), never a match on the wrong window.
+    //
+    // Filtering on the *active* pane yields exactly one row per window, so a
+    // second match means two windows share the name — not two panes in one.
+    let mut matches = listing.lines().filter_map(|line| {
+        let mut parts = line.splitn(3, ' ');
+        let active = parts.next()?;
+        let pane_id = parts.next()?;
+        let name = parts.next()?.trim_end();
+        (active == "1" && name == window).then(|| pane_id.to_string())
+    });
+
+    let Some(pane_id) = matches.next() else {
+        bail!("no tmux window named '{window}'");
+    };
+    if matches.next().is_some() {
+        bail!(
+            "multiple tmux windows named '{}' exist — close the duplicate windows before dispatching",
+            window
+        );
+    }
+    Ok(pane_id)
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
@@ -77,15 +207,20 @@ pub fn new_window_running(
 ///
 /// Uses `-l` to prevent tmux from interpreting escape sequences in the text.
 /// Enter is sent as a separate `send-keys` call without `-l`.
+///
+/// The window name is resolved by [`window_target`] first — an absent window
+/// must fail here, never fall through to a prefix-matched sibling, because the
+/// payload is typed into whatever Claude session receives it.
 pub fn send_keys(window: &str, keys: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let target = window_target(window, runner)?;
     run_checked(
         runner,
-        &["send-keys", "-t", window, "-l", keys],
+        &["send-keys", "-t", &target, "-l", keys],
         "send-keys -l",
     )?;
     run_checked(
         runner,
-        &["send-keys", "-t", window, "Enter"],
+        &["send-keys", "-t", &target, "Enter"],
         "send-keys Enter",
     )?;
     Ok(())
@@ -161,43 +296,52 @@ pub fn list_all_window_names(runner: &dyn ProcessRunner) -> Result<Vec<String>> 
 }
 
 /// Kill the tmux window with the given name.
+///
+/// The name is resolved by [`window_target`] first, so an absent window fails
+/// instead of destroying a prefix-matched sibling's agent. That makes this safe
+/// on its own; [`kill_window_if_present`] remains the wrapper for callers whose
+/// cleanup must not abort when the window is simply already gone.
 pub fn kill_window(window: &str, runner: &dyn ProcessRunner) -> Result<()> {
-    run_checked(runner, &["kill-window", "-t", window], "kill-window")?;
+    let target = window_target(window, runner)?;
+    run_checked(runner, &["kill-window", "-t", &target], "kill-window")?;
     Ok(())
 }
 
 /// Switch the active tmux window to the one with the given name.
 pub fn select_window(window: &str, runner: &dyn ProcessRunner) -> Result<()> {
-    run_checked(runner, &["select-window", "-t", window], "select-window")?;
+    let target = window_target(window, runner)?;
+    run_checked(runner, &["select-window", "-t", &target], "select-window")?;
     Ok(())
 }
 
 /// Store the worktree path as a per-window user option so the session-level
 /// `after-split-window` hook (installed by [`ensure_split_hook`]) can look it
 /// up when a split happens in this window.
+///
+/// A prefix-matched target here would leak one task's worktree path onto
+/// another task's window, sending that window's future splits into the wrong
+/// worktree — so the name is resolved by [`window_target`] first. That resolver
+/// also owns the duplicate-name refusal this function used to approximate by
+/// sniffing tmux's stderr for "ambiguous"; `set-option -w` does not actually
+/// report ambiguity, it silently picks one of the duplicates.
 pub fn set_window_dispatch_dir(
     window: &str,
     working_dir: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
-    let args = [
+    let target = window_target(window, runner)?;
+    run_checked(
+        runner,
+        &[
+            "set-option",
+            "-w",
+            "-t",
+            &target,
+            "@dispatch_dir",
+            working_dir,
+        ],
         "set-option",
-        "-w",
-        "-t",
-        window,
-        "@dispatch_dir",
-        working_dir,
-    ];
-    let output = runner.run("tmux", &args)?;
-    if !output.status.success() {
-        if String::from_utf8_lossy(&output.stderr).contains("ambiguous") {
-            bail!(
-                "multiple tmux windows named '{}' exist — close the duplicate windows before dispatching",
-                window
-            );
-        }
-        return Err(checked_error("set-option", &output));
-    }
+    )?;
     Ok(())
 }
 
@@ -299,11 +443,16 @@ pub fn current_window_name(runner: &dyn ProcessRunner) -> Result<String> {
     run_checked_stdout(runner, &["display-message", "-p", "#W"], "display-message")
 }
 
-/// Rename a tmux window. Pass `""` as `target` to rename the current window.
+/// Rename a tmux window. `target` may be a window name, a pane ID, or `""` to
+/// rename the current window.
+///
+/// Only `target` is resolved by [`window_target`] — never `new_name`, which is
+/// a name being assigned and by definition need not exist yet.
 pub fn rename_window(target: &str, new_name: &str, runner: &dyn ProcessRunner) -> Result<()> {
+    let target = window_target(target, runner)?;
     run_checked(
         runner,
-        &["rename-window", "-t", target, new_name],
+        &["rename-window", "-t", &target, new_name],
         "rename-window",
     )?;
     Ok(())
@@ -365,8 +514,13 @@ pub fn split_window_horizontal(target_pane: &str, runner: &dyn ProcessRunner) ->
 /// by the board's own split-pane feature) — this one is for spawning a
 /// companion process (e.g. `dispatch agent-tree <task_id>`) narrower than
 /// that split, since the target pane's own output still needs the room.
+///
+/// `target` may be a pane ID or a window *name*: `spawn_agent_tree_pane`
+/// (src/dispatch/agents.rs) passes the agent's `task-<id>` window. Names go
+/// through [`window_target`], so the companion pane cannot be opened inside a
+/// prefix-matched sibling's window; pane IDs pass through untouched.
 pub fn split_window_horizontal_running(
-    target_pane: &str,
+    target: &str,
     size_pct: u8,
     command: &[&str],
     runner: &dyn ProcessRunner,
@@ -374,6 +528,7 @@ pub fn split_window_horizontal_running(
     if command.is_empty() {
         bail!("split_window_horizontal_running: command must not be empty");
     }
+    let target_pane = window_target(target, runner)?;
     let size_arg = format!("{size_pct}%");
     let mut args: Vec<&str> = vec![
         "split-window",
@@ -383,7 +538,7 @@ pub fn split_window_horizontal_running(
         "-l",
         &size_arg,
         "-t",
-        target_pane,
+        &target_pane,
         "-P",
         "-F",
         "#{pane_id}",
@@ -400,13 +555,13 @@ pub fn join_pane(
     target_pane: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<String> {
-    // Get the source pane ID first — pane IDs are preserved across moves,
-    // and join-pane does not support -P/-F for printing the result.
-    let pane_id = run_checked_stdout(
-        runner,
-        &["display-message", "-p", "-t", source_window, "#{pane_id}"],
-        "display-message",
-    )?;
+    // Resolving the source window by exact name *is* the pane-ID lookup this
+    // used to do with a separate `display-message`: it returns the window's
+    // active pane, which is the pane join-pane moves, and pane IDs are
+    // preserved across the move (join-pane has no -P/-F to print the result).
+    // Passing the ID rather than the name also keeps a prefix-matched sibling
+    // from being torn out of its own window and into the board.
+    let pane_id = window_target(source_window, runner)?;
 
     run_checked(
         runner,
@@ -415,7 +570,7 @@ pub fn join_pane(
             "-h",
             "-d",
             "-s",
-            source_window,
+            &pane_id,
             "-t",
             target_pane,
             "-l",
@@ -456,33 +611,33 @@ pub fn respawn_pane(pane_id: &str, runner: &dyn ProcessRunner) -> Result<()> {
     Ok(())
 }
 
-/// Get the pane ID for a window's first pane.
+/// Get the pane ID of a window's active pane, matching the window name exactly.
+/// Errors when `window` does not exist.
 ///
-/// Errors when `window` does not exist. That check has to be explicit: like
-/// [`pane_exists`]' old implementation, `display-message -t <unknown>` exits 0
-/// and prints an empty string rather than failing, so a missing window would
-/// otherwise resolve to `Ok("")` — and `swap-pane -s ''` also exits 0, so the
-/// empty id propagates silently until some later command in the sequence fails
-/// with a misleading message. Verified against tmux 3.5a.
+/// This is the public face of [`window_target`]. It replaced a
+/// `display-message -p -t <window> '#{pane_id}'` call, which was wrong in two
+/// compounding ways. It prefix-matched the window name, so it could hand back a
+/// *different* task's pane ID — one that then propagated into swaps, splits and
+/// the split-pane's tracked pane. And for a window that genuinely did not exist
+/// it exited 0 printing an empty string rather than failing, so the miss
+/// resolved to `Ok("")` — and `swap-pane -s ''` also exits 0, so the empty id
+/// propagated silently until some later command failed with a misleading
+/// message. Resolving through a `list-panes` row removes both: there is no row
+/// to misattribute, and no row at all means no window. Verified against tmux
+/// 3.5a.
 pub fn pane_id_for_window(window: &str, runner: &dyn ProcessRunner) -> Result<String> {
-    let pane_id = run_checked_stdout(
-        runner,
-        &["display-message", "-p", "-t", window, "#{pane_id}"],
-        "display-message",
-    )?;
-    if pane_id.is_empty() {
-        bail!("no tmux window named '{window}'");
-    }
-    Ok(pane_id)
+    window_target(window, runner)
 }
 
 /// Atomically swap the contents of two panes without changing the layout.
 /// `-d` keeps focus on the current pane.
 ///
-/// Pass pane **ids**, not `<window>.<index>` targets: pane indices shift with the
-/// user's `pane-base-index` and are renumbered by a `-b` split, so an index-based
-/// target can miss or hit the wrong pane. Use [`pane_id_for_window`] or
-/// [`inactive_pane_id`] to resolve one.
+/// Pass pane **ids**, not `<window>.<index>` targets: such a target is wrong in
+/// both halves. The index shifts with the user's `pane-base-index` and is
+/// renumbered by a `-b` split, so it can miss or hit the wrong pane; the window
+/// name prefix-matches (see [`window_target`]), so it can address the wrong
+/// window entirely. Use [`pane_id_for_window`] or [`inactive_pane_id`] to
+/// resolve one.
 pub fn swap_pane(source: &str, target: &str, runner: &dyn ProcessRunner) -> Result<()> {
     run_checked(
         runner,
@@ -506,18 +661,22 @@ pub fn select_pane(pane_id: &str, runner: &dyn ProcessRunner) -> Result<()> {
 /// always the *inactive* one, regardless of what index tmux assigns it.
 /// Deliberately does not target a pane by index: tmux's `pane-base-index`
 /// option can shift which index the "first" pane gets, so an index-based
-/// target could hit the wrong pane under a customised setting.
+/// target could hit the wrong pane under a customised setting. For the same
+/// reason `window` is resolved through [`window_target`] rather than handed to
+/// `list-panes -t` directly: otherwise the panes listed could be those of a
+/// prefix-matched sibling window.
 ///
 /// Returns `None` for a single-pane window (nothing is inactive) and,
 /// defensively, for a window with more than one inactive pane — ambiguous,
 /// and this function must not guess.
 pub fn inactive_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Option<String>> {
+    let target = window_target(window, runner)?;
     let out = run_checked_stdout(
         runner,
         &[
             "list-panes",
             "-t",
-            window,
+            &target,
             "-F",
             "#{pane_active} #{pane_id}",
         ],
@@ -576,6 +735,24 @@ pub fn pane_exists(pane_id: &str, runner: &dyn ProcessRunner) -> bool {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    // --- window_target scaffolding ---
+    //
+    // Every helper that takes a window *name* resolves it to a pane ID first, so
+    // these tests declare the fake server's windows with `with_windows` and
+    // assert the resolved `-t %N` target via `pane_id_of`. `with_windows` answers
+    // the lookup out of band, so response queues and `calls[N]` indices stay
+    // about the operation — see `MockProcessRunner::with_windows`.
+    //
+    // What these tests can and cannot do: they assert the argv we hand tmux, not
+    // what tmux does with it. The pre-fix versions pinned the vulnerable
+    // `-t task-42` argv and stayed green throughout. The behavioural coverage —
+    // that an absent name cannot reach a prefix-matched sibling — is in
+    // tests/tmux_window_targets.rs, against a real server.
+
+    /// The three-window topology that exposes the bug: `task-4`'s name is a
+    /// prefix of `task-42`'s.
+    const COLLIDING: [&str; 3] = ["dispatch", "task-4", "task-42"];
 
     #[test]
     fn has_window_finds_match_in_output() {
@@ -710,7 +887,8 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window
             MockProcessRunner::ok(),                         // kill-window
-        ]);
+        ])
+        .with_windows(&["task-42"]);
         kill_window_if_present("task-42", &mock).unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 2);
@@ -738,7 +916,8 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window
             MockProcessRunner::fail("no such window"),       // kill-window fails
-        ]);
+        ])
+        .with_windows(&["task-42"]);
         let err = kill_window_if_present("task-42", &mock).unwrap_err();
         assert!(err.to_string().contains("kill-window failed"), "got: {err}");
     }
@@ -762,7 +941,7 @@ mod tests {
 
     #[test]
     fn set_window_dispatch_dir_issues_correct_tmux_args() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&COLLIDING);
         set_window_dispatch_dir("task-42", "/some/path", &mock).unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
@@ -773,7 +952,7 @@ mod tests {
                 "set-option",
                 "-w",
                 "-t",
-                "task-42",
+                &mock.pane_id_of("task-42"),
                 "@dispatch_dir",
                 "/some/path",
             ]
@@ -782,10 +961,13 @@ mod tests {
 
     #[test]
     fn set_window_dispatch_dir_detects_ambiguous_windows() {
-        let mock =
-            MockProcessRunner::new(vec![MockProcessRunner::fail("ambiguous window: task-42")]);
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["task-42", "task-42"]);
         let err = set_window_dispatch_dir("task-42", "/some/path", &mock).unwrap_err();
         assert!(err.to_string().contains("multiple tmux windows"));
+        assert!(
+            mock.recorded_calls().is_empty(),
+            "set-option must not be attempted for an ambiguous name"
+        );
     }
 
     /// Pins the hook string, including its `-t #{pane_id}` target. Note what this
@@ -837,21 +1019,73 @@ mod tests {
 
     #[test]
     fn rename_window_issues_correct_tmux_args() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()])
+            .with_windows(&["dispatch", "task-42"]);
         rename_window("dispatch", "my-old-name", &mock).unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "tmux");
         assert_eq!(
             calls[0].1,
-            vec!["rename-window", "-t", "dispatch", "my-old-name"]
+            vec![
+                "rename-window",
+                "-t",
+                &mock.pane_id_of("dispatch"),
+                "my-old-name",
+            ]
         );
+    }
+
+    /// `-t` and the new name are adjacent arguments; only the target is resolved.
+    /// A resolver applied to the new name would reject every rename, since the
+    /// name being assigned does not exist yet — here `brand-new-name` is not a
+    /// declared window, so resolving it would fail.
+    #[test]
+    fn rename_window_does_not_resolve_the_new_name() {
+        let mock =
+            MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&["dispatch"]);
+        rename_window("dispatch", "brand-new-name", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls[0].1.last().unwrap(), "brand-new-name");
+    }
+
+    /// `setup_tmux_for_tui` (src/runtime/mod.rs) renames by pane ID, and falls
+    /// back to `""` (tmux's "current window") when that lookup fails. Both are
+    /// already unambiguous and must reach tmux untouched.
+    #[test]
+    fn rename_window_passes_through_already_exact_targets() {
+        for target in ["%7", ""] {
+            // `with_queued_window_lookup` makes a resolution attempt observable:
+            // it would consume the queued Ok and then panic for want of a second
+            // response. Passing means no lookup happened at all.
+            let mock =
+                MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_queued_window_lookup();
+            rename_window(target, "dispatch", &mock).unwrap();
+            let calls = mock.recorded_calls();
+            assert_eq!(calls.len(), 1, "no resolution for target {target:?}");
+            assert_eq!(
+                calls[0].1,
+                vec!["rename-window", "-t", target, "dispatch"],
+                "target {target:?} should pass through unchanged"
+            );
+        }
     }
 
     #[test]
     fn rename_window_fails_on_nonzero_exit() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")])
+            .with_windows(&["dispatch"]);
         assert!(rename_window("dispatch", "other", &mock).is_err());
+    }
+
+    #[test]
+    fn rename_window_fails_when_target_window_is_absent() {
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-42"]);
+        let err = rename_window("task-4", "renamed", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-4'"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -879,28 +1113,23 @@ mod tests {
 
     #[test]
     fn join_pane_issues_correct_tmux_args() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%5\n"), // display-message to get source pane ID
-            MockProcessRunner::ok(),                    // join-pane (no -P/-F)
-        ]);
+        // Resolution *is* the pane lookup, so the separate display-message call
+        // this used to make is gone: one recorded call, not two.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&COLLIDING);
         let pane_id = join_pane("task-42", "%1", &mock).unwrap();
-        assert_eq!(pane_id, "%5");
+        let expected = mock.pane_id_of("task-42");
+        assert_eq!(pane_id, expected);
         let calls = mock.recorded_calls();
-        assert_eq!(calls.len(), 2);
-        // First call: get the source pane ID
+        assert_eq!(calls.len(), 1);
+        // join-pane takes the resolved pane ID as its source, not the name.
         assert_eq!(
             calls[0].1,
-            vec!["display-message", "-p", "-t", "task-42", "#{pane_id}"]
-        );
-        // Second call: join-pane without -P or -F
-        assert_eq!(
-            calls[1].1,
             vec![
                 "join-pane",
                 "-h",
                 "-d",
                 "-s",
-                "task-42",
+                &expected,
                 "-t",
                 "%1",
                 "-l",
@@ -911,12 +1140,23 @@ mod tests {
 
     #[test]
     fn join_pane_returns_source_pane_id() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%99\n"),
-            MockProcessRunner::ok(),
-        ]);
+        let mock =
+            MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&["my-window"]);
         let result = join_pane("my-window", "%0", &mock).unwrap();
-        assert_eq!(result, "%99");
+        assert_eq!(result, mock.pane_id_of("my-window"));
+    }
+
+    #[test]
+    fn join_pane_fails_when_source_window_is_absent() {
+        // Otherwise a prefix-matched sibling's pane is torn out of its own window
+        // and pulled into the board's split.
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-42"]);
+        let err = join_pane("task-4", "%1", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-4'"),
+            "got: {err}"
+        );
+        assert!(mock.recorded_calls().is_empty(), "join-pane must not run");
     }
 
     #[test]
@@ -1036,22 +1276,54 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok(), // send-keys -l
             MockProcessRunner::ok(), // send-keys Enter
-        ]);
+        ])
+        .with_windows(&["dispatch", "task-1"]);
         send_keys("task-1", "hello world", &mock).unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 2);
+        let pane = mock.pane_id_of("task-1");
         assert_eq!(calls[0].0, "tmux");
         assert_eq!(
             calls[0].1,
-            vec!["send-keys", "-t", "task-1", "-l", "hello world"]
+            vec!["send-keys", "-t", &pane, "-l", "hello world"]
         );
         assert_eq!(calls[1].0, "tmux");
-        assert_eq!(calls[1].1, vec!["send-keys", "-t", "task-1", "Enter"]);
+        assert_eq!(calls[1].1, vec!["send-keys", "-t", &pane, "Enter"]);
+    }
+
+    /// Both `send-keys` calls must name the *same* resolved pane, so the payload
+    /// and the Enter that submits it cannot land in different places.
+    #[test]
+    fn send_keys_targets_one_pane_for_both_calls() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok(), MockProcessRunner::ok()])
+            .with_windows(&["task-1"]);
+        send_keys("task-1", "hello", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        let target = |c: &(String, Vec<String>)| c.1[2].clone();
+        assert_eq!(target(&calls[0]), target(&calls[1]));
+        assert_eq!(target(&calls[0]), mock.pane_id_of("task-1"));
+    }
+
+    #[test]
+    fn send_keys_fails_when_window_is_absent() {
+        // The worst consequence of prefix matching: `task-1`'s payload typed into
+        // `task-12`'s live Claude session as user input.
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-12"]);
+        let err = send_keys("task-1", "hello", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-1'"),
+            "got: {err}"
+        );
+        assert!(
+            mock.recorded_calls().is_empty(),
+            "no send-keys may be attempted"
+        );
     }
 
     #[test]
     fn send_keys_fails_on_first_send_error() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no pane")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no pane")])
+            .with_windows(&["task-1"]);
         let err = send_keys("task-1", "hello", &mock).unwrap_err();
         assert!(
             err.to_string().contains("send-keys -l failed"),
@@ -1064,7 +1336,8 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok(),              // send-keys -l succeeds
             MockProcessRunner::fail("pane gone"), // send-keys Enter fails
-        ]);
+        ])
+        .with_windows(&["task-1"]);
         let err = send_keys("task-1", "hello", &mock).unwrap_err();
         assert!(
             err.to_string().contains("send-keys Enter failed"),
@@ -1076,26 +1349,68 @@ mod tests {
 
     #[test]
     fn kill_window_issues_correct_tmux_args() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&COLLIDING);
         kill_window("task-42", &mock).unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "tmux");
-        assert_eq!(calls[0].1, vec!["kill-window", "-t", "task-42"]);
+        assert_eq!(
+            calls[0].1,
+            vec!["kill-window", "-t", &mock.pane_id_of("task-42")]
+        );
+    }
+
+    #[test]
+    fn kill_window_fails_when_window_is_absent() {
+        // The other worst consequence: killing a live sibling's agent because the
+        // intended window had already died.
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "keep-99"]);
+        let err = kill_window("keep-9", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'keep-9'"),
+            "got: {err}"
+        );
+        assert!(
+            mock.recorded_calls().is_empty(),
+            "no kill-window may be attempted"
+        );
     }
 
     #[test]
     fn kill_window_fails_on_nonzero_exit() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")])
+            .with_windows(&["task-42"]);
         let err = kill_window("task-42", &mock).unwrap_err();
         assert!(err.to_string().contains("kill-window failed"), "got: {err}");
     }
 
-    // --- select_window failure ---
+    // --- select_window ---
+
+    #[test]
+    fn select_window_issues_correct_tmux_args() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&COLLIDING);
+        select_window("task-4", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(
+            calls[0].1,
+            vec!["select-window", "-t", &mock.pane_id_of("task-4")]
+        );
+    }
+
+    #[test]
+    fn select_window_fails_when_window_is_absent() {
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-42"]);
+        let err = select_window("task-4", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-4'"),
+            "got: {err}"
+        );
+    }
 
     #[test]
     fn select_window_fails_on_nonzero_exit() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")])
+            .with_windows(&["task-42"]);
         let err = select_window("task-42", &mock).unwrap_err();
         assert!(
             err.to_string().contains("select-window failed"),
@@ -1116,8 +1431,9 @@ mod tests {
 
     #[test]
     fn set_window_dispatch_dir_fails_on_generic_nonzero_exit() {
-        // Non-ambiguous error (does not contain "ambiguous")
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no session running")]);
+        // The window resolves, but `set-option` itself fails.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no session running")])
+            .with_windows(&["task-42"]);
         let err = set_window_dispatch_dir("task-42", "/some/path", &mock).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1128,6 +1444,20 @@ mod tests {
             !msg.contains("multiple tmux windows"),
             "should not be the ambiguous-window error, got: {msg}"
         );
+    }
+
+    #[test]
+    fn set_window_dispatch_dir_fails_when_window_is_absent() {
+        // The bug: with only `task-42` alive, a request for `task-4` used to set
+        // @dispatch_dir on task-42, sending that task's future splits into a
+        // different task's worktree.
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-42"]);
+        let err = set_window_dispatch_dir("task-4", "/some/path", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-4'"),
+            "got: {err}"
+        );
+        assert!(mock.recorded_calls().is_empty(), "set-option must not run");
     }
 
     // --- split_window_horizontal ---
@@ -1234,21 +1564,20 @@ mod tests {
     // --- join_pane failure paths ---
 
     #[test]
-    fn join_pane_fails_when_display_message_fails() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")]);
+    fn join_pane_fails_when_the_window_lookup_fails() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no server running")])
+            .with_queued_window_lookup();
         let err = join_pane("task-42", "%1", &mock).unwrap_err();
         assert!(
-            err.to_string().contains("display-message failed"),
+            err.to_string().contains("no tmux window named 'task-42'"),
             "got: {err}"
         );
     }
 
     #[test]
     fn join_pane_fails_when_join_pane_command_fails() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%5\n"), // display-message ok
-            MockProcessRunner::fail("invalid target"),  // join-pane fails
-        ]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("invalid target")])
+            .with_windows(&["task-42"]);
         let err = join_pane("task-42", "%1", &mock).unwrap_err();
         assert!(err.to_string().contains("join-pane failed"), "got: {err}");
     }
@@ -1314,22 +1643,22 @@ mod tests {
 
     #[test]
     fn pane_id_for_window_issues_correct_args() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%3\n")]);
-        let result = pane_id_for_window("task-42", &mock).unwrap();
-        assert_eq!(result, "%3");
-        let calls = mock.recorded_calls();
-        assert_eq!(
-            calls[0].1,
-            vec!["display-message", "-p", "-t", "task-42", "#{pane_id}"]
-        );
+        let mock = MockProcessRunner::new(vec![]).with_windows(&COLLIDING);
+        let short = pane_id_for_window("task-4", &mock).unwrap();
+        let long = pane_id_for_window("task-42", &mock).unwrap();
+        assert_eq!(short, mock.pane_id_of("task-4"));
+        assert_eq!(long, mock.pane_id_of("task-42"));
+        assert_ne!(short, long, "colliding names are different windows");
     }
 
     #[test]
     fn pane_id_for_window_fails_on_empty_output() {
-        // The case real tmux actually produces for a missing window: exit 0 with
-        // no output. Without the explicit emptiness check this returned Ok(""),
-        // and `swap-pane -s ''` exits 0 too, so the bad id propagated silently.
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"\n")]);
+        // The case real tmux produces for a missing window: exit 0 with no
+        // output. Under the old `display-message` implementation that returned
+        // Ok(""), and `swap-pane -s ''` exits 0 too, so the bad id propagated
+        // silently. A no-row listing must stay a hard miss.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"\n")])
+            .with_queued_window_lookup();
         let err = pane_id_for_window("task-999", &mock).unwrap_err();
         assert!(
             err.to_string().contains("no tmux window named 'task-999'"),
@@ -1339,10 +1668,23 @@ mod tests {
 
     #[test]
     fn pane_id_for_window_fails_on_nonzero_exit() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")])
+            .with_queued_window_lookup();
         let err = pane_id_for_window("task-42", &mock).unwrap_err();
         assert!(
-            err.to_string().contains("display-message failed"),
+            err.to_string().contains("no tmux window named 'task-42'"),
+            "got: {err}"
+        );
+    }
+
+    /// The prefix case, which used to return the sibling's pane ID — a wrong ID
+    /// that then propagated into swaps, splits and the split-pane's tracked pane.
+    #[test]
+    fn pane_id_for_window_fails_rather_than_returning_a_siblings_pane() {
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-42"]);
+        let err = pane_id_for_window("task-4", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-4'"),
             "got: {err}"
         );
     }
@@ -1477,17 +1819,20 @@ mod tests {
 
     #[test]
     fn inactive_pane_id_finds_the_inactive_pane() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n0 %7\n")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n0 %7\n")])
+            .with_windows(&COLLIDING);
         let pane_id = inactive_pane_id("task-42", &mock).unwrap();
         assert_eq!(pane_id, Some("%7".to_string()));
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
+        // The window is named by its resolved pane, so the panes returned cannot
+        // be a prefix-matched sibling's.
         assert_eq!(
             calls[0].1,
             vec![
                 "list-panes",
                 "-t",
-                "task-42",
+                &mock.pane_id_of("task-42"),
                 "-F",
                 "#{pane_active} #{pane_id}",
             ]
@@ -1496,7 +1841,8 @@ mod tests {
 
     #[test]
     fn inactive_pane_id_returns_none_for_single_pane_window() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n")])
+            .with_windows(&["task-42"]);
         assert_eq!(inactive_pane_id("task-42", &mock).unwrap(), None);
     }
 
@@ -1506,14 +1852,181 @@ mod tests {
         // function must not guess which of several inactive panes to target.
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
             b"0 %3\n0 %7\n1 %9\n",
-        )]);
+        )])
+        .with_windows(&["task-42"]);
         assert_eq!(inactive_pane_id("task-42", &mock).unwrap(), None);
     }
 
     #[test]
     fn inactive_pane_id_fails_on_nonzero_exit() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")])
+            .with_windows(&["task-42"]);
         let err = inactive_pane_id("task-42", &mock).unwrap_err();
         assert!(err.to_string().contains("list-panes failed"), "got: {err}");
+    }
+
+    #[test]
+    fn inactive_pane_id_fails_when_window_is_absent() {
+        // Previously returned Ok(None) after inspecting the sibling's panes —
+        // silently reporting "no companion pane" for a window that isn't there.
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-42"]);
+        let err = inactive_pane_id("task-4", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-4'"),
+            "got: {err}"
+        );
+    }
+
+    // --- window_target ---
+    //
+    // These assert the lookup itself, so they queue its response positionally
+    // (`with_queued_window_lookup`) rather than letting the mock resolve out of
+    // band — the listing bytes *are* the fixture here.
+
+    /// A runner whose window lookup is answered from `responses`, for the tests
+    /// whose subject is resolution.
+    fn queued(responses: Vec<Result<Output>>) -> MockProcessRunner {
+        MockProcessRunner::new(responses).with_queued_window_lookup()
+    }
+
+    #[test]
+    fn window_target_asks_tmux_for_an_exact_name_match() {
+        let mock = queued(vec![MockProcessRunner::ok_with_stdout(b"1 %1 task-4\n")]);
+        window_target("task-4", &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tmux");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "list-panes",
+                "-a",
+                "-f",
+                "#{==:#{window_name},task-4}",
+                "-F",
+                WINDOW_PANE_FORMAT,
+            ],
+            "the filter must compare window_name for equality, not prefix"
+        );
+    }
+
+    #[test]
+    fn window_target_resolves_an_exact_name_to_its_active_pane() {
+        // Two panes in task-42, only one active: the active pane is the one every
+        // command this module issues means by "the window".
+        let mock = queued(vec![MockProcessRunner::ok_with_stdout(
+            b"0 %5 task-42\n1 %6 task-42\n",
+        )]);
+        assert_eq!(window_target("task-42", &mock).unwrap(), "%6");
+    }
+
+    /// The local name comparison is not redundant with tmux's `-f` filter: a name
+    /// carrying `,` or `}` could confuse `#{==:…}` into returning a row for a
+    /// different window. Re-checking here turns that into a miss, never a wrong
+    /// hit — so a hostile listing cannot make resolution target the wrong pane.
+    #[test]
+    fn window_target_rechecks_the_name_the_filter_returned() {
+        let mock = queued(vec![MockProcessRunner::ok_with_stdout(b"1 %9 task-3782\n")]);
+        let err = window_target("task-378", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-378'"),
+            "a row for the wrong window must not resolve, got: {err}"
+        );
+    }
+
+    #[test]
+    fn window_target_rejects_duplicate_names() {
+        let mock = queued(vec![MockProcessRunner::ok_with_stdout(
+            b"1 %1 task-42\n1 %2 task-42\n",
+        )]);
+        let err = window_target("task-42", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("multiple tmux windows"),
+            "got: {err}"
+        );
+    }
+
+    /// Window names may contain spaces (the board window inherits whatever the
+    /// user had), so the name must be the parsed remainder, not one field.
+    #[test]
+    fn window_target_handles_names_containing_spaces() {
+        let mock = queued(vec![MockProcessRunner::ok_with_stdout(
+            b"1 %3 my project shell\n",
+        )]);
+        assert_eq!(window_target("my project shell", &mock).unwrap(), "%3");
+    }
+
+    #[test]
+    fn window_target_passes_through_pane_ids_and_empty_targets() {
+        for target in ["%42", "%0", ""] {
+            let mock = queued(vec![]);
+            assert_eq!(window_target(target, &mock).unwrap(), target);
+            assert!(
+                mock.recorded_calls().is_empty(),
+                "an already-exact target must not be looked up: {target:?}"
+            );
+        }
+    }
+
+    /// A window can genuinely be named `%foo`, so only `%`-plus-digits is a pane
+    /// ID. Anything else takes the lookup path and gets this module's clear
+    /// "no tmux window named" error rather than tmux's "can't find pane".
+    #[test]
+    fn window_target_looks_up_names_that_merely_start_with_percent() {
+        for target in ["%foo", "%", "%1a"] {
+            let mock = queued(vec![MockProcessRunner::ok_with_stdout(b"")]);
+            let err = window_target(target, &mock).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains(&format!("no tmux window named '{target}'")),
+                "{target:?} should be looked up as a name, got: {err}"
+            );
+            assert_eq!(
+                mock.recorded_calls().len(),
+                1,
+                "{target:?} should have been looked up"
+            );
+        }
+    }
+
+    #[test]
+    fn window_target_treats_a_failed_lookup_as_not_found() {
+        // No server running: there is genuinely no such window. Mirrors
+        // `list_all_window_names`, which maps the same failure to an empty list.
+        let mock = queued(vec![MockProcessRunner::fail("no server running")]);
+        let err = window_target("task-42", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-42'"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn window_target_propagates_a_runner_error() {
+        let mock = queued(vec![Err(anyhow::anyhow!("tmux: command not found"))]);
+        let err = window_target("task-42", &mock).unwrap_err();
+        assert!(err.to_string().contains("command not found"), "got: {err}");
+    }
+
+    /// `window_name_in_lookup` must invert `window_filter` exactly, or
+    /// `MockProcessRunner` silently stops recognising the lookup and every mock
+    /// test that relies on out-of-band resolution starts failing obscurely.
+    #[test]
+    fn window_name_in_lookup_inverts_the_filter_this_module_builds() {
+        let filter = window_filter("task-42");
+        let args = ["list-panes", "-a", "-f", &filter, "-F", WINDOW_PANE_FORMAT];
+        assert_eq!(window_name_in_lookup(&args), Some("task-42"));
+    }
+
+    #[test]
+    fn window_name_in_lookup_ignores_other_calls() {
+        assert_eq!(
+            window_name_in_lookup(&["list-windows", "-a", "-F", "#{window_name}"]),
+            None
+        );
+        assert_eq!(
+            window_name_in_lookup(&["list-panes", "-t", "%1", "-F", "#{pane_id}"]),
+            None
+        );
     }
 }
