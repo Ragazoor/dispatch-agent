@@ -718,6 +718,49 @@ mod tests {
     }
 
     #[test]
+    fn retro_skill_permits_fixing_small_context_drift_in_session() {
+        // The old Step 3 said "Do not edit files yourself", which turned every
+        // one-line doc correction into a task + worktree + agent dispatch. The
+        // agent that just did the work has the context and is already in a
+        // worktree whose next step is a commit; it should make the fix.
+        let content = skill_body("retro").to_lowercase();
+        assert!(
+            !content.contains("do not edit files yourself"),
+            "retro must no longer ban editing outright — fixing small context \
+             drift in place is now its job"
+        );
+        let section = retro_section("## step 3:");
+        assert!(
+            section.contains("fix it yourself"),
+            "retro must tell the agent to fix small context drift in this session"
+        );
+        assert!(
+            section.contains("small and self-evident"),
+            "retro's edit licence must be bounded to small, self-evident \
+             corrections that need no design judgement"
+        );
+    }
+
+    #[test]
+    fn retro_skill_forbids_speccing_unimplemented_behaviour() {
+        // A spec edit describing behaviour the session already implemented is
+        // documentation catching up. One describing behaviour the code lacks is
+        // a design change, and this repo runs those spec -> tests -> code with
+        // their own dispatch — so retro must file it, not write it.
+        let section = retro_section("## step 3:");
+        assert!(
+            section.contains("already implemented"),
+            "retro may only edit a spec to describe behaviour this session \
+             already implemented"
+        );
+        assert!(
+            section.contains("spec → tests → code"),
+            "retro must route a spec change for not-yet-implemented behaviour \
+             to a task, naming the spec -> tests -> code loop as the reason"
+        );
+    }
+
+    #[test]
     fn decompose_review_skill_defaults_wrap_up_mode_to_rebase() {
         // Review work packages are small and land on main — one draft PR per
         // package is noise. The skill pre-sets wrap_up_mode purely to skip

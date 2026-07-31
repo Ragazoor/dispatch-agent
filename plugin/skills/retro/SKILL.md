@@ -55,25 +55,34 @@ against that and had to back the design out" is a finding — it cost real time.
 "A timing constant isn't listed in the constants table" is not — nobody was
 slowed by its absence, and filing it buys the next agent nothing.
 
-## Step 3: Turn findings into follow-up tasks, not edits
+## Step 3: Fix it here, or file it
 
-For each **concrete, actionable** finding from Step 2 (or a bug noticed but
-out of scope, or a worthwhile enhancement surfaced along the way), call
-`create_task`:
+Fix it yourself, in this session, when **all** of these hold:
 
-- `title` — specific and actionable (e.g. "Update tasks.allium: X rule now
-  says Y").
-- `description` — reference this task's ID for traceability (e.g. "Found
-  during task #123 — CLAUDE.md's module-map entry for `src/foo/` no longer
-  matches after this session's refactor.").
-- `tag` — `chore` for doc/spec drift, `bug` for a noticed-but-unfixed bug,
-  `feature` for an enhancement idea.
+- the surface is agent-facing prose — `CLAUDE.md`, a page under `docs/`, or a
+  skill under `plugin/skills/`;
+- your own work this session made it wrong, or this session proved it wrong;
+- the correction is small and self-evident, needing no judgement about intended
+  design.
 
-`repo_path` and `epic_id` are inherited automatically from the caller — no
-need to pass them explicitly unless overriding.
+One Allium case is also yours to fix: making a spec describe behaviour **this
+session already implemented** is documentation catching up, not a design change.
 
-**Do not edit files yourself.** The follow-up task is what gets dispatched
-later to make the actual change — this skill only identifies and records.
+You are the best-placed agent to make these fixes. You have the context, and
+you are already in a worktree whose very next step is a commit — the calling
+skill picks your edits up. Handing a one-line correction to a future agent who
+must rebuild everything you already know is the expensive way to do nothing.
+
+File a task with `create_task` instead — and do **not** edit — when:
+
+- the change would make a spec describe behaviour the code does not have yet.
+  That is a `spec → tests → code` loop and needs its own dispatch;
+- the fix needs a judgement call about intended design;
+- it is a pre-existing inaccuracy whose history you do not know;
+- it is not small.
+
+Also file a `bug` for a concrete defect you noticed but could not fix in scope —
+one with an observable wrong behaviour, not a suspicion.
 
 **Anti-patterns — do not create a task for:**
 - A vague idea with no concrete next step.
