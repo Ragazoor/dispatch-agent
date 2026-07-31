@@ -13,6 +13,7 @@
 //! - [`learnings`] — knowledge-base entries
 //! - [`todos`] — personal TODO list items
 //! - [`usage`] — usage events
+//! - [`budget`] — Claude subscription rate-limit windows
 //! - [`columns`] — `VisualColumn` kanban board layout
 //! - [`url`] — typed task URLs
 
@@ -43,6 +44,9 @@ pub use epics::*;
 
 pub mod usage;
 pub use usage::*;
+
+pub mod budget;
+pub use budget::*;
 
 mod columns;
 pub use columns::VisualColumn;
