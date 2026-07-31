@@ -656,6 +656,67 @@ mod tests {
             .unwrap_or_else(|| panic!("{path} must be UTF-8"))
     }
 
+    /// A lowercased section of the retro skill body: from the first occurrence
+    /// of `anchor` up to the next Markdown heading of any depth.
+    ///
+    /// Scoped per-section deliberately. Retro repeats words like "task",
+    /// "spec" and "fix" across its steps, so a whole-document `contains` can
+    /// still pass after the instruction under test has been deleted. Ending at
+    /// `\n#` rather than at a fixed depth means promoting or demoting a heading
+    /// cannot silently widen a section to the rest of the file. If you reword
+    /// an anchor heading, re-anchor it here.
+    fn retro_section(anchor: &str) -> String {
+        let content = skill_body("retro").to_lowercase();
+        let (_, section) = content.split_once(anchor).unwrap_or_else(|| {
+            panic!("retro skill must contain the section anchored on {anchor:?}")
+        });
+        section
+            .split_once("\n#")
+            .map_or(section, |(block, _)| block)
+            .to_string()
+    }
+
+    #[test]
+    fn retro_admission_test_is_next_agent_benefit_not_doc_accuracy() {
+        // The old Step 2 asked whether CLAUDE.md or a spec was "stale or
+        // wrong" — a correctness question every trivial nit passes, which is
+        // how retro came to file 38 one-line doc chores. The bar is now
+        // whether the *next* agent would do better, and each finding must
+        // trace to a concrete moment this session actually lost time on.
+        let section = retro_section("## step 2:");
+        assert!(
+            section.contains("would the next agent do better"),
+            "retro's admission test must be whether the next agent benefits, \
+             not whether a sentence is inaccurate"
+        );
+        assert!(
+            section.contains("concrete moment"),
+            "retro must require every finding to trace to a concrete moment \
+             from Step 1 rather than to a hypothetical"
+        );
+        assert!(
+            !section.contains("stale or wrong"),
+            "retro must not frame its check as a documentation-accuracy audit"
+        );
+    }
+
+    #[test]
+    fn retro_reflection_feeds_the_context_check() {
+        // Step 1's reflection used to be decorative: printed in Step 4 and
+        // discarded, while Step 2 ran an audit that ignored it. The friction
+        // the agent actually hit is now the input to what gets fixed.
+        let section = retro_section("## step 1:");
+        assert!(
+            section.contains("lost time") || section.contains("lose time"),
+            "retro's first step must ask where the session lost time"
+        );
+        assert!(
+            section.contains("nothing notable"),
+            "retro must state that an empty reflection is a real answer, so a \
+             smooth session is not pressured into inventing findings"
+        );
+    }
+
     #[test]
     fn decompose_review_skill_defaults_wrap_up_mode_to_rebase() {
         // Review work packages are small and land on main — one draft PR per

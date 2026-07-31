@@ -14,35 +14,46 @@ knowledge base.
 **Announce at start:** "I'm using the retro skill to run a session
 retrospective."
 
-## Step 1: Reflect
+## Step 1: Where did you lose time?
 
-Write two short bullet lists grounded in what actually happened this session —
-not a fixed questionnaire:
+List the concrete moments this session where you were slowed down or misled. Be
+specific — a moment, not a category:
 
-- **Went well** — approaches that saved time, tools/commands that worked
-  cleanly, patterns worth repeating.
-- **Could improve** — places you wasted time exploring, information you
-  should have asked for earlier, anything you'd do differently next time.
+- An assumption you took from `CLAUDE.md` that turned out to be wrong.
+- A convention you had to discover by reading source, because nothing told you.
+- A spec that described behaviour the code no longer had.
+- A rule you had to guess at — where a test goes, which helper to use.
+- A command that failed until you found the right invocation.
 
-Keep both lists to what's actually true of this session. An empty list
-("nothing notable") is a fine answer — don't pad it.
+Also note what went well and is worth repeating.
 
-## Step 2: Check for drift
+Keep both grounded in what actually happened this session. **"Nothing notable"
+is a real and common answer** — a session that ran smoothly has no findings, and
+padding this list is how retro turns into busywork.
 
-Read the repo's root `CLAUDE.md`. If `docs/specs/*.allium` exists, read the
-spec(s) relevant to the files this session touched (not the whole spec
-directory).
+## Step 2: Would a context change have prevented it?
 
-Ask: does anything this session built make `CLAUDE.md` or a spec now stale or
-wrong? Look for:
+For each moment in Step 1, ask: **is there a change to the agent-facing context
+that would have prevented it?** These are the surfaces that reach the next agent:
 
-- A convention or file-path reference in `CLAUDE.md` that this session's
-  changes made inaccurate.
-- A behavior this session changed that a spec still describes the old way.
+| Surface | Reaches the next agent via |
+|---|---|
+| root `CLAUDE.md` | loaded into every dispatch prompt |
+| `docs/specs/*.allium` | the source of truth agents consult |
+| `docs/*.md` | linked from `CLAUDE.md`, read on demand |
+| `plugin/skills/*/SKILL.md` | the skill the next agent invokes |
+| the knowledge base | injected into the prompt (see the `learnings` skill) |
+| the repo's verify command | appended to every dispatch prompt |
 
-This is a check, not an edit — do not modify `CLAUDE.md` or any spec file
-yourself here. Anything found becomes a follow-up task (Step 3), never a
-direct edit from this skill.
+The test is **"would the next agent do better?"** — not "is this statement
+inaccurate?" Every finding must trace back to a concrete moment from Step 1. If
+nothing in this session was made harder by it, it is not a finding, however true
+it is.
+
+Concretely: "`CLAUDE.md` claims there is a single DB connection; I designed
+against that and had to back the design out" is a finding — it cost real time.
+"A timing constant isn't listed in the constants table" is not — nobody was
+slowed by its absence, and filing it buys the next agent nothing.
 
 ## Step 3: Turn findings into follow-up tasks, not edits
 
