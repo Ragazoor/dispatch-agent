@@ -84,13 +84,37 @@ File a task with `create_task` instead — and do **not** edit — when:
 Also file a `bug` for a concrete defect you noticed but could not fix in scope —
 one with an observable wrong behaviour, not a suspicion.
 
-**Anti-patterns — do not create a task for:**
-- A vague idea with no concrete next step.
-- A one-off nit not worth a dedicated task.
-- Something already tracked elsewhere (check before creating a duplicate).
+### What you may file
 
-Cap it to what's genuinely worth a task — most sessions will produce zero or
-one, not several.
+Only two tags:
+
+- `bug` — a concrete defect with observable wrong behaviour.
+- `chore` — a context improvement that passed Step 2 but that you must not fix
+  yourself under the rules above.
+
+**Never file a `feature`.** Speculative refactors and enhancement ideas are not
+retro findings. "This invariant is enforced by convention, so the same omission
+could recur" is a hypothetical, not a defect — and it is the shape of every
+retro-filed task that later got archived unread. If it matters, it will come
+back as a real bug with a real incident behind it.
+
+### Before you file
+
+- **Check for a duplicate.** Call `list_tasks` and look for an existing task
+  covering the finding. Do not file a second one.
+- **One task per finding, not per file.** The same wrong statement repeated
+  across three documents is one task that lists all three, not three tasks.
+- **Write it so a cold agent can act.** `title` names the specific change.
+  `description` references this task's ID and says what the next agent will hit
+  if it stays unfixed — e.g. "Found during task #123 — `CLAUDE.md` claims the DB
+  has a single connection; I designed against that and had to back it out."
+
+`repo_path` and `epic_id` are inherited from the caller — no need to pass them
+explicitly unless overriding.
+
+**Zero tasks is the normal outcome.** Most sessions should file none. Filing one
+is unremarkable. Filing several means you are recording nits, not findings — go
+back to Step 2 and drop the ones that cost this session nothing.
 
 ## Step 4: Output
 

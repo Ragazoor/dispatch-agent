@@ -761,6 +761,56 @@ mod tests {
     }
 
     #[test]
+    fn retro_skill_does_not_file_feature_tasks() {
+        // Every archived retro-created task was a speculative refactor dressed
+        // as an enhancement — "this invariant is enforced by convention, so the
+        // same omission could recur", "this could be a single atomic insert".
+        // feature leaves retro's vocabulary entirely.
+        let section = retro_section("### what you may file");
+        assert!(
+            section.contains("never file a `feature`"),
+            "retro must explicitly refuse to file feature tasks"
+        );
+        assert!(
+            section.contains("speculative refactor"),
+            "retro must name speculative refactors as a non-finding, since that \
+             is the shape of every retro task that got archived"
+        );
+        assert!(
+            !section.contains("`feature` for"),
+            "retro must not still describe when to use the feature tag"
+        );
+    }
+
+    #[test]
+    fn retro_skill_requires_a_duplicate_check_before_filing() {
+        // Two findings were each filed twice: one stale sentence that appeared
+        // in two documents, and one recurring shape nobody recognised. Nothing
+        // in the skill told the agent to look first.
+        let section = retro_section("### before you file");
+        assert!(
+            section.contains("list_tasks"),
+            "retro must check for an existing task with list_tasks before filing"
+        );
+        assert!(
+            section.contains("one task per finding"),
+            "retro must collapse a finding that spans several files into one task"
+        );
+    }
+
+    #[test]
+    fn retro_skill_states_zero_findings_is_the_normal_outcome() {
+        // The old skill buried this under three steps of checklist-shaped
+        // instructions, which read as a quota to fill rather than a bar to
+        // clear.
+        let section = retro_section("### before you file");
+        assert!(
+            section.contains("zero tasks is the normal outcome"),
+            "retro must state outright that filing nothing is the expected result"
+        );
+    }
+
+    #[test]
     fn decompose_review_skill_defaults_wrap_up_mode_to_rebase() {
         // Review work packages are small and land on main — one draft PR per
         // package is noise. The skill pre-sets wrap_up_mode purely to skip
