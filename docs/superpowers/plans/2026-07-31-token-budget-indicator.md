@@ -47,7 +47,6 @@
 | `src/runtime/commands.rs` (modify) | Dispatch `Command::Budget` |
 | `src/tui/ui/budget.rs` (create) | `budget_spans()` — formatting, thresholds, degradation order |
 | `src/tui/ui/shared.rs` (modify) | `render_top_indicators` prepends budget spans |
-| `src/cli/doctor.rs` (modify) | Chain-drift + snapshot-freshness checks |
 | Deletions | `plugin/hooks/scripts/task-usage-hook`, its `hooks.json` entry, `src/setup/hooks.rs:22-28,36-38,130`, `src/setup/plugins.rs:478` entry, `docs/reference.md:201`, `docs/specs/epics.allium:271` |
 
 ---
@@ -1659,77 +1658,7 @@ git commit -m "feat(tui): render the budget indicator in the top row"
 
 ---
 
-### Task 8: `dispatch doctor` checks
-
-**Files:**
-- Modify: `src/cli/doctor.rs`
-
-**Interfaces:**
-- Consumes: `setup::statusline::discover_chain`, `build_command` (Task 4). Widen their visibility to `pub(crate)` if `doctor` cannot reach them.
-- Produces: two new doctor checks.
-
-- [ ] **Step 1: Write the failing tests**
-
-Read `src/cli/doctor.rs` and find its existing check-test pattern, then add tests asserting:
-
-```rust
-#[test]
-fn reports_ok_when_statusline_file_matches_current_chain() { /* … */ }
-
-#[test]
-fn reports_drift_when_user_changed_their_status_line() {
-    // The --chain target is baked in at setup time. If the user later edits
-    // their own statusLine.command, the decorator keeps invoking the stale one
-    // and the unconditional exit 0 hides it. Doctor is the only way to notice.
-}
-
-#[test]
-fn reports_missing_when_statusline_settings_file_absent() { /* … */ }
-
-#[test]
-fn reports_stale_when_snapshot_older_than_threshold() {
-    // Threshold injected, not slept on.
-}
-
-#[test]
-fn reports_missing_when_snapshot_absent() {
-    // Expected on non-subscription auth — must read as informational, not an error.
-}
-```
-
-Write each body against the file's existing helper style.
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run: `cargo test cli::doctor`
-Expected: FAIL — new checks do not exist.
-
-- [ ] **Step 3: Implement the checks**
-
-Add a `statusline` check that:
-- reports missing if `~/.claude/dispatch-statusline.json` is absent → remedy "run `dispatch setup`";
-- parses its `statusLine.command`, recomputes the expected command from the *current* `discover_chain`, and reports drift on mismatch → remedy "run `dispatch setup`";
-- reports the snapshot's age, treating absent-or-stale as informational (not a failure), since non-subscription auth legitimately never produces one.
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `cargo test cli::doctor`
-Expected: all pass.
-
-- [ ] **Step 5: Smoke test**
-
-Run: `cargo run -- doctor` and confirm the new lines read sensibly.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/cli/doctor.rs
-git commit -m "feat(doctor): check statusline wiring and budget snapshot freshness"
-```
-
----
-
-### Task 9: Remove the dead `task-usage-hook`
+### Task 8: Remove the dead `task-usage-hook`
 
 **Files:**
 - Delete: `plugin/hooks/scripts/task-usage-hook`
@@ -1793,7 +1722,7 @@ git commit -m "chore: remove the dead task-usage-hook"
 
 ---
 
-### Task 10: Final verification and spec alignment
+### Task 9: Final verification and spec alignment
 
 - [ ] **Step 1: Run the full verification command**
 
@@ -1842,11 +1771,13 @@ git commit -m "chore: final verification for the budget indicator"
 
 ## Self-Review Notes
 
-**Spec coverage:** every design section maps to a task — data source and decorator → Task 3; install site and chain discovery/recursion guard → Task 4; injection → Task 5; store and concurrent-writer safety → Task 3 (unique temp file, with a test that no temp files accumulate); TUI poll pattern → Task 6; render site, all states, and degradation order → Task 7; doctor checks for chain drift and staleness → Task 8; cleanup → Task 9; specs → Task 1.
+**Spec coverage:** every design section maps to a task — data source and decorator → Task 3; install site and chain discovery/recursion guard → Task 4; injection → Task 5; store and concurrent-writer safety → Task 3 (unique temp file, with a test that no temp files accumulate); TUI poll pattern → Task 6; render site, all states, and degradation order → Task 7; cleanup → Task 8; specs → Task 1.
+
+**Deliberately not covered: automatic detection of chain drift or a broken payload schema.** An earlier revision put these in `dispatch doctor`; that was dropped because the doctor CLI is being retired (task #3832). Drift is repaired by re-running `dispatch setup`, which rewrites the chain target from the user's current config — that is the whole remedy. Do not add doctor checks for this feature.
 
 **Known soft spots for the implementer to watch:**
 
 1. **Task 5, Step 3** — the Rust line-continuation `\` inside the string literal eats following whitespace. Verify the rendered constant has exactly one space between `--plugin-dir …dispatch` and `--settings`. A missing space silently produces a bogus flag.
 2. **Task 7, Step 5** — the width arithmetic for prepending is the fiddliest part of the whole plan. `render_top_indicators` has no truncation logic today, and the right-aligned `Paragraph` will silently clip rather than error. Verify with an actual narrow-width snapshot test, not by reading the code.
 3. **Task 6** — `budget_snapshot_path` on `TuiRuntime` must derive from the *same* `--db`-resolved data dir that `dispatch setup` used when writing `--snapshot` into the settings file. If the TUI runs with `--db /tmp/scratch.db` but setup ran against the default, the reader and writer point at different files and the indicator silently stays hidden. This is expected behaviour for a throwaway DB, but do not mistake it for a bug during manual testing.
-4. **Task 8** — `discover_chain` and `build_command` are `pub(super)` within `setup`. Widening them for `doctor` is fine; do not duplicate the command-building logic, or drift detection will compare against a second, divergent formatter.
+4. **Task 4** — `discover_chain` and `build_command` stay `pub(super)` within `setup`. Nothing outside setup needs them now that the doctor checks are gone; resist widening their visibility without a caller.

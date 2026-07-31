@@ -68,8 +68,15 @@ without notice. Combined with the decorator's unconditional exit 0 (below), a
 schema change on upgrade degrades to *the indicator silently stays hidden* —
 indistinguishable from "user is on API-key auth". That is an acceptable failure
 mode for a chrome affordance, but it is a permanent maintenance risk and is
-accepted knowingly, not overlooked. `dispatch doctor` gains a check (below) so the
-failure is at least diagnosable on demand.
+accepted knowingly, not overlooked.
+
+There is deliberately **no automatic detection** of this. An earlier revision put
+a check in `dispatch doctor`; that was dropped because the doctor CLI is being
+retired (task #3832), and because a manual check only helps someone who already
+suspects a problem — which is precisely what a silent hide denies them. The
+accepted position: the badge's absence on a board the user looks at constantly is
+the signal, and re-running `dispatch setup` is the remedy. Documented in
+`docs/reference.md` rather than enforced in code.
 
 ## Architecture
 
@@ -192,10 +199,10 @@ the observable behaviour the regression test asserts.
 
 **Chain drift.** The `--chain` target is baked in at setup time. If the user later
 changes their own `statusLine.command`, the chain keeps invoking the stale one and
-step 4 hides the discrepancy. Mitigation: `dispatch doctor` compares the recorded
-chain target against the current `statusLine.command` and reports a mismatch,
-alongside a check that the snapshot file exists and is fresh. Re-running
-`dispatch setup` repairs it. This is a known limitation, not a solved problem.
+step 4 hides the discrepancy. The remedy is re-running `dispatch setup`, which
+rewrites the chain target from the current config; setup is idempotent, so this is
+safe to repeat. There is no automatic detection — this is a known, accepted
+limitation, documented rather than solved.
 
 Coverage is every session dispatch spawns — the main session, every agent, every
 resume. Ad-hoc `claude` sessions the user launches themselves do not report; the
@@ -388,7 +395,6 @@ budget-remaining and is explicitly out of scope.
 | Recursion guard: self-referential command → file written with no `--chain` | `src/setup/` inline tests |
 | Setup still does not write `~/.claude/settings.json` | existing `setup_does_not_write_settings_json` must keep passing |
 | Spawn sites carry `--settings` | `src/dispatch/tests.rs`, prompt snapshots |
-| `doctor` flags chain drift and a stale/missing snapshot | `src/cli/doctor.rs` inline tests |
 | `tick_budget_poll` emits `Refresh` on the Nth tick | `src/tui/tests/` |
 | Unchanged snapshot does not set `dirty`; changed one does | `src/tui/tests/` |
 | Thresholds, hidden, per-window omission, stale, `·now`, clamp | `src/tui/tests/snapshots/` |
@@ -417,7 +423,7 @@ figure was recomputed and is arithmetically exact. Corrections applied:
 | R9 | "grouped with apiKeyHelper … therefore not a plugin capability" | That grouping is a settings-trust helper and proves nothing about plugins. Replaced with the real evidence: the settings-schema location and the two plugin component enumerations. |
 | R10 | no undefined-state handling | Added `resets_at` in the past, percentage clamping, and missing-data-dir. |
 | R11 | recursion guard behaviour unstated | Now specified as observable behaviour: write the file with no `--chain`, warn. |
-| R12 | chain drift unaddressed | Added a `dispatch doctor` check; documented as a known limitation. |
+| R12 | chain drift unaddressed | Documented as a known limitation, repaired by re-running `dispatch setup`. A `doctor` check was considered and rejected — the doctor CLI is being retired (task #3832). |
 | R13 | line citations | Fixed: `dispatch.allium:818` (was 826), `hooks.json:23-34`/`:29-32` (was 27-36), `tui/mod.rs:41` (was 37), `update/agent.rs:373` (was 371), `runtime/split.rs:90` (was 86). |
 | R14 | "~300 ms throttle" | It is a debounce, and `refreshInterval` can add periodic re-runs. Reinforces the "must not open the DB" constraint, now explicit. |
 | — | stability of the source | Added an explicit accepted-risk section; revision 1 presented a binary-string discovery as though it were a contract. |
