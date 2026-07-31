@@ -1,6 +1,6 @@
 ---
 name: retro
-description: Sub-step of the wrap-up skill, not a way to finish a task. The wrap-up skill invokes this automatically between wrap_up and exit_session — to complete, finish, wrap up, or end a task, always use the wrap-up skill, never this one. Only invoke retro directly when the user explicitly runs /retro or asks for a session retrospective. Captures what went well/could improve, checks whether this repo's CLAUDE.md or Allium specs are now stale, and opens follow-up tasks for anything actionable.
+description: Sub-step of the wrap-up skill, not a way to finish a task. The wrap-up skill invokes this automatically before its commit step — to complete, finish, wrap up, or end a task, always use the wrap-up skill, never this one. Only invoke retro directly when the user explicitly runs /retro or asks for a session retrospective. Reflects on where this session lost time, fixes small agent-context drift in place so the next agent does better, and opens follow-up tasks only for what it must not fix itself.
 ---
 
 # Retro
@@ -133,7 +133,7 @@ Print a structured summary:
 **Follow-up tasks created:** #<id> (<tag>: <title>){, or "none needed"}
 ```
 
-This is the last step of the retro skill itself — it is not the end of the session. Retro is almost always invoked as a sub-step of `wrap-up`, between `wrap_up` and `exit_session`. After printing this summary, immediately resume the calling skill's next instruction (the closing `exit_session` call) in the same turn. Do not stop here.
+This is the last step of the retro skill itself — it is not the end of the session. Retro is almost always invoked as a sub-step of `wrap-up`, just before that skill's commit step — which is what carries any edit you just made. After printing this summary, immediately resume the calling skill's next instruction (the closing `exit_session` call) in the same turn. Do not stop here.
 
 ## Relationship to other skills
 

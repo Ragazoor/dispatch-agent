@@ -843,16 +843,50 @@ mod tests {
 
     #[test]
     fn retro_skill_tells_agent_to_resume_the_caller() {
-        // wrap-up invokes retro between wrap_up and exit_session. Without an
+        // wrap-up invokes retro pre-commit, before its commit step. Without an
         // explicit instruction to resume the caller's remaining steps, an
         // agent that just finished following retro's own steps has nothing
         // telling it to continue — that's how wrap-up gets stuck after retro
-        // and never reaches exit_session.
+        // and never reaches the commit, the user's action choice, or
+        // exit_session. Retro's own edits are among what that commit carries,
+        // so stopping here loses them.
         let content = skill_body("retro");
         assert!(
             content.contains("do not stop here") || content.contains("Do not stop here"),
             "retro skill must explicitly instruct the agent to resume the \
              calling skill's next step instead of stopping"
+        );
+    }
+
+    #[test]
+    fn wrap_up_skill_runs_retro_before_the_commit_step() {
+        // Retro fixes small agent-context drift in place, so it has to run
+        // before the commit that carries those edits. Invoked after wrap_up
+        // instead, its edits are stranded: the rebase path has already
+        // fast-forwarded base_branch, so a later commit sits on a branch
+        // nobody merges, and the PR path has already pushed.
+        let content = skill_body("wrap-up");
+        let retro_at = content
+            .find("Skill({ skill: \"retro\" })")
+            .expect("wrap-up skill must invoke the retro skill");
+        let commit_at = content
+            .find("## Step 3: Commit uncommitted changes")
+            .expect("wrap-up skill must have a commit step to anchor retro before");
+        assert!(
+            retro_at < commit_at,
+            "wrap-up must invoke retro before its commit step, so retro's \
+             context fixes are committed with the session's work"
+        );
+        assert_eq!(
+            content.matches("Skill({ skill: \"retro\" })").count(),
+            1,
+            "wrap-up must invoke retro exactly once — a leftover call in the \
+             closing sequence would run it twice and re-file its findings"
+        );
+        assert!(
+            !content.to_lowercase().contains("run `/retro`"),
+            "wrap-up must not still invoke retro from the closing sequence \
+             between wrap_up and exit_session"
         );
     }
 

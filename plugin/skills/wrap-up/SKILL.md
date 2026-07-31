@@ -1,13 +1,13 @@
 ---
 name: wrap-up
-description: Use to finish a dispatch task and close its session — whenever work in a dispatch worktree is complete and the user says to wrap up, finish, close out, finalise, or "we're done here", even if they don't name this skill. Commits remaining changes, then takes one of three paths chosen by the user: rebase onto the task's base_branch (dispatch-driven), author and open a draft GitHub PR yourself (you write the title and body), or done with no git operations. Always use this rather than calling wrap_up/exit_session by hand — the two calls have an ordering and a retro step between them that are easy to get wrong.
+description: Use to finish a dispatch task and close its session — whenever work in a dispatch worktree is complete and the user says to wrap up, finish, close out, finalise, or "we're done here", even if they don't name this skill. Commits remaining changes, then takes one of three paths chosen by the user: rebase onto the task's base_branch (dispatch-driven), author and open a draft GitHub PR yourself (you write the title and body), or done with no git operations. Always use this rather than calling wrap_up/exit_session by hand — the retro step must run before the commit and the two closing calls have an ordering that is easy to get wrong.
 ---
 
 # Wrap Up
 
 Wrap up a dispatch worktree. All three paths follow the same shape:
 
-`wrap_up(action)` → run the `/retro` skill → a single `exit_session(token, action, ...)` call that applies the terminal state change and closes the session.
+`/retro` (pre-commit) → commit → `wrap_up(action)` → a single `exit_session(token, action, ...)` call that applies the terminal state change and closes the session.
 
 **`exit_session` is mandatory on every path.** `wrap_up` alone changes nothing terminal — it issues a token and, for `rebase`, does the git work. The task's status is not moved and the session is not closed until `exit_session` runs. A wrap-up that stops after `wrap_up` leaves the tmux window alive and the task stuck in its old status. Never end your turn between the two calls.
 
@@ -65,6 +65,27 @@ Wait for the skill to complete before proceeding. If it makes additional changes
 
 If there are no code file changes, skip this step entirely.
 
+## Step 2.6: Run the retro
+
+Invoke the retro skill:
+
+```
+Skill({ skill: "retro" })
+```
+
+Wait for it to complete before proceeding.
+
+Retro reflects on where this session lost time and may fix small inaccuracies in
+`CLAUDE.md`, a page under `docs/`, or a skill so the next agent dispatched here
+does better. It runs **here, before the commit**, so anything it fixes is
+committed by Step 3 and travels with the rebase or the PR.
+
+Do not defer it to the closing sequence. After `wrap_up` the rebase path has
+already fast-forwarded `{base_branch}`, so a later commit strands those fixes on
+a branch nobody merges, and the PR path has already pushed.
+
+Retro may also file follow-up tasks. That is expected — leave them alone.
+
 ## Step 3: Commit uncommitted changes
 
 Run:
@@ -102,13 +123,13 @@ If the user cancels or says no, exit without calling any tool.
 
 ## Step 5: The closing sequence
 
-Every path ends with the same five steps. Only Step C differs by action, plus the PR path's authoring work which happens *before* this sequence (see *The PR path* below). The task moves to "done" (rebase, done) or "review" (pr) automatically — don't set the status by hand.
+Every path ends with the same four steps. Only Step C differs by action, plus the PR path's authoring work which happens *before* this sequence (see *The PR path* below). The task moves to "done" (rebase, done) or "review" (pr) automatically — don't set the status by hand.
 
 **A. Summarise behaviour changes.** Invoke the `summarize` skill (`Skill({ skill: "summarize" })`) and show the user the result, which leads with how behaviour changed. This is the user's last recap before the session closes. Skip it on the PR path — the PR body you just wrote already serves this purpose, and repeating it wastes the user's attention.
 
 **B. Rate retrieved knowledge.** See *Rate retrieved knowledge* below.
 
-**C. Call `wrap_up`** with `task_id` (the integer from Step 1) and `action`. This returns an **Exit token** (a UUID string). It does not close the session and does not move the task's status — that all waits for Step E. What it does beyond issuing the token depends on the action:
+**C. Call `wrap_up`** with `task_id` (the integer from Step 1) and `action`. This returns an **Exit token** (a UUID string). It does not close the session and does not move the task's status — that all waits for Step D. What it does beyond issuing the token depends on the action:
 
 | action | what `wrap_up` does | notes |
 |---|---|---|
@@ -118,11 +139,9 @@ Every path ends with the same five steps. Only Step C differs by action, plus th
 
 If `wrap_up` returns an error, show the user the exact message and stop. Do not call `exit_session` — you have no valid token, and the task stays in its current status. For a rebase conflict, suggest resolution steps.
 
-**D. Run `/retro`.** Invoke the retro skill (`Skill({ skill: "retro" })`) now, before `exit_session`. Nothing prompts you to reflect once the session is closed, so this is the only chance: if retro surfaces pitfalls, conventions, or tool tips, calling `record_learning` for them is part of that skill.
+**D. Call `exit_session`** with `task_id`, `token` (from Step C), `action` (must match the action you passed to `wrap_up`), and `pr_url` on the pr path only. This single call applies the terminal state change, clears the tmux window, and consumes the token — atomically. There is no follow-up call; this closes the loop.
 
-**E. Call `exit_session`** with `task_id`, `token` (from Step C), `action` (must match the action you passed to `wrap_up`), and `pr_url` on the pr path only. This single call applies the terminal state change, clears the tmux window, and consumes the token — atomically. There is no follow-up call; this closes the loop.
-
-Do not stop between C and E. Skipping `exit_session` leaves the tmux window alive and the task stuck in its old status — and on the PR path, the PR unrecorded.
+Do not stop between C and D. Skipping `exit_session` leaves the tmux window alive and the task stuck in its old status — and on the PR path, the PR unrecorded.
 
 ### Don't dispatch the epic's next subtask yourself
 
@@ -234,10 +253,10 @@ EOF
 
 `{owner}` is the first part of the repo slug. The `{owner}:{branch}` format is required so `gh` resolves the branch in the same repo as `--repo` (rather than your authenticated user's namespace).
 
-`gh pr create` prints the PR URL on stdout. Capture it — it is the `pr_url` you pass to `exit_session` in Step E.
+`gh pr create` prints the PR URL on stdout. Capture it — it is the `pr_url` you pass to `exit_session` in Step D.
 
 If `gh` reports `a pull request for branch '...' already exists`, parse the URL it returns and use that — the PR already exists and your job is just to record it.
 
 ### Then run the closing sequence
 
-Go to Step 5 with `action="pr"`, skipping Step A (the PR body is your summary). The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down while you're still in retro. Don't reorder to "close first, retro after".
+Go to Step 5 with `action="pr"`, skipping Step A (the PR body is your summary). The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down between the two calls. Don't reorder to "close first, then finish up".
