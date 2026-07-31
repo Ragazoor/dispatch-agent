@@ -1,0 +1,682 @@
+-- allium: 3
+-- repo-sync.allium
+--
+-- Scope: Local-first repo sync — keeping a repository's primary checkout in
+--        step with origin on its own default branch.
+-- Includes: the ahead/behind measurement and when it is refreshed; the sync
+--           operation with its typed preconditions and its two outcomes; and
+--           the four surfaces that expose them (the status-bar drift segment,
+--           the [o] sync action and its confirmation, the
+--           `dispatch repo status` / `dispatch repo sync` CLI, and — in
+--           doctor.allium — the `repo-sync` check).
+-- Excludes: worktree provisioning and per-task base-branch resolution (see
+--           dispatch.allium); the rebase / fast-forward that moves local base
+--           ahead in the first place (see pr-workflow.allium); the doctor
+--           findings model, flag conventions and output contract (see
+--           doctor.allium).
+--
+-- Why this exists: the dominant integration path (wrap_up "rebase") pulls
+-- origin, rebases the task branch and fast-forwards the repo's base branch —
+-- and never pushes. Local base therefore drifts ahead of origin on every
+-- finished task, and behind whenever a PR merges elsewhere. Nothing measured,
+-- displayed or closed that gap. This spec makes the drift visible where it
+-- cannot be ignored and defines exactly one action that closes it.
+
+use "./core.allium" as core
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+-- AheadBehind is a two-sided commit count between a repository's local base
+-- branch and its origin counterpart: `ahead` commits are reachable only from
+-- the local branch, `behind` commits only from origin/<base>. The pair is
+-- always read together, from the same observation, so it is one value rather
+-- than two fields.
+value AheadBehind {
+    ahead: Integer
+    behind: Integer
+
+    -- Any non-zero side is drift worth surfacing.
+    has_drift: ahead > 0 or behind > 0
+
+    -- Both sides non-zero: local and origin have each moved independently.
+    -- This is the case resolved by merging rather than rebasing.
+    is_diverged: ahead > 0 and behind > 0
+}
+
+-- A failed sync reports one cause plus exactly the detail that makes that cause
+-- actionable. The cause and its detail travel together; neither is useful alone.
+value SyncFailureReport {
+    failure: SyncFailure
+    detail: String   -- the branch found and expected, the dirty or conflicted
+                     -- paths, or git's own message — see ReportRepoSyncFailure
+
+    -- A rejected push means origin moved between the fetch and the push, so
+    -- repeating the same action is the fix. Every other cause needs the operator
+    -- to change something first.
+    retryable: failure = push_rejected
+}
+
+------------------------------------------------------------
+-- Contracts
+------------------------------------------------------------
+
+-- The sync engine is a synchronous, process-runner-driven unit with no TUI or
+-- database coupling: the same three operations back the board action, the CLI
+-- and the doctor check. Its obligations are stated here because getting them
+-- wrong is silent — a mis-measured repo claims to be in sync, and a
+-- precondition checked too late corrupts a working tree.
+contract RepoSyncEngine {
+    ahead_behind: (repo_path: String, base_branch: String) -> AheadBehind
+    fetch_base_error: (repo_path: String, base_branch: String) -> String
+    sync_repo: (repo_path: String, base_branch: String) -> SyncFailureReport
+
+    @invariant UnmeasurableIsNotInSync
+        -- ahead_behind yields no counts at all — never a zero/zero pair — when
+        -- origin/<base_branch> does not resolve (no remote, never fetched) or
+        -- when the count output cannot be parsed. A repository that cannot be
+        -- measured must not be reported as clean.
+
+    @invariant PreconditionsPrecedeEveryWrite
+        -- sync_repo checks every precondition before it performs any write, and
+        -- reports each failed precondition as its own distinct SyncFailure. A
+        -- dirty primary worktree can therefore never masquerade as a merge
+        -- conflict, and a missing remote can never masquerade as a rejected
+        -- push.
+
+    @invariant FetchPrecedesCounting
+        -- The fetch runs unconditionally, before the counts that decide whether
+        -- to merge or push are read. The counts are only trustworthy against
+        -- refs the same operation just refreshed.
+
+    @invariant LocalBaseHistoryIsNeverRewritten
+        -- Divergence is closed by merging origin/<base_branch> into the local
+        -- branch, never by rebasing or resetting the local branch. Worktrees
+        -- already branched off local base stay valid.
+
+    @invariant ConflictFilesCapturedBeforeAbort
+        -- On a merge conflict the unmerged paths are read from the repository's
+        -- own status before the merge is aborted, because aborting clears them.
+        -- The reported file list is the real one, not a guess.
+
+    @invariant BaseBranchIsTheRepositoryDefault
+        -- base_branch is the repository's own default branch (its
+        -- origin/HEAD symbolic ref, falling back to
+        -- core/config.default_branch), so `master` repositories work
+        -- unchanged. It is never taken from the per-task base-branch history,
+        -- which also records PR-review feature branches.
+
+    @guidance
+        -- Implementation: src/repo_sync.rs, structured and tested like
+        -- src/dispatch/finish.rs — synchronous, MockProcessRunner-driven,
+        -- exact-argv assertions.
+        --
+        -- ahead_behind reads `rev-list --count --left-right <base>...origin/<base>`
+        -- and yields nothing when that ref pair does not resolve or the output
+        -- does not parse.
+        --
+        -- fetch_base_error yields nothing on success and the failure message
+        -- otherwise; a failed fetch is non-fatal everywhere it is used.
+        --
+        -- sync_repo yields nothing on success and one SyncFailureReport
+        -- otherwise.
+        -- Porcelain and unmerged-path parsing is shared with the rebase path
+        -- (both live in src/git.rs, one implementation, two callers) so
+        -- conflict detection is not duplicated.
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+-- Every way a sync can fail, one value per cause. The split is the point: each
+-- cause has a different remedy and a different message, so none of them may be
+-- collapsed into a generic error.
+enum SyncFailure {
+    no_remote               -- the repository has no origin remote configured
+    | not_on_base_branch    -- the primary checkout is on some other branch;
+                            -- both the merge and the push act on whatever is
+                            -- checked out, so this must stop the operation
+    | dirty_primary_worktree -- the primary checkout has uncommitted changes;
+                            -- merging into a dirty tree is how work is lost
+    | merge_conflict        -- origin/<base> did not merge cleanly; the merge
+                            -- was aborted and the conflicted paths reported
+    | push_rejected         -- origin moved between the fetch and the push;
+                            -- retryable as-is
+    | other                 -- a git invocation failed for some other reason
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- RepoSyncState is the current drift measurement for one repository. At most
+-- one exists per repo_path. It is a measurement, not a record: every consumer
+-- establishes it for itself (the board refreshes it on the events below, the
+-- CLI and the doctor check compute it when they run), so it crosses no process
+-- boundary and needs no persistence.
+entity RepoSyncState {
+    repo_path: String        -- absolute path to the repository's primary checkout; identifies the measurement
+    base_branch: String      -- the repository's own default branch, as measured
+    counts: AheadBehind?     -- null when origin/<base_branch> could not be measured at all
+    last_fetch_error: String? -- message from the most recent failed fetch; null once a fetch succeeds
+
+    -- Whether the repository could be measured. An unmeasured repository is
+    -- distinct from a clean one and must not be presented as clean.
+    is_measured: counts != null
+
+    -- Drift the user can act on. False both when clean and when unmeasured.
+    has_drift: counts != null and counts.has_drift
+
+    invariant UniqueMeasurementPerRepo {
+        for a in RepoSyncStates:
+            for b in RepoSyncStates:
+                a != b implies a.repo_path != b.repo_path
+    }
+
+    invariant CountsAreNonNegative {
+        counts = null or (counts.ahead >= 0 and counts.behind >= 0)
+    }
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- == Measurement ==
+--
+-- Measurement is event-driven. Every refresh point below is an occasion on
+-- which a git-network operation has either just happened or is genuinely
+-- wanted, so there is no poll interval and no new timing constant. Only the
+-- startup refresh performs a fetch; the other three ride refs some other
+-- operation already refreshed, which makes them local ref reads with no
+-- network cost at all.
+
+rule RefreshRepoSyncState {
+    when: RefreshRepoSyncState(repo_path, fetch_first)
+
+    -- The repository's own default branch (see the
+    -- BaseBranchIsTheRepositoryDefault contract invariant).
+    let base = detect_default_branch(repo_path)
+
+    -- Only the fetching refresh points can produce a fetch error.
+    let fetch_error = if fetch_first: fetch_base_error(repo_path, base) else: null
+
+    let state = RepoSyncState{repo_path: repo_path}
+
+    ensures:
+        if not exists state:
+            RepoSyncState.created(
+                repo_path: repo_path,
+                base_branch: base,
+                counts: if fetch_error = null: ahead_behind(repo_path, base) else: null,
+                last_fetch_error: fetch_error
+            )
+        else if fetch_error != null:
+            -- Non-fatal by design: the previously known counts are kept, so a
+            -- slow or offline network leaves the drift indicator undisturbed
+            -- rather than blanking it. Only the error is recorded, for the CLI
+            -- table and the doctor check to report.
+            state.last_fetch_error = fetch_error
+        else:
+            state.base_branch = base
+            state.counts = ahead_behind(repo_path, base)
+            state.last_fetch_error = null
+
+    @guidance
+        -- fetch_first = true only for the startup refresh and for
+        -- `dispatch repo status` without --no-fetch. Every other caller passes
+        -- false, because the refs were refreshed moments earlier by the
+        -- operation that triggered the refresh.
+        --
+        -- Ordering matters: the counts are read after the fetch, never before
+        -- (FetchPrecedesCounting).
+        --
+        -- The work runs off the event loop — git subprocesses and filesystem
+        -- access must not touch the async or render paths — and its result
+        -- arrives asynchronously, so a slow network never delays TUI startup or
+        -- blocks a frame.
+}
+
+rule RefreshRepoSyncStateOnStartup {
+    when: AppStarts()
+
+    for repo in core/SavedRepoPaths:
+        ensures: RefreshRepoSyncState(repo_path: repo.path, fetch_first: true)
+
+    @guidance
+        -- The only genuinely new network traffic this feature introduces: one
+        -- fetch per saved repo path at startup. Fire-and-forget — results
+        -- arrive as they land, and an offline machine simply keeps unmeasured
+        -- repositories, which show no indicator.
+}
+
+rule RefreshRepoSyncStateAfterDispatch {
+    when: AgentLaunched(task, _)
+
+    ensures: RefreshRepoSyncState(repo_path: task.repo_path, fetch_first: false)
+
+    @guidance
+        -- No new network cost: provisioning the task's worktree already fetched
+        -- origin/<base> for that repository, so this is a local ref read.
+}
+
+rule RefreshRepoSyncStateAfterRebase {
+    when: BranchRebased(branch, onto)
+
+    -- The rebased branch identifies the worktree, which identifies the task,
+    -- which names the repository whose base branch just moved.
+    let worktree = core/Worktree{branch: branch}
+    let task = core/Task{worktree: worktree}
+
+    requires: exists task
+
+    ensures: RefreshRepoSyncState(repo_path: task.repo_path, fetch_first: false)
+
+    @guidance
+        -- A successful rebase wrap-up pulled origin/<base> and then
+        -- fast-forwarded local <base> onto the rebased branch, so local base
+        -- provably just moved ahead and the refs are already current. This is
+        -- the refresh point that lights the indicator most often, which is the
+        -- honest consequence of the workflow: ahead > 0 is the normal state
+        -- immediately after every rebase wrap-up.
+}
+
+rule RefreshRepoSyncStateAfterSync {
+    when: RepoSyncFinished(repo_path)
+
+    ensures: RefreshRepoSyncState(repo_path: repo_path, fetch_first: false)
+
+    @guidance
+        -- Recount after a sync so the indicator clears (or, on a partial
+        -- outcome, tells the truth) without waiting for another event.
+}
+
+-- == Sync ==
+--
+-- Decision: sync is an explicit action, never a side effect of wrap-up.
+-- Wrap-up already bundles commit, rebase, fast-forward, retro and session exit;
+-- adding a write to a shared branch would make its one irreversible step worse,
+-- would publish work no one verified, and would only ever help the `ahead`
+-- half. One key, one command, one confirmation.
+
+rule SyncRepo {
+    when: SyncRepo(repo_path, base_branch)
+
+    -- Preconditions are verified by the engine at execution time, each before
+    -- any write and each reported as its own SyncFailure (see the
+    -- PreconditionsPrecedeEveryWrite contract invariant):
+    --   origin remote configured           -> no_remote
+    --   primary checkout on base_branch    -> not_on_base_branch
+    --   primary checkout clean             -> dirty_primary_worktree
+    -- They are execution-time checks rather than rule preconditions because the
+    -- caller must be told which one failed; a silently rejected trigger would
+    -- lose exactly the distinction that makes them worth separating.
+
+    -- Counts read after the unconditional fetch. Null when the repository
+    -- cannot be measured even against freshly fetched refs.
+    let measured = ahead_behind(repo_path, base_branch)
+
+    -- Merging origin/<base_branch> into a diverged local branch adds one merge
+    -- commit, which is itself something to publish. A behind-only repository
+    -- fast-forwards instead and has nothing to push.
+    let pushed =
+        if measured != null and measured.is_diverged: measured.ahead + 1
+        else if measured != null: measured.ahead
+        else: 0
+
+    ensures:
+        if measured = null or not measured.has_drift:
+            -- The fetch still ran; that is what makes "in sync" a fact rather
+            -- than an assumption. No merge and no push are performed.
+            RepoAlreadyInSync(repo_path: repo_path, base_branch: base_branch)
+        else:
+            RepoSynced(
+                repo_path: repo_path,
+                base_branch: base_branch,
+                pulled: measured.behind,
+                pushed: pushed
+            )
+    ensures: RepoSyncFinished(repo_path: repo_path)
+
+    @guidance
+        -- The operation, in order:
+        --   1. fetch origin <base_branch> — always, even when nothing follows.
+        --   2. recount ahead/behind from the refreshed refs.
+        --   3. behind > 0: merge origin/<base_branch> into the checked-out
+        --      branch. One command covers both shapes — it fast-forwards when
+        --      ahead = 0 and creates a merge commit when diverged. Local
+        --      history is never rewritten, so live worktrees branched off local
+        --      base stay valid; the merge commit is the same cost the rebase
+        --      wrap-up path already pays.
+        --   4. ahead > 0, recounted after the merge: push origin <base_branch>.
+        --   5. report the outcome.
+        --
+        -- The two outcomes are distinguishable to the caller: RepoAlreadyInSync
+        -- when both counts were zero after the fetch, RepoSynced with the
+        -- commit counts actually pulled and pushed otherwise.
+        --
+        -- Emitted from exactly two places: the board confirmation
+        -- (AcceptRepoSyncPrompt) and `dispatch repo sync` (SyncRepoViaCli).
+        -- There is deliberately no agent-facing tool and no automatic caller:
+        -- publishing to a shared branch is an operator decision (see the
+        -- SyncNeverAutomatic invariant).
+}
+
+rule ReportRepoSyncFailure {
+    when: RepoSyncFailed(repo_path, report)
+
+    ensures: RepoSyncFailureShown(
+        repo_path: repo_path,
+        failure: report.failure,
+        detail: report.detail,
+        retryable: report.retryable
+    )
+
+    @guidance
+        -- Emitted by the sync worker when sync_repo reports a SyncFailure.
+        -- Each failure carries the detail that makes it actionable, and nothing
+        -- more:
+        --   not_on_base_branch      -> the branch found and the one expected
+        --   dirty_primary_worktree  -> the checkout path and its dirty files
+        --   merge_conflict          -> the conflicted paths, read before the
+        --                              merge was aborted
+        --   push_rejected           -> git's own rejection output; retryable
+        --   no_remote / other       -> the underlying message
+        --
+        -- In the TUI a failure goes to the error popup, never the status bar:
+        -- the status bar is for outcomes the user does not have to act on, and
+        -- every failure here needs a decision. Successful outcomes
+        -- (RepoSynced, RepoAlreadyInSync) go to the status bar.
+        --
+        -- No task or repository state is mutated. A failed sync leaves the
+        -- repository exactly as it found it, so retrying once the cause is
+        -- cleared is always safe.
+}
+
+-- == Board action ==
+
+rule PromptRepoSync {
+    when: OpenRepoSyncPrompt(user, task)
+
+    let state = RepoSyncState{repo_path: task.repo_path}
+
+    requires: exists state
+    requires: state.has_drift
+
+    ensures: RepoSyncPrompted(state: state)
+
+    @guidance
+        -- [o] for origin. It is the only unbound board-mode key with a clean
+        -- mnemonic and no hazardous neighbour: y/n are the accept/reject keys
+        -- of every confirmation prompt, so y would both open and accept a push
+        -- to a shared branch, and w sits next to W (wrap up), the other
+        -- irreversible git action. [O] is left unbound for a future sync-all.
+        --
+        -- The key acts on the repository of the selected task and on no other.
+        -- With no task selected, an unmeasured repository or a clean one, there
+        -- is no drift to close and no prompt is shown — the same condition that
+        -- hides the indicator.
+}
+
+rule AcceptRepoSyncPrompt {
+    when: ConfirmRepoSync(user, state)
+
+    requires: state.has_drift
+
+    ensures: SyncRepo(
+        repo_path: state.repo_path,
+        base_branch: state.base_branch
+    )
+}
+
+-- == CLI ==
+
+rule RepoStatusViaCli {
+    when: CliRepoStatus(operator, no_fetch)
+
+    for repo in core/SavedRepoPaths:
+        ensures: RefreshRepoSyncState(repo_path: repo.path, fetch_first: not no_fetch)
+
+    @guidance
+        -- `dispatch repo status [--no-fetch]`. Read-only: it measures every
+        -- saved repo path and prints one row each. This is the multi-repo view;
+        -- the board deliberately shows only the selected task's repository.
+        -- Implementation: a RepoAction variant alongside the existing
+        -- set-verify / clear-verify / list forms.
+}
+
+rule SyncRepoViaCli {
+    when: CliRepoSync(operator, repo_path?)
+
+    -- One named repository, or every saved one when the path is omitted.
+    let targets =
+        if repo_path != null: core/SavedRepoPaths where path = repo_path
+        else: core/SavedRepoPaths
+
+    requires: targets.count > 0
+
+    ensures:
+        for repo in targets:
+            SyncRepo(
+                repo_path: repo.path,
+                base_branch: detect_default_branch(repo.path)
+            )
+
+    @guidance
+        -- `dispatch repo sync [<path>]`. Every target is attempted; one
+        -- failure does not abandon the rest. The exit code is non-zero when any
+        -- target failed, so the command is usable from a script.
+}
+
+------------------------------------------------------------
+-- Invariants
+------------------------------------------------------------
+
+-- LocalBaseHistoryPreserved: no path in this spec rewrites the primary
+-- checkout's base-branch history. Divergence is closed by merging
+-- origin/<base> into local base, never by rebasing or resetting it. This is
+-- what makes sync safe to run while agents hold live worktrees branched off
+-- local base — a rewrite would silently orphan every one of them. Not
+-- expressible as a state assertion: it constrains how state changes, not what
+-- any single state looks like.
+
+-- UnmeasuredIsNeverPresentedAsClean: a repository whose counts could not be
+-- read is presented as unknown, never as in sync. Every consumer honours this
+-- the same way — the status-bar segment hides, the CLI row shows no counts, the
+-- doctor check reports nothing about drift — so no surface can quietly claim a
+-- repository is clean on the strength of a failed measurement.
+
+-- OneRepoSetForDriftMeasurement: drift is measured over the saved repo paths
+-- (core/SavedRepoPaths) and nothing else, on every surface — the startup
+-- refresh, the board indicator, `dispatch repo status`, `dispatch repo sync`
+-- with no path, and doctor's repo-sync check. The doctor check therefore does
+-- NOT use doctor's wider "known repo" union (saved paths plus every distinct
+-- task repo_path); it is the single exception to that union, so that no surface
+-- can report drift for a repository another surface silently omits. A repo with
+-- tasks but no saved path is a degenerate state — task creation saves the path —
+-- and doctor's worktrees check already reports it as its own anomaly, so
+-- reporting drift for it too would only add noise. Not expressible as a state
+-- assertion: it constrains which repositories every consumer enumerates, not
+-- what any single RepoSyncState looks like.
+
+-- SyncNeverAutomatic: a push to a shared branch happens only in response to an
+-- explicit operator action — the confirmed [o] prompt or `dispatch repo sync`.
+-- No timer, no wrap-up step, no agent-facing tool and no dispatch path may
+-- emit SyncRepo. A refresh may happen automatically; a sync may not.
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface RepoDriftIndicator {
+    facing user: User
+
+    -- A drift segment in the board's status bar, for the repository owning the
+    -- currently selected task. A status bar rather than a popup on purpose:
+    -- the point is a nag, and a nag you have to open is a nag you will not see.
+
+    let selected_task = selected_task()
+    let state = if selected_task != null: RepoSyncState{repo_path: selected_task.repo_path} else: null
+
+    let base_branch = state?.base_branch
+    let ahead = state?.counts?.ahead ?? 0
+    let behind = state?.counts?.behind ?? 0
+
+    -- Rendered only when there is a measured repository with real drift.
+    let visible = state != null and state.has_drift
+
+    exposes:
+        base_branch
+        ahead
+        behind
+        visible
+
+    provides:
+        -- [o] opens the sync confirmation for this repository. Offered only
+        -- while the segment is lit: with no drift there is nothing to close and
+        -- the key does nothing.
+        OpenRepoSyncPrompt(user, selected_task)
+            when visible
+
+    @guarantee HiddenWithoutASelectedTask
+        -- With no selected task there is no repository in scope and no segment.
+        -- An epic row is not a task: selecting one shows no segment, because
+        -- the segment names the repository of a selected task.
+
+    @guarantee HiddenWhenUnmeasured
+        -- A repository whose counts could not be read shows no segment. The
+        -- indicator never claims "in sync" about a repository it could not
+        -- measure.
+
+    @guarantee HiddenWhenClean
+        -- ahead = 0 and behind = 0 shows no segment.
+
+    @guarantee BehindIsAWarning
+        -- Any behind > 0 is styled as a warning: that is the direction that
+        -- will bite the next rebase.
+
+    @guarantee AheadOnlyIsNeutral
+        -- behind = 0 with ahead > 0 is styled neutrally. It is the normal state
+        -- immediately after every rebase wrap-up, so the segment is lit much of
+        -- the time. That is the design working — it clears when [o] is pressed
+        -- — but "hidden when clean" buys less quiet than it sounds.
+
+    @guarantee NoStalenessBeyondTheLastMeasurement
+        -- The segment shows the most recent successful measurement. A failed
+        -- fetch leaves the previous counts in place rather than blanking the
+        -- segment; the failure itself is reported through the CLI and the
+        -- doctor check, not here.
+
+    @guidance
+        -- Rendered as a compact `main ↑3↓1`-style segment beside the existing
+        -- status-bar badges. selected_task() is the board's current selection;
+        -- it yields nothing when the cursor is not on a task.
+        --
+        -- A multi-repo repos popup was considered and deferred until the engine
+        -- is proven; `dispatch repo status` covers that need in the meantime.
+}
+
+surface RepoSyncConfirmation {
+    facing user: User
+
+    context state: RepoSyncState
+
+    exposes:
+        state.repo_path
+        state.base_branch
+        state.counts
+
+    provides:
+        ConfirmRepoSync(user, state)
+            when state.has_drift
+        DismissRepoSync(user)
+
+    @guarantee PromptStatesExactlyWhatWillHappen
+        -- The prompt names the operations that will actually run against
+        -- origin, with their commit counts, and no others. Diverged: both the
+        -- merge and the push. behind = 0: the push alone. ahead = 0: the merge
+        -- alone. A half that will not run is not mentioned.
+
+    @guarantee NoSyncWithoutConfirmation
+        -- Nothing is fetched, merged or pushed until the prompt is confirmed.
+        -- Dismissing it leaves the repository untouched.
+
+    @guarantee OutcomeAndFailureRouteDifferently
+        -- A successful outcome is reported in the status bar; a failure is
+        -- reported in the error popup, because every failure needs an operator
+        -- decision.
+
+    @guidance
+        -- The prompt is the whole safety mechanism for the only network write
+        -- dispatch performs to a shared branch, which is why the wording is a
+        -- guarantee and not a styling detail. Confirming emits SyncRepo for
+        -- this repository (AcceptRepoSyncPrompt).
+}
+
+surface RepoStatusCli {
+    facing operator: User
+
+    -- `dispatch repo status [--no-fetch]` — one row per saved repo path.
+
+    let no_fetch = false
+
+    exposes:
+        for state in RepoSyncStates:
+            state.repo_path
+            state.base_branch
+            state.is_measured
+            state.counts
+            state.last_fetch_error
+
+    provides:
+        CliRepoStatus(operator, no_fetch)
+
+    @guarantee FetchesUnlessSuppressed
+        -- The command fetches before measuring, so its counts are current.
+        -- --no-fetch skips the fetch and reports whatever the local refs say,
+        -- for use offline or in a tight loop.
+
+    @guarantee UnmeasuredRowsShowNoCounts
+        -- A repository that could not be measured shows no ahead/behind figures
+        -- and, when the fetch was the cause, its fetch error instead.
+
+    @guarantee ReadOnly
+        -- The command never merges or pushes. Measuring is the whole of it.
+}
+
+surface RepoSyncCli {
+    facing operator: User
+
+    -- `dispatch repo sync [<path>]` — sync one repository or all of them.
+
+    let target_path = null
+
+    exposes:
+        for state in RepoSyncStates:
+            state.repo_path
+            state.base_branch
+
+    provides:
+        CliRepoSync(operator, target_path)
+
+    @guarantee EveryTargetAttempted
+        -- With the path omitted, every saved repository is attempted. A failure
+        -- on one does not abandon the others.
+
+    @guarantee FailureIsVisibleInTheExitCode
+        -- The exit code is non-zero when any target failed, and zero only when
+        -- all of them succeeded or were already in sync.
+
+    @guidance
+        -- The scripted equivalent of the board's [o]. Same engine, same
+        -- preconditions, same failure vocabulary — see the RepoSyncEngine
+        -- contract.
+}
+
+------------------------------------------------------------
+-- Open Questions
+------------------------------------------------------------
+
+-- (none)
