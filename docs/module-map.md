@@ -82,7 +82,7 @@ to look.
 | `src/feed/ingest/stale.rs` | `delete_stale_subtree()` / `clear_parent_stranded_tasks()` — role-routed phase 3: delete absent tasks + clear the parent |
 | `src/process.rs` | `ProcessRunner` trait + `RealProcessRunner` / `MockProcessRunner` for testable shell execution |
 | `src/tmux.rs` | Tmux API: create windows, send keys, capture pane output, kill windows |
-| `src/git.rs` | Small git plumbing shared across the crate (e.g. `detect_default_branch` via `origin/HEAD`) |
+| `src/git.rs` | The shared git plumbing both mutating operations gate on. `has_origin_remote` / `current_branch` / `dirty_files` are the three preflight reads that `dispatch::finish::finish_task` (`src/dispatch/finish.rs`) and `repo_sync::sync_repo` (`src/repo_sync.rs`) both run before writing — each caller decides what a failed check *means* in its own error type, but the read itself lives here once. `parse_porcelain_files` / `parse_unmerged_files` (over the shared `porcelain_entries` splitter) give "is this checkout dirty?" and "did that merge conflict?" exactly one answer each. Also `detect_default_branch` via `origin/HEAD`. **Look here before adding another `git status --porcelain` or `rev-parse --abbrev-ref HEAD` call** |
 | `src/notify.rs` | Shared notification delivery (`write_message_file` / `notify_tmux` / `deliver`) — writes a message file into a task's worktree and injects a tmux nudge; used by `send_message` (`src/mcp/handlers/tasks/dispatch.rs`) and task-watcher completion notices (`src/service/tasks/watchers.rs`) |
 | `src/editor.rs` | External `$EDITOR` integration for editing task/epic fields |
 | `src/plan.rs` | Plan file parsing (extract title/description from markdown) |
