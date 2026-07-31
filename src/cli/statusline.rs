@@ -14,9 +14,19 @@
 //!    no `Database` import and must keep it that way.
 
 use crate::models::budget::BudgetSnapshot;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+/// Wall-clock budget for the chained command. If it has not closed its stdout
+/// (i.e. exited or otherwise finished producing output) within this time, it
+/// is killed and the chain yields an empty string — consistent with this
+/// module's "any failure -> blank status line" philosophy. The real chained
+/// command runs several `git -C` invocations, which can block on a lock, NFS,
+/// or a network remote, so this bound is load-bearing, not decorative.
+const CHAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Parse the payload and atomically publish a snapshot. Returns whether a
 /// snapshot was written. Never panics; every failure is a silent `false`.
@@ -62,8 +72,23 @@ fn write_atomically(path: &Path, text: &str) -> bool {
 }
 
 /// Run the chained command with `stdin` on its stdin, returning its stdout.
-/// Any failure yields an empty string — a blank status line, never a broken one.
-fn run_chain(chain: &str, stdin: &str) -> String {
+/// Any failure — including a timeout — yields an empty string, a blank status
+/// line rather than a broken one.
+///
+/// Two hazards this guards against:
+///
+/// 1. **A never-exiting child hangs forever.** The chained command (in
+///    practice, several `git -C` invocations) can block on a lock, NFS, or a
+///    network remote. `timeout` bounds the wait; on expiry the child is
+///    killed rather than awaited indefinitely.
+/// 2. **Bidirectional-pipe deadlock.** Writing all of `stdin` before draining
+///    the child's stdout deadlocks once the payload exceeds the pipe buffer
+///    (~64 KiB on Linux) for a command that echoes as it reads (`cat`, `tee`,
+///    `jq .`): the child blocks writing to its full, undrained stdout while
+///    the parent blocks writing more to the child's full, undrained stdin.
+///    Writing stdin from a separate thread lets the parent drain stdout
+///    concurrently, so neither side can fill its pipe buffer and stall.
+fn run_chain(chain: &str, stdin: &str, timeout: Duration) -> String {
     let spawned = Command::new("sh")
         .arg("-c")
         .arg(chain)
@@ -73,13 +98,44 @@ fn run_chain(chain: &str, stdin: &str) -> String {
     let Ok(mut child) = spawned else {
         return String::new();
     };
+
     if let Some(mut pipe) = child.stdin.take() {
-        let _ = pipe.write_all(stdin.as_bytes());
-        // Drop closes the pipe so the child sees EOF and can exit.
+        let payload = stdin.to_string();
+        // Runs on its own thread so the parent is free to drain stdout at
+        // the same time. The pipe is moved in and drops at the end of this
+        // closure, closing the child's stdin so it sees EOF. A child that
+        // never reads stdin at all is fine — `write_all` erroring is ignored.
+        let _ = std::thread::spawn(move || {
+            let _ = pipe.write_all(payload.as_bytes());
+        });
     }
-    match child.wait_with_output() {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-        Err(_) => String::new(),
+
+    let (tx, rx) = mpsc::channel();
+    match child.stdout.take() {
+        Some(mut out) => {
+            std::thread::spawn(move || {
+                let mut buf = Vec::new();
+                let _ = out.read_to_end(&mut buf);
+                let _ = tx.send(buf);
+            });
+        }
+        None => {
+            let _ = tx.send(Vec::new());
+        }
+    }
+
+    match rx.recv_timeout(timeout) {
+        Ok(buf) => {
+            let _ = child.wait();
+            String::from_utf8_lossy(&buf).into_owned()
+        }
+        Err(_) => {
+            // Timed out: the child never closed stdout within budget. Kill
+            // and reap it so it does not linger as an orphan/zombie.
+            let _ = child.kill();
+            let _ = child.wait();
+            String::new()
+        }
     }
 }
 
@@ -94,7 +150,7 @@ pub fn run(stdin: &str, snapshot_path: &Path, chain: Option<&str>, now: i64) -> 
 pub fn run_capturing(stdin: &str, snapshot_path: &Path, chain: Option<&str>, now: i64) -> String {
     record_snapshot(stdin, snapshot_path, now);
     match chain {
-        Some(cmd) if !cmd.trim().is_empty() => run_chain(cmd, stdin),
+        Some(cmd) if !cmd.trim().is_empty() => run_chain(cmd, stdin, CHAIN_TIMEOUT),
         _ => String::new(),
     }
 }
@@ -242,5 +298,35 @@ mod tests {
         let path = tmp.path().join("rate-limits.json");
         run(PAYLOAD, &path, Some("exit 1"), 7);
         assert_eq!(read_snapshot(&path).captured_at, 7);
+    }
+
+    #[test]
+    fn chain_that_never_exits_times_out_and_returns_empty() {
+        // Exercises run_chain directly with an injected short timeout so the
+        // test does not wait out CHAIN_TIMEOUT's production value of 2s. A
+        // chain that never exits (blocked on a lock, NFS, a network remote,
+        // or here, `sleep`) must not hang the caller.
+        let out = run_chain("sleep 30", PAYLOAD, Duration::from_millis(100));
+        assert_eq!(
+            out, "",
+            "a hung chain command must yield empty output, not hang"
+        );
+    }
+
+    #[test]
+    fn chain_that_echoes_a_large_payload_does_not_deadlock() {
+        // Comfortably larger than the ~64 KiB Linux pipe buffer. Padded as a
+        // JSON string value so the payload still parses if something were to
+        // feed it through record_snapshot, even though this test only
+        // exercises run_chain's stdin/stdout plumbing.
+        let padding = "x".repeat(200_000);
+        let payload = format!(
+            r#"{{"rate_limits":{{"five_hour":{{"used_percentage":1.0,"resets_at":1}}}},"padding":"{padding}"}}"#
+        );
+        let out = run_chain("cat", &payload, Duration::from_secs(5));
+        assert_eq!(
+            out, payload,
+            "a large payload must round-trip through an echoing chain without deadlocking"
+        );
     }
 }

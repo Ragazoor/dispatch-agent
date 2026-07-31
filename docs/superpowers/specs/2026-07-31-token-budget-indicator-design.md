@@ -97,7 +97,8 @@ decorator:
 1. Read the payload JSON from stdin.
 2. If `.rate_limits` is present, write the snapshot to `<path>` atomically.
 3. If `--chain` is given, run that command with the same stdin bytes and print its
-   stdout verbatim.
+   stdout verbatim, bounded by a hard wall-clock timeout (2s in production); a
+   chain that does not finish within budget is killed and yields empty output.
 4. **Exit 0 unconditionally.** A failure anywhere in 1–3 must never blank or break
    the user's status line.
 
