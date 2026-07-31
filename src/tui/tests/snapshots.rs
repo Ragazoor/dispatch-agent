@@ -222,6 +222,8 @@ fn snapshot_card_badges_baseline() {
     let mut t = mk(8, TaskStatus::Running, "crashed");
     t.sub_status = SubStatus::Crashed;
     t.worktree = Some("/wt".to_string());
+    // No window: detached out-prioritises crashed, which is what this row locks.
+    t.tmux_window = None;
     tasks.push(t);
 
     // Review: PR labels + sub-statuses

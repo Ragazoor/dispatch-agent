@@ -325,6 +325,21 @@ impl Task {
             && matches!(self.status, TaskStatus::Running | TaskStatus::Review)
             && self.sub_status != SubStatus::Conflict
     }
+
+    /// Whether this task looks live but has nothing behind it: Running/Review
+    /// with neither a worktree nor a tmux window, so there is nothing to
+    /// resume. The complement of [`Self::is_detached`], which requires a
+    /// worktree — the two are mutually exclusive.
+    ///
+    /// Reachable by a manual forward move out of Backlog, by a crash between
+    /// the dispatch claim and provisioning, and by a dispatch worker that dies
+    /// without reporting. See `UnprovisionedIndicator` in
+    /// `docs/specs/dispatch.allium`.
+    pub fn is_unprovisioned(&self) -> bool {
+        self.worktree.is_none()
+            && self.tmux_window.is_none()
+            && matches!(self.status, TaskStatus::Running | TaskStatus::Review)
+    }
 }
 
 // ---------------------------------------------------------------------------

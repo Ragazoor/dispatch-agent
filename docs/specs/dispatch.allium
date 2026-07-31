@@ -871,9 +871,11 @@ surface DispatchingFeedback {
 
     @guarantee DispatchingTimeout
         -- A task that remains in `dispatching` for more than 60 seconds is
-        -- removed by the next Tick and a "dispatch timed out" failure toast
-        -- is shown. Defence-in-depth against a stuck dispatch worker
-        -- (e.g. an agent panic that escapes catch_unwind).
+        -- removed by the next Tick and a "dispatch timed out" failure is
+        -- raised as an error popup — naming the task when one expired, and
+        -- reporting the count when several expire on the same tick.
+        -- Defence-in-depth against a stuck dispatch worker (e.g. an agent
+        -- panic that escapes catch_unwind).
         --
         -- The timeout does NOT release the claim, and that is deliberate.
         -- Exceeding the deadline means "slow", not "dead" — a fetch over a slow
@@ -882,21 +884,23 @@ surface DispatchingFeedback {
         -- a second dispatch land on the same branch, breaking
         -- DispatchClaimExclusive. This surface is a UI backstop and stays one: it
         -- clears the spinner and reports the timeout, nothing more.
+        --
         -- A worker that really did die therefore leaves the task running with no
-        -- worktree, and that state is quiet: it is not detached (detachment
-        -- requires a worktree), and activity classification and window checks
-        -- both skip rows without a tmux_window, so it renders as an ordinary
-        -- running task and never self-flags as stale or crashed. The retry
-        -- dialogue is out of reach for the same reason (it is offered only for a
-        -- windowless STALE or CRASHED task), so recovery is the manual backward
-        -- move to backlog followed by a re-dispatch — the same manual override
-        -- RunningTaskHasWorktree already sanctions.
-        -- Accepted deliberately: releasing is wrong routinely, on any fetch
-        -- slower than the deadline, whereas stranding needs a worker to vanish
-        -- without reporting at all. That a dead-worker task is
-        -- indistinguishable from a live agent on the board is a real gap, but the
-        -- fix for it is an indicator for running-without-worktree, not a claim
-        -- release.
+        -- worktree. That state used to be quiet — not detached (detachment
+        -- requires a worktree), and skipped by both activity classification and
+        -- the window checks, so it rendered as an ordinary running task and never
+        -- self-flagged. It no longer is: the row is is_unprovisioned, and
+        -- UnprovisionedIndicator renders it distinctly with recovery reachable in
+        -- place, instead of leaving a manual backward move to backlog as the only
+        -- way out. That indicator is why stranding remains the right trade here:
+        -- releasing is wrong routinely, on any fetch slower than the deadline,
+        -- whereas stranding needs a worker to vanish without reporting at all —
+        -- and is now visible when it happens.
+        --
+        -- The deadline does double duty. UnprovisionedIndicator reuses it as the
+        -- line past which an unprovisioned claim stops being "still
+        -- provisioning" and starts being "abandoned", so the two surfaces agree
+        -- on when a dispatch has failed.
 
     @guarantee DeletedTaskPruned
         -- If a task referenced in `dispatching` is deleted from the task
@@ -949,6 +953,102 @@ surface DispatchingFeedback {
         -- (spinner glyph + "dispatching…"). Once `dispatching` is empty
         -- the status bar reverts to its idle state and cards return to
         -- their normal indicator.
+}
+
+surface UnprovisionedIndicator {
+    facing user: User
+
+    -- The card line-2 indicator for a task that looks live but has nothing
+    -- behind it: running or review, with neither a worktree nor a tmux
+    -- window (Task.is_unprovisioned in core.allium). Evaluated per rendered
+    -- card, not only for the selected one.
+
+    context task: core/Task
+
+    let unprovisioned = task.is_unprovisioned
+
+    -- Whether the task is unprovisioned because a dispatch is still running
+    -- rather than because one died. Two sources, OR'd: the in-flight set
+    -- behind DispatchingFeedback, plus the row's own claim stamp — every
+    -- claim seeds last_pre_tool_use_at, and a stamp younger than the
+    -- DispatchingTimeout deadline means provisioning may still be underway.
+    -- A row with no stamp counts as not-in-flight, so it surfaces at once.
+    let dispatch_in_flight = dispatch_in_flight(task)
+
+    exposes:
+        unprovisioned
+        dispatch_in_flight
+
+    @guarantee ShownForWindowlessRunning
+        -- An unprovisioned task renders a distinct warning indicator — its
+        -- own label in the same alarming style as the conflict and crashed
+        -- indicators — never the ordinary "running" one it is otherwise
+        -- indistinguishable from, and never the "detached" one (which means
+        -- the opposite thing: a worktree is present and resumable).
+        --
+        -- It also outranks the conflict indicator. A conflict means a rebase
+        -- ran, which means a worktree existed, so the combination should not
+        -- arise; if it does, "there is nothing here" is the more actionable
+        -- of the two readings. Every indicator this one outranks describes a
+        -- state that presupposes a provisioned worktree.
+
+    @guarantee DispatchingOutranksIt
+        -- While dispatch_in_flight, the card shows the dispatching feedback
+        -- (see DispatchingFeedback), not this indicator. The claim writes
+        -- running before the worktree exists, so every in-flight dispatch
+        -- passes through the unprovisioned state; rendering those as broken
+        -- would flag every normal dispatch. This indicator is what remains
+        -- once dispatch feedback ends — whether it ended in success (the
+        -- task now has a worktree and is no longer unprovisioned), failure,
+        -- or the DispatchingTimeout watchdog.
+        --
+        -- This governs the KEY and the HINT as much as the label. An
+        -- in-flight task offers neither the retry hint nor the retry dialog;
+        -- the go-to-session key reports that a dispatch is in progress.
+        -- Retrying mid-flight would return the task to backlog and start a
+        -- SECOND dispatch alongside the one still running — the same
+        -- duplicate-agent hazard DispatchingTimeout declines to risk.
+        --
+        -- The in-flight set alone is not enough to decide this. It holds only
+        -- the dispatches the board itself started; the epic chain claims its
+        -- next subtask inside the MCP close path (AutoDispatchNextSubtask in
+        -- epics.allium) and never enters the set, and restarting the board
+        -- mid-dispatch empties it. Both leave a genuinely-provisioning task
+        -- looking abandoned. Hence the claim-stamp fallback in
+        -- dispatch_in_flight: a claim younger than the DispatchingTimeout
+        -- deadline is treated as alive, whichever process made it. Once it
+        -- ages past that deadline — the same line that separates "slow" from
+        -- "dead" for the watchdog — the indicator takes over.
+
+    @guarantee NotShownWhenProvisioned
+        -- A task holding a worktree is never rendered as unprovisioned,
+        -- whether or not it still has a window. A worktree with no window is
+        -- is_detached, and keeps its existing detached rendering.
+
+    @guarantee RetryReachableInPlace
+        -- The go-to-session key offers the kill-and-retry dialog for an
+        -- unprovisioned RUNNING task whatever its sub_status, rather than
+        -- reporting that there is no worktree to resume and leaving a manual
+        -- backward move as the only recovery. Running only: the retry path
+        -- accepts running tasks and refuses every other status, so offering
+        -- the dialog elsewhere would open a prompt that does nothing.
+        -- The action hints advertise it: where a provisioned running task
+        -- offers session/resume on that key, an unprovisioned one offers
+        -- retry, so the recovery is discoverable rather than only reachable.
+        --
+        -- The dialog it opens offers the fresh-start branch only, and names
+        -- the state as never-started rather than stale or crashed. The
+        -- resume branch needs a worktree to resume into and would report
+        -- that there is none — exactly the dead end this guarantee removes.
+
+    @guidance
+        -- Nothing else catches this state. It is not detached (that requires
+        -- a worktree), and the activity/window tick classifications both skip
+        -- tasks with no window, so it never becomes stale or crashed either.
+        -- Without its own indicator it renders as a healthy running agent
+        -- indefinitely. Reachable by a manual forward move out of backlog, by
+        -- a crash between the claim and provisioning, and by a dispatch
+        -- worker that dies without reporting (see DispatchingTimeout).
 }
 
 -- == Main Session ==
@@ -1028,11 +1128,15 @@ surface MainSessionIndicator {
 -- DispatchResearchTask always have a worktree, ONCE THE DISPATCH HAS COMPLETED.
 -- Two states break it in the meantime: a dispatch in flight, whose claim writes
 -- running ahead of provisioning (see DispatchTask), and manual forward movement
--- (m key), which moves a task to running without provisioning at all. The
--- dispatch flow is the canonical path; manual moves are overrides. This is why
--- every consumer that must not see a half-provisioned agent — crash detection,
--- activity classification, is_wrappable — keys off tmux_window rather than
--- status.
+-- (the move-forward key), which moves a task to running without provisioning at
+-- all. The dispatch flow is the canonical path; manual moves are overrides. This
+-- is why every consumer that must not see a half-provisioned agent — crash
+-- detection, activity classification, is_wrappable — keys off tmux_window rather
+-- than status.
+--
+-- Neither exception is silent on the board: both satisfy Task.is_unprovisioned,
+-- and UnprovisionedIndicator distinguishes the one still provisioning from the
+-- one whose dispatch died.
 
 -- DispatchClaimExclusive: at most one dispatch ever provisions a given task,
 -- however many entry points fire on it at once. Not expressible as a state

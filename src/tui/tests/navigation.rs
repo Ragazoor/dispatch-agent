@@ -325,7 +325,9 @@ fn move_backward_from_running_detaches_but_keeps_worktree() {
 
 #[test]
 fn move_backward_from_running_without_dispatch_fields() {
-    let task = make_task(3, TaskStatus::Running);
+    let mut task = make_task(3, TaskStatus::Running);
+    task.worktree = None;
+    task.tmux_window = None;
     let mut app = App::new(vec![task]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
         id: TaskId(3),
@@ -1469,8 +1471,9 @@ fn detach_tmux_running_task_with_window_is_detachable() {
 
 #[test]
 fn detach_tmux_noop_on_task_without_window() {
-    let mut app = App::new(vec![make_task(1, TaskStatus::Review)]);
-    // tmux_window is None by default from make_task
+    let mut task = make_task(1, TaskStatus::Review);
+    task.tmux_window = None;
+    let mut app = App::new(vec![task]);
 
     let cmds = app.update(Message::Task(
         crate::tui::messages::TaskMessage::DetachTmux(TaskId(1)),
@@ -1659,6 +1662,31 @@ fn is_detached_returns_false_for_conflict() {
     task.worktree = Some("/repo/.worktrees/1-fix".to_string());
     task.tmux_window = None;
     assert!(!task.is_detached());
+}
+
+#[test]
+fn is_unprovisioned_is_mutually_exclusive_with_is_detached() {
+    for status in [TaskStatus::Running, TaskStatus::Review] {
+        let mut task = make_task(1, status);
+        task.worktree = None;
+        task.tmux_window = None;
+        assert!(task.is_unprovisioned(), "{status:?} with nothing behind it");
+        assert!(!task.is_detached(), "the two are mutually exclusive");
+
+        task.worktree = Some("/repo/.worktrees/1-fix".to_string());
+        assert!(!task.is_unprovisioned(), "a worktree means resumable");
+        assert!(task.is_detached());
+    }
+}
+
+#[test]
+fn is_unprovisioned_is_false_for_non_live_statuses() {
+    for status in [TaskStatus::Backlog, TaskStatus::Done, TaskStatus::Archived] {
+        let mut task = make_task(1, status);
+        task.worktree = None;
+        task.tmux_window = None;
+        assert!(!task.is_unprovisioned(), "{status:?} is not a live status");
+    }
 }
 
 #[test]

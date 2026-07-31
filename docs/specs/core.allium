@@ -292,6 +292,14 @@ entity Task {
     is_detached: worktree != null and tmux_window = null
                  and status in {running, review}
                  and sub_status != conflict
+    -- A task that looks live but was never provisioned (or lost its
+    -- provisioning), so there is nothing to resume. Mutually exclusive with
+    -- is_detached, which requires a worktree — but not its complement: a
+    -- running task with a worktree, no window and sub_status = conflict is
+    -- neither.
+    -- Surfaced on the card by UnprovisionedIndicator in dispatch.allium.
+    is_unprovisioned: worktree = null and tmux_window = null
+                      and status in {running, review}
     -- pr_number is parsed from the trailing numeric segment of url.url, but
     -- only when the url is pr-typed; otherwise null. Not persisted; computed
     -- on demand.

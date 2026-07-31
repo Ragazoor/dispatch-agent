@@ -24,20 +24,29 @@ fn format_task_title(task: &Task, max_title: usize) -> String {
 // ---------------------------------------------------------------------------
 
 /// Classifies a task's current state into a single display indicator.
-/// Priority order matters: dispatching > conflict > detached-review >
-/// crashed > stale > blocked > detached-running > running > review-pr >
-/// done-merged > idle. The `Dispatching` variant covers a task from before its
-/// claim until the dispatch worker reports success or failure, so it is
-/// reachable for a Backlog task (not yet claimed) *and* for a Running one with
-/// no worktree (claimed, being provisioned). Its top priority is what keeps that
-/// second state from rendering as a live agent — see `SpansTheClaim` on the
+/// Priority order matters: dispatching > unprovisioned > conflict >
+/// detached-review > crashed > stale > blocked > detached-running > running >
+/// review-pr > done-merged > idle. The `Dispatching` variant covers a task from
+/// before its claim until the dispatch worker reports success or failure, so it
+/// is reachable for a Backlog task (not yet claimed) *and* for a Running one
+/// with no worktree (claimed, being provisioned). Its top priority is what keeps
+/// that second state from rendering as a live agent — see `SpansTheClaim` on the
 /// `DispatchingFeedback` surface in `docs/specs/dispatch.allium`.
+///
+/// `Unprovisioned` sits directly below it because every indicator beneath
+/// describes a state that presupposes a worktree. It is also gated on
+/// [`App::dispatch_may_be_in_flight`], because `Dispatching` membership only
+/// spans the claims this TUI made: the epic chain claims inside the MCP close
+/// path and a board restart empties the set, so the freshness gate covers the
+/// dispatches `SpansTheClaim` cannot. See `UnprovisionedIndicator` in
+/// `docs/specs/dispatch.allium`.
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 enum CardIndicator {
     Dispatching {
         spinner_frame: u8,
     },
+    Unprovisioned,
     Conflict,
     DetachedReview {
         pr_label: String,
@@ -74,7 +83,7 @@ fn classify_card_indicator(
     app: &App,
     now: DateTime<Utc>,
 ) -> CardIndicator {
-    if app.dispatching.contains_key(&task.id) {
+    if app.is_dispatching(task.id) {
         // No assertion here on purpose. Membership implies "not yet provisioned",
         // but only up to message-queue latency (`SpansTheClaim` in
         // docs/specs/dispatch.allium), so a board refresh can briefly pair a
@@ -85,6 +94,13 @@ fn classify_card_indicator(
         return CardIndicator::Dispatching {
             spinner_frame: app.spinner_tick,
         };
+    }
+    // A claim that is still being provisioned looks identical to one whose
+    // worker died. Only the second is worth alarming about, so keep rendering
+    // the ordinary running card until the claim ages past the dispatch
+    // watchdog window.
+    if task.is_unprovisioned() && !app.dispatch_may_be_in_flight(task, now) {
+        return CardIndicator::Unprovisioned;
     }
     if task.sub_status == SubStatus::Conflict {
         return CardIndicator::Conflict;
@@ -165,6 +181,7 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
                 [(spinner_frame as usize) % crate::tui::DISPATCH_SPINNER_FRAMES as usize];
             (format!("{glyph} dispatching\u{2026}"), Color::Yellow)
         }
+        CardIndicator::Unprovisioned => ("\u{26a0} no worktree".to_string(), Color::Red),
         CardIndicator::Conflict => ("\u{26a0} rebase conflict".to_string(), Color::Red),
         CardIndicator::DetachedReview { pr_label } => (format!("\u{25cb} {pr_label}"), Color::Cyan),
         CardIndicator::Detached => ("\u{25cb} detached".to_string(), MUTED),
@@ -466,7 +483,7 @@ pub(super) fn render_epic_item(
 mod tests {
     use super::*;
     use crate::models::SubStatus;
-    use crate::tui::tests::make_task;
+    use crate::tui::tests::{make_task, make_unprovisioned_task};
 
     fn stale_task(last_pre_tool_use_at: Option<DateTime<Utc>>) -> crate::models::Task {
         let mut t = make_task(1, TaskStatus::Running);
@@ -495,6 +512,110 @@ mod tests {
         );
         let text = line_text(&render_card_indicator(indicator, &[]));
         assert!(text.contains("stale · 7m"), "got {text:?}");
+    }
+
+    #[test]
+    fn running_without_worktree_classifies_unprovisioned() {
+        let now = Utc::now();
+        let task = make_unprovisioned_task(1, TaskStatus::Running);
+        let app = App::new(vec![]);
+        let indicator = classify_card_indicator(&task, task.status, &app, now);
+        assert_eq!(indicator, CardIndicator::Unprovisioned);
+        let text = line_text(&render_card_indicator(indicator, &[]));
+        assert!(text.contains("no worktree"), "got {text:?}");
+        assert!(!text.contains("running"), "got {text:?}");
+    }
+
+    #[test]
+    fn review_without_worktree_classifies_unprovisioned() {
+        let now = Utc::now();
+        let mut task = make_unprovisioned_task(1, TaskStatus::Review);
+        task.sub_status = SubStatus::AwaitingReview;
+        task.url = Some(crate::models::TaskUrl::new(
+            "https://github.com/org/repo/pull/7",
+            crate::models::UrlType::Pr,
+        ));
+        let app = App::new(vec![]);
+        assert_eq!(
+            classify_card_indicator(&task, task.status, &app, now),
+            CardIndicator::Unprovisioned,
+        );
+    }
+
+    /// `@guarantee DispatchingOutranksIt` — the claim writes Running before the
+    /// worktree exists, so every in-flight dispatch passes through the
+    /// unprovisioned state. It must keep rendering "dispatching…"; otherwise
+    /// every normal dispatch renders as broken while it is in flight.
+    #[test]
+    fn dispatching_outranks_unprovisioned() {
+        let now = Utc::now();
+        let task = make_unprovisioned_task(1, TaskStatus::Running);
+        let mut app = App::new(vec![task.clone()]);
+        app.mark_dispatching(task.id);
+        let indicator = classify_card_indicator(&task, task.status, &app, now);
+        assert!(
+            matches!(indicator, CardIndicator::Dispatching { .. }),
+            "got {indicator:?}",
+        );
+    }
+
+    /// The epic auto-dispatch chain claims its next subtask inside the MCP
+    /// handler and never enters `app.dispatching`, so the map alone would let
+    /// every chained subtask render as broken for its whole provisioning
+    /// window. A fresh claim stamp keeps it on the ordinary running card.
+    #[test]
+    fn freshly_claimed_task_not_in_dispatching_map_still_shows_running() {
+        let now = Utc::now();
+        let mut task = make_unprovisioned_task(1, TaskStatus::Running);
+        task.last_pre_tool_use_at = Some(now - chrono::Duration::seconds(5));
+        let app = App::new(vec![task.clone()]);
+        assert!(
+            !app.is_dispatching(task.id),
+            "not in the map, by construction"
+        );
+        assert_eq!(
+            classify_card_indicator(&task, task.status, &app, now),
+            CardIndicator::Running,
+        );
+    }
+
+    /// Once the claim ages past the dispatch watchdog window, "slow" becomes
+    /// "dead" and the card flips to the warning.
+    #[test]
+    fn stale_claim_flips_to_unprovisioned() {
+        let now = Utc::now();
+        let mut task = make_unprovisioned_task(1, TaskStatus::Running);
+        task.last_pre_tool_use_at = Some(now - chrono::Duration::seconds(120));
+        let app = App::new(vec![task.clone()]);
+        assert_eq!(
+            classify_card_indicator(&task, task.status, &app, now),
+            CardIndicator::Unprovisioned,
+        );
+    }
+
+    /// `@guarantee NotShownWhenProvisioned` — a worktree with no window is
+    /// `detached` (resumable), the opposite of unprovisioned.
+    #[test]
+    fn running_with_worktree_no_window_stays_detached() {
+        let now = Utc::now();
+        let mut task = make_task(1, TaskStatus::Running);
+        task.tmux_window = None;
+        let app = App::new(vec![]);
+        assert_eq!(
+            classify_card_indicator(&task, task.status, &app, now),
+            CardIndicator::Detached,
+        );
+    }
+
+    #[test]
+    fn running_with_worktree_and_window_stays_running() {
+        let now = Utc::now();
+        let task = make_task(1, TaskStatus::Running);
+        let app = App::new(vec![]);
+        assert_eq!(
+            classify_card_indicator(&task, task.status, &app, now),
+            CardIndicator::Running,
+        );
     }
 
     #[test]

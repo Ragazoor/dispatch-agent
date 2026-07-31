@@ -315,8 +315,26 @@ impl App {
                 // Priority 3: no window — route by status.
                 let status = task.status;
                 let has_worktree = task.worktree.is_some();
+                // Stale/Crashed, or Running with nothing provisioned behind it.
+                // The latter never becomes Stale or Crashed — both tick
+                // classifications skip windowless tasks — so without this it
+                // has no in-place recovery at all. Running only: RetryFresh
+                // refuses every other status, so widening further would open a
+                // dialog that no-ops. See RetryReachableInPlace in
+                // docs/specs/dispatch.allium.
+                //
+                // Excluded while a dispatch may still be in flight (see
+                // App::dispatch_may_be_in_flight): RetryFresh would move the
+                // task back to Backlog and fire a SECOND DispatchAgent
+                // alongside the one already provisioning it.
+                // DispatchingOutranksIt governs the key, not only the label.
+                let now = chrono::Utc::now();
                 let is_problematic = self.find_task(id).is_some_and(|t| {
-                    t.sub_status == SubStatus::Stale || t.sub_status == SubStatus::Crashed
+                    t.sub_status == SubStatus::Stale
+                        || t.sub_status == SubStatus::Crashed
+                        || (t.status == TaskStatus::Running
+                            && t.is_unprovisioned()
+                            && !self.dispatch_may_be_in_flight(t, now))
                 });
 
                 match status {
@@ -336,13 +354,23 @@ impl App {
                     }
                     TaskStatus::Running | TaskStatus::Review | TaskStatus::Done => {
                         if is_problematic {
-                            // Windowless Stale/Crashed: open the kill-and-retry
-                            // dialog (the only path that still reaches it).
+                            // Windowless Stale/Crashed, or an unprovisioned
+                            // Running task: open the kill-and-retry dialog.
                             let mut cmds = self.update(Message::Task(
                                 crate::tui::messages::TaskMessage::KillAndRetry(id),
                             ));
                             cmds.push(key_event("open_retry_dialog", " "));
                             cmds
+                        } else if !has_worktree
+                            && self
+                                .find_task(id)
+                                .is_some_and(|t| self.dispatch_may_be_in_flight(t, now))
+                        {
+                            self.update(Message::System(
+                                crate::tui::messages::SystemMessage::StatusInfo(
+                                    "Dispatch in progress\u{2026}".to_string(),
+                                ),
+                            ))
                         } else if has_worktree {
                             let mut cmds = self.update(Message::Task(
                                 crate::tui::messages::TaskMessage::Resume(id),
@@ -384,7 +412,8 @@ impl App {
         }
     }
 
-    /// Handle 'm'/'M' key: move selected task(s) forward or backward.
+    /// Handle the 'L'/'H' keys: move selected task(s) forward or backward.
+    /// (`m` is the move-to-epic tree picker, not a status move.)
     pub(in crate::tui) fn handle_key_move(&mut self, direction: MoveDirection) -> Vec<Command> {
         if self.has_selection() {
             if self.select.tasks.is_empty() {

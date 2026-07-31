@@ -76,7 +76,7 @@ fn epic_action_hints_done() {
 #[test]
 fn action_hints_no_ctrl_g_outside_epic() {
     let task = make_task(1, TaskStatus::Backlog);
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys = hint_keys(&hints);
     assert!(
         !keys.contains(&"[^g]"),
@@ -3038,6 +3038,7 @@ fn reparent_target_epics_excludes_only_active_filtered_epic() {
     active.tmux_window = Some("sess:1".to_string());
     let mut inactive = make_task(2, TaskStatus::Running);
     inactive.epic_id = Some(EpicId(30));
+    inactive.tmux_window = None; // no live session — what only_active filters on
     app.board.tasks = vec![active, inactive];
     app.filter.only_active = true;
 

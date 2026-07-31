@@ -8,7 +8,7 @@ use std::time::Instant;
 #[tokio::test]
 async fn action_hints_backlog_task() {
     let task = make_task(1, TaskStatus::Backlog);
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -34,7 +34,7 @@ async fn action_hints_backlog_task() {
 async fn action_hints_backlog_task_with_plan() {
     let mut task = make_task(3, TaskStatus::Backlog);
     task.plan_path = Some("plan.md".into());
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -52,7 +52,7 @@ async fn action_hints_backlog_task_with_plan() {
 async fn action_hints_running_with_window() {
     let mut task = make_task(4, TaskStatus::Running);
     task.tmux_window = Some("win-4".to_string());
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -69,7 +69,8 @@ async fn action_hints_running_with_window() {
 async fn action_hints_running_with_worktree_no_window() {
     let mut task = make_task(4, TaskStatus::Running);
     task.worktree = Some("/tmp/wt".to_string());
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    task.tmux_window = None;
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -81,10 +82,15 @@ async fn action_hints_running_with_worktree_no_window() {
     assert!(text.contains("resume"), "Space means resume here");
 }
 
+/// `@guarantee RetryReachableInPlace` in docs/specs/dispatch.allium — an
+/// unprovisioned Running task has nothing to jump to or resume, so Space
+/// advertises the kill-and-retry recovery instead.
 #[tokio::test]
 async fn action_hints_running_no_worktree_no_window() {
-    let task = make_task(4, TaskStatus::Running);
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let mut task = make_task(4, TaskStatus::Running);
+    task.worktree = None;
+    task.tmux_window = None;
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -94,9 +100,11 @@ async fn action_hints_running_no_worktree_no_window() {
         !keys.contains(&"[d]"),
         "no dispatch/resume without worktree"
     );
+    assert!(keys.contains(&"[Space]"), "Space offers retry");
+    let text: String = hints.iter().map(|s| s.content.as_ref()).collect();
     assert!(
-        !keys.contains(&"[Space]"),
-        "no go-to-session without window"
+        text.contains("retry"),
+        "Space means retry here, got {text:?}"
     );
     assert!(keys.contains(&"[e]"), "still has edit");
 }
@@ -105,7 +113,7 @@ async fn action_hints_running_no_worktree_no_window() {
 async fn action_hints_review_with_window() {
     let mut task = make_task(6, TaskStatus::Review);
     task.tmux_window = Some("win-6".to_string());
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -120,7 +128,7 @@ async fn action_hints_review_with_window() {
 #[tokio::test]
 async fn action_hints_done_task() {
     let task = make_task(5, TaskStatus::Done);
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -135,7 +143,7 @@ async fn action_hints_done_task() {
 
 #[tokio::test]
 async fn action_hints_no_task() {
-    let hints = ui::action_hints(None, 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(None, false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
@@ -149,7 +157,7 @@ async fn action_hints_no_task() {
 #[tokio::test]
 async fn action_hints_backlog_shows_enter_detail() {
     let task = make_task(1, TaskStatus::Backlog);
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys = hint_keys(&hints);
     assert!(keys.contains(&"[Enter]"), "should show Enter/detail hint");
 }
@@ -157,7 +165,7 @@ async fn action_hints_backlog_shows_enter_detail() {
 #[tokio::test]
 async fn action_hints_shows_filter_help() {
     let task = make_task(1, TaskStatus::Backlog);
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys = hint_keys(&hints);
     assert!(keys.contains(&"[f]"), "should show filter hint");
     assert!(keys.contains(&"[?]"), "should show help hint");
@@ -166,7 +174,7 @@ async fn action_hints_shows_filter_help() {
 #[tokio::test]
 async fn action_hints_shows_copy_and_split() {
     let task = make_task(1, TaskStatus::Backlog);
-    let hints = ui::action_hints(Some(&task), 0, Color::Rgb(122, 162, 247));
+    let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys = hint_keys(&hints);
     assert!(keys.contains(&"[c]"), "should show copy hint");
     assert!(keys.contains(&"[s]"), "should show split hint");
@@ -898,7 +906,7 @@ async fn render_shows_unchecked_toggle_when_not_all_selected() {
 async fn action_hints_include_select_all() {
     let app = make_app();
     let task = app.selected_task();
-    let spans = ui::action_hints(task, 0, Color::Blue);
+    let spans = ui::action_hints(task, false, Color::Blue);
     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
     assert!(
         text.contains("select all"),

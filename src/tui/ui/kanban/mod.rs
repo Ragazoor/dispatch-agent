@@ -449,9 +449,14 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
 
 /// Build context-sensitive keybinding hint spans for the status bar.
 /// Returns styled spans showing available actions for the selected task.
+///
+/// `dispatch_in_flight` comes from [`crate::tui::App::dispatch_may_be_in_flight`].
+/// It is not cosmetic: an unprovisioned task is indistinguishable from one
+/// mid-provisioning, and advertising retry on the latter invites a second
+/// dispatch. See `RetryReachableInPlace` in `docs/specs/dispatch.allium`.
 pub(in crate::tui) fn action_hints(
     task: Option<&Task>,
-    _selected_column: usize,
+    dispatch_in_flight: bool,
     key_color: Color,
 ) -> Vec<Span<'static>> {
     let label_style = Style::default().fg(MUTED);
@@ -480,6 +485,11 @@ pub(in crate::tui) fn action_hints(
                     push_hint("Space", "session");
                 } else if task.worktree.is_some() {
                     push_hint("Space", "resume");
+                } else if !dispatch_in_flight {
+                    // Unprovisioned: nothing to jump to or resume, but Space
+                    // opens the kill-and-retry dialog. See RetryReachableInPlace
+                    // in docs/specs/dispatch.allium.
+                    push_hint("Space", "retry");
                 }
                 push_hint("e", "edit");
                 push_hint("L", "move");

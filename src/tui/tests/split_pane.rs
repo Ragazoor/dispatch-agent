@@ -129,7 +129,8 @@ fn s_outside_split_mode_shows_status_hint() {
 
 #[test]
 fn s_in_split_mode_on_task_without_window_shows_status() {
-    let task = make_task(4, TaskStatus::Running); // no tmux_window
+    let mut task = make_task(4, TaskStatus::Running);
+    task.tmux_window = None;
     let mut app = App::new(vec![task]);
     app.board.split.active = true;
     app.board.split.right_pane_id = Some("%42".to_string());
@@ -298,7 +299,8 @@ fn toggle_split_with_selected_tmux_task_emits_enter_with_task() {
 
 #[test]
 fn toggle_split_without_tmux_task_emits_plain_enter() {
-    let task = make_task(3, TaskStatus::Running);
+    let mut task = make_task(3, TaskStatus::Running);
+    task.tmux_window = None;
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(2); // Running column, task has no tmux_window
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('s'))));

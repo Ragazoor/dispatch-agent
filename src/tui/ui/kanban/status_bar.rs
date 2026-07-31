@@ -236,7 +236,10 @@ fn normal_status_line(app: &App) -> (Line<'static>, Style) {
     } else if let Some(ColumnItem::Epic(epic)) = app.selected_column_item() {
         epic_action_hints(epic, key_color)
     } else {
-        action_hints(app.selected_task(), app.selected_column(), key_color)
+        let task = app.selected_task();
+        let now = chrono::Utc::now();
+        let in_flight = task.is_some_and(|t| app.dispatch_may_be_in_flight(t, now));
+        action_hints(task, in_flight, key_color)
     };
     if app.split_active() {
         prepend(

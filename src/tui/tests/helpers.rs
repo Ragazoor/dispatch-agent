@@ -58,16 +58,21 @@ pub(in crate::tui) fn resolve_pending_g_via_idle_tick(app: &mut App) -> Vec<Comm
     app.handle_tick()
 }
 
+/// A task fixture. Running/Review tasks come provisioned — a dispatched task
+/// has a worktree and a window, and leaving them null would make the default
+/// fixture `is_unprovisioned` (rendering "⚠ no worktree" on every card). Tests
+/// that want an unprovisioned or detached task clear the fields explicitly.
 pub(in crate::tui) fn make_task(id: i64, status: TaskStatus) -> Task {
     let now = chrono::Utc::now();
+    let provisioned = matches!(status, TaskStatus::Running | TaskStatus::Review);
     Task {
         id: TaskId(id),
         title: format!("Task {id}"),
         description: String::new(),
         repo_path: String::from("/repo"),
         status,
-        worktree: None,
-        tmux_window: None,
+        worktree: provisioned.then(|| format!("/repo/.worktrees/{id}-task-{id}")),
+        tmux_window: provisioned.then(|| format!("task-{id}")),
         plan_path: None,
         epic_id: None,
         sub_status: SubStatus::default_for(status),
@@ -83,6 +88,19 @@ pub(in crate::tui) fn make_task(id: i64, status: TaskStatus) -> Task {
         last_notification_at: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+    }
+}
+
+/// A Running/Review task with neither a worktree nor a window — the state
+/// `UnprovisionedIndicator` in `docs/specs/dispatch.allium` covers. Also
+/// carries no activity stamp, so `App::dispatch_may_be_in_flight` reads it as
+/// a dead claim rather than one still provisioning.
+pub(in crate::tui) fn make_unprovisioned_task(id: i64, status: TaskStatus) -> Task {
+    Task {
+        worktree: None,
+        tmux_window: None,
+        last_pre_tool_use_at: None,
+        ..make_task(id, status)
     }
 }
 

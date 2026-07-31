@@ -8,17 +8,25 @@ use super::super::App;
 impl App {
     pub(in crate::tui) fn handle_kill_and_retry(&mut self, id: TaskId) -> Vec<Command> {
         self.input.mode = InputMode::ConfirmRetry(id);
-        let label = if self
-            .find_task(id)
-            .is_some_and(|t| t.sub_status == SubStatus::Crashed)
-        {
+        let task = self.find_task(id);
+
+        // An unprovisioned task has no worktree to resume into, so [r] would
+        // dead-end on "Cannot resume: task has no worktree". Offer only the
+        // fresh start, and name the state it is actually in — it is neither
+        // stale nor crashed. See RetryReachableInPlace in
+        // docs/specs/dispatch.allium.
+        if task.is_some_and(|t| t.is_unprovisioned()) {
+            self.set_status("Agent never started - [f] Fresh start  [Esc] Cancel".to_string());
+            return vec![];
+        }
+
+        let state = if task.is_some_and(|t| t.sub_status == SubStatus::Crashed) {
             "crashed"
         } else {
             "stale"
         };
         self.set_status(format!(
-            "Agent {} - [r] Resume  [f] Fresh start  [Esc] Cancel",
-            label
+            "Agent {state} - [r] Resume  [f] Fresh start  [Esc] Cancel"
         ));
         vec![]
     }

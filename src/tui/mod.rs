@@ -13,6 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
+
 #[cfg(test)]
 use crate::models::ReviewDecision;
 use crate::models::{
@@ -465,9 +467,40 @@ impl App {
         app
     }
 
-    /// Returns true if the given task has an in-flight dispatch.
+    /// Returns true if the given task has an in-flight dispatch *started by
+    /// this TUI process*. Not the whole picture — see
+    /// [`Self::dispatch_may_be_in_flight`].
     pub fn is_dispatching(&self, id: TaskId) -> bool {
         self.dispatching.contains_key(&id)
+    }
+
+    /// Whether an unprovisioned task is unprovisioned because a dispatch is
+    /// still running, rather than because one died.
+    ///
+    /// `dispatching` only holds dispatches this TUI started. The epic
+    /// auto-dispatch chain claims its next subtask inside the MCP handler
+    /// (`auto_dispatch_next`) and never enters that map, and a TUI restart
+    /// mid-dispatch empties it — in both cases the row is `Running` with no
+    /// worktree while an agent is genuinely being provisioned. So fall back to
+    /// the row itself: every claim seeds `last_pre_tool_use_at`, and
+    /// [`DISPATCH_WATCHDOG_TIMEOUT`] is already the line this codebase draws
+    /// between "slow" and "dead" (see `DispatchingTimeout` in
+    /// `docs/specs/dispatch.allium`).
+    ///
+    /// A missing stamp counts as not-in-flight, so an unstamped row surfaces
+    /// immediately rather than hiding for a minute.
+    ///
+    /// Only meaningful for `task.is_unprovisioned()`; a provisioned task has
+    /// its stamp refreshed by agent hooks and would always look "fresh".
+    pub fn dispatch_may_be_in_flight(&self, task: &Task, now: DateTime<Utc>) -> bool {
+        if self.is_dispatching(task.id) {
+            return true;
+        }
+        task.last_pre_tool_use_at.is_some_and(|stamp| {
+            now.signed_duration_since(stamp)
+                .to_std()
+                .is_ok_and(|elapsed| elapsed < DISPATCH_WATCHDOG_TIMEOUT)
+        })
     }
 
     /// Get the current selection state (from whichever view mode is active).
