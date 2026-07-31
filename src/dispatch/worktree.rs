@@ -126,7 +126,8 @@ fn resolve_start_point(
 }
 
 /// Create a git worktree and open a tmux window.
-/// Shared by both `dispatch_agent` and `brainstorm_agent`.
+/// Shared by `dispatch_agent`, `research_agent`, and `quick_dispatch_agent`,
+/// all of which reach it via `dispatch_with_prompt`.
 ///
 /// `timeout` is passed to `run_with_timeout` for long-running git subprocesses
 /// (`git fetch`, `git worktree add`). Use [`crate::process::SUBPROCESS_TIMEOUT`]

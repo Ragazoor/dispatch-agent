@@ -211,7 +211,7 @@ rule DispatchTask {
 
         -- == Unified prompt skeleton ==
         -- Every task-agent prompt produced by build_prompt /
-        -- build_quick_dispatch_prompt / build_epic_planning_prompt has
+        -- build_quick_dispatch_prompt / build_research_prompt has
         -- the same shape:
         --
         --   {rebase_preamble}              (fetch-then-rebase instruction:
