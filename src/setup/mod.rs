@@ -1025,6 +1025,80 @@ mod tests {
             0,
             "--yes suppresses prompts"
         );
+
+        // Status line: dispatch-owned settings file written, statusLine.command
+        // matches the snapshot path derived from data_dir, and the invariant
+        // that we never touch settings.json holds through the real code path
+        // (not just via apply_mcp_setup, which the unit tests exercise).
+        assert!(
+            paths.statusline_path.exists(),
+            "statusline settings file must be written"
+        );
+        let statusline_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&paths.statusline_path).unwrap()).unwrap();
+        assert_eq!(statusline_json["statusLine"]["type"], "command");
+        let expected_snapshot = data_dir.path().join("rate-limits.json");
+        let expected_command = format!(
+            "dispatch statusline --snapshot '{}'",
+            expected_snapshot.display()
+        );
+        assert_eq!(
+            statusline_json["statusLine"]["command"], expected_command,
+            "command must point at the snapshot path derived from data_dir"
+        );
+        assert!(
+            !paths.claude_dir.join("settings.json").exists(),
+            "run_setup_in must never create settings.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_setup_in_chains_to_existing_status_line_without_touching_settings_json() {
+        let root = tempfile::tempdir().unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
+        let paths = setup_layout(root.path());
+        let db = Database::open_in_memory().await.unwrap();
+
+        fs::create_dir_all(&paths.claude_dir).unwrap();
+        let settings_path = paths.claude_dir.join("settings.json");
+        let settings_before =
+            r#"{"statusLine":{"type":"command","command":"my-prev-line"}}"#.to_string();
+        fs::write(&settings_path, &settings_before).unwrap();
+
+        let runner = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"off\n"),
+            MockProcessRunner::ok(),
+        ]);
+        let confirmer = FakeConfirmer::never();
+
+        run_setup_in(
+            &db,
+            data_dir.path(),
+            &paths,
+            3142,
+            true,
+            &confirmer,
+            &runner,
+        )
+        .await
+        .unwrap();
+
+        let statusline_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&paths.statusline_path).unwrap()).unwrap();
+        let command = statusline_json["statusLine"]["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            command.contains("--chain 'my-prev-line'"),
+            "must chain to the discovered statusLine command, got: {command}"
+        );
+
+        let settings_after = fs::read_to_string(&settings_path).unwrap();
+        assert_eq!(
+            settings_before, settings_after,
+            "settings.json must be byte-identical after run_setup_in — we only read it"
+        );
     }
 
     #[tokio::test]
