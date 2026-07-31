@@ -119,19 +119,28 @@ earlier ones", and a resolver that walks that list backwards so the last definin
 source wins. `--settings` is `flagSettings` and therefore outranks the user's
 `userSettings`. The injected statusLine wins.
 
-**The settings file lives at a fixed literal path**, inside the dispatch-owned
-plugin directory that the spawn constant already names:
+**The settings file lives at a fixed literal path**, dispatch-owned:
 
 ```
-~/.claude/plugins/local/dispatch/statusline.json
+~/.claude/dispatch-statusline.json
 ```
+
+It deliberately does **not** live inside the plugin directory. `install_plugin_in`
+calls `remove_stale_files`, which deletes any file under the plugin dir that is not
+in the `include_dir!` embedded set (`src/setup/plugins.rs:107-111`) — a generated
+file there would be destroyed on the next `dispatch setup`. The plugin dir is a
+wholesale mirror of embedded content; generated state does not belong in it.
+
+Nor does this touch `settings.json`: the `src/setup/mod.rs:455` invariant is about
+that specific user-owned file, and setup already creates other dispatch-owned
+things under `~/.claude` (the plugin dir) and elsewhere (the tmux conf).
 
 `DISPATCH_PLUGIN_DIR` (`src/dispatch/prompts.rs:12`) becomes:
 
 ```rust
 pub(super) const DISPATCH_PLUGIN_DIR: &str =
     "--plugin-dir ~/.claude/plugins/local/dispatch \
-     --settings ~/.claude/plugins/local/dispatch/statusline.json";
+     --settings ~/.claude/dispatch-statusline.json";
 ```
 
 This is what keeps the change genuinely small, and it is a direct correction to
@@ -412,3 +421,4 @@ figure was recomputed and is arithmetically exact. Corrections applied:
 | R13 | line citations | Fixed: `dispatch.allium:818` (was 826), `hooks.json:23-34`/`:29-32` (was 27-36), `tui/mod.rs:41` (was 37), `update/agent.rs:373` (was 371), `runtime/split.rs:90` (was 86). |
 | R14 | "~300 ms throttle" | It is a debounce, and `refreshInterval` can add periodic re-runs. Reinforces the "must not open the DB" constraint, now explicit. |
 | — | stability of the source | Added an explicit accepted-risk section; revision 1 presented a binary-string discovery as though it were a contract. |
+| R15 | settings file placed in the plugin dir (revision 2, pre-plan) | Found while writing the implementation plan: `remove_stale_files` (`src/setup/plugins.rs:107-111`) deletes any non-embedded file under the plugin dir, so it would be destroyed on the next `dispatch setup`. Moved to `~/.claude/dispatch-statusline.json`. |
