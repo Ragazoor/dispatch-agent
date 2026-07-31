@@ -325,6 +325,25 @@ Two patterns have already caused bugs and must not be repeated:
 
   **Accepted exception:** `validate_repo_path` (`src/dispatch/worktree.rs`), called synchronously from `handle_submit_repo_path` (`src/tui/update/forms.rs`). It does only a `.exists()`/`.is_dir()` stat — no file content is read or parsed — on the low-frequency repo-path form-submit path (once per new task typed), unlike the `~/.claude.json` read-plus-`serde_json`-parse that motivated moving the `Space`-key trust check off the render thread (`CheckTrustAndDispatch` in `src/tui/commands/task.rs`). Keep it inline; don't route it through a `Command` unless it grows beyond a bare stat.
 
+## `MockProcessRunner` vs a real tmux server
+
+Two test styles cover tmux, and they prove different things. Picking the wrong one is not a style preference — it is how a broken command stays green.
+
+- **`MockProcessRunner` proves *which command we sent*.** It records argv. Right for argv shape: flag ordering, target formatting, that an option is passed at all. The ~80 inline tests in `src/tmux.rs` are this style and should stay.
+
+- **A real tmux server proves *what tmux did with it*.** The only thing that catches wrong-pane, wrong-cwd, or wrong-pane-count bugs — because tmux resolves a loose target by **falling back**, not by failing. A `send-keys` with no `-t` inside `run-shell -bC` silently hits the session's active pane; a `%`-less pane target silently hits whatever index `pane-base-index` happens to make first. Both look like a well-formed command to a mock.
+
+That gap is not hypothetical. #3781 was a `send-keys` target defect whose mock test pinned the broken string and passed. #3782 found three more of the same family (`pane_exists` blind, `pane_id_for_window` blind, swap by pane index). **If the assertion you want to write contains the words "which pane", "which cwd", or "how many panes", a mock cannot make it.**
+
+Where to put a real-tmux test:
+
+| Question | File |
+|---|---|
+| What topology and cwd does dispatch/resume/split actually build? | `tests/tmux_lifecycle.rs` — panes run the real shell with stub `claude`/`dispatch` binaries that record `argv`/`$PWD`/`$TMUX_PANE` |
+| Which pane does a keystroke land in? | `tests/tmux_split_hook.rs` — every pane runs `cat > log`, so delivery is observable |
+
+Both share the rig in `tests/tmux_harness/mod.rs`: a private `-L` socket, `-f /dev/null` so the developer's `~/.tmux.conf` can't change the result, and drop-guard teardown. Start from `tmux_available_or_skip()` — it skips locally when tmux is missing but **hard-fails under `CI`**, so a missing tmux in the workflow can never quietly report green. Waiting on pane output goes through `poll_for` (the sole sanctioned `// allow-test-sleep`, see below), never a fixed sleep.
+
 ## No `tokio::time::sleep` in tests
 
 Tests must never sleep on the wall clock to "wait for" background work or to cross a duration threshold. Wall-clock sleeps are flaky on slow CI (the work may not be done when the timer fires) and needlessly slow the suite. `./scripts/check-no-test-sleep.sh` enforces this in the pre-push hook, rejecting `tokio::time::sleep(` anywhere under `src/`/`tests/` **and** `std::thread::sleep(` in test files (anything under `tests/`, under a `src/**/tests/` directory, or named `tests.rs`). Production `std::thread::sleep` (e.g. `src/process.rs`, `src/runtime/mod.rs`) is unaffected. Inline `#[cfg(test)] mod tests` blocks inside production files are a blind spot of the grep-level check — keep sleeps out of them by review.
