@@ -6,8 +6,9 @@
 //! These drive the production entry points (`dispatch_agent`, `resume_agent`,
 //! `join_task_window_into_pane`, …) against a real tmux server and then ask the
 //! server what it actually built. Windows created by production run the default
-//! shell — `tmux::new_window` takes no command — so their panes resolve stub
-//! `claude` / `dispatch` binaries that report their own cwd, pane and argv.
+//! shell — `tmux::new_window` takes no command — so their panes launch stub
+//! `claude` / `dispatch` binaries (named to production by the harness runner)
+//! that report their own cwd, pane and argv.
 //!
 //! Its sibling `tests/tmux_split_hook.rs` covers the complementary question,
 //! *routing*: which pane a keystroke reached, observed with capture panes it
@@ -27,11 +28,12 @@ use std::path::{Path, PathBuf};
 
 use dispatch_tui::dispatch;
 use dispatch_tui::models::{SubStatus, Task, TaskId, TaskStatus};
+use dispatch_tui::process::ProcessRunner;
 use dispatch_tui::tmux;
 
 use tmux_harness::{
-    await_stub_line, capture_cmd, install_stubs, read_now, stub_lines, tmux_available_or_skip,
-    StubLine, TmuxServer,
+    await_stub_line, capture_cmd, read_now, stub_lines, tmux_available_or_skip, StubLine,
+    TmuxServer,
 };
 
 /// The board TUI window. Created first so it is the session's active window —
@@ -63,11 +65,6 @@ fn setup_or_skip() -> Option<Fixture> {
 }
 
 fn setup() -> Fixture {
-    // Before anything else: prove the stubs shadow the real `claude` /
-    // `dispatch`. See install_stubs — running the real ones would touch the
-    // developer's actual database.
-    install_stubs();
-
     let dir = tempfile::tempdir().unwrap();
     let repo = seed_repo(dir.path());
     let board_log = dir.path().join("board.log");
@@ -85,10 +82,6 @@ fn setup() -> Fixture {
         "-c",
         &capture_cmd(&board_log),
     ]);
-    // Before production creates any window: pin the pane shell so a
-    // `send-keys`-launched `claude` resolves to the stub rather than the real
-    // binary. Must come after the session exists and before the agent windows.
-    server.isolate_pane_shell();
 
     Fixture {
         server,
@@ -274,7 +267,7 @@ impl Fixture {
     /// by a stub invocation from an earlier step (e.g. the `agent-tree <id>` the
     /// original dispatch logged, when the point is that a *resync* relaunched it).
     fn clear_stub_log(&self) {
-        let _ = std::fs::remove_file(tmux_harness::stub_log_path(&self.server));
+        let _ = std::fs::remove_file(self.server.stub_log());
     }
 
     /// The board must never receive keystrokes. Safe to call only after the
@@ -313,11 +306,6 @@ fn harness_ignores_the_developers_tmux_config() {
     if !tmux_available_or_skip() {
         return;
     }
-    // Called even though this test never launches a stub, so that every test in
-    // the binary reaches the `PATH` mutation through the same OnceLock before it
-    // spawns any process — `std::env::set_var` is not thread-safe against a
-    // concurrent `Command::spawn` reading the environment.
-    install_stubs();
     let server = TmuxServer::start();
     server.tmux_ok(&["new-session", "-d", "-s", "t", "-n", "w"]);
 
@@ -330,6 +318,35 @@ fn harness_ignores_the_developers_tmux_config() {
         server.tmux_stdout(&["show-options", "-gv", "pane-base-index"]),
         "0",
         "pane-base-index must be the default — tests that care set it explicitly"
+    );
+}
+
+/// The stub seam is invisible when it works, and the failure mode is severe: a
+/// real `claude` spawns a live agent and can hang on its trust prompt, a real
+/// `dispatch` opens the developer's database. This replaces the two `PATH`-era
+/// resolution guards with one assertion about the mechanism that now does the
+/// work — the runner naming the binaries.
+#[test]
+fn harness_runner_names_its_own_stub_binaries() {
+    if !tmux_available_or_skip() {
+        return;
+    }
+    let server = TmuxServer::start();
+    let bins = server.runner().agent_binaries();
+
+    let stub_root = server.stub_log().parent().unwrap().to_path_buf();
+    for path in [&bins.claude, &bins.dispatch] {
+        let path = Path::new(path);
+        assert!(
+            path.starts_with(&stub_root),
+            "agent binary {path:?} must live in this server's stub dir {stub_root:?}"
+        );
+        assert!(path.is_file(), "stub {path:?} was not written");
+    }
+    assert_ne!(
+        bins,
+        Default::default(),
+        "the bare names must be overridden"
     );
 }
 

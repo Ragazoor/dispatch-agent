@@ -29,10 +29,12 @@ const AGENT_TREE_PANE_PERCENT: u8 = 30;
 /// dispatch/resume operation.
 fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn ProcessRunner) {
     let id_arg = task_id.0.to_string();
+    // Passed as argv (`split-window --`), so the binary needs no shell quoting.
+    let dispatch_bin = runner.agent_binaries().dispatch;
     if let Err(e) = tmux::split_window_horizontal_running(
         tmux_window,
         AGENT_TREE_PANE_PERCENT,
-        &["dispatch", "agent-tree", &id_arg],
+        &[&dispatch_bin, "agent-tree", &id_arg],
         runner,
     ) {
         tracing::warn!(
@@ -179,9 +181,15 @@ fn dispatch_with_prompt(
         Some(mode) => format!(" --permission-mode {mode}"),
         None => String::new(),
     };
+    // The binary goes *after* the script as bash's `$0`, not inside it. Inside
+    // the single-quoted body it would sit under two quoting layers (the pane's
+    // shell strips the outer quotes, then bash parses what's left), and a path
+    // with a space would need escaping twice to survive both. As `$0` it is one
+    // ordinary shell word, quoted once like every other launch site.
+    let claude = runner.agent_binaries().claude_quoted();
     let claude_cmd = format!(
         "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
-         && claude {DISPATCH_PLUGIN_DIR}{permission_flag} \"$prompt\"'"
+         && \"$0\" {DISPATCH_PLUGIN_DIR}{permission_flag} \"$prompt\"' {claude}"
     );
     tmux::send_keys(&provision.tmux_window, &claude_cmd, runner)
         .context("failed to send keys to tmux window")?;
@@ -340,9 +348,10 @@ pub fn resume_agent(
         .context("failed to set tmux window dispatch dir")?;
     tmux::ensure_split_hook(runner).context("failed to ensure tmux split hook")?;
 
+    let claude = runner.agent_binaries().claude_quoted();
     tmux::send_keys(
         &tmux_window,
-        &format!("claude {DISPATCH_PLUGIN_DIR} --continue"),
+        &format!("{claude} {DISPATCH_PLUGIN_DIR} --continue"),
         runner,
     )
     .context("failed to send resume keys to tmux window")?;
@@ -386,7 +395,8 @@ pub fn create_main_session(dir: &str, runner: &dyn ProcessRunner) -> Result<Stri
 
     tmux::new_window(window, dir, runner).context("failed to create main session tmux window")?;
 
-    tmux::send_keys(window, &format!("claude {DISPATCH_PLUGIN_DIR}"), runner)
+    let claude = runner.agent_binaries().claude_quoted();
+    tmux::send_keys(window, &format!("{claude} {DISPATCH_PLUGIN_DIR}"), runner)
         .context("failed to send keys to main session tmux window")?;
 
     tracing::info!(%window, %dir, "main session created");
@@ -398,7 +408,7 @@ pub fn create_main_session(dir: &str, runner: &dyn ProcessRunner) -> Result<Stri
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::process::MockProcessRunner;
+    use crate::process::{AgentBinaries, MockProcessRunner};
 
     #[test]
     fn resync_agent_tree_pane_noop_for_non_task_window() {
@@ -418,6 +428,27 @@ mod tests {
         resync_agent_tree_pane("task-5", &mock);
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1, "only the companion check should run");
+    }
+
+    /// The companion pane's binary comes from the runner, not a literal — the
+    /// seam that lets the real-tmux harness point it at a stub without shadowing
+    /// `dispatch` on `PATH`.
+    #[test]
+    fn spawn_agent_tree_pane_launches_the_runners_dispatch_binary() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %9\n"), // list-panes
+            MockProcessRunner::ok(),                            // kill-pane
+            MockProcessRunner::ok_with_stdout(b"%20\n"),        // split-window
+        ])
+        .with_agent_binaries(AgentBinaries::stub());
+
+        resync_agent_tree_pane("task-5", &mock);
+
+        let split = &mock.recorded_calls()[2].1;
+        assert!(
+            split.contains(&"/stub/bin/dispatch-stub".to_string()),
+            "companion pane must exec the runner's dispatch binary, got: {split:?}"
+        );
     }
 
     #[test]
@@ -510,6 +541,29 @@ mod tests {
         assert!(
             has_plugin_dir,
             "expected claude with plugin dir in send-keys, got: {all_args:?}"
+        );
+    }
+
+    #[test]
+    fn create_main_session_launches_the_runners_claude_binary() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // new-window
+            MockProcessRunner::ok(), // send-keys -l
+            MockProcessRunner::ok(), // send-keys Enter
+        ])
+        .with_agent_binaries(AgentBinaries::stub());
+
+        create_main_session("/home/user", &mock).unwrap();
+
+        let calls = mock.recorded_calls();
+        let sent = calls[1]
+            .1
+            .iter()
+            .find(|a| a.contains("claude"))
+            .expect("send-keys payload naming claude");
+        assert!(
+            sent.starts_with("/stub/bin/claude-stub --plugin-dir"),
+            "main session must launch the runner's claude binary, got: {sent}"
         );
     }
 }

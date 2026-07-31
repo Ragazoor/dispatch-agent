@@ -9,7 +9,7 @@ use super::worktree::provision_worktree;
 use super::*;
 
 use crate::models::{EpicId, Task, TaskId, TaskStatus};
-use crate::process::{exit_fail, MockProcessRunner, SUBPROCESS_TIMEOUT};
+use crate::process::{exit_fail, AgentBinaries, MockProcessRunner, SUBPROCESS_TIMEOUT};
 use chrono::Utc;
 use std::process::Output;
 use std::time::Duration;
@@ -2206,6 +2206,111 @@ fn resume_agent_includes_plugin_dir() {
     assert!(
         send_keys_arg.contains(".claude/plugins/local/dispatch"),
         "plugin-dir should point to local dispatch plugin, got: {send_keys_arg}"
+    );
+}
+
+// --- injected binary identities ---
+//
+// The launchers read `claude` / `dispatch` from `ProcessRunner::agent_binaries`
+// rather than hardcoding them. These tests pin argv0, which a mock test could not
+// assert while the names were literals.
+
+fn dispatch_mock() -> MockProcessRunner {
+    MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),                    // git fetch origin main
+        MockProcessRunner::ok(),                    // tmux new-window
+        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                    // tmux set-hook
+        MockProcessRunner::ok(),                    // tmux send-keys -l
+        MockProcessRunner::ok(),                    // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+    ])
+}
+
+fn resume_mock() -> MockProcessRunner {
+    MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),                    // tmux new-window
+        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                    // tmux set-hook
+        MockProcessRunner::ok(),                    // tmux send-keys -l
+        MockProcessRunner::ok(),                    // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+    ])
+}
+
+#[test]
+fn dispatch_agent_launches_the_runners_claude_binary() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let mock = dispatch_mock().with_agent_binaries(AgentBinaries::stub());
+
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+
+    let calls = mock.recorded_calls();
+    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    // The binary rides as bash's `$0`, after the script body.
+    assert!(
+        send_keys_arg.ends_with("/stub/bin/claude-stub"),
+        "dispatch_agent must launch the runner's claude binary, got: {send_keys_arg}"
+    );
+}
+
+#[test]
+fn dispatch_agent_launches_the_runners_dispatch_binary_in_the_companion_pane() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let mock = dispatch_mock().with_agent_binaries(AgentBinaries::stub());
+
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+
+    // The companion pane is spawned via `split-window --`, so the binary is a
+    // plain argv element rather than part of a shell string.
+    let split = &mock.recorded_calls()[6].1;
+    assert!(
+        split.contains(&"/stub/bin/dispatch-stub".to_string()),
+        "companion pane must exec the runner's dispatch binary, got: {split:?}"
+    );
+}
+
+#[test]
+fn resume_agent_launches_the_runners_claude_binary() {
+    let (_dir, worktree_path) = make_test_repo();
+    let mock = resume_mock().with_agent_binaries(AgentBinaries::stub());
+
+    resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    let send_keys_arg = find_call_arg(&calls, 3, "claude");
+    assert!(
+        send_keys_arg.starts_with("/stub/bin/claude-stub --plugin-dir"),
+        "resume_agent must launch the runner's claude binary, got: {send_keys_arg}"
+    );
+    assert!(
+        send_keys_arg.ends_with("--continue"),
+        "resume must still pass --continue, got: {send_keys_arg}"
+    );
+}
+
+/// A runner that does not override `agent_binaries` must still emit the bare,
+/// unquoted names — the guarantee that this seam changed no production behaviour.
+#[test]
+fn agent_launchers_default_to_bare_binary_names() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let mock = dispatch_mock();
+
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+
+    let calls = mock.recorded_calls();
+    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    assert!(
+        send_keys_arg.ends_with("' claude"),
+        "the default must be the bare, unquoted name, got: {send_keys_arg}"
+    );
+    assert!(
+        calls[6].1.contains(&"dispatch".to_string()),
+        "the default companion binary must be the bare name, got: {:?}",
+        calls[6].1
     );
 }
 

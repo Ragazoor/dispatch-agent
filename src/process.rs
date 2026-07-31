@@ -22,6 +22,74 @@ pub(crate) fn stdout_str(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
+/// The `claude` and `dispatch` binaries the agent launchers in
+/// `src/dispatch/agents.rs` invoke.
+///
+/// Production uses the bare names, resolved on `PATH` at launch time; a test can
+/// name a stub instead. See [`ProcessRunner::agent_binaries`] for why this rides
+/// with the runner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentBinaries {
+    /// The Claude Code CLI. Interpolated into shell command strings, so read it
+    /// through [`Self::claude_quoted`] rather than directly.
+    pub claude: String,
+    /// This crate's own binary, launched as `dispatch agent-tree <id>` in the
+    /// companion pane. Passed as argv, so it needs no quoting.
+    pub dispatch: String,
+}
+
+impl Default for AgentBinaries {
+    fn default() -> Self {
+        Self {
+            claude: "claude".to_string(),
+            dispatch: "dispatch".to_string(),
+        }
+    }
+}
+
+impl AgentBinaries {
+    /// [`Self::claude`] as one shell word, ready to interpolate into a command
+    /// string.
+    ///
+    /// Every launcher site is arranged so that exactly one quoting layer applies
+    /// — including `dispatch_with_prompt`, which passes the binary as bash's
+    /// `$0` *outside* its single-quoted script body rather than inside it. Nested
+    /// quoting would need the value escaped twice, and a site that got only one
+    /// of the two layers right would look escaped while splitting at the first
+    /// space; keeping the layer count at one everywhere removes that class of
+    /// mistake instead of encapsulating it.
+    pub fn claude_quoted(&self) -> String {
+        shell_quote(&self.claude)
+    }
+
+    /// The stub identities the test suites substitute. One definition so the
+    /// sentinel paths cannot drift between the launcher tests that assert on
+    /// them.
+    #[cfg(test)]
+    pub fn stub() -> Self {
+        Self {
+            claude: "/stub/bin/claude-stub".to_string(),
+            dispatch: "/stub/bin/dispatch-stub".to_string(),
+        }
+    }
+}
+
+/// Quote `s` for use as one word in a shell command, leaving it untouched when it
+/// needs no quoting.
+///
+/// The pass-through case is load-bearing, not an optimisation: the default binary
+/// names are plain, so the only change to production's emitted command string is
+/// the `$0` indirection itself — no quoting noise on top of it.
+fn shell_quote(s: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    if !s.is_empty() && s.chars().all(safe) {
+        return s.to_string();
+    }
+    // POSIX single-quoting: everything inside is literal, and an embedded quote
+    // is written by closing, escaping, and reopening.
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
 pub trait ProcessRunner: Send + Sync {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output>;
 
@@ -33,6 +101,23 @@ pub trait ProcessRunner: Send + Sync {
     /// Override this on real runners that can actually spawn and kill children.
     fn run_with_timeout(&self, program: &str, args: &[&str], _timeout: Duration) -> Result<Output> {
         self.run(program, args)
+    }
+
+    /// Which `claude` / `dispatch` binaries the agent launchers should invoke.
+    ///
+    /// The default is the bare names, resolved on `PATH` at launch — what every
+    /// production runner wants. Override it to name stubs instead; that is the
+    /// seam `tests/tmux_harness/mod.rs` uses so its real-tmux tests cannot spawn
+    /// a live agent or open the developer's database.
+    ///
+    /// Only `src/dispatch/agents.rs` reads this, which cuts against the
+    /// trait-narrowing convention in docs/conventions.md — deliberately. That
+    /// convention is scoped to the DB traits, where narrowing is what makes the
+    /// mutation boundary compiler-enforced. Here the alternative is threading the
+    /// value through six launcher signatures and ~50 call sites that all pass the
+    /// default, to substitute it in exactly one. Don't "fix" this by narrowing.
+    fn agent_binaries(&self) -> AgentBinaries {
+        AgentBinaries::default()
     }
 }
 
@@ -154,6 +239,7 @@ pub struct MockProcessRunner {
     calls: Mutex<Vec<(String, Vec<String>)>>,
     responses: Mutex<VecDeque<(Option<Duration>, Result<Output>)>>,
     window_lookup: WindowLookup,
+    binaries: AgentBinaries,
 }
 
 impl MockProcessRunner {
@@ -171,6 +257,7 @@ impl MockProcessRunner {
             calls: Mutex::new(Vec::new()),
             responses: Mutex::new(VecDeque::from(responses)),
             window_lookup: WindowLookup::AnyName(Mutex::new(Vec::new())),
+            binaries: AgentBinaries::default(),
         }
     }
 
@@ -276,6 +363,14 @@ impl MockProcessRunner {
         }
     }
 
+    /// Name distinctive `claude` / `dispatch` binaries, so a test can assert
+    /// which binary an agent launcher actually invoked rather than only that it
+    /// invoked *something* called `claude`.
+    pub fn with_agent_binaries(mut self, binaries: AgentBinaries) -> Self {
+        self.binaries = binaries;
+        self
+    }
+
     #[allow(clippy::unwrap_used)] // test helper — panics on poisoned mutex (programming error)
     pub fn recorded_calls(&self) -> Vec<(String, Vec<String>)> {
         self.calls.lock().unwrap().clone()
@@ -361,6 +456,10 @@ impl ProcessRunner for MockProcessRunner {
         }
         response
     }
+
+    fn agent_binaries(&self) -> AgentBinaries {
+        self.binaries.clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +487,102 @@ pub fn exit_fail() -> std::process::ExitStatus {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    // --- AgentBinaries ---
+
+    #[test]
+    fn agent_binaries_defaults_to_bare_names() {
+        let bins = AgentBinaries::default();
+        assert_eq!(bins.claude, "claude");
+        assert_eq!(bins.dispatch, "dispatch");
+    }
+
+    /// Production must keep resolving on `PATH`: the trait default is what every
+    /// real runner inherits, and no production code overrides it.
+    #[test]
+    fn real_process_runner_uses_default_agent_binaries() {
+        assert_eq!(RealProcessRunner.agent_binaries(), AgentBinaries::default());
+    }
+
+    #[test]
+    fn mock_process_runner_reports_the_binaries_it_was_built_with() {
+        let bins = AgentBinaries::stub();
+        let mock = MockProcessRunner::new(vec![]).with_agent_binaries(bins.clone());
+        assert_eq!(mock.agent_binaries(), bins);
+    }
+
+    /// The pass-through case is what keeps the bare default names out of the
+    /// emitted command string unquoted, exactly as they were before.
+    #[test]
+    fn shell_quote_leaves_plain_paths_untouched() {
+        for s in ["claude", "/tmp/x/claude", "./claude", "claude-1.2_beta"] {
+            assert_eq!(shell_quote(s), s, "{s} should need no quoting");
+        }
+    }
+
+    #[test]
+    fn shell_quote_wraps_paths_needing_it() {
+        assert_eq!(shell_quote("/my dir/claude"), "'/my dir/claude'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("a;rm -rf /"), "'a;rm -rf /'");
+    }
+
+    /// An embedded single quote cannot be escaped *inside* single quotes, so it
+    /// has to close, escape and reopen — get this wrong and the quoting is a
+    /// shell injection rather than a defence against one.
+    #[test]
+    fn shell_quote_escapes_embedded_single_quotes() {
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
+    #[test]
+    fn claude_quoted_passes_a_plain_name_through_unchanged() {
+        assert_eq!(AgentBinaries::default().claude_quoted(), "claude");
+    }
+
+    /// Executed rather than string-compared: the value is interpolated into
+    /// exactly the shape `dispatch_with_prompt` emits — as bash's `$0`, *after*
+    /// the single-quoted script body — handed to a real shell, and the binary
+    /// must run as a single word with its argument intact.
+    ///
+    /// This is what pins the `$0` arrangement in place. Move the binary back
+    /// inside the quoted body and a path with a space needs escaping twice; this
+    /// test fails for `"claude bin"` if anyone does.
+    #[test]
+    fn claude_quoted_survives_the_launcher_command_shape() {
+        for name in ["claude bin", "cla'ude", "claude"] {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = dir.path().join(name);
+            std::fs::write(&bin, "#!/bin/sh\nprintf 'ran:%s' \"$1\"\n").unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let bins = AgentBinaries {
+                claude: bin.to_string_lossy().into_owned(),
+                ..AgentBinaries::default()
+            };
+            let claude = bins.claude_quoted();
+            let cmd = format!("bash -c '\"$0\" arg' {claude}");
+
+            let out = std::process::Command::new("sh")
+                .args(["-c", &cmd])
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                "ran:arg",
+                "quoting failed for {name:?}; command was: {cmd} (stderr: {})",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn agent_binaries_stub_names_both_binaries_distinctly() {
+        let stub = AgentBinaries::stub();
+        assert_ne!(stub, AgentBinaries::default());
+        assert_ne!(stub.claude, stub.dispatch);
+    }
 
     // --- RealProcessRunner::run_with_timeout ---
 

@@ -113,6 +113,8 @@ Required on `PATH` at runtime, with **no startup preflight** — `dispatch docto
 - **gh** (`src/dispatch/mod.rs`, and the `scripts/fetch-*.sh` feed commands) — PR status and feed data. Network calls.
 - **claude** — spawned inside the tmux window by `src/dispatch/agents.rs` as `claude --plugin-dir ~/.claude/plugins/local/dispatch …`; that plugin dir is installed by `cargo run -- setup`.
 
+The agent launchers do **not** hardcode `claude` / `dispatch`: they read them from `ProcessRunner::agent_binaries()` (`src/process.rs`), which defaults to those bare names. That is the seam `tests/tmux_harness/mod.rs` uses to point them at stubs — never `PATH` manipulation. Interpolate via `claude_for_shell()` or `claude_for_bash_c()` depending on how many quoting layers the target command string has; both pass a plain name through untouched.
+
 POSIX-only. Embeddings/RAG (`src/service/embeddings.rs`) also make live calls.
 
 ## Verify Command
