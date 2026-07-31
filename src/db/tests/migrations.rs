@@ -2690,6 +2690,82 @@ fn test_v55_learning_embedding_column() {
     assert_eq!(val, Some(vec![1, 2, 3, 4]));
 }
 
+// ---------------------------------------------------------------------------
+// v80 — drop the orphaned agent_status column
+// ---------------------------------------------------------------------------
+
+#[test]
+fn migrate_v80_drops_agent_status_and_keeps_sibling_columns() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    // Pre-v80 shape of the four tables v27/v28 added agent_status to.
+    conn.execute_batch(
+        "CREATE TABLE review_prs (repo TEXT, number INTEGER, tmux_window TEXT,
+                                  worktree TEXT, agent_status TEXT);
+         CREATE TABLE bot_prs (repo TEXT, number INTEGER, agent_status TEXT);
+         CREATE TABLE security_alerts (repo TEXT, number INTEGER, agent_status TEXT);
+         CREATE TABLE my_prs (repo TEXT, number INTEGER, agent_status TEXT);
+         INSERT INTO review_prs (repo, number, tmux_window, worktree, agent_status)
+             VALUES ('kognic/x', 7, 'win', '/wt', 'reviewing');
+         PRAGMA user_version = 79;",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v80_drop_agent_status(&conn).unwrap();
+
+    for table in ["review_prs", "bot_prs", "security_alerts", "my_prs"] {
+        let cols: Vec<String> = conn
+            .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            !cols.contains(&"agent_status".to_string()),
+            "agent_status must be gone from {table}, got {cols:?}"
+        );
+    }
+
+    // Sibling columns and their data survive the drop.
+    let (window, worktree): (String, String) = conn
+        .query_row("SELECT tmux_window, worktree FROM review_prs", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
+    assert_eq!((window.as_str(), worktree.as_str()), ("win", "/wt"));
+}
+
+#[test]
+fn migrate_v80_is_idempotent_and_tolerates_missing_tables() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    // No agent_status column, and three of the four tables absent entirely.
+    conn.execute_batch("CREATE TABLE my_prs (repo TEXT, number INTEGER);")
+        .unwrap();
+    crate::db::migrations::migrate_v80_drop_agent_status(&conn).unwrap();
+    crate::db::migrations::migrate_v80_drop_agent_status(&conn).unwrap();
+}
+
+#[tokio::test]
+async fn fresh_db_has_no_agent_status_column_anywhere() {
+    let db = in_memory_db().await;
+    let hits: i64 = db
+        .db_call(|conn| {
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master m
+                 JOIN pragma_table_info(m.name) c
+                 WHERE m.type = 'table' AND c.name = 'agent_status'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .await
+        .unwrap();
+    assert_eq!(hits, 0, "no table may carry agent_status after v80");
+}
+
 #[tokio::test]
 async fn migrate_v56_drops_task_usage_table() {
     let db = in_memory_db().await;

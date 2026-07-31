@@ -15,6 +15,21 @@ pub(super) async fn in_memory_db() -> Database {
     Database::open_in_memory().await.unwrap()
 }
 
+/// Run `sql` on the writer connection with CHECK constraints disabled, so a
+/// test can plant a row the application-level API would never produce (e.g. an
+/// unrecognised `status` string). Used to exercise the decode-failure policy —
+/// see the decode-failure-policy section of `docs/conventions.md`.
+pub(super) async fn write_corrupt_row(db: &Database, sql: &'static str) {
+    db.db_call(move |conn| {
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON;")?;
+        let result = conn.execute_batch(sql);
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF;")?;
+        result.map_err(anyhow::Error::from)
+    })
+    .await
+    .unwrap();
+}
+
 pub(super) async fn create_task_returning(
     db: &Database,
     title: &str,

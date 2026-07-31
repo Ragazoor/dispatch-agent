@@ -6,7 +6,7 @@ use crate::set_field;
 use crate::models::{EpicId, FeedItem, SubStatus, TaskId, TaskStatus, WrapUpMode};
 
 use super::super::{CreateTaskRequest, Database, TaskPatch};
-use super::{row_to_task, write_json_string_vec, TASK_COLUMNS};
+use super::{collect_decodable, row_to_task, write_json_string_vec, TASK_COLUMNS};
 
 /// Owned mirror of [`CreateTaskRequest`] for moving into a `db_call` closure.
 ///
@@ -155,11 +155,10 @@ impl super::super::TaskRead for Database {
                     "SELECT {TASK_COLUMNS} FROM tasks ORDER BY COALESCE(sort_order, id) ASC, id ASC"
                 ))
                 .context("Failed to prepare list_all")?;
-            let tasks = stmt
+            let rows = stmt
                 .query_map([], row_to_task)
-                .context("Failed to query tasks")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to collect tasks")?;
+                .context("Failed to query tasks")?;
+            let tasks = collect_decodable(rows, "tasks").context("Failed to collect tasks")?;
             Ok(tasks)
         })
         .await
@@ -172,11 +171,11 @@ impl super::super::TaskRead for Database {
                     &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE status = ?1 ORDER BY COALESCE(sort_order, id) ASC, id ASC"),
                 )
                 .context("Failed to prepare list_by_status")?;
-            let tasks = stmt
+            let rows = stmt
                 .query_map(params![status.as_str()], row_to_task)
-                .context("Failed to query tasks by status")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to collect tasks by status")?;
+                .context("Failed to query tasks by status")?;
+            let tasks =
+                collect_decodable(rows, "tasks").context("Failed to collect tasks by status")?;
             Ok(tasks)
         })
         .await

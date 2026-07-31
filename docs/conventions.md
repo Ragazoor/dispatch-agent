@@ -65,11 +65,17 @@ boundaries — `Ctrl+←/→` steps through path segments, which is the point.
 
 ## Soft-fail decoding
 
-Schema enum values may be added in a migration before all rows are upgraded. Row decoders in `src/db/queries/` default unknown values and emit `tracing::warn!` rather than panicking — see `row_to_task` in `src/db/queries/mod.rs:73` for the canonical example.
+Schema enum values may be added in a migration before all rows are upgraded. Never `panic!` (or `unwrap()`/`expect()`) on a value read from the DB — a poisoned row must not kill the TUI.
 
-Never `panic!` (or `unwrap()`/`expect()`) on an unknown enum value read from the DB. Use `Enum::parse(&s).unwrap_or_else(|| { tracing::warn!(...); Enum::Default })`. This keeps an old DB readable after a partial migration and prevents a poisoned row from killing the TUI.
+**Field level.** An enum that can legitimately gain variants (a newer binary writing a value this one doesn't know) defaults with a warning: `Enum::parse(&s).unwrap_or_else(|| { tracing::warn!(...); Enum::Default })`. `parse_feed_role` and `parse_epic_origin` (`src/db/queries/mod.rs`) are the canonical examples. Fields where no default is meaningful — `status`, `sub_status`, `tag`, `wrap_up_mode`, the timestamps, the `url`/`url_type` pair — instead fail the row via `unknown_enum`, and the row-level policy below decides what that costs.
 
-**Decode-fallback counter:** every soft-fail in `row_to_task`/`row_to_epic` and `read_json_string_vec` bumps a process-wide `AtomicU64` exposed as `crate::db::decode_fallback_count()`. The counter value is included in the `tracing::warn!` message (`count=N`) so the warns are greppable in aggregate, and the accessor lets tests and ad-hoc debugging detect slow-bleeding decode bugs without chasing log lines. When you add a new soft-fail branch, bump the counter from `db::queries::bump_decode_fallback()`.
+**Row level — the decode-failure policy.** Which reads tolerate an undecodable row is deliberate, not incidental:
+
+- **Bulk reads skip and warn.** `list_all`, `list_by_status`, `list_epics`, `list_root_epics`, `list_sub_epics`, `list_tasks_for_epic`, and `list_all_tasks_with_epic_id` run their `query_map` iterator through `collect_decodable` (`src/db/queries/mod.rs`), which drops each undecodable row with a `tracing::warn!` and keeps the rest. One corrupt row degrades the board instead of blanking it — before this, a single unparseable `status` made `list_all` return `Err` and the TUI rendered an empty board.
+- **Single-entity reads fail loudly.** `get_task`, `get_epic`, and `find_task_by_plan` return the decode error: the caller asked for that specific row, so silently answering "not found" would be a lie. This is also how a corrupt row stays diagnosable once the bulk read has stopped surfacing it.
+- **Only decode errors are skippable.** `collect_decodable` propagates anything that is not a row-content failure — a `SqliteFailure` (I/O error, interrupt) mid-iteration would otherwise silently truncate a healthy result set, and an `InvalidColumnName` would hide a mismatch between `TASK_COLUMNS` and `row_to_task`.
+
+**Decode-fallback counter:** every field-level default and every row skipped by `collect_decodable` bumps a process-wide `AtomicU64` exposed as `crate::db::decode_fallback_count()`. The value is included in the `tracing::warn!` (`count=N`) so the warns are greppable in aggregate, and the accessor lets tests and ad-hoc debugging detect slow-bleeding decode bugs without chasing log lines. It is monotonic and never reset — assert on deltas, since the test suite shares one process. When you add a new soft-fail branch, bump it via `db::queries::bump_decode_fallback()`.
 
 ## Border parsing
 
@@ -321,7 +327,9 @@ Two patterns have already caused bugs and must not be repeated:
 
 ## No `tokio::time::sleep` in tests
 
-Async tests must never `tokio::time::sleep` to "wait for" background work. Wall-clock sleeps are flaky on slow CI (the work may not be done when the timer fires) and needlessly slow the suite. `./scripts/check-no-test-sleep.sh` enforces this in the pre-push hook; production `std::thread::sleep` (e.g. `src/process.rs`) is unaffected.
+Tests must never sleep on the wall clock to "wait for" background work or to cross a duration threshold. Wall-clock sleeps are flaky on slow CI (the work may not be done when the timer fires) and needlessly slow the suite. `./scripts/check-no-test-sleep.sh` enforces this in the pre-push hook, rejecting `tokio::time::sleep(` anywhere under `src/`/`tests/` **and** `std::thread::sleep(` in test files (anything under `tests/`, under a `src/**/tests/` directory, or named `tests.rs`). Production `std::thread::sleep` (e.g. `src/process.rs`, `src/runtime/mod.rs`) is unaffected. Inline `#[cfg(test)] mod tests` blocks inside production files are a blind spot of the grep-level check — keep sleeps out of them by review.
+
+The `std::thread::sleep` check has one escape hatch, for the single shape a grep cannot tell apart from a fixed sleep: a short **poll step** inside a loop that polls a condition against a deadline, where only a genuine failure pays the deadline in full. Mark it with an `// allow-test-sleep: <why>` comment on the call line or the line directly above (`poll_for` in `tests/tmux_harness/mod.rs` is the only current use — it polls for output delivered through a real tmux pane's tty, where no in-process signal exists). The marker is not a way to keep a fixed sleep: if deleting the surrounding condition check would leave the test passing, it is a fixed sleep and must go.
 
 Use whichever of these fits the thing you're waiting on:
 
@@ -341,3 +349,5 @@ Use whichever of these fits the thing you're waiting on:
 - **A test-only completion signal for detached writes.** When production spawns fire-and-forget work with no observable signal (the MCP handler's usage + trajectory writes), add an optional sender that the spawn fires on completion — `McpState::test_hooks.bg_write_done_tx` / `BackgroundWrite`, installed via `router_with_bg_done` / `test_state_with_bg_done`. It is always `None` in production. Mirrors the existing optional `notify_tx` pattern.
 
 - **An injected clock for time-dependent behaviour.** Hook-event timestamps persist at one-second resolution, so a test that needs two events in distinct seconds must not sleep ≥1s — inject `service::FixedClock` via `TaskService::with_clock` and `clock.advance(chrono::Duration::seconds(2))`. Production defaults to `SystemClock` (`Utc::now()`), so no call sites change.
+
+- **An injected threshold when the behaviour under test is "did this take longer than X".** Don't sleep past the real threshold, and don't assume a trivial closure beats it either — a loaded CI box can push a no-op `db_call` past 200 ms, so asserting the *absence* of a slow-call warning is just as load-sensitive as asserting its presence. `Database::set_slow_call_threshold` (`#[cfg(test)]`, per-instance so parallel tests don't race) pins `SLOW_DB_CALL_THRESHOLD` for one `Database`: `Duration::ZERO` forces the warning, an hour forbids it. See `src/db/tests/async_handle.rs`.

@@ -13,6 +13,14 @@ use crate::models::{
     Todo, TodoId, WrapUpMode,
 };
 
+/// Number of decode soft-fails since process start: unknown enum values that
+/// were defaulted, plus rows skipped by a bulk read because they could not be
+/// decoded. Monotonic — compare deltas, not absolutes. See the
+/// decode-failure-policy section of `docs/conventions.md`.
+pub fn decode_fallback_count() -> u64 {
+    queries::decode_fallback_count()
+}
+
 // ---------------------------------------------------------------------------
 // patch_struct! — declarative macro for selective-update builder structs
 // ---------------------------------------------------------------------------
@@ -720,6 +728,11 @@ pub struct Database {
     read_pool: Vec<tokio::sync::OnceCell<tokio_rusqlite::Connection>>,
     next_reader: std::sync::atomic::AtomicUsize,
     read_target: ReadTarget,
+    /// Threshold above which [`Database::dispatch`] warns. Defaults to
+    /// [`SLOW_DB_CALL_THRESHOLD`]; per-instance (not a global) so tests can
+    /// pin it without racing each other — see
+    /// [`Database::set_slow_call_threshold`].
+    slow_call_threshold: std::time::Duration,
 }
 
 impl Database {
@@ -741,6 +754,7 @@ impl Database {
             read_pool: Self::empty_read_pool(),
             next_reader: std::sync::atomic::AtomicUsize::new(0),
             read_target: ReadTarget::File(path.to_path_buf()),
+            slow_call_threshold: SLOW_DB_CALL_THRESHOLD,
         })
     }
 
@@ -771,7 +785,23 @@ impl Database {
             read_pool: Self::empty_read_pool(),
             next_reader: std::sync::atomic::AtomicUsize::new(0),
             read_target: ReadTarget::MemoryUri(uri),
+            slow_call_threshold: SLOW_DB_CALL_THRESHOLD,
         })
+    }
+
+    /// Pin the slow-`db_call` warning threshold for this instance.
+    ///
+    /// Tests assert on the warning in both directions, and both directions are
+    /// unreliable against the real 200 ms threshold: producing a warning needs
+    /// a >200 ms wall-clock sleep (slow, and banned — see
+    /// `scripts/check-no-test-sleep.sh`), while asserting the *absence* of one
+    /// is load-sensitive, because a loaded CI box can push a trivial closure
+    /// past 200 ms. Pinning the threshold instead (`ZERO` to force a warning,
+    /// something absurdly large to forbid one) makes both deterministic. See
+    /// the "No `tokio::time::sleep` in tests" section of `docs/conventions.md`.
+    #[cfg(test)]
+    fn set_slow_call_threshold(&mut self, threshold: std::time::Duration) {
+        self.slow_call_threshold = threshold;
     }
 
     fn empty_read_pool() -> Vec<tokio::sync::OnceCell<tokio_rusqlite::Connection>> {
@@ -797,10 +827,19 @@ impl Database {
                 .await
                 .context("Failed to open in-memory read connection")?,
         };
-        Self::dispatch(&conn, std::panic::Location::caller(), |c| {
-            c.execute_batch(CONNECTION_PRAGMAS)
-                .context("Failed to set reader PRAGMAs")
-        })
+        // Deliberately the real constant, not the instance's (possibly pinned)
+        // threshold: opening a connection is one-time setup cost, not query
+        // latency, and tests that pin the threshold to zero assert an exact
+        // warning count that a reader-open warning would break.
+        Self::dispatch(
+            &conn,
+            std::panic::Location::caller(),
+            SLOW_DB_CALL_THRESHOLD,
+            |c| {
+                c.execute_batch(CONNECTION_PRAGMAS)
+                    .context("Failed to set reader PRAGMAs")
+            },
+        )
         .await?;
         Ok(conn)
     }
@@ -812,6 +851,7 @@ impl Database {
     async fn dispatch<R, F>(
         conn: &tokio_rusqlite::Connection,
         caller: &'static std::panic::Location<'static>,
+        threshold: std::time::Duration,
         f: F,
     ) -> Result<R>
     where
@@ -823,7 +863,7 @@ impl Database {
             .call(move |c| f(c).map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e)))))
             .await;
         let elapsed = start.elapsed();
-        if elapsed > SLOW_DB_CALL_THRESHOLD {
+        if elapsed > threshold {
             tracing::warn!(
                 duration_ms = elapsed.as_millis() as u64,
                 location = %caller,
@@ -867,7 +907,7 @@ impl Database {
         R: Send + 'static,
     {
         let caller = std::panic::Location::caller();
-        async move { Self::dispatch(&self.conn, caller, f).await }
+        async move { Self::dispatch(&self.conn, caller, self.slow_call_threshold, f).await }
     }
 
     /// Run a synchronous **read-only** closure against a pooled read
@@ -901,7 +941,7 @@ impl Database {
             let conn = self.read_pool[idx]
                 .get_or_try_init(|| Self::open_reader(&self.read_target))
                 .await?;
-            Self::dispatch(conn, caller, f).await
+            Self::dispatch(conn, caller, self.slow_call_threshold, f).await
         }
     }
 

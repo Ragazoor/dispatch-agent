@@ -138,18 +138,20 @@ where
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Run a `db_call` whose closure sleeps past the 200ms threshold
-/// (`config.slow_db_call_threshold_ms` in `docs/specs/observability.allium`)
-/// and return everything logged during it.
+/// Run a `db_call` that is guaranteed to count as slow, and return everything
+/// logged during it.
+///
+/// The threshold (`config.slow_db_call_threshold_ms` in
+/// `docs/specs/observability.allium`, 200ms in production) is pinned to zero
+/// for this instance rather than sleeping past the real value: a wall-clock
+/// sleep is both slow and banned in tests — see
+/// `Database::set_slow_call_threshold` and the "No `tokio::time::sleep` in
+/// tests" section of `docs/conventions.md`.
 async fn logged_during_slow_db_call() -> String {
     logged_during(|| async {
-        let db = in_memory_db().await;
-        db.db_call(|_conn| {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-            Ok(())
-        })
-        .await
-        .unwrap();
+        let mut db = in_memory_db().await;
+        db.set_slow_call_threshold(std::time::Duration::ZERO);
+        db.db_call(|_conn| Ok(())).await.unwrap();
     })
     .await
 }
@@ -172,19 +174,19 @@ async fn slow_db_call_emits_warning_above_threshold() {
         1,
         "expected exactly one slow db_call warning, got log: {log}"
     );
-    let duration_ms =
-        extract_field(&log, "duration_ms").expect("duration_ms field must be present");
-    assert!(
-        duration_ms >= 200,
-        "expected duration_ms >= 200, got {duration_ms}"
-    );
+    // The value is whatever the closure actually took; only its presence and
+    // parseability are deterministic once the threshold is pinned.
+    extract_field(&log, "duration_ms").expect("duration_ms field must be present");
 }
 
-/// A `db_call` that completes well under the threshold emits no warning.
+/// A `db_call` that completes under the threshold emits no warning. The
+/// threshold is pinned absurdly high rather than relying on a trivial closure
+/// beating the real 200ms — a loaded CI box can lose that race.
 #[tokio::test]
 async fn fast_db_call_emits_no_warning() {
     let log = logged_during(|| async {
-        let db = in_memory_db().await;
+        let mut db = in_memory_db().await;
+        db.set_slow_call_threshold(std::time::Duration::from_secs(3600));
         db.db_call(|_conn| Ok(())).await.unwrap();
     })
     .await;

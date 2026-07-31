@@ -562,7 +562,13 @@ async fn list_all_errors_on_corrupt_labels_json() {
     })
     .await
     .unwrap();
-    let result = db.list_all().await;
+    // Bulk read: skip-and-warn. The single-entity read stays fail-loud.
+    let tasks = db.list_all().await.expect("bulk read must not fail");
+    assert!(
+        tasks.is_empty(),
+        "the row with corrupt labels JSON must be skipped, got {tasks:?}"
+    );
+    let result = db.get_task(id).await;
     assert!(
         result.is_err(),
         "expected Err on corrupt labels JSON, got {:?}",
@@ -3173,7 +3179,7 @@ async fn get_task_errors_on_unknown_tag() {
 }
 
 #[tokio::test]
-async fn list_all_errors_on_unknown_wrap_up_mode() {
+async fn get_task_errors_on_unknown_wrap_up_mode_while_list_all_skips_it() {
     let db = in_memory_db().await;
     let id = db
         .create_task(CreateTaskRequest {
@@ -3201,7 +3207,12 @@ async fn list_all_errors_on_unknown_wrap_up_mode() {
     })
     .await
     .unwrap();
-    let result = db.list_all().await;
+    let tasks = db.list_all().await.expect("bulk read must not fail");
+    assert!(
+        tasks.is_empty(),
+        "the row with an unknown wrap_up_mode must be skipped, got {tasks:?}"
+    );
+    let result = db.get_task(id).await;
     assert!(result.is_err(), "expected Err on unknown wrap_up_mode");
 }
 
@@ -3804,4 +3815,139 @@ async fn delete_watches_by_watcher_removes_only_that_watchers_rows() {
 
     assert!(db.list_watchers_of(target1.id).await.unwrap().is_empty());
     assert_eq!(db.list_watchers_of(target2.id).await.unwrap(), vec![b.id]);
+}
+
+// ---------------------------------------------------------------------------
+// Decode-failure policy: skip-and-warn for bulk reads, fail-loud for
+// single-entity reads. See the decode-failure-policy section of
+// docs/conventions.md.
+// ---------------------------------------------------------------------------
+
+/// Plant an undecodable task row (unrecognised `status`) alongside a healthy
+/// one and return the healthy task's id.
+async fn db_with_undecodable_status_row() -> (Database, TaskId) {
+    let db = in_memory_db().await;
+    let good = create_task_returning(&db, "healthy", "", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    write_corrupt_row(
+        &db,
+        "INSERT INTO tasks (id, title, description, repo_path, status, sub_status,
+                            base_branch, created_at, updated_at)
+         VALUES (9001, 'corrupt', '', '/repo', 'not_a_status', 'none', 'main',
+                 '2026-01-01 00:00:00', '2026-01-01 00:00:00');",
+    )
+    .await;
+    (db, good.id)
+}
+
+#[tokio::test]
+async fn list_all_skips_row_with_unrecognised_status() {
+    let (db, good_id) = db_with_undecodable_status_row().await;
+    let before = crate::db::decode_fallback_count();
+
+    let tasks = db
+        .list_all()
+        .await
+        .expect("one undecodable row must not fail the whole board load");
+
+    assert_eq!(
+        tasks.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![good_id],
+        "the healthy row must still load; the corrupt row must be skipped"
+    );
+    assert!(
+        crate::db::decode_fallback_count() > before,
+        "skipping a row must bump the decode-fallback counter"
+    );
+}
+
+#[tokio::test]
+async fn list_by_status_skips_row_with_unrecognised_status() {
+    let (db, good_id) = db_with_undecodable_status_row().await;
+    let tasks = db.list_by_status(TaskStatus::Backlog).await.unwrap();
+    assert_eq!(
+        tasks.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![good_id]
+    );
+}
+
+#[tokio::test]
+async fn get_task_errors_on_unrecognised_status() {
+    let (db, _) = db_with_undecodable_status_row().await;
+    let result = db.get_task(TaskId(9001)).await;
+    assert!(
+        result.is_err(),
+        "a single-entity read must fail loudly for the row the caller asked for, got {result:?}"
+    );
+    let msg = format!("{:#}", result.unwrap_err());
+    assert!(
+        msg.contains("not_a_status"),
+        "error must name the offending value, got: {msg}"
+    );
+}
+
+/// Plant a task row whose `url`/`url_type` pair is inconsistent — a state the
+/// application can never write, but which a partially-applied migration could
+/// leave behind.
+async fn db_with_inconsistent_url_row() -> (Database, TaskId, TaskId) {
+    let db = in_memory_db().await;
+    let good = create_task_returning(&db, "healthy", "", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    let bad = create_task_returning(&db, "corrupt", "", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    let bad_id = bad.id.0;
+    db.db_call(move |conn| {
+        conn.execute(
+            "UPDATE tasks SET url = 'https://example.com/pull/1', url_type = NULL WHERE id = ?1",
+            rusqlite::params![bad_id],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    (db, good.id, bad.id)
+}
+
+#[tokio::test]
+async fn list_all_skips_row_with_inconsistent_url_pair() {
+    let (db, good_id, _) = db_with_inconsistent_url_row().await;
+    let tasks = db
+        .list_all()
+        .await
+        .expect("an inconsistent url/url_type pair must not fail the whole board load");
+    assert_eq!(
+        tasks.iter().map(|t| t.id).collect::<Vec<_>>(),
+        vec![good_id]
+    );
+}
+
+#[tokio::test]
+async fn get_task_errors_on_inconsistent_url_pair() {
+    let (db, _, bad_id) = db_with_inconsistent_url_row().await;
+    let result = db.get_task(bad_id).await;
+    assert!(
+        result.is_err(),
+        "a single-entity read must fail loudly on a corrupt url/url_type pair, got {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn find_task_by_plan_errors_on_undecodable_row() {
+    let db = in_memory_db().await;
+    write_corrupt_row(
+        &db,
+        "INSERT INTO tasks (id, title, description, repo_path, status, sub_status,
+                            base_branch, plan_path, created_at, updated_at)
+         VALUES (9002, 'corrupt', '', '/repo', 'not_a_status', 'none', 'main', '/p/plan.md',
+                 '2026-01-01 00:00:00', '2026-01-01 00:00:00');",
+    )
+    .await;
+    let result = db.find_task_by_plan("/p/plan.md").await;
+    assert!(
+        result.is_err(),
+        "find_task_by_plan targets one row, so it must fail loudly, got {result:?}"
+    );
 }

@@ -1126,9 +1126,20 @@ async fn recalculate_epic_status_terminates_on_cycle() {
     })
     .await
     .unwrap();
-    // Must return without stack overflow
-    let result = db.recalculate_epic_status(a.id).await;
-    assert!(result.is_ok());
+    // Must return without spinning. The timeout is the actual assertion: a
+    // regressed cycle guard makes `recalculate_epic_status` loop forever, and a
+    // bare `.await` would hang the test (or, on stack overflow, abort the whole
+    // test binary and take every other test with it) instead of failing.
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        db.recalculate_epic_status(a.id),
+    )
+    .await
+    .expect("recalculate_epic_status must terminate on an epic cycle, not spin");
+    assert!(
+        result.is_ok(),
+        "expected Ok on a cyclic epic graph, got {result:?}"
+    );
 }
 
 #[tokio::test]
@@ -1200,5 +1211,57 @@ async fn get_epic_errors_on_corrupt_auto_dispatch_type() {
         result.is_err(),
         "expected Err when auto_dispatch holds a non-boolean value, got {:?}",
         result
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Decode-failure policy (docs/conventions.md): bulk epic reads skip
+// undecodable rows; `get_epic` fails loudly.
+// ---------------------------------------------------------------------------
+
+/// Plant an epic row with an unrecognised `status` alongside a healthy one.
+async fn db_with_undecodable_epic_row() -> (Database, EpicId) {
+    let db = in_memory_db().await;
+    let good = db.create_epic("healthy", "", None).await.unwrap();
+    write_corrupt_row(
+        &db,
+        "INSERT INTO epics (id, title, description, status, created_at, updated_at)
+         VALUES (9101, 'corrupt', '', 'not_a_status',
+                 '2026-01-01 00:00:00', '2026-01-01 00:00:00');",
+    )
+    .await;
+    (db, good.id)
+}
+
+#[tokio::test]
+async fn list_epics_skips_row_with_unrecognised_status() {
+    let (db, good_id) = db_with_undecodable_epic_row().await;
+    let epics = db
+        .list_epics()
+        .await
+        .expect("one undecodable epic row must not fail the whole load");
+    assert_eq!(
+        epics.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![good_id]
+    );
+}
+
+#[tokio::test]
+async fn list_root_epics_skips_row_with_unrecognised_status() {
+    let (db, good_id) = db_with_undecodable_epic_row().await;
+    let epics = db.list_root_epics().await.unwrap();
+    assert_eq!(
+        epics.iter().map(|e| e.id).collect::<Vec<_>>(),
+        vec![good_id]
+    );
+}
+
+#[tokio::test]
+async fn get_epic_errors_on_unrecognised_status() {
+    let (db, _) = db_with_undecodable_epic_row().await;
+    let result = db.get_epic(EpicId(9101)).await;
+    assert!(
+        result.is_err(),
+        "a single-entity read must fail loudly, got {result:?}"
     );
 }

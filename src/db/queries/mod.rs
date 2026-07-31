@@ -37,6 +37,74 @@ pub(super) fn unknown_enum(field: &'static str, raw: &str) -> rusqlite::Error {
     )
 }
 
+/// Process-wide count of decode soft-fails: defaulted enum values plus rows
+/// skipped by [`collect_decodable`]. See [`decode_fallback_count`].
+static DECODE_FALLBACKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Bump the decode-fallback counter and return the new total, so callers can
+/// include `count=N` in their `tracing::warn!`. Call this from every soft-fail
+/// branch — see the soft-fail-decoding section of `docs/conventions.md`.
+///
+/// Call it on its own line, **not** inline as a `tracing::warn!` field value:
+/// the macro skips evaluating its field expressions when no subscriber has the
+/// event enabled, so an inline bump would silently stop counting in every
+/// process without a subscriber (most one-shot CLI subcommands, and the test
+/// suite).
+pub(super) fn bump_decode_fallback() -> u64 {
+    DECODE_FALLBACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1
+}
+
+/// Total decode soft-fails since process start. Monotonic and never reset, so
+/// tests assert on *deltas* rather than absolute values (the suite shares one
+/// process).
+pub(super) fn decode_fallback_count() -> u64 {
+    DECODE_FALLBACKS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// True for errors meaning "this row's *contents* could not be decoded", as
+/// opposed to "the query itself failed". Only the former are skippable by
+/// [`collect_decodable`]: skipping a `SqliteFailure` (I/O error, interrupt)
+/// would silently truncate an otherwise-healthy result set, and skipping an
+/// `InvalidColumnName`/`InvalidColumnIndex` would hide a programmer error in
+/// the SELECT column list.
+fn is_row_decode_error(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::Utf8Error(..)
+    )
+}
+
+/// Collect a `query_map` iterator under the **bulk-read** half of the
+/// decode-failure policy: a row that fails to decode is skipped with a
+/// `tracing::warn!` (and counted via [`bump_decode_fallback`]) so one corrupt
+/// row degrades the board instead of blanking it. Errors that are not row
+/// decode failures still propagate.
+///
+/// Single-entity reads (`get_task`, `get_epic`, `find_task_by_plan`) must
+/// **not** use this — the caller asked for that specific row, so a decode
+/// failure there is reported, not swallowed. See the decode-failure-policy
+/// section of `docs/conventions.md`.
+pub(super) fn collect_decodable<T>(
+    rows: impl Iterator<Item = rusqlite::Result<T>>,
+    what: &str,
+) -> rusqlite::Result<Vec<T>> {
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            Ok(value) => out.push(value),
+            Err(e) if is_row_decode_error(&e) => {
+                let count = bump_decode_fallback();
+                tracing::warn!(count, error = %e, "skipping undecodable {what} row");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
+}
+
 /// Column list shared by all task SELECT queries. Pair with `row_to_task`.
 pub(super) const TASK_COLUMNS: &str =
     "id, title, description, repo_path, status, worktree, tmux_window, \
@@ -61,8 +129,9 @@ fn read_task_url(row: &rusqlite::Row<'_>) -> rusqlite::Result<Option<crate::mode
         (Some(u), Some(t)) => Ok(Some(crate::models::TaskUrl::new(u, t))),
         (None, None) => Ok(None),
         // A url without a url_type (or vice versa) is a corrupted row the
-        // application can never produce, so surface it loudly rather than
-        // silently coercing to None.
+        // application can never produce, so fail the row rather than silently
+        // coercing to None. Single-entity reads report that error; bulk reads
+        // skip the row via `collect_decodable`.
         (u, t) => Err(unknown_enum(
             "url/url_type",
             &format!("inconsistent url={u:?} url_type={t:?}"),
@@ -157,7 +226,12 @@ fn parse_sub_status(raw: &str) -> rusqlite::Result<SubStatus> {
 /// row. See the soft-fail-decoding section of docs/conventions.md.
 fn parse_feed_role(raw: &str) -> FeedRole {
     FeedRole::parse(raw).unwrap_or_else(|| {
-        tracing::warn!(value = %raw, "unknown epics.feed_role value; defaulting to none");
+        let count = bump_decode_fallback();
+        tracing::warn!(
+            count,
+            value = %raw,
+            "unknown epics.feed_role value; defaulting to none"
+        );
         FeedRole::None
     })
 }
@@ -167,7 +241,12 @@ fn parse_feed_role(raw: &str) -> FeedRole {
 /// row. See the soft-fail-decoding section of docs/conventions.md.
 fn parse_epic_origin(raw: &str) -> crate::models::EpicOrigin {
     crate::models::EpicOrigin::parse(raw).unwrap_or_else(|| {
-        tracing::warn!(value = %raw, "unknown epics.origin value; defaulting to manual");
+        let count = bump_decode_fallback();
+        tracing::warn!(
+            count,
+            value = %raw,
+            "unknown epics.origin value; defaulting to manual"
+        );
         crate::models::EpicOrigin::Manual
     })
 }
@@ -267,4 +346,53 @@ pub(super) fn save_tips_state(
         anyhow::bail!("save_tips_state: expected 1 row updated, got {rows}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    fn sqlite_failure() -> rusqlite::Error {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+            Some("disk I/O error".to_string()),
+        )
+    }
+
+    #[test]
+    fn collect_decodable_skips_decode_failures() {
+        let rows = vec![Ok(1), Err(unknown_enum("task_status", "bogus")), Ok(3)];
+        let before = decode_fallback_count();
+        let collected = collect_decodable(rows.into_iter(), "tasks").unwrap();
+        assert_eq!(collected, vec![1, 3]);
+        // `>=`, not `==`: the counter is process-wide and tests run in
+        // parallel, so a concurrent test's skip can land between the two reads.
+        assert!(
+            decode_fallback_count() > before,
+            "a skipped row must bump the decode-fallback counter"
+        );
+    }
+
+    #[test]
+    fn collect_decodable_propagates_non_decode_errors() {
+        // A failing `step()` (I/O error, interrupt) must not be mistaken for a
+        // corrupt row — skipping it would silently truncate the result set.
+        let rows: Vec<rusqlite::Result<i32>> = vec![Ok(1), Err(sqlite_failure())];
+        let err = collect_decodable(rows.into_iter(), "tasks")
+            .expect_err("a SqliteFailure must propagate, not be skipped");
+        assert!(
+            matches!(err, rusqlite::Error::SqliteFailure(..)),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn collect_decodable_propagates_column_mistakes() {
+        // An `InvalidColumnName` means the SELECT list and the decoder
+        // disagree — a programmer error, not row corruption.
+        let rows: Vec<rusqlite::Result<i32>> =
+            vec![Err(rusqlite::Error::InvalidColumnName("nope".to_string()))];
+        assert!(collect_decodable(rows.into_iter(), "tasks").is_err());
+    }
 }

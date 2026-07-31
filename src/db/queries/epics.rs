@@ -9,7 +9,7 @@ use crate::set_field;
 use crate::models::{sort_order_for_status_transition, EpicId, TaskId, TaskStatus};
 
 use super::super::{Database, EpicPatch};
-use super::{row_to_epic, row_to_task, EPIC_COLUMNS, TASK_COLUMNS};
+use super::{collect_decodable, row_to_epic, row_to_task, EPIC_COLUMNS, TASK_COLUMNS};
 
 #[async_trait::async_trait]
 impl super::super::EpicRead for Database {
@@ -24,11 +24,10 @@ impl super::super::EpicRead for Database {
                     "SELECT {EPIC_COLUMNS} FROM epics ORDER BY COALESCE(sort_order, id) ASC, id ASC"
                 ))
                 .context("Failed to prepare list_epics")?;
-            let epics = stmt
+            let rows = stmt
                 .query_map([], row_to_epic)
-                .context("Failed to query epics")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to collect epics")?;
+                .context("Failed to query epics")?;
+            let epics = collect_decodable(rows, "epics").context("Failed to collect epics")?;
             Ok(epics)
         })
         .await
@@ -42,11 +41,10 @@ impl super::super::EpicRead for Database {
                      ORDER BY COALESCE(sort_order, id) ASC, id ASC"
                 ))
                 .context("Failed to prepare list_root_epics")?;
-            let epics = stmt
+            let rows = stmt
                 .query_map([], row_to_epic)
-                .context("Failed to query root epics")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to collect root epics")?;
+                .context("Failed to query root epics")?;
+            let epics = collect_decodable(rows, "epics").context("Failed to collect root epics")?;
             Ok(epics)
         })
         .await
@@ -60,11 +58,10 @@ impl super::super::EpicRead for Database {
                      ORDER BY COALESCE(sort_order, id) ASC, id ASC"
                 ))
                 .context("Failed to prepare list_sub_epics")?;
-            let epics = stmt
+            let rows = stmt
                 .query_map(params![parent_id.0], row_to_epic)
-                .context("Failed to query sub-epics")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to collect sub-epics")?;
+                .context("Failed to query sub-epics")?;
+            let epics = collect_decodable(rows, "epics").context("Failed to collect sub-epics")?;
             Ok(epics)
         })
         .await
@@ -77,11 +74,11 @@ impl super::super::EpicRead for Database {
                     &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE epic_id = ?1 ORDER BY COALESCE(sort_order, id) ASC, id ASC"),
                 )
                 .context("Failed to prepare list_tasks_for_epic")?;
-            let tasks = stmt
+            let rows = stmt
                 .query_map(params![epic_id.0], row_to_task)
-                .context("Failed to query tasks for epic")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to collect tasks for epic")?;
+                .context("Failed to query tasks for epic")?;
+            let tasks =
+                collect_decodable(rows, "tasks").context("Failed to collect tasks for epic")?;
             Ok(tasks)
         })
         .await
@@ -94,11 +91,11 @@ impl super::super::EpicRead for Database {
                     "SELECT {TASK_COLUMNS} FROM tasks WHERE epic_id IS NOT NULL ORDER BY epic_id ASC, COALESCE(sort_order, id) ASC, id ASC"
                 ))
                 .context("Failed to prepare list_all_tasks_with_epic_id")?;
-            let tasks = stmt
+            let rows = stmt
                 .query_map([], row_to_task)
-                .context("Failed to query tasks with epic_id")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to collect tasks with epic_id")?;
+                .context("Failed to query tasks with epic_id")?;
+            let tasks =
+                collect_decodable(rows, "tasks").context("Failed to collect tasks with epic_id")?;
             Ok(tasks)
         })
         .await

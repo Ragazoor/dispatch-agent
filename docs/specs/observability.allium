@@ -1,14 +1,19 @@
 -- allium: 3
 -- observability.allium
 --
--- Scope: Observability — per-task audit log of MCP tool calls, plus
---        slow-DB-call latency warnings.
+-- Scope: Observability — per-task audit log of MCP tool calls, slow-DB-call
+--        latency warnings, and the decode-failure policy for rows read back
+--        from the database.
 -- Includes: TrajectoryEntry value type, append-on-each-MCP-call rule,
 --           fire-and-forget error handling;
 --           SlowDbCallWarning value type and the DbCallSlowWarning rule that
 --           emits a warn-level log line when a DB call exceeds the configured
 --           latency threshold, on either dispatch path (the single writer
---           connection or a read-only pool connection).
+--           connection or a read-only pool connection);
+--           DecodeFallbackWarning value type and the three rules deciding what
+--           an undecodable row costs: bulk reads skip it and warn, single-entity
+--           reads fail, and errors that are not row-decode failures always
+--           propagate.
 -- Excludes: tmux pane capture, Claude lifecycle hooks (PreToolUse, Stop —
 --           see agent-health.allium), dispatch-internal commands, reader UIs,
 --           replay tooling.
@@ -63,6 +68,20 @@ value SlowDbCallWarning {
                            -- caller, formatted as "file.rs:line:column"
                            -- (std::panic::Location's Display, which includes
                            -- the column)
+}
+
+-- A single warn-level log record emitted when a row read back from the
+-- database cannot be decoded into its domain type, or when an unknown enum
+-- value is defaulted rather than failing the row. Like SlowDbCallWarning this
+-- is a tracing event, not a persisted entity: no identity, no lifecycle. Its
+-- durable capture depends on the running process having a subscriber
+-- configured (same scope boundary as DbCallSlowWarning).
+value DecodeFallbackWarning {
+    entity_kind: String   -- which collection the row came from, e.g. "tasks"
+    reason:      String   -- the decode failure, verbatim
+    count:       Integer  -- running total of decode fallbacks in this process,
+                          -- monotonic from process start and never reset, so
+                          -- readers compare deltas rather than absolutes
 }
 
 ------------------------------------------------------------
@@ -238,6 +257,80 @@ rule DbCallSlowWarning {
         --
         -- No new metric, counter, doctor check, or queryable surface: the log
         -- line in the existing app.log is the complete deliverable.
+}
+
+-- == Decode-failure policy ==
+
+rule BulkReadSkipsUndecodableRow {
+    -- A read that answers "all the tasks/epics matching X" must stay useful
+    -- when one stored row cannot be decoded. The offending row is omitted from
+    -- the result, every other row is returned, and the omission is warned.
+    -- Blanking the whole board because one row is corrupt is not an acceptable
+    -- failure mode: the corrupt row is one card, the board is the product.
+    when: BulkRowDecodeFailed(entity_kind, reason, fallback_total)
+
+    ensures:
+        RowOmittedFromBulkResult(entity_kind: entity_kind)
+        DecodeFallbackLogged(
+            warning: DecodeFallbackWarning {
+                entity_kind: entity_kind,
+                reason: reason,
+                count: fallback_total
+            }
+        )
+
+    @guidance
+        -- "Bulk read" means any read whose contract is a collection: the task
+        -- board load, the per-status column loads, the epic lists, and the
+        -- per-epic task lists. Skipping is applied once, at the point the row
+        -- iterator is collected, rather than in each field decoder — so a row
+        -- that fails for any reason (unknown status, unknown sub-status, an
+        -- unparseable timestamp, an inconsistent url/url_type pair) is handled
+        -- identically.
+        -- fallback_total is the value of the process-wide counter *after* this
+        -- fallback, exposed for tests and ad-hoc debugging so a slow bleed of
+        -- skipped rows is detectable without chasing log lines. It is bumped
+        -- eagerly, before the warn event is constructed: a counter incremented
+        -- as a log field value would stop counting entirely in processes with
+        -- no tracing subscriber.
+        -- The same counter covers field-level fallbacks (an unknown feed_role
+        -- or epic origin defaulting rather than failing its row), so the total
+        -- reads as "decode surprises seen", not "rows dropped".
+}
+
+rule SingleEntityReadFailsOnUndecodableRow {
+    -- A read that names one specific row reports the decode failure instead of
+    -- answering "not found". The caller asked for that row: pretending it does
+    -- not exist would turn a corrupt row into a silent absence, and would
+    -- remove the only remaining way to diagnose a row the bulk reads have
+    -- stopped surfacing.
+    when: SingleRowDecodeFailed(reason)
+
+    ensures: ReadFailed(reason: reason)
+
+    @guidance
+        -- Covers reads keyed to one row: fetching a task or epic by id, and
+        -- finding the task owning a given plan path. Deliberately asymmetric
+        -- with BulkReadSkipsUndecodableRow — the two rules answer different
+        -- questions, so they earn different failure modes.
+}
+
+rule QueryFailurePropagatesFromBulkRead {
+    -- Only row-content failures are skippable. An error raised by the query
+    -- itself — I/O failure, interrupt, or a mismatch between the selected
+    -- columns and the decoder — fails the whole read.
+    when: BulkQueryFailed(reason)
+
+    ensures: ReadFailed(reason: reason)
+
+    @guidance
+        -- The distinction matters because the two error classes look alike at
+        -- the row iterator: both arrive as a failed row. Treating a mid-iteration
+        -- I/O error as one bad row would silently truncate an otherwise healthy
+        -- result set — the caller would see a short list and no error, which is
+        -- strictly worse than the blank board this policy exists to prevent.
+        -- A column-name mismatch is likewise a code defect, not data corruption,
+        -- and must not be absorbed into a warn line.
 }
 
 ------------------------------------------------------------

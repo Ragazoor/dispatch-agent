@@ -138,6 +138,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (77, migrate_v77_add_auto_run_plan),
     (78, migrate_v78_create_task_watchers),
     (79, migrate_v79_backfill_done_sort_order),
+    (80, migrate_v80_drop_agent_status),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1140,6 +1141,37 @@ pub(super) fn migrate_v79_backfill_done_sort_order(conn: &Connection) -> Result<
         tracing::info!("Migration v79: backfilled sort_order for {epics_updated} Done epic(s)");
     }
 
+    Ok(())
+}
+
+/// Drop the orphaned `agent_status` column added by v27 (`review_prs`,
+/// `bot_prs`, `security_alerts`) and v28 (`my_prs`). It was residue of the
+/// removed `ReviewAgentStatus` feature — no production code has read or
+/// written it since. v27/v28 stay untouched: this registry is append-only
+/// (see the module header) and both have already run against real databases.
+///
+/// Tolerant of a missing table as well as a missing column: which of these
+/// tables a given database has depends on how far its migration history got,
+/// and `column_exists` on an absent table simply returns false. `tasks` is in
+/// the list for the same reason — no registered migration adds `agent_status`
+/// there, but the pre-v42 schema replica in `src/db/tests/migrations.rs` shows
+/// early hand-built databases carried it, and the guard makes covering that a
+/// free no-op everywhere else.
+pub(super) fn migrate_v80_drop_agent_status(conn: &Connection) -> Result<()> {
+    for table in &[
+        "review_prs",
+        "bot_prs",
+        "security_alerts",
+        "my_prs",
+        "tasks",
+    ] {
+        if column_exists(conn, table, "agent_status") {
+            conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN agent_status"))
+                .with_context(|| {
+                    format!("Failed to drop agent_status from {table} (migration v80)")
+                })?;
+        }
+    }
     Ok(())
 }
 
