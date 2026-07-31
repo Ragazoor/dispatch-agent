@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Verify every `src/…` and `docs/…` path mentioned in our agent-facing docs
 # actually exists, and that every `file:NN` line citation is in range. By
-# default scans CLAUDE.md plus the topic files under docs/ that CLAUDE.md
-# points at. Pass an explicit path to scan a single file instead.
+# default scans CLAUDE.md plus every docs/*.md and docs/specs/*.allium. The
+# globs are deliberately non-recursive, which excludes docs/plans/,
+# docs/superpowers/, and docs/research/ — those are dated artifacts, so a
+# reference that has since gone stale is expected, not a defect. Pass an
+# explicit path to scan a single file instead.
 #
 # What is validated, per reference:
 #   - plain paths (`src/db/mod.rs`, `docs/conventions.md`, `docs/specs/x.allium`)
@@ -18,15 +21,13 @@ set -euo pipefail
 if [[ $# -gt 0 ]]; then
     DOCS=("$@")
 else
-    DOCS=(
-        CLAUDE.md
-        docs/architecture.md
-        docs/conventions.md
-        docs/module-map.md
-        docs/how-to.md
-        docs/mcp.md
-        docs/reference.md
-    )
+    # Globbed, not hand-listed: a doc added under docs/ is covered the moment it
+    # lands, with nothing to remember. nullglob so an empty match expands to
+    # nothing rather than to a literal `docs/*.md` that then "does not exist".
+    DOCS=(CLAUDE.md)
+    shopt -s nullglob
+    DOCS+=(docs/*.md docs/specs/*.allium)
+    shopt -u nullglob
 fi
 
 # A path-ish token under src/ or docs/, ending in a known extension or a
