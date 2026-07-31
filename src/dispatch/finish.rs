@@ -1,4 +1,4 @@
-use crate::git::{parse_porcelain_files, parse_unmerged_files};
+use crate::git::parse_unmerged_files;
 use crate::models::expand_tilde;
 use crate::process::ProcessRunner;
 
@@ -86,13 +86,8 @@ pub fn finish_task(
     let worktree = &expand_tilde(worktree);
 
     // 1. Verify we're on the base branch
-    let output = runner
-        .run(
-            "git",
-            &["-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
-        )
-        .map_err(|e| FinishError::Other(format!("Failed to check current branch: {e}")))?;
-    let current_branch = stdout_str(&output);
+    let current_branch =
+        crate::git::current_branch(repo_path, runner).map_err(FinishError::Other)?;
     if current_branch != base_branch {
         return Err(FinishError::NotOnDefaultBranch {
             current: current_branch,
@@ -101,10 +96,7 @@ pub fn finish_task(
     }
 
     // 2. Check the primary worktree (repo root) is clean before touching it.
-    let output = runner
-        .run("git", &["-C", repo_path, "status", "--porcelain"])
-        .map_err(|e| FinishError::Other(format!("Failed to check working tree status: {e}")))?;
-    let dirty_files = parse_porcelain_files(&output);
+    let dirty_files = crate::git::dirty_files(repo_path, runner).map_err(FinishError::Other)?;
     if !dirty_files.is_empty() {
         return Err(FinishError::DirtyPrimaryWorktree {
             path: repo_path.to_string(),
@@ -113,10 +105,7 @@ pub fn finish_task(
     }
 
     // 3. Pull latest base branch (skip if no remote configured)
-    let has_remote = runner
-        .run("git", &["-C", repo_path, "remote", "get-url", "origin"])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let has_remote = crate::git::has_origin_remote(repo_path, runner);
 
     if has_remote {
         let output = runner

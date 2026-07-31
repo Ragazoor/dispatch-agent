@@ -507,14 +507,27 @@ async fn cmd_repo_status(database: &db::Database, no_fetch: bool) -> Result<()> 
         println!("No repo paths configured.");
         return Ok(());
     }
-    let runner = dispatch_tui::process::RealProcessRunner;
+    // Every repo is measured concurrently: with a fetch this is a network
+    // round-trip each, so N repos sequentially would cost N latencies for work
+    // that has no ordering between repositories. Mirrors the board's startup
+    // fan-out (`exec_refresh_all_repo_sync`). Handles are spawned up front and
+    // awaited in `paths` order, so the table stays deterministic regardless of
+    // which repository answers first.
+    let handles: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            let expanded = expand_tilde(path);
+            tokio::task::spawn_blocking(move || {
+                let runner = dispatch_tui::process::RealProcessRunner;
+                dispatch_tui::repo_sync::measure_repo(&expanded, !no_fetch, &runner)
+            })
+        })
+        .collect();
+
     let mut cache = dispatch_tui::repo_sync::RepoSyncCache::default();
-    for path in &paths {
+    for (path, handle) in paths.iter().zip(handles) {
         let expanded = expand_tilde(path);
-        let measurement = tokio::task::block_in_place(|| {
-            dispatch_tui::repo_sync::measure_repo(&expanded, !no_fetch, &runner)
-        });
-        cache.apply(measurement);
+        cache.apply(handle.await?);
         // `measure_repo` keys the state by the path it was handed.
         let Some(state) = cache.get(&expanded) else {
             continue;

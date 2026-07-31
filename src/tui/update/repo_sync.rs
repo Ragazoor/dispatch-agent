@@ -15,8 +15,9 @@ impl App {
     /// task, or `None` when the cursor is not on a task (an epic row names no
     /// repository) or that repository has never been refreshed.
     pub(in crate::tui) fn selected_repo_sync_state(&self) -> Option<&RepoSyncState> {
-        let repo_path = self.selected_task()?.repo_path.clone();
-        self.repo_sync.get(&repo_path)
+        // `get` borrows the key as `&str`, so no clone is needed — this runs on
+        // the status-bar render path, i.e. every tick and every keypress.
+        self.repo_sync.get(self.selected_task()?.repo_path.as_str())
     }
 
     /// Fold one refresh observation into the per-repo cache (rule

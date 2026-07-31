@@ -202,20 +202,13 @@ pub fn sync_repo(
 
     // 1. An origin remote must exist. Both a spawn failure and a non-zero exit
     //    mean the same thing here: nothing to sync against.
-    let has_remote = runner
-        .run("git", &["-C", &repo, "remote", "get-url", "origin"])
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if !has_remote {
+    if !crate::git::has_origin_remote(&repo, runner) {
         return Err(SyncError::NoRemote);
     }
 
     // 2. The checkout must be on the base branch — the merge and the push both
     //    act on whatever is checked out.
-    let output = runner
-        .run("git", &["-C", &repo, "rev-parse", "--abbrev-ref", "HEAD"])
-        .map_err(|e| SyncError::Other(format!("Failed to check current branch: {e}")))?;
-    let current = stdout_str(&output);
+    let current = crate::git::current_branch(&repo, runner).map_err(SyncError::Other)?;
     if current != base_branch {
         return Err(SyncError::NotOnBaseBranch {
             current,
@@ -224,10 +217,7 @@ pub fn sync_repo(
     }
 
     // 3. The checkout must be clean — merging into a dirty tree loses work.
-    let output = runner
-        .run("git", &["-C", &repo, "status", "--porcelain"])
-        .map_err(|e| SyncError::Other(format!("Failed to check working tree status: {e}")))?;
-    let dirty = crate::git::parse_porcelain_files(&output);
+    let dirty = crate::git::dirty_files(&repo, runner).map_err(SyncError::Other)?;
     if !dirty.is_empty() {
         return Err(SyncError::DirtyPrimaryWorktree {
             path: repo.clone(),

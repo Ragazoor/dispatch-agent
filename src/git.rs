@@ -24,6 +24,56 @@ pub fn detect_default_branch(repo_path: &str, runner: &dyn ProcessRunner) -> Str
     "main".to_string()
 }
 
+/// Whether the repo has an `origin` remote configured.
+///
+/// A spawn failure and a non-zero exit are treated alike — neither yields a
+/// usable remote — so callers get one boolean rather than a nested result.
+/// Callers decide what absence *means*: [`crate::dispatch::finish::finish_task`]
+/// skips its pull, while [`crate::repo_sync::sync_repo`] refuses outright.
+pub(crate) fn has_origin_remote(repo_path: &str, runner: &dyn ProcessRunner) -> bool {
+    runner
+        .run("git", &["-C", repo_path, "remote", "get-url", "origin"])
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// The repo's currently checked-out branch name.
+///
+/// One of the three preflight reads shared by the rebase path
+/// ([`crate::dispatch::finish::finish_task`]) and the repo-sync path
+/// ([`crate::repo_sync::sync_repo`]). Both need to know they are on the base
+/// branch before writing, because rebase, merge and push all act on whatever is
+/// checked out. Returns the branch rather than a yes/no so each caller can name
+/// the actual branch in its own error variant.
+pub(crate) fn current_branch(
+    repo_path: &str,
+    runner: &dyn ProcessRunner,
+) -> std::result::Result<String, String> {
+    runner
+        .run(
+            "git",
+            &["-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
+        )
+        .map(|output| crate::process::stdout_str(&output))
+        .map_err(|e| format!("Failed to check current branch: {e}"))
+}
+
+/// Every dirty or untracked path in the repo's working tree, empty when clean.
+///
+/// The second shared preflight read: both the rebase and the repo-sync path
+/// refuse to touch a dirty checkout, because rebasing or merging into one is
+/// how work gets lost. Returns the paths so each caller can list them in its
+/// own error variant.
+pub(crate) fn dirty_files(
+    repo_path: &str,
+    runner: &dyn ProcessRunner,
+) -> std::result::Result<Vec<String>, String> {
+    runner
+        .run("git", &["-C", repo_path, "status", "--porcelain"])
+        .map(|output| parse_porcelain_files(&output))
+        .map_err(|e| format!("Failed to check working tree status: {e}"))
+}
+
 /// Splits every `git status --porcelain` line into its two-character status
 /// code and the path that follows (after the status code and its separating
 /// space). Operates on the raw `Output` rather than a pre-trimmed string:
