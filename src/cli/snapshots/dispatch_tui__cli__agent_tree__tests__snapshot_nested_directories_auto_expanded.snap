@@ -4,8 +4,8 @@ expression: rendered
 ---
 ┌ dispatch ──────────────────────────────────────┐
 │▼ a                                             │
-│  ▶ b                                           │
-│                                                │
+│  ▼ b                                           │
+│      c.rs [Modified]                           │
 │                                                │
 │                                                │
 │                                                │

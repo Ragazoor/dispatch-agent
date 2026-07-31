@@ -58,18 +58,17 @@ fn node_label(node: &TreeNode) -> Line<'static> {
 
 fn node_to_item(node: &TreeNode, path: &mut Vec<String>) -> Option<TreeItem<'static, String>> {
     path.push(node.name.clone());
-    let id = path.join("/");
     let label = node_label(node);
     let item = match node.kind {
-        TreeNodeKind::File => Some(TreeItem::new_leaf(id, label)),
+        TreeNodeKind::File => Some(TreeItem::new_leaf(node.name.clone(), label)),
         TreeNodeKind::Directory => {
             let children = to_items(&node.children, path);
-            match TreeItem::new(id.clone(), label, children) {
+            match TreeItem::new(node.name.clone(), label, children) {
                 Ok(item) => Some(item),
                 Err(e) => {
                     tracing::warn!(
                         error = ?e,
-                        id,
+                        path = path.join("/"),
                         "skipping agent-tree node with duplicate child identifiers"
                     );
                     None
@@ -90,9 +89,15 @@ fn to_items(children: &[TreeNode], path: &mut Vec<String>) -> Vec<TreeItem<'stat
 
 /// Convert subtask 3's touched-paths tree into `tui_tree_widget` items.
 /// The root node itself is not rendered as a wrapping item — its children
-/// become the top-level list, like a normal file browser. Uses the same
-/// `Vec<String>` path representation `RenderState::sync_expansion` walks
-/// with, joined into a `/`-separated identifier per node.
+/// become the top-level list, like a normal file browser.
+///
+/// A node is identified by its own name segment, which is all the widget
+/// requires (identifiers must be unique among siblings only — it already
+/// scopes lookups by the chain of ancestor identifiers). That makes a
+/// node's widget key and its path segments the same `Vec<String>`, which is
+/// exactly what `RenderState::sync_expansion` walks with. The `path`
+/// accumulator survives only to give the duplicate-identifier warning
+/// somewhere useful to point.
 pub fn build_tree_items(root: &TreeNode) -> Vec<TreeItem<'static, String>> {
     to_items(&root.children, &mut Vec::new())
 }
@@ -123,10 +128,12 @@ impl RenderState {
     /// Auto-open every directory with a touched descendant, exactly once
     /// per directory — see the struct doc comment on monotonicity.
     pub fn sync_expansion(&mut self, root: &TreeNode) {
-        let mut path = Vec::new();
-        self.sync_expansion_at(&root.children, &mut path);
+        self.sync_expansion_at(&root.children, &mut Vec::new());
     }
 
+    /// `path` doubles as the widget's open-set key: it looks a node up by
+    /// the chain of its ancestors' identifiers, and `node_to_item`
+    /// identifies each node by its own name segment, so the two coincide.
     fn sync_expansion_at(&mut self, children: &[TreeNode], path: &mut Vec<String>) {
         for child in children {
             if child.kind != TreeNodeKind::Directory {
@@ -347,16 +354,20 @@ mod tests {
         assert_eq!(items[0].children().len(), 1);
     }
 
+    /// Each node is identified by its own name segment — the widget scopes
+    /// lookups by ancestor chain, so sibling-uniqueness is all it needs.
+    /// Keeping it a bare segment is what makes a node's widget key and its
+    /// path segments the same vector (see `sync_expansion_at`).
     #[test]
-    fn nested_file_identifier_is_slash_joined_path() {
+    fn node_identifier_is_its_own_name_segment() {
         let tree = build_tree(&root(), &event("/repo/a/b/c.rs", "read"));
         let items = build_tree_items(&tree);
         let a = &items[0];
         assert_eq!(a.identifier(), "a");
         let b = &a.children()[0];
-        assert_eq!(b.identifier(), "a/b");
+        assert_eq!(b.identifier(), "b");
         let c = &b.children()[0];
-        assert_eq!(c.identifier(), "a/b/c.rs");
+        assert_eq!(c.identifier(), "c.rs");
     }
 
     #[test]
@@ -426,11 +437,9 @@ mod tests {
         let tree = build_tree(&root(), &event("/repo/a/b/c.rs", "read"));
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
-        assert!(state.tree_state.opened().contains(&vec!["a".to_string()]));
-        assert!(state
-            .tree_state
-            .opened()
-            .contains(&vec!["a".to_string(), "b".to_string()]));
+        let opened = state.tree_state.opened();
+        assert!(opened.contains(&vec!["a".to_string()]));
+        assert!(opened.contains(&vec!["a".to_string(), "b".to_string()]));
     }
 
     use ratatui::backend::TestBackend;
@@ -484,5 +493,39 @@ mod tests {
         let jsonl = event("/repo/a/b/c.rs", "modified");
         let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
         insta::assert_snapshot!(rendered);
+    }
+
+    /// The only form that exercises the widget's own open-set lookup, and
+    /// so the only one that can catch a key-representation mismatch: an
+    /// assertion over `opened()` can encode a key that matches no node and
+    /// still pass, because `TreeState::open` reports success on it (#3811).
+    /// Every directory on the way to a touched file is expanded, so the
+    /// leaf is on screen with no keypresses.
+    #[test]
+    fn deeply_nested_touched_file_is_visible_without_manual_expansion() {
+        let jsonl = event("/repo/a/b/c/d/leaf.rs", "modified");
+        let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
+        assert!(
+            rendered.contains("leaf.rs"),
+            "the leaf must be visible unaided; rendered:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains('▶'),
+            "no directory may render collapsed; rendered:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn manually_collapsed_nested_directory_stays_collapsed_on_refresh() {
+        let jsonl = event("/repo/a/b/c.rs", "read");
+        let tree = build_tree(&root(), &jsonl);
+        let mut state = RenderState::new();
+        state.sync_expansion(&tree);
+
+        let nested = vec!["a".to_string(), "b".to_string()];
+        assert!(state.tree_state.close(&nested));
+
+        state.sync_expansion(&build_tree(&root(), &jsonl));
+        assert!(!state.tree_state.opened().contains(&nested));
     }
 }

@@ -649,6 +649,15 @@ rule RefreshAgentTree {
         -- The renderer is a small standalone ratatui loop reusing the existing
         -- tree widget dependency; it is not part of the board's App and shares
         -- none of its state.
+        --
+        -- == Auto-expansion must be verified by RENDERING ==
+        -- The EXPANSION clause above has to be covered by rendering a deeply
+        -- nested touched path and asserting the LEAF is on screen — not by
+        -- inspecting the tree widget's open-set. Asking the widget to open a
+        -- directory reports success even when the key identifies no node, so
+        -- an open-set assertion can encode the wrong key and pass while every
+        -- nested directory renders collapsed. That was the shipped behaviour
+        -- until #3811, under a green open-set test.
 }
 
 -- == Companion Pane Input ==
