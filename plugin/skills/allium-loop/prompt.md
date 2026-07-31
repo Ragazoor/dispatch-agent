@@ -35,6 +35,11 @@ resolving silently.
   Read/Glob/Grep access to the whole directory and its own mandate to push back on ambiguity.
 - On later iterations, only re-invoke `allium:tend` if this run's work reveals a spec error (a
   test or implementation detail that contradicts what the spec says).
+- Do NOT pass a `model` override to `allium:tend` (or to `allium:weed` in step 7). Both agents pin
+  a strong model in their own definitions, which wins over inheriting yours — so spec reasoning
+  keeps that model even though you were dispatched on a cheaper one. Adding an override "for
+  consistency" with your own model would downgrade the two judgement-heavy steps of this loop,
+  which is exactly what the cheaper iteration model is meant to avoid.
 - Determine which specs this run touched:
 
   ```bash
@@ -88,6 +93,8 @@ Use the Agent tool with `subagent_type: "allium:weed"` in check mode to compare 
 `docs/specs/` against the implementation in `src/` (weed already sweeps the whole directory — no
 target file needed here). Reconcile divergence: update the spec for undocumented behavior or
 spec bugs; for code bugs that contradict a correct spec, ask the user before fixing.
+
+As in step 2, do not pass a `model` override here — `allium:weed` pins its own.
 
 ### 8. Commit
 

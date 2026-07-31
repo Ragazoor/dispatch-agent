@@ -61,10 +61,19 @@ rebase/tend/implement/verify/weed work itself.
 5. **Resolve `max_iterations`**: if the user explicitly asked for a specific value when invoking
    the skill (e.g. "run allium-loop with max_iterations 20"), use it; otherwise default to `6`.
 
-6. **Read the prompt file** at
+6. **Resolve `model`** — the model each iteration agent runs on: if the user explicitly asked for
+   one when invoking the skill (e.g. "run allium-loop on opus"), use it; otherwise default to
+   `sonnet`. A run does up to `max_iterations` full iterations, so the iteration agent's model
+   multiplies across the whole loop; sonnet is the default because the iteration agent's own work
+   (rebase, `/propagate`, red check, implement, verify, commit) is mechanical. The judgement-heavy
+   spec steps are not affected — see the note in step 2 of the prompt file. Recording this as a
+   loop parameter is what lets a hard convergence opt back into a stronger model without editing
+   this skill.
+
+7. **Read the prompt file** at
    `~/.claude/plugins/local/dispatch/skills/allium-loop/prompt.md`.
 
-7. **Create the loop state file** directly at `.claude/allium-loop-state.local.md` using the
+8. **Create the loop state file** directly at `.claude/allium-loop-state.local.md` using the
    Write tool:
 
 ```markdown
@@ -77,25 +86,33 @@ consecutive_no_change_runs: 0
 design_doc: "DESIGN_DOC_PATH"
 base_branch: "BASE_BRANCH"
 verify_command: "VERIFY_COMMAND"
+model: "MODEL"
 started_at: "TIMESTAMP"
 ---
 ```
 
    Get the timestamp with `date -u +%Y-%m-%dT%H:%M:%SZ`.
 
-8. **Tell the user** the loop is active (naming the design doc, verify command, base branch, and
-   `max_iterations` — noting it can be raised by asking), then dispatch iteration 1 immediately
-   (see "Each Iteration" below).
+9. **Tell the user** the loop is active (naming the design doc, verify command, base branch,
+   `model`, and `max_iterations` — noting both can be changed by asking), then dispatch iteration 1
+   immediately (see "Each Iteration" below).
 
 ### Each Iteration
 
 1. Substitute `{{DESIGN_DOC}}`, `{{VERIFY_COMMAND}}`, `{{BASE_BRANCH}}`, and
-   `{{ITERATION_NUMBER}}` into the prompt content read in kickoff step 6. The iteration number is
+   `{{ITERATION_NUMBER}}` into the prompt content read in kickoff step 7. The iteration number is
    1-indexed and always derived from the state file as `runs_completed + 1` — so it is correct
    after a resume or a context compaction, not only on a clean run.
 
 2. Dispatch it: call the Agent tool with a **fresh subagent** (do not pass `subagent_type:
-   "fork"`) and this filled-in prompt as its task.
+   "fork"`), passing `model` set to the state file's `model` value (`sonnet` unless this run
+   resolved otherwise in kickoff step 6), and this filled-in prompt as its task.
+
+   The two rules reinforce each other: a `fork` ignores the `model` override entirely and runs on
+   the session model, so dispatching a fork would silently discard the pin — passing a fresh
+   subagent is what makes the model override take effect at all. Read `model` from the state file
+   rather than remembering it, for the same reason the iteration number is derived there: a resume
+   or a context compaction must not lose it.
 
 3. When that call's result arrives (a task-notification, per the Agent tool's async dispatch
    model — this may land in a different turn than the one that dispatched it):

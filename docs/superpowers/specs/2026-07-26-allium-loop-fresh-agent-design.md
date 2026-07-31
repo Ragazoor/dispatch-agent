@@ -59,6 +59,23 @@ be durable enough to survive the driver's own context being compacted in between
 an orphaned loop" below) — this is not optional hardening, it is required for correctness given
 the confirmed async model.
 
+Each dispatch also carries an explicit `model` (the state file's `model`, `sonnet` by default).
+This depends on the non-`fork` requirement above rather than merely coexisting with it: a `fork`
+ignores the `model` override entirely and runs on the session model, so the two rules are one
+mechanism — dispatching a fresh subagent is what makes the model pin take effect at all.
+
+### Nested spec agents keep their own model
+
+Each iteration spawns `allium:tend` (prompt step 2) and `allium:weed` (step 7). Those agent
+definitions live outside this repo and pin a strong model (Opus) in their own frontmatter, which
+wins over inheriting the spawning parent's — so the loop's two judgement-heavy steps keep that
+model even when the iteration agent itself runs on sonnet. The cost reduction therefore lands on
+the mechanical work only, and no override is needed to protect spec quality.
+
+`prompt.md` states this inline at both call sites, because the failure mode is a plausible-looking
+edit: a reader who pins the iteration agent and then adds a matching override "for consistency"
+would downgrade exactly the two steps the cheaper iteration model was chosen to leave alone.
+
 ### State file
 
 SKILL.md creates `.claude/allium-loop-state.local.md` (no relation to `ralph-loop.local.md`,
@@ -74,6 +91,7 @@ consecutive_no_change_runs: 0
 design_doc: "docs/superpowers/specs/2026-07-26-....md"
 base_branch: "main"
 verify_command: "cargo test && ./scripts/check-doc-paths.sh"
+model: "sonnet"
 started_at: "2026-07-26T12:00:00Z"
 ---
 ```
@@ -94,6 +112,13 @@ inspectable by the user), not read by any hook.
   give-up condition (`>= 2`). It exists because that stop condition must be evaluable from the
   state file alone — the driver cannot rely on remembering the *previous* run's summary across a
   context compaction.
+- `model`: the model each iteration agent is dispatched on, defaulting to `sonnet`. It is a
+  recorded loop parameter rather than a constant in the skill for two reasons: the driver must read
+  it back after a compaction (same reason as the counters above), and a hard convergence can then
+  opt back into a stronger model without editing the skill. Sonnet is the default because the cost
+  multiplies by `max_iterations` while the iteration agent's own work — rebase, `/propagate`, red
+  check, implement, verify, commit — is mechanical. The judgement-heavy spec steps are unaffected;
+  see "Nested spec agents keep their own model" below.
 - The current iteration number is not stored; it is always derived as `runs_completed + 1`, which
   stays correct across a resume or a compaction.
 
@@ -128,16 +153,19 @@ creating a new one:
 3. Resolve `max_iterations`: an explicit override if the user asked for one when invoking the
    skill (e.g. "run allium-loop with max_iterations 20"), else default `6`. No target-spec
    resolution step — removed entirely (see below).
-4. Read `prompt.md` (the per-iteration template).
-5. Write `.claude/allium-loop-state.local.md` as above (`retry_count: 0`,
+4. Resolve `model`: an explicit override if the user asked for one when invoking the skill (e.g.
+   "run allium-loop on opus"), else default `sonnet`.
+5. Read `prompt.md` (the per-iteration template).
+6. Write `.claude/allium-loop-state.local.md` as above (`retry_count: 0`,
    `consecutive_no_change_runs: 0`).
-6. Tell the user the loop is active: design doc, verify command, base branch, and
-   `max_iterations` (noting it can be raised by asking).
-7. Dispatch iteration 1: an `Agent` tool call — a **fresh subagent, not `fork`** — with the
-   filled-in `prompt.md` content as its task, substituting `{{ITERATION_NUMBER}}: 1` so the
-   subagent (which has no memory of prior runs) knows definitively whether it's the first run.
-   Subsequent dispatches derive the number as `runs_completed + 1`.
-8. On receiving that call's result (a later task-notification — see the verified async dispatch
+7. Tell the user the loop is active: design doc, verify command, base branch, `model`, and
+   `max_iterations` (noting the last two can be changed by asking).
+8. Dispatch iteration 1: an `Agent` tool call — a **fresh subagent, not `fork`** — with the
+   filled-in `prompt.md` content as its task, `model` set to the state file's value, substituting
+   `{{ITERATION_NUMBER}}: 1` so the subagent (which has no memory of prior runs) knows definitively
+   whether it's the first run. Subsequent dispatches derive the number as `runs_completed + 1` and
+   re-read `model` from the state file for the same reason.
+9. On receiving that call's result (a later task-notification — see the verified async dispatch
    semantics above), and on every subsequent iteration's result:
    - Read the subagent's two-line final report (`CONVERGED: yes/no` and a one-line `SUMMARY` of
      changes made this run) and `.claude/allium-loop-state.local.md`.
@@ -175,6 +203,8 @@ iterations beyond the repo itself):
      judgment — one file, several files, or a new file, as the behavior warrants. No pre-declared
      target file.
    - Otherwise, only re-invoke tend if this run's work reveals a spec error.
+   - No `model` override on tend (nor on weed in step 7) — both pin their own; see "Nested spec
+     agents keep their own model" above.
    - Determine this run's touched specs: `git status --porcelain -- docs/specs/`. No history diff is
      involved: this step runs BEFORE the run's own commit (step 8) and every iteration always
      commits before ending, so "touched this run" is exactly the currently-uncommitted working-tree

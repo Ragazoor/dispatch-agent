@@ -584,14 +584,65 @@ mod tests {
     /// to the rest of the file); if you reword the heading, re-anchor it here.
     fn failed_close_guidance() -> String {
         let content = skill_body("wrap-up").to_lowercase();
-        let (_, section) = content.split_once("did not take effect").expect(
+        section_after(&content, "did not take effect").expect(
             "wrap-up skill must document that a successful exit_session response \
              can still report the close did not take effect",
+        )
+    }
+
+    /// The slice of `content` that follows `anchor`, ending at the next Markdown
+    /// heading of any depth — so promoting or demoting a heading cannot silently
+    /// widen a scoped assertion to the rest of the document. `None` if `anchor`
+    /// is absent, letting each caller phrase its own "this copy is gone" panic.
+    fn section_after(content: &str, anchor: &str) -> Option<String> {
+        let (_, section) = content.split_once(anchor)?;
+        Some(
+            section
+                .split_once("\n#")
+                .map_or(section, |(block, _)| block)
+                .to_string(),
+        )
+    }
+
+    /// A loop iteration does rebase, tend, propagate, red check, implement,
+    /// verify and weed, up to `max_iterations` times, so an iteration agent left
+    /// on the session model (Opus) multiplies that cost by the iteration count.
+    /// Nothing in the loop's own output reveals which model ran, so dropping
+    /// this instruction would regress silently.
+    #[test]
+    fn allium_loop_dispatches_iteration_agents_on_sonnet() {
+        let section = allium_loop_dispatch_instruction();
+        assert!(
+            section.contains("sonnet"),
+            "allium-loop's dispatch step must name the sonnet model for \
+             iteration agents"
         );
-        section
-            .split_once("\n#")
-            .map_or(section, |(block, _)| block)
-            .to_string()
+    }
+
+    /// The no-fork rule and the model override are load-bearing together: a
+    /// `fork` ignores `model` entirely and runs on the session model, so losing
+    /// the no-fork constraint would silently undo the sonnet pin even with the
+    /// override still written down.
+    #[test]
+    fn allium_loop_dispatch_still_forbids_fork() {
+        let section = allium_loop_dispatch_instruction();
+        assert!(
+            section.contains("fork"),
+            "allium-loop's dispatch step must keep forbidding `fork` — a fork \
+             ignores the model override and runs on the session model"
+        );
+    }
+
+    /// The allium-loop skill's per-iteration dispatch instruction: the "Each
+    /// Iteration" section.
+    ///
+    /// Scoped to that one section deliberately — the kickoff section also names
+    /// the model (it resolves and records the loop parameter), so a
+    /// whole-document check would still pass with the dispatch step's override
+    /// deleted. Re-anchor here if the heading is reworded.
+    fn allium_loop_dispatch_instruction() -> String {
+        section_after(skill_body("allium-loop"), "### Each Iteration")
+            .expect("allium-loop skill must have an 'Each Iteration' section")
     }
 
     /// Read an embedded skill's `SKILL.md` by skill name, for tests that assert
