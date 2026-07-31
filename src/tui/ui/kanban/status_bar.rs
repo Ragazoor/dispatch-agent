@@ -96,12 +96,56 @@ pub(in crate::tui) fn repo_drift_segment(
     )])
 }
 
+/// Display width allotted to the repository path inside the sync prompt
+/// (docs/specs/repo-sync.allium: `path_display_budget` on surface
+/// RepoSyncConfirmation).
+pub(in crate::tui) const REPO_PATH_DISPLAY_BUDGET: usize = 40;
+
+/// Render `repo_path` for the sync prompt, shortened from the *left* when it
+/// exceeds `REPO_PATH_DISPLAY_BUDGET` (`PromptNamesTheRepository`).
+///
+/// The status bar has finite width, and a right-truncated path loses exactly the
+/// part that tells two checkouts apart — so the head is elided, marked with an
+/// ellipsis, and the distinguishing tail is kept. The cut lands on a path
+/// separator so the result still reads as a path; only a final component that is
+/// itself over budget is cut mid-component.
+pub(in crate::tui) fn repo_path_for_prompt(repo_path: &str) -> String {
+    if repo_path.chars().count() <= REPO_PATH_DISPLAY_BUDGET {
+        return repo_path.to_string();
+    }
+    // One char of the budget pays for the ellipsis marking the elided head.
+    let tail_budget = REPO_PATH_DISPLAY_BUDGET.saturating_sub(1);
+    // Separator positions run head-to-tail, so the first suffix that fits is the
+    // longest run of whole components that fits.
+    let on_separator = repo_path
+        .char_indices()
+        .filter(|&(_, c)| c == '/')
+        .map(|(byte_idx, _)| &repo_path[byte_idx..])
+        .find(|tail| tail.chars().count() <= tail_budget);
+    let tail = match on_separator {
+        Some(tail) => tail,
+        None => {
+            // Not even the final component fits: keep the last chars of it.
+            let skip = repo_path.chars().count().saturating_sub(tail_budget);
+            let byte_idx = repo_path
+                .char_indices()
+                .nth(skip)
+                .map_or(repo_path.len(), |(byte_idx, _)| byte_idx);
+            &repo_path[byte_idx..]
+        }
+    };
+    format!("…{tail}")
+}
+
 /// The sync confirmation prompt for one repository
 /// (docs/specs/repo-sync.allium: surface RepoSyncConfirmation).
 ///
 /// Names the operations that will actually run against origin, with their commit
 /// counts, and no others: a half that will not run is not mentioned
-/// (`PromptStatesExactlyWhatWillHappen`).
+/// (`PromptStatesExactlyWhatWillHappen`). It also names the repository, not only
+/// the branch, so two repositories sitting on the same branch never produce the
+/// same prompt immediately before the only network write dispatch performs to a
+/// shared branch (`PromptNamesTheRepository`).
 pub(in crate::tui) fn repo_sync_prompt_text(state: &crate::repo_sync::RepoSyncState) -> String {
     let (ahead, behind) = state.counts.map_or((0, 0), |c| (c.ahead, c.behind));
     let mut halves: Vec<String> = Vec::new();
@@ -111,7 +155,12 @@ pub(in crate::tui) fn repo_sync_prompt_text(state: &crate::repo_sync::RepoSyncSt
     if ahead > 0 {
         halves.push(format!("push {ahead} to origin"));
     }
-    format!("Sync {}: {}? [y/n]", state.base_branch, halves.join(", "))
+    format!(
+        "Sync {} in {}: {}? [y/n]",
+        state.base_branch,
+        repo_path_for_prompt(&state.repo_path),
+        halves.join(", ")
+    )
 }
 
 /// Compute the status bar content (a styled `Line` plus a base paragraph style)
@@ -252,8 +301,24 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::ConfirmTrustRepo { .. } | InputMode::ConfirmTrustRepoQuickDispatch { .. } => {
             hint_text(app, "Repo not trusted — trust it? [y/N]", Color::Yellow)
         }
-        InputMode::ConfirmRepoSync { .. } => {
-            hint_text(app, "Sync repo with origin? [y/n]", Color::Yellow)
+        InputMode::ConfirmRepoSync { repo_path } => {
+            // The status message carrying the full prompt auto-clears after
+            // STATUS_MESSAGE_TTL while the mode lives on, so the fallback rebuilds
+            // the same prompt rather than degrading to one that names no
+            // repository (`PromptNamesTheRepository`). A repository that lost its
+            // drift — or its measurement — in the meantime is offered no sync at
+            // all: confirming would be refused anyway, so the fallback must not
+            // word itself as a sync that will happen
+            // (`PromptStatesExactlyWhatWillHappen`).
+            let fallback = app
+                .repo_sync
+                .get(repo_path)
+                .filter(|state| state.has_drift())
+                .map_or_else(
+                    || "Nothing left to sync — [n] to dismiss".to_string(),
+                    repo_sync_prompt_text,
+                );
+            hint_text(app, &fallback, Color::Yellow)
         }
     }
 }

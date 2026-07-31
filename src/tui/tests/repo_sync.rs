@@ -8,7 +8,9 @@ use super::*;
 use crate::repo_sync::{AheadBehind, RepoSyncMeasurement, RepoSyncState, SyncOutcome};
 use crate::tui::commands::RepoSyncCommand;
 use crate::tui::messages::RepoSyncMessage;
-use crate::tui::ui::{repo_drift_segment, repo_sync_prompt_text};
+use crate::tui::ui::{
+    repo_drift_segment, repo_path_for_prompt, repo_sync_prompt_text, REPO_PATH_DISPLAY_BUDGET,
+};
 use crossterm::event::KeyCode;
 
 const REPO: &str = "/repo";
@@ -497,4 +499,154 @@ fn confirming_does_not_sync_when_the_drift_is_gone() {
             .any(|c| matches!(c, Command::RepoSync(RepoSyncCommand::Sync { .. }))),
         "state.has_drift is required at confirm time: {cmds:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// @guarantee PromptNamesTheRepository
+// ---------------------------------------------------------------------------
+
+fn state_at(repo_path: &str, base_branch: &str) -> RepoSyncState {
+    RepoSyncState {
+        repo_path: repo_path.to_string(),
+        base_branch: base_branch.to_string(),
+        counts: Some(AheadBehind {
+            ahead: 3,
+            behind: 1,
+        }),
+        last_fetch_error: None,
+    }
+}
+
+// surface-exposure.RepoSyncConfirmation.repo_path: the exposed path reaches the
+// rendered prompt, so it names the repository and not only the branch.
+#[test]
+fn the_prompt_names_the_repository_not_only_the_branch() {
+    let state = state_at("/home/dev/Code/dispatch", "main");
+    let text = repo_sync_prompt_text(&state);
+    assert!(
+        text.contains(&repo_path_for_prompt(&state.repo_path)),
+        "the prompt must name the repository: {text}"
+    );
+}
+
+#[test]
+fn two_repositories_on_the_same_branch_never_produce_the_same_prompt() {
+    let a = repo_sync_prompt_text(&state_at("/home/dev/Code/alpha", "main"));
+    let b = repo_sync_prompt_text(&state_at("/home/dev/Code/beta", "main"));
+    assert_ne!(
+        a, b,
+        "same branch, different repositories: the prompts must differ"
+    );
+}
+
+#[test]
+fn a_path_within_the_display_budget_is_shown_whole() {
+    let path = "/home/dev/Code/dispatch";
+    assert!(path.chars().count() <= REPO_PATH_DISPLAY_BUDGET);
+    assert_eq!(repo_path_for_prompt(path), path);
+}
+
+#[test]
+fn an_over_budget_path_is_shortened_from_the_left_within_the_budget() {
+    let path = "/home/dev/Code/work/experiments/dispatch/.worktrees/3783-local-first-repos";
+    assert!(path.chars().count() > REPO_PATH_DISPLAY_BUDGET);
+    let shown = repo_path_for_prompt(path);
+    assert!(
+        shown.chars().count() <= REPO_PATH_DISPLAY_BUDGET,
+        "must fit the budget of {REPO_PATH_DISPLAY_BUDGET}: {shown:?}"
+    );
+    assert!(
+        shown.starts_with('…'),
+        "the elided head is marked with an ellipsis: {shown:?}"
+    );
+    assert!(
+        shown.ends_with("3783-local-first-repos"),
+        "the distinguishing tail is kept: {shown:?}"
+    );
+    assert!(
+        !shown.contains("/home/dev"),
+        "the head is what gets dropped, not the tail: {shown:?}"
+    );
+}
+
+// A right-truncated path would lose exactly the part that tells two checkouts
+// apart; shortening from the left keeps it.
+#[test]
+fn shortening_from_the_left_keeps_what_tells_two_checkouts_apart() {
+    let a = "/home/dev/Code/work/first-parent-directory/dispatch";
+    let b = "/home/dev/Code/work/other-parent-directory/dispatch";
+    assert!(a.chars().count() > REPO_PATH_DISPLAY_BUDGET);
+    assert!(b.chars().count() > REPO_PATH_DISPLAY_BUDGET);
+    assert_ne!(
+        repo_path_for_prompt(a),
+        repo_path_for_prompt(b),
+        "two checkouts of the same repository under different parents"
+    );
+    assert_ne!(
+        repo_sync_prompt_text(&state_at(a, "main")),
+        repo_sync_prompt_text(&state_at(b, "main")),
+        "a bare basename is not enough to tell these two apart"
+    );
+}
+
+// The status message carrying the prompt auto-clears after STATUS_MESSAGE_TTL
+// while ConfirmRepoSync lives on, so the guarantee must survive that expiry.
+#[test]
+fn the_prompt_still_names_the_repository_after_the_status_message_expires() {
+    let mut app = app_with_measurement(drifted(3, 1));
+    app.handle_key(make_key(KeyCode::Char('o')));
+    app.status.message = None;
+    let buf = render_to_buffer(&mut app, 120, 40);
+    assert!(
+        buffer_contains(&buf, &format!("Sync main in {REPO}")),
+        "the expired prompt must still name the repository"
+    );
+}
+
+// @guarantee PromptStatesExactlyWhatWillHappen: with the drift gone there is no
+// merge and no push to name, so no sync is offered at all.
+#[test]
+fn the_expired_prompt_offers_no_sync_once_the_drift_is_gone() {
+    let mut app = app_with_measurement(drifted(3, 1));
+    app.handle_key(make_key(KeyCode::Char('o')));
+    app.update(Message::RepoSync(RepoSyncMessage::Measured(drifted(0, 0))));
+    app.status.message = None;
+    let buf = render_to_buffer(&mut app, 120, 40);
+    assert!(
+        !buffer_contains(&buf, "Sync main in"),
+        "must not word itself as a sync that will happen"
+    );
+    assert!(
+        buffer_contains(&buf, "Nothing left to sync"),
+        "the operator is told there is nothing to do"
+    );
+}
+
+// An unmeasured repository is likewise never offered a sync — and never gets a
+// prompt that names no repository.
+#[test]
+fn the_expired_prompt_offers_no_sync_for_an_unmeasured_repository() {
+    let mut app = make_app();
+    app.input.mode = InputMode::ConfirmRepoSync {
+        repo_path: REPO.to_string(),
+    };
+    let buf = render_to_buffer(&mut app, 120, 40);
+    assert!(
+        !buffer_contains(&buf, "Sync repo with origin"),
+        "a prompt that names no repository is exactly what is forbidden"
+    );
+    assert!(
+        buffer_contains(&buf, "Nothing left to sync"),
+        "nothing measured means nothing offered"
+    );
+}
+
+// The prompt still says exactly what will happen once the repository is named:
+// PromptNamesTheRepository does not weaken PromptStatesExactlyWhatWillHappen.
+#[test]
+fn naming_the_repository_keeps_the_branch_and_the_counts() {
+    let text = repo_sync_prompt_text(&state_at("/home/dev/Code/dispatch", "main"));
+    assert!(text.contains("main"), "names the branch: {text}");
+    assert!(text.contains("merge") && text.contains('1'), "got: {text}");
+    assert!(text.contains("push") && text.contains('3'), "got: {text}");
 }

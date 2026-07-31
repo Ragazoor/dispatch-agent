@@ -374,10 +374,20 @@ rule RefreshRepoSyncStateAfterRebase {
     @guidance
         -- A successful rebase wrap-up pulled origin/<base> and then
         -- fast-forwarded local <base> onto the rebased branch, so local base
-        -- provably just moved ahead and the refs are already current. This is
-        -- the refresh point that lights the indicator most often, which is the
-        -- honest consequence of the workflow: ahead > 0 is the normal state
-        -- immediately after every rebase wrap-up.
+        -- provably just moved ahead and the refs are already current. The
+        -- refresh fires from the MCP wrap-up path, which is where real wrap-ups
+        -- happen, and ahead > 0 is the normal state immediately after every
+        -- rebase wrap-up.
+        --
+        -- The board's own finish path is deliberately exempt, and that exemption
+        -- is to be left as it stands. Only the MCP wrap-up emits BranchRebased;
+        -- the board's finish path emits no refresh. That path is reachable only
+        -- through the [W] key — both emitters of the board finish command, the
+        -- single-task wrap-up and the epic merge queue, sit behind it — and [W]
+        -- is a dead key in practice: humans do not use it, and its removal is
+        -- tracked separately. The after-rebase refresh therefore correctly rides
+        -- on the MCP path alone. Do not add a refresh to the board's finish path
+        -- to satisfy this rule.
 }
 
 rule RefreshRepoSyncStateAfterSync {
@@ -746,6 +756,10 @@ surface RepoSyncConfirmation {
 
     context state: RepoSyncState
 
+    -- The maximum display width, in characters, allotted to the repository path
+    -- inside the prompt.
+    let path_display_budget = 40
+
     exposes:
         state.repo_path
         state.base_branch
@@ -761,6 +775,17 @@ surface RepoSyncConfirmation {
         -- origin, with their commit counts, and no others. Diverged: both the
         -- merge and the push. behind = 0: the push alone. ahead = 0: the merge
         -- alone. A half that will not run is not mentioned.
+
+    @guarantee PromptNamesTheRepository
+        -- The prompt identifies the repository whose base branch is about to be
+        -- written to, not only the branch, so two repositories sitting on the
+        -- same branch never produce the same prompt. The path is shown up to
+        -- path_display_budget characters; when it does not fit it is shortened
+        -- from the left, keeping the distinguishing tail and marking the elided
+        -- head with an ellipsis, because the status bar has finite width and a
+        -- right-truncated path loses exactly the part that tells two checkouts
+        -- apart. A bare basename is explicitly not enough: two checkouts of the
+        -- same repository under different parents share it.
 
     @guarantee NoSyncWithoutConfirmation
         -- Nothing is fetched, merged or pushed until the prompt is confirmed.

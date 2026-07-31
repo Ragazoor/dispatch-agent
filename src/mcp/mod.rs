@@ -34,9 +34,10 @@ pub enum McpEvent {
     MessageSent { to_task_id: TaskId },
     /// A `wrap_up(rebase)` succeeded, so the repository's local base branch was
     /// just fast-forwarded and its drift changed (docs/specs/repo-sync.allium:
-    /// rule RefreshRepoSyncStateAfterRebase). Carries the repository resolved
-    /// from the rebased branch's task; an empty path means none could be
-    /// resolved and nothing is measured.
+    /// rule RefreshRepoSyncStateAfterRebase). Carries the repository taken from
+    /// the rebased branch's task, which in practice always names one; the
+    /// consumer still treats an empty path as "no repository" and measures
+    /// nothing, so a future emitter that cannot resolve one has a safe encoding.
     BranchRebased { repo_path: String },
     /// An agent was launched off-board — by the `dispatch_task` tool or by epic
     /// auto-dispatch chaining — so the repository's worktree provisioning just

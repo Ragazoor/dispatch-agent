@@ -270,6 +270,19 @@ rule WrapUpRebase {
         -- but never surfaced to the agent. The TUI Finish path (W+r) does
         -- not trigger a re-index.
         --
+        -- The BranchRebased emission is, in practice, carried by the MCP
+        -- wrap-up path alone: WrapUpViaMcp declares the same emission and is
+        -- the only path that performs it. This rule's path is reachable only
+        -- through the [W] key, and [W] is a dead key in practice — humans do
+        -- not use it, and its removal is tracked separately. The consumer of
+        -- the emission is RefreshRepoSyncStateAfterRebase in repo-sync.allium,
+        -- whose own guidance records the matching side of this exemption; the
+        -- two notes are meant to be read together. Because the live wrap-up
+        -- path already emits, the drift refresh loses nothing by this path not
+        -- emitting. Do not "fix" this by adding an emission to the board's
+        -- finish path, and do not drop the ensures — the declaration stays
+        -- correct for the rule as specified; what is exempt is the board
+        -- path's implementation of it, pending [W]'s removal.
 }
 
 rule WrapUpPr {

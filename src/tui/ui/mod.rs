@@ -12,6 +12,10 @@ pub(in crate::tui) use kanban::repo_sync_prompt_text;
 // the surface's guarantees can be asserted directly.
 #[cfg(test)]
 pub(in crate::tui) use kanban::repo_drift_segment;
+// The prompt's path shortening and its budget, re-exported so
+// PromptNamesTheRepository can be asserted directly.
+#[cfg(test)]
+pub(in crate::tui) use kanban::{repo_path_for_prompt, REPO_PATH_DISPLAY_BUDGET};
 pub(in crate::tui) use shared::caret_field_line;
 pub use shared::{refresh_status, truncate};
 
