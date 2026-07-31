@@ -261,6 +261,7 @@ impl App {
 
     /// Abandon an armed `gg` chord if one is pending, leaving any other
     /// [`PendingAction`] untouched. Called on the overlay-entry guards where the
+    // allow-phantom-symbol: removed field, cited as the behaviour this method preserves
     /// old code unconditionally cleared `pending_g`; scoping the clear to
     /// `GChord` preserves that exact semantics under the collapsed enum.
     fn clear_pending_g_chord(&mut self) {

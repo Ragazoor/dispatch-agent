@@ -13,6 +13,12 @@ echo "doc-paths..."
 echo "doc-paths self-test..."
 bash ./scripts/test-check-doc-paths.sh
 
+echo "doc-symbols..."
+./scripts/check-doc-symbols.sh
+
+echo "doc-symbols self-test..."
+bash ./scripts/test-check-doc-symbols.sh
+
 echo "no-test-sleep..."
 ./scripts/check-no-test-sleep.sh
 

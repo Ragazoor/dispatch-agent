@@ -8,6 +8,7 @@ mod usage;
 /// Push a conditional `SET col = ?` clause for patch builders.
 ///
 /// Usage: `set_field!(sets, values, opt_value, "col_name")`
+// allow-phantom-symbol: opt_value is an illustrative argument name in the usage example
 /// If `opt_value` is `Some(v)`, appends the SQL fragment and boxes `v`.
 /// Handles both plain `Option<T>` (plain field) and `Option<Option<T>>`
 /// (nullable field — the inner `Option` maps to SQL NULL vs value).

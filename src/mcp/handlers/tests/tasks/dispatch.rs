@@ -493,6 +493,7 @@ impl ChainFixture {
     }
 }
 
+// allow-phantom-symbol: renamed test, cited for provenance
 /// Migrated from `dispatch_next_picks_first_backlog_subtask`: closing a subtask
 /// dispatches the epic's first backlog subtask and leaves the rest alone.
 #[tokio::test]
@@ -554,6 +555,7 @@ async fn exit_session_response_names_the_chained_subtask() {
     wait_for_task_changed(&mut fx.notify_rx, next).await;
 }
 
+// allow-phantom-symbol: renamed test, cited for provenance
 /// Migrated from `dispatch_next_respects_sort_order`: selection is by
 /// `sort_order` ascending, not creation order.
 #[tokio::test]
@@ -583,6 +585,7 @@ async fn exit_session_chain_respects_sort_order() {
     );
 }
 
+// allow-phantom-symbol: renamed test, cited for provenance
 /// Migrated from `dispatch_next_respects_tag_routing`: the chained dispatch
 /// still routes through `DispatchMode::for_task`.
 #[tokio::test]
@@ -621,6 +624,7 @@ async fn exit_session_chain_respects_tag_routing() {
     );
 }
 
+// allow-phantom-symbol: renamed test, cited for provenance
 /// Migrated from `dispatch_next_no_backlog_returns_success_noop`: closing the
 /// epic's last subtask closes cleanly and chains nothing.
 #[tokio::test]
@@ -645,6 +649,7 @@ async fn exit_session_with_no_backlog_subtask_closes_without_chaining() {
 // `auto_dispatch_next_returns_none_for_missing_epic`, inline in
 // src/mcp/handlers/tasks/dispatch.rs.
 
+// allow-phantom-symbol: renamed test, cited for provenance
 /// Migrated from `dispatch_next_returns_disabled_when_auto_dispatch_off`
 /// (previously in tests/tasks/crud.rs): `auto_dispatch = false` closes the
 /// session and chains nothing.

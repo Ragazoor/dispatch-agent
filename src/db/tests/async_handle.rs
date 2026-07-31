@@ -115,6 +115,7 @@ impl std::io::Write for LogBuffer {
 
 /// Run `body` with a `fmt` subscriber installed as the default for the
 /// current task, and return everything it logged as text. Relies on
+// allow-phantom-symbol: current_thread names tokio's runtime flavour, not our code
 /// `#[tokio::test]`'s default `current_thread` runtime so the thread-local
 /// subscriber guard survives every `.await` in `body` (the task never
 /// migrates to another OS thread).

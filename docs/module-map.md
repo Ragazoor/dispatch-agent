@@ -28,7 +28,7 @@ to look.
 | `src/tui/text_caret.rs` | Pure single-line caret mechanics (`insert`, `delete_before`, `move_left`, `word_left`, `byte_offset`, …) shared by every text `InputMode` — see the caret convention in `docs/conventions.md` |
 | `src/tui/ui/mod.rs` | Rendering entry point — re-exports `render()`, thin dispatcher |
 | `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `tips.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`, `managed_feeds.rs`) |
-| `src/tui/ui/shared.rs` | Cross-board helpers: `render_tab_bar`, `refresh_status`, `truncate`, `push_hint_spans`, `caret_line` |
+| `src/tui/ui/shared.rs` | Cross-board helpers: `refresh_status`, `truncate`, `fair_truncate_segments`, `push_hint_spans`, `caret_line` |
 | `src/tui/ui/palette.rs` | Tokyo Night color palette constants |
 | `src/tui/ui/{input_form,learnings,todos}.rs` | Overlay renderers (input forms, knowledge base panel, TODO overlay) |
 | `src/tui/types.rs` | `Message`, `Command`, `ViewMode`, `InputMode`, `LayoutCache`, `AgentTracking` enums and structs |

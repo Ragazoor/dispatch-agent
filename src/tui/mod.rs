@@ -276,7 +276,9 @@ pub struct App {
 }
 
 /// A one-shot transient action awaiting its follow-up message. Collapses the
+// allow-phantom-symbol: removed fields, cited as the history this enum collapses
 /// former `pending_todo_edit` / `pending_todo_delete` / `pending_todo_link` /
+// allow-phantom-symbol: removed field, cited as the history this enum collapses
 /// `pending_g` fields into one matchable value — only one can be in flight at a
 /// time (each is gated by a distinct [`InputMode`], and `GChord` is only armed
 /// on the board), so a single field loses no information.

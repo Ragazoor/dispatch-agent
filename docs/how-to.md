@@ -20,7 +20,7 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
    }
    ```
 
-   Reads may go through `state.db`. **Mutations must not** — task and epic writes go through `state.task_svc` / `state.epic_svc` (`TaskServiceApi` / `EpicServiceApi`), because the service layer owns invariants like epic-status recalculation. `McpState.db` is typed `Arc<dyn db::TaskReadStore>` (`src/mcp/mod.rs:95`), so `state.db.patch_task(…)` is a **compile error**, locked in by a `compile_fail` doctest at `src/db/mod.rs:621`. Map service errors with `service_err_to_response`, and call `state.notify()` after a successful mutation so the TUI refreshes. See the [service mutation boundary](conventions.md#service-layer-is-the-mutation-boundary).
+   Reads may go through `state.db`. **Mutations must not** — task and epic writes go through `state.task_svc` / `state.epic_svc` (`TaskServiceApi` / `EpicServiceApi`), because the service layer owns invariants like epic-status recalculation. `McpState.db` is typed `Arc<dyn db::TaskReadStore>` (`src/mcp/mod.rs:95`), so `state.db.patch_task(…)` is a **compile error**, locked in by a `compile_fail` doctest at `src/db/mod.rs:621`. <!-- allow-phantom-symbol: compile_fail is a rustdoc attribute, not our symbol --> Map service errors with `service_err_to_response`, and call `state.notify()` after a successful mutation so the TUI refreshes. See the [service mutation boundary](conventions.md#service-layer-is-the-mutation-boundary).
 
 3. **Register the tool** by adding one entry to the `mcp_tools!` list in `src/mcp/handlers/dispatch.rs`: the `sync`/`async` kind, the tool name, the handler path, the description string, and the JSON input schema.
 

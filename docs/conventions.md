@@ -222,7 +222,7 @@ Unmocked calls panic rather than silently returning a default, and a new seam me
 
 Reading through `state.db` directly is fine — list, get, and other queries have no side effects beyond the read. **Mutations are different: task and epic writes go through `TaskServiceApi` / `EpicServiceApi`, not `state.db` directly.** The service layer owns the invariants that a bare DB write would skip — most importantly epic-status recalculation (see below).
 
-**This boundary is now compiler-enforced.** `McpState.db` and `TuiRuntime.database` are typed `Arc<dyn db::TaskReadStore>`, not `Arc<dyn db::TaskStore>`. `TaskReadStore` exposes the task/epic **read** surface (`TaskRead` + `EpicRead`) plus the settings/learning/usage stores, but **not** `TaskCrud`/`EpicCrud`. So `state.db.patch_task(...)` (or `create_epic`, `set_task_epic_id`, `recalculate_epic_status`, …) from a handler is a **compile error**. A `compile_fail` doctest on `TaskReadStore` (`src/db/mod.rs`) locks this in.
+**This boundary is now compiler-enforced.** `McpState.db` and `TuiRuntime.database` are typed `Arc<dyn db::TaskReadStore>`, not `Arc<dyn db::TaskStore>`. `TaskReadStore` exposes the task/epic **read** surface (`TaskRead` + `EpicRead`) plus the settings/learning/usage stores, but **not** `TaskCrud`/`EpicCrud`. So `state.db.patch_task(...)` (or `create_epic`, `set_task_epic_id`, `recalculate_epic_status`, …) from a handler is a **compile error**. A `compile_fail` doctest on `TaskReadStore` (`src/db/mod.rs`) locks this in. <!-- allow-phantom-symbol: compile_fail is a rustdoc attribute, not our symbol -->
 
 **The name is scoped on purpose.** `TaskReadStore` seals **task/epic** writes only, not every write — settings/learning/usage writes stay reachable through it (see the caveat below). The old name `ReadStore` implied read-only-everything, which was a misnomer; the `Task` prefix makes the guarantee honest.
 
@@ -385,3 +385,18 @@ Use whichever of these fits the thing you're waiting on:
 - **An injected clock for time-dependent behaviour.** Hook-event timestamps persist at one-second resolution, so a test that needs two events in distinct seconds must not sleep ≥1s — inject `service::FixedClock` via `TaskService::with_clock` and `clock.advance(chrono::Duration::seconds(2))`. Production defaults to `SystemClock` (`Utc::now()`), so no call sites change.
 
 - **An injected threshold when the behaviour under test is "did this take longer than X".** Don't sleep past the real threshold, and don't assume a trivial closure beats it either — a loaded CI box can push a no-op `db_call` past 200 ms, so asserting the *absence* of a slow-call warning is just as load-sensitive as asserting its presence. `Database::set_slow_call_threshold` (`#[cfg(test)]`, per-instance so parallel tests don't race) pins `SLOW_DB_CALL_THRESHOLD` for one `Database`: `Duration::ZERO` forces the warning, an hour forbids it. See `src/db/tests/async_handle.rs`.
+
+## No phantom symbol references in docs
+
+`./scripts/check-doc-symbols.sh` (pre-push) rejects a backticked snake_case identifier that occurs **nowhere in the code**. It covers `CLAUDE.md`, the topic files under `docs/`, `docs/specs/*.allium`, and the doc comments (`///`, `//!`) in `src/**/*.rs`. It exists because `check-doc-paths.sh` validates paths but never symbol names, which is how two phantom function names survived until #3806 removed them by hand.
+
+It is a **phantom check, not a definition check** — it asks "does this identifier occur in the code at all", not "is this a function". Matching against `fn <name>` definitions drowns in false positives (struct fields, enum variants, config keys, test helpers). The accepted tradeoff is a false negative: a renamed symbol whose old name still occurs somewhere in the code passes.
+
+Two properties are load-bearing and easy to break:
+
+- **The identifier index is built from code only, with comments stripped.** Index raw file text and every phantom self-validates through its own doc comment. `tests/` counts as code (the docs cite helpers like `poll_for`), and Allium spec bodies are a second index source because specs declare their own namespace — `repo_group` is an `EpicOrigin` variant and `current_tmux_window()` is spec-level pseudocode, both correct references that resolve only there.
+- **Matching is whole-word.** No substring fallback, so shorthand for a longer real name (`install_plugin` for `install_plugin_in`) is a finding: name the real identifier. <!-- allow-phantom-symbol: install_plugin is the illustrative bad example in this very sentence -->
+
+Escape hatch, for deliberate references to removed code and to external-crate names: an `allow-phantom-symbol: <why>` comment on the offending line or the line directly above, mirroring `allow-test-sleep:`. In a Rust doc block the marker is a plain `//` line interleaved between `///` lines.
+
+Two surfaces are deliberately unguarded. `docs/plans/`, `docs/superpowers/`, and `docs/research/` are dated artifacts that describe code as it stood then. And **bare (un-backticked) identifiers in Allium `--` comments are not scanned** — doing so would catch #3806's `dispatch.allium` phantom, but measured 37 hits for 1 real finding. A checker that cries wolf gets bypassed, so that one stays uncaught by design; see `docs/plans/3807-check-doc-symbols.md`.
