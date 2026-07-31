@@ -8,10 +8,9 @@ to look.
 
 | File | Responsibility |
 |------|---------------|
-| `src/main.rs` | CLI entry point (clap), subcommand dispatch (`tui`, `setup`, `verify-feed`, `doctor`, …), global `--db` flag, `app.log` tracing subscriber |
+| `src/main.rs` | CLI entry point (clap), subcommand dispatch (`tui`, `setup`, `verify-feed`, `repo`, …), global `--db` flag, `app.log` tracing subscriber |
 | `src/lib.rs` | Crate root, public module re-exports, `DEFAULT_PORT`, `default_db_path()` |
-| `src/cli/mod.rs` | CLI submodule declarations (`agent_tree`, `caller_headers`, `doctor`) |
-| `src/cli/doctor.rs` | `dispatch doctor` self-diagnosis: worktree/session/hook checks and `--repair` (see `docs/specs/doctor.allium`) |
+| `src/cli/mod.rs` | CLI submodule declarations (`agent_tree`, `caller_headers`) |
 | `src/cli/caller_headers.rs` | `dispatch caller-headers` — pure CWD→identity-header resolver used as Claude Code's `headersHelper`, so an agent's MCP calls carry `X-Caller-Task-Id`. No DB, no network, no async |
 | `src/cli/agent_tree.rs` | `dispatch agent-tree <task_id>` — standalone ratatui companion-pane renderer, deliberately not part of the board TUI's `App`/message loop. Converts subtask 3's `agent_tree::TreeNode` into `tui_tree_widget` items with `[Modified]`/`[Read]` badges (`build_tree_items`), tracks manual expand/collapse across redraws so only newly-touched directories auto-open (`RenderState`), and `run()` polls the task's file-events JSONL on a 1-second timer (see `docs/specs/agent-tree.allium`'s `AgentTreeCompanionPane` surface) |
 | `src/runtime/mod.rs` | Async event loop (`tokio::select!`), bridges TUI ↔ MCP ↔ shell commands; `TICK_INTERVAL`, `execute_commands` |

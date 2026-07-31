@@ -551,7 +551,6 @@ rule AttachPlanViaCli {
 --   • `dispatch hook <id> <kind> [--kind K]` — see HookNotification in agent-health.allium.
 --   • `dispatch pr-gate <id>` — see PrLearningsGate in pr-workflow.allium.
 --   • `dispatch caller-headers` — see CreateTaskViaMcp guidance.
---   • `dispatch doctor ...` — see doctor.allium.
 --   • `dispatch verify-feed <command>` — see VerifyFeed in feeds.allium.
 
 -- == MCP Wrap-Up and Exit Tools ==

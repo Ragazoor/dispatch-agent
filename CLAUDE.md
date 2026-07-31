@@ -23,7 +23,7 @@ cargo run -- verify-feed 'gh api ...'  # run a feed command and validate its JSO
 
 The pre-push hook (`.githooks/pre-push`) runs, in order: `cargo fmt` (auto-formats), `cargo clippy --all-targets -- -D warnings` (no `--fix` — it checks, it does not rewrite), `./scripts/check-doc-paths.sh` (validates every `src/…`/`docs/…` path and `file:NN` line citation in `CLAUDE.md`, every `docs/*.md`, and every `docs/specs/*.allium` — globbed, so a new doc is covered the moment it lands; the dated artifacts under `docs/plans/`, `docs/superpowers/`, and `docs/research/` are excluded), `./scripts/test-check-doc-paths.sh` (self-test for that checker), `./scripts/check-doc-symbols.sh` (rejects backticked snake_case identifiers in the agent-facing docs and in `src/**/*.rs` doc comments that occur nowhere in the code — annotate a deliberate reference to removed or external code with `allow-phantom-symbol: <why>`), `./scripts/test-check-doc-symbols.sh` (self-test for that checker), `./scripts/check-no-test-sleep.sh` (rejects `tokio::time::sleep` anywhere under `src/`/`tests/`, and `std::thread::sleep` in test files — see the async-test rule below), and `bash ./scripts/test-fetch-reviews.sh` (stub-`gh` test for the review feed script). Run `cargo test` separately before pushing.
 
-The hook is tracked at `.githooks/pre-push`. A fresh clone must point git at it once — run `cargo run -- doctor hooks --repair` (which sets `core.hooksPath = .githooks`) or `git config core.hooksPath .githooks`. Don't add hooks to `.git/hooks/` directly: that directory is untracked and shared across all worktrees, so changes there aren't version-controlled or reviewed.
+The hook is tracked at `.githooks/pre-push`. A fresh clone must point git at it once — run `git config core.hooksPath .githooks`. Nothing does this for you, and until it is run the whole gate above is silently inert. Don't add hooks to `.git/hooks/` directly: that directory is untracked and shared across all worktrees, so changes there aren't version-controlled or reviewed.
 
 ### Running tests
 
@@ -106,7 +106,7 @@ RUST_LOG=dispatch_tui=debug cargo run -- tui      # then tail the log file (see 
 
 ## External Dependencies
 
-Required on `PATH` at runtime, with **no startup preflight** — `dispatch doctor` checks worktrees, sessions, and hooks, not binary availability, so a missing binary surfaces as a failed shell command mid-operation:
+Required on `PATH` at runtime, with **no startup preflight** — nothing checks binary availability, so a missing binary surfaces as a failed shell command mid-operation:
 
 - **tmux** (`src/tmux.rs`) — every window/pane operation.
 - **git** (`src/git.rs`, `src/dispatch/worktree.rs`, `src/dispatch/finish.rs`) — worktrees, rebase, branch detection.
@@ -144,7 +144,6 @@ The Allium specs in `docs/specs/` are the **source of truth** for domain logic:
 - `todo.allium` — personal TODO overlay (lightweight checklist, separate from the kanban board)
 - `repo-rag.allium` — per-repo semantic search: indexing and RAG-based doc search
 - `observability.allium` — trajectory persistence (per-task audit log of MCP tool calls) and slow-db-call latency warnings
-- `doctor.allium` — `dispatch doctor` self-diagnosis CLI surface
 - `tips.allium` — startup tips popup (show/browse/dismiss)
 - `repo-sync.allium` — local-first repo sync: ahead/behind drift measurement, the sync operation and its typed failure vocabulary, and the surfaces that expose them
 
@@ -193,7 +192,7 @@ This file is intentionally slim — it is loaded into every agent's context. Rea
 
 > Bare `unwrap()`/`expect()` are clippy-warned outside tests — see the soft-fail-decoding section of `docs/conventions.md` for the canonical fallback pattern. The warning only becomes a **hard error via `-D warnings`**, which the pre-push hook applies (`cargo clippy --all-targets -- -D warnings`); a plain local `cargo build` or `cargo clippy` will *not* fail on it, so a green local build does not imply clippy-clean.
 
-> **Mutation boundary** (compiler-enforced): reads via `state.db` are fine, but task/epic *mutations* go through `TaskServiceApi`/`EpicServiceApi`, not the DB directly — the service layer owns invariants like epic-status recalculation. `state.db` is typed `Arc<dyn db::TaskReadStore>`, so `state.db.patch_task(...)` from a handler is a **compile error**. The name is scoped on purpose: `TaskReadStore` seals **task/epic** writes only — settings/learning/usage writes stay reachable through it because they carry no cross-entity invariant. Sanctioned exceptions hold their own write handle and manage their own invariants — `FeedRunner` (`src/feed/`), `TuiRuntime::feed_db`, and startup/CLI paths (`runtime::bootstrap`, `src/setup/`, `src/cli/doctor.rs`, `src/main.rs`) — so a direct `patch_*` call in those places is not a violation. **CLI handlers still route through `TaskService`** even though `src/main.rs` is sanctioned (e.g. `cmd_plan` uses `TaskService::attach_plan`, mirroring `cmd_update`/`cmd_hook`/`cmd_pr_gate`) — the sanction is a fallback for startup wiring, not a licence to bypass the service. See the service mutation-boundary (including "Sanctioned direct-mutation consumers") and `recalculate_epic_status` sections of `docs/conventions.md`.
+> **Mutation boundary** (compiler-enforced): reads via `state.db` are fine, but task/epic *mutations* go through `TaskServiceApi`/`EpicServiceApi`, not the DB directly — the service layer owns invariants like epic-status recalculation. `state.db` is typed `Arc<dyn db::TaskReadStore>`, so `state.db.patch_task(...)` from a handler is a **compile error**. The name is scoped on purpose: `TaskReadStore` seals **task/epic** writes only — settings/learning/usage writes stay reachable through it because they carry no cross-entity invariant. Sanctioned exceptions hold their own write handle and manage their own invariants — `FeedRunner` (`src/feed/`), `TuiRuntime::feed_db`, and startup/CLI paths (`runtime::bootstrap`, `src/setup/`, `src/main.rs`) — so a direct `patch_*` call in those places is not a violation. **CLI handlers still route through `TaskService`** even though `src/main.rs` is sanctioned (e.g. `cmd_plan` uses `TaskService::attach_plan`, mirroring `cmd_update`/`cmd_hook`/`cmd_pr_gate`) — the sanction is a fallback for startup wiring, not a licence to bypass the service. See the service mutation-boundary (including "Sanctioned direct-mutation consumers") and `recalculate_epic_status` sections of `docs/conventions.md`.
 
 > **Layout-cache coherence** (self-healing, not compiler-enforced): `App.layout` (a [`LayoutCache`](src/tui/types.rs), grouping `epic_stats_cache`, `children_map_cache`, `column_anchor_cache`, `epic_filter_cache`, `task_index`, and their fingerprints) is derived from `board.tasks`/`board.epics`. Calling `invalidate_layout_cache()` after a mutation is still good practice (immediate rebuild — it delegates to `LayoutCache::invalidate()`), but `cached_epic_stats()` also fingerprints the board on every call and self-heals on mismatch — a handler that forgets to invalidate cannot serve stale data. See the layout-cache-coherence section of `docs/architecture.md`.
 
@@ -216,7 +215,7 @@ Subsystem entry points (no dedicated doc page — read the source):
 
 - `src/feed/mod.rs` — feed system: `FeedRunner` poll loop, exec/parse/ingest pipeline that upserts tasks from external commands (see also `docs/module-map.md`)
 - `src/service/repo_index/` (`mod.rs` orchestration + `scan.rs`/`chunking.rs`/`embed.rs`/`search.rs`), `src/service/embeddings.rs`, `src/mcp/handlers/repo_rag.rs` — repo indexing / embeddings / RAG: `index_repo` and `search_docs` MCP tools for semantic doc search
-- `src/cli/` — CLI subcommand implementations, including the `doctor` health-check subcommand (`src/cli/doctor.rs`)
+- `src/cli/` — CLI subcommand implementations (`agent_tree`, `caller_headers`)
 - `src/mcp/trajectory.rs` — agent trajectory capture (records the agent's tool-call history for a task)
 - `src/repo_sync.rs` — local-first repo sync: `ahead_behind` drift measurement and `sync_repo` (fetch, merge `origin/<base>`, push). Synchronous and `ProcessRunner`-driven like `src/dispatch/finish.rs`; local base history is never rewritten. See `docs/specs/repo-sync.allium`
 

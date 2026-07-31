@@ -139,17 +139,6 @@ enum Commands {
     },
     /// Remove repo paths that no longer exist on the filesystem.
     PruneRepoPaths,
-    /// Self-diagnosis: detect (and optionally repair) common install inconsistencies.
-    Doctor {
-        #[command(subcommand)]
-        check: Option<DoctorCheck>,
-        /// Emit structured JSON instead of human-readable lines.
-        #[arg(long)]
-        json: bool,
-        /// Explicitly request detection-only mode; overrides --repair if both are set.
-        #[arg(long)]
-        dry_run: bool,
-    },
     /// Toggle the companion agent-tree pane in a tmux window. Invoked by the
     /// global toggle keybinding's bound run-shell command; not meant to be
     /// run by hand.
@@ -183,46 +172,6 @@ enum RepoAction {
     Sync {
         /// The repo path to sync. Omitted, every saved repo path is attempted.
         path: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-enum DoctorCheck {
-    /// Compare .worktrees/ directories against DB task rows.
-    Worktrees {
-        /// Apply available repairs (default is dry-run: detect only).
-        #[arg(long)]
-        repair: bool,
-        /// Skip confirmation prompts when using --repair.
-        #[arg(long)]
-        force: bool,
-        /// Emit structured JSON instead of human-readable lines.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Compare tasks.tmux_window values against live tmux windows.
-    Sessions {
-        /// Apply available repairs (default is dry-run: detect only).
-        #[arg(long)]
-        repair: bool,
-        /// Skip confirmation prompts when using --repair.
-        #[arg(long)]
-        force: bool,
-        /// Emit structured JSON instead of human-readable lines.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Verify git config core.hooksPath = .githooks for each known repo.
-    Hooks {
-        /// Apply available repairs (default is dry-run: detect only).
-        #[arg(long)]
-        repair: bool,
-        /// Skip confirmation prompts when using --repair.
-        #[arg(long)]
-        force: bool,
-        /// Emit structured JSON instead of human-readable lines.
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -635,175 +584,6 @@ async fn cmd_plan(db: &std::path::Path, id: i64, path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_doctor(
-    db: &std::path::Path,
-    check: Option<DoctorCheck>,
-    json: bool,
-    dry_run: bool,
-) -> Result<()> {
-    use dispatch_tui::cli::doctor::{
-        check_hooks, check_sessions, check_worktrees, format_human, format_json, has_problems,
-        repair_hooks_set_path, repair_sessions_orphan_db_row, repair_sessions_stale_window,
-        repair_worktrees_orphan_db_row, repair_worktrees_remove, CheckKind, FindingStatus,
-    };
-    use dispatch_tui::process::RealProcessRunner;
-
-    let database = db::Database::open(db).await?;
-    let tasks = database.list_all().await?;
-    let repo_paths = database.list_repo_paths().await?;
-    let runner = RealProcessRunner;
-
-    let mut all_repos: Vec<String> = repo_paths;
-    for t in &tasks {
-        if !all_repos.contains(&t.repo_path) {
-            all_repos.push(t.repo_path.clone());
-        }
-    }
-
-    let mut findings = Vec::new();
-
-    // Resolve json: subcommand flag takes precedence over parent flag.
-    let json = match &check {
-        None => json,
-        Some(DoctorCheck::Worktrees { json, .. }) => *json,
-        Some(DoctorCheck::Sessions { json, .. }) => *json,
-        Some(DoctorCheck::Hooks { json, .. }) => *json,
-    };
-
-    let (run_worktrees, run_sessions, run_hooks, repair, force) = match &check {
-        None => (true, true, true, false, false),
-        Some(DoctorCheck::Worktrees { repair, force, .. }) => (true, false, false, *repair, *force),
-        Some(DoctorCheck::Sessions { repair, force, .. }) => (false, true, false, *repair, *force),
-        Some(DoctorCheck::Hooks { repair, force, .. }) => (false, false, true, *repair, *force),
-    };
-    // --dry-run always overrides --repair/--force
-    let (repair, force) = if dry_run {
-        (false, false)
-    } else {
-        (repair, force)
-    };
-
-    if run_worktrees {
-        findings.extend(check_worktrees(&tasks, &all_repos));
-    }
-    if run_sessions {
-        findings.extend(check_sessions(&tasks, &runner));
-    }
-    if run_hooks {
-        findings.extend(check_hooks(&all_repos, &runner));
-    }
-
-    if repair {
-        if !force {
-            let repairable: Vec<_> = findings.iter().filter(|f| f.repair_available).collect();
-            if !repairable.is_empty() {
-                if json {
-                    println!("{}", format_json(&findings));
-                } else {
-                    println!("{}", format_human(&findings));
-                }
-                eprintln!("The following repairs would be applied (re-run with --force to apply):");
-                for f in &repairable {
-                    eprintln!(
-                        "  would repair: {} {}  —  {}",
-                        f.check.as_str(),
-                        f.target,
-                        f.message
-                    );
-                }
-                std::process::exit(1);
-            }
-        } else {
-            let mut any_repair_failed = false;
-            for f in &findings {
-                if !f.repair_available {
-                    continue;
-                }
-                let result: anyhow::Result<()> = match f.check {
-                    CheckKind::Hooks => repair_hooks_set_path(&f.target, &runner),
-                    CheckKind::Sessions => match f.status {
-                        FindingStatus::Error => {
-                            let Some(task) = tasks
-                                .iter()
-                                .find(|t| t.tmux_window.as_deref() == Some(f.target.as_str()))
-                            else {
-                                eprintln!(
-                                    "repair skipped for {}: no matching task found",
-                                    f.target
-                                );
-                                continue;
-                            };
-                            repair_sessions_orphan_db_row(task.id, &database).await
-                        }
-                        FindingStatus::Warn => repair_sessions_stale_window(&f.target, &runner),
-                        FindingStatus::Ok => Ok(()),
-                    },
-                    CheckKind::Worktrees => match f.status {
-                        FindingStatus::Error => {
-                            let Some(task) = tasks
-                                .iter()
-                                .find(|t| t.worktree.as_deref() == Some(f.target.as_str()))
-                            else {
-                                eprintln!(
-                                    "repair skipped for {}: no matching task found",
-                                    f.target
-                                );
-                                continue;
-                            };
-                            repair_worktrees_orphan_db_row(task.id, &database).await
-                        }
-                        FindingStatus::Warn => {
-                            let Some(repo) = all_repos
-                                .iter()
-                                .find(|r| f.target.starts_with(&format!("{r}/.worktrees/")))
-                                .cloned()
-                            else {
-                                eprintln!(
-                                    "repair skipped for {}: no matching repo found",
-                                    f.target
-                                );
-                                continue;
-                            };
-                            repair_worktrees_remove(&repo, &f.target, &runner)
-                        }
-                        FindingStatus::Ok => Ok(()),
-                    },
-                };
-                match result {
-                    Err(e) => {
-                        eprintln!("repair failed for {}: {e}", f.target);
-                        any_repair_failed = true;
-                    }
-                    Ok(()) if !json => {
-                        println!("repaired: {} {}", f.check.as_str(), f.target)
-                    }
-                    Ok(()) => {}
-                }
-            }
-            if any_repair_failed {
-                std::process::exit(1);
-            }
-            if json {
-                println!("{}", format_json(&findings));
-            }
-            return Ok(());
-        }
-    }
-
-    if json {
-        println!("{}", format_json(&findings));
-    } else if findings.is_empty() {
-        println!("all checks passed");
-    } else {
-        println!("{}", format_human(&findings));
-    }
-
-    if has_problems(&findings) {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
 /// Toggle the companion agent-tree pane in `window`. Best-effort: this runs
 /// detached via the global keybinding's `run-shell -b`, so a failure has
 /// nowhere useful to surface — it's logged to app.log and swallowed rather
@@ -854,11 +634,6 @@ async fn main() -> Result<()> {
         Commands::CallerHeaders => cmd_caller_headers()?,
         Commands::Repo { action } => cmd_repo(&cli.db, action).await?,
         Commands::PruneRepoPaths => cmd_prune_repo_paths(&cli.db).await?,
-        Commands::Doctor {
-            check,
-            json,
-            dry_run,
-        } => cmd_doctor(&cli.db, check, json, dry_run).await?,
         Commands::Plan { id, path } => cmd_plan(&cli.db, id, path).await?,
         Commands::ToggleAgentTreePane { window } => {
             cmd_toggle_agent_tree_pane(&cli.db, window)?;

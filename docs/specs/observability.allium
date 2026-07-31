@@ -21,7 +21,7 @@
 --           the TUI and the `hook` one-shot subcommand -- both initialise a
 --           tracing subscriber writing to the same <data_dir>/app.log. The
 --           remaining one-shot CLI subcommands (update, pr-gate, list, repo,
---           prune-repo-paths, doctor, plan, setup) call the same shared DB-call
+--           prune-repo-paths, plan, setup) call the same shared DB-call
 --           paths, but with no subscriber configured their warn events are
 --           silently dropped -- persisting those is out of scope for now (see
 --           DbCallSlowWarning for the scope boundary).
@@ -252,11 +252,11 @@ rule DbCallSlowWarning {
         -- without it the process actually holding the write lock could not
         -- explain itself in the log.
         -- The remaining one-shot subcommands (update, pr-gate, list, repo,
-        -- prune-repo-paths, doctor, plan, setup) still have no subscriber, so their
+        -- prune-repo-paths, plan, setup) still have no subscriber, so their
         -- warn events are silently dropped; persisting those is deferred.
         --
-        -- No new metric, counter, doctor check, or queryable surface: the log
-        -- line in the existing app.log is the complete deliverable.
+        -- No new metric, counter, or queryable surface: the log line in the
+        -- existing app.log is the complete deliverable.
 }
 
 -- == Decode-failure policy ==

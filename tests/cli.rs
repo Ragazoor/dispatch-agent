@@ -963,215 +963,28 @@ fn dispatch_repo_set_verify_expands_tilde_in_path() {
 }
 
 // ---------------------------------------------------------------------------
-// dispatch doctor
+// doctor subcommand removed (self-diagnosis surface retired)
 // ---------------------------------------------------------------------------
 
+/// The `doctor` self-diagnosis surface was retired. Its only remediation worth
+/// keeping — pointing git at `.githooks` — is now the documented one-liner
+/// `git config core.hooksPath .githooks` in CLAUDE.md's "First-time setup".
 #[test]
-fn doctor_no_subcommand_exits_zero_on_clean_db() {
+fn doctor_subcommand_removed() {
     let db = NamedTempFile::new().unwrap();
     let out = binary()
         .args(["--db", db.path().to_str().unwrap(), "doctor"])
         .output()
         .unwrap();
     assert!(
-        out.status.success(),
-        "expected exit 0 on clean DB, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn doctor_worktrees_exits_zero_on_clean_db() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "doctor", "worktrees"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn doctor_sessions_exits_zero_on_clean_db() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "doctor", "sessions"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn doctor_hooks_exits_zero_on_clean_db() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "doctor", "hooks"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-#[test]
-fn doctor_json_flag_emits_valid_json_array() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "doctor", "--json"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let _: Vec<serde_json::Value> = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("expected valid JSON array, got: {stdout} — error: {e}"));
-}
-
-#[tokio::test]
-async fn doctor_worktrees_exits_nonzero_on_db_orphan() {
-    let db = NamedTempFile::new().unwrap();
-    let db_path = db.path().to_str().unwrap();
-
-    let task_id = seed_task(db.path(), "Orphan Test").await;
-    let conn = Database::open(db.path()).await.unwrap();
-    conn.patch_task(
-        task_id,
-        &TaskPatch::new()
-            .status(TaskStatus::Running)
-            .sub_status(SubStatus::Active)
-            .worktree(Some("/nonexistent/worktree/path-99999")),
-    )
-    .await
-    .unwrap();
-    drop(conn);
-
-    let out = binary()
-        .args(["--db", db_path, "doctor", "worktrees"])
-        .output()
-        .unwrap();
-    assert!(
         !out.status.success(),
-        "expected exit 1 for DB orphan, stdout: {}",
+        "doctor must no longer be a recognised subcommand, stdout: {}",
         String::from_utf8_lossy(&out.stdout)
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stdout.contains("error"),
-        "expected 'error' in output, got: {stdout}"
-    );
-}
-
-#[test]
-fn doctor_worktrees_json_trailing_flag() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args([
-            "--db",
-            db.path().to_str().unwrap(),
-            "doctor",
-            "worktrees",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "expected exit 0, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let _: Vec<serde_json::Value> = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("expected valid JSON array, got: {stdout} — error: {e}"));
-}
-
-#[tokio::test]
-async fn doctor_repair_without_force_emits_json() {
-    let db = NamedTempFile::new().unwrap();
-    let db_path = db.path().to_str().unwrap();
-
-    let task_id = seed_task(db.path(), "Repair JSON Test").await;
-    let conn = Database::open(db.path()).await.unwrap();
-    conn.patch_task(
-        task_id,
-        &TaskPatch::new()
-            .status(TaskStatus::Running)
-            .sub_status(SubStatus::Active)
-            .worktree(Some("/nonexistent/worktree/path-repair-json-test"))
-            .tmux_window(Some("task-repair-json")),
-    )
-    .await
-    .unwrap();
-    drop(conn);
-
-    let out = binary()
-        .args(["--db", db_path, "doctor", "worktrees", "--repair", "--json"])
-        .output()
-        .unwrap();
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let _: Vec<serde_json::Value> = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-        panic!("expected valid JSON array on stdout, got: {stdout} — error: {e}")
-    });
-    assert!(
-        !out.status.success(),
-        "expected non-zero exit when repairable findings exist (--repair without --force)"
-    );
-}
-
-#[tokio::test]
-async fn doctor_repair_force_clears_db_orphan_worktree() {
-    let db = NamedTempFile::new().unwrap();
-    let db_path = db.path().to_str().unwrap();
-
-    let task_id = seed_task(db.path(), "Repair Test").await;
-    let conn = Database::open(db.path()).await.unwrap();
-    conn.patch_task(
-        task_id,
-        &TaskPatch::new()
-            .status(TaskStatus::Running)
-            .sub_status(SubStatus::Active)
-            .worktree(Some("/nonexistent/worktree/path-repair-test"))
-            .tmux_window(Some("task-repair")),
-    )
-    .await
-    .unwrap();
-    drop(conn);
-
-    let out = binary()
-        .args([
-            "--db",
-            db_path,
-            "doctor",
-            "worktrees",
-            "--repair",
-            "--force",
-        ])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "expected exit 0 after repair, stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-
-    let conn = Database::open(db.path()).await.unwrap();
-    let task = conn.get_task(task_id).await.unwrap().unwrap();
-    assert!(
-        task.worktree.is_none(),
-        "expected worktree to be cleared after --repair --force, got: {:?}",
-        task.worktree
+        stderr.contains("unrecognized subcommand") || stderr.contains("unexpected argument"),
+        "expected clap to reject `doctor` as an unknown subcommand, stderr: {stderr}"
     );
 }
 
