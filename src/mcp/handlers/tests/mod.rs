@@ -649,22 +649,16 @@ async fn list_projects_tool_is_removed() {
 /// the last Backlog -> Running path still doing a read-then-write status check
 /// instead of an atomic claim.
 ///
-/// Asserted against `TOOL_NAMES` rather than through `tools_list_returns_tools`:
-/// that test compares `tools/list` *against* `TOOL_NAMES`, so it is
-/// self-consistent by construction and would stay green if the tool came back.
+/// `TOOL_NAMES` is the whole guard, rather than a `tools/call` round-trip or
+/// `tools_list_returns_tools`. That test compares `tools/list` *against*
+/// `TOOL_NAMES`, so it is self-consistent by construction and would stay green
+/// if the tool came back. And `TOOL_NAMES` and `dispatch_tool`'s match arms
+/// expand from the same `$name` literals in `mcp_tools!`, so a name absent here
+/// is unroutable by construction — a live-dispatch check could not fail
+/// independently of this assert.
 ///
-/// `TOOL_NAMES` alone is the whole guard — no `tools/call` round-trip. Both it
-/// and `dispatch_tool`'s match arms expand from the same `$name` literals in
-/// `mcp_tools!`, so a name absent from `TOOL_NAMES` is unroutable by
-/// construction; a live-dispatch check could not fail independently, and the
-/// `Unknown tool` fallback shape is already covered by
-/// `tools_call_unknown_tool_returns_is_error_result`.
-///
-/// This is the third bespoke tool-absence test (see `list_projects_tool_is_removed`
-/// and `dispatch_next_tool_no_longer_exists`). One registry test pinning
-/// `TOOL_NAMES` against an explicit literal list would subsume all three and
-/// additionally catch a tool silently *added* or renamed, which nothing covers
-/// today.
+/// #3824 tracks folding this and the two sibling tool-absence tests into one
+/// registry test that pins `TOOL_NAMES` against an explicit list.
 #[test]
 fn claim_task_tool_is_removed() {
     assert!(
