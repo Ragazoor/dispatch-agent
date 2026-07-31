@@ -293,7 +293,7 @@ rule WrapUpPr {
         --   gh pr create --draft --base <task.base_branch>
         --     --head <owner>:<branch> --repo <owner>/<repo>
         --     --title <agent-authored> --body <agent-authored>
-        -- then call wrap_up(action="pr") (no pr_url), run the /retro skill,
+        -- then call wrap_up(action="pr") (no pr_url),
         -- and finally call exit_session(token, action="pr", pr_url=<url>) using
         -- the URL that `gh pr create` printed. It is exit_session that records
         -- task.url (with url_type = pr) and moves the task to review. The
@@ -349,7 +349,7 @@ rule WrapUpDone {
         -- issues an exit token recording action = done, exactly like
         -- wrap_up(action="rebase"). The Done transition and the tmux_window
         -- teardown happen later, in the single ExitSession call. The agent
-        -- runs the /retro skill between wrap_up and exit_session. This removes
+        -- runs the /retro skill before its commit step, ahead of wrap_up. This removes
         -- the old asymmetry where done flipped to Done immediately while
         -- rebase deferred to exit_session.
         --
@@ -363,7 +363,7 @@ rule WrapUpDone {
         --
         -- /wrap-up skill path: if task.wrap_up_mode = done (from get_task),
         -- or if the user selects "done" in Step 4, the skill calls
-        -- wrap_up(action="done"), runs /retro, then exit_session(token,
+        -- wrap_up(action="done"), then exit_session(token,
         -- action="done") — no git commands.
 }
 

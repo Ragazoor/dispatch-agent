@@ -590,8 +590,10 @@ rule WrapUpViaMcp {
         -- mutations are applied later, atomically, by ExitSessionViaMcp. This
         -- removes the old asymmetry where done/pr mutated status inside
         -- wrap_up while rebase deferred to exit_session.
-        -- The /wrap-up skill runs the /retro skill between wrap_up and
-        -- exit_session. For the pr path the agent has already run git push and
+        -- The /wrap-up skill runs the /retro skill before its commit step,
+        -- ahead of wrap_up, so any agent-context fix retro makes is committed
+        -- with the session's work rather than stranded after the rebase.
+        -- For the pr path the agent has already run git push and
         -- gh pr create by this point, and passes the resulting URL to
         -- exit_session (not to wrap_up).
         -- Handled by handle_wrap_up in src/mcp/handlers/tasks/wrap_up.rs.
