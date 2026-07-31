@@ -41,11 +41,12 @@ substitutes. It stays as-is.
 
 ## Spec impact
 
-None. Production behaviour is byte-identical — the emitted tmux command strings
-do not change, because the defaults are the bare names `claude` / `dispatch` and
-shell quoting is a no-op for them. No Allium spec describes *how* the binaries are
-named, so there is nothing to tend. Verified by grepping `docs/specs/` for
-binary/path language.
+None. Production behaviour is unchanged: the defaults are the bare names
+`claude` / `dispatch`, shell quoting is a no-op for them, and the one textual
+change to an emitted command string (the `$0` indirection, above) resolves the
+same binary the same way. No Allium spec describes *how* the binaries are named,
+so there is nothing to tend. Verified by grepping `docs/specs/` for binary/path
+language.
 
 ## Work
 
@@ -73,28 +74,42 @@ pub struct AgentBinaries { pub claude: String, pub dispatch: String }
 impl Default for AgentBinaries { /* bare names */ }
 
 impl AgentBinaries {
-    /// One quoting layer — for a command typed straight at a pane shell.
-    pub fn claude_for_shell(&self) -> String { .. }
-    /// Two layers — for the single-quoted body of `bash -c '…'`.
-    pub fn claude_for_bash_c(&self) -> String { .. }
+    /// The binary as one shell word. One quoting layer, everywhere.
+    pub fn claude_quoted(&self) -> String { .. }
 }
 ```
 
-Two accessors, because the launchers emit two different shapes and getting only
-one quoting layer right is worse than none. `resume_agent` /
-`create_main_session` `send-keys` a bare `claude …` line: one layer.
-`dispatch_with_prompt` interpolates *inside* an already single-quoted
-`bash -c '…'` body, so the value is quoted for the inner `bash` and that quoting
-is then escaped (`'` → `'\''`) for the outer shell that strips the enclosing
-quotes. A single-layer quote there would produce a string that looks escaped and
-splits at the first space. Covered by a test that runs the composed string
-through a real `sh` for a path with a space and one with an embedded quote.
+**One accessor, because every call site is arranged to need exactly one quoting
+layer.** The first cut had two — `dispatch_with_prompt` interpolates *inside* an
+already single-quoted `bash -c '…'` body, which imposes two layers (the pane's
+shell strips the outer quotes, then the inner `bash` parses what is left), so it
+needed the value quoted for the inner shell and that quoting escaped (`'` →
+`'\''`) for the outer one. Getting only one of the two right yields a string that
+looks escaped and splits at the first space.
+
+The simplify pass (two independent reviewers, converging) called that the wrong
+altitude: it encapsulates a subtle rule instead of removing it. The fix is to pass
+the binary as bash's `$0`, *after* the script body:
+
+```rust
+let claude_cmd = format!(
+    "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
+     && \"$0\" {DISPATCH_PLUGIN_DIR}{permission_flag} \"$prompt\"' {claude}"
+);
+```
+
+Now the binary is an ordinary shell word outside the quotes, one layer like every
+other launcher, and `claude_for_bash_c` / `escape_within_single_quotes` are
+deleted. `claude_quoted_survives_the_launcher_command_shape` composes the real
+shape and runs it through `sh` for a path with a space and one with an embedded
+quote — that test is what pins the `$0` arrangement, and it fails for
+`"claude bin"` if anyone moves the binary back inside the quotes.
 
 `shell_quote` returns its input unchanged when it matches
 `[A-Za-z0-9_@%+=:,./-]+` (the standard "safe" set), else single-quotes it. Keeping
-the common case unquoted is deliberate: it means the production command string
-does not change at all, so no prompt/TUI snapshot moves and the existing
-`dispatch_agent_includes_plugin_dir`-style assertions keep their exact meaning.
+the common case unquoted means the only change to the production command string
+is the `$0` indirection itself, with no quoting noise on top. Behaviour is
+identical — `bash` resolves a bare `claude` from `PATH` exactly as before.
 
 Add the trait default method plus a `MockProcessRunner::with_agent_binaries`
 builder so mock tests can pin a distinctive path.
