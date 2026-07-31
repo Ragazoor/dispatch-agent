@@ -1024,14 +1024,15 @@ surface MainSessionIndicator {
 -- Invariants
 ------------------------------------------------------------
 
--- RunningTaskHasWorktree: Tasks dispatched via DispatchTask or ClaimTaskViaMcp
--- always have a worktree, ONCE THE DISPATCH HAS COMPLETED. Two states break it
--- in the meantime: a dispatch in flight, whose claim writes running ahead of
--- provisioning (see DispatchTask), and manual forward movement (m key), which
--- moves a task to running without provisioning at all. The dispatch flow is the
--- canonical path; manual moves are overrides. This is why every consumer that
--- must not see a half-provisioned agent — crash detection, activity
--- classification, is_wrappable — keys off tmux_window rather than status.
+-- RunningTaskHasWorktree: Tasks dispatched via DispatchTask or
+-- DispatchResearchTask always have a worktree, ONCE THE DISPATCH HAS COMPLETED.
+-- Two states break it in the meantime: a dispatch in flight, whose claim writes
+-- running ahead of provisioning (see DispatchTask), and manual forward movement
+-- (m key), which moves a task to running without provisioning at all. The
+-- dispatch flow is the canonical path; manual moves are overrides. This is why
+-- every consumer that must not see a half-provisioned agent — crash detection,
+-- activity classification, is_wrappable — keys off tmux_window rather than
+-- status.
 
 -- DispatchClaimExclusive: at most one dispatch ever provisions a given task,
 -- however many entry points fire on it at once. Not expressible as a state

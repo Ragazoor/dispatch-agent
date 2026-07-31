@@ -6,10 +6,9 @@ use crate::mcp::McpState;
 use crate::models::{DispatchMode, EpicId, TaskId};
 
 use super::{
-    parse_args, service_err_to_response, ClaimTaskArgs, DispatchTaskArgs, JsonRpcResponse,
-    SendMessageArgs,
+    parse_args, service_err_to_response, DispatchTaskArgs, JsonRpcResponse, SendMessageArgs,
 };
-use crate::service::{ClaimTaskParams, FieldUpdate, UpdateTaskParams};
+use crate::service::{FieldUpdate, UpdateTaskParams};
 
 fn do_dispatch(
     task: &crate::models::Task,
@@ -33,38 +32,6 @@ fn do_dispatch(
         DispatchMode::Research => {
             dispatch::research_agent(task, runner, epic_ctx.as_ref(), verify_command.as_deref())
         }
-    }
-}
-
-pub(crate) async fn handle_claim_task(
-    state: &McpState,
-    id: Option<Value>,
-    _identity: &CallerIdentity,
-    args: Value,
-) -> JsonRpcResponse {
-    let parsed = match parse_args::<ClaimTaskArgs>(&id, args) {
-        Ok(a) => a,
-        Err(resp) => return resp,
-    };
-    tracing::info!(task_id = parsed.task_id, worktree = %parsed.worktree, "MCP claim_task");
-
-    match state
-        .task_svc
-        .claim_task(ClaimTaskParams {
-            task_id: TaskId(parsed.task_id),
-            worktree: parsed.worktree,
-            tmux_window: parsed.tmux_window,
-        })
-        .await
-    {
-        Ok(task) => {
-            state.notify_task_changed(task.id);
-            JsonRpcResponse::ok(
-                id,
-                json!({"content": [{"type": "text", "text": format!("Task {} claimed: {}", parsed.task_id, task.title)}]}),
-            )
-        }
-        Err(e) => service_err_to_response(id, e),
     }
 }
 

@@ -13,7 +13,7 @@ use crate::models::{
 };
 use crate::service::ServiceError;
 
-use super::params::{ClaimTaskParams, CreateTaskParams, ListTasksFilter, UpdateTaskParams};
+use super::params::{CreateTaskParams, ListTasksFilter, UpdateTaskParams};
 use super::validators::build_task_patch;
 use crate::service::UrlUpdate;
 
@@ -604,59 +604,6 @@ impl TaskService {
         Ok(filtered)
     }
 
-    pub async fn claim_task(&self, params: ClaimTaskParams) -> Result<Task, ServiceError> {
-        let task = self.get_task(params.task_id).await?;
-
-        if task.status != TaskStatus::Backlog {
-            return Err(ServiceError::Validation(format!(
-                "Task {} is already {}",
-                params.task_id,
-                task.status.as_str()
-            )));
-        }
-
-        // Same-repo check: derive repo from worktree by stripping /.worktrees/<anything>
-        let repo_from_worktree = params
-            .worktree
-            .find("/.worktrees/")
-            .map(|idx| &params.worktree[..idx])
-            .unwrap_or(&params.worktree);
-
-        if repo_from_worktree != task.repo_path {
-            return Err(ServiceError::Validation(format!(
-                "Repo mismatch: task belongs to {}, your worktree is in {}",
-                task.repo_path, repo_from_worktree
-            )));
-        }
-
-        // Seed last_pre_tool_use_at so ClassifyAgentActivity treats the
-        // freshly running task as Active until the agent's first PreToolUse
-        // hook fires — otherwise it flickers into Stale on the next tick.
-        self.db
-            .patch_task(
-                params.task_id,
-                &TaskPatch::new()
-                    .status(TaskStatus::Running)
-                    .worktree(Some(&params.worktree))
-                    .tmux_window(Some(&params.tmux_window))
-                    .last_pre_tool_use_at(Some(self.clock.now())),
-            )
-            .await?;
-
-        // Backlog → Running changes the parent epic's rolled-up status; see
-        // the EpicStatusRecalculation invariant in docs/specs/epics.allium.
-        // `task.epic_id` is still current: `TaskPatch` cannot carry epic_id
-        // (linkage moves only via `set_task_epic_id`), so there is no need to
-        // re-read the task the way `recalculate_epic_for_task` would.
-        if let Some(epic_id) = task.epic_id {
-            self.recalculate_epic(epic_id).await;
-        }
-
-        // Return the post-patch row: `task` above is the pre-patch snapshot
-        // and would still report Backlog with no worktree.
-        self.get_task(params.task_id).await
-    }
-
     pub async fn validate_wrap_up(&self, task_id: TaskId) -> Result<Task, ServiceError> {
         let task = self.get_task(task_id).await?;
 
@@ -864,8 +811,8 @@ impl TaskService {
     /// Conditional, mirroring [`Self::claim_next_backlog_task`]: it only fires
     /// while the task is still `Running` with no worktree. Provisioning can take
     /// a `git fetch`'s worth of wall time, so an unconditional revert would
-    /// stomp a task a human moved, or one that `claim_task` legitimately took,
-    /// back to `Backlog`. Returns whether the release applied.
+    /// drag a task a human moved in that window back to `Backlog`. Returns
+    /// whether the release applied.
     pub async fn release_claim(&self, task_id: TaskId) -> Result<bool, ServiceError> {
         let released = self.db.try_release_backlog_claim(task_id).await?;
         if released {

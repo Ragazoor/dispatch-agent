@@ -251,27 +251,6 @@ mcp_tools! {
             }
         };
 
-    async "claim_task" => tasks::handle_claim_task,
-        "Claim a backlog task into your current worktree. Sets the task to running and associates it with your worktree and tmux window. Only tasks in the same repo can be claimed.",
-        {
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "integer",
-                    "description": "The task ID to claim"
-                },
-                "worktree": {
-                    "type": "string",
-                    "description": "Your current worktree path (from git rev-parse --show-toplevel)"
-                },
-                "tmux_window": {
-                    "type": "string",
-                    "description": "Your current tmux window name (from tmux display-message -p '#W')"
-                }
-            },
-            "required": ["task_id", "worktree", "tmux_window"]
-        };
-
     async "create_epic" => epics::handle_create_epic,
         "Create a new epic on the kanban board.",
         {

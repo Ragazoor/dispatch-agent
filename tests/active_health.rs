@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use dispatch_tui::db::{self, Database};
 use dispatch_tui::models::{HookEventKind, SubStatus, TaskStatus};
-use dispatch_tui::service::{ClaimTaskParams, CreateTaskParams, FixedClock, TaskService};
+use dispatch_tui::service::{CreateTaskParams, FixedClock, TaskService, UpdateTaskParams};
 
 #[tokio::test]
 async fn hook_event_flow_drives_sub_status_and_lifecycle() {
@@ -37,13 +37,12 @@ async fn hook_event_flow_drives_sub_status_and_lifecycle() {
         .await
         .unwrap();
 
-    svc.claim_task(ClaimTaskParams {
-        task_id: id,
-        worktree: "/repo/.worktrees/active-health".into(),
-        tmux_window: "task-active".into(),
-    })
-    .await
-    .unwrap();
+    // Running is the whole precondition: `record_hook_event` branches on
+    // `status` and the timestamp fields only, never on worktree/tmux_window.
+    // How the task reached Running is not what this test covers.
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Running))
+        .await
+        .unwrap();
 
     let t = svc.get_task(id).await.unwrap();
     assert_eq!(t.status, TaskStatus::Running);

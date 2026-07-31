@@ -1,7 +1,7 @@
 -- allium: 3
 -- mcp-task-tools.allium
 --
--- Scope: MCP tools for task management (create, get, update, list, claim,
+-- Scope: MCP tools for task management (create, get, update, list,
 --        dispatch, send-message, subscribe/unsubscribe-to-task, query-usage,
 --        set-verify-command) and the CLI plan-attachment surface.
 -- Excludes: Task lifecycle (see tasks.allium); dispatch/retry (see dispatch.allium);
@@ -125,7 +125,8 @@ rule UpdateTaskViaMcp {
         -- Note: worktree and tmux_window ARE mutable through the internal
         -- Rust TaskService::update_task API (UpdateTaskParams defines
         -- them; see src/service/tasks/params.rs). The runtime uses that
-        -- path for detach and claim flows. They are intentionally
+        -- path for detach and the epic-chain claim's post-provision patch.
+        -- They are intentionally
         -- unreachable from MCP because the MCP handler does not parse
         -- those fields: the UpdateTaskArgs struct that defines the accepted
         -- argument set (src/mcp/handlers/tasks/mod.rs) has no worktree or
@@ -357,41 +358,6 @@ rule ListTasksViaMcp {
         --   | Goal: <plan goal>  (from **Goal:** line in plan file; falls back to
         --                         description preview ≤200 chars when plan absent/unreadable)
         -- Implemented in handle_list_tasks (src/mcp/handlers/tasks/crud.rs).
-}
-
-rule ClaimTaskViaMcp {
-    when: McpClaimTask(task, worktree, tmux_window)
-
-    requires: task.status = backlog
-
-    -- Repo root derived from the worktree by stripping the
-    -- `/.worktrees/<slug>` suffix must exactly match task.repo_path.
-    -- This is stricter than a simple starts_with check: worktrees
-    -- pointing at another repository with a similar prefix are rejected.
-    requires: repo_from_worktree(worktree.path) = task.repo_path
-
-    ensures: task.status = running
-    ensures: task.sub_status = core/SubStatus.default_for(running)
-    ensures: task.last_pre_tool_use_at = now
-    ensures: task.worktree = worktree
-    ensures: task.tmux_window = tmux_window
-    ensures: task.updated_at = now
-
-    @guidance
-        -- The backlog -> running transition changes the parent epic's
-        -- rolled-up status, so the service recalculates it after the write
-        -- per the EpicStatusRecalculation invariant in epics.allium.
-        -- The service returns the post-write task, not the pre-write
-        -- snapshot it read to validate the requires clauses above.
-        -- repo_from_worktree splits on "/.worktrees/" and returns the
-        -- prefix; when the path does not contain "/.worktrees/", the
-        -- full path is returned (so a user's repo root is accepted as-is).
-        -- On mismatch, the service returns a Validation error naming
-        -- the task's repo_path and the caller's derived repo root.
-        -- last_pre_tool_use_at is seeded so ClassifyAgentActivity sees a
-        -- recent activity stamp through the ACTIVE_THRESHOLD window before
-        -- the agent's first PreToolUse hook fires — without that, the
-        -- freshly running task flickers into Stale on the next tick.
 }
 
 rule QueryUsageViaMcp {

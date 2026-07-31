@@ -8,7 +8,7 @@ mod validators;
 mod watchers;
 
 pub use crud::{CloseSessionOutcome, ClosedSession, TaskService, UpdateTaskResult};
-pub use params::{ClaimTaskParams, CreateTaskParams, ListTasksFilter, UpdateTaskParams};
+pub use params::{CreateTaskParams, ListTasksFilter, UpdateTaskParams};
 pub use watchers::SubscribeOutcome;
 
 #[cfg(test)]

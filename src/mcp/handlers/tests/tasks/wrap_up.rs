@@ -1188,35 +1188,6 @@ async fn create_task_sends_refresh_notification() {
 }
 
 #[tokio::test]
-async fn claim_task_sends_refresh_notification() {
-    let (state, mut rx) = test_state_with_notify().await;
-    let task_id = create_task_fixture(&state).await;
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "claim_task",
-            "arguments": {
-                "task_id": task_id.0,
-                "worktree": "/repo/.worktrees/1-test",
-                "tmux_window": "task-1"
-            }
-        })),
-    )
-    .await;
-    assert!(resp.error.is_none(), "{:?}", resp.error);
-
-    let event = rx
-        .try_recv()
-        .expect("expected notification after claim_task");
-    assert!(
-        matches!(event, crate::mcp::McpEvent::TaskChanged(t) if t == task_id),
-        "expected TaskChanged({task_id:?}), got {event:?}"
-    );
-}
-
-#[tokio::test]
 async fn failed_update_does_not_send_notification() {
     let (state, mut rx) = test_state_with_notify().await;
     let task_id = create_task_fixture(&state).await;

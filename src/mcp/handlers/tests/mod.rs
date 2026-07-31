@@ -556,10 +556,6 @@ async fn every_tool_with_args_rejects_unknown_field() {
         ("get_task", json!({"task_id": 1})),
         ("create_task", json!({"title": "t", "repo_path": "/r"})),
         ("list_tasks", json!({})),
-        (
-            "claim_task",
-            json!({"task_id": 1, "worktree": "/w", "tmux_window": "tw"}),
-        ),
         ("create_epic", json!({"title": "t"})),
         ("get_epic", json!({"epic_id": 1})),
         ("update_epic", json!({"epic_id": 1})),
@@ -645,6 +641,36 @@ async fn list_projects_tool_is_removed() {
     assert_eq!(result["isError"], json!(true));
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Unknown tool"), "got: {text}");
+}
+
+/// `claim_task` was the agent-facing "adopt this backlog task into the worktree
+/// I already have" call, removed in #3808: it had zero recorded invocations
+/// across 627 agent trajectories, no skill told an agent to call it, and it was
+/// the last Backlog -> Running path still doing a read-then-write status check
+/// instead of an atomic claim.
+///
+/// Asserted against `TOOL_NAMES` rather than through `tools_list_returns_tools`:
+/// that test compares `tools/list` *against* `TOOL_NAMES`, so it is
+/// self-consistent by construction and would stay green if the tool came back.
+///
+/// `TOOL_NAMES` alone is the whole guard — no `tools/call` round-trip. Both it
+/// and `dispatch_tool`'s match arms expand from the same `$name` literals in
+/// `mcp_tools!`, so a name absent from `TOOL_NAMES` is unroutable by
+/// construction; a live-dispatch check could not fail independently, and the
+/// `Unknown tool` fallback shape is already covered by
+/// `tools_call_unknown_tool_returns_is_error_result`.
+///
+/// This is the third bespoke tool-absence test (see `list_projects_tool_is_removed`
+/// and `dispatch_next_tool_no_longer_exists`). One registry test pinning
+/// `TOOL_NAMES` against an explicit literal list would subsume all three and
+/// additionally catch a tool silently *added* or renamed, which nothing covers
+/// today.
+#[test]
+fn claim_task_tool_is_removed() {
+    assert!(
+        !super::dispatch::TOOL_NAMES.contains(&"claim_task"),
+        "claim_task must not be a registered tool"
+    );
 }
 
 #[tokio::test]

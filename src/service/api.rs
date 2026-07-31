@@ -218,11 +218,6 @@ macro_rules! task_service_api {
                 filter: $crate::service::ListTasksFilter
             ) -> Result<Vec<$crate::models::Task>, $crate::service::ServiceError>;
 
-            async fn claim_task(
-                &self,
-                params: $crate::service::ClaimTaskParams
-            ) -> Result<$crate::models::Task, $crate::service::ServiceError>;
-
             async fn validate_wrap_up(
                 &self,
                 task_id: $crate::models::TaskId
