@@ -8,6 +8,7 @@
 mod config;
 mod hooks;
 mod plugins;
+mod statusline;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -215,6 +216,7 @@ pub(super) struct SetupPaths {
     pub mcp_path: PathBuf,
     pub legacy_mcp_path: PathBuf,
     pub tmux_conf_path: PathBuf,
+    pub statusline_path: PathBuf,
 }
 
 impl SetupPaths {
@@ -222,11 +224,13 @@ impl SetupPaths {
     fn resolve() -> Result<Self> {
         let claude_dir = claude_dir()?;
         let legacy_mcp_path = claude_dir.join(".mcp.json");
+        let statusline_path = claude_dir.join(statusline::SETTINGS_FILE_NAME);
         Ok(Self {
             claude_dir,
             mcp_path: user_global_config_path()?,
             legacy_mcp_path,
             tmux_conf_path: tmux::tmux_conf_path()?,
+            statusline_path,
         })
     }
 }
@@ -325,6 +329,24 @@ pub(super) async fn run_setup_in(
         }
     } else {
         println!("Plugin: dispatch plugin already up to date");
+    }
+
+    // 2b. Status line — dispatch-owned settings file that chains to the
+    // user's existing statusLine.command (see src/setup/statusline.rs).
+    let chain = statusline::discover_chain(&paths.claude_dir);
+    let snapshot_path = data_dir.join("rate-limits.json");
+    match statusline::write_settings_file(&paths.statusline_path, &snapshot_path, chain.as_deref())
+    {
+        Ok(true) => println!(
+            "Status line: wrote {} (budget indicator){}",
+            display_for(&paths.statusline_path),
+            match &chain {
+                Some(c) => format!(", chaining to `{c}`"),
+                None => String::new(),
+            }
+        ),
+        Ok(false) => println!("Status line: already configured"),
+        Err(e) => eprintln!("Warning: failed to write statusline settings: {e}"),
     }
 
     // 3. Tmux focus-events
@@ -950,6 +972,7 @@ mod tests {
             mcp_path: root.join(".claude.json"),
             legacy_mcp_path: claude_dir.join(".mcp.json"),
             tmux_conf_path: root.join(".tmux.conf"),
+            statusline_path: claude_dir.join(statusline::SETTINGS_FILE_NAME),
         }
     }
 

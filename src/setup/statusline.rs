@@ -1,0 +1,207 @@
+//! Generates the dispatch-owned statusLine settings file that is injected into
+//! every dispatch-spawned Claude session via `--settings`.
+//!
+//! The file lives at a **fixed literal path** (`~/.claude/dispatch-statusline.json`)
+//! so the spawn constant in `src/dispatch/prompts.rs` stays a compile-time
+//! `const` with no runtime path and no shell-quoting hazard. Runtime paths live
+//! inside this file instead, where they can be quoted properly.
+//!
+//! Note it is NOT placed under the plugin dir: `remove_stale_files` deletes any
+//! non-embedded file there. And it is NOT `~/.claude/settings.json`, which
+//! `src/setup/mod.rs` deliberately never writes.
+
+use anyhow::{Context, Result};
+use serde_json::json;
+use std::path::Path;
+
+/// The fixed file name, under the resolved `~/.claude` directory.
+pub(super) const SETTINGS_FILE_NAME: &str = "dispatch-statusline.json";
+
+/// POSIX single-quoting: wrap in `'…'` and replace each embedded `'` with
+/// `'\''`. The generated string is run through `sh -c`, so an unquoted path
+/// containing a space would split into two arguments.
+pub(super) fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// Build the statusLine command string.
+pub(super) fn build_command(snapshot_path: &Path, chain: Option<&str>) -> String {
+    let mut cmd = format!(
+        "dispatch statusline --snapshot {}",
+        shell_quote(&snapshot_path.display().to_string())
+    );
+    if let Some(chain) = chain {
+        cmd.push_str(&format!(" --chain {}", shell_quote(chain)));
+    }
+    cmd
+}
+
+/// Read the user's current `statusLine.command` so the decorator can chain to
+/// it. Read-only — this never writes `settings.json`.
+///
+/// Returns `None` when there is nothing to chain, including the
+/// **recursion-guard** case where the user's command is already a
+/// `dispatch statusline` invocation. Chaining to ourselves would loop; the
+/// honest outcome is an empty status line, with the reporter still running.
+pub(super) fn discover_chain(claude_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(claude_dir.join("settings.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let command = value
+        .get("statusLine")?
+        .get("command")?
+        .as_str()?
+        .trim()
+        .to_string();
+    if command.is_empty() || command.contains("dispatch statusline") {
+        return None;
+    }
+    Some(command)
+}
+
+/// Write the settings file. Returns whether the on-disk content changed, so
+/// setup can report accurately and stay idempotent.
+pub(super) fn write_settings_file(
+    path: &Path,
+    snapshot_path: &Path,
+    chain: Option<&str>,
+) -> Result<bool> {
+    let content = serde_json::to_string_pretty(&json!({
+        "statusLine": {
+            "type": "command",
+            "command": build_command(snapshot_path, chain),
+        }
+    }))
+    .context("failed to serialize statusline settings")?;
+
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        if existing.trim() == content.trim() {
+            return Ok(false);
+        }
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(path, &content)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(true)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quotes_plain_path() {
+        assert_eq!(shell_quote("/home/a/b.json"), "'/home/a/b.json'");
+    }
+
+    #[test]
+    fn quotes_path_with_spaces() {
+        assert_eq!(shell_quote("/home/my dir/b.json"), "'/home/my dir/b.json'");
+    }
+
+    #[test]
+    fn escapes_embedded_single_quote() {
+        // A path containing a single quote must not terminate the quoting.
+        assert_eq!(shell_quote("/home/o'brien/b"), r#"'/home/o'\''brien/b'"#);
+    }
+
+    #[test]
+    fn builds_command_with_chain() {
+        let cmd = build_command(Path::new("/d/rate-limits.json"), Some("claude-statusline"));
+        assert_eq!(
+            cmd,
+            "dispatch statusline --snapshot '/d/rate-limits.json' --chain 'claude-statusline'"
+        );
+    }
+
+    #[test]
+    fn builds_command_without_chain() {
+        let cmd = build_command(Path::new("/d/rate-limits.json"), None);
+        assert_eq!(cmd, "dispatch statusline --snapshot '/d/rate-limits.json'");
+    }
+
+    #[test]
+    fn discovers_existing_status_line_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("settings.json"),
+            r#"{"statusLine":{"type":"command","command":"claude-statusline"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            discover_chain(tmp.path()).as_deref(),
+            Some("claude-statusline")
+        );
+    }
+
+    #[test]
+    fn discovers_none_when_no_settings_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(discover_chain(tmp.path()), None);
+    }
+
+    #[test]
+    fn discovers_none_when_no_status_line_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("settings.json"), r#"{"permissions":{}}"#).unwrap();
+        assert_eq!(discover_chain(tmp.path()), None);
+    }
+
+    #[test]
+    fn discovers_none_when_settings_malformed() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("settings.json"), "{ not json").unwrap();
+        assert_eq!(discover_chain(tmp.path()), None);
+    }
+
+    #[test]
+    fn recursion_guard_refuses_to_chain_to_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("settings.json"),
+            r#"{"statusLine":{"type":"command","command":"dispatch statusline --snapshot /d/x.json"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            discover_chain(tmp.path()),
+            None,
+            "must not chain to a dispatch statusline invocation"
+        );
+    }
+
+    #[test]
+    fn writes_valid_settings_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("dispatch-statusline.json");
+        assert!(write_settings_file(&path, Path::new("/d/rl.json"), Some("cs")).unwrap());
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["statusLine"]["type"], "command");
+        assert_eq!(
+            v["statusLine"]["command"],
+            "dispatch statusline --snapshot '/d/rl.json' --chain 'cs'"
+        );
+    }
+
+    #[test]
+    fn write_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("dispatch-statusline.json");
+        assert!(write_settings_file(&path, Path::new("/d/rl.json"), Some("cs")).unwrap());
+        assert!(
+            !write_settings_file(&path, Path::new("/d/rl.json"), Some("cs")).unwrap(),
+            "second identical write must report no change"
+        );
+    }
+
+    #[test]
+    fn write_reports_change_when_chain_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("dispatch-statusline.json");
+        write_settings_file(&path, Path::new("/d/rl.json"), Some("old")).unwrap();
+        assert!(write_settings_file(&path, Path::new("/d/rl.json"), Some("new")).unwrap());
+    }
+}
