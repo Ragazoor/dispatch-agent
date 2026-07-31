@@ -16,10 +16,15 @@ pub struct BudgetWindow {
 
 impl BudgetWindow {
     /// Percentage constrained to 0..=100. The upstream field is documented as
-    /// 0-100 but is not validated here, and a nonsense value must not produce
-    /// nonsense colour or text.
+    /// 0-100 but is not validated here. NaN values are treated as 0.0 to prevent
+    /// nonsense colour or text — a missing/garbage reading should read as "no
+    /// information", and 0 is the safe end for a used-percentage.
     pub fn clamped_percentage(&self) -> f64 {
-        self.used_percentage.clamp(0.0, 100.0)
+        if self.used_percentage.is_nan() {
+            0.0
+        } else {
+            self.used_percentage.clamp(0.0, 100.0)
+        }
     }
 
     fn from_json(value: &serde_json::Value) -> Option<Self> {
@@ -131,6 +136,15 @@ mod tests {
         };
         assert_eq!(high.clamped_percentage(), 100.0);
         assert_eq!(low.clamped_percentage(), 0.0);
+    }
+
+    #[test]
+    fn clamps_nan_to_zero() {
+        let nan_window = BudgetWindow {
+            used_percentage: f64::NAN,
+            resets_at: 0,
+        };
+        assert_eq!(nan_window.clamped_percentage(), 0.0);
     }
 
     #[test]
