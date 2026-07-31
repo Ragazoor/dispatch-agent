@@ -1,3 +1,4 @@
+use crate::git::{parse_porcelain_files, parse_unmerged_files};
 use crate::models::expand_tilde;
 use crate::process::ProcessRunner;
 
@@ -48,40 +49,6 @@ impl std::fmt::Display for FinishError {
             FinishError::Other(msg) => write!(f, "{msg}"),
         }
     }
-}
-
-/// Splits every `git status --porcelain` line into its two-character status
-/// code and the path that follows (after the status code and its separating
-/// space). Operates on the raw `Output` rather than a pre-trimmed string:
-/// the leading status-code column can itself be a space (e.g. `" M"`), which
-/// a whole-buffer `.trim()` on the first line would incorrectly eat.
-fn porcelain_entries(output: &std::process::Output) -> Vec<(String, String)> {
-    String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.len() >= 3)
-        .map(|line| (line[0..2].to_string(), line[3..].trim_end().to_string()))
-        .collect()
-}
-
-/// Every dirty/untracked path from a `git status --porcelain` run.
-fn parse_porcelain_files(output: &std::process::Output) -> Vec<String> {
-    porcelain_entries(output)
-        .into_iter()
-        .map(|(_, path)| path)
-        .collect()
-}
-
-/// Just the unmerged (conflicted) paths from a `git status --porcelain` run
-/// — status codes `UU`, `AA`, `DD`, or any code containing `U` (added/deleted
-/// by us/them). Structural and locale-independent, unlike parsing conflict
-/// file names out of rebase's English stdout/stderr prose (which breaks on
-/// rename/delete conflicts, whose message doesn't end in "... in <path>").
-fn parse_unmerged_files(output: &std::process::Output) -> Vec<String> {
-    porcelain_entries(output)
-        .into_iter()
-        .filter(|(code, _)| code == "AA" || code == "DD" || code.contains('U'))
-        .map(|(_, path)| path)
-        .collect()
 }
 
 /// The git-orchestration inputs for [`finish_task`], grouped to avoid a long
