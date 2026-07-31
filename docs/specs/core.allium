@@ -536,6 +536,8 @@ config {
     notifications_enabled: Boolean = false
     pr_poll_interval: Duration = 30.seconds
     main_session_poll_interval: Duration = 10.seconds   -- cadence for the live tmux liveness check behind the main-session status-bar indicator (see dispatch.allium: MainSessionIndicator); a fixed multiple of tick_interval
+    budget_poll_interval: Duration = 10.seconds
+    budget_stale_after: Duration = 10.minutes
     default_feed_interval: Duration = 30.seconds   -- default cadence for feed epics with no explicit feed_interval_secs (see feeds.allium)
     mcp_port: Integer = 3142                         -- MCP server port (override via DISPATCH_PORT env var)
     -- Fallback when the repo has no origin/HEAD symbolic-ref.

@@ -1120,6 +1120,58 @@ surface MainSessionIndicator {
         -- setting; main_session_window_alive() is the shared live tmux check.
 }
 
+surface TokenBudgetIndicator {
+    facing user: User
+    -- prose: passive readout of the Claude subscription rate-limit windows in
+    -- the top indicator row. Sourced from the statusLine hook payload of every
+    -- dispatch-spawned session, recorded to a snapshot file, polled by the TUI.
+    -- NOT related to usage_events (see mcp-task-tools.allium: QueryUsageViaMcp) —
+    -- those are feature-usage counters, these are subscription budget windows.
+    let five_hour   = budget_window(FiveHour)
+    let seven_day   = budget_window(SevenDay)
+    let stale       = snapshot_age() > core/config.budget_stale_after
+    let visible     = five_hour.present or seven_day.present
+
+    exposes:
+        five_hour
+        seven_day
+        stale
+        visible
+    @guarantee WindowsRenderedWithPercentAndReset
+        -- each present window renders as "<label> <pct>% ·<countdown>"
+    @guarantee ColourByThreshold
+        -- per window, independently: green below 50, yellow 50..80, red above 80
+    @guarantee HiddenWhenNoSnapshot
+        -- no snapshot, unreadable snapshot, or neither window present => nothing
+        -- is rendered. Never imply 0% used: API-key and cloud-provider auth
+        -- never emit rate_limits at all.
+    @guarantee PerWindowOmission
+        -- one window present and the other absent renders only the present one
+    @guarantee DimmedWhenStale
+        -- snapshot older than core/config.budget_stale_after dims the whole
+        -- indicator and appends an age suffix
+    @guarantee ResetInPastRendersNow
+        -- a resets_at at or before now renders "·now", never a negative countdown
+    @guarantee PercentageClamped
+        -- used_percentage is clamped to 0..100 for both colour and display
+    @guarantee DegradesWhenRowTooNarrow
+        -- when the row's spans would exceed the width, drop in order: countdown
+        -- suffixes, then the seven_day window, then the indicator entirely.
+        -- Pre-existing badges in that row are never dropped to make room.
+    @guarantee DerivedLiveNeverPersisted
+        -- read from the snapshot file off the event loop; never stored in the
+        -- database and never part of Board state
+    @guarantee RefreshedPeriodicallyNoRedrawWhenUnchanged
+        -- refreshed every core/config.budget_poll_interval, a fixed multiple
+        -- of core/config.tick_interval; an unchanged refresh does not force
+        -- a redraw
+    @guarantee PassiveNotNavigable
+        -- display-only; not selectable, focusable, or a navigation target
+    @guidance -- rendered by render_top_indicators, prepended so it sits left of
+              -- the bell; the status bar was rejected as a site because its
+              -- hint text already overflows the terminal width and is clipped
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
