@@ -329,7 +329,7 @@ Two patterns have already caused bugs and must not be repeated:
 
 Two test styles cover tmux, and they prove different things. Picking the wrong one is not a style preference — it is how a broken command stays green.
 
-- **`MockProcessRunner` proves *which command we sent*.** It records argv. Right for argv shape: flag ordering, target formatting, that an option is passed at all. The ~80 inline tests in `src/tmux.rs` are this style and should stay.
+- **`MockProcessRunner` proves *which command we sent*.** It records argv. Right for argv shape: flag ordering, target formatting, that an option is passed at all. The 100-plus inline tests in `src/tmux.rs` are this style and should stay.
 
 - **A real tmux server proves *what tmux did with it*.** The only thing that catches wrong-pane, wrong-cwd, or wrong-pane-count bugs — because tmux resolves a loose target by **falling back**, not by failing. A `send-keys` with no `-t` inside `run-shell -bC` silently hits the session's active pane; a `%`-less pane target silently hits whatever index `pane-base-index` happens to make first. Both look like a well-formed command to a mock.
 
@@ -341,8 +341,23 @@ Where to put a real-tmux test:
 |---|---|
 | What topology and cwd does dispatch/resume/split actually build? | `tests/tmux_lifecycle.rs` — panes run the real shell with stub `claude`/`dispatch` binaries that record `argv`/`$PWD`/`$TMUX_PANE` |
 | Which pane does a keystroke land in? | `tests/tmux_split_hook.rs` — every pane runs `cat > log`, so delivery is observable |
+| Does a named target resolve to the window it names? | `tests/tmux_window_targets.rs` — colliding-prefix topology (`task-4` alongside `task-42`), so a prefix-matched target is observable as the wrong window being hit |
 
-Both share the rig in `tests/tmux_harness/mod.rs`: a private `-L` socket, `-f /dev/null` so the developer's `~/.tmux.conf` can't change the result, and drop-guard teardown. Start from `tmux_available_or_skip()` — it skips locally when tmux is missing but **hard-fails under `CI`**, so a missing tmux in the workflow can never quietly report green. Waiting on pane output goes through `poll_for` (the sole sanctioned `// allow-test-sleep`, see below), never a fixed sleep.
+All three share the rig in `tests/tmux_harness/mod.rs`: a private `-L` socket, `-f /dev/null` so the developer's `~/.tmux.conf` can't change the result, and drop-guard teardown. Start from `tmux_available_or_skip()` — it skips locally when tmux is missing but **hard-fails under `CI`**, so a missing tmux in the workflow can never quietly report green. Waiting on pane output goes through `poll_for` (the sole sanctioned `// allow-test-sleep`, see below), never a fixed sleep.
+
+### Writing a mock tmux test: `MockProcessRunner`'s window-lookup policy
+
+Every `tmux::` helper that takes a window *name* first resolves it to a pane ID via `window_target` (`src/tmux.rs`) — an extra `list-panes` call, because tmux prefix-matches a bare `-t <name>`. `MockProcessRunner` therefore carries a `WindowLookup` policy (`src/process.rs:128`) deciding how that lookup is answered, and the default is **not** "from the response queue":
+
+| Policy | How the lookup is answered | When to use |
+|---|---|---|
+| `AnyName` (default, from `MockProcessRunner::new`) | Out of band: any name resolves, pane IDs `%0`, `%1`, … in first-seen order. **Not** taken from the positional response queue and **not** recorded in `recorded_calls()`. | The default. The subject is the operation, not the resolution. |
+| `with_windows(&[…])` | Also out of band, but only the declared names resolve — anything else fails as absent. Pair with `pane_id_of(name)` to assert the resolved `-t %N`. | The topology matters — above all a prefix collision: `with_windows(&["task-42"])` then an operation on `task-4`, which must fail rather than hit `task-42`. |
+| `with_queued_window_lookup()` | From the positional queue, and recorded like any other call. (`pane_id_of` panics — there is no fake server to ask.) | The lookup itself is the subject, or no call at all is expected (`MockProcessRunner::unused`). |
+
+The consequence that trips people up: under the two out-of-band policies the lookup consumes no queue entry and appears in no `recorded_calls()` index, so `calls[N]` numbers the operation's own calls only — don't budget a listing response per helper invocation. Flip to `with_queued_window_lookup()` and the indices shift, because the lookup now occupies one.
+
+A mock still can't verify that a target *resolved* correctly — it records argv, not tmux's reading of it. Exact-name resolution is covered by the `window_target` unit tests in `src/tmux.rs` plus `tests/tmux_window_targets.rs` against a real server.
 
 ## No `tokio::time::sleep` in tests
 
