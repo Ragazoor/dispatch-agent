@@ -282,10 +282,13 @@ async fn dispatch_task(
             branch,
             base_branch,
             worktree,
-            tmux_window,
         } => {
-            rt.exec_finish(id, repo_path, branch, base_branch, worktree, tmux_window)
+            rt.exec_finish(id, repo_path, branch, base_branch, worktree)
                 .await;
+            vec![]
+        }
+        CloseSession(task) => {
+            drop(rt.exec_close_session(app, task).await);
             vec![]
         }
         CheckWindow { id, window } => {

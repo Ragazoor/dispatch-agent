@@ -7,9 +7,9 @@ use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 use crate::tmux;
 
 use super::prompts::{
-    build_prompt, build_quick_dispatch_prompt, build_research_prompt, build_tmux_window_name,
-    parse_tmux_window_task_id, pr_rebase_preamble, rebase_preamble, EpicContext,
-    LearningInjections, PromptContext, DISPATCH_PLUGIN_DIR,
+    build_and_record_injections, build_prompt, build_quick_dispatch_prompt, build_research_prompt,
+    build_tmux_window_name, parse_tmux_window_task_id, pr_rebase_preamble, rebase_preamble,
+    EpicContext, LearningInjections, PromptContext, DISPATCH_PLUGIN_DIR,
 };
 use super::worktree::provision_worktree;
 
@@ -260,6 +260,51 @@ pub fn quick_dispatch_agent(
         Some(&task.base_branch),
         None,
     )
+}
+
+/// The three per-task reads every dispatch entry point performs before it can
+/// build a prompt: the epic banner, the learnings to inject (recording each
+/// retrieval as it goes), and the repo's verify command.
+///
+/// Grouped because all four launch sites — `dispatch_task` and the epic chain in
+/// `src/mcp/handlers/tasks/dispatch.rs`, and `exec_quick_dispatch` /
+/// `exec_dispatch_agent` in `src/runtime/tasks.rs` — ran the identical
+/// three-step prologue inline, so a change to it meant editing four places.
+pub struct DispatchInputs {
+    pub epic_ctx: Option<EpicContext>,
+    pub injected: Vec<crate::models::Learning>,
+    pub verify_command: Option<String>,
+}
+
+/// Run the dispatch prologue for `task`, reading its epic context from the DB.
+///
+/// Async and side-effecting (it records prompt-injection retrievals), so callers
+/// run it before handing the task to the blocking dispatch itself.
+pub async fn prepare_inputs(
+    db: &dyn crate::db::TaskReadStore,
+    task: &Task,
+    emb_svc: &std::sync::Arc<crate::service::embeddings::EmbeddingService>,
+) -> DispatchInputs {
+    let epic_ctx = EpicContext::from_db(task, db).await;
+    prepare_inputs_with_epic_ctx(db, task, emb_svc, epic_ctx).await
+}
+
+/// [`prepare_inputs`] for a caller that already holds the epic row — the epic
+/// chain, which reads the epic to check `auto_dispatch` and would otherwise
+/// re-read it here.
+pub async fn prepare_inputs_with_epic_ctx(
+    db: &dyn crate::db::TaskReadStore,
+    task: &Task,
+    emb_svc: &std::sync::Arc<crate::service::embeddings::EmbeddingService>,
+    epic_ctx: Option<EpicContext>,
+) -> DispatchInputs {
+    let injected = build_and_record_injections(db, task, emb_svc).await;
+    let verify_command = fetch_verify_command(db, &task.repo_path).await;
+    DispatchInputs {
+        epic_ctx,
+        injected,
+        verify_command,
+    }
 }
 
 /// Fetch the verify command for a repository path from the settings store.

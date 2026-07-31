@@ -55,13 +55,16 @@ pub(super) fn run_blocking_dispatch(
 fn run_quick_dispatch(
     task: models::Task,
     runner: Arc<dyn ProcessRunner>,
-    epic_ctx: Option<dispatch::EpicContext>,
-    injected: Vec<crate::models::Learning>,
-    verify_command: Option<String>,
+    inputs: dispatch::DispatchInputs,
     msg_tx: tokio::sync::mpsc::UnboundedSender<Message>,
 ) {
     let id = task.id;
     run_blocking_dispatch(id, "Quick dispatch", true, msg_tx, move || {
+        let dispatch::DispatchInputs {
+            epic_ctx,
+            injected,
+            verify_command,
+        } = inputs;
         let injections = dispatch::LearningInjections::from(injected.as_slice());
         dispatch::quick_dispatch_agent(
             &task,
@@ -156,10 +159,8 @@ impl TuiRuntime {
         // Spawn a background task so the TUI command loop is never blocked
         // waiting for the embedding thread (which may be busy with index_repo).
         tokio::spawn(async move {
-            let epic_ctx = dispatch::EpicContext::from_db(&task, &*db).await;
-            let injected = dispatch::build_and_record_injections(&*db, &task, &emb_svc).await;
-            let verify_command = dispatch::fetch_verify_command(&*db, &task.repo_path).await;
-            run_quick_dispatch(task, runner, epic_ctx, injected, verify_command, msg_tx);
+            let inputs = dispatch::prepare_inputs(&*db, &task, &emb_svc).await;
+            run_quick_dispatch(task, runner, inputs, msg_tx);
         });
     }
 
@@ -188,7 +189,7 @@ impl TuiRuntime {
         match self.task_svc.update_task(p).await {
             Ok(result) => {
                 app.dirty_since_refresh = true;
-                self.write_back_task_sort_order(app, result);
+                self.write_back_task_sort_order(app, result.task_id, result.sort_order_after_write);
             }
             Err(e) => {
                 app.update(Message::System(crate::tui::messages::SystemMessage::Error(
@@ -198,13 +199,13 @@ impl TuiRuntime {
         }
     }
 
-    /// If `result` carries a written `sort_order`, patch that one field onto
+    /// If the write carried a `sort_order`, patch that one field onto
     /// the in-memory task immediately. The service — not the caller — computes
     /// it on a Done transition (`sort_order_for_status_transition`, run inside
-    /// `update_task`), so without this the board keeps whatever the caller's
-    /// snapshot held until the next refresh ~2s later: a freshly-completed
-    /// task renders at the *bottom* of Done, and one that just left Done stays
-    /// pinned to the top of the column it landed in.
+    /// `update_task` and `close_session` alike), so without this the board keeps
+    /// whatever the caller's snapshot held until the next refresh ~2s later: a
+    /// freshly-completed task renders at the *bottom* of Done, and one that just
+    /// left Done stays pinned to the top of the column it landed in.
     ///
     /// The task twin of `write_back_epic_sort_order` (src/runtime/epics.rs),
     /// and identical in the two details that matter. It clones the **live
@@ -221,17 +222,66 @@ impl TuiRuntime {
     /// `spawn_refresh_task` uses — rather than reaching into `App.board`
     /// directly: see the "Visibility convention" in docs/conventions.md, only
     /// `crate::tui` code may mutate `App.board`.
-    fn write_back_task_sort_order(&self, app: &mut App, result: crate::service::UpdateTaskResult) {
-        let Some(new_sort_order) = result.sort_order_after_write else {
+    fn write_back_task_sort_order(
+        &self,
+        app: &mut App,
+        task_id: TaskId,
+        sort_order_after_write: Option<Option<i64>>,
+    ) {
+        let Some(new_sort_order) = sort_order_after_write else {
             return;
         };
-        let Some(mut task) = app.tasks().iter().find(|t| t.id == result.task_id).cloned() else {
+        let Some(mut task) = app.tasks().iter().find(|t| t.id == task_id).cloned() else {
             return;
         };
         task.sort_order = new_sort_order;
         app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
             task,
         )));
+    }
+
+    /// Persist a finished task's terminal state, then — only if that write
+    /// landed — tear down its tmux window.
+    ///
+    /// The ordering is the point. `finish_task` used to kill the window itself,
+    /// *before* the Done write, which is the opposite of the rule the MCP close
+    /// follows: a failed terminal write would leave a task still marked Review
+    /// while its session was already gone. Routing through
+    /// [`crate::service::TaskServiceApi::close_session`] makes the teardown
+    /// conditional on the write, so window and `tmux_window` can never disagree
+    /// (`FinishTaskSuccess` in `docs/specs/pr-workflow.allium`).
+    ///
+    /// Returns the teardown's `JoinHandle` when a window was killed (`None`
+    /// when the close failed or there was no window), mirroring
+    /// [`Self::exec_check_window`]: the command loop drops it, tests await it.
+    pub(super) async fn exec_close_session(
+        &self,
+        app: &mut App,
+        task: models::Task,
+    ) -> Option<tokio::task::JoinHandle<()>> {
+        let id = task.id;
+        let closed = match self
+            .task_svc
+            .close_session(id, crate::service::CloseSessionOutcome::Done)
+            .await
+        {
+            Ok(closed) => closed,
+            Err(e) => {
+                app.update(Message::System(crate::tui::messages::SystemMessage::Error(
+                    Self::db_error("closing task session", e),
+                )));
+                return None;
+            }
+        };
+        app.dirty_since_refresh = true;
+        self.write_back_task_sort_order(app, id, closed.sort_order_after_write);
+        let window = closed.window?;
+        let runner = self.runner.clone();
+        Some(tokio::task::spawn_blocking(move || {
+            if let Err(e) = tmux::kill_window_if_present(&window, &*runner) {
+                tracing::warn!(task_id = id.0, "finish: failed to kill tmux window: {e}");
+            }
+        }))
     }
 
     /// Write `last_pre_tool_use_at` for a freshly running task. Used after
@@ -325,9 +375,11 @@ impl TuiRuntime {
         // Spawn a background task so the TUI command loop is never blocked
         // waiting for the embedding thread (which may be busy with index_repo).
         tokio::spawn(async move {
-            let epic_ctx = dispatch::EpicContext::from_db(&task, &*db).await;
-            let injected = dispatch::build_and_record_injections(&*db, &task, &emb_svc).await;
-            let verify_command = dispatch::fetch_verify_command(&*db, &task.repo_path).await;
+            let dispatch::DispatchInputs {
+                epic_ctx,
+                injected,
+                verify_command,
+            } = dispatch::prepare_inputs(&*db, &task, &emb_svc).await;
             let label = mode.label();
             let id = task.id;
             tracing::info!(task_id = id.0, label, "dispatching");
@@ -706,7 +758,6 @@ impl TuiRuntime {
         branch: String,
         base_branch: String,
         worktree: String,
-        tmux_window: Option<String>,
     ) {
         let shared = match self
             .database
@@ -742,7 +793,6 @@ impl TuiRuntime {
                     worktree: &worktree,
                     branch: &branch,
                     base_branch: &base_branch,
-                    tmux_window: tmux_window.as_deref(),
                 },
                 &*runner,
             ) {

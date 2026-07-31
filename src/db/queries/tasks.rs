@@ -555,30 +555,38 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
-    async fn try_claim_backlog_task(
+    async fn try_claim_next_backlog_task(
         &self,
-        id: TaskId,
+        epic_id: EpicId,
         now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<bool> {
+    ) -> Result<Option<TaskId>> {
         let now = super::format_datetime(now);
         self.db_call(move |conn| {
             let running = TaskStatus::Running;
-            let rows = conn
-                .execute(
+            // The subquery carries the whole selection rule, so the row this
+            // updates is chosen and claimed in the same statement.
+            let claimed = conn
+                .query_row(
                     "UPDATE tasks \
                      SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
                          updated_at = datetime('now') \
-                     WHERE id = ?4 AND status = ?5",
+                     WHERE id = (SELECT id FROM tasks \
+                                  WHERE epic_id = ?4 AND status = ?5 \
+                                  ORDER BY COALESCE(sort_order, id), id \
+                                  LIMIT 1) \
+                     RETURNING id",
                     params![
                         running.as_str(),
                         SubStatus::default_for(running).as_str(),
                         now,
-                        id.0,
+                        epic_id.0,
                         TaskStatus::Backlog.as_str(),
                     ],
+                    |row| row.get::<_, i64>(0),
                 )
-                .context("Failed to claim backlog task")?;
-            Ok(rows == 1)
+                .optional()
+                .context("Failed to claim next backlog subtask")?;
+            Ok(claimed.map(TaskId))
         })
         .await
     }

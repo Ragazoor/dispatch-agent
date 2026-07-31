@@ -183,23 +183,24 @@ pub trait TaskCrud: TaskRead {
     /// caller should block), `false` if it was already set or the task does not
     /// exist (caller should allow the PR).
     async fn mark_pr_learnings_gate_shown(&self, id: TaskId) -> Result<bool>;
-    /// Atomically claim a backlog task for dispatch: move it to `Running` with
-    /// the default running sub-status and `last_pre_tool_use_at = now`, but only
-    /// while it is still in `Backlog`. Returns `true` when this call won the
-    /// row, `false` when a concurrent caller already claimed it (or the task
-    /// does not exist).
+    /// Atomically select *and* claim `epic_id`'s next backlog subtask for
+    /// dispatch: the first one ordered by `COALESCE(sort_order, id)` then `id`
+    /// moves to `Running` with the default running sub-status and
+    /// `last_pre_tool_use_at = now`. Returns the id it claimed, or `None` when
+    /// the epic has no backlog subtask left.
     ///
-    /// The `WHERE status = 'backlog'` clause is what makes the claim exclusive —
-    /// not a lock. Every mutation serialises through the single writer
-    /// connection, so the conditional `UPDATE` is atomic against all other
-    /// writes. Backs the epic-chaining claim described by
-    /// `AutoDispatchNextSubtask` in `docs/specs/epics.allium`.
-    async fn try_claim_backlog_task(
+    /// Selection and claim are one statement — the ordering predicate lives in
+    /// the `WHERE id = (SELECT … LIMIT 1)` subquery — so there is no
+    /// select-then-claim window for a concurrent caller to win, and hence no
+    /// retry. Exclusivity comes from that plus the single writer connection all
+    /// mutations serialise through, not from a lock. Backs the epic-chaining
+    /// claim described by `AutoDispatchNextSubtask` in `docs/specs/epics.allium`.
+    async fn try_claim_next_backlog_task(
         &self,
-        id: TaskId,
+        epic_id: EpicId,
         now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<bool>;
-    /// The inverse of [`Self::try_claim_backlog_task`]: return a claimed but
+    ) -> Result<Option<TaskId>>;
+    /// The inverse of [`Self::try_claim_next_backlog_task`]: return a claimed but
     /// still-unprovisioned task to `Backlog` and clear the activity stamp the
     /// claim seeded. Conditional on `status = running AND worktree IS NULL`, so
     /// it cannot stomp a task that has since been provisioned or moved by

@@ -422,28 +422,17 @@ fn mock_task(id: i64, title: &str) -> crate::models::Task {
     }
 }
 
-/// Constructs McpState with `task_svc` injected directly — no `new()` needed.
+/// Constructs McpState with `task_svc` injected — the mock-service seam.
 async fn state_with_mock_task_svc(
     task_svc: Arc<dyn crate::service::TaskServiceApi>,
 ) -> Arc<McpState> {
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let epic_svc: Arc<dyn crate::service::EpicServiceApi> =
-        Arc::new(crate::service::EpicService::new(db.clone()));
-    Arc::new(McpState {
-        db: db.clone(),
-        task_svc,
-        epic_svc,
-        learning_svc: Arc::new(crate::service::MockLearningService),
-        notify_tx: None,
-        runner: Arc::new(MockProcessRunner::new(vec![])),
-        embedding_service: EmbeddingService::new_test(),
-        exit_tokens: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
-        data_dir: std::env::temp_dir(),
-        test_hooks: crate::mcp::TestHooks {
-            bg_write_done_tx: None,
-            db_write: db,
-        },
-    })
+    test_state_with_overrides(
+        Arc::new(MockProcessRunner::new(vec![])),
+        None,
+        Some(task_svc),
+    )
+    .await
+    .0
 }
 
 /// `list_tasks` returns whatever the service layer provides, independently of

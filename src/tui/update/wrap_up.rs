@@ -23,9 +23,12 @@ impl App {
             if !in_queue {
                 self.set_status(format!("Task {} finished", id));
             }
-            vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
-                task_clone,
-            ))]
+            // CloseSession, not Persist: the window teardown must follow the
+            // Done write landing, and only that command can gate one on the
+            // other. See FinishTaskSuccess in docs/specs/pr-workflow.allium.
+            vec![Command::Task(
+                crate::tui::commands::TaskCommand::CloseSession(task_clone),
+            )]
         } else {
             vec![]
         };
@@ -132,7 +135,6 @@ impl App {
                 branch,
                 base_branch: task.base_branch.clone(),
                 worktree,
-                tmux_window: task.tmux_window.clone(),
             })]
         } else {
             vec![]

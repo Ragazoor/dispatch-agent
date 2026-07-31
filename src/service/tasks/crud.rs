@@ -17,12 +17,6 @@ use super::params::{ClaimTaskParams, CreateTaskParams, ListTasksFilter, UpdateTa
 use super::validators::build_task_patch;
 use crate::service::UrlUpdate;
 
-/// How many times [`TaskService::claim_next_backlog_task`] re-selects after
-/// losing a row to a concurrent claim. Bounded so a pathological contention
-/// storm cannot spin: giving up simply stops the chain, which is a normal
-/// outcome (see `AutoDispatchNextSubtask` in `docs/specs/epics.allium`).
-const CLAIM_MAX_ATTEMPTS: usize = 5;
-
 /// Result of [`TaskService::update_task`]. Carries the updated task id plus
 /// presentation-relevant transition flags so MCP handlers can format their
 /// response without re-reading the DB.
@@ -42,6 +36,29 @@ pub struct UpdateTaskResult {
     /// `App.board.tasks`) use this to learn a value they could not have
     /// computed themselves: `sort_order_for_status_transition` runs inside
     /// this method, not at the call site.
+    pub sort_order_after_write: Option<Option<i64>>,
+}
+
+/// What a session close makes of the task — the terminal status half of
+/// `ExitSession` / `FinishTaskSuccess` (`docs/specs/pr-workflow.allium`).
+#[derive(Debug, Clone)]
+pub enum CloseSessionOutcome {
+    /// `rebase` / `done`, and the TUI finish path: the task is finished.
+    Done,
+    /// `pr`: the task moves to Review carrying the PR url.
+    Review { pr_url: crate::models::TaskUrl },
+}
+
+/// Result of [`TaskService::close_session`].
+#[derive(Debug, Clone)]
+pub struct ClosedSession {
+    /// The tmux window the close cleared, or `None` if the task had none. The
+    /// caller tears this window down — and only ever reaches it by holding an
+    /// `Ok`, which is the point of the call.
+    pub window: Option<String>,
+    /// Whether this close wrote `sort_order`, and to what — same contract as
+    /// [`UpdateTaskResult::sort_order_after_write`]. The TUI holds its own copy
+    /// of the task and cannot compute the completion-recency rank itself.
     pub sort_order_after_write: Option<Option<i64>>,
 }
 
@@ -192,6 +209,69 @@ impl TaskService {
         Ok(UpdateTaskResult {
             task_id,
             was_pr_finalisation,
+            sort_order_after_write,
+        })
+    }
+
+    /// Apply a session close: the terminal status, its default sub-status, the
+    /// PR url when there is one, and the cleared `tmux_window`, as one patch.
+    ///
+    /// Purpose-built rather than expressed through [`Self::update_task`], and
+    /// deliberately so. Callers gate the tmux teardown (and, for the MCP path,
+    /// the epic chain) on this `Result`, which is only sound if `Err` means
+    /// exactly "the terminal write did not land". `update_task` cannot promise
+    /// that: its fallible follow-up steps (epic re-linking, repo rerouting) run
+    /// *after* the patch, so an `Err` from it can mean "patch landed, follow-up
+    /// failed" — and a caller reading that as a failed close would leave a live
+    /// window on a task that is already done. Here the patch is the only
+    /// fallible step, so the two can never disagree. See the `close_persisted`
+    /// discussion in `ExitSession` (`docs/specs/pr-workflow.allium`).
+    ///
+    /// Returns the window the close cleared, for the caller to tear down.
+    pub async fn close_session(
+        &self,
+        task_id: TaskId,
+        outcome: CloseSessionOutcome,
+    ) -> Result<ClosedSession, ServiceError> {
+        let prior = self
+            .db
+            .get_task(task_id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("Task {} not found", task_id.0)))?;
+
+        // `pr_url` is bound out here rather than inside the builder because
+        // `TaskPatch` borrows it.
+        let (status, pr_url) = match &outcome {
+            CloseSessionOutcome::Done => (TaskStatus::Done, None),
+            CloseSessionOutcome::Review { pr_url } => (TaskStatus::Review, Some(pr_url)),
+        };
+
+        let mut patch = db::TaskPatch::new()
+            .status(status)
+            .sub_status(SubStatus::default_for(status))
+            .tmux_window(None);
+        if let Some(url) = pr_url {
+            patch = patch.url(Some(url));
+        }
+        // Same completion-recency rule `update_task` applies on a Done
+        // transition, so a closed task sorts to the top of Done.
+        if let Some(so) = sort_order_for_status_transition(prior.status, status, self.clock.now()) {
+            patch = patch.sort_order(so);
+        }
+
+        let sort_order_after_write = patch.sort_order;
+
+        self.db.patch_task(task_id, &patch).await?;
+
+        // Everything past the write is infallible on purpose — see the doc
+        // comment. The one-shot watcher notice fires on the Done transition
+        // exactly as it does through `update_task`.
+        self.notify_watchers_after_status_write(Some(&prior), Some(status))
+            .await;
+        self.recalculate_epic_for_task(task_id).await;
+
+        Ok(ClosedSession {
+            window: prior.tmux_window,
             sort_order_after_write,
         })
     }
@@ -711,34 +791,16 @@ impl TaskService {
         Ok(self.db.mark_pr_learnings_gate_shown(id).await?)
     }
 
-    /// Find the next backlog task for an epic, sorted by sort_order then id.
-    /// Returns `Ok(None)` if no backlog tasks remain.
-    pub async fn next_backlog_task(&self, epic_id: EpicId) -> Result<Option<Task>, ServiceError> {
-        // Verify the epic exists
-        self.db
-            .get_epic(epic_id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(format!("Epic {} not found", epic_id.0)))?;
-
-        let tasks = self.db.list_tasks_for_epic(epic_id).await?;
-
-        let mut backlog: Vec<Task> = tasks
-            .into_iter()
-            .filter(|t| t.status == TaskStatus::Backlog)
-            .collect();
-        backlog.sort_by_key(|t| (t.sort_order.unwrap_or(t.id.0), t.id.0));
-
-        Ok(backlog.into_iter().next())
-    }
-
     /// Select and atomically claim the epic's next backlog subtask.
     ///
     /// Returns the claimed task with its `Running` status applied, or `Ok(None)`
-    /// when no backlog subtask remains. The selection is exclusive: a losing
-    /// claim means a concurrent caller won that row, so this re-selects. Two
-    /// concurrent callers therefore claim two *different* subtasks, never the
+    /// when no backlog subtask remains. Selecting and claiming are a single
+    /// conditional write ([`db::TaskStore::try_claim_next_backlog_task`]), so
+    /// there is no window in which a concurrent caller can take the row this one
+    /// picked: two concurrent callers claim two *different* subtasks, never the
     /// same one — the guarantee `AutoDispatchNextSubtask` in
-    /// `docs/specs/epics.allium` depends on.
+    /// `docs/specs/epics.allium` depends on. `Ok(None)` therefore means exactly
+    /// "no backlog subtask left", never "gave up under contention".
     ///
     /// Claiming moves the `Running` transition ahead of worktree provisioning,
     /// so the returned task has `worktree = None` until the dispatch completes.
@@ -746,26 +808,22 @@ impl TaskService {
         &self,
         epic_id: EpicId,
     ) -> Result<Option<Task>, ServiceError> {
-        for _ in 0..CLAIM_MAX_ATTEMPTS {
-            let Some(candidate) = self.next_backlog_task(epic_id).await? else {
-                return Ok(None);
-            };
-            let now = self.clock.now();
-            if !self.db.try_claim_backlog_task(candidate.id, now).await? {
-                // Lost the row to a concurrent claim — re-select.
-                continue;
-            }
-            self.recalculate_epic(epic_id).await;
-            // Re-read rather than mirroring the claim's SET list here: the row
-            // is the truth, and hand-copying it silently drifts (the DB also
-            // stamps `updated_at`, which no in-memory copy would carry).
-            return Ok(self.db.get_task(candidate.id).await?);
-        }
-        tracing::warn!(
-            epic_id = epic_id.0,
-            "claim_next_backlog_task: gave up after {CLAIM_MAX_ATTEMPTS} contended attempts"
-        );
-        Ok(None)
+        // Read only to honour the NotFound contract — the claim itself needs no
+        // prior selection.
+        self.db
+            .get_epic(epic_id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("Epic {} not found", epic_id.0)))?;
+
+        let now = self.clock.now();
+        let Some(claimed_id) = self.db.try_claim_next_backlog_task(epic_id, now).await? else {
+            return Ok(None);
+        };
+        self.recalculate_epic(epic_id).await;
+        // Re-read rather than mirroring the claim's SET list here: the row is
+        // the truth, and hand-copying it silently drifts (the DB also stamps
+        // `updated_at`, which no in-memory copy would carry).
+        Ok(self.db.get_task(claimed_id).await?)
     }
 
     /// Undo a claim on a subtask that was never provisioned, returning it to

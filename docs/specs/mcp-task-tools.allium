@@ -613,8 +613,8 @@ rule WrapUpViaMcp {
         -- agent must pass it back to exit_session.
         -- action="rebase" is the only action that does real synchronous work
         -- here: it runs the rebase / fast-forward (BranchRebased) via
-        -- finish_task with tmux_window=None so the session stays alive until
-        -- exit_session. action="done" and action="pr" perform no task-status
+        -- finish_task, which performs no session teardown, so the session
+        -- stays alive until exit_session. action="done" and action="pr" perform no task-status
         -- or url mutation at wrap_up time — done no longer flips to Done, and
         -- pr no longer sets task.url or moves the task to review. Those
         -- mutations are applied later, atomically, by ExitSessionViaMcp. This

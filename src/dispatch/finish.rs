@@ -1,6 +1,5 @@
 use crate::models::expand_tilde;
 use crate::process::ProcessRunner;
-use crate::tmux;
 
 use super::git_output::is_rebase_conflict;
 use super::{stderr_str, stdout_str};
@@ -96,12 +95,16 @@ pub struct FinishContext<'a> {
     pub branch: &'a str,
     /// The branch the repo root must be on; rebase/fast-forward target.
     pub base_branch: &'a str,
-    /// The tmux window to kill once the rebase succeeds, if any.
-    pub tmux_window: Option<&'a str>,
 }
 
-/// Rebase the task branch onto `base_branch` and fast-forward it, then kill the tmux window.
-/// The worktree is preserved — it will be cleaned up when the task is archived.
+/// Rebase the task branch onto `base_branch` and fast-forward it. The git half
+/// of a finish and nothing else: no tmux teardown, no task write.
+///
+/// Killing the session is the caller's job, and deliberately so — both finish
+/// paths gate the teardown on the task's terminal write landing first, so a task
+/// whose Done write failed keeps its live window (`FinishTaskSuccess` and
+/// `ExitSession` in `docs/specs/pr-workflow.allium`). The worktree is preserved
+/// — it will be cleaned up when the task is archived.
 pub fn finish_task(
     ctx: &FinishContext,
     runner: &dyn ProcessRunner,
@@ -111,7 +114,6 @@ pub fn finish_task(
         worktree,
         branch,
         base_branch,
-        tmux_window,
     } = *ctx;
     let repo_path = &expand_tilde(repo_path);
     let worktree = &expand_tilde(worktree);
@@ -214,12 +216,6 @@ pub fn finish_task(
         )));
     }
 
-    // 6. Kill tmux window (worktree is preserved for later archival)
-    if let Some(window) = tmux_window {
-        tmux::kill_window_if_present(window, runner)
-            .map_err(|e| FinishError::Other(format!("Failed to kill tmux window: {e}")))?;
-    }
-
     Ok(())
 }
 
@@ -237,33 +233,39 @@ mod tests {
     }
 
     /// Build a `FinishContext` with the standard test repo/worktree/branch,
-    /// varying only the fields the individual tests care about.
-    fn fctx<'a>(base_branch: &'a str, tmux_window: Option<&'a str>) -> FinishContext<'a> {
+    /// varying only the base branch the individual tests care about.
+    fn fctx(base_branch: &str) -> FinishContext<'_> {
         FinishContext {
             repo_path: "/repo",
             worktree: "/repo/.worktrees/42-fix-bug",
             branch: "42-fix-bug",
             base_branch,
-            tmux_window,
         }
     }
 
-    // The has_window path when tmux itself can't be executed (runner returns
-    // Err).  finish_task should warn and still return Ok(()) — a missing tmux
-    // window is not a fatal error at this stage.
+    // finish_task is the git half only: a successful rebase + fast-forward
+    // issues no tmux call at all. The teardown belongs to the caller, gated on
+    // the task's terminal write landing (FinishTaskSuccess in
+    // docs/specs/pr-workflow.allium).
     #[test]
-    fn finish_task_has_window_runner_error_warns_and_succeeds() {
+    fn finish_task_issues_no_tmux_command() {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
             MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
             MockProcessRunner::fail(""),                  // remote get-url (no remote)
             MockProcessRunner::ok(),                      // git rebase main
             MockProcessRunner::ok(),                      // git merge --ff-only
-            Err(anyhow::anyhow!("tmux: command not found")), // tmux list-windows (has_window Err)
         ]);
 
-        finish_task(&fctx("main", Some("task-42")), &mock)
-            .expect("should succeed despite has_window runner error");
+        finish_task(&fctx("main"), &mock).expect("rebase + fast-forward succeeds");
+
+        assert!(
+            mock.recorded_calls()
+                .iter()
+                .all(|(program, _)| program != "tmux"),
+            "finish_task must not touch tmux: {:?}",
+            mock.recorded_calls()
+        );
     }
 
     // Pull runner returns Err (process could not be spawned) rather than a
@@ -277,7 +279,7 @@ mod tests {
             Err(anyhow::anyhow!("git: command not found")), // git pull
         ]);
 
-        let err = finish_task(&fctx("main", None), &mock).unwrap_err();
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
 
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to pull")),
@@ -297,7 +299,7 @@ mod tests {
             Err(anyhow::anyhow!("git: command not found")), // git merge --ff-only
         ]);
 
-        let err = finish_task(&fctx("main", None), &mock).unwrap_err();
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
 
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to fast-forward")),
@@ -324,7 +326,7 @@ mod tests {
             MockProcessRunner::ok(),                           // git rebase --abort
         ]);
 
-        let err = finish_task(&fctx("main", None), &mock).unwrap_err();
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
 
         assert!(
             matches!(err, FinishError::RebaseConflict { ref files, .. } if files == &["lib.rs".to_string()]),
@@ -346,7 +348,7 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b" M src/unrelated.rs\n?? scratch.txt\n"), // status --porcelain (dirty)
         ]);
 
-        let err = finish_task(&fctx("main", None), &mock).unwrap_err();
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
 
         assert!(
             matches!(err, FinishError::DirtyPrimaryWorktree { ref path, ref files }

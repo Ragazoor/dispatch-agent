@@ -1340,112 +1340,147 @@ async fn get_epic_with_subtasks() {
     assert_eq!(subtasks.len(), 1);
 }
 
-// -- next_backlog_task -----------------------------------------------------
+// -- close_session ---------------------------------------------------------
+//
+// The one purpose-built terminal write. Callers gate the tmux teardown and the
+// epic chain on its Result, so `Err` must mean "the write did not land" and
+// nothing else — see ExitSession in docs/specs/pr-workflow.allium.
 
-#[tokio::test]
-async fn next_backlog_task_returns_first_by_sort_order() {
-    let db = test_db().await;
-    let task_svc = task_svc(&db);
-    let epic_svc = epic_svc(&db);
-
-    let epic = epic_svc
-        .create_epic(CreateEpicParams {
-            title: "E".into(),
-            description: "".into(),
-            sort_order: None,
-            parent_epic_id: None,
-            feed_command: None,
-            feed_interval_secs: None,
-        })
-        .await
-        .unwrap();
-
-    task_svc
-        .create_task(CreateTaskParams {
-            title: "Second".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: Some(epic.id),
-            sort_order: Some(20),
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    task_svc
-        .create_task(CreateTaskParams {
-            title: "First".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: Some(epic.id),
-            sort_order: Some(10),
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    let next = task_svc.next_backlog_task(epic.id).await.unwrap();
-    assert_eq!(next.unwrap().title, "First");
+/// A running task with a worktree and a tmux window — what `exit_session` and
+/// the TUI finish path both close.
+async fn running_task_with_window(
+    db: &Arc<dyn db::TaskStore>,
+    epic_id: Option<EpicId>,
+) -> (TaskId, String) {
+    let svc = task_svc(db);
+    let mut params = make_task_params("/repo");
+    params.epic_id = epic_id;
+    let id = svc.create_task(params).await.unwrap();
+    let window = format!("task-{}", id.0);
+    svc.update_task(
+        UpdateTaskParams::for_task(id)
+            .status(TaskStatus::Running)
+            .worktree(FieldUpdate::Set("/repo/.worktrees/wt".to_string()))
+            .tmux_window(FieldUpdate::Set(window.clone())),
+    )
+    .await
+    .unwrap();
+    (id, window)
 }
 
 #[tokio::test]
-async fn next_backlog_task_skips_non_backlog() {
-    let db = test_db().await;
-    let task_svc = task_svc(&db);
-    let epic_svc = epic_svc(&db);
-
-    let epic = epic_svc
-        .create_epic(CreateEpicParams {
-            title: "E".into(),
-            description: "".into(),
-            sort_order: None,
-            parent_epic_id: None,
-            feed_command: None,
-            feed_interval_secs: None,
-        })
-        .await
-        .unwrap();
-
-    let id = task_svc
-        .create_task(CreateTaskParams {
-            title: "Running".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: Some(epic.id),
-            sort_order: Some(1),
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    // Move to running
-    task_svc
-        .update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Running))
-        .await
-        .unwrap();
-
-    let next = task_svc.next_backlog_task(epic.id).await.unwrap();
-    assert!(next.is_none());
-}
-
-#[tokio::test]
-async fn next_backlog_task_epic_not_found() {
+async fn close_session_done_moves_task_to_done_and_clears_the_window() {
     let db = test_db().await;
     let svc = task_svc(&db);
-    let err = svc.next_backlog_task(EpicId(999)).await.unwrap_err();
+    let (id, window) = running_task_with_window(&db, None).await;
+
+    let closed = svc
+        .close_session(id, crate::service::CloseSessionOutcome::Done)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        closed.window,
+        Some(window),
+        "the caller tears down the window this close cleared"
+    );
+    let task = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Done);
+    assert_eq!(task.sub_status, SubStatus::default_for(TaskStatus::Done));
+    assert!(task.tmux_window.is_none());
+    assert!(
+        task.worktree.is_some(),
+        "the worktree survives the close; it is removed on archive"
+    );
+    assert!(
+        task.sort_order.is_some(),
+        "the Done transition applies the completion-recency rank"
+    );
+    assert!(task.url.is_none());
+}
+
+#[tokio::test]
+async fn close_session_pr_moves_task_to_review_and_records_the_url() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let (id, window) = running_task_with_window(&db, None).await;
+
+    let closed = svc
+        .close_session(
+            id,
+            crate::service::CloseSessionOutcome::Review {
+                pr_url: crate::models::TaskUrl::new(
+                    "https://github.com/acme/repo/pull/7".to_string(),
+                    crate::models::UrlType::Pr,
+                ),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(closed.window, Some(window));
+    let task = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Review);
+    assert_eq!(task.sub_status, SubStatus::default_for(TaskStatus::Review));
+    assert!(task.tmux_window.is_none());
+    let url = task.url.expect("pr url recorded");
+    assert_eq!(url.url, "https://github.com/acme/repo/pull/7");
+    assert!(url.is_pr());
+}
+
+#[tokio::test]
+async fn close_session_reports_a_missing_window_as_none() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    let closed = svc
+        .close_session(id, crate::service::CloseSessionOutcome::Done)
+        .await
+        .unwrap();
+
+    assert!(closed.window.is_none(), "nothing to tear down");
+}
+
+#[tokio::test]
+async fn close_session_missing_task_is_not_found() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let err = svc
+        .close_session(TaskId(999_999), crate::service::CloseSessionOutcome::Done)
+        .await
+        .unwrap_err();
     assert!(matches!(err, ServiceError::NotFound(_)));
+}
+
+#[tokio::test]
+async fn close_session_recalculates_the_parent_epic() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let epic_svc = epic_svc(&db);
+    let epic = epic_svc
+        .create_epic(CreateEpicParams {
+            title: "E".into(),
+            description: "".into(),
+            sort_order: None,
+            parent_epic_id: None,
+            feed_command: None,
+            feed_interval_secs: None,
+        })
+        .await
+        .unwrap();
+    let (id, _) = running_task_with_window(&db, Some(epic.id)).await;
+
+    svc.close_session(id, crate::service::CloseSessionOutcome::Done)
+        .await
+        .unwrap();
+
+    let after = db.get_epic(epic.id).await.unwrap().unwrap();
+    assert_eq!(
+        after.status,
+        TaskStatus::Done,
+        "an epic whose only subtask closed rolls up to Done"
+    );
 }
 
 // -- claim_next_backlog_task -----------------------------------------------

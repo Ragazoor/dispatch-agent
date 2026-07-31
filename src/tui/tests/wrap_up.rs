@@ -20,9 +20,11 @@ fn finish_complete_moves_to_done() {
     // Worktree is preserved — will be cleaned up during archive
     assert!(task.worktree.is_some());
     assert!(task.tmux_window.is_none());
+    // CloseSession, not Persist: the window teardown must be gated on the Done
+    // write landing (FinishTaskSuccess in docs/specs/pr-workflow.allium).
     assert!(cmds.iter().any(|c| matches!(
         c,
-        Command::Task(crate::tui::commands::TaskCommand::Persist(_))
+        Command::Task(crate::tui::commands::TaskCommand::CloseSession(_))
     )));
 }
 

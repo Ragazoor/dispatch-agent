@@ -3465,101 +3465,195 @@ async fn mark_pr_learnings_gate_shown_missing_task_is_false() {
         .unwrap());
 }
 
-// -- try_claim_backlog_task -------------------------------------------------
+// -- try_claim_next_backlog_task --------------------------------------------
+
+/// Helper: a subtask of `epic_id` in `status`, with an explicit `sort_order`.
+async fn subtask(
+    db: &Database,
+    epic_id: EpicId,
+    title: &str,
+    status: TaskStatus,
+    sort_order: Option<i64>,
+) -> TaskId {
+    db.create_task(CreateTaskRequest {
+        title,
+        description: "",
+        repo_path: "/tmp/r",
+        plan: None,
+        status,
+        base_branch: "main",
+        epic_id: Some(epic_id),
+        sort_order,
+        tag: None,
+        wrap_up_mode: None,
+        auto_run_plan: false,
+    })
+    .await
+    .unwrap()
+}
 
 #[tokio::test]
-async fn try_claim_backlog_task_claims_a_backlog_task_once() {
+async fn try_claim_next_backlog_task_claims_the_lowest_sort_order_subtask() {
     let db = in_memory_db().await;
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "t",
-            description: "",
-            repo_path: "/tmp/r",
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let third = subtask(&db, epic.id, "c", TaskStatus::Backlog, Some(30)).await;
+    let first = subtask(&db, epic.id, "a", TaskStatus::Backlog, Some(10)).await;
+    let second = subtask(&db, epic.id, "b", TaskStatus::Backlog, Some(20)).await;
+
+    let claimed = db
+        .try_claim_next_backlog_task(epic.id, chrono::Utc::now())
         .await
         .unwrap();
+
+    assert_eq!(claimed, Some(first));
+    for untouched in [second, third] {
+        assert_eq!(
+            db.get_task(untouched).await.unwrap().unwrap().status,
+            TaskStatus::Backlog,
+            "only the selected row may be claimed"
+        );
+    }
+}
+
+/// The ordering key is `COALESCE(sort_order, id)` then `id` — the SQL
+/// equivalent of the `(sort_order.unwrap_or(id), id)` sort this statement
+/// replaced. A null-sort_order subtask sorts by its own id, so it loses to an
+/// explicitly lower sort_order and wins against a higher one, regardless of
+/// insertion order.
+#[tokio::test]
+async fn try_claim_next_backlog_task_falls_back_to_id_when_sort_order_is_null() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let unordered = subtask(&db, epic.id, "no sort_order", TaskStatus::Backlog, None).await;
+    let above = subtask(&db, epic.id, "sorts after", TaskStatus::Backlog, Some(500)).await;
+    let below = subtask(&db, epic.id, "sorts before", TaskStatus::Backlog, Some(0)).await;
+
     let now = chrono::Utc::now();
-
-    assert!(db.try_claim_backlog_task(id, now).await.unwrap());
-    let claimed = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(claimed.status, TaskStatus::Running);
     assert_eq!(
-        claimed.sub_status,
-        SubStatus::default_for(TaskStatus::Running)
+        db.try_claim_next_backlog_task(epic.id, now).await.unwrap(),
+        Some(below),
+        "sort_order 0 must beat a null whose fallback key is its own id"
     );
-    assert!(claimed.last_pre_tool_use_at.is_some());
-
-    // Second call loses: the task is no longer in backlog.
-    assert!(!db.try_claim_backlog_task(id, now).await.unwrap());
+    assert_eq!(
+        db.try_claim_next_backlog_task(epic.id, now).await.unwrap(),
+        Some(unordered),
+        "the null-sort_order subtask beats sort_order 500 via its id fallback"
+    );
+    assert_eq!(
+        db.try_claim_next_backlog_task(epic.id, now).await.unwrap(),
+        Some(above)
+    );
 }
 
 #[tokio::test]
-async fn try_claim_backlog_task_is_false_for_task_out_of_backlog() {
+async fn try_claim_next_backlog_task_skips_non_backlog_subtasks() {
     let db = in_memory_db().await;
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "t",
-            description: "",
-            repo_path: "/tmp/r",
-            plan: None,
-            status: TaskStatus::Running,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    subtask(&db, epic.id, "running", TaskStatus::Running, Some(1)).await;
+    subtask(&db, epic.id, "review", TaskStatus::Review, Some(2)).await;
+    subtask(&db, epic.id, "done", TaskStatus::Done, Some(3)).await;
+    let backlog = subtask(&db, epic.id, "backlog", TaskStatus::Backlog, Some(4)).await;
+
+    assert_eq!(
+        db.try_claim_next_backlog_task(epic.id, chrono::Utc::now())
+            .await
+            .unwrap(),
+        Some(backlog)
+    );
+}
+
+#[tokio::test]
+async fn try_claim_next_backlog_task_is_none_when_no_backlog_subtask_remains() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    subtask(&db, epic.id, "running", TaskStatus::Running, Some(1)).await;
+
+    assert!(db
+        .try_claim_next_backlog_task(epic.id, chrono::Utc::now())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn try_claim_next_backlog_task_ignores_other_epics_subtasks() {
+    let db = in_memory_db().await;
+    let mine = db.create_epic("mine", "", None).await.unwrap();
+    let other = db.create_epic("other", "", None).await.unwrap();
+    let theirs = subtask(&db, other.id, "theirs", TaskStatus::Backlog, Some(1)).await;
+
+    assert!(db
+        .try_claim_next_backlog_task(mine.id, chrono::Utc::now())
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        db.get_task(theirs).await.unwrap().unwrap().status,
+        TaskStatus::Backlog
+    );
+}
+
+#[tokio::test]
+async fn try_claim_next_backlog_task_applies_running_and_the_activity_stamp() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let id = subtask(&db, epic.id, "t", TaskStatus::Backlog, Some(1)).await;
+    let before = db.get_task(id).await.unwrap().unwrap().updated_at;
+
+    let claimed = db
+        .try_claim_next_backlog_task(epic.id, chrono::Utc::now())
         .await
         .unwrap();
 
-    assert!(!db
-        .try_claim_backlog_task(id, chrono::Utc::now())
-        .await
-        .unwrap());
+    assert_eq!(claimed, Some(id));
+    let task = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert_eq!(task.sub_status, SubStatus::default_for(TaskStatus::Running));
+    assert!(
+        task.last_pre_tool_use_at.is_some(),
+        "the claim seeds the activity stamp so the tick classifier does not flicker the task to Stale"
+    );
+    assert!(task.updated_at >= before);
 }
 
+/// Selection and claim are one statement, so repeated calls walk the epic's
+/// backlog and can never hand the same subtask out twice — the exclusivity
+/// `AutoDispatchNextSubtask` depends on, at the layer that provides it.
 #[tokio::test]
-async fn try_claim_backlog_task_is_false_for_missing_task() {
+async fn try_claim_next_backlog_task_claims_each_subtask_at_most_once() {
     let db = in_memory_db().await;
-    assert!(!db
-        .try_claim_backlog_task(TaskId(999_999), chrono::Utc::now())
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let first = subtask(&db, epic.id, "a", TaskStatus::Backlog, Some(10)).await;
+    let second = subtask(&db, epic.id, "b", TaskStatus::Backlog, Some(20)).await;
+
+    let now = chrono::Utc::now();
+    assert_eq!(
+        db.try_claim_next_backlog_task(epic.id, now).await.unwrap(),
+        Some(first)
+    );
+    assert_eq!(
+        db.try_claim_next_backlog_task(epic.id, now).await.unwrap(),
+        Some(second)
+    );
+    assert!(db
+        .try_claim_next_backlog_task(epic.id, now)
         .await
-        .unwrap());
+        .unwrap()
+        .is_none());
 }
 
 // -- try_release_backlog_claim ----------------------------------------------
 
-/// Helper: a backlog task, claimed, ready to have its claim released.
+/// Helper: a backlog subtask, claimed, ready to have its claim released.
 async fn claimed_task(db: &Database) -> TaskId {
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "t",
-            description: "",
-            repo_path: "/tmp/r",
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    assert!(db
-        .try_claim_backlog_task(id, chrono::Utc::now())
-        .await
-        .unwrap());
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let id = subtask(db, epic.id, "t", TaskStatus::Backlog, None).await;
+    assert_eq!(
+        db.try_claim_next_backlog_task(epic.id, chrono::Utc::now())
+            .await
+            .unwrap(),
+        Some(id)
+    );
     id
 }
 

@@ -29,18 +29,33 @@ use crate::service::embeddings::{serialize_embedding, EmbeddingService};
 use super::dispatch::{handle_mcp, tool_definitions};
 use super::types::{JsonRpcRequest, JsonRpcResponse};
 
-async fn test_state() -> Arc<McpState> {
+/// The single `McpState` constructor the test module builds on: an in-memory DB
+/// plus whichever of the three injectable seams a test cares about. Everything
+/// else here (`test_state`, `test_state_with_db`, `state_with_mock_task_svc`,
+/// `ChainFixture`) delegates, so the wiring exists once.
+async fn test_state_with_overrides(
+    runner: Arc<dyn ProcessRunner>,
+    notify_tx: Option<mpsc::UnboundedSender<crate::mcp::McpEvent>>,
+    task_svc: Option<Arc<dyn crate::service::TaskServiceApi>>,
+) -> (Arc<McpState>, Arc<dyn db::TaskStore>) {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    Arc::new(McpState::new(
+    let mut state = McpState::new(
         McpDeps {
-            db,
+            db: db.clone(),
             runner,
             embedding_service: EmbeddingService::new_test(),
             data_dir: std::env::temp_dir(),
         },
-        None,
-    ))
+        notify_tx,
+    );
+    if let Some(task_svc) = task_svc {
+        state.task_svc = task_svc;
+    }
+    (Arc::new(state), db)
+}
+
+async fn test_state() -> Arc<McpState> {
+    test_state_with_db().await.0
 }
 
 /// Like [`test_state`], but installs a completion signal that fires after each
@@ -64,18 +79,7 @@ async fn test_state_with_bg_done() -> (Arc<McpState>, mpsc::UnboundedReceiver<Ba
 }
 
 async fn test_state_with_db() -> (Arc<McpState>, Arc<dyn db::TaskStore>) {
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        None,
-    ));
-    (state, db)
+    test_state_with_overrides(Arc::new(MockProcessRunner::new(vec![])), None, None).await
 }
 
 async fn call(state: &Arc<McpState>, method: &str, params: Option<Value>) -> JsonRpcResponse {
@@ -162,30 +166,92 @@ async fn create_task_fixture_at(state: &Arc<McpState>, repo_path: &str) -> crate
         .unwrap()
 }
 
-/// Create a Running task with worktree and tmux_window set — ready for exit_session.
+/// Create a Running task with worktree and tmux_window set — ready for
+/// exit_session. Uses the placeholder `/repo` path, which is fine for any test
+/// that never provisions.
 async fn create_running_task_with_window(state: &Arc<McpState>) -> crate::models::TaskId {
+    create_running_task_with_window_in(state, "/repo", None).await
+}
+
+/// [`create_running_task_with_window`] for a task that must live in a real
+/// on-disk repo (so a dispatch can provision against it) and/or belong to an
+/// epic. The worktree and window are derived from the task id, so a fixture
+/// holding several of them keeps them distinct.
+async fn create_running_task_with_window_in(
+    state: &Arc<McpState>,
+    repo_path: &str,
+    epic_id: Option<crate::models::EpicId>,
+) -> crate::models::TaskId {
     let task_id = state
         .db_write()
         .create_task(CreateTaskRequest {
             title: "Running Task",
             description: "description",
-            repo_path: "/repo",
+            repo_path,
             plan: None,
             status: TaskStatus::Running,
             base_branch: "main",
-            epic_id: None,
-            sort_order: None,
+            epic_id,
+            sort_order: Some(0),
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
         })
         .await
         .unwrap();
+    let worktree = format!("{repo_path}/.worktrees/{}-running-task", task_id.0);
+    let window = format!("task-{}", task_id.0);
     let patch = crate::db::TaskPatch::new()
-        .worktree(Some("/repo/.worktrees/task-123"))
-        .tmux_window(Some("task-123"));
+        .worktree(Some(worktree.as_str()))
+        .tmux_window(Some(window.as_str()));
     state.db_write().patch_task(task_id, &patch).await.unwrap();
     task_id
+}
+
+/// The PR url [`close_session_via_mcp`] supplies for the `Pr` action.
+const TEST_PR_URL: &str = "https://github.com/acme/repo/pull/1";
+
+/// Seed the in-memory exit token `wrap_up` would have issued for `action`, and
+/// return it. Shared because the token's shape is one struct in one map and
+/// every close test needs it — inlining it made the shape a 15-site edit.
+fn seed_exit_token(
+    state: &Arc<McpState>,
+    task_id: crate::models::TaskId,
+    action: crate::mcp::handlers::tasks::WrapUpAction,
+) -> String {
+    let token = "tok".to_string();
+    state.exit_tokens.write().unwrap().insert(
+        task_id,
+        crate::mcp::ExitToken {
+            token: token.clone(),
+            action,
+        },
+    );
+    token
+}
+
+/// Close `task_id`'s session with `action`, seeding the exit token the same way
+/// `wrap_up` would. `pr_url` is supplied for the `Pr` action, which requires it.
+async fn close_session_via_mcp(
+    state: &Arc<McpState>,
+    task_id: crate::models::TaskId,
+    action: crate::mcp::handlers::tasks::WrapUpAction,
+) -> JsonRpcResponse {
+    let token = seed_exit_token(state, task_id, action);
+    let mut arguments = json!({
+        "task_id": task_id.0,
+        "token": token,
+        "action": action.as_str(),
+    });
+    if action == crate::mcp::handlers::tasks::WrapUpAction::Pr {
+        arguments["pr_url"] = json!(TEST_PR_URL);
+    }
+    call(
+        state,
+        "tools/call",
+        Some(json!({ "name": "exit_session", "arguments": arguments })),
+    )
+    .await
 }
 
 /// Returns `true` if the response is either a JSON-RPC protocol error or an

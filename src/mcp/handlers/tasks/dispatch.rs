@@ -14,11 +14,14 @@ use crate::service::{ClaimTaskParams, FieldUpdate, UpdateTaskParams};
 fn do_dispatch(
     task: &crate::models::Task,
     runner: &dyn crate::process::ProcessRunner,
-    epic_ctx: Option<dispatch::EpicContext>,
-    injected: &[crate::models::Learning],
-    verify_command: Option<String>,
+    inputs: dispatch::DispatchInputs,
 ) -> anyhow::Result<crate::models::DispatchResult> {
-    let injections = dispatch::LearningInjections::from(injected);
+    let dispatch::DispatchInputs {
+        epic_ctx,
+        injected,
+        verify_command,
+    } = inputs;
+    let injections = dispatch::LearningInjections::from(injected.as_slice());
     match DispatchMode::for_task(task) {
         DispatchMode::Dispatch => dispatch::dispatch_agent(
             task,
@@ -128,17 +131,15 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
     let embedding_service = state.embedding_service.clone();
 
     tokio::spawn(async move {
-        // Injection building runs a local embedding inference and several
-        // writes; keep it off the caller's request path — `exit_session` only
-        // needs the id and title, both already known.
-        let injected =
-            dispatch::build_and_record_injections(&*db, &next_task, &embedding_service).await;
-        let verify_command = dispatch::fetch_verify_command(&*db, &next_task.repo_path).await;
+        // The prologue runs a local embedding inference and several writes; keep
+        // it off the caller's request path — `exit_session` only needs the id and
+        // title, both already known.
+        let inputs =
+            dispatch::prepare_inputs_with_epic_ctx(&*db, &next_task, &embedding_service, epic_ctx)
+                .await;
 
-        let result = tokio::task::spawn_blocking(move || {
-            do_dispatch(&next_task, &*runner, epic_ctx, &injected, verify_command)
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || do_dispatch(&next_task, &*runner, inputs)).await;
 
         match result {
             Ok(Ok(dispatch_result)) => {
@@ -235,18 +236,12 @@ pub(crate) async fn handle_dispatch_task(
         );
     }
 
-    let epic_ctx = dispatch::EpicContext::from_db(&task, &*state.db).await;
     let db = state.db.clone();
     let runner = state.runner.clone();
     let epic_id = task.epic_id;
 
-    let injected =
-        dispatch::build_and_record_injections(&*db, &task, &state.embedding_service).await;
-    let verify_command = dispatch::fetch_verify_command(&*db, &task.repo_path).await;
-    let result = tokio::task::spawn_blocking(move || {
-        do_dispatch(&task, &*runner, epic_ctx, &injected, verify_command)
-    })
-    .await;
+    let inputs = dispatch::prepare_inputs(&*db, &task, &state.embedding_service).await;
+    let result = tokio::task::spawn_blocking(move || do_dispatch(&task, &*runner, inputs)).await;
 
     match result {
         Ok(Ok(dr)) => {

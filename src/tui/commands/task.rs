@@ -46,8 +46,13 @@ pub enum TaskCommand {
         branch: String,
         base_branch: String,
         worktree: String,
-        tmux_window: Option<String>,
     },
+    /// Persist a finished task's terminal state, then — only if that write
+    /// landed — kill its tmux window. The ordering is normative: a task whose
+    /// Done write failed keeps both its live window and its `tmux_window`
+    /// reference, so the two can never disagree (`FinishTaskSuccess` in
+    /// `docs/specs/pr-workflow.allium`, matching `ExitSession`'s MCP path).
+    CloseSession(Task),
     CheckWindow {
         id: TaskId,
         window: String,

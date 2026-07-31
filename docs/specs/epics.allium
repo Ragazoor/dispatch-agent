@@ -691,18 +691,21 @@ rule AutoDispatchNextSubtask {
         -- only ever chosen once the planned subtasks are exhausted.
         --
         -- At most one agent is launched per closed session, even under
-        -- concurrent closes. Selection is exclusive: the chosen subtask is
-        -- claimed by a single conditional write that succeeds only while the
-        -- task is still in backlog (implementation: UPDATE ... WHERE status =
-        -- 'backlog', serialised through the single writer connection), and a
-        -- caller that loses the claim re-selects. Two sessions closing on the
-        -- same epic in the same instant therefore launch two DIFFERENT
-        -- subtasks, never two agents for one subtask. The claim is a mechanism
-        -- rather than domain behaviour, so it is recorded here instead of being
-        -- modelled as a rule — but the exclusivity it buys is normative.
-        -- Re-selection after a lost claim is bounded (currently 5 attempts) so a
-        -- pathological contention storm cannot spin; exhausting the budget just
-        -- stops the chain, which is one of the normal outcomes above.
+        -- concurrent closes. Selection is exclusive because selecting and
+        -- claiming are the SAME write: one conditional statement whose ordering
+        -- predicate picks the first backlog subtask and whose update applies to
+        -- exactly that row (implementation: UPDATE tasks ... WHERE id =
+        -- (SELECT ... WHERE status = 'backlog' ORDER BY ... LIMIT 1) RETURNING
+        -- id, serialised through the single writer connection). There is no
+        -- select-then-claim window to lose, so there is no re-selection and no
+        -- retry budget: the statement either returns the subtask it just
+        -- claimed, or returns nothing because none was left. Two sessions
+        -- closing on the same epic in the same instant therefore launch two
+        -- DIFFERENT subtasks, never two agents for one subtask. The claim is a
+        -- mechanism rather than domain behaviour, so it is recorded here instead
+        -- of being modelled as a rule — but the exclusivity it buys is
+        -- normative. The three stopping conditions above are consequently
+        -- exhaustive: contention is not a fourth way for the chain to stop.
         -- Scope of that exclusivity: it holds BETWEEN CHAINS, and nowhere else.
         -- Neither DispatchTaskViaMcp nor the TUI dispatch key claims: both read
         -- the task's status, then provision, then write running, so a claim that
@@ -742,9 +745,8 @@ rule AutoDispatchNextSubtask {
         -- No chain failure can fail the close. By the time this rule runs the
         -- closing task has already reached its terminal status and its session
         -- has been torn down, so reporting an error here would tell the agent
-        -- its session failed to close when it did not. A missing epic, a lost
-        -- claim, a claim error and a failed dispatch are each logged at warn and
-        -- nothing more. A DB error while READING auto_dispatch is fail-CLOSED —
+        -- its session failed to close when it did not. A missing epic, a claim
+        -- error and a failed dispatch are each logged at warn and nothing more. A DB error while READING auto_dispatch is fail-CLOSED —
         -- the chain simply stops, indistinguishable from the normal stops above.
         -- Nothing requested this chain, so the conservative default is to launch
         -- no agent: failing open would start an agent on an epic whose operator

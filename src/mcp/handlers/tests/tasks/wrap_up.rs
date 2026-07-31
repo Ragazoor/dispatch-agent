@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
+use crate::mcp::handlers::tasks::WrapUpAction;
 
 // ---------------------------------------------------------------------------
 // wrap_up tests
@@ -1364,23 +1365,7 @@ async fn wrap_up_rebase_omits_reflection_nudge_regardless_of_setting() {
 async fn exit_session_rebase_closes_session_in_one_call() {
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-rebase".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Rebase,
-        },
-    );
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "tok-rebase", "action": "rebase" }
-        })),
-    )
-    .await;
+    let resp = close_session_via_mcp(&state, task_id, WrapUpAction::Rebase).await;
 
     assert_eq!(extract_response_text(&resp), "Session closed.");
     let task = state.db.get_task(task_id).await.unwrap().unwrap();
@@ -1393,23 +1378,7 @@ async fn exit_session_rebase_closes_session_in_one_call() {
 async fn exit_session_done_closes_session_in_one_call() {
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-done".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "tok-done", "action": "done" }
-        })),
-    )
-    .await;
+    let resp = close_session_via_mcp(&state, task_id, WrapUpAction::Done).await;
 
     assert_eq!(extract_response_text(&resp), "Session closed.");
     let task = state.db.get_task(task_id).await.unwrap().unwrap();
@@ -1421,38 +1390,14 @@ async fn exit_session_done_closes_session_in_one_call() {
 async fn exit_session_pr_sets_review_and_url() {
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-pr".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Pr,
-        },
-    );
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "exit_session",
-            "arguments": {
-                "task_id": task_id.0,
-                "token": "tok-pr",
-                "action": "pr",
-                "pr_url": "https://github.com/owner/repo/pull/7"
-            }
-        })),
-    )
-    .await;
+    let resp = close_session_via_mcp(&state, task_id, WrapUpAction::Pr).await;
 
     assert_eq!(extract_response_text(&resp), "Session closed.");
     let task = state.db.get_task(task_id).await.unwrap().unwrap();
     assert!(task.tmux_window.is_none());
     assert_eq!(task.status, TaskStatus::Review);
     assert_eq!(task.sub_status, SubStatus::default_for(TaskStatus::Review));
-    assert_eq!(
-        task.url.as_ref().map(|u| u.url.as_str()),
-        Some("https://github.com/owner/repo/pull/7")
-    );
+    assert_eq!(task.url.as_ref().map(|u| u.url.as_str()), Some(TEST_PR_URL));
     assert_eq!(
         task.url.as_ref().map(|u| u.url_type),
         Some(crate::models::UrlType::Pr)
@@ -1463,20 +1408,14 @@ async fn exit_session_pr_sets_review_and_url() {
 async fn exit_session_pr_without_pr_url_errors() {
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-pr-nourl".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Pr,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Pr);
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "tok-pr-nourl", "action": "pr" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "pr" }
         })),
     )
     .await;
@@ -1497,13 +1436,7 @@ async fn exit_session_action_mismatch_errors() {
     // closing as another.
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-mismatch".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Rebase,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Rebase);
 
     let resp = call(
         &state,
@@ -1512,7 +1445,7 @@ async fn exit_session_action_mismatch_errors() {
             "name": "exit_session",
             "arguments": {
                 "task_id": task_id.0,
-                "token": "tok-mismatch",
+                "token": token,
                 "action": "pr",
                 "pr_url": "https://github.com/owner/repo/pull/1"
             }
@@ -1537,20 +1470,14 @@ async fn exit_session_action_mismatch_errors() {
 async fn exit_session_without_action_errors() {
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-no-action".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "tok-no-action" }
+            "arguments": { "task_id": task_id.0, "token": token }
         })),
     )
     .await;
@@ -1561,13 +1488,7 @@ async fn exit_session_without_action_errors() {
 async fn exit_session_after_close_token_is_gone() {
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-once".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
 
     // Close.
     let resp = call(
@@ -1575,7 +1496,7 @@ async fn exit_session_after_close_token_is_gone() {
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "tok-once", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;
@@ -1587,7 +1508,7 @@ async fn exit_session_after_close_token_is_gone() {
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "tok-once", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;
@@ -1761,20 +1682,14 @@ async fn exit_session_task_without_window_returns_error() {
     let task_id = create_task_fixture(&state).await; // Backlog task, no tmux_window
 
     // Insert a matching token+action so we get past those checks.
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "tok-no-win".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "tok-no-win", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;
@@ -1802,13 +1717,8 @@ async fn exit_session_with_wrong_token_errors() {
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
 
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "correct-token".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
+    assert_ne!(token, "wrong-token", "the token below must not match");
 
     let resp = call(
         &state,
@@ -1881,20 +1791,14 @@ async fn exit_session_marks_task_done_with_no_epic() {
     // recalculate_epic_status.
     let state = test_state().await;
     let task_id = create_running_task_with_window(&state).await;
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "close-tok".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
 
     let resp = call(
         &state,
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "close-tok", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;
@@ -1921,20 +1825,14 @@ async fn exit_session_already_done_task_stays_done() {
         )
         .await
         .unwrap();
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "close-done-tok".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
 
     call(
         &state,
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "close-done-tok", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;
@@ -1965,20 +1863,14 @@ async fn exit_session_recalculates_epic_status() {
         TaskStatus::Done,
         "precondition: epic should be in-progress before exit_session"
     );
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "epic-close-tok".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
 
     call(
         &state,
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "epic-close-tok", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;
@@ -2005,20 +1897,14 @@ async fn exit_session_resets_sub_status_to_default_for_done() {
         )
         .await
         .unwrap();
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "sub-close-tok".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
 
     call(
         &state,
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "sub-close-tok", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;
@@ -2039,13 +1925,7 @@ async fn exit_session_emits_refresh_after_done_patch() {
     let (state, mut rx) = test_state_with_notify().await;
     let task_id = create_running_task_with_window(&state).await;
 
-    state.exit_tokens.write().unwrap().insert(
-        task_id,
-        crate::mcp::ExitToken {
-            token: "notify-tok".to_string(),
-            action: crate::mcp::handlers::tasks::WrapUpAction::Done,
-        },
-    );
+    let token = seed_exit_token(&state, task_id, WrapUpAction::Done);
     while rx.try_recv().is_ok() {}
 
     let resp = call(
@@ -2053,7 +1933,7 @@ async fn exit_session_emits_refresh_after_done_patch() {
         "tools/call",
         Some(json!({
             "name": "exit_session",
-            "arguments": { "task_id": task_id.0, "token": "notify-tok", "action": "done" }
+            "arguments": { "task_id": task_id.0, "token": token, "action": "done" }
         })),
     )
     .await;

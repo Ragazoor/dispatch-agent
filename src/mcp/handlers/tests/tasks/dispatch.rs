@@ -706,44 +706,51 @@ impl ChainFixture {
         Self::build(None).await
     }
 
+    /// Like [`ChainFixture::new`], but with a caller-supplied runner script, for
+    /// tests that assert on the exact command sequence a dispatch issues (or
+    /// need one to fail).
+    async fn with_runner(runner: Arc<MockProcessRunner>) -> Self {
+        Self::build_with(runner, None).await
+    }
+
     /// Like [`ChainFixture::new`], but with a `task_svc` whose `update_task`
     /// always fails, so `exit_session`'s terminal close patch cannot land. This
     /// is the `close_persisted = false` branch of `ExitSession` /
     /// `ExitSessionViaMcp`.
     async fn with_failing_close() -> Self {
-        Self::build(Some(Arc::new(FailingUpdateTaskService))).await
+        Self::build(Some(Arc::new(FailingCloseTaskService))).await
     }
 
     async fn build(task_svc_override: Option<Arc<dyn crate::service::TaskServiceApi>>) -> Self {
-        let dir = tempfile::TempDir::new().unwrap();
-        let repo_path = dir.path().to_str().unwrap().to_string();
-        std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
-
-        let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
         // The kill-window teardown and the chained dispatch race by design, and
         // MockProcessRunner pops a shared FIFO, so queue uniform successes
         // rather than a command-ordered script.
         let runner = Arc::new(MockProcessRunner::new(
             (0..24).map(|_| MockProcessRunner::ok()).collect(),
         ));
-        let mut state = McpState::new(
-            McpDeps {
-                db: db.clone(),
-                runner: runner.clone() as Arc<dyn ProcessRunner>,
-                embedding_service: EmbeddingService::new_test(),
-                data_dir: std::env::temp_dir(),
-            },
+        Self::build_with(runner, task_svc_override).await
+    }
+
+    async fn build_with(
+        runner: Arc<MockProcessRunner>,
+        task_svc_override: Option<Arc<dyn crate::service::TaskServiceApi>>,
+    ) -> Self {
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
+
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
+        let (state, db) = test_state_with_overrides(
+            runner.clone() as Arc<dyn ProcessRunner>,
             Some(notify_tx),
-        );
-        if let Some(task_svc) = task_svc_override {
-            state.task_svc = task_svc;
-        }
+            task_svc_override,
+        )
+        .await;
         Self {
             _dir: dir,
             repo_path,
             db,
-            state: Arc::new(state),
+            state,
             notify_rx,
             runner,
         }
@@ -812,69 +819,23 @@ impl ChainFixture {
 
     /// The task whose session is about to close: Running with a worktree and a
     /// tmux window, which is what `is_wrappable` and `exit_session` demand.
+    /// Only the epic membership and the fixture's real temp repo distinguish it
+    /// from the shared helper, so it supplies those and delegates.
     async fn closing_subtask(
         &self,
         epic_id: Option<crate::models::EpicId>,
     ) -> crate::models::TaskId {
-        let id = self
-            .db
-            .create_task(CreateTaskRequest {
-                title: "Closing Subtask",
-                description: "",
-                repo_path: &self.repo_path,
-                plan: None,
-                status: TaskStatus::Running,
-                base_branch: "main",
-                epic_id,
-                sort_order: Some(0),
-                tag: None,
-                wrap_up_mode: None,
-                auto_run_plan: false,
-            })
-            .await
-            .unwrap();
-        let worktree = format!("{}/.worktrees/{}-closing-subtask", self.repo_path, id.0);
-        let window = format!("task-{}", id.0);
-        self.db
-            .patch_task(
-                id,
-                &db::TaskPatch::new()
-                    .worktree(Some(worktree.as_str()))
-                    .tmux_window(Some(window.as_str())),
-            )
-            .await
-            .unwrap();
-        id
+        create_running_task_with_window_in(&self.state, &self.repo_path, epic_id).await
     }
 
-    /// Close `task_id`'s session with `action`, seeding the exit token the same
-    /// way `wrap_up` would.
+    /// Close `task_id`'s session with `action`. Thin wrapper over the shared
+    /// [`close_session_via_mcp`] so the exit-token shape lives in one place.
     async fn close(
         &self,
         task_id: crate::models::TaskId,
         action: crate::mcp::handlers::tasks::WrapUpAction,
     ) -> JsonRpcResponse {
-        self.state.exit_tokens.write().unwrap().insert(
-            task_id,
-            crate::mcp::ExitToken {
-                token: "tok".to_string(),
-                action,
-            },
-        );
-        let mut arguments = json!({
-            "task_id": task_id.0,
-            "token": "tok",
-            "action": action.as_str(),
-        });
-        if action == WrapUpAction::Pr {
-            arguments["pr_url"] = json!("https://github.com/acme/repo/pull/1");
-        }
-        call(
-            &self.state,
-            "tools/call",
-            Some(json!({ "name": "exit_session", "arguments": arguments })),
-        )
-        .await
+        close_session_via_mcp(&self.state, task_id, action).await
     }
 }
 
@@ -1194,26 +1155,27 @@ async fn exit_session_chain_reverts_claim_when_dispatch_fails() {
 // and the cleared tmux_window actually landed. Only consuming the exit token is
 // unconditional. The tests below drive the `close_persisted = false` branch.
 
-/// A task service whose `update_task` always fails, so `exit_session`'s
+/// A task service whose `close_session` always fails, so `exit_session`'s
 /// terminal close patch cannot land. Every other method inherits the panicking
 /// default from `TaskServiceApiStub` — which is itself an assertion: if the
 /// chain ever fired on this path it would panic on `claim_next_backlog_task`
 /// rather than pass quietly.
-struct FailingUpdateTaskService;
+struct FailingCloseTaskService;
 
 #[async_trait::async_trait]
-impl crate::service::TaskServiceApiStub for FailingUpdateTaskService {
-    async fn update_task(
+impl crate::service::TaskServiceApiStub for FailingCloseTaskService {
+    async fn close_session(
         &self,
-        _params: crate::service::UpdateTaskParams,
-    ) -> Result<crate::service::UpdateTaskResult, crate::service::ServiceError> {
+        _task_id: crate::models::TaskId,
+        _outcome: crate::service::CloseSessionOutcome,
+    ) -> Result<crate::service::ClosedSession, crate::service::ServiceError> {
         Err(crate::service::ServiceError::Internal(anyhow::anyhow!(
             "simulated persistence failure"
         )))
     }
 }
 
-crate::task_service_api!(service_api_stub_bridge, FailingUpdateTaskService);
+crate::task_service_api!(service_api_stub_bridge, FailingCloseTaskService);
 
 /// The terminal mutation is withheld: the task keeps the status, sub_status and
 /// tmux_window it had, so it stays visible in its current column for a manual
@@ -1672,66 +1634,45 @@ async fn wrap_up_rebase_clears_conflict_substatus_on_non_conflict_error() {
 // dispatch_task tests
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn dispatch_task_dispatches_backlog_task() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo_path = dir.path().to_str().unwrap().to_string();
-    std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
-
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
+/// The exact command sequence one successful dispatch issues. Scripted rather
+/// than uniformly-ok because the order is itself the assertion, and because the
+/// split-window call must return a pane id.
+fn dispatch_runner_script() -> Arc<MockProcessRunner> {
+    Arc::new(MockProcessRunner::new(vec![
         MockProcessRunner::ok(),                    // git fetch origin main
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
         MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(), // tmux send-keys -l (literal text / write prompt file)
-        MockProcessRunner::ok(), // tmux send-keys Enter
+        MockProcessRunner::ok(),                    // tmux send-keys -l (writes prompt file)
+        MockProcessRunner::ok(),                    // tmux send-keys Enter
         MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
-    ]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        None,
-    ));
+    ]))
+}
 
-    let task_id = db
-        .create_task(CreateTaskRequest {
-            title: "My Backlog Task",
-            description: "do the thing",
-            repo_path: &repo_path,
-            plan: Some("docs/plan.md"),
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    // Pre-create worktree dir (mocked git won't create it)
-    std::fs::create_dir_all(
-        dir.path()
-            .join(".worktrees")
-            .join(format!("{}-my-backlog-task", task_id.0)),
-    )
-    .unwrap();
-
-    let resp = call(
-        &state,
+/// The `dispatch_task` tools/call for `task_id`.
+async fn call_dispatch_task(
+    state: &Arc<McpState>,
+    task_id: crate::models::TaskId,
+) -> JsonRpcResponse {
+    call(
+        state,
         "tools/call",
         Some(json!({
             "name": "dispatch_task",
             "arguments": { "task_id": task_id.0 }
         })),
     )
-    .await;
+    .await
+}
+
+#[tokio::test]
+async fn dispatch_task_dispatches_backlog_task() {
+    let fx = ChainFixture::with_runner(dispatch_runner_script()).await;
+    let task_id = fx
+        .backlog_subtask(None, "My Backlog Task", None, None)
+        .await;
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
 
     let text = extract_response_text(&resp);
     assert!(
@@ -1740,7 +1681,7 @@ async fn dispatch_task_dispatches_backlog_task() {
     );
 
     // dispatch_task is synchronous — no sleep needed
-    let task = db.get_task(task_id).await.unwrap().unwrap();
+    let task = fx.db.get_task(task_id).await.unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Running);
     assert!(
         task.worktree.is_some(),
@@ -1777,15 +1718,7 @@ async fn dispatch_task_returns_error_for_non_backlog_task() {
         .await
         .unwrap();
 
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_task",
-            "arguments": { "task_id": task_id.0 }
-        })),
-    )
-    .await;
+    let resp = call_dispatch_task(&state, task_id).await;
 
     assert_error(&resp, "not in backlog");
 }
@@ -1809,81 +1742,28 @@ async fn dispatch_task_unknown_task_id_returns_error() {
 
 #[tokio::test]
 async fn dispatch_task_respects_tag_routing() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo_path = dir.path().to_str().unwrap().to_string();
-    std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
-
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(), // tmux send-keys -l (literal text / write prompt file)
-        MockProcessRunner::ok(), // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
-    ]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        None,
-    ));
-
-    // Feature-tagged task with no plan → should route to Plan mode
-    let task_id = db
-        .create_task(CreateTaskRequest {
-            title: "Feature Task",
-            description: "a new feature",
-            repo_path: &repo_path,
-            plan: None,
-            status: // no plan
-            TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
+    let fx = ChainFixture::with_runner(dispatch_runner_script()).await;
+    // Feature-tagged task with no plan → still routes to the standard dispatch
+    // agent (only Research + no plan routes elsewhere).
+    let task_id = fx.backlog_subtask(None, "Feature Task", None, None).await;
+    fx.db
+        .patch_task(
+            task_id,
+            &db::TaskPatch::new()
+                .plan_path(None)
+                .tag(Some(crate::models::TaskTag::Feature)),
+        )
         .await
         .unwrap();
-    db.patch_task(
-        task_id,
-        &db::TaskPatch::new().tag(Some(crate::models::TaskTag::Feature)),
-    )
-    .await
-    .unwrap();
 
-    // Pre-create worktree dir
-    std::fs::create_dir_all(
-        dir.path()
-            .join(".worktrees")
-            .join(format!("{}-feature-task", task_id.0)),
-    )
-    .unwrap();
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_task",
-            "arguments": { "task_id": task_id.0 }
-        })),
-    )
-    .await;
+    let resp = call_dispatch_task(&fx.state, task_id).await;
 
     let text = extract_response_text(&resp);
     assert!(
         text.contains("dispatched"),
         "Expected dispatch confirmation, got: {text}"
     );
-
-    // Task should be Running — plan mode still dispatches an agent
-    let task = db.get_task(task_id).await.unwrap().unwrap();
+    let task = fx.db.get_task(task_id).await.unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Running);
 }
 
@@ -1891,69 +1771,21 @@ async fn dispatch_task_respects_tag_routing() {
 async fn dispatch_task_dependabot_tag_routes_through_dispatch_agent() {
     // Dependabot tag is a label now — it routes through the unified dispatch
     // agent like any other task without a dedicated dispatch mode.
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo_path = dir.path().to_str().unwrap().to_string();
-    std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
-
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l (writes prompt file)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
-    ]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        None,
-    ));
-
-    let task_id = db
-        .create_task(CreateTaskRequest {
-            title: "Bump foo from 1.0.0 to 1.0.1",
-            description: "https://github.com/example/repo/pull/7",
-            repo_path: &repo_path,
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
+    let fx = ChainFixture::with_runner(dispatch_runner_script()).await;
+    let title = "Bump foo from 1.0.0 to 1.0.1";
+    let task_id = fx.backlog_subtask(None, title, None, None).await;
+    fx.db
+        .patch_task(
+            task_id,
+            &db::TaskPatch::new().tag(Some(crate::models::TaskTag::Dependabot)),
+        )
         .await
         .unwrap();
-    db.patch_task(
-        task_id,
-        &db::TaskPatch::new().tag(Some(crate::models::TaskTag::Dependabot)),
-    )
-    .await
-    .unwrap();
-
-    let slug = crate::models::slugify("Bump foo from 1.0.0 to 1.0.1");
-    let worktree_dir = dir
-        .path()
+    let worktree_dir = std::path::Path::new(&fx.repo_path)
         .join(".worktrees")
-        .join(format!("{}-{}", task_id.0, slug));
-    std::fs::create_dir_all(&worktree_dir).unwrap();
+        .join(format!("{}-{}", task_id.0, crate::models::slugify(title)));
 
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_task",
-            "arguments": { "task_id": task_id.0 }
-        })),
-    )
-    .await;
+    let resp = call_dispatch_task(&fx.state, task_id).await;
 
     let text = extract_response_text(&resp);
     assert!(
@@ -1989,56 +1821,19 @@ async fn dispatch_task_dependabot_tag_routes_through_dispatch_agent() {
 
 #[tokio::test]
 async fn dispatch_task_returns_error_when_dispatch_fails() {
-    let dir = tempfile::TempDir::new().unwrap();
-    let repo_path = dir.path().to_str().unwrap().to_string();
-    std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
-
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    // First mock call fails (tmux new-window fails) → dispatch errors out
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("tmux: no server running"), // tmux new-window fails
-    ]));
-    let state = Arc::new(McpState::new(
-        McpDeps {
-            db: db.clone(),
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        None,
-    ));
-
-    let task_id = db
-        .create_task(CreateTaskRequest {
-            title: "Backlog Task",
-            description: "will fail to dispatch",
-            repo_path: &repo_path,
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    let resp = call(
-        &state,
-        "tools/call",
-        Some(json!({
-            "name": "dispatch_task",
-            "arguments": { "task_id": task_id.0 }
-        })),
-    )
+    // First mock call fails (tmux new-window fails) → dispatch errors out.
+    let fx = ChainFixture::with_runner(Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::fail("tmux: no server running"),
+    ])))
     .await;
+    let task_id = fx.backlog_subtask(None, "Backlog Task", None, None).await;
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
 
     assert!(is_error(&resp), "expected error when dispatch fails");
 
     // Task status must remain Backlog — dispatch failure must not leave it as Running
-    let task = db.get_task(task_id).await.unwrap().unwrap();
+    let task = fx.db.get_task(task_id).await.unwrap().unwrap();
     assert_eq!(
         task.status,
         TaskStatus::Backlog,

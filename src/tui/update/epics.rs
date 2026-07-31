@@ -93,15 +93,14 @@ impl App {
                         let branch = dispatch::branch_from_worktree(&worktree);
                         let repo_path = t.repo_path.clone();
                         let base_branch = t.base_branch.clone();
-                        let tmux_window = t.tmux_window.clone();
-                        branch.map(|b| (worktree, b, repo_path, base_branch, tmux_window))
+                        branch.map(|b| (worktree, b, repo_path, base_branch))
                     }
                     None => None,
                 },
                 _ => None,
             };
 
-            let Some((worktree, branch, repo_path, base_branch, tmux_window)) = task_data else {
+            let Some((worktree, branch, repo_path, base_branch)) = task_data else {
                 // Skip this task — no longer eligible
                 if let Some(q) = &mut self.merge_queue {
                     q.completed += 1;
@@ -124,7 +123,6 @@ impl App {
                 branch,
                 base_branch,
                 worktree,
-                tmux_window,
             })];
         }
     }

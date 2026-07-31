@@ -7,7 +7,7 @@ mod params;
 mod validators;
 mod watchers;
 
-pub use crud::{TaskService, UpdateTaskResult};
+pub use crud::{CloseSessionOutcome, ClosedSession, TaskService, UpdateTaskResult};
 pub use params::{ClaimTaskParams, CreateTaskParams, ListTasksFilter, UpdateTaskParams};
 pub use watchers::SubscribeOutcome;
 

@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use crate::dispatch;
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
-use crate::models::{SubStatus, Task, TaskId, TaskStatus};
-use crate::service::{FieldUpdate, UpdateTaskParams};
+use crate::models::{SubStatus, Task, TaskId};
+use crate::service::UpdateTaskParams;
 
 use super::{
     fetch_caller_task, parse_args, service_err_to_response, ExitSessionArgs, JsonRpcResponse,
@@ -193,7 +193,6 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
                 worktree: &worktree,
                 branch: &branch,
                 base_branch: &base_branch,
-                tmux_window: None,
             },
             &*runner,
         )
@@ -345,59 +344,59 @@ pub(crate) async fn handle_exit_session(
         (action, pr_url)
     };
 
-    let mut params = UpdateTaskParams::for_task(task_id).tmux_window(FieldUpdate::Clear);
-    params = match (action, pr_url) {
-        (WrapUpAction::Pr, Some(pr_url)) => {
-            params
-                .status(TaskStatus::Review)
-                .url(crate::service::UrlUpdate::Set(crate::models::TaskUrl::new(
-                    pr_url,
-                    crate::models::UrlType::Pr,
-                )))
-        }
+    let outcome = match (action, pr_url) {
+        (WrapUpAction::Pr, Some(pr_url)) => crate::service::CloseSessionOutcome::Review {
+            pr_url: crate::models::TaskUrl::new(pr_url, crate::models::UrlType::Pr),
+        },
         // pr_url is validated as required above whenever action = Pr, so this
         // (Pr, None) arm is unreachable in practice — Done is a safe, non-panicking
         // fallback rather than asserting an invariant the compiler can't see.
         (WrapUpAction::Pr, None) | (WrapUpAction::Rebase, _) | (WrapUpAction::Done, _) => {
-            params.status(TaskStatus::Done)
+            crate::service::CloseSessionOutcome::Done
         }
     };
     // `close_persisted` in `ExitSession` (docs/specs/pr-workflow.allium): the
     // terminal mutation, the tmux teardown and the trailing SessionClosed
     // emission are all gated on this single write landing. Only consuming the
-    // token (already done above) happens either way.
-    let close_result = state.task_svc.update_task(params).await;
+    // token (already done above) happens either way. `close_session` exists so
+    // that gate is sound — its `Err` means the write did not land and nothing
+    // else. See its doc comment before swapping in a generic `update_task`.
+    let close_result = state.task_svc.close_session(task_id, outcome).await;
     state.notify_task_changed(task_id);
     if let Some(epic_id) = task.epic_id {
         state.notify_epic_changed(epic_id);
     }
 
-    if let Err(e) = close_result {
-        tracing::warn!(
-            task_id = task_id.0,
-            "exit_session: failed to apply closing patch: {e}"
-        );
-        // Still a successful response: the exit token was consumed above, so an
-        // error would strand the agent with no retry path and no session. The
-        // text is what carries the failure. Neither the teardown nor the chain
-        // runs — the task keeps its live window and its `tmux_window` reference,
-        // so it never satisfies `is_detached` and cannot drift into the
-        // awaiting-merge rendering, and a broken close is never compounded into
-        // a second dispatch.
-        return JsonRpcResponse::ok(
-            id,
-            json!({"content": [{"type": "text", "text": format!(
-                "Task #{} could NOT be moved to its terminal status — the close did not take \
-                 effect, and your tmux session is still alive. Do not treat this as a completed \
-                 close: the task is still in its previous status and needs closing by hand.",
-                task_id.0
-            )}]}),
-        );
-    }
+    let closed = match close_result {
+        Ok(closed) => closed,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.0,
+                "exit_session: failed to apply closing patch: {e}"
+            );
+            // Still a successful response: the exit token was consumed above, so
+            // an error would strand the agent with no retry path and no session.
+            // The text is what carries the failure. Neither the teardown nor the
+            // chain runs — the task keeps its live window and its `tmux_window`
+            // reference, so it never satisfies `is_detached` and cannot drift
+            // into the awaiting-merge rendering, and a broken close is never
+            // compounded into a second dispatch.
+            return JsonRpcResponse::ok(
+                id,
+                json!({"content": [{"type": "text", "text": format!(
+                    "Task #{} could NOT be moved to its terminal status — the close did not take \
+                     effect, and your tmux session is still alive. Do not treat this as a completed \
+                     close: the task is still in its previous status and needs closing by hand.",
+                    task_id.0
+                )}]}),
+            );
+        }
+    };
 
     // Past this point the close persisted, so both of the following are
-    // unconditional.
-    let tmux_window = task.tmux_window;
+    // unconditional. The window comes from the close itself, not from the
+    // pre-read task: it is the row the close actually cleared.
+    let tmux_window = closed.window;
     let runner = state.runner.clone();
     tokio::task::spawn_blocking(move || {
         if let Some(window) = &tmux_window {

@@ -1265,7 +1265,6 @@ async fn exec_finish_sends_complete_when_shared_worktree() {
         "1-task-a".into(),
         "main".into(),
         worktree.into(),
-        Some("task-1".into()),
     )
     .await;
 
@@ -1314,7 +1313,6 @@ async fn exec_finish_happy_path_sends_complete() {
         "1-test".into(),
         "main".into(),
         "/repo/.worktrees/1-test".into(),
-        None,
     )
     .await;
 
@@ -1325,6 +1323,133 @@ async fn exec_finish_happy_path_sends_complete() {
     assert!(
         matches!(msg, Message::Task(crate::tui::messages::TaskMessage::FinishComplete(tid)) if tid == id),
         "Expected FinishComplete, got: {msg:?}"
+    );
+}
+
+// -- exec_close_session ----------------------------------------------------
+//
+// FinishTaskSuccess (docs/specs/pr-workflow.allium): the tmux teardown follows
+// the Done write and is gated on it, so a task whose terminal write failed keeps
+// BOTH its live window and its tmux_window reference. `finish_task` used to kill
+// the window itself, before that write — the opposite order.
+
+/// A Running task with a worktree and a tmux window, plus the in-memory clone
+/// `handle_finish_complete` hands to `CloseSession` (Done already applied
+/// optimistically).
+async fn task_ready_to_close(db: &Arc<Database>) -> models::Task {
+    let task = create_task_returning(
+        &**db,
+        "Test",
+        "desc",
+        "/repo",
+        None,
+        models::TaskStatus::Review,
+    )
+    .await
+    .unwrap();
+    db.patch_task(
+        task.id,
+        &db::TaskPatch::new()
+            .worktree(Some("/repo/.worktrees/1-test"))
+            .tmux_window(Some("task-1")),
+    )
+    .await
+    .unwrap();
+    let mut in_memory = db.get_task(task.id).await.unwrap().unwrap();
+    in_memory.status = models::TaskStatus::Done;
+    in_memory.tmux_window = None;
+    in_memory
+}
+
+#[tokio::test]
+async fn exec_close_session_kills_the_window_only_after_the_done_write() {
+    let db = test_db().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"task-1\n"), // tmux list-windows (has_window)
+        MockProcessRunner::ok(),                        // tmux kill-window
+    ]));
+    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+    let mut app = App::new(db.list_all().await.unwrap());
+    let task = task_ready_to_close(&db).await;
+    let id = task.id;
+
+    let teardown = rt.exec_close_session(&mut app, task).await;
+
+    // The write has landed by the time exec_close_session returns; the teardown
+    // is the only thing still in flight.
+    let persisted = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(persisted.status, models::TaskStatus::Done);
+    assert!(persisted.tmux_window.is_none());
+    assert!(
+        persisted.worktree.is_some(),
+        "the worktree survives a finish; it is removed on archive"
+    );
+
+    teardown
+        .expect("a task with a window gets a teardown")
+        .await
+        .unwrap();
+    let calls = mock.recorded_calls();
+    assert!(
+        calls
+            .iter()
+            .any(|(prog, args)| prog == "tmux" && args.iter().any(|a| a == "kill-window")),
+        "the window must be killed once the Done write landed, got: {calls:?}"
+    );
+}
+
+/// A task service whose `close_session` always fails, so the terminal write
+/// cannot land. Every other method inherits the panicking `TaskServiceApiStub`
+/// default.
+struct FailingCloseTaskService;
+
+#[async_trait::async_trait]
+impl crate::service::TaskServiceApiStub for FailingCloseTaskService {
+    async fn close_session(
+        &self,
+        _task_id: TaskId,
+        _outcome: crate::service::CloseSessionOutcome,
+    ) -> Result<crate::service::ClosedSession, crate::service::ServiceError> {
+        Err(crate::service::ServiceError::Internal(anyhow::anyhow!(
+            "simulated persistence failure"
+        )))
+    }
+}
+
+crate::task_service_api!(service_api_stub_bridge, FailingCloseTaskService);
+
+#[tokio::test]
+async fn exec_close_session_leaves_the_window_alive_when_the_done_write_fails() {
+    let db = test_db().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![]));
+    let mut rt = make_runtime(db.clone(), tx, mock.clone()).await;
+    rt.task_svc = Arc::new(FailingCloseTaskService);
+    let mut app = App::new(db.list_all().await.unwrap());
+    let task = task_ready_to_close(&db).await;
+    let id = task.id;
+
+    let teardown = rt.exec_close_session(&mut app, task).await;
+
+    assert!(
+        teardown.is_none(),
+        "a failed close must not tear the session down"
+    );
+    assert!(
+        mock.recorded_calls().is_empty(),
+        "no tmux command may be issued when the close did not persist"
+    );
+    let persisted = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        persisted.status,
+        models::TaskStatus::Review,
+        "the task keeps the status it had"
+    );
+    assert_eq!(
+        persisted.tmux_window.as_deref(),
+        Some("task-1"),
+        "the tmux_window reference survives, so it can never disagree with the live window"
     );
 }
 
@@ -1369,7 +1494,6 @@ async fn exec_finish_conflict_sends_failed() {
         "1-test".into(),
         "main".into(),
         "/repo/.worktrees/1-test".into(),
-        None,
     )
     .await;
 
@@ -1416,7 +1540,6 @@ async fn exec_finish_not_on_main_sends_failed() {
         "1-test".into(),
         "main".into(),
         "/repo/.worktrees/1-test".into(),
-        None,
     )
     .await;
 
@@ -3659,6 +3782,113 @@ async fn build_learning_injections_partitions_and_records_retrievals() {
     assert!(rows
         .iter()
         .all(|r| matches!(r.source, RetrievalSource::PromptInjection)));
+}
+
+// ---------------------------------------------------------------------------
+// prepare_inputs tests
+// ---------------------------------------------------------------------------
+//
+// The shared dispatch prologue. Four launch sites (dispatch_task and the epic
+// chain in src/mcp/handlers/tasks/dispatch.rs, exec_quick_dispatch and
+// exec_dispatch_agent in src/runtime/tasks.rs) run it; their own end-to-end
+// tests cover the wiring, these pin the prologue itself.
+
+#[tokio::test]
+async fn prepare_inputs_reads_epic_context_injections_and_verify_command() {
+    use crate::db::CreateLearningRow;
+    use crate::models::{LearningKind, LearningScope, RetrievalSource};
+    use crate::service::embeddings::{serialize_embedding, EmbeddingService};
+
+    let (rt, _app) = test_runtime().await;
+    let db = rt.db_write().clone();
+    let epic = db.create_epic("Chained Epic", "desc", None).await.unwrap();
+    let task_id = db
+        .create_task(CreateTaskRequest {
+            title: "title",
+            description: "desc",
+            repo_path: "/repo/a",
+            plan: None,
+            status: models::TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: Some(epic.id),
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+    let task = db.get_task(task_id).await.unwrap().unwrap();
+    db.set_verify_command("/repo/a", Some("cargo test"))
+        .await
+        .unwrap();
+    let learning_id = db
+        .create_learning(CreateLearningRow {
+            kind: LearningKind::Convention,
+            summary: "Use Arc for shared state.",
+            detail: None,
+            scope: LearningScope::Repo,
+            scope_ref: Some("/repo/a"),
+            tags: &[],
+            source_task_id: None,
+            embedding: Some(&serialize_embedding(&[0.1f32; 384])),
+        })
+        .await
+        .unwrap();
+
+    let inputs = crate::dispatch::prepare_inputs(&*db, &task, &EmbeddingService::new_test()).await;
+
+    let epic_ctx = inputs.epic_ctx.expect("epic context read from the DB");
+    assert_eq!(epic_ctx.epic_id, epic.id);
+    assert_eq!(epic_ctx.epic_title, "Chained Epic");
+    assert_eq!(
+        inputs.injected.iter().map(|l| l.id).collect::<Vec<_>>(),
+        vec![learning_id]
+    );
+    assert_eq!(inputs.verify_command.as_deref(), Some("cargo test"));
+
+    // The prologue's side effect: each injection is recorded as a retrieval.
+    let rows = db.list_retrievals_for_task(task.id).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(rows[0].source, RetrievalSource::PromptInjection));
+}
+
+#[tokio::test]
+async fn prepare_inputs_with_epic_ctx_uses_the_supplied_context() {
+    use crate::service::embeddings::EmbeddingService;
+
+    let (rt, _app) = test_runtime().await;
+    let db = rt.db_write().clone();
+    // Deliberately epic-less: a from_db read would yield None, so seeing the
+    // supplied context proves it was not re-read.
+    let task = create_task_returning(
+        &*db,
+        "title",
+        "desc",
+        "/repo/a",
+        None,
+        models::TaskStatus::Backlog,
+    )
+    .await
+    .unwrap();
+    let supplied = crate::dispatch::EpicContext {
+        epic_id: models::EpicId(7),
+        epic_title: "Already in hand".to_string(),
+    };
+
+    let inputs = crate::dispatch::prepare_inputs_with_epic_ctx(
+        &*db,
+        &task,
+        &EmbeddingService::new_test(),
+        Some(supplied),
+    )
+    .await;
+
+    let epic_ctx = inputs.epic_ctx.expect("the supplied context is returned");
+    assert_eq!(epic_ctx.epic_id, models::EpicId(7));
+    assert_eq!(epic_ctx.epic_title, "Already in hand");
+    assert!(inputs.injected.is_empty());
+    assert!(inputs.verify_command.is_none());
 }
 
 // ---------------------------------------------------------------------------

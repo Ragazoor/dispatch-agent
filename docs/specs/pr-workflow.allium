@@ -221,9 +221,9 @@ rule WrapUpRebase {
         --   5. `git merge --ff-only <branch>` in the repo root to
         --      fast-forward the base branch to the rebased branch.
         -- The worktree is preserved after a successful rebase (cleaned
-        -- up only on archive). The MCP wrap_up handler calls finish_task
-        -- with tmux_window=None so the agent's session stays alive until
-        -- it explicitly calls exit_session. The MCP wrap_up handler returns
+        -- up only on archive). finish_task performs no session teardown at
+        -- all — it is the git half only — so the agent's session stays alive
+        -- until it explicitly calls exit_session. The MCP wrap_up handler returns
         -- an exit token in its success response. The agent MUST pass this
         -- token to exit_session to close its session. The token records
         -- action = rebase, and the agent must call exit_session with
@@ -468,6 +468,16 @@ rule ExitSession {
         -- triggers EpicStatusRecalculation on the parent epic. Killing the tmux
         -- window is gated on that same write — see below.
         --
+        -- close_persisted is the outcome of ONE purpose-built persistence call
+        -- that does nothing but apply this terminal patch and recalculate the
+        -- parent epic. That matters: if the close were expressed as a general
+        -- task update, a failure in some unrelated follow-up step of that update
+        -- (re-parenting, repo rerouting) would report failure after the patch had
+        -- already landed, and the teardown gated below would then be withheld
+        -- from a task that IS closed — leaving a live window on a done task, the
+        -- one disagreement this gate exists to prevent. Keep the close a
+        -- dedicated call; do not fold it back into the generic update path.
+        --
         -- When the terminal write does NOT take effect (close_persisted =
         -- false — the single patch that carries status, sub_status, url and the
         -- cleared tmux_window failed at the persistence layer):
@@ -580,7 +590,14 @@ rule FinishTaskSuccess {
         -- Same finish_task path as WrapUpRebase. The implementation
         -- rebases the task branch onto task.base_branch (after pulling
         -- latest from origin), then fast-forwards task.base_branch to
-        -- the rebased branch, then kills the tmux window.
+        -- the rebased branch, then persists done with a cleared
+        -- tmux_window, and only then kills the tmux window.
+        -- That last ordering is normative and matches ExitSession: the
+        -- teardown is gated on the terminal write landing, so a task
+        -- whose done write failed keeps BOTH its live window and its
+        -- tmux_window reference and the two can never disagree. finish_task
+        -- itself performs no tmux teardown — it is the git half only, shared
+        -- with the MCP wrap_up path, which never wanted a teardown at all.
         -- Worktree is preserved after finish; it will be cleaned up
         -- when the task is archived. If another active task shares the
         -- same worktree, the worktree is detached from this task but
