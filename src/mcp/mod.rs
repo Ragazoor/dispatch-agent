@@ -38,6 +38,19 @@ pub enum McpEvent {
     /// from the rebased branch's task; an empty path means none could be
     /// resolved and nothing is measured.
     BranchRebased { repo_path: String },
+    /// An agent was launched off-board — by the `dispatch_task` tool or by epic
+    /// auto-dispatch chaining — so the repository's worktree provisioning just
+    /// fetched `origin/<base>` and its drift measurement is out of date
+    /// (docs/specs/repo-sync.allium: rule RefreshRepoSyncStateAfterDispatch).
+    /// That rule's obligation is per-event, not per-surface: the board emits its
+    /// own refresh command directly, and these two paths owe the same refresh.
+    ///
+    /// Carries the repository rather than the task, for the same reason
+    /// [`McpEvent::BranchRebased`] does: the emitter already holds the task that
+    /// names it, and no other key identifies a repository unambiguously. No mode
+    /// travels with it because neither emitter can produce the one mode the rule
+    /// excludes — `resume` provisions nothing and has no MCP entry point.
+    AgentLaunched { repo_path: String },
 }
 
 /// Identifies a fire-and-forget background write performed by the MCP handler.
@@ -207,6 +220,19 @@ impl McpState {
     pub(crate) fn notify_branch_rebased(&self, repo_path: &str) {
         if let Some(tx) = &self.notify_tx {
             let _ = tx.send(McpEvent::BranchRebased {
+                repo_path: repo_path.to_string(),
+            });
+        }
+    }
+
+    /// Notify the runtime that an agent was just launched into a worktree under
+    /// `repo_path`, so its drift measurement is now out of date
+    /// (docs/specs/repo-sync.allium: rule RefreshRepoSyncStateAfterDispatch).
+    /// Call this only after a dispatch that actually launched an agent — a failed
+    /// provisioning moved nothing.
+    pub(crate) fn notify_agent_launched(&self, repo_path: &str) {
+        if let Some(tx) = &self.notify_tx {
+            let _ = tx.send(McpEvent::AgentLaunched {
                 repo_path: repo_path.to_string(),
             });
         }

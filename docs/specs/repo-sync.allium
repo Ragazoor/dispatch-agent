@@ -388,6 +388,15 @@ rule RefreshRepoSyncStateAfterSync {
     @guidance
         -- Recount after a sync so the indicator clears (or, on a partial
         -- outcome, tells the truth) without waiting for another event.
+        --
+        -- Unlike RefreshRepoSyncStateAfterDispatch, this obligation is only
+        -- observable where a measurement outlives the operation, which means the
+        -- board. `dispatch repo sync` (SyncRepoViaCli) is a one-shot process: it
+        -- prints the counts the operation itself moved and exits, so there is no
+        -- displayed measurement left to go stale and no recount is performed.
+        -- The RepoSyncState it would refresh dies with the process. Adding one
+        -- would spend a git invocation per target to produce a number nothing
+        -- reads.
 }
 
 -- == Sync ==

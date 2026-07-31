@@ -110,6 +110,24 @@ fn dispatching_a_task_requests_a_non_fetching_refresh() {
     );
 }
 
+// rule-failure.RefreshRepoSyncStateAfterDispatch.1: resume provisions nothing
+// and fetches nothing, so the guard `mode in {standard, research, quick}`
+// excludes it and no refresh follows.
+#[test]
+fn resuming_a_task_requests_no_refresh() {
+    let mut app = make_app();
+    let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Resumed {
+        id: TaskId(1),
+        tmux_window: "task-1".to_string(),
+    }));
+    assert!(
+        !cmds
+            .iter()
+            .any(|c| matches!(c, Command::RepoSync(RepoSyncCommand::Refresh { .. }))),
+        "resume re-reads exactly the refs the last measurement read, got: {cmds:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // RefreshRepoSyncStateAfterSync
 // ---------------------------------------------------------------------------

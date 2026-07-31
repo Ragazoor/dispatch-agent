@@ -1377,6 +1377,101 @@ async fn dispatch_task_dispatches_backlog_task() {
     );
 }
 
+/// Drain `rx` and report whether an `AgentLaunched` naming `repo_path` is among
+/// the events already queued. Non-blocking: every emitter below has finished its
+/// notifications by the time the caller awaits it.
+fn saw_agent_launched(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<crate::mcp::McpEvent>,
+    repo_path: &str,
+) -> bool {
+    let mut seen = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(&event, crate::mcp::McpEvent::AgentLaunched { repo_path: p } if p == repo_path)
+        {
+            seen = true;
+        }
+    }
+    seen
+}
+
+// rule-success.RefreshRepoSyncStateAfterDispatch, MCP surface: the obligation is
+// per-event, not per-surface, so `dispatch_task` owes the same refresh the board's
+// own dispatch does (docs/specs/repo-sync.allium).
+#[tokio::test]
+async fn dispatch_task_notifies_that_the_repo_needs_remeasuring() {
+    let mut fx = ChainFixture::with_runner(dispatch_runner_script()).await;
+    let task_id = fx.backlog_subtask(None, "Measured Task", None, None).await;
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
+    assert!(extract_response_text(&resp).contains("dispatched"));
+
+    let repo_path = fx.repo_path.clone();
+    assert!(
+        saw_agent_launched(&mut fx.notify_rx, &repo_path),
+        "an MCP dispatch must ask the runtime to remeasure {repo_path}"
+    );
+}
+
+// rule-failure.RefreshRepoSyncStateAfterDispatch: a dispatch that failed launched
+// no agent, so there is no AgentLaunched to follow and nothing to remeasure.
+#[tokio::test]
+async fn a_failed_dispatch_task_notifies_no_remeasure() {
+    let mut fx = ChainFixture::new().await;
+    let task_id = fx
+        .backlog_subtask(None, "Doomed", None, Some("/nonexistent/dispatch-mcp-repo"))
+        .await;
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
+    assert_error(&resp, "dispatch failed");
+
+    assert!(
+        !saw_agent_launched(&mut fx.notify_rx, "/nonexistent/dispatch-mcp-repo"),
+        "no agent launched, so nothing moved and nothing needs remeasuring"
+    );
+}
+
+// rule-success.RefreshRepoSyncStateAfterDispatch, epic-chain surface: auto-dispatch
+// chaining routes through the same DispatchTask rule, so it is not exempt either.
+#[tokio::test]
+async fn the_auto_dispatch_chain_notifies_that_the_repo_needs_remeasuring() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Chained Task", Some(10), None)
+        .await;
+
+    let resp = fx.close(closing, WrapUpAction::Done).await;
+    assert!(resp.error.is_none(), "close must succeed: {:?}", resp.error);
+
+    // The chain dispatches on a spawned task, so wait for its notifications
+    // rather than draining what happens to have arrived. `TaskChanged(next)` is
+    // unique to the chain (the close notifies about the closing task and the
+    // shared epic) and follows the refresh notification, so it bounds the wait
+    // and fails fast instead of hanging when that notification is missing.
+    let repo_path = fx.repo_path.clone();
+    let mut launched = false;
+    loop {
+        match fx.notify_rx.recv().await {
+            Some(crate::mcp::McpEvent::AgentLaunched { repo_path: p }) if p == repo_path => {
+                launched = true;
+            }
+            Some(crate::mcp::McpEvent::TaskChanged(id)) if id == next => break,
+            Some(_) => continue,
+            None => panic!("notification channel closed before the chain finished"),
+        }
+    }
+    assert!(
+        launched,
+        "a chained dispatch must ask the runtime to remeasure {repo_path}"
+    );
+    assert_eq!(
+        fx.db.get_task(next).await.unwrap().unwrap().status,
+        TaskStatus::Running,
+        "the chain really did launch an agent"
+    );
+}
+
 #[tokio::test]
 async fn dispatch_task_returns_error_for_non_backlog_task() {
     let state = test_state().await;

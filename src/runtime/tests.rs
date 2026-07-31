@@ -5848,6 +5848,41 @@ async fn apply_loop_event_branch_rebased_refreshes_the_repo() {
     );
 }
 
+// rule-success.RefreshRepoSyncStateAfterDispatch: an agent launched off-board
+// (the dispatch_task tool, or epic auto-dispatch chaining) refreshes the
+// repository's drift too, without a fetch — provisioning already fetched
+// origin/<base>.
+#[tokio::test]
+async fn apply_loop_event_agent_launched_refreshes_the_repo() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+        MockProcessRunner::ok_with_stdout(b"1\t0\n"),
+    ]));
+    let rt = make_runtime(db, tx, mock.clone()).await;
+    let mut app = App::new(vec![]);
+
+    let cmds = apply_loop_event(
+        &mut app,
+        LoopEvent::Mcp(mcp::McpEvent::AgentLaunched {
+            repo_path: "/repo".to_string(),
+        }),
+        &rt,
+    );
+
+    assert!(cmds.is_empty(), "the refresh is spawned, not queued");
+    let m = expect_measurement(&mut rx).await;
+    assert_eq!(m.repo_path, "/repo");
+    assert!(
+        !mock
+            .recorded_calls()
+            .iter()
+            .any(|(_, a)| a.contains(&"fetch".to_string())),
+        "provisioning already fetched origin/<base>"
+    );
+}
+
 // rule-failure.RefreshRepoSyncStateAfterRebase.1: no repository could be
 // resolved from the rebased branch, so nothing is refreshed.
 #[tokio::test]

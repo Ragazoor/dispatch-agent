@@ -84,6 +84,8 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
 
     let next_id = next_task.id;
     let next_title = next_task.title.clone();
+    // Read before the task is moved into the blocking dispatch.
+    let repo_path = next_task.repo_path.clone();
     // The epic row is already in hand, so skip `EpicContext::from_db`'s
     // re-read. The claim selects only from this epic's subtasks, so the
     // context is always this epic.
@@ -108,8 +110,10 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
         let result =
             tokio::task::spawn_blocking(move || do_dispatch(&next_task, &*runner, inputs)).await;
 
+        let mut launched = false;
         match result {
             Ok(Ok(dispatch_result)) => {
+                launched = true;
                 // The claim already applied Running and seeded
                 // last_pre_tool_use_at, so this patch only records where the
                 // agent actually landed.
@@ -140,6 +144,13 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
         }
 
         if let Some(tx) = notify_tx {
+            // RefreshRepoSyncStateAfterDispatch: the chain provisioned a worktree
+            // and fetched origin/<base>, so the board's drift measurement is
+            // stale. Sent ahead of the row reloads because it is the fact the
+            // dispatch established; a dispatch that failed established nothing.
+            if launched {
+                let _ = tx.send(crate::mcp::McpEvent::AgentLaunched { repo_path });
+            }
             let _ = tx.send(crate::mcp::McpEvent::TaskChanged(next_id));
             let _ = tx.send(crate::mcp::McpEvent::EpicChanged(epic_id));
         }
@@ -207,6 +218,8 @@ pub(crate) async fn handle_dispatch_task(
     let db = state.db.clone();
     let runner = state.runner.clone();
     let epic_id = task.epic_id;
+    // Read before the task is moved into the blocking dispatch.
+    let repo_path = task.repo_path.clone();
 
     let inputs = dispatch::prepare_inputs(&*db, &task, &state.embedding_service).await;
     let result = tokio::task::spawn_blocking(move || do_dispatch(&task, &*runner, inputs)).await;
@@ -229,6 +242,11 @@ pub(crate) async fn handle_dispatch_task(
                     "dispatch_task: failed to update task: {e}"
                 );
             }
+            // RefreshRepoSyncStateAfterDispatch: this call provisioned a worktree
+            // and fetched origin/<base>, so the board's drift measurement for the
+            // repository is stale. Only the success arm notifies — a failed
+            // dispatch moved nothing.
+            state.notify_agent_launched(&repo_path);
             state.notify_task_changed(task_id);
             if let Some(eid) = epic_id {
                 state.notify_epic_changed(eid);

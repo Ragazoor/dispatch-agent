@@ -611,6 +611,15 @@ fn apply_loop_event(app: &mut App, event: LoopEvent, rt: &TuiRuntime) -> Vec<Com
                     }
                     vec![]
                 }
+                mcp::McpEvent::AgentLaunched { repo_path } => {
+                    // RefreshRepoSyncStateAfterDispatch: provisioning the agent's
+                    // worktree already fetched origin/<base>, so this is a local
+                    // ref read at no network cost. The board's own dispatch takes
+                    // the same refresh through a command; these are the off-board
+                    // launches (dispatch_task, epic auto-dispatch chaining).
+                    drop(rt.exec_refresh_repo_sync(repo_path, false));
+                    vec![]
+                }
                 mcp::McpEvent::MessageSent { to_task_id } => {
                     app.update(Message::System(
                         crate::tui::messages::SystemMessage::MessageReceived(to_task_id),
