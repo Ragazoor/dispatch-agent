@@ -114,6 +114,19 @@ enum Commands {
         /// Task ID whose file-events log to render
         task_id: i64,
     },
+    /// statusLine decorator for Claude Code: record the subscription
+    /// rate-limit windows from the hook payload on stdin, then run the
+    /// user's previous statusLine command and print its output verbatim.
+    /// Always exits 0 — never breaks the user's status line. Opens no
+    /// database (it runs several times a second per session).
+    Statusline {
+        /// Where to publish the snapshot JSON
+        #[arg(long)]
+        snapshot: String,
+        /// The previous statusLine command to run and echo
+        #[arg(long)]
+        chain: Option<String>,
+    },
     /// Gate `gh pr create`: block the first attempt for a task with a reminder
     /// to consult PR learnings, then allow subsequent attempts. Exits 2 to
     /// block (Claude Code PreToolUse block signal), 0 to allow.
@@ -624,6 +637,18 @@ async fn main() -> Result<()> {
             cmd_hook_file_event(&cli.db, id, tool, path).await?
         }
         Commands::AgentTree { task_id } => cmd_agent_tree(&cli.db, task_id).await?,
+        Commands::Statusline { snapshot, chain } => {
+            let mut stdin = String::new();
+            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
+            let now = chrono::Utc::now().timestamp();
+            let code = dispatch_tui::cli::statusline::run(
+                &stdin,
+                std::path::Path::new(&snapshot),
+                chain.as_deref(),
+                now,
+            );
+            std::process::exit(code);
+        }
         Commands::PrGate { id } => cmd_pr_gate(&cli.db, id).await?,
         Commands::List { status } => cmd_list(&cli.db, status).await?,
         Commands::Setup { port, yes } => {
