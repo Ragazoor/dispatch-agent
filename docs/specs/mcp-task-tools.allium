@@ -125,11 +125,12 @@ rule UpdateTaskViaMcp {
         -- Note: worktree and tmux_window ARE mutable through the internal
         -- Rust TaskService::update_task API (UpdateTaskParams defines
         -- them; see src/service/tasks/params.rs). The runtime uses that
-        -- path for detach and the epic-chain claim's post-provision patch.
-        -- They are intentionally
-        -- unreachable from MCP because the MCP handler does not parse
-        -- those fields: the UpdateTaskArgs struct that defines the accepted
-        -- argument set (src/mcp/handlers/tasks/mod.rs) has no worktree or
+        -- path for detach and for the post-provision patch on both dispatch
+        -- paths (dispatch_task and the epic chain).
+        -- They are intentionally unreachable from MCP because the MCP
+        -- handler does not parse those fields: the UpdateTaskArgs struct
+        -- that defines the accepted argument set
+        -- (src/mcp/handlers/tasks/mod.rs) has no worktree or
         -- tmux_window field, so handle_update_task
         -- (src/mcp/handlers/tasks/crud.rs) can never carry them into
         -- UpdateTaskParams.
