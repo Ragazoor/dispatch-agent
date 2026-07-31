@@ -189,7 +189,11 @@ harness, which builds a real repo with a real local `origin` and pushes `main`
 notes the origin exists precisely so `resolve_start_point` returns
 `origin/<base>`), then dispatches through the production entry point
 (`Fixture::dispatch`, `:184-194`) for a task id whose worktree does not yet
-exist. None of those 23 tests are `#[ignore]`d, so this runs in the normal suite.
+exist. None of those tests are `#[ignore]`d; they gate at runtime on
+`tmux_available_or_skip()` from the shared rig (`tests/tmux_harness/mod.rs`),
+which skips locally when tmux is missing but **hard-fails under `CI`**
+(`docs/conventions.md:345`) — so this is real, enforced coverage in CI rather than
+a test that can quietly stop running.
 
 Assert the **premise**, not the prompt: after a fresh dispatch,
 `git rev-parse <branch>` equals `git rev-parse origin/main`. That is exactly the

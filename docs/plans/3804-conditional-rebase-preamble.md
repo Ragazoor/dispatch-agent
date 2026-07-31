@@ -195,11 +195,23 @@ git, so it must not be covered by unit tests alone.
 **Test** (`tests/tmux_lifecycle.rs`) —
 `fresh_dispatch_leaves_branch_at_origin_base`:
 
+- Start from `tmux_available_or_skip()` (shared rig, `tests/tmux_harness/mod.rs`),
+  as `docs/conventions.md:345` requires: it skips locally when tmux is missing but
+  hard-fails under `CI`, so a missing tmux can never quietly report green.
 - Use the existing fixture: `seed_repo` (`tmux_lifecycle.rs:111-125`) already
   builds a real repo with a real local `origin` and pushes `main`.
 - `Fixture::dispatch(<unused id>)` (`:184-194`) for a task id whose worktree does
   not exist, so real `git worktree add` runs and really creates the directory.
 - Assert `git rev-parse <branch>` == `git rev-parse origin/main` in the repo.
+
+**Why this file, given `docs/conventions.md:328-345`.** That convention routes
+tests by whether the question is about tmux *semantics* (which pane, which cwd,
+how many panes → real server) or argv *shape* (→ mock). This test is neither: it
+asks a **git** question. It belongs here only because `tests/tmux_lifecycle.rs` is
+the one place with a real repo, a real `origin`, and a real dispatch through the
+production entry point. Say so in a comment on the test, so a later reader doesn't
+mistake it for a tmux-semantics test and "simplify" it back onto a mock — a mock
+cannot answer it, because a mock never runs `git worktree add` for real.
 
 This asserts the **premise** — the fact that makes the preamble a no-op — so if
 provisioning ever stops leaving the branch at `origin/<base>`, the no-preamble
@@ -241,12 +253,13 @@ this step deletes. Specifically:
 
 - `tests.rs:1015-1048` (reuse + fetch failed) asserts `contains("origin/main")`
   and `contains("Note:")` — both hold for `reused_rebase_preamble` + `Note:`.
-- `tests.rs:1050-1076` (reuse + fetch ok) asserts only `!contains("Note:")`.
+- `tests.rs:1051` (reuse + fetch ok) asserts only `!contains("Note:")`.
 - `tests.rs:984-1012` (PR review) asserts `contains("git rebase origin/feature-x")`
   and `!contains("git rebase main")` — holds, since PR rows ignore `reused`.
-- `src/mcp/handlers/tests/tasks/dispatch.rs:1966` (dependabot, pre-created dir)
-  asserts `contains("Your task is:")` — unaffected.
-- Mock call-order/count assertions (`tests.rs:722-755`, `:2710-2738`) are
+- `src/mcp/handlers/tests/tasks/dispatch.rs:1798` (dependabot, pre-created dir)
+  asserts `contains("Your task is:")`, `contains("Dependabot PR review")` and
+  `!contains("Dependabot triage agent")` — all `.contains`, so unaffected.
+- Mock call-order/count assertions (`tests.rs:722-755`, `:2679`) are
   unaffected: `select_preamble` is pure and issues no subprocess calls.
 
 If any of these *does* fail, treat it as a signal the decision table was
