@@ -3642,6 +3642,80 @@ async fn try_claim_next_backlog_task_claims_each_subtask_at_most_once() {
         .is_none());
 }
 
+// -- try_claim_backlog_task (by id) ----------------------------------------
+//
+// The by-id twin of the claim above, backing every dispatch entry point that is
+// handed a specific task (DispatchClaimExclusive in docs/specs/dispatch.allium).
+
+#[tokio::test]
+async fn try_claim_backlog_task_applies_the_full_claim() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let id = subtask(&db, epic.id, "target", TaskStatus::Backlog, Some(1)).await;
+
+    assert!(db
+        .try_claim_backlog_task(id, chrono::Utc::now())
+        .await
+        .unwrap());
+
+    // Same SET list as the by-epic claim — asserted here so the two cannot drift.
+    let claimed = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(claimed.status, TaskStatus::Running);
+    assert_eq!(
+        claimed.sub_status,
+        SubStatus::default_for(TaskStatus::Running)
+    );
+    assert!(claimed.last_pre_tool_use_at.is_some());
+    assert!(
+        claimed.worktree.is_none(),
+        "the claim runs ahead of provisioning"
+    );
+}
+
+#[tokio::test]
+async fn try_claim_backlog_task_is_false_for_a_task_out_of_backlog() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let id = subtask(&db, epic.id, "running", TaskStatus::Running, Some(1)).await;
+
+    assert!(!db
+        .try_claim_backlog_task(id, chrono::Utc::now())
+        .await
+        .unwrap());
+    assert!(
+        db.get_task(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_pre_tool_use_at
+            .is_none(),
+        "a lost claim writes nothing at all — one statement, so it cannot half-apply"
+    );
+}
+
+#[tokio::test]
+async fn try_claim_backlog_task_is_false_for_a_missing_task() {
+    let db = in_memory_db().await;
+    assert!(!db
+        .try_claim_backlog_task(TaskId(999_999), chrono::Utc::now())
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn try_claim_backlog_task_claims_at_most_once() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let id = subtask(&db, epic.id, "target", TaskStatus::Backlog, Some(1)).await;
+    let now = chrono::Utc::now();
+
+    assert!(db.try_claim_backlog_task(id, now).await.unwrap());
+    assert!(
+        !db.try_claim_backlog_task(id, now).await.unwrap(),
+        "the row has left Backlog, so a second claim on it must lose"
+    );
+}
+
 // -- try_release_backlog_claim ----------------------------------------------
 
 /// Helper: a backlog subtask, claimed, ready to have its claim released.

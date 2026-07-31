@@ -445,15 +445,18 @@ rule DispatchTaskViaMcp {
         -- that ExitSessionViaMcp withholds when its terminal write fails).
         -- Unlike that chain, this call is synchronous: it waits
         -- for worktree creation and agent launch to complete before returning.
-        -- Its backlog guard stops a task a chain claimed BEFORE this call reads
-        -- it, but no later: the guard is read-then-act, with worktree
-        -- provisioning awaited between the read and the running write, so a
-        -- claim landing inside that window is invisible to it and the subtask is
-        -- provisioned twice. Closing that means claiming here too rather than
-        -- comparing a status this call already read.
+        -- Its backlog guard is a claim, not a read: the backlog -> running
+        -- transition is taken conditionally before provisioning starts, so a
+        -- concurrent chain or TUI dispatch either loses to this call or beats it
+        -- outright, and the task is never provisioned twice
+        -- (DispatchClaimExclusive in dispatch.allium). A lost claim is reported
+        -- as the same "not in backlog" error a task that was already running
+        -- would produce, naming the status the task actually holds now.
         -- On success, the worktree path and tmux window are returned to the caller.
         -- On failure (e.g. worktree creation or tmux launch error), the error is
-        -- returned immediately and the task remains in backlog status.
+        -- returned immediately and the claim this call won is released, so the
+        -- task is left in backlog status exactly as it was before the call. A call
+        -- that never won the claim releases nothing.
 }
 
 rule SendMessageViaMcp {

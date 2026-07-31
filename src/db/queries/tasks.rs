@@ -591,6 +591,38 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
+    async fn try_claim_backlog_task(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let now = super::format_datetime(now);
+        self.db_call(move |conn| {
+            let running = TaskStatus::Running;
+            // Same SET list as `try_claim_next_backlog_task` above — deliberately,
+            // so "what a claim writes" has one definition — with the ordering
+            // subquery replaced by the caller's id. One statement, so the claim
+            // either applies whole or not at all.
+            let rows = conn
+                .execute(
+                    "UPDATE tasks \
+                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
+                         updated_at = datetime('now') \
+                     WHERE id = ?4 AND status = ?5",
+                    params![
+                        running.as_str(),
+                        SubStatus::default_for(running).as_str(),
+                        now,
+                        id.0,
+                        TaskStatus::Backlog.as_str(),
+                    ],
+                )
+                .context("Failed to claim backlog task")?;
+            Ok(rows == 1)
+        })
+        .await
+    }
+
     async fn try_release_backlog_claim(&self, id: TaskId) -> Result<bool> {
         self.db_call(move |conn| {
             let backlog = TaskStatus::Backlog;

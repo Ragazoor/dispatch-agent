@@ -100,6 +100,13 @@ pub enum TaskCommand {
         id: TaskId,
         at: chrono::DateTime<chrono::Utc>,
     },
+    /// Return a claimed-but-unprovisioned task to `Backlog`.
+    ///
+    /// Emitted by `handle_dispatch_failed`, and only there: the caller must have
+    /// *held* the claim. Paths that never held it use
+    /// `TaskMessage::DispatchAbandoned`, whose doc explains why. The dispatch
+    /// watchdog also deliberately does not release — see `tick_dispatching`.
+    ReleaseClaim(TaskId),
     /// Update `sub_status` for multiple tasks in a single DB transaction.
     /// Emitted by the tick instead of N individual `Persist` commands so all
     /// reclassifications in one tick round-trip are batched together.

@@ -304,15 +304,21 @@ fn dispatched_sets_fields_and_transitions_to_running() {
             .num_seconds()
             < 5
     );
-    assert_eq!(cmds.len(), 2);
+    // Persist only. No SeedActivity: the pre-provisioning claim already wrote
+    // the activity stamp, so re-writing it here would be redundant — and would
+    // clobber a real hook stamp if this handling ever ran later than it does.
+    assert_eq!(cmds.len(), 1, "got: {cmds:?}");
     let Command::Task(crate::tui::commands::TaskCommand::Persist(persisted)) = &cmds[0] else {
         panic!("expected Persist command, got {:?}", cmds[0]);
     };
     assert!(persisted.last_pre_tool_use_at.is_some());
-    assert!(matches!(
-        &cmds[1],
-        Command::Task(crate::tui::commands::TaskCommand::SeedActivity { id, .. }) if *id == TaskId(3)
-    ));
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::SeedActivity { .. })
+        )),
+        "the claim owns the activity stamp on the dispatch path"
+    );
 }
 
 #[test]
@@ -328,17 +334,13 @@ fn dispatched_with_switch_focus_emits_jump() {
             switch_focus: true,
         },
     ));
-    assert_eq!(cmds.len(), 3);
+    assert_eq!(cmds.len(), 2, "got: {cmds:?}");
     assert!(matches!(
         &cmds[0],
         Command::Task(crate::tui::commands::TaskCommand::Persist(_))
     ));
-    assert!(matches!(
-        &cmds[1],
-        Command::Task(crate::tui::commands::TaskCommand::SeedActivity { .. })
-    ));
     assert!(
-        matches!(&cmds[2], Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "win")
+        matches!(&cmds[1], Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "win")
     );
 }
 
@@ -1263,6 +1265,120 @@ fn dispatch_failed_clears_mark_dispatching_guard() {
         crate::tui::messages::TaskMessage::DispatchFailed(TaskId(1)),
     ));
     assert!(!app.is_dispatching(TaskId(1)));
+}
+
+/// Every dispatch entry point claims before it provisions, so every way a
+/// dispatch can end without provisioning owes the claim back. `DispatchFailed`
+/// is the single funnel for all of them — the failed and panicked dispatch arms
+/// and the failed repo-trust grant — so the release rides on it rather than
+/// being re-derived at each producer.
+#[test]
+fn dispatch_failed_releases_the_claim() {
+    let mut app = make_app();
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::MarkDispatching(TaskId(1)),
+    ));
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::DispatchFailed(TaskId(1)),
+    ));
+
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::ReleaseClaim(id)) if *id == TaskId(1)
+        )),
+        "DispatchFailed must release the claim, got: {cmds:?}"
+    );
+}
+
+/// A *lost* claim must NOT release, and so cannot travel on `DispatchFailed`.
+///
+/// The winner of a contested claim is itself Running with no worktree while it
+/// provisions — exactly the state `release_claim` is conditional on. So a loser
+/// that released would hand the winner's task back to Backlog mid-provision,
+/// leaving the winner to patch a worktree onto a task the board thinks is
+/// dispatchable and inviting a third dispatch of the same work. The loser owns
+/// no claim, so it drains its spinner and stops there.
+#[test]
+fn dispatch_claim_lost_clears_the_spinner_without_releasing() {
+    let mut app = make_app();
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::MarkDispatching(TaskId(1)),
+    ));
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::DispatchAbandoned(TaskId(1)),
+    ));
+
+    assert!(
+        !app.is_dispatching(TaskId(1)),
+        "a lost claim must still drain the spinner"
+    );
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::ReleaseClaim(_))
+        )),
+        "the loser owns no claim and must not release the winner's, got: {cmds:?}"
+    );
+}
+
+/// The watchdog must NOT release, even though it drains `dispatching`.
+///
+/// "Slower than 60s" is not "dead" — a `git fetch` on a slow network outlives the
+/// deadline with its worker perfectly alive. Releasing would return the task to
+/// Backlog mid-provision and let a second dispatch land on the same branch, which
+/// is the double-provisioning `DispatchClaimExclusive` rules out. The watchdog
+/// stays a UI backstop: it clears the spinner and says so. A truly dead worker
+/// leaves the task Running with no worktree, which renders as detached and is
+/// recoverable via retry-fresh.
+#[test]
+fn dispatching_timeout_does_not_release_the_claim() {
+    let mut app = make_app();
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::MarkDispatching(TaskId(1)),
+    ));
+    app.dispatching
+        .insert(TaskId(1), Instant::now() - Duration::from_secs(90));
+
+    let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+
+    assert!(
+        !app.is_dispatching(TaskId(1)),
+        "the watchdog still drains the spinner"
+    );
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::ReleaseClaim(_))
+        )),
+        "a slow-but-alive dispatch must keep its claim, got: {cmds:?}"
+    );
+}
+
+/// The claim flips the task to Running before provisioning finishes, so the
+/// "dispatching…" indicator has to survive that transition. Before the claim
+/// existed, a member of `dispatching` was always Backlog; now it is Backlog
+/// (pre-claim) or Running-without-worktree (claimed, being provisioned), and the
+/// indicator must win over the status-derived ones in both cases or an in-flight
+/// dispatch would render as a live agent (`SpansTheClaim` in
+/// docs/specs/dispatch.allium).
+#[test]
+fn claimed_task_still_renders_the_dispatching_indicator() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = None;
+    task.tmux_window = None;
+    let mut app = App::new(vec![task]);
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::MarkDispatching(TaskId(1)),
+    ));
+
+    let buf = render_to_buffer(&mut app, 120, 40);
+    assert!(
+        buffer_contains(&buf, "dispatching"),
+        "a claimed-but-unprovisioned task must still show 'dispatching', not a running indicator"
+    );
 }
 
 #[test]

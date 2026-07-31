@@ -151,6 +151,14 @@ impl TuiRuntime {
         let _ = self.database.save_repo_path(&expanded).await;
         let paths = self.database.list_repo_paths().await.unwrap_or_default();
         app.update(Message::RepoPathsUpdated(paths));
+        // Claim before provisioning, exactly as exec_dispatch_agent does. This
+        // task was created moments ago, so the claim is effectively uncontended
+        // — it is taken anyway so that the Running write, the activity stamp and
+        // the release-on-failure unwind are identical across entry points rather
+        // than quick dispatch keeping a second, subtly different shape.
+        if !self.claim_for_dispatch(task.id).await {
+            return;
+        }
         let db = Arc::clone(&self.database);
         let emb_svc = Arc::clone(&self.emb_svc);
         let msg_tx = self.msg_tx.clone();
@@ -366,7 +374,20 @@ impl TuiRuntime {
         }
     }
 
-    pub(super) fn exec_dispatch_agent(&self, task: models::Task, mode: models::DispatchMode) {
+    /// Claim `task` for dispatch, then provision it in the background.
+    ///
+    /// The claim is the guard, not the caller's snapshot: `handle_dispatch_task`
+    /// filters on the board's copy of the status, which can be stale by the time
+    /// this runs, and a chain or MCP `dispatch_task` landing in between would
+    /// otherwise get the same task provisioned twice
+    /// (`DispatchClaimExclusive` in `docs/specs/dispatch.allium`).
+    ///
+    /// A lost claim reports `DispatchAbandoned` plus an error naming why, so the
+    /// spinner never outlives the attempt.
+    pub(super) async fn exec_dispatch_agent(&self, task: models::Task, mode: models::DispatchMode) {
+        if !self.claim_for_dispatch(task.id).await {
+            return;
+        }
         let db = Arc::clone(&self.database);
         let emb_svc = Arc::clone(&self.emb_svc);
         let msg_tx = self.msg_tx.clone();
@@ -402,6 +423,43 @@ impl TuiRuntime {
                 }
             });
         });
+    }
+
+    /// Take the pre-provisioning claim. Returns whether the caller may provision.
+    ///
+    /// Shared by [`Self::exec_dispatch_agent`] and [`Self::exec_quick_dispatch`]
+    /// so both entry points claim identically.
+    async fn claim_for_dispatch(&self, id: TaskId) -> bool {
+        // Both failure modes are `DispatchAbandoned`: the claim is a single
+        // statement, so neither a lost claim nor an errored one leaves this
+        // caller holding anything to release.
+        let reason = match self.task_svc.claim_backlog_task(id).await {
+            Ok(true) => return true,
+            Ok(false) => format!("Task #{} was already dispatched by something else", id.0),
+            Err(e) => Self::db_error("claiming task for dispatch", e),
+        };
+        let _ = self.msg_tx.send(Message::Task(
+            crate::tui::messages::TaskMessage::DispatchAbandoned(id),
+        ));
+        self.send_system_error(reason);
+        false
+    }
+
+    /// Undo a claim whose dispatch never provisioned anything, returning the
+    /// task to `Backlog`. Driven by `TaskCommand::ReleaseClaim`, which
+    /// `handle_dispatch_failed` emits. The dispatch watchdog deliberately does
+    /// not — see `tick_dispatching`.
+    ///
+    /// Conditional in the service layer: a task that *was* provisioned, or that
+    /// moved on meanwhile, is left alone. `Ok(false)` is therefore an expected
+    /// outcome, not an error — a lost claim releases nothing, and neither does a
+    /// dispatch that failed after provisioning.
+    pub(super) async fn exec_release_claim(&self, app: &mut App, id: TaskId) {
+        if let Err(e) = self.task_svc.release_claim(id).await {
+            app.update(Message::System(crate::tui::messages::SystemMessage::Error(
+                Self::db_error("releasing dispatch claim", e),
+            )));
+        }
     }
 
     pub(super) fn exec_check_window(

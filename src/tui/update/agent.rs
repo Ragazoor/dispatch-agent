@@ -180,6 +180,12 @@ impl App {
     /// Reconcile the in-flight dispatching set: drop deleted tasks, force-fail
     /// dispatches past the watchdog timeout, and advance the spinner. No-op when
     /// nothing is dispatching (so the spinner only advances while active).
+    ///
+    /// Deliberately does **not** release the dispatch claim, even though it
+    /// drains the marker: the deadline means "slow", not "dead", so releasing
+    /// would hand a still-provisioning task back to Backlog and allow a second
+    /// agent on one branch. Full reasoning, and what the resulting stranded state
+    /// costs, in `@guarantee DispatchingTimeout` (`docs/specs/dispatch.allium`).
     fn tick_dispatching(&mut self) {
         if self.dispatching.is_empty() {
             return;

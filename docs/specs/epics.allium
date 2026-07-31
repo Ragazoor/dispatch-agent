@@ -706,22 +706,26 @@ rule AutoDispatchNextSubtask {
         -- of being modelled as a rule — but the exclusivity it buys is
         -- normative. The three stopping conditions above are consequently
         -- exhaustive: contention is not a fourth way for the chain to stop.
-        -- Scope of that exclusivity: it holds BETWEEN CHAINS, and nowhere else.
-        -- Neither DispatchTaskViaMcp nor the TUI dispatch key claims: both read
-        -- the task's status, then provision, then write running, so a claim that
-        -- lands inside that window changes nothing they re-check and the same
-        -- subtask is provisioned twice. Those windows are pre-existing and
-        -- closing them means routing every dispatch entry point through the
-        -- claim.
-        -- Consequence: the status half of DispatchTask's postcondition (backlog
-        -- -> running with the default running sub_status, and a seeded
-        -- last_pre_tool_use_at) is applied synchronously at selection time,
-        -- ahead of worktree provisioning, so a chained subtask is briefly
-        -- running with worktree = null. Both crash detection and activity
-        -- classification filter on tmux_window != null, so that window
-        -- produces no spurious Stale or Crashed (see agent-health.allium), and
-        -- is_wrappable requires a worktree, so the subtask cannot be wrapped up
-        -- before it is provisioned.
+        -- Scope of that exclusivity: it is unconditional. Every dispatch entry
+        -- point claims before it provisions — this chain, DispatchTaskViaMcp and
+        -- the TUI dispatch key alike (DispatchClaimExclusive in
+        -- dispatch.allium) — so no two of them can provision the same subtask.
+        -- The other two claim a row they were handed rather than selecting one,
+        -- but it is literally the same statement with the ordering subquery
+        -- replaced by an id: one conditional write, same fields, backlog ->
+        -- running only while the row is still backlog. This chain therefore
+        -- cannot be beaten to a subtask it already holds, and a subtask another
+        -- entry point claimed first is simply no longer backlog, so it is not a
+        -- candidate here — which is stopping condition three, not a fourth.
+        -- Consequence, on every path and not only this one: the status half of
+        -- DispatchTask's postcondition (backlog -> running with the default
+        -- running sub_status, and a seeded last_pre_tool_use_at) is applied
+        -- synchronously at claim time, ahead of worktree provisioning, so a
+        -- task being dispatched is briefly running with worktree = null. Both
+        -- crash detection and activity classification filter on tmux_window !=
+        -- null, so that window produces no spurious Stale or Crashed (see
+        -- agent-health.allium), and is_wrappable requires a worktree, so the
+        -- subtask cannot be wrapped up before it is provisioned.
         --
         -- The dispatch itself runs on a background task through the standard
         -- single-dispatch path, and a refresh notification is sent to the TUI

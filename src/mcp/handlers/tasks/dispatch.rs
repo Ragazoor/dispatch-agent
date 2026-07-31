@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::dispatch;
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
-use crate::models::{DispatchMode, EpicId, TaskId, TaskStatus};
+use crate::models::{DispatchMode, EpicId, TaskId};
 
 use super::{
     parse_args, service_err_to_response, ClaimTaskArgs, DispatchTaskArgs, JsonRpcResponse,
@@ -181,24 +181,23 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
     Some((next_id, next_title))
 }
 
-/// Return a claimed-but-unprovisioned subtask to `Backlog` so a failed chain
-/// leaves it dispatchable exactly as it was before the chain fired.
+/// Return a claimed-but-unprovisioned task to `Backlog` so a failed dispatch
+/// leaves it dispatchable exactly as it was before the attempt.
 ///
-/// Delegates to [`crate::service::TaskServiceApi::release_claim`], which is
-/// conditional on the task still being claimed-and-unprovisioned — provisioning
-/// can take a `git fetch`'s worth of wall time, and an unconditional revert
-/// would stomp anything that touched the task meanwhile.
+/// Shared by the chain and `handle_dispatch_task`, which both claim ahead of
+/// provisioning and so both owe the release on failure. Delegates to
+/// [`crate::service::TaskServiceApi::release_claim`], which is conditional on
+/// the task still being claimed-and-unprovisioned — provisioning can take a
+/// `git fetch`'s worth of wall time, and an unconditional revert would stomp
+/// anything that touched the task meanwhile.
 async fn release_claim(task_svc: &dyn crate::service::TaskServiceApi, task_id: TaskId) {
     match task_svc.release_claim(task_id).await {
         Ok(true) => {}
         Ok(false) => tracing::info!(
             task_id = task_id.0,
-            "auto_dispatch_next: claim already released or task moved on; left as-is"
+            "release_claim: claim already released or task moved on; left as-is"
         ),
-        Err(e) => tracing::warn!(
-            task_id = task_id.0,
-            "auto_dispatch_next: failed to release claim: {e}"
-        ),
+        Err(e) => tracing::warn!(task_id = task_id.0, "release_claim: failed: {e}"),
     }
 }
 
@@ -225,15 +224,17 @@ pub(crate) async fn handle_dispatch_task(
         Err(e) => return JsonRpcResponse::err(id, -32603, format!("db error: {e:#}")),
     };
 
-    if task.status != TaskStatus::Backlog {
-        return JsonRpcResponse::err(
-            id,
-            -32602,
-            format!(
-                "task #{} is not in backlog (current: {})",
-                task_id.0, task.status
-            ),
-        );
+    // Claim before provisioning. The backlog guard is the claim itself, not the
+    // status read above: a read-then-provision guard leaves a window in which a
+    // concurrent chain or TUI dispatch takes the same task and both provision it
+    // (DispatchClaimExclusive in `docs/specs/dispatch.allium`).
+    // Neither a lost nor an errored claim releases: the claim is a single
+    // statement, so it holds nothing to unwind, and the row it failed to take
+    // belongs to whoever did take it.
+    match state.task_svc.claim_backlog_task(task_id).await {
+        Ok(true) => {}
+        Ok(false) => return not_in_backlog_response(state, id, task_id).await,
+        Err(e) => return service_err_to_response(id, e),
     }
 
     let db = state.db.clone();
@@ -245,18 +246,16 @@ pub(crate) async fn handle_dispatch_task(
 
     match result {
         Ok(Ok(dr)) => {
-            // Seed last_pre_tool_use_at so ClassifyAgentActivity treats the
-            // freshly running task as Active until the agent's first
-            // PreToolUse hook fires.
+            // The claim already applied Running and seeded
+            // last_pre_tool_use_at, so this patch only records where the agent
+            // actually landed.
             let response_text = format!(
                 "dispatched task #{} — worktree: {}, tmux: {}",
                 task_id.0, dr.worktree_path, dr.tmux_window
             );
             let params = UpdateTaskParams::for_task(task_id)
-                .status(TaskStatus::Running)
                 .worktree(FieldUpdate::Set(dr.worktree_path))
-                .tmux_window(FieldUpdate::Set(dr.tmux_window))
-                .last_pre_tool_use_at(Some(chrono::Utc::now()));
+                .tmux_window(FieldUpdate::Set(dr.tmux_window));
             if let Err(e) = state.task_svc.update_task(params).await {
                 tracing::warn!(
                     task_id = task_id.0,
@@ -272,9 +271,43 @@ pub(crate) async fn handle_dispatch_task(
                 json!({"content": [{"type": "text", "text": response_text}]}),
             )
         }
-        Ok(Err(e)) => JsonRpcResponse::err(id, -32603, format!("dispatch failed: {e:#}")),
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("dispatch join error: {e}")),
+        Ok(Err(e)) => {
+            release_claim(&*state.task_svc, task_id).await;
+            JsonRpcResponse::err(id, -32603, format!("dispatch failed: {e:#}"))
+        }
+        Err(e) => {
+            release_claim(&*state.task_svc, task_id).await;
+            JsonRpcResponse::err(id, -32603, format!("dispatch join error: {e}"))
+        }
     }
+}
+
+/// The error for a `dispatch_task` whose claim was lost.
+///
+/// Re-reads the row so the message names the status the task actually holds now
+/// rather than the pre-claim one this call read — the status is precisely what
+/// changed under us. A row that vanished between the two reads is reported as
+/// `NotFound`, matching what the initial read would have said.
+async fn not_in_backlog_response(
+    state: &McpState,
+    id: Option<Value>,
+    task_id: TaskId,
+) -> JsonRpcResponse {
+    let current = match state.db.get_task(task_id).await {
+        Ok(Some(t)) => t.status.to_string(),
+        Ok(None) => {
+            return service_err_to_response(
+                id,
+                crate::service::ServiceError::NotFound(format!("task #{} not found", task_id.0)),
+            )
+        }
+        Err(e) => return JsonRpcResponse::err(id, -32603, format!("db error: {e:#}")),
+    };
+    JsonRpcResponse::err(
+        id,
+        -32602,
+        format!("task #{} is not in backlog (current: {current})", task_id.0),
+    )
 }
 
 pub(crate) async fn handle_send_message(

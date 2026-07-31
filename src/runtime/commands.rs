@@ -205,7 +205,11 @@ async fn dispatch_task(
             vec![]
         }
         DispatchAgent { task, mode } => {
-            rt.exec_dispatch_agent(task, mode);
+            rt.exec_dispatch_agent(task, mode).await;
+            vec![]
+        }
+        ReleaseClaim(id) => {
+            rt.exec_release_claim(app, id).await;
             vec![]
         }
         TrustAndDispatch { task, mode } => {
@@ -218,11 +222,13 @@ async fn dispatch_task(
 
             match trust_result {
                 Ok(()) => {
-                    rt.exec_dispatch_agent(task, mode);
+                    rt.exec_dispatch_agent(task, mode).await;
                 }
                 Err(e) => {
+                    // Abandoned, not failed: the trust grant runs *upstream* of
+                    // the claim, so there is no claim of ours to release.
                     app.update(crate::tui::Message::Task(
-                        crate::tui::messages::TaskMessage::DispatchFailed(id),
+                        crate::tui::messages::TaskMessage::DispatchAbandoned(id),
                     ));
                     app.update(crate::tui::Message::System(
                         crate::tui::messages::SystemMessage::Error(format!(

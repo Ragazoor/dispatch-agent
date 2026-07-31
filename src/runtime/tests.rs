@@ -895,7 +895,9 @@ async fn exec_dispatch_sends_dispatched_message() {
     )
     .await
     .unwrap();
-    rt.exec_dispatch_agent(task, models::DispatchMode::Dispatch);
+    let id = task.id;
+    rt.exec_dispatch_agent(task, models::DispatchMode::Dispatch)
+        .await;
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -908,6 +910,109 @@ async fn exec_dispatch_sends_dispatched_message() {
         ),
         "Expected Dispatched, got: {msg:?}"
     );
+
+    // The claim, not `handle_dispatched`'s Persist, owns the Running write — and
+    // nothing here runs that Persist, so the row can only have left Backlog via
+    // the claim `exec_dispatch_agent` takes before provisioning
+    // (`DispatchClaimExclusive` in docs/specs/dispatch.allium).
+    let claimed = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(claimed.status, models::TaskStatus::Running);
+    assert!(
+        claimed.last_pre_tool_use_at.is_some(),
+        "the claim seeds the activity stamp"
+    );
+}
+
+/// A lost claim must stop the dispatch dead, before any provisioning command
+/// runs, and report the failure so the spinner drains (`LostClaimReported` in
+/// docs/specs/dispatch.allium).
+#[tokio::test]
+async fn exec_dispatch_agent_lost_claim_provisions_nothing() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    // An empty script is itself the assertion: any provisioning command would
+    // panic the mock rather than pass quietly.
+    let mock = Arc::new(MockProcessRunner::new(vec![]));
+    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+    // Backlog in the caller's snapshot, already Running in the DB — exactly the
+    // race the claim exists to catch.
+    let task = create_task_returning(
+        &*db,
+        "Contended Task",
+        "desc",
+        "/repo",
+        None,
+        models::TaskStatus::Backlog,
+    )
+    .await
+    .unwrap();
+    assert!(rt.task_svc.claim_backlog_task(task.id).await.unwrap());
+
+    rt.exec_dispatch_agent(task.clone(), models::DispatchMode::Dispatch)
+        .await;
+
+    let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(msg1, Message::Task(crate::tui::messages::TaskMessage::DispatchAbandoned(id)) if id == task.id),
+        "a lost claim must report DispatchAbandoned, not DispatchFailed — the latter \
+         releases, and the claim we lost belongs to the winner. Got: {msg1:?}"
+    );
+    let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            msg2,
+            Message::System(crate::tui::messages::SystemMessage::Error(_))
+        ),
+        "Expected Error, got: {msg2:?}"
+    );
+    assert!(
+        mock.recorded_calls().is_empty(),
+        "a lost claim must run no provisioning commands, got: {:?}",
+        mock.recorded_calls()
+    );
+    // The winner's claim is untouched: still Running, still unprovisioned,
+    // still theirs to finish.
+    let after = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(after.status, models::TaskStatus::Running);
+    assert!(after.worktree.is_none());
+}
+
+/// `ReleaseClaim` returns a claimed-but-unprovisioned task to Backlog. This is
+/// the command `DispatchFailed` emits.
+#[tokio::test]
+async fn exec_release_claim_returns_the_task_to_backlog() {
+    let db = test_db().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+    let mut app = App::new(vec![]);
+    let task = create_task_returning(
+        &*db,
+        "Claimed Task",
+        "desc",
+        "/repo",
+        None,
+        models::TaskStatus::Backlog,
+    )
+    .await
+    .unwrap();
+    assert!(rt.task_svc.claim_backlog_task(task.id).await.unwrap());
+
+    rt.exec_release_claim(&mut app, task.id).await;
+
+    let released = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(released.status, models::TaskStatus::Backlog);
+    assert!(
+        released.last_pre_tool_use_at.is_none(),
+        "the release clears the stamp the claim seeded"
+    );
+    assert!(app.error_popup().is_none());
 }
 
 #[tokio::test]
@@ -929,7 +1034,8 @@ async fn exec_dispatch_sends_error_on_failure() {
     )
     .await
     .unwrap();
-    rt.exec_dispatch_agent(task.clone(), models::DispatchMode::Dispatch);
+    rt.exec_dispatch_agent(task.clone(), models::DispatchMode::Dispatch)
+        .await;
 
     let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await

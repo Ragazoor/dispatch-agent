@@ -125,7 +125,27 @@ impl App {
         ]
     }
 
+    /// A dispatch that *held* the claim ended without provisioning: drain the
+    /// spinner and hand the claim back. The funnel for every failure downstream of
+    /// a won claim, which is why the release rides here rather than at each
+    /// producer.
+    ///
+    /// Anything that ended *without* holding the claim goes to
+    /// [`Self::handle_dispatch_abandoned`] instead — see
+    /// [`crate::tui::messages::TaskMessage::DispatchAbandoned`] for why that split
+    /// is load-bearing.
     pub(in crate::tui) fn handle_dispatch_failed(&mut self, id: TaskId) -> Vec<Command> {
+        self.unmark_dispatching(id);
+        vec![Command::Task(
+            crate::tui::commands::TaskCommand::ReleaseClaim(id),
+        )]
+    }
+
+    /// A dispatch ended before it ever held the claim — it lost the claim, or
+    /// gave up upstream of it (a failed repo-trust grant). Drain the spinner and
+    /// touch nothing else. See [`Self::handle_dispatch_failed`] for why this must
+    /// not release.
+    pub(in crate::tui) fn handle_dispatch_abandoned(&mut self, id: TaskId) -> Vec<Command> {
         self.unmark_dispatching(id);
         vec![]
     }

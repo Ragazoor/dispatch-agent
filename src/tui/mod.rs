@@ -728,6 +728,11 @@ impl App {
     /// UI-only state update — does not perform dispatch. The caller (a
     /// `Command` handler) has already executed the side effect; this
     /// method only records the in-flight UI marker.
+    /// Every production caller reaches this only for an unprovisioned task
+    /// (`SpansTheClaim` in docs/specs/dispatch.allium) — the dispatch paths filter
+    /// on Backlog, and retry-fresh clears the worktree first — but that is not
+    /// asserted here. It is a property of the callers, not of this setter, and a
+    /// `debug_assert` would fire on any test that drives the marker directly.
     pub(in crate::tui) fn mark_dispatching(&mut self, id: TaskId) {
         if self.find_task(id).is_none() {
             return;

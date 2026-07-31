@@ -721,6 +721,14 @@ impl ChainFixture {
         Self::build(Some(Arc::new(FailingCloseTaskService))).await
     }
 
+    /// Like [`ChainFixture::new`], but with a `task_svc` whose
+    /// `claim_backlog_task` always loses, standing in for another entry point
+    /// having taken the task first. Every other method panics, so a caller that
+    /// dispatches without claiming is caught rather than silently passing.
+    async fn with_lost_claim() -> Self {
+        Self::build(Some(Arc::new(LostClaimTaskService))).await
+    }
+
     async fn build(task_svc_override: Option<Arc<dyn crate::service::TaskServiceApi>>) -> Self {
         // The kill-window teardown and the chained dispatch race by design, and
         // MockProcessRunner pops a shared FIFO, so queue uniform successes
@@ -1176,6 +1184,27 @@ impl crate::service::TaskServiceApiStub for FailingCloseTaskService {
 }
 
 crate::task_service_api!(service_api_stub_bridge, FailingCloseTaskService);
+
+/// A task service whose `claim_backlog_task` always loses the claim, standing in
+/// for another dispatch entry point having taken the task a moment earlier.
+///
+/// Every other method keeps the panicking `TaskServiceApiStub` default on
+/// purpose: that is what makes `dispatch_task_lost_claim_provisions_nothing`
+/// discriminating. A handler that checked the status instead of claiming would
+/// provision the task and then hit the unmocked `update_task`.
+struct LostClaimTaskService;
+
+#[async_trait::async_trait]
+impl crate::service::TaskServiceApiStub for LostClaimTaskService {
+    async fn claim_backlog_task(
+        &self,
+        _task_id: crate::models::TaskId,
+    ) -> Result<bool, crate::service::ServiceError> {
+        Ok(false)
+    }
+}
+
+crate::task_service_api!(service_api_stub_bridge, LostClaimTaskService);
 
 /// The terminal mutation is withheld: the task keeps the status, sub_status and
 /// tmux_window it had, so it stays visible in its current column for a manual
@@ -1721,6 +1750,98 @@ async fn dispatch_task_returns_error_for_non_backlog_task() {
     let resp = call_dispatch_task(&state, task_id).await;
 
     assert_error(&resp, "not in backlog");
+}
+
+#[tokio::test]
+async fn dispatch_task_reports_the_status_a_lost_claim_left_behind() {
+    // The claim, not a pre-read, is what rejects this call now. A task another
+    // entry point already took is simply no longer Backlog, so the conditional
+    // transition finds nothing to move and the handler re-reads to name the
+    // status the task actually holds (DispatchTaskViaMcp in
+    // docs/specs/mcp-task-tools.allium).
+    let fx = ChainFixture::with_runner(dispatch_runner_script()).await;
+    let task_id = fx.backlog_subtask(None, "Contended Task", None, None).await;
+    assert!(
+        fx.state.task_svc.claim_backlog_task(task_id).await.unwrap(),
+        "another entry point claims it first"
+    );
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
+
+    assert_error(&resp, "not in backlog");
+    assert_error(&resp, "running");
+    let task = fx.db.get_task(task_id).await.unwrap().unwrap();
+    assert!(
+        task.worktree.is_none(),
+        "a lost claim must provision nothing"
+    );
+}
+
+/// A lost claim must gate provisioning, not merely be noticed afterwards.
+///
+/// Discriminating by construction: `LostClaimTaskService` mocks only
+/// `claim_backlog_task`, and every other `TaskServiceApi` method panics. A
+/// handler that read the status instead of claiming would sail past the Backlog
+/// row, provision it, and then panic in the unmocked post-dispatch
+/// `update_task`. Reaching the assertions at all proves the claim was consulted;
+/// the empty runner log proves it was consulted *first*.
+#[tokio::test]
+async fn dispatch_task_lost_claim_provisions_nothing() {
+    let fx = ChainFixture::with_lost_claim().await;
+    let task_id = fx.backlog_subtask(None, "Contended Task", None, None).await;
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
+
+    assert_error(&resp, "not in backlog");
+    assert!(
+        fx.runner.recorded_calls().is_empty(),
+        "a lost claim must run no provisioning commands at all, got: {:?}",
+        fx.runner.recorded_calls()
+    );
+    let task = fx.db.get_task(task_id).await.unwrap().unwrap();
+    assert!(task.worktree.is_none());
+    assert!(task.tmux_window.is_none());
+}
+
+/// A dispatch that fails after the claim must release it, leaving the task
+/// exactly as dispatchable as before the call.
+///
+/// The Backlog end-state is only reachable via the release, given
+/// `dispatch_task_lost_claim_provisions_nothing` establishes that the claim is
+/// taken before provisioning: the claim moved the row to Running, so something
+/// has to move it back.
+#[tokio::test]
+async fn dispatch_task_releases_the_claim_when_provisioning_fails() {
+    let fx = ChainFixture::new().await;
+    // A repo path that does not exist fails provisioning before any subprocess
+    // runs, so the failure is deterministic — the same shape
+    // `exit_session_chain_reverts_claim_when_dispatch_fails` uses.
+    let task_id = fx
+        .backlog_subtask(None, "Doomed", None, Some("/nonexistent/dispatch-mcp-repo"))
+        .await;
+
+    let resp = call_dispatch_task(&fx.state, task_id).await;
+
+    assert_error(&resp, "dispatch failed");
+    let task = fx.db.get_task(task_id).await.unwrap().unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Backlog,
+        "a failed dispatch must release the claim, not leave the task Running"
+    );
+    assert_eq!(
+        task.sub_status,
+        crate::models::SubStatus::default_for(TaskStatus::Backlog)
+    );
+    assert!(
+        task.last_pre_tool_use_at.is_none(),
+        "the release clears the stamp the claim seeded"
+    );
+    assert!(task.worktree.is_none());
+    assert!(
+        fx.state.task_svc.claim_backlog_task(task_id).await.unwrap(),
+        "the released task is dispatchable again"
+    );
 }
 
 #[tokio::test]

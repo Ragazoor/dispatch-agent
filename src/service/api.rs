@@ -264,6 +264,21 @@ macro_rules! task_service_api {
                 epic_id: $crate::models::EpicId
             ) -> Result<Option<$crate::models::Task>, $crate::service::ServiceError>;
 
+            /// Atomically claim one specific `Backlog` task for dispatch,
+            /// moving it to `Running` before any provisioning happens. Returns
+            /// whether the claim was won; `false` (or `Err`, which writes
+            /// nothing) means this caller must provision nothing and has no
+            /// claim to release.
+            ///
+            /// Every dispatch entry point goes through this — see
+            /// `DispatchClaimExclusive` in `docs/specs/dispatch.allium`. Do not
+            /// add a "read the status, then dispatch" path alongside it: that is
+            /// the double-provisioning hole this closes.
+            async fn claim_backlog_task(
+                &self,
+                task_id: $crate::models::TaskId
+            ) -> Result<bool, $crate::service::ServiceError>;
+
             /// Undo an unprovisioned claim, returning the subtask to `Backlog`.
             /// Conditional on the task still being claimed-and-unprovisioned;
             /// returns whether it applied.

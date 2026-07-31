@@ -200,6 +200,22 @@ pub trait TaskCrud: TaskRead {
         epic_id: EpicId,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<TaskId>>;
+    /// The by-id twin of [`Self::try_claim_next_backlog_task`]: claim `id` for
+    /// dispatch if and only if it is still `Backlog`, applying the same
+    /// `Running` + default sub-status + `last_pre_tool_use_at` write. Returns
+    /// whether the claim was won.
+    ///
+    /// For callers handed a specific task rather than selecting one — the MCP
+    /// `dispatch_task` tool and every TUI dispatch path. One statement, so a
+    /// claim never half-applies: `Ok(false)` means someone else holds it (or it
+    /// is gone) and `Err` means nothing was written, which is what lets callers
+    /// treat a failed claim as "provision nothing" with no unwind to do. Backs
+    /// `DispatchClaimExclusive` in `docs/specs/dispatch.allium`.
+    async fn try_claim_backlog_task(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool>;
     /// The inverse of [`Self::try_claim_next_backlog_task`]: return a claimed but
     /// still-unprovisioned task to `Backlog` and clear the activity stamp the
     /// claim seeded. Conditional on `status = running AND worktree IS NULL`, so

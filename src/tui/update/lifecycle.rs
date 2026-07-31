@@ -152,6 +152,15 @@ impl App {
         }]
     }
 
+    /// Start a dispatch from the board.
+    ///
+    /// The Backlog filter here is optimism, not the guard: it reads the board's
+    /// snapshot, which a chain or an MCP `dispatch_task` can have invalidated
+    /// already. The real guard is the atomic claim
+    /// `TuiRuntime::exec_dispatch_agent` takes before provisioning
+    /// (`DispatchClaimExclusive` in `docs/specs/dispatch.allium`) — this check
+    /// just avoids queueing a command that is already known to be pointless, and
+    /// keeps a Running card from sprouting a spinner on a keypress.
     pub(in crate::tui) fn handle_dispatch_task(
         &mut self,
         id: TaskId,
@@ -249,19 +258,18 @@ impl App {
             task.tmux_window = Some(tmux_window.clone());
             task.status = TaskStatus::Running;
             task.sub_status = SubStatus::default_for(TaskStatus::Running);
-            // Seed last_pre_tool_use_at so ClassifyAgentActivity treats the
-            // freshly dispatched task as Active until the agent's first real
-            // PreToolUse hook fires — otherwise it flickers into Stale on the
-            // next tick. The DB write goes through SeedActivity (not Persist)
-            // so a later generic Persist cannot clobber a hook-written stamp.
-            let seed_at = chrono::Utc::now();
-            task.last_pre_tool_use_at = Some(seed_at);
+            // The status/sub_status/stamp are set on the board's copy only — the
+            // pre-provisioning claim already wrote all three to the DB
+            // (`DispatchTask` in docs/specs/dispatch.allium), so there is no
+            // SeedActivity command here. Emitting one would re-write the stamp
+            // the claim just set, and would overwrite a real hook stamp outright
+            // if `Dispatched` handling ever moved behind slower work.
+            task.last_pre_tool_use_at = Some(chrono::Utc::now());
             let task_clone = task.clone();
             self.sync_board_selection();
-            let mut cmds = vec![
-                Command::Task(crate::tui::commands::TaskCommand::Persist(task_clone)),
-                Command::Task(crate::tui::commands::TaskCommand::SeedActivity { id, at: seed_at }),
-            ];
+            let mut cmds = vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
+                task_clone,
+            ))];
             if switch_focus {
                 cmds.push(Command::Task(
                     crate::tui::commands::TaskCommand::JumpToTmux {

@@ -40,7 +40,19 @@ pub enum TaskMessage {
         id: TaskId,
         tmux_window: String,
     },
+    /// A dispatch that **held** the claim failed or panicked. Drains the spinner
+    /// *and* releases the claim.
     DispatchFailed(TaskId),
+    /// A dispatch ended without ever holding the claim: it lost the claim to
+    /// another entry point, or gave up before claiming (a failed repo-trust
+    /// grant). Drains the spinner and nothing else.
+    ///
+    /// Deliberately not `DispatchFailed`. Releasing here would target a claim
+    /// belonging to someone else: the winner of a contested claim is itself
+    /// Running-with-no-worktree for as long as its provisioning takes, which is
+    /// the exact state `release_claim` fires on, so the release would hand the
+    /// winner's task back to Backlog mid-provision.
+    DispatchAbandoned(TaskId),
     MarkDispatching(TaskId),
     Edited(TaskEdit),
     QuickDispatch {
@@ -116,6 +128,7 @@ impl TaskMessage {
             TaskMessage::Resume(id) => app.handle_resume_task(id),
             TaskMessage::Resumed { id, tmux_window } => app.handle_resumed(id, tmux_window),
             TaskMessage::DispatchFailed(id) => app.handle_dispatch_failed(id),
+            TaskMessage::DispatchAbandoned(id) => app.handle_dispatch_abandoned(id),
             TaskMessage::MarkDispatching(id) => app.handle_mark_dispatching(id),
             TaskMessage::Edited(edit) => app.handle_task_edited(edit),
             TaskMessage::QuickDispatch { repo_path, epic_id } => {

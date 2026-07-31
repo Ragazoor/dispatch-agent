@@ -131,16 +131,49 @@ rule DispatchTask {
     ensures: AgentLaunched(task: task, mode: standard)
 
     @guidance
-        -- Precondition timing on the epic-chaining path. AutoDispatchNextSubtask
-        -- (epics.allium) selects its subtask with an atomic claim that already
-        -- applies the status half of the postcondition below (backlog -> running,
-        -- default running sub_status, seeded last_pre_tool_use_at) before
-        -- emitting DispatchTask. The backlog precondition is therefore evaluated
-        -- against the pre-claim state — the claim IS the guard on that path —
-        -- and a chained subtask is briefly running with worktree = null while
-        -- provisioning runs. Every other launch site (the TUI dispatch key,
-        -- DispatchTaskViaMcp) checks backlog and applies the whole postcondition
-        -- after provisioning succeeds.
+        -- == The claim, and precondition timing ==
+        -- The backlog precondition is not a read: it is an atomic claim, and it
+        -- is the same claim on every entry point (the TUI dispatch key and its
+        -- trust-confirmed, retry-fresh and quick-dispatch siblings,
+        -- DispatchTaskViaMcp, and AutoDispatchNextSubtask in epics.allium). The
+        -- claim applies the status half of the postcondition above — backlog ->
+        -- running, default running sub_status, seeded last_pre_tool_use_at —
+        -- conditionally on the task still being backlog, and it does so BEFORE
+        -- provisioning starts. The worktree and tmux_window halves are written
+        -- after provisioning succeeds. (The TUI path also re-asserts the status
+        -- half at that point, from the board's own copy of the task; it is
+        -- redundant with the claim rather than load-bearing.)
+        --
+        -- Two consequences, both normative. First, the precondition is evaluated
+        -- against the pre-claim state and enforced by the claim itself, so
+        -- exactly one caller can provision a given task no matter how many fire
+        -- at once (DispatchClaimExclusive below). A caller whose claim is lost
+        -- provisions nothing and launches no agent: DispatchTaskViaMcp reports
+        -- that the task is no longer in backlog, the TUI clears its
+        -- DispatchingFeedback entry with a failure message, and the chain never
+        -- had the row as a candidate. Second, a task being dispatched is briefly
+        -- running with worktree = null (see RunningTaskHasWorktree below).
+        --
+        -- If provisioning fails, the claim is released: the task returns to
+        -- backlog with the default backlog sub_status and the
+        -- last_pre_tool_use_at the claim seeded cleared again, leaving it
+        -- dispatchable exactly as before. That release is itself conditional,
+        -- mirroring the claim — it applies only while the task is still running
+        -- with no worktree, so a task provisioned or moved on meanwhile is left
+        -- alone rather than stomped back to backlog. The last_pre_tool_use_at
+        -- clear is the one sanctioned exception to the ownership invariant in
+        -- agent-health.allium: it unwinds a stamp this same flow wrote moments
+        -- earlier, rather than overwriting a hook's.
+        --
+        -- Only the caller that WON the claim ever releases it, and that is exact
+        -- rather than best-effort because the claim is a SINGLE conditional write:
+        -- it cannot half-apply, so a caller that did not get `won` holds nothing,
+        -- and a claim that errored wrote nothing. Losing the claim and failing
+        -- after winning it look the same to the user but are different outcomes —
+        -- the conditional release fires on "running with no worktree", which is
+        -- precisely the winner's state while it provisions, so a loser that
+        -- released would drag the winner's task back to backlog mid-provision
+        -- (LostClaimReported on the DispatchingFeedback surface).
         --
         -- == Repo-trust pre-gate ==
         -- Every launch of a worktree agent from the TUI is gated on Claude
@@ -832,14 +865,38 @@ surface DispatchingFeedback {
 
     @guarantee ClearedWhenEmpty
         -- status_text becomes null the moment `dispatching` drains,
-        -- regardless of how the last entry was removed (Dispatched,
-        -- DispatchFailed, or watchdog timeout).
+        -- regardless of how the last entry was removed (dispatch succeeded,
+        -- dispatch failed, dispatch abandoned before it held the claim, or
+        -- watchdog timeout).
 
     @guarantee DispatchingTimeout
         -- A task that remains in `dispatching` for more than 60 seconds is
         -- removed by the next Tick and a "dispatch timed out" failure toast
         -- is shown. Defence-in-depth against a stuck dispatch worker
         -- (e.g. an agent panic that escapes catch_unwind).
+        --
+        -- The timeout does NOT release the claim, and that is deliberate.
+        -- Exceeding the deadline means "slow", not "dead" — a fetch over a slow
+        -- network outlives it with the worker still alive — so releasing would
+        -- return the task to backlog while it is still being provisioned and let
+        -- a second dispatch land on the same branch, breaking
+        -- DispatchClaimExclusive. This surface is a UI backstop and stays one: it
+        -- clears the spinner and reports the timeout, nothing more.
+        -- A worker that really did die therefore leaves the task running with no
+        -- worktree, and that state is quiet: it is not detached (detachment
+        -- requires a worktree), and activity classification and window checks
+        -- both skip rows without a tmux_window, so it renders as an ordinary
+        -- running task and never self-flags as stale or crashed. The retry
+        -- dialogue is out of reach for the same reason (it is offered only for a
+        -- windowless STALE or CRASHED task), so recovery is the manual backward
+        -- move to backlog followed by a re-dispatch — the same manual override
+        -- RunningTaskHasWorktree already sanctions.
+        -- Accepted deliberately: releasing is wrong routinely, on any fetch
+        -- slower than the deadline, whereas stranding needs a worker to vanish
+        -- without reporting at all. That a dead-worker task is
+        -- indistinguishable from a live agent on the board is a real gap, but the
+        -- fix for it is an indicator for running-without-worktree, not a claim
+        -- release.
 
     @guarantee DeletedTaskPruned
         -- If a task referenced in `dispatching` is deleted from the task
@@ -852,6 +909,34 @@ surface DispatchingFeedback {
         -- sticky status text is always kept in sync with set membership.
         -- Routing through `app.update(MarkDispatching)` from another
         -- update handler is forbidden (recursive update hazard).
+
+    @guarantee SpansTheClaim
+        -- Membership begins BEFORE the dispatch claim is taken and ends only
+        -- when the worker reports, so a task shows "dispatching…" across the
+        -- claim as well as across provisioning. A member is therefore normally
+        -- backlog (not yet claimed) or running with worktree = null (claimed,
+        -- being provisioned), and the indicator takes priority over every
+        -- status-derived one precisely so the claim's early running write does not
+        -- make an in-flight dispatch render as a live agent.
+        -- The "no worktree" half holds up to message-queue latency rather than
+        -- absolutely: a member drains as soon as its outcome message is
+        -- processed, but between a worker landing a worktree and that message
+        -- being handled, a board refresh can briefly pair a worktree-bearing row
+        -- with a live membership. The window is a queue hop and affects only
+        -- which indicator one frame shows, so it is not defended against beyond a
+        -- debug assertion.
+
+    @guarantee LostClaimReported
+        -- A dispatch whose claim is lost — another entry point took the task
+        -- first — drains its entry with a failure message, so the user is told
+        -- the task was already dispatched rather than left watching a spinner
+        -- that never resolves. Draining is ALL it does: a lost claim must not
+        -- release, because the winner is itself running with worktree = null for
+        -- as long as its provisioning takes, which is exactly the state a
+        -- release fires on. A loser that released would hand the winner's task
+        -- back to backlog mid-provision. Losing and failing are therefore
+        -- distinct outcomes despite looking identical to the user; only the
+        -- caller that HELD the claim releases it.
 
     @guidance
         -- Dispatch is asynchronous: the worker runs `git fetch origin
@@ -940,9 +1025,21 @@ surface MainSessionIndicator {
 ------------------------------------------------------------
 
 -- RunningTaskHasWorktree: Tasks dispatched via DispatchTask or ClaimTaskViaMcp
--- always have a worktree. However, manual forward movement (m key) can move a
--- task to running without provisioning a worktree. The dispatch flow is the
--- canonical path; manual moves are overrides.
+-- always have a worktree, ONCE THE DISPATCH HAS COMPLETED. Two states break it
+-- in the meantime: a dispatch in flight, whose claim writes running ahead of
+-- provisioning (see DispatchTask), and manual forward movement (m key), which
+-- moves a task to running without provisioning at all. The dispatch flow is the
+-- canonical path; manual moves are overrides. This is why every consumer that
+-- must not see a half-provisioned agent — crash detection, activity
+-- classification, is_wrappable — keys off tmux_window rather than status.
+
+-- DispatchClaimExclusive: at most one dispatch ever provisions a given task,
+-- however many entry points fire on it at once. Not expressible as a state
+-- assertion — it constrains the ordering of two writes rather than any single
+-- moment's field values — but it is normative, and it is the reason the
+-- backlog -> running transition is a conditional claim taken before
+-- provisioning rather than a status read followed by a status write. The losing
+-- caller provisions nothing; see DispatchTask for what each entry point reports.
 
 -- TmuxWindowTargetedExactly: every tmux operation aimed at a named window acts
 -- on that window or fails. It never acts on a different window. This covers all

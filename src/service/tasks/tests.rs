@@ -1610,6 +1610,118 @@ async fn claim_next_backlog_task_epic_not_found() {
     assert!(matches!(err, ServiceError::NotFound(_)));
 }
 
+// -- claim_backlog_task (by id) ---------------------------------------------
+//
+// The by-id twin of the claim above. Every dispatch entry point takes this
+// before it provisions, which is what makes DispatchClaimExclusive
+// (docs/specs/dispatch.allium) hold across entry points and not merely
+// between chains.
+
+#[tokio::test]
+async fn claim_backlog_task_moves_the_task_running_without_provisioning() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    assert!(svc.claim_backlog_task(id).await.unwrap());
+
+    let claimed = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(claimed.status, TaskStatus::Running);
+    assert_eq!(
+        claimed.sub_status,
+        SubStatus::default_for(TaskStatus::Running)
+    );
+    assert!(
+        claimed.last_pre_tool_use_at.is_some(),
+        "the claim seeds last_pre_tool_use_at so the tick classifier keeps the task Active"
+    );
+    assert!(
+        claimed.worktree.is_none(),
+        "the claim runs ahead of provisioning"
+    );
+}
+
+#[tokio::test]
+async fn claim_backlog_task_lost_claim_writes_nothing() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+    svc.update_task(
+        UpdateTaskParams::for_task(id)
+            .status(TaskStatus::Review)
+            .sub_status(SubStatus::default_for(TaskStatus::Review)),
+    )
+    .await
+    .unwrap();
+
+    assert!(!svc.claim_backlog_task(id).await.unwrap());
+
+    // The extras patch must be gated on the transition winning, or a lost
+    // claim would stamp last_pre_tool_use_at on someone else's task.
+    let after = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(after.status, TaskStatus::Review);
+    assert_eq!(after.sub_status, SubStatus::default_for(TaskStatus::Review));
+    assert!(
+        after.last_pre_tool_use_at.is_none(),
+        "a lost claim must not seed the activity stamp"
+    );
+}
+
+#[tokio::test]
+async fn claim_backlog_task_is_false_for_a_missing_task() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    assert!(!svc.claim_backlog_task(TaskId(999_999)).await.unwrap());
+}
+
+#[tokio::test]
+async fn claim_backlog_task_is_exclusive_under_concurrency() {
+    let db = test_db().await;
+    let svc = Arc::new(task_svc(&db));
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    let a = {
+        let svc = svc.clone();
+        tokio::spawn(async move { svc.claim_backlog_task(id).await })
+    };
+    let b = {
+        let svc = svc.clone();
+        tokio::spawn(async move { svc.claim_backlog_task(id).await })
+    };
+    let first = a.await.unwrap().unwrap();
+    let second = b.await.unwrap().unwrap();
+
+    assert!(
+        first ^ second,
+        "exactly one of two concurrent claims on the same task may win"
+    );
+}
+
+#[tokio::test]
+async fn release_claim_undoes_a_by_id_claim() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+    assert!(svc.claim_backlog_task(id).await.unwrap());
+
+    assert!(svc.release_claim(id).await.unwrap());
+
+    let released = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(released.status, TaskStatus::Backlog);
+    assert_eq!(
+        released.sub_status,
+        SubStatus::default_for(TaskStatus::Backlog)
+    );
+    assert!(
+        released.last_pre_tool_use_at.is_none(),
+        "the release clears the stamp the claim seeded"
+    );
+    assert!(
+        svc.claim_backlog_task(id).await.unwrap(),
+        "a released task is dispatchable again"
+    );
+}
+
 // -- create_task_returning ---------------------------------------------------
 
 #[tokio::test]

@@ -26,9 +26,12 @@ fn format_task_title(task: &Task, max_title: usize) -> String {
 /// Classifies a task's current state into a single display indicator.
 /// Priority order matters: dispatching > conflict > detached-review >
 /// crashed > stale > blocked > detached-running > running > review-pr >
-/// done-merged > idle. The `Dispatching` variant is reachable only for
-/// pre-dispatch (Backlog) tasks and is removed automatically when the
-/// dispatch worker reports success or failure.
+/// done-merged > idle. The `Dispatching` variant covers a task from before its
+/// claim until the dispatch worker reports success or failure, so it is
+/// reachable for a Backlog task (not yet claimed) *and* for a Running one with
+/// no worktree (claimed, being provisioned). Its top priority is what keeps that
+/// second state from rendering as a live agent — see `SpansTheClaim` on the
+/// `DispatchingFeedback` surface in `docs/specs/dispatch.allium`.
 #[derive(Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 enum CardIndicator {
@@ -72,11 +75,13 @@ fn classify_card_indicator(
     now: DateTime<Utc>,
 ) -> CardIndicator {
     if app.dispatching.contains_key(&task.id) {
-        debug_assert_eq!(
-            task.status,
-            TaskStatus::Backlog,
-            "dispatching set should only contain pre-dispatch (Backlog) tasks"
-        );
+        // No assertion here on purpose. Membership implies "not yet provisioned",
+        // but only up to message-queue latency (`SpansTheClaim` in
+        // docs/specs/dispatch.allium), so a board refresh can briefly pair a
+        // worktree-bearing row with a live membership — and a render function is
+        // the wrong place to panic over a state the spec calls racy. The
+        // invariant is asserted where it is definitionally true instead, in
+        // `mark_dispatching`.
         return CardIndicator::Dispatching {
             spinner_frame: app.spinner_tick,
         };

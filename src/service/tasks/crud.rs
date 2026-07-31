@@ -826,6 +826,38 @@ impl TaskService {
         Ok(self.db.get_task(claimed_id).await?)
     }
 
+    /// Atomically claim one specific `Backlog` task for dispatch, moving it to
+    /// `Running` before any provisioning happens. Returns whether the claim was
+    /// won.
+    ///
+    /// The by-id twin of [`Self::claim_next_backlog_task`], and the guard every
+    /// dispatch entry point takes ahead of provisioning — that is what makes
+    /// `DispatchClaimExclusive` (`docs/specs/dispatch.allium`) hold across
+    /// entry points rather than only between epic chains. `Ok(false)` means
+    /// someone else got there first (or the task is gone); the caller must
+    /// provision nothing and launch no agent.
+    ///
+    /// One conditional write ([`db::TaskStore::try_claim_backlog_task`]), sharing
+    /// its SET list with the by-epic claim so "what a claim writes" has a single
+    /// definition. Being one statement is what keeps the caller's side simple:
+    /// the claim can never half-apply, so `Err` means nothing was written and
+    /// there is no partial state for the caller to unwind.
+    ///
+    /// No `sort_order` recency rank is applied: this transition can neither reach
+    /// nor leave `Done`, so `sort_order_for_status_transition` would return
+    /// `None` regardless.
+    pub async fn claim_backlog_task(&self, task_id: TaskId) -> Result<bool, ServiceError> {
+        if !self
+            .db
+            .try_claim_backlog_task(task_id, self.clock.now())
+            .await?
+        {
+            return Ok(false);
+        }
+        self.recalculate_epic_for_task(task_id).await;
+        Ok(true)
+    }
+
     /// Undo a claim on a subtask that was never provisioned, returning it to
     /// `Backlog` with the claim's activity stamp cleared.
     ///
