@@ -800,12 +800,20 @@ surface AgentTreeCompanionPane {
         ToggleAgentTreePane(user)
 
         -- Keys handled by the renderer inside the pane itself, unprefixed,
-        -- while the pane has tmux focus. All five act on the view only.
+        -- while the pane has tmux focus. Every one but the exit key acts on
+        -- the view only. Each cursor and expansion action carries a vim motion
+        -- and an arrow key bound to the same action; the two are exact aliases,
+        -- so nothing distinguishes which one the user pressed. Toggle is the
+        -- exception, keyed by Space and Enter.
         ExitAgentTreeRenderer(user, pane)              -- q, Ctrl-C
-        MoveAgentTreeCursorUp(user, pane)              -- Up
-        MoveAgentTreeCursorDown(user, pane)            -- Down
-        CollapseSelectedAgentTreeNode(user, pane)      -- Left
-        ExpandSelectedAgentTreeNode(user, pane)        -- Right
+        MoveAgentTreeCursorUp(user, pane)              -- k, Up
+        MoveAgentTreeCursorDown(user, pane)            -- j, Down
+
+        -- Collapse doubles as "step out": when the selected node is already
+        -- closed (or is a file), the cursor moves to its parent instead.
+        CollapseSelectedAgentTreeNode(user, pane)      -- h, Left
+
+        ExpandSelectedAgentTreeNode(user, pane)        -- l, Right
         ToggleSelectedAgentTreeNode(user, pane)        -- Space, Enter
 
     @guarantee ReadOnlyObservation

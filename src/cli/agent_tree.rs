@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -224,6 +224,49 @@ fn rebuild(root: &Path, events_path: &Path, state: &mut RenderState) -> TreeNode
     tree
 }
 
+/// What the event loop should do after `handle_key` has processed a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyAction {
+    /// Stay in the loop and redraw.
+    Continue,
+    /// Leave the loop, which exits the process and so closes the tmux pane.
+    Exit,
+}
+
+/// Apply one key press to the view state — see `docs/specs/agent-tree.allium`'s
+/// `AgentTreeCompanionPane` surface for the bindings. Cursor and expansion keys
+/// each have a vim motion and an arrow key bound to the same action.
+///
+/// Pure with respect to everything but `state`, so the loop's key handling is
+/// testable without a terminal or an event source.
+pub fn handle_key(state: &mut RenderState, key: KeyEvent) -> KeyAction {
+    // `TreeState`'s navigation methods return whether anything changed; the
+    // loop redraws unconditionally, so the answer is discarded.
+    match key.code {
+        KeyCode::Char('q') => return KeyAction::Exit,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return KeyAction::Exit
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            state.tree_state.key_up();
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            state.tree_state.key_down();
+        }
+        KeyCode::Char('h') | KeyCode::Left => {
+            state.tree_state.key_left();
+        }
+        KeyCode::Char('l') | KeyCode::Right => {
+            state.tree_state.key_right();
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            state.tree_state.toggle_selected();
+        }
+        _ => {}
+    }
+    KeyAction::Continue
+}
+
 fn run_loop<B: Backend>(terminal: &mut Terminal<B>, root: &Path, events_path: &Path) -> Result<()> {
     let title = worktree_title(root);
     let mut state = RenderState::new();
@@ -240,27 +283,8 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, root: &Path, events_path: &P
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match key.code {
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(())
-                }
-                KeyCode::Up => {
-                    state.tree_state.key_up();
-                }
-                KeyCode::Down => {
-                    state.tree_state.key_down();
-                }
-                KeyCode::Left => {
-                    state.tree_state.key_left();
-                }
-                KeyCode::Right => {
-                    state.tree_state.key_right();
-                }
-                KeyCode::Char(' ') | KeyCode::Enter => {
-                    state.tree_state.toggle_selected();
-                }
-                _ => {}
+            if handle_key(&mut state, key) == KeyAction::Exit {
+                return Ok(());
             }
             continue;
         }
@@ -469,6 +493,171 @@ mod tests {
             .draw(|frame| render(frame, frame.area(), &tree, &mut state, title))
             .expect("draw");
         buffer_to_string(terminal.backend().buffer())
+    }
+
+    /// A rendered companion pane: `TreeState`'s cursor movement resolves
+    /// against the identifiers captured by the *last render*, so a key test
+    /// has to draw at least once before pressing anything.
+    struct KeyRig {
+        tree: TreeNode,
+        state: RenderState,
+        terminal: Terminal<TestBackend>,
+    }
+
+    impl KeyRig {
+        fn new(jsonl: &str) -> Self {
+            let tree = build_tree(&root(), jsonl);
+            let mut state = RenderState::new();
+            state.sync_expansion(&tree);
+            let terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
+            let mut rig = Self {
+                tree,
+                state,
+                terminal,
+            };
+            rig.draw();
+            rig
+        }
+
+        fn draw(&mut self) {
+            let tree = &self.tree;
+            let state = &mut self.state;
+            self.terminal
+                .draw(|frame| render(frame, frame.area(), tree, state, "dispatch"))
+                .expect("draw");
+        }
+
+        /// Press a key, then redraw as the real loop does — so a following
+        /// press sees the identifiers the new view actually rendered.
+        fn press(&mut self, code: KeyCode) -> KeyAction {
+            let action = handle_key(&mut self.state, KeyEvent::new(code, KeyModifiers::NONE));
+            self.draw();
+            action
+        }
+
+        fn selected(&self) -> Vec<String> {
+            self.state.tree_state.selected().to_vec()
+        }
+
+        fn is_open(&self, path: &[&str]) -> bool {
+            let path: Vec<String> = path.iter().map(|s| (*s).to_string()).collect();
+            self.state.tree_state.opened().contains(&path)
+        }
+    }
+
+    /// Two top-level files plus a directory holding one file. Sorted by name,
+    /// so the flattened view is: a.rs, src, src/lib.rs, z.rs.
+    fn three_node_log() -> String {
+        format!(
+            "{}\n{}\n{}",
+            event("/repo/a.rs", "read"),
+            event("/repo/src/lib.rs", "modified"),
+            event("/repo/z.rs", "read")
+        )
+    }
+
+    #[test]
+    fn q_exits_the_renderer() {
+        let mut rig = KeyRig::new("");
+        assert_eq!(rig.press(KeyCode::Char('q')), KeyAction::Exit);
+    }
+
+    #[test]
+    fn ctrl_c_exits_the_renderer() {
+        let mut state = RenderState::new();
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(handle_key(&mut state, key), KeyAction::Exit);
+    }
+
+    #[test]
+    fn a_bare_c_does_not_exit_the_renderer() {
+        let mut rig = KeyRig::new("");
+        assert_eq!(rig.press(KeyCode::Char('c')), KeyAction::Continue);
+    }
+
+    #[test]
+    fn down_and_j_both_move_the_cursor_down() {
+        for code in [KeyCode::Down, KeyCode::Char('j')] {
+            let mut rig = KeyRig::new(&three_node_log());
+            assert_eq!(rig.press(code), KeyAction::Continue);
+            assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
+            rig.press(code);
+            assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
+        }
+    }
+
+    #[test]
+    fn up_and_k_both_move_the_cursor_up() {
+        for code in [KeyCode::Up, KeyCode::Char('k')] {
+            let mut rig = KeyRig::new(&three_node_log());
+            rig.press(KeyCode::Down);
+            rig.press(KeyCode::Down);
+            assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
+            assert_eq!(rig.press(code), KeyAction::Continue);
+            assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
+        }
+    }
+
+    #[test]
+    fn right_and_l_both_expand_the_selected_directory() {
+        for code in [KeyCode::Right, KeyCode::Char('l')] {
+            let mut rig = KeyRig::new(&three_node_log());
+            // "src" auto-expanded on first sync; collapse it so expanding is
+            // an observable change.
+            rig.press(KeyCode::Down);
+            rig.press(KeyCode::Down);
+            assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
+            assert!(rig.state.tree_state.close(&["src".to_string()]));
+            rig.draw();
+            assert!(!rig.is_open(&["src"]), "{code:?}");
+
+            assert_eq!(rig.press(code), KeyAction::Continue);
+            assert!(rig.is_open(&["src"]), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn left_and_h_both_collapse_the_selected_directory() {
+        for code in [KeyCode::Left, KeyCode::Char('h')] {
+            let mut rig = KeyRig::new(&three_node_log());
+            rig.press(KeyCode::Down);
+            rig.press(KeyCode::Down);
+            assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
+            assert!(rig.is_open(&["src"]), "{code:?}");
+
+            assert_eq!(rig.press(code), KeyAction::Continue);
+            assert!(!rig.is_open(&["src"]), "{code:?}");
+        }
+    }
+
+    #[test]
+    fn h_on_a_child_moves_the_cursor_to_its_parent() {
+        let mut rig = KeyRig::new(&three_node_log());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(
+            rig.selected(),
+            vec!["src".to_string(), "src/lib.rs".to_string()]
+        );
+
+        rig.press(KeyCode::Char('h'));
+        assert_eq!(rig.selected(), vec!["src".to_string()]);
+    }
+
+    #[test]
+    fn space_and_enter_both_toggle_the_selected_directory() {
+        for code in [KeyCode::Char(' '), KeyCode::Enter] {
+            let mut rig = KeyRig::new(&three_node_log());
+            rig.press(KeyCode::Char('j'));
+            rig.press(KeyCode::Char('j'));
+            assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
+
+            assert_eq!(rig.press(code), KeyAction::Continue);
+            assert!(!rig.is_open(&["src"]), "{code:?}");
+            rig.press(code);
+            assert!(rig.is_open(&["src"]), "{code:?}");
+        }
     }
 
     #[test]

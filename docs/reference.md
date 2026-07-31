@@ -63,6 +63,24 @@
 Typing inserts at the caret. In repo-picker fields (`←`/`→` move the text caret;
 `↑`/`↓` still move the repo list).
 
+### Agent-tree companion pane
+
+Pressed inside the pane itself (no tmux prefix) while it has tmux focus. The pane is
+its own process — these keys never reach the board TUI, and all of them act on the
+pane's own view only.
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move the cursor down |
+| `k` / `↑` | Move the cursor up |
+| `h` / `←` | Collapse the selected directory, or move to its parent |
+| `l` / `→` | Expand the selected directory |
+| `Space` / `Enter` | Toggle the selected directory open/closed |
+| `q` / `Ctrl+C` | Close the pane |
+
+The cursor position and manual expansions live in that process, so they do not survive
+closing and reopening the pane. Use `Prefix+e` to toggle it (see above).
+
 ## How Dispatch Works
 
 Press `Space` on a Backlog task:
