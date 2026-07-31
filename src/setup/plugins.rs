@@ -605,10 +605,10 @@ mod tests {
     }
 
     /// A loop iteration does rebase, tend, propagate, red check, implement,
-    /// verify and weed, up to `max_iterations` times, so an iteration agent left
-    /// on the session model (Opus) multiplies that cost by the iteration count.
-    /// Nothing in the loop's own output reveals which model ran, so dropping
-    /// this instruction would regress silently.
+    /// verify and weed, and repeats up to the loop's configured maximum — so an
+    /// iteration agent left on the session model (Opus) multiplies that cost by
+    /// the iteration count. Nothing in the loop's own output reveals which model
+    /// ran, so dropping this instruction would regress silently.
     #[test]
     fn allium_loop_dispatches_iteration_agents_on_sonnet() {
         let section = allium_loop_dispatch_instruction();
