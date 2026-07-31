@@ -146,6 +146,7 @@ The Allium specs in `docs/specs/` are the **source of truth** for domain logic:
 - `observability.allium` — trajectory persistence (per-task audit log of MCP tool calls) and slow-db-call latency warnings
 - `doctor.allium` — `dispatch doctor` self-diagnosis CLI surface
 - `tips.allium` — startup tips popup (show/browse/dismiss)
+- `repo-sync.allium` — local-first repo sync: ahead/behind drift measurement, the sync operation and its typed failure vocabulary, and the surfaces that expose them
 
 Consult the relevant spec before changing core behavior. Use `allium:tend` and `allium:weed` skills to keep spec and code aligned.
 
@@ -217,6 +218,7 @@ Subsystem entry points (no dedicated doc page — read the source):
 - `src/service/repo_index/` (`mod.rs` orchestration + `scan.rs`/`chunking.rs`/`embed.rs`/`search.rs`), `src/service/embeddings.rs`, `src/mcp/handlers/repo_rag.rs` — repo indexing / embeddings / RAG: `index_repo` and `search_docs` MCP tools for semantic doc search
 - `src/cli/` — CLI subcommand implementations, including the `doctor` health-check subcommand (`src/cli/doctor.rs`)
 - `src/mcp/trajectory.rs` — agent trajectory capture (records the agent's tool-call history for a task)
+- `src/repo_sync.rs` — local-first repo sync: `ahead_behind` drift measurement and `sync_repo` (fetch, merge `origin/<base>`, push). Synchronous and `ProcessRunner`-driven like `src/dispatch/finish.rs`; local base history is never rewritten. See `docs/specs/repo-sync.allium`
 
 ## Unsafe Policy
 

@@ -16,6 +16,7 @@ pub mod models;
 pub mod notify;
 pub mod plan;
 pub mod process;
+pub mod repo_sync;
 pub mod runtime;
 pub mod service;
 pub mod setup;

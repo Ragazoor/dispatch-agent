@@ -52,6 +52,20 @@ value AheadBehind {
     is_diverged: ahead > 0 and behind > 0
 }
 
+-- The two ways a sync can succeed, and what each moved. Distinguishable to the
+-- caller on purpose: already_in_sync means the fetch ran and left nothing to
+-- act on — no merge and no push were performed — while synced carries the
+-- commit counts the operation actually moved.
+value SyncOutcome {
+    outcome: SyncOutcomeKind
+    pulled: Integer   -- commits merged into local base; zero when already_in_sync
+    pushed: Integer   -- commits published to origin; zero when already_in_sync
+
+    invariant AlreadyInSyncMovedNothing {
+        outcome = already_in_sync implies (pulled = 0 and pushed = 0)
+    }
+}
+
 -- A failed sync reports one cause plus exactly the detail that makes that cause
 -- actionable. The cause and its detail travel together; neither is useful alone.
 value SyncFailureReport {
@@ -59,10 +73,27 @@ value SyncFailureReport {
     detail: String   -- the branch found and expected, the dirty or conflicted
                      -- paths, or git's own message — see ReportRepoSyncFailure
 
-    -- A rejected push means origin moved between the fetch and the push, so
-    -- repeating the same action is the fix. Every other cause needs the operator
-    -- to change something first.
+    -- Retrying the same action is the fix for the cause that dominates a
+    -- rejected push: origin moved between the fetch and the push. A credential
+    -- or hook rejection arrives by the same route and will be rejected again —
+    -- git's verbatim output is what tells the operator which they are looking
+    -- at. Every other cause needs the operator to change something first.
     retryable: failure = push_rejected
+}
+
+-- What sync_repo hands back: exactly one of two channels, never both and never
+-- neither. Keeping them apart is what lets every caller route a success to the
+-- status bar and a failure to the error popup without inspecting the other.
+value SyncResult {
+    outcome: SyncOutcome?          -- present exactly when the sync succeeded
+    failure: SyncFailureReport?    -- present exactly when the sync failed
+
+    succeeded: failure = null
+
+    invariant ExactlyOneChannelIsPresent {
+        (outcome = null or failure = null)
+        and (outcome != null or failure != null)
+    }
 }
 
 ------------------------------------------------------------
@@ -75,9 +106,15 @@ value SyncFailureReport {
 -- a mis-measured repo claims to be in sync, and a precondition checked too
 -- late corrupts a working tree.
 contract RepoSyncEngine {
-    ahead_behind: (repo_path: String, base_branch: String) -> AheadBehind
-    fetch_base_error: (repo_path: String, base_branch: String) -> String
-    sync_repo: (repo_path: String, base_branch: String) -> SyncFailureReport
+    -- No counts at all when the repository cannot be measured.
+    ahead_behind: (repo_path: String, base_branch: String) -> AheadBehind?
+
+    -- Nothing on success; the failure message otherwise.
+    fetch_base: (repo_path: String, base_branch: String) -> String?
+
+    -- One SyncOutcome on success, one SyncFailureReport otherwise — the two
+    -- channels of a SyncResult, exactly one of which is ever present.
+    sync_repo: (repo_path: String, base_branch: String) -> SyncResult
 
     @invariant UnmeasurableIsNotInSync
         -- ahead_behind yields no counts at all — never a zero/zero pair — when
@@ -91,6 +128,11 @@ contract RepoSyncEngine {
         -- dirty primary worktree can therefore never masquerade as a merge
         -- conflict, and a missing remote can never masquerade as a rejected
         -- push.
+        --
+        -- One carve-out, deliberate: a remote probe that cannot be run at all
+        -- and one that reports no origin are the same fact for this operation —
+        -- there is nothing to sync against — so both report no_remote rather
+        -- than splitting the second into `other`.
 
     @invariant FetchPrecedesCounting
         -- The fetch runs unconditionally, before the counts that decide whether
@@ -123,19 +165,38 @@ contract RepoSyncEngine {
         -- and yields nothing when that ref pair does not resolve or the output
         -- does not parse.
         --
-        -- fetch_base_error yields nothing on success and the failure message
-        -- otherwise; a failed fetch is non-fatal everywhere it is used.
+        -- fetch_base yields nothing on success and the failure message
+        -- otherwise. A failed fetch is non-fatal to a *refresh*: the previously
+        -- known counts are kept and only the error is recorded. It is fatal to a
+        -- *sync*: inside sync_repo a failed fetch reports `other` and no counts
+        -- are read at all, because counting against refs the operation failed to
+        -- refresh is exactly what FetchPrecedesCounting forbids.
         --
-        -- sync_repo yields nothing on success and one SyncFailureReport
-        -- otherwise.
+        -- sync_repo yields a SyncResult: one SyncOutcome on success — the
+        -- already_in_sync / synced split, with the commit counts it moved — and
+        -- one SyncFailureReport otherwise, which is what ReportRepoSyncFailure
+        -- carries.
+        --
         -- Porcelain and unmerged-path parsing is shared with the rebase path
-        -- (both live in src/git.rs, one implementation, two callers) so
-        -- conflict detection is not duplicated.
+        -- (parse_porcelain_files / parse_unmerged_files in src/git.rs, one
+        -- implementation, two callers). Conflict *detection* is not shared, by
+        -- design: the rebase path reads git's own prose markers
+        -- (is_rebase_conflict in src/dispatch/git_output.rs), the sync path
+        -- reads whether the unmerged path list is empty.
 }
 
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
+
+-- Which shape a successful sync took. Kept apart because "nothing to do" and
+-- "commits moved" call for different words in every surface that reports them.
+enum SyncOutcomeKind {
+    already_in_sync   -- the fetch ran and left nothing the operation could act
+                      -- on: no merge and no push were performed
+    | synced          -- commits were merged into local base, published to
+                      -- origin, or both
+}
 
 -- Every way a sync can fail, one value per cause. The split is the point: each
 -- cause has a different remedy and a different message, so none of them may be
@@ -147,11 +208,23 @@ enum SyncFailure {
                             -- checked out, so this must stop the operation
     | dirty_primary_worktree -- the primary checkout has uncommitted changes;
                             -- merging into a dirty tree is how work is lost
-    | merge_conflict        -- origin/<base> did not merge cleanly; the merge
-                            -- was aborted and the conflicted paths reported
-    | push_rejected         -- origin moved between the fetch and the push;
-                            -- retryable as-is
-    | other                 -- a git invocation failed for some other reason
+    | merge_conflict        -- the merge of origin/<base> failed *and* left
+                            -- unmerged paths behind; the merge was aborted and
+                            -- those paths reported. Unmerged paths are the
+                            -- discriminator: a merge that fails with nothing
+                            -- unmerged (unrelated histories, a bad ref) reports
+                            -- `other` instead, because an empty conflict list
+                            -- would misstate the remedy
+    | push_rejected         -- `git push` exited non-zero, whatever the reason:
+                            -- origin moved between the fetch and the push, or a
+                            -- credential or pre-receive hook refused it. They
+                            -- arrive by the same route, and only git's own
+                            -- output distinguishes them, so that output is
+                            -- reported verbatim. A push that cannot be *run* at
+                            -- all reports `other`
+    | other                 -- any other git failure: a failed fetch, a merge
+                            -- that failed with nothing unmerged, or a git
+                            -- command that could not be run at all
 }
 
 ------------------------------------------------------------
@@ -208,7 +281,7 @@ rule RefreshRepoSyncState {
     let base = detect_default_branch(repo_path)
 
     -- Only the fetching refresh points can produce a fetch error.
-    let fetch_error = if fetch_first: fetch_base_error(repo_path, base) else: null
+    let fetch_error = if fetch_first: fetch_base(repo_path, base) else: null
 
     let state = RepoSyncState{repo_path: repo_path}
 
@@ -325,18 +398,30 @@ rule SyncRepo {
     -- cannot be measured even against freshly fetched refs.
     let measured = ahead_behind(repo_path, base_branch)
 
-    -- Merging origin/<base_branch> into a diverged local branch adds one merge
-    -- commit, which is itself something to publish. A behind-only repository
-    -- fast-forwards instead and has nothing to push.
+    -- Whenever there is anything to pull, the merge changes what local base is
+    -- ahead by — a merge commit of its own when diverged, nothing when it
+    -- fast-forwards — so the ahead count is re-read from the merged refs rather
+    -- than predicted from the pre-merge count.
+    let merged =
+        if measured != null and measured.behind > 0: ahead_behind(repo_path, base_branch)
+        else: null
+
+    -- A recount that cannot be read pushes nothing: refusing to guess beats
+    -- publishing a count the operation cannot justify. The merge that already
+    -- happened still counts as pulled.
     let pushed =
-        if measured != null and measured.is_diverged: measured.ahead + 1
-        else if measured != null: measured.ahead
-        else: 0
+        if measured = null: 0
+        else if measured.behind > 0: merged?.ahead ?? 0
+        else: measured.ahead
 
     ensures:
         if measured = null or not measured.has_drift:
-            -- The fetch still ran; that is what makes "in sync" a fact rather
-            -- than an assumption. No merge and no push are performed.
+            -- No merge and no push are performed. When the counts were read,
+            -- the fetch preceding them is what makes "nothing to do" a fact
+            -- rather than an assumption. When they could not be read at all,
+            -- this reports what the operation did — it fetched and found
+            -- nothing it could justify acting on — and not that the repository
+            -- is level (see UnmeasuredIsNeverPresentedAsClean).
             RepoAlreadyInSync(repo_path: repo_path, base_branch: base_branch)
         else:
             RepoSynced(
@@ -357,12 +442,18 @@ rule SyncRepo {
         --      history is never rewritten, so live worktrees branched off local
         --      base stay valid; the merge commit is the same cost the rebase
         --      wrap-up path already pays.
-        --   4. ahead > 0, recounted after the merge: push origin <base_branch>.
+        --   4. re-read the ahead count from the merged refs and, when it is
+        --      non-zero, push origin <base_branch>. The count pushed is
+        --      measured after the merge, never predicted from the pre-merge
+        --      count plus a merge commit. A recount that cannot be read pushes
+        --      nothing and reports pushed = 0, while the merge that already
+        --      happened still counts as pulled.
         --   5. report the outcome.
         --
         -- The two outcomes are distinguishable to the caller: RepoAlreadyInSync
-        -- when both counts were zero after the fetch, RepoSynced with the
-        -- commit counts actually pulled and pushed otherwise.
+        -- when the fetch left nothing to act on — both counts zero, or no counts
+        -- readable at all — RepoSynced with the commit counts actually pulled
+        -- and pushed otherwise.
         --
         -- Emitted from exactly two places: the board confirmation
         -- (AcceptRepoSyncPrompt) and `dispatch repo sync` (SyncRepoViaCli).
@@ -382,24 +473,37 @@ rule ReportRepoSyncFailure {
     )
 
     @guidance
-        -- Emitted by the sync worker when sync_repo reports a SyncFailure.
+        -- Emitted by the sync worker when sync_repo comes back with a
+        -- SyncFailureReport in the failure channel of its SyncResult; `report` is
+        -- that SyncFailureReport.
         -- Each failure carries the detail that makes it actionable, and nothing
         -- more:
         --   not_on_base_branch      -> the branch found and the one expected
         --   dirty_primary_worktree  -> the checkout path and its dirty files
         --   merge_conflict          -> the conflicted paths, read before the
         --                              merge was aborted
-        --   push_rejected           -> git's own rejection output; retryable
-        --   no_remote / other       -> the underlying message
+        --   push_rejected           -> git's own rejection output, verbatim:
+        --                              it is the only thing that says whether
+        --                              origin moved or a credential or hook
+        --                              refused the push
+        --   no_remote               -> the underlying message
+        --   other                   -> the underlying message: a failed fetch, a
+        --                              merge that failed with nothing unmerged,
+        --                              or the reason a git command could not be
+        --                              run at all
         --
         -- In the TUI a failure goes to the error popup, never the status bar:
         -- the status bar is for outcomes the user does not have to act on, and
         -- every failure here needs a decision. Successful outcomes
         -- (RepoSynced, RepoAlreadyInSync) go to the status bar.
         --
-        -- No task or repository state is mutated. A failed sync leaves the
-        -- repository exactly as it found it, so retrying once the cause is
-        -- cleared is always safe.
+        -- No task or repository state is mutated. Every precondition failure and
+        -- every merge conflict — the merge is aborted — leaves the repository
+        -- exactly as the operation found it, so retrying once the cause is
+        -- cleared is safe. The one exception is push_rejected on a diverged
+        -- repository: the merge has already been committed locally and stays
+        -- there. That is precisely why retrying the same action is the fix — the
+        -- merge is never repeated, only the publishing step is.
 }
 
 -- == Board action ==
@@ -498,6 +602,16 @@ rule SyncRepoViaCli {
 -- would run against refs it never refreshed, and reporting on that basis would
 -- violate this invariant outright rather than merely risk it. See the header
 -- note and doctor.allium.
+--
+-- One carve-out, and it is about vocabulary rather than measurement: a sync
+-- whose post-fetch recount cannot be read performs no merge and no push and
+-- reports RepoAlreadyInSync (see the SyncRepo rule). That outcome is a statement
+-- about what the operation did — it fetched, then found nothing it could justify
+-- acting on — not a claim that the repository is level with origin. Surfaces
+-- reporting it must word it that way ("nothing to do"), and must never quote
+-- counts they did not read. The measurement and display surfaces are not
+-- weakened at all: a RepoSyncState with no counts still reads as unknown, never
+-- as in sync.
 
 -- OneRepoSetForDriftMeasurement: drift is measured over the saved repo paths
 -- (core/SavedRepoPaths) and nothing else, on every surface — the startup
