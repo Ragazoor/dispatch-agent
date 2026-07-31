@@ -17,6 +17,7 @@ mod move_task;
 mod navigation;
 mod pr;
 mod repo_filter;
+mod repo_sync;
 mod retry;
 mod selection;
 mod split_pane;

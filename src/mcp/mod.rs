@@ -32,6 +32,12 @@ pub enum McpEvent {
     EpicChanged(EpicId),
     /// A message was sent to an agent — flash the target task's card.
     MessageSent { to_task_id: TaskId },
+    /// A `wrap_up(rebase)` succeeded, so the repository's local base branch was
+    /// just fast-forwarded and its drift changed (docs/specs/repo-sync.allium:
+    /// rule RefreshRepoSyncStateAfterRebase). Carries the repository resolved
+    /// from the rebased branch's task; an empty path means none could be
+    /// resolved and nothing is measured.
+    BranchRebased { repo_path: String },
 }
 
 /// Identifies a fire-and-forget background write performed by the MCP handler.
@@ -192,6 +198,17 @@ impl McpState {
     pub fn notify_epic_changed(&self, epic_id: EpicId) {
         if let Some(tx) = &self.notify_tx {
             let _ = tx.send(McpEvent::EpicChanged(epic_id));
+        }
+    }
+
+    /// Notify the runtime that a `wrap_up(rebase)` fast-forwarded `repo_path`'s
+    /// local base branch, so its drift measurement is now out of date
+    /// (docs/specs/repo-sync.allium: rule RefreshRepoSyncStateAfterRebase).
+    pub(crate) fn notify_branch_rebased(&self, repo_path: &str) {
+        if let Some(tx) = &self.notify_tx {
+            let _ = tx.send(McpEvent::BranchRebased {
+                repo_path: repo_path.to_string(),
+            });
         }
     }
 

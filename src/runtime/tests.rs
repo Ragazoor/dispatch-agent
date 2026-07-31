@@ -5612,3 +5612,262 @@ async fn spawn_refresh_from_db_sends_task_and_epic_refresh_messages() {
         Message::Epic(crate::tui::messages::EpicMessage::Refresh(_))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Local-first repo sync (docs/specs/repo-sync.allium)
+// ---------------------------------------------------------------------------
+
+/// The three responses one fetching refresh consumes: symbolic-ref, fetch,
+/// rev-list.
+fn refresh_responses_fetching(counts: &[u8]) -> Vec<anyhow::Result<std::process::Output>> {
+    vec![
+        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+        MockProcessRunner::ok(),
+        MockProcessRunner::ok_with_stdout(counts),
+    ]
+}
+
+async fn expect_measurement(
+    rx: &mut mpsc::UnboundedReceiver<Message>,
+) -> crate::repo_sync::RepoSyncMeasurement {
+    match recv_msg(rx).await {
+        Message::RepoSync(crate::tui::messages::RepoSyncMessage::Measured(m)) => m,
+        other => panic!("expected a repo-sync measurement, got {other:?}"),
+    }
+}
+
+// rule-success.RefreshRepoSyncState: the refresh runs off the event loop and
+// reports its measurement back as a message.
+#[tokio::test]
+async fn exec_refresh_repo_sync_reports_the_measurement() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(refresh_responses_fetching(
+        b"3\t1\n",
+    )));
+    let rt = make_runtime(db, tx, mock.clone()).await;
+
+    rt.exec_refresh_repo_sync("/repo".to_string(), true)
+        .await
+        .unwrap();
+
+    let m = expect_measurement(&mut rx).await;
+    assert_eq!(m.repo_path, "/repo");
+    assert_eq!(m.base_branch, "main");
+    assert_eq!(
+        m.counts,
+        Some(crate::repo_sync::AheadBehind {
+            ahead: 3,
+            behind: 1
+        })
+    );
+    assert!(mock
+        .recorded_calls()
+        .iter()
+        .any(|(_, a)| a.contains(&"fetch".to_string())));
+}
+
+// Only the fetching refresh points perform a fetch; every other caller rides
+// refs some other operation already refreshed.
+#[tokio::test]
+async fn exec_refresh_repo_sync_without_fetch_touches_no_network() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+        MockProcessRunner::ok_with_stdout(b"0\t2\n"),
+    ]));
+    let rt = make_runtime(db, tx, mock.clone()).await;
+
+    rt.exec_refresh_repo_sync("/repo".to_string(), false)
+        .await
+        .unwrap();
+
+    let m = expect_measurement(&mut rx).await;
+    assert_eq!(
+        m.counts,
+        Some(crate::repo_sync::AheadBehind {
+            ahead: 0,
+            behind: 2
+        })
+    );
+    assert!(
+        !mock
+            .recorded_calls()
+            .iter()
+            .any(|(_, a)| a.contains(&"fetch".to_string())),
+        "a non-fetching refresh must be a pure local ref read"
+    );
+}
+
+// rule-success.RefreshRepoSyncStateOnStartup + OneRepoSetForDriftMeasurement:
+// one fetching refresh per saved repo path, and no other repository.
+#[tokio::test]
+async fn exec_refresh_all_repo_sync_fetches_once_per_saved_repo_path() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut responses = refresh_responses_fetching(b"1\t0\n");
+    responses.extend(refresh_responses_fetching(b"0\t1\n"));
+    let mock = Arc::new(MockProcessRunner::new(responses));
+    let rt = make_runtime(db, tx, mock.clone()).await;
+
+    let paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
+    for handle in rt.exec_refresh_all_repo_sync(&paths) {
+        handle.await.unwrap();
+    }
+
+    let mut seen = vec![
+        expect_measurement(&mut rx).await.repo_path,
+        expect_measurement(&mut rx).await.repo_path,
+    ];
+    seen.sort();
+    assert_eq!(seen, paths);
+    assert_eq!(
+        mock.recorded_calls()
+            .iter()
+            .filter(|(_, a)| a.contains(&"fetch".to_string()))
+            .count(),
+        2,
+        "exactly one fetch per saved repo path"
+    );
+}
+
+#[tokio::test]
+async fn exec_refresh_all_repo_sync_does_nothing_without_saved_paths() {
+    let db = test_db().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![]));
+    let rt = make_runtime(db, tx, mock.clone()).await;
+
+    assert!(rt.exec_refresh_all_repo_sync(&[]).is_empty());
+    assert!(mock.recorded_calls().is_empty());
+}
+
+// rule-success.SyncRepo, reported back through the success channel.
+#[tokio::test]
+async fn exec_sync_repo_reports_the_counts_it_moved() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote
+        MockProcessRunner::ok_with_stdout(b"main\n"),                        // branch
+        MockProcessRunner::ok_with_stdout(b""),                              // clean
+        MockProcessRunner::ok(),                                             // fetch
+        MockProcessRunner::ok_with_stdout(b"3\t1\n"),                        // rev-list
+        MockProcessRunner::ok(),                                             // merge
+        MockProcessRunner::ok_with_stdout(b"4\t0\n"),                        // recount
+        MockProcessRunner::ok(),                                             // push
+    ]));
+    let rt = make_runtime(db, tx, mock).await;
+
+    rt.exec_sync_repo("/repo".to_string(), "main".to_string())
+        .await
+        .unwrap();
+
+    match recv_msg(&mut rx).await {
+        Message::RepoSync(crate::tui::messages::RepoSyncMessage::Succeeded {
+            repo_path,
+            outcome,
+        }) => {
+            assert_eq!(repo_path, "/repo");
+            assert_eq!(
+                outcome,
+                crate::repo_sync::SyncOutcome::Synced {
+                    pulled: 1,
+                    pushed: 4
+                }
+            );
+        }
+        other => panic!("expected a sync success, got {other:?}"),
+    }
+}
+
+// rule-success.ReportRepoSyncFailure: the failure channel carries the detail
+// that makes the cause actionable, plus whether retrying is the fix.
+#[tokio::test]
+async fn exec_sync_repo_reports_a_failure_with_its_detail() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"),
+        MockProcessRunner::ok_with_stdout(b"feature\n"), // not on base branch
+    ]));
+    let rt = make_runtime(db, tx, mock).await;
+
+    rt.exec_sync_repo("/repo".to_string(), "main".to_string())
+        .await
+        .unwrap();
+
+    match recv_msg(&mut rx).await {
+        Message::RepoSync(crate::tui::messages::RepoSyncMessage::Failed {
+            repo_path,
+            detail,
+            retryable,
+        }) => {
+            assert_eq!(repo_path, "/repo");
+            assert!(
+                detail.contains("feature") && detail.contains("main"),
+                "the branch found and the one expected: {detail}"
+            );
+            assert!(!retryable, "the operator must checkout main first");
+        }
+        other => panic!("expected a sync failure, got {other:?}"),
+    }
+}
+
+// rule-success.RefreshRepoSyncStateAfterRebase: a rebase that moved the repo's
+// base branch triggers a non-fetching refresh.
+#[tokio::test]
+async fn apply_loop_event_branch_rebased_refreshes_the_repo() {
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+        MockProcessRunner::ok_with_stdout(b"2\t0\n"),
+    ]));
+    let rt = make_runtime(db, tx, mock.clone()).await;
+    let mut app = App::new(vec![]);
+
+    let cmds = apply_loop_event(
+        &mut app,
+        LoopEvent::Mcp(mcp::McpEvent::BranchRebased {
+            repo_path: "/repo".to_string(),
+        }),
+        &rt,
+    );
+
+    assert!(cmds.is_empty(), "the refresh is spawned, not queued");
+    let m = expect_measurement(&mut rx).await;
+    assert_eq!(m.repo_path, "/repo");
+    assert!(
+        !mock
+            .recorded_calls()
+            .iter()
+            .any(|(_, a)| a.contains(&"fetch".to_string())),
+        "the rebase already refreshed the refs"
+    );
+}
+
+// rule-failure.RefreshRepoSyncStateAfterRebase.1: no repository could be
+// resolved from the rebased branch, so nothing is refreshed.
+#[tokio::test]
+async fn apply_loop_event_branch_rebased_without_a_repo_refreshes_nothing() {
+    let db = test_db().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let mock = Arc::new(MockProcessRunner::new(vec![]));
+    let rt = make_runtime(db, tx, mock.clone()).await;
+    let mut app = App::new(vec![]);
+
+    apply_loop_event(
+        &mut app,
+        LoopEvent::Mcp(mcp::McpEvent::BranchRebased {
+            repo_path: String::new(),
+        }),
+        &rt,
+    );
+
+    assert!(
+        mock.recorded_calls().is_empty(),
+        "an unresolvable repository must not be measured"
+    );
+}

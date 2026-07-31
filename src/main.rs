@@ -168,6 +168,22 @@ enum RepoAction {
     ClearVerify { path: String },
     /// List known repo paths and their verify commands.
     List,
+    /// Show each saved repo path's drift against origin on its default branch.
+    /// Read-only: it measures and prints, it never merges or pushes.
+    /// See docs/specs/repo-sync.allium (surface RepoStatusCli).
+    Status {
+        /// Skip the fetch and report whatever the local refs say — for use
+        /// offline or in a tight loop.
+        #[arg(long)]
+        no_fetch: bool,
+    },
+    /// Bring one saved repo path — or every one of them — into step with origin
+    /// on its default branch. See docs/specs/repo-sync.allium (surface
+    /// RepoSyncCli).
+    Sync {
+        /// The repo path to sync. Omitted, every saved repo path is attempted.
+        path: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -469,6 +485,103 @@ async fn cmd_repo(db: &std::path::Path, action: RepoAction) -> Result<()> {
                 }
             }
         }
+        RepoAction::Status { no_fetch } => {
+            cmd_repo_status(&database, no_fetch).await?;
+        }
+        RepoAction::Sync { path } => {
+            cmd_repo_sync(&database, path).await?;
+        }
+    }
+    Ok(())
+}
+
+/// `dispatch repo status [--no-fetch]` — one row per saved repo path.
+///
+/// Fetches before measuring unless suppressed, so the counts are current. A
+/// repository that could not be measured shows no ahead/behind figures at all
+/// (`UnmeasuredIsNeverPresentedAsClean`) and, when the fetch was the cause, its
+/// fetch error instead.
+async fn cmd_repo_status(database: &db::Database, no_fetch: bool) -> Result<()> {
+    let paths = database.list_repo_paths().await?;
+    if paths.is_empty() {
+        println!("No repo paths configured.");
+        return Ok(());
+    }
+    let runner = dispatch_tui::process::RealProcessRunner;
+    let mut cache = dispatch_tui::repo_sync::RepoSyncCache::default();
+    for path in &paths {
+        let expanded = expand_tilde(path);
+        let measurement = tokio::task::block_in_place(|| {
+            dispatch_tui::repo_sync::measure_repo(&expanded, !no_fetch, &runner)
+        });
+        cache.apply(measurement);
+        // `measure_repo` keys the state by the path it was handed.
+        let Some(state) = cache.get(&expanded) else {
+            continue;
+        };
+        match state.counts {
+            Some(counts) => println!(
+                "{}\t{}\t\u{2191}{} \u{2193}{}",
+                state.repo_path, state.base_branch, counts.ahead, counts.behind
+            ),
+            None => match &state.last_fetch_error {
+                Some(err) => println!("{}\t{}\tunknown\t{err}", state.repo_path, state.base_branch),
+                None => println!("{}\t{}\tunknown", state.repo_path, state.base_branch),
+            },
+        }
+    }
+    Ok(())
+}
+
+/// `dispatch repo sync [<path>]` — sync one saved repo path or every one.
+///
+/// Every target is attempted; one failure does not abandon the rest. The exit
+/// code is non-zero when any target failed, so the command is usable from a
+/// script.
+async fn cmd_repo_sync(database: &db::Database, path: Option<String>) -> Result<()> {
+    let saved = database.list_repo_paths().await?;
+    let targets: Vec<String> = match &path {
+        Some(p) => {
+            let expanded = expand_tilde(p);
+            saved
+                .into_iter()
+                .filter(|s| expand_tilde(s) == expanded)
+                .collect()
+        }
+        None => saved,
+    };
+    if targets.is_empty() {
+        match path {
+            Some(p) => anyhow::bail!("{p} is not a saved repo path"),
+            None => anyhow::bail!("No repo paths configured."),
+        }
+    }
+
+    let runner = dispatch_tui::process::RealProcessRunner;
+    let mut failed = 0;
+    for target in &targets {
+        let expanded = expand_tilde(target);
+        let base = tokio::task::block_in_place(|| {
+            dispatch_tui::git::detect_default_branch(&expanded, &runner)
+        });
+        let result = tokio::task::block_in_place(|| {
+            dispatch_tui::repo_sync::sync_repo(&expanded, &base, &runner)
+        });
+        match result {
+            Ok(dispatch_tui::repo_sync::SyncOutcome::AlreadyInSync) => {
+                println!("{expanded}\t{base}\tnothing to do");
+            }
+            Ok(dispatch_tui::repo_sync::SyncOutcome::Synced { pulled, pushed }) => {
+                println!("{expanded}\t{base}\tpulled {pulled}, pushed {pushed}");
+            }
+            Err(e) => {
+                failed += 1;
+                eprintln!("{expanded}\t{base}\tfailed: {e}");
+            }
+        }
+    }
+    if failed > 0 {
+        anyhow::bail!("{failed} of {} repo(s) failed to sync", targets.len());
     }
     Ok(())
 }

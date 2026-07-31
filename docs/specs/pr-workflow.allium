@@ -183,7 +183,15 @@ rule WrapUpRebase {
         if was_conflict:
             task.sub_status = core/SubStatus.default_for(task.status)
             task.updated_at = now
-    ensures: BranchRebased(branch: branch, onto: task.base_branch)
+    -- repo_path travels on the event because the consumer
+    -- (RefreshRepoSyncStateAfterRebase in repo-sync.allium) needs the repository
+    -- whose base branch just moved, and a branch name alone does not identify
+    -- one.
+    ensures: BranchRebased(
+        branch: branch,
+        onto: task.base_branch,
+        repo_path: task.repo_path
+    )
 
     @guidance
         -- wrap_up(action="rebase") writes to the task ONLY on the branch that

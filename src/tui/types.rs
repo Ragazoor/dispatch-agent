@@ -185,6 +185,9 @@ pub enum Message {
     Pr(crate::tui::messages::PrMessage),
     /// Repo-filter overlay messages — see [`crate::tui::messages::RepoFilterMessage`].
     RepoFilter(crate::tui::messages::RepoFilterMessage),
+    /// Local-first repo sync messages — see
+    /// [`crate::tui::messages::RepoSyncMessage`].
+    RepoSync(crate::tui::messages::RepoSyncMessage),
     /// Wrap-up flow messages (rebase only — PR creation is agent-driven via the
     /// `/wrap-up` skill). See [`crate::tui::messages::WrapUpMessage`].
     WrapUp(crate::tui::messages::WrapUpMessage),
@@ -242,6 +245,9 @@ pub enum Command {
     },
     /// Repo-filter overlay side-effect commands — see [`crate::tui::commands::RepoFilterCommand`].
     RepoFilter(crate::tui::commands::RepoFilterCommand),
+    /// Local-first repo sync side-effect commands — see
+    /// [`crate::tui::commands::RepoSyncCommand`].
+    RepoSync(crate::tui::commands::RepoSyncCommand),
     /// PR flow side-effect commands — see [`crate::tui::commands::PrCommand`].
     Pr(crate::tui::commands::PrCommand),
     /// Tips persistence commands — see [`crate::tui::commands::TipsCommand`].
@@ -337,6 +343,13 @@ pub enum InputMode {
     ConfirmDeleteTodo,
     /// Board-pick mode: user browses the board to link this todo to a task/epic.
     LinkTodoToTask(TodoId),
+    /// Sync confirmation for one repository (docs/specs/repo-sync.allium:
+    /// surface RepoSyncConfirmation). Carries only the repo path: the
+    /// measurement itself is re-read from `App.repo_sync` at confirm time, so a
+    /// refresh that lands while the prompt is open cannot be acted on stale.
+    ConfirmRepoSync {
+        repo_path: String,
+    },
 }
 
 impl InputMode {

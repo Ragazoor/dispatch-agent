@@ -6,6 +6,8 @@
 //! [`ProcessRunner`]-driven, with no TUI or database coupling, so the same three
 //! operations back the board action and the CLI.
 
+use std::collections::HashMap;
+
 use crate::models::expand_tilde;
 use crate::process::{stderr_str, stdout_str, ProcessRunner, SUBPROCESS_TIMEOUT};
 
@@ -307,6 +309,145 @@ pub fn sync_repo(
         pulled: counts.behind,
         pushed: ahead,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Measurement state — the `RepoSyncState` entity and its per-repo cache
+// ---------------------------------------------------------------------------
+
+/// The current drift measurement for one repository (spec: entity
+/// `RepoSyncState`).
+///
+/// A measurement, not a record: every consumer establishes it for itself — the
+/// board refreshes it on the trigger events, the CLI computes it when it runs —
+/// so it crosses no process boundary and is never persisted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoSyncState {
+    /// Absolute path to the repository's primary checkout; identifies the
+    /// measurement.
+    pub repo_path: String,
+    /// The repository's own default branch, as measured.
+    pub base_branch: String,
+    /// `None` when `origin/<base_branch>` could not be measured at all.
+    pub counts: Option<AheadBehind>,
+    /// Message from the most recent failed fetch; cleared once a fetch succeeds.
+    pub last_fetch_error: Option<String>,
+}
+
+impl RepoSyncState {
+    /// Whether the repository could be measured. An unmeasured repository is
+    /// distinct from a clean one and must never be presented as clean
+    /// (`UnmeasuredIsNeverPresentedAsClean`).
+    pub fn is_measured(&self) -> bool {
+        self.counts.is_some()
+    }
+
+    /// Drift the user can act on. False both when clean and when unmeasured.
+    pub fn has_drift(&self) -> bool {
+        self.counts.is_some_and(|c| c.has_drift())
+    }
+}
+
+/// One refresh observation, before it is folded into the cached state.
+///
+/// Kept apart from [`RepoSyncState`] because a failed fetch must record only its
+/// error and leave the previously known counts alone — a merge the observation
+/// itself cannot perform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoSyncMeasurement {
+    pub repo_path: String,
+    pub base_branch: String,
+    pub counts: Option<AheadBehind>,
+    pub fetch_error: Option<String>,
+}
+
+/// The per-repository measurement cache, keyed by `repo_path`.
+///
+/// Keying by path is what enforces `UniqueMeasurementPerRepo`: a repeated
+/// refresh replaces the repository's measurement rather than adding a second.
+#[derive(Debug, Default, Clone)]
+pub struct RepoSyncCache(HashMap<String, RepoSyncState>);
+
+impl RepoSyncCache {
+    /// The measurement for `repo_path`, or `None` when it has never been
+    /// refreshed.
+    pub fn get(&self, repo_path: &str) -> Option<&RepoSyncState> {
+        self.0.get(repo_path)
+    }
+
+    /// Number of repositories measured.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether no repository has been measured yet.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Fold one observation in, per the `RefreshRepoSyncState` rule: create the
+    /// state on a first observation; on a later one, a failed fetch records only
+    /// the error (keeping the previously known counts, so a slow or offline
+    /// network leaves the drift indicator undisturbed) while a successful fetch
+    /// replaces the branch, the counts and clears the error.
+    pub fn apply(&mut self, m: RepoSyncMeasurement) {
+        match self.0.get_mut(&m.repo_path) {
+            None => {
+                self.0.insert(
+                    m.repo_path.clone(),
+                    RepoSyncState {
+                        repo_path: m.repo_path,
+                        base_branch: m.base_branch,
+                        counts: m.counts,
+                        last_fetch_error: m.fetch_error,
+                    },
+                );
+            }
+            Some(state) => {
+                if m.fetch_error.is_some() {
+                    state.last_fetch_error = m.fetch_error;
+                } else {
+                    state.base_branch = m.base_branch;
+                    state.counts = m.counts;
+                    state.last_fetch_error = None;
+                }
+            }
+        }
+    }
+}
+
+/// Measure one repository: resolve its own default branch, optionally fetch, and
+/// read the two-sided count from the refreshed refs.
+///
+/// This is the measurement half of `RefreshRepoSyncState`. `fetch_first` is true
+/// only for the TUI's startup refresh and for `dispatch repo status` without
+/// `--no-fetch`; every other caller rides refs some other operation just
+/// refreshed, making this a pure local ref read.
+///
+/// A failed fetch yields the error and *no* counts: counting against refs this
+/// call failed to refresh is exactly what `FetchPrecedesCounting` forbids.
+pub fn measure_repo(
+    repo_path: &str,
+    fetch_first: bool,
+    runner: &dyn ProcessRunner,
+) -> RepoSyncMeasurement {
+    let base_branch = crate::git::detect_default_branch(repo_path, runner);
+    let fetch_error = if fetch_first {
+        fetch_base(repo_path, &base_branch, runner).err()
+    } else {
+        None
+    };
+    let counts = if fetch_error.is_none() {
+        ahead_behind(repo_path, &base_branch, runner)
+    } else {
+        None
+    };
+    RepoSyncMeasurement {
+        repo_path: repo_path.to_string(),
+        base_branch,
+        counts,
+        fetch_error,
+    }
 }
 
 #[cfg(test)]
@@ -946,6 +1087,411 @@ mod tests {
                 assert!(
                     !args.iter().any(|a| a == forbidden),
                     "sync must never rewrite local history, but ran: {program} {args:?}"
+                );
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // RepoSyncState — fields, optional fields, derived values
+    // ---------------------------------------------------------------------
+
+    fn measured_state(ahead: u32, behind: u32) -> RepoSyncState {
+        RepoSyncState {
+            repo_path: REPO.to_string(),
+            base_branch: BASE.to_string(),
+            counts: Some(AheadBehind { ahead, behind }),
+            last_fetch_error: None,
+        }
+    }
+
+    fn unmeasured_state() -> RepoSyncState {
+        RepoSyncState {
+            repo_path: REPO.to_string(),
+            base_branch: BASE.to_string(),
+            counts: None,
+            last_fetch_error: None,
+        }
+    }
+
+    #[test]
+    fn repo_sync_state_carries_every_declared_field() {
+        let state = RepoSyncState {
+            repo_path: REPO.to_string(),
+            base_branch: "master".to_string(),
+            counts: Some(AheadBehind {
+                ahead: 3,
+                behind: 1,
+            }),
+            last_fetch_error: Some("offline".to_string()),
+        };
+        assert_eq!(state.repo_path, REPO);
+        assert_eq!(state.base_branch, "master");
+        assert_eq!(
+            state.counts,
+            Some(AheadBehind {
+                ahead: 3,
+                behind: 1
+            })
+        );
+        assert_eq!(state.last_fetch_error.as_deref(), Some("offline"));
+    }
+
+    // entity-optional.RepoSyncState.counts / .last_fetch_error
+    #[test]
+    fn repo_sync_state_optional_fields_accept_null_and_non_null() {
+        let mut state = unmeasured_state();
+        assert_eq!(state.counts, None);
+        assert_eq!(state.last_fetch_error, None);
+        state.counts = Some(AheadBehind {
+            ahead: 0,
+            behind: 0,
+        });
+        state.last_fetch_error = Some("boom".to_string());
+        assert!(state.counts.is_some());
+        assert!(state.last_fetch_error.is_some());
+    }
+
+    // derived.RepoSyncState.is_measured
+    #[test]
+    fn repo_sync_state_is_measured_only_with_counts() {
+        assert!(measured_state(0, 0).is_measured());
+        assert!(!unmeasured_state().is_measured());
+    }
+
+    // derived.RepoSyncState.has_drift — false both when clean and when
+    // unmeasured (UnmeasuredIsNeverPresentedAsClean).
+    #[test]
+    fn repo_sync_state_has_drift_is_false_when_clean_and_when_unmeasured() {
+        assert!(!measured_state(0, 0).has_drift());
+        assert!(!unmeasured_state().has_drift());
+        assert!(measured_state(1, 0).has_drift());
+        assert!(measured_state(0, 1).has_drift());
+        assert!(measured_state(2, 3).has_drift());
+    }
+
+    // invariant.RepoSyncState.CountsAreNonNegative — the counts are unsigned, so
+    // a negative count is unrepresentable rather than merely unexpected.
+    #[test]
+    fn repo_sync_state_counts_are_non_negative_by_construction() {
+        let state = measured_state(7, 5);
+        let counts = state.counts.expect("measured");
+        // Widened to a signed type so the assertion is a real comparison rather
+        // than one the unsigned range makes vacuously true.
+        assert!(i64::from(counts.ahead) >= 0 && i64::from(counts.behind) >= 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // RepoSyncCache — UniqueMeasurementPerRepo
+    // ---------------------------------------------------------------------
+
+    fn measurement(
+        repo: &str,
+        counts: Option<AheadBehind>,
+        err: Option<&str>,
+    ) -> RepoSyncMeasurement {
+        RepoSyncMeasurement {
+            repo_path: repo.to_string(),
+            base_branch: BASE.to_string(),
+            counts,
+            fetch_error: err.map(str::to_string),
+        }
+    }
+
+    // invariant.RepoSyncState.UniqueMeasurementPerRepo: repeated refreshes of one
+    // repo replace the measurement rather than accumulating a second one.
+    #[test]
+    fn cache_keeps_at_most_one_measurement_per_repo() {
+        let mut cache = RepoSyncCache::default();
+        cache.apply(measurement(
+            REPO,
+            Some(AheadBehind {
+                ahead: 1,
+                behind: 0,
+            }),
+            None,
+        ));
+        cache.apply(measurement(
+            REPO,
+            Some(AheadBehind {
+                ahead: 2,
+                behind: 0,
+            }),
+            None,
+        ));
+        cache.apply(measurement(
+            "/other",
+            Some(AheadBehind {
+                ahead: 9,
+                behind: 9,
+            }),
+            None,
+        ));
+        assert_eq!(cache.len(), 2, "one entry per repo_path, not per refresh");
+        assert_eq!(
+            cache.get(REPO).and_then(|s| s.counts),
+            Some(AheadBehind {
+                ahead: 2,
+                behind: 0
+            }),
+            "the later measurement wins"
+        );
+    }
+
+    #[test]
+    fn cache_has_no_state_for_an_unrefreshed_repo() {
+        let cache = RepoSyncCache::default();
+        assert!(cache.get(REPO).is_none());
+    }
+
+    // rule-success.RefreshRepoSyncState — first observation creates the state
+    // with the counts that were read.
+    #[test]
+    fn cache_creates_state_from_a_first_successful_measurement() {
+        let mut cache = RepoSyncCache::default();
+        cache.apply(measurement(
+            REPO,
+            Some(AheadBehind {
+                ahead: 3,
+                behind: 1,
+            }),
+            None,
+        ));
+        let state = cache.get(REPO).expect("state created");
+        assert_eq!(state.repo_path, REPO);
+        assert_eq!(state.base_branch, BASE);
+        assert_eq!(
+            state.counts,
+            Some(AheadBehind {
+                ahead: 3,
+                behind: 1
+            })
+        );
+        assert_eq!(state.last_fetch_error, None);
+    }
+
+    // A first observation whose fetch failed creates an *unmeasured* state
+    // carrying the error — never a zero/zero pair.
+    #[test]
+    fn cache_creates_unmeasured_state_when_the_first_fetch_failed() {
+        let mut cache = RepoSyncCache::default();
+        cache.apply(measurement(REPO, None, Some("offline")));
+        let state = cache.get(REPO).expect("state created");
+        assert_eq!(state.counts, None);
+        assert!(!state.is_measured());
+        assert!(!state.has_drift());
+        assert_eq!(state.last_fetch_error.as_deref(), Some("offline"));
+    }
+
+    // RefreshRepoSyncState's `else if fetch_error != null` branch: previously
+    // known counts survive a failed fetch, so a slow or offline network leaves
+    // the drift indicator undisturbed rather than blanking it.
+    #[test]
+    fn cache_keeps_previous_counts_when_a_later_fetch_fails() {
+        let mut cache = RepoSyncCache::default();
+        cache.apply(measurement(
+            REPO,
+            Some(AheadBehind {
+                ahead: 3,
+                behind: 1,
+            }),
+            None,
+        ));
+        cache.apply(measurement(REPO, None, Some("offline")));
+        let state = cache.get(REPO).expect("state still present");
+        assert_eq!(
+            state.counts,
+            Some(AheadBehind {
+                ahead: 3,
+                behind: 1
+            }),
+            "a failed fetch records only the error"
+        );
+        assert_eq!(state.last_fetch_error.as_deref(), Some("offline"));
+    }
+
+    // The success branch clears a stale fetch error and re-reads base_branch.
+    #[test]
+    fn cache_clears_the_fetch_error_once_a_fetch_succeeds() {
+        let mut cache = RepoSyncCache::default();
+        cache.apply(measurement(REPO, None, Some("offline")));
+        let mut ok = measurement(
+            REPO,
+            Some(AheadBehind {
+                ahead: 0,
+                behind: 2,
+            }),
+            None,
+        );
+        ok.base_branch = "master".to_string();
+        cache.apply(ok);
+        let state = cache.get(REPO).expect("state present");
+        assert_eq!(state.last_fetch_error, None);
+        assert_eq!(state.base_branch, "master");
+        assert_eq!(
+            state.counts,
+            Some(AheadBehind {
+                ahead: 0,
+                behind: 2
+            })
+        );
+    }
+
+    // A successful fetch that still cannot be counted blanks the counts back to
+    // unknown rather than leaving a stale measurement in place.
+    #[test]
+    fn cache_marks_unmeasured_when_a_successful_fetch_cannot_be_counted() {
+        let mut cache = RepoSyncCache::default();
+        cache.apply(measurement(
+            REPO,
+            Some(AheadBehind {
+                ahead: 3,
+                behind: 1,
+            }),
+            None,
+        ));
+        cache.apply(measurement(REPO, None, None));
+        let state = cache.get(REPO).expect("state present");
+        assert_eq!(state.counts, None);
+        assert!(!state.is_measured());
+    }
+
+    // ---------------------------------------------------------------------
+    // measure_repo — RefreshRepoSyncState's measurement half
+    // ---------------------------------------------------------------------
+
+    // BaseBranchIsTheRepositoryDefault: the branch measured is the repository's
+    // own origin/HEAD, so a `master` repository works unchanged.
+    #[test]
+    fn measure_repo_uses_the_repositorys_own_default_branch() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/master\n"), // symbolic-ref
+            MockProcessRunner::ok(),                                            // fetch
+            MockProcessRunner::ok_with_stdout(b"2\t0\n"),                       // rev-list
+        ]);
+        let m = measure_repo(REPO, true, &mock);
+        assert_eq!(m.base_branch, "master");
+        assert!(mock
+            .recorded_calls()
+            .iter()
+            .any(|(_, args)| args.contains(&"master...origin/master".to_string())));
+    }
+
+    // FetchPrecedesCounting: the fetch is issued before the rev-list it makes
+    // trustworthy.
+    #[test]
+    fn measure_repo_fetches_before_counting() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok(),
+            MockProcessRunner::ok_with_stdout(b"3\t1\n"),
+        ]);
+        let m = measure_repo(REPO, true, &mock);
+        assert_eq!(
+            m.counts,
+            Some(AheadBehind {
+                ahead: 3,
+                behind: 1
+            })
+        );
+        assert_eq!(m.fetch_error, None);
+        let calls = mock.recorded_calls();
+        let fetch_at = calls
+            .iter()
+            .position(|(_, a)| a.contains(&"fetch".to_string()))
+            .expect("a fetching refresh fetches");
+        let count_at = calls
+            .iter()
+            .position(|(_, a)| a.contains(&"rev-list".to_string()))
+            .expect("counts are read");
+        assert!(fetch_at < count_at, "counts must follow the fetch");
+    }
+
+    // fetch_first = false is a pure local ref read: no network call at all.
+    #[test]
+    fn measure_repo_skips_the_fetch_when_not_asked_to_fetch() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok_with_stdout(b"0\t2\n"),
+        ]);
+        let m = measure_repo(REPO, false, &mock);
+        assert_eq!(
+            m.counts,
+            Some(AheadBehind {
+                ahead: 0,
+                behind: 2
+            })
+        );
+        assert_eq!(m.fetch_error, None);
+        assert!(
+            !mock
+                .recorded_calls()
+                .iter()
+                .any(|(_, a)| a.contains(&"fetch".to_string())),
+            "a non-fetching refresh must not touch the network"
+        );
+    }
+
+    // A failed fetch yields the error and NO counts — counting against refs the
+    // refresh failed to update is what FetchPrecedesCounting forbids.
+    #[test]
+    fn measure_repo_reports_the_fetch_error_and_reads_no_counts() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::fail("could not resolve host github.com"),
+        ]);
+        let m = measure_repo(REPO, true, &mock);
+        assert_eq!(m.counts, None);
+        let err = m.fetch_error.expect("a failed fetch is reported");
+        assert!(
+            err.contains("could not resolve host"),
+            "expected git's own message, got: {err}"
+        );
+        assert!(
+            !mock
+                .recorded_calls()
+                .iter()
+                .any(|(_, a)| a.contains(&"rev-list".to_string())),
+            "no counts may be read after a failed fetch"
+        );
+    }
+
+    // UnmeasurableIsNotInSync, at the measurement boundary.
+    #[test]
+    fn measure_repo_yields_no_counts_for_an_unmeasurable_repo() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok(),
+            MockProcessRunner::fail("fatal: unknown revision"),
+        ]);
+        let m = measure_repo(REPO, true, &mock);
+        assert_eq!(m.counts, None);
+        assert_eq!(m.fetch_error, None, "the fetch itself succeeded");
+    }
+
+    #[test]
+    fn measure_repo_names_the_repository_it_measured() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok_with_stdout(b"0\t0\n"),
+        ]);
+        assert_eq!(measure_repo(REPO, false, &mock).repo_path, REPO);
+    }
+
+    // RepoStatusCli @guarantee ReadOnly: measuring never merges or pushes.
+    #[test]
+    fn measure_repo_never_merges_or_pushes() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok(),
+            MockProcessRunner::ok_with_stdout(b"3\t1\n"),
+        ]);
+        measure_repo(REPO, true, &mock);
+        for (program, args) in mock.recorded_calls() {
+            for forbidden in ["merge", "push", "rebase", "reset"] {
+                assert!(
+                    !args.iter().any(|a| a == forbidden),
+                    "measuring must be read-only, but ran: {program} {args:?}"
                 );
             }
         }

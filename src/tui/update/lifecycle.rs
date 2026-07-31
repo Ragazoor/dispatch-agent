@@ -266,6 +266,7 @@ impl App {
             // if `Dispatched` handling ever moved behind slower work.
             task.last_pre_tool_use_at = Some(chrono::Utc::now());
             let task_clone = task.clone();
+            let repo_path = task_clone.repo_path.clone();
             self.sync_board_selection();
             let mut cmds = vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
                 task_clone,
@@ -277,6 +278,10 @@ impl App {
                     },
                 ));
             }
+            // RefreshRepoSyncStateAfterDispatch: provisioning the worktree already
+            // fetched origin/<base> for this repository, so this is a local ref
+            // read with no network cost.
+            cmds.push(Self::refresh_repo_sync_command(repo_path));
             cmds
         } else {
             vec![]

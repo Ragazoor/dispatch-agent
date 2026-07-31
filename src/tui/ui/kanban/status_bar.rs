@@ -65,6 +65,55 @@ fn main_session_badge(app: &App) -> Option<Vec<Span<'static>>> {
     )])
 }
 
+/// Build the repo-drift segment for the status bar, or `None` when it should be
+/// hidden (docs/specs/repo-sync.allium: surface RepoDriftIndicator).
+///
+/// Rendered only for a *measured* repository with real drift: no selected task,
+/// an unmeasurable repository and a clean one all yield nothing, so the segment
+/// can never claim "in sync" about a repository it could not measure
+/// (`UnmeasuredIsNeverPresentedAsClean`). Any `behind > 0` is styled as a
+/// warning — that is the direction that will bite the next rebase — while
+/// ahead-only is neutral, being the normal state after every rebase wrap-up.
+pub(in crate::tui) fn repo_drift_segment(
+    state: Option<&crate::repo_sync::RepoSyncState>,
+) -> Option<Vec<Span<'static>>> {
+    let state = state?;
+    let counts = state.counts?;
+    if !counts.has_drift() {
+        return None;
+    }
+    let color = if counts.behind > 0 {
+        Color::Yellow
+    } else {
+        MUTED
+    };
+    Some(vec![Span::styled(
+        format!(
+            "{} \u{2191}{}\u{2193}{} ",
+            state.base_branch, counts.ahead, counts.behind
+        ),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    )])
+}
+
+/// The sync confirmation prompt for one repository
+/// (docs/specs/repo-sync.allium: surface RepoSyncConfirmation).
+///
+/// Names the operations that will actually run against origin, with their commit
+/// counts, and no others: a half that will not run is not mentioned
+/// (`PromptStatesExactlyWhatWillHappen`).
+pub(in crate::tui) fn repo_sync_prompt_text(state: &crate::repo_sync::RepoSyncState) -> String {
+    let (ahead, behind) = state.counts.map_or((0, 0), |c| (c.ahead, c.behind));
+    let mut halves: Vec<String> = Vec::new();
+    if behind > 0 {
+        halves.push(format!("merge {behind} from origin"));
+    }
+    if ahead > 0 {
+        halves.push(format!("push {ahead} to origin"));
+    }
+    format!("Sync {}: {}? [y/n]", state.base_branch, halves.join(", "))
+}
+
 /// Compute the status bar content (a styled `Line` plus a base paragraph style)
 /// for the current app state. Rendering happens once, in `render_status_bar`.
 ///
@@ -203,6 +252,9 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::ConfirmTrustRepo { .. } | InputMode::ConfirmTrustRepoQuickDispatch { .. } => {
             hint_text(app, "Repo not trusted — trust it? [y/N]", Color::Yellow)
         }
+        InputMode::ConfirmRepoSync { .. } => {
+            hint_text(app, "Sync repo with origin? [y/n]", Color::Yellow)
+        }
     }
 }
 
@@ -281,6 +333,9 @@ fn normal_status_line(app: &App) -> (Line<'static>, Style) {
                 Style::default().fg(CYAN).add_modifier(Modifier::BOLD),
             )],
         );
+    }
+    if let Some(segment) = repo_drift_segment(app.selected_repo_sync_state()) {
+        prepend(&mut spans, segment);
     }
     if let Some(badge) = main_session_badge(app) {
         prepend(&mut spans, badge);

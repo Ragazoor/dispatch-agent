@@ -343,16 +343,14 @@ rule RefreshRepoSyncStateAfterDispatch {
 }
 
 rule RefreshRepoSyncStateAfterRebase {
-    when: BranchRebased(branch, onto)
+    -- The event names the repository whose base branch just moved. It is carried
+    -- on the event rather than resolved from the branch here, because a branch
+    -- name is not unique across repositories: a branch-keyed worktree lookup
+    -- would be ambiguous the moment two repositories carry the same branch
+    -- name, and the emitters already hold the task that names the repository.
+    when: BranchRebased(_, _, repo_path)
 
-    -- The rebased branch identifies the worktree, which identifies the task,
-    -- which names the repository whose base branch just moved.
-    let worktree = core/Worktree{branch: branch}
-    let task = core/Task{worktree: worktree}
-
-    requires: exists task
-
-    ensures: RefreshRepoSyncState(repo_path: task.repo_path, fetch_first: false)
+    ensures: RefreshRepoSyncState(repo_path: repo_path, fetch_first: false)
 
     @guidance
         -- A successful rebase wrap-up pulled origin/<base> and then
@@ -504,6 +502,19 @@ rule ReportRepoSyncFailure {
         -- repository: the merge has already been committed locally and stays
         -- there. That is precisely why retrying the same action is the fix — the
         -- merge is never repeated, only the publishing step is.
+        --
+        -- No refresh follows a failure. RepoSyncFinished is ensured by a
+        -- completed SyncRepo, not by a failed one, so RefreshRepoSyncStateAfterSync
+        -- does not fire here. For every failure that leaves the repository as it
+        -- found it, that is exactly right: there is nothing new to measure. The
+        -- push_rejected-on-a-diverged-repo exception is the one case where the
+        -- displayed measurement goes stale — the local merge commit has moved
+        -- ahead beyond the count the indicator still shows — and it is left
+        -- deliberately: the retry the failure asks for measures it anew, and so
+        -- does the next dispatch or rebase in that repository. The indicator
+        -- understating ahead is a strictly smaller nag than the truth, never a
+        -- claim of cleanliness (UnmeasuredIsNeverPresentedAsClean is untouched:
+        -- the counts are real, merely older).
 }
 
 -- == Board action ==
@@ -803,4 +814,21 @@ surface RepoSyncCli {
 -- Open Questions
 ------------------------------------------------------------
 
--- (none)
+-- RefreshRepoSyncStateAfterDispatch fires on AgentLaunched(task, _), but only
+-- three of the five launch paths currently refresh. Needs an operator decision,
+-- because the two gaps are not the same kind of gap:
+--
+--   * The MCP dispatch_task tool (and the epic auto-dispatch chaining built on
+--     it) runs the same provisioning as the board's own dispatch — the worktree
+--     is created and origin/<base> fetched — so the rule's stated rationale
+--     applies verbatim and the missing refresh reads as a code gap. Closing it
+--     needs a repo-sync-shaped MCP notification alongside the existing
+--     notify_task_changed, mirroring notify_branch_rebased.
+--   * Resume (ResumeTask / RetryResume, mode = resume) provisions no worktree
+--     and performs no fetch, so a refresh there would re-read exactly the refs
+--     the previous measurement already read. Here it is arguably the `_` mode
+--     wildcard that over-claims, and the honest fix is to narrow this rule to
+--     the provisioning modes rather than to add a refresh.
+--
+-- Resolve both together: narrowing the wildcard on its own would silently
+-- absolve the MCP gap.

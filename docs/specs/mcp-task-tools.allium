@@ -569,7 +569,15 @@ rule WrapUpViaMcp {
     -- travels with exit_session instead.
     ensures:
         if action = rebase:
-            BranchRebased(branch: task.worktree.branch, onto: task.base_branch)
+            -- repo_path travels on the event because its consumer
+            -- (RefreshRepoSyncStateAfterRebase in repo-sync.allium) needs the
+            -- repository whose base branch just moved, and a branch name alone
+            -- does not identify one.
+            BranchRebased(
+                branch: task.worktree.branch,
+                onto: task.base_branch,
+                repo_path: task.repo_path
+            )
             issue_exit_token(task, rebase)
         else if action = done:
             issue_exit_token(task, done)

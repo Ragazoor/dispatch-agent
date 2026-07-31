@@ -209,6 +209,9 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
             // reflects the merged code.
             reindex_repo_in_background(state, task.repo_path.clone());
             state.notify_task_changed(task_id);
+            // Local base provably just moved ahead of origin, and the refs are
+            // already current — RefreshRepoSyncStateAfterRebase.
+            state.notify_branch_rebased(&task.repo_path);
             let (verify_line, token, exit_line) =
                 issue_wrap_up_token(state, task_id, &task.repo_path, WrapUpAction::Rebase).await;
             JsonRpcResponse::ok(

@@ -38,6 +38,7 @@
 | `A` | Toggle filter: show only tasks with an active tmux session |
 | `N` | Toggle notification panel |
 | `:` | Open the main session — jump to it if its tmux window is alive, otherwise pick a directory (reconfigure) and open it there. The status bar shows a passive badge: `● main` when the session is running, `○ main` when a directory is configured but no session is running |
+| `o` | Sync the selected task's repository with origin on its default branch: merge whatever it is behind by, push whatever it is ahead by, after a confirmation. Offered only while the status bar's drift segment is lit (`main ↑3↓1`); a clean or unmeasurable repository shows no segment and the key does nothing. See `docs/specs/repo-sync.allium` |
 
 ### Epics
 
@@ -82,7 +83,16 @@ dispatch tui
 dispatch update <task-id> <status>
 dispatch list [--status <status>]
 dispatch plan <task-id> <plan-path>
+
+# Local-first repo sync (see docs/specs/repo-sync.allium)
+dispatch repo status [--no-fetch]   # one drift row per saved repo path; read-only
+dispatch repo sync [<path>]         # sync one saved repo path, or every one
 ```
+
+`repo status` fetches before measuring so its counts are current; `--no-fetch`
+reports whatever the local refs say. A repository that cannot be measured shows
+`unknown` rather than any ahead/behind figure — it is never reported as clean.
+`repo sync` attempts every target and exits non-zero if any of them failed.
 
 Tasks are created via the MCP `create_task` tool — there is no CLI
 subcommand for task creation.

@@ -304,10 +304,12 @@ fn dispatched_sets_fields_and_transitions_to_running() {
             .num_seconds()
             < 5
     );
-    // Persist only. No SeedActivity: the pre-provisioning claim already wrote
-    // the activity stamp, so re-writing it here would be redundant — and would
-    // clobber a real hook stamp if this handling ever ran later than it does.
-    assert_eq!(cmds.len(), 1, "got: {cmds:?}");
+    // Persist plus the trailing repo-sync refresh
+    // (docs/specs/repo-sync.allium: RefreshRepoSyncStateAfterDispatch).
+    // No SeedActivity: the pre-provisioning claim already wrote the activity
+    // stamp, so re-writing it here would be redundant — and would clobber a
+    // real hook stamp if this handling ever ran later than it does.
+    assert_eq!(cmds.len(), 2, "got: {cmds:?}");
     let Command::Task(crate::tui::commands::TaskCommand::Persist(persisted)) = &cmds[0] else {
         panic!("expected Persist command, got {:?}", cmds[0]);
     };
@@ -334,7 +336,8 @@ fn dispatched_with_switch_focus_emits_jump() {
             switch_focus: true,
         },
     ));
-    assert_eq!(cmds.len(), 2, "got: {cmds:?}");
+    // Persist, JumpToTmux, and the trailing repo-sync refresh.
+    assert_eq!(cmds.len(), 3, "got: {cmds:?}");
     assert!(matches!(
         &cmds[0],
         Command::Task(crate::tui::commands::TaskCommand::Persist(_))

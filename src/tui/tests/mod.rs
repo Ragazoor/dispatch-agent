@@ -15,6 +15,7 @@ mod navigation;
 mod render_dirty;
 mod rendering;
 mod repo_filter;
+mod repo_sync;
 mod search;
 mod split_pane;
 mod targeted_refresh;

@@ -7,6 +7,11 @@ pub mod todos;
 
 pub(in crate::tui) use kanban::build_reparent_tree;
 pub use kanban::render;
+pub(in crate::tui) use kanban::repo_sync_prompt_text;
+// Only the status bar itself renders the drift segment; the re-export exists so
+// the surface's guarantees can be asserted directly.
+#[cfg(test)]
+pub(in crate::tui) use kanban::repo_drift_segment;
 pub(in crate::tui) use shared::caret_field_line;
 pub use shared::{refresh_status, truncate};
 

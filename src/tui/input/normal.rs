@@ -428,6 +428,16 @@ impl App {
                 ]
             }
 
+            // [o] for origin: open the sync confirmation for the selected task's
+            // repository (docs/specs/repo-sync.allium: rule PromptRepoSync).
+            // Offered only while the drift segment is lit; with no drift the key
+            // does nothing. [O] is left unbound for a future sync-all.
+            KeyCode::Char('o') => self.dispatch_keyed(
+                Message::RepoSync(crate::tui::messages::RepoSyncMessage::OpenPrompt),
+                "open_repo_sync_prompt",
+                "o",
+            ),
+
             KeyCode::Char('g') => {
                 // Start a pending `gg` chord; resolved by the next keypress
                 // (above) or by `handle_tick` if the user goes idle.

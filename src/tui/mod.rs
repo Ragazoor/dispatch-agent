@@ -270,6 +270,10 @@ pub struct App {
     /// Recomputed once in `handle_repo_paths_updated` so the render path is
     /// never blocked by filesystem syscalls on every frame.
     pub(in crate::tui) broken_repo_paths: HashSet<String>,
+    /// Per-repository drift measurements, keyed by repo path
+    /// (docs/specs/repo-sync.allium: entity RepoSyncState). Purely in-memory:
+    /// every refresh point re-establishes it, and nothing is persisted.
+    pub(in crate::tui) repo_sync: crate::repo_sync::RepoSyncCache,
     /// Wall-clock of the last stale-learning cleanup sweep. `None` = never run.
     /// `handle_tick` emits `LearningCommand::ArchiveStale` at most once per
     /// [`STALE_CLEANUP_INTERVAL`] by consulting this. See
@@ -459,6 +463,7 @@ impl App {
             managed_feed_settings: ManagedFeedSettings::default(),
             interaction: InteractionState::default(),
             broken_repo_paths: HashSet::new(),
+            repo_sync: crate::repo_sync::RepoSyncCache::default(),
             last_stale_cleanup_at: None,
         };
         // Prime all caches so the first render is a cache hit instead of recomputing.

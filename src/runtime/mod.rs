@@ -307,6 +307,7 @@ mod epics;
 mod learnings;
 mod managed_feeds;
 mod pr;
+mod repo_sync;
 mod settings;
 mod split;
 mod tasks;
@@ -473,6 +474,12 @@ impl TuiRuntime {
         // Load initial todo open-count so the board footer shows it immediately.
         runtime.exec_load_todo_count(&mut app).await;
 
+        // RefreshRepoSyncStateOnStartup: the only genuinely new network traffic
+        // this feature introduces — one fetch per saved repo path. Fire-and-forget,
+        // so a slow or offline network never delays startup.
+        let saved_repo_paths = app.repo_paths().to_vec();
+        drop(runtime.exec_refresh_all_repo_sync(&saved_repo_paths));
+
         Ok(Bootstrap {
             app,
             runtime,
@@ -593,6 +600,15 @@ fn apply_loop_event(app: &mut App, event: LoopEvent, rt: &TuiRuntime) -> Vec<Com
                     // for feed commands (e.g. a newly added feed_command becomes visible).
                     rt.invalidate_feed_cache();
                     drop(rt.spawn_refresh_epic(epic_id));
+                    vec![]
+                }
+                mcp::McpEvent::BranchRebased { repo_path } => {
+                    // A rebase wrap-up pulled origin/<base> and fast-forwarded
+                    // local <base>, so the refs are current and no fetch is
+                    // needed. An unresolved repository measures nothing.
+                    if !repo_path.is_empty() {
+                        drop(rt.exec_refresh_repo_sync(repo_path, false));
+                    }
                     vec![]
                 }
                 mcp::McpEvent::MessageSent { to_task_id } => {

@@ -23,7 +23,7 @@ expression: rendered
                         ║  [v] select  [f] filter repos  [A] filter active  [W] wrap up        ║
                         ║  [T] detach tmux panel  (any task with a tmux window, supports batch)║
                         ║  [s] toggle split  [S] swap task into pane                           ║
-                        ║  [p] open PR in browser  [:] main session (jump / pick dir)          ║
+                        ║  [p] open PR  [:] main session (jump/pick dir)  [o] sync repo        ║
                         ║  [J/K] reorder item up/down  [C] feed config  [P] todo (a add · space║
                         ║                                                                      ║
                         ║  * [d] is context-dependent:                                         ║

@@ -110,6 +110,9 @@ impl App {
                 InputMode::ConfirmTrustRepoQuickDispatch { draft, epic_id } => {
                     self.handle_key_confirm_trust_repo_quick_dispatch(key, draft, epic_id)
                 }
+                InputMode::ConfirmRepoSync { repo_path } => {
+                    self.handle_key_confirm_repo_sync(key, repo_path)
+                }
             }
         };
 

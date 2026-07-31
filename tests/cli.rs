@@ -1203,3 +1203,175 @@ async fn toggle_agent_tree_pane_never_fails_without_a_real_tmux_session() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---------------------------------------------------------------------------
+// repo status / repo sync (docs/specs/repo-sync.allium)
+// ---------------------------------------------------------------------------
+
+/// Seed a repo path into the DB via `repo set-verify`, which creates the row.
+fn seed_repo_path(db_arg: &str, path: &str) {
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_dispatch"))
+        .args(["--db", db_arg, "repo", "set-verify", path, "true"])
+        .status()
+        .unwrap();
+    assert!(status.success(), "seeding {path} should succeed");
+}
+
+// surface-provides.RepoStatusCli — the command exists and is read-only.
+#[test]
+fn repo_status_reports_no_paths_for_an_empty_db() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let out = binary()
+        .args(["--db", tmp.path().to_str().unwrap(), "repo", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("No repo paths configured."),
+        "got: {stdout}"
+    );
+}
+
+// @guarantee UnmeasuredRowsShowNoCounts + UnmeasuredIsNeverPresentedAsClean: a
+// repository that cannot be measured shows no ahead/behind figures and reports
+// its fetch error instead.
+#[test]
+fn repo_status_row_for_an_unmeasurable_repo_shows_no_counts() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db_arg = tmp.path().to_str().unwrap();
+    let missing = "/tmp/dispatch-test-not-a-repo-77777";
+    seed_repo_path(db_arg, missing);
+
+    let out = binary()
+        .args(["--db", db_arg, "repo", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "measuring is read-only and never fails the command; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(missing), "the row names the repo: {stdout}");
+    assert!(
+        stdout.contains("unknown"),
+        "an unmeasurable repo reads as unknown, never as in sync: {stdout}"
+    );
+    assert!(
+        !stdout.contains('\u{2191}') && !stdout.contains('\u{2193}'),
+        "no ahead/behind figures may be quoted: {stdout}"
+    );
+}
+
+// @guarantee FetchesUnlessSuppressed — the default fetches, so a repository
+// whose fetch fails reports that error.
+#[test]
+fn repo_status_fetches_by_default_and_reports_the_fetch_error() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db_arg = tmp.path().to_str().unwrap();
+    let missing = "/tmp/dispatch-test-not-a-repo-77778";
+    seed_repo_path(db_arg, missing);
+
+    let out = binary()
+        .args(["--db", db_arg, "repo", "status"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.to_lowercase().contains("fetch"),
+        "expected the fetch failure in the row, got: {stdout}"
+    );
+}
+
+// @guarantee FetchesUnlessSuppressed — --no-fetch skips the fetch, so there is
+// no fetch error to report.
+#[test]
+fn repo_status_no_fetch_skips_the_fetch() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db_arg = tmp.path().to_str().unwrap();
+    let missing = "/tmp/dispatch-test-not-a-repo-77779";
+    seed_repo_path(db_arg, missing);
+
+    let out = binary()
+        .args(["--db", db_arg, "repo", "status", "--no-fetch"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains(missing), "got: {stdout}");
+    assert!(
+        !stdout.to_lowercase().contains("fetch"),
+        "--no-fetch performs no fetch, so no fetch error exists: {stdout}"
+    );
+}
+
+// rule-failure.SyncRepoViaCli.1 — `requires: targets.count > 0`.
+#[test]
+fn repo_sync_fails_when_there_are_no_saved_paths() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let out = binary()
+        .args(["--db", tmp.path().to_str().unwrap(), "repo", "sync"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "no targets means nothing to sync, which is an error"
+    );
+}
+
+#[test]
+fn repo_sync_fails_for_an_unknown_path() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db_arg = tmp.path().to_str().unwrap();
+    seed_repo_path(db_arg, "/tmp/dispatch-test-saved-77780");
+
+    let out = binary()
+        .args([
+            "--db",
+            db_arg,
+            "repo",
+            "sync",
+            "/tmp/dispatch-test-never-saved-77781",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a path that is not a saved repo path is not a target"
+    );
+}
+
+// @guarantee FailureIsVisibleInTheExitCode + EveryTargetAttempted: every target
+// is attempted and the exit code is non-zero when any of them failed.
+#[test]
+fn repo_sync_attempts_every_target_and_fails_the_exit_code() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let db_arg = tmp.path().to_str().unwrap();
+    let a = "/tmp/dispatch-test-not-a-repo-77782";
+    let b = "/tmp/dispatch-test-not-a-repo-77783";
+    seed_repo_path(db_arg, a);
+    seed_repo_path(db_arg, b);
+
+    let out = binary()
+        .args(["--db", db_arg, "repo", "sync"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "a failed target must fail the command"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains(a) && combined.contains(b),
+        "one failure must not abandon the rest, got: {combined}"
+    );
+}

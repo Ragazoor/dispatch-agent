@@ -51,6 +51,10 @@ pub(super) async fn dispatch(
             dispatch_repo_filter(rt, app, cmd).await;
             vec![]
         }
+        RepoSync(cmd) => {
+            dispatch_repo_sync(rt, cmd);
+            vec![]
+        }
         // PR commands (creation is agent-driven via the /wrap-up skill)
         Pr(cmd) => {
             dispatch_pr(rt, cmd);
@@ -444,6 +448,21 @@ fn dispatch_feed(rt: &super::TuiRuntime, cmd: crate::tui::commands::FeedCommand)
             feed_command,
             group_by_repo,
         } => rt.exec_trigger_epic_feed(epic_id, epic_title, feed_command, group_by_repo),
+    }
+}
+
+/// Per-domain dispatcher for [`crate::tui::commands::RepoSyncCommand`] variants.
+fn dispatch_repo_sync(rt: &super::TuiRuntime, cmd: crate::tui::commands::RepoSyncCommand) {
+    use crate::tui::commands::RepoSyncCommand::*;
+    match cmd {
+        Refresh {
+            repo_path,
+            fetch_first,
+        } => drop(rt.exec_refresh_repo_sync(repo_path, fetch_first)),
+        Sync {
+            repo_path,
+            base_branch,
+        } => drop(rt.exec_sync_repo(repo_path, base_branch)),
     }
 }
 
