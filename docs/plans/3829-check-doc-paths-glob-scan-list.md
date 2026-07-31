@@ -20,10 +20,13 @@ plenty of `src/…` paths.
 - `bash scripts/check-doc-paths.sh docs/specs/*.allium` reports
   `all references resolve` — **zero** existing findings. Globbing the specs in is
   free; no pre-existing staleness has to be resolved first.
-- `scripts/check-doc-symbols.sh` (referenced by the task description as prior art)
-  does not exist on `main` yet — #3807's script hasn't landed, and neither has
-  `docs/plans/3807-check-doc-symbols.md`. Nothing to mirror literally; the glob
-  shape from the task description stands on its own.
+- `scripts/check-doc-symbols.sh` (the prior art the task description points at)
+  **is** on `main` — #3807 landed as `935cc44d`, which this branch was initially
+  rebased past because the first `git rebase origin/main` targeted a stale
+  `origin/main` that was 13 commits behind the local `main`. Its default list is
+  `CLAUDE.md` + `docs/*.md` + `docs/specs/*.allium` under `nullglob` (plus
+  `src/**/*.rs` for doc comments, which is specific to symbol checking), and it
+  documents the same dated-artifact exclusion. This plan's glob matches it.
 - No Allium spec covers `scripts/`, so no spec change is needed.
 
 ## Plan
@@ -48,8 +51,9 @@ against a purpose-built fixture repo:
      is covered without editing the script.
   2. Default run output names `docs/specs/newspec.allium` → specs are scanned.
   3. After fixing those two docs, the default run exits 0 → `docs/plans/`,
-     `docs/superpowers/`, and `docs/research/` stay excluded — they are dated
-     artifacts, not living docs, so stale references in them are expected.
+     `docs/superpowers/`, and `docs/research/` stay excluded — dated working
+     artifacts that legitimately describe code as it stood then, per the
+     exclusion rationale in `docs/plans/3807-check-doc-symbols.md`.
   4. Default run in a repo with no `docs/` at all does not crash on an unexpanded
      glob (pins `nullglob`).
 
