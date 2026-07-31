@@ -21,7 +21,7 @@ cargo run -- verify-feed 'gh api ...'  # run a feed command and validate its JSO
 
 ### First-time setup
 
-The pre-push hook (`.githooks/pre-push`) runs, in order: `cargo fmt` (auto-formats), `cargo clippy --all-targets -- -D warnings` (no `--fix` — it checks, it does not rewrite), `./scripts/check-doc-paths.sh` (validates every `src/…`/`docs/…` path and `file:NN` line citation in the agent-facing docs), `./scripts/test-check-doc-paths.sh` (self-test for that checker), `./scripts/check-no-test-sleep.sh` (rejects `tokio::time::sleep` in test code — see the async-test rule below), and `bash ./scripts/test-fetch-reviews.sh` (stub-`gh` test for the review feed script). Run `cargo test` separately before pushing.
+The pre-push hook (`.githooks/pre-push`) runs, in order: `cargo fmt` (auto-formats), `cargo clippy --all-targets -- -D warnings` (no `--fix` — it checks, it does not rewrite), `./scripts/check-doc-paths.sh` (validates every `src/…`/`docs/…` path and `file:NN` line citation in the agent-facing docs), `./scripts/test-check-doc-paths.sh` (self-test for that checker), `./scripts/check-no-test-sleep.sh` (rejects `tokio::time::sleep` anywhere under `src/`/`tests/`, and `std::thread::sleep` in test files — see the async-test rule below), and `bash ./scripts/test-fetch-reviews.sh` (stub-`gh` test for the review feed script). Run `cargo test` separately before pushing.
 
 The hook is tracked at `.githooks/pre-push`. A fresh clone must point git at it once — run `cargo run -- doctor hooks --repair` (which sets `core.hooksPath = .githooks`) or `git config core.hooksPath .githooks`. Don't add hooks to `.git/hooks/` directly: that directory is untracked and shared across all worktrees, so changes there aren't version-controlled or reviewed.
 
@@ -79,7 +79,7 @@ Skill copy is asserted with targeted `contains` checks (not snapshots) so that d
 
 Inline test modules (`mod tests`, `mod property_tests`) must have `#[allow(clippy::unwrap_used, clippy::expect_used)]` at the top — the workspace `-D warnings` policy otherwise rejects bare `unwrap()`/`expect()` calls. See `src/db/tests/mod.rs` for the canonical pattern.
 
-When writing async tests over `spawn_blocking` or detached `tokio::spawn` work, await a deterministic completion signal (oneshot / `Notify` / an `McpEvent`) or inject a clock — never `tokio::time::sleep`, which is flaky on slow CI. `./scripts/check-no-test-sleep.sh` (in the pre-push hook) enforces this. See the "No `tokio::time::sleep` in tests" section of `docs/conventions.md` for the canonical patterns.
+Tests must never sleep on the wall clock — not to "wait for" `spawn_blocking` or detached `tokio::spawn` work, and not to cross a duration threshold. Instead await a deterministic completion signal (oneshot / `Notify` / an `McpEvent`), inject a clock, or inject the threshold (`Database::set_slow_call_threshold`, used by `src/db/tests/async_handle.rs`). `./scripts/check-no-test-sleep.sh` (in the pre-push hook) enforces this: no `tokio::time::sleep` anywhere under `src/`/`tests/`, and no `std::thread::sleep` in test files (anything under `tests/`, under a `src/**/tests/` directory, or named `tests.rs`). Production `std::thread::sleep` is unaffected, and a deadline-bounded poll step may carry an `// allow-test-sleep: <why>` marker. See the "No `tokio::time::sleep` in tests" section of `docs/conventions.md` for the canonical patterns.
 
 ### Coverage
 
