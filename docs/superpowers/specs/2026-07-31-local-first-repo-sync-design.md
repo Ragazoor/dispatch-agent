@@ -54,6 +54,25 @@ Settled during brainstorming, recorded so the plan does not relitigate them:
    prompt, so `y` would both open and accept a push to shared main. `w` was
    rejected for sitting next to `W` (wrap up), the other irreversible git
    action.
+6. **No doctor check.** Retracted during iteration 1 of the spec loop, which
+   caught a contradiction: `doctor.allium` maps *any* `warn` finding to exit
+   1, and `FindingStatus` has only `ok | warn | error`, so "report drift as a
+   warning, not a failure" is not expressible — `ahead > 0` being the normal
+   post-wrap_up state would make `dispatch doctor` exit non-zero almost
+   permanently. Rather than add an `info` severity or a per-check exception
+   to the exit rule, the check is dropped:
+   - every other doctor check has a remediation doctor can perform under
+     `--repair`, whereas closing drift is a different subcommand
+     (`dispatch repo sync`);
+   - doctor performs no fetch, so with stale refs it would present an
+     unverified repo as clean — exactly what the
+     `UnmeasuredIsNeverPresentedAsClean` invariant forbids;
+   - `dispatch repo status` already gives a richer per-repo view and does
+     fetch;
+   - nothing consumes doctor's exit code today (`cmd_doctor` in
+     `src/main.rs:512` is reachable only from the clap subcommand — no TUI
+     path, no CI), so the real cost of a permanently-warn line would be
+     training the operator to ignore doctor's output.
 
 ## Architecture
 
@@ -193,9 +212,7 @@ future sync-all.
 - `dispatch repo sync [<path>]` — sync one repo, or every known repo when
   the path is omitted. Non-zero exit if any repo fails.
 
-**Doctor** — a `repo-sync` check reporting drift per repo as a **warning,
-not a failure**, using doctor's existing severity vocabulary. `ahead > 0` is
-normal in this workflow and must not turn `dispatch doctor` permanently red.
+**Doctor** — no repo-sync check. Retracted; see Decision 6.
 
 ## Testing
 
@@ -210,15 +227,15 @@ sleeps: every test is mock- or event-driven, per the no-test-sleep rule.
 | Each refresh trigger emits `RefreshSyncState`; a failed fetch preserves prior counts | `src/tui/tests/` |
 | Status-bar segment present when drifted, absent when clean / unknown / unselected | `src/tui/tests/snapshots` (120×40 — do not change the backend size) |
 | `o` → confirm → sync flow, and the prompt naming only the applicable halves | `src/tui/tests/scenarios` |
-| `repo status` and `repo sync` argument handling and exit codes | `tests/cli.rs` |
-| `repo-sync` check output and severity | inline in `src/cli/doctor.rs` |
+| `repo status` and `repo sync` argument handling and exit codes; `--no-fetch` suppresses the fetch | `tests/cli.rs` |
 
 ## Spec changes
 
 - **New `docs/specs/repo-sync.allium`** — owns `AheadBehind`, the
   `sync_repo` contract with its typed failures, the refresh triggers, and
   all four surfaces.
-- **`docs/specs/doctor.allium`** — the new `repo-sync` check.
+- **`docs/specs/doctor.allium`** — records that doctor deliberately does *not*
+  report drift, and why (Decision 6), so a later reader does not re-add it.
 - **`CLAUDE.md`** — mention `src/repo_sync.rs` under subsystem entry points.
 
 No `core.allium` config entry: the timer is gone, so there is nothing to
@@ -235,6 +252,8 @@ Explicitly excluded, each either decided against or deferred to its own task:
   follow-up task. Real, and the concrete cost of the drift, but it changes
   dispatch semantics for every task in every repo and deserves its own
   design pass.
+- **A `repo-sync` doctor check** — retracted, see Decision 6. Deliberately
+  recorded in `doctor.allium` so it is not re-added by a later reader.
 - **Post-rebase verify gate** (#233, #314) — separate concern.
 - **Per-card worktree staleness badges** — separate concern.
 - **Repos popup** — deferred until the engine is proven.

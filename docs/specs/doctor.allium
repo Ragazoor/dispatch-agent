@@ -4,9 +4,13 @@
 -- Scope: `dispatch doctor` self-diagnosis CLI surface
 -- Covers: findings model, check surfaces, flag conventions, output contract
 --
--- The repo-sync check's subject matter (the ahead/behind measurement, the sync
--- operation and its failures) is specified in repo-sync.allium; only its
--- doctor-side reporting lives here.
+-- Doctor deliberately does NOT report local-vs-origin drift. Every check here
+-- has a remediation doctor itself can perform under --repair, whereas closing
+-- drift is a different subcommand (`dispatch repo sync`). Drift also cannot be
+-- measured honestly from a network-free run: doctor has no fetch, so stale
+-- refs would let it present an unverified repo as clean, which
+-- repo-sync.allium's UnmeasuredIsNeverPresentedAsClean forbids. Drift is
+-- surfaced by the board indicator and `dispatch repo status` instead.
 
 ------------------------------------------------------------
 -- Enumerations
@@ -22,7 +26,7 @@ enum FindingStatus { ok | warn | error }
 -- status drives the exit code on a plain check run (any warn or error → exit 1),
 -- but the repair paths override that; see the Output contract section.
 entity Finding {
-    check:            String     -- which check produced this finding: "worktrees" | "sessions" | "hooks" | "repo-sync"
+    check:            String     -- which check produced this finding: "worktrees" | "sessions" | "hooks"
     status:           FindingStatus
     target:           String     -- the specific path/window/repo being described
     message:          String     -- human-readable one-line description
@@ -39,20 +43,10 @@ entity Finding {
 --   worktrees   compare .worktrees/ dirs against tasks.worktree in the DB
 --   sessions    compare tasks.tmux_window against live tmux windows
 --   hooks       verify git config core.hooksPath = .githooks in each known repo
---   (none)      run every check in sequence: worktrees, sessions, hooks,
---               repo-sync
---
--- repo-sync has no subcommand form of its own; it runs only as part of the
--- bare all-checks form, and it is never repairable — closing drift is an
--- explicit operator action (see repo-sync.allium: SyncNeverAutomatic), so it
--- can never be something --repair applies on the operator's behalf.
+--   (none)      run every check in sequence: worktrees, sessions, hooks
 --
 -- "Known repo" (the repo set every check runs over) is the union of the saved
--- repo paths and the distinct repo_path of every task, in that order. The
--- repo-sync check is the one exception: it runs over the saved repo paths only,
--- matching the board indicator and `dispatch repo status`, so all three agree
--- on which repositories drift is measured for (see repo-sync.allium:
--- OneRepoSetForDriftMeasurement).
+-- repo paths and the distinct repo_path of every task, in that order.
 --
 -- Flag availability is NOT uniform; each flag exists on specific command forms:
 --   --repair    subcommand forms only (worktrees | sessions | hooks).
@@ -137,41 +131,6 @@ entity Finding {
 --   status: ok, repair_available: false
 
 ------------------------------------------------------------
--- Repo-sync check
-------------------------------------------------------------
-
--- Reports drift between each saved repo path's local base branch and its origin
--- counterpart. Deliberately the saved repo paths rather than doctor's wider
--- "known repo" union, so that doctor, the board indicator and
--- `dispatch repo status` all measure the same set (repo-sync.allium:
--- OneRepoSetForDriftMeasurement). The measurement, the base-branch resolution
--- and the sync operation itself all belong to repo-sync.allium; this check only
--- reports.
-
--- Drifted repo: the repo's ahead/behind measurement is known and at least one
---               side is non-zero (repo-sync.allium: RepoSyncState.has_drift)
---   target: the repo path
---   message: names the base branch and both counts
---   status: warn, repair_available: false
---
--- warn, never error: local base being ahead of origin is the NORMAL state
--- after every rebase wrap-up in this workflow, so an error here would make
--- `dispatch doctor` report a broken system for working exactly as designed.
---
--- repair_available: false is deliberate and not an oversight. Closing the gap
--- pushes to a shared branch, which repo-sync.allium's SyncNeverAutomatic
--- invariant reserves for an explicit operator action ([o] on the board, or
--- `dispatch repo sync`). Doctor diagnoses; it does not publish.
-
--- Unmeasurable repo: origin/<base> does not resolve, so no counts exist.
---   No finding. Silent-on-healthy in both directions: the check never claims a
---   repo is in sync, and never reports drift it could not measure. See the
---   UnmeasuredIsNeverPresentedAsClean invariant in repo-sync.allium.
-
--- In-sync repo (both counts zero): no finding. Like worktrees and sessions,
--- and unlike hooks, this check constructs no ok finding.
-
-------------------------------------------------------------
 -- Output contract
 ------------------------------------------------------------
 
@@ -193,13 +152,3 @@ entity Finding {
 --     1 only when a repair itself fails.
 --   --repair without --force (preview path): 1 whenever at least one finding is
 --     repair_available, regardless of severity, since nothing was resolved.
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
-open question "The repo-sync check reports drift as warn, but the plain-check exit rule maps any warn to exit 1 — and local base being ahead of origin is the normal state after every rebase wrap-up. As specified, `dispatch doctor` therefore exits non-zero almost permanently, which the check was explicitly meant not to cause. Which gives way: does repo-sync drift get a severity that does not affect the exit code, is it excluded from the exit-code calculation, or does the workflow accept a habitually non-zero doctor?"
-
-open question "Does the repo-sync check fetch before measuring? Without a fetch its counts are only as fresh as the last dispatch or wrap-up in that repo, so a repo behind origin can be reported as in sync — and no fetch error exists for it to report either. With a fetch, `dispatch doctor` gains network I/O and a per-repo latency cost that no other check has. `dispatch repo status` settles the same question with a --no-fetch flag; doctor has no equivalent."
-
-open question "repo-sync is the only check with no subcommand form: it runs only in the bare all-checks run, so an operator cannot ask about drift alone the way they can about worktrees, sessions or hooks. Should it gain a `dispatch doctor repo-sync` form for symmetry, given it has nothing to repair and `dispatch repo status` already offers a richer per-repo view?"

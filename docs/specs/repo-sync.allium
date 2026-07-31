@@ -5,10 +5,9 @@
 --        step with origin on its own default branch.
 -- Includes: the ahead/behind measurement and when it is refreshed; the sync
 --           operation with its typed preconditions and its two outcomes; and
---           the four surfaces that expose them (the status-bar drift segment,
---           the [o] sync action and its confirmation, the
---           `dispatch repo status` / `dispatch repo sync` CLI, and — in
---           doctor.allium — the `repo-sync` check).
+--           the three surfaces that expose them (the status-bar drift segment,
+--           the [o] sync action and its confirmation, and the
+--           `dispatch repo status` / `dispatch repo sync` CLI).
 -- Excludes: worktree provisioning and per-task base-branch resolution (see
 --           dispatch.allium); the rebase / fast-forward that moves local base
 --           ahead in the first place (see pr-workflow.allium); the doctor
@@ -21,6 +20,14 @@
 -- finished task, and behind whenever a PR merges elsewhere. Nothing measured,
 -- displayed or closed that gap. This spec makes the drift visible where it
 -- cannot be ignored and defines exactly one action that closes it.
+--
+-- Not a surface: `dispatch doctor`. Doctor's exit contract maps any warn or
+-- error finding to exit 1, and ahead > 0 is the normal state after every
+-- rebase wrap-up — a doctor check would make that exit code permanently
+-- non-zero. Doctor also performs no fetch, so it cannot measure drift
+-- honestly (see UnmeasuredIsNeverPresentedAsClean below). `dispatch repo
+-- status` already gives the richer, fetch-backed view; see doctor.allium's
+-- header for the fuller rationale. Do not re-add a doctor check for this.
 
 use "./core.allium" as core
 
@@ -63,10 +70,10 @@ value SyncFailureReport {
 ------------------------------------------------------------
 
 -- The sync engine is a synchronous, process-runner-driven unit with no TUI or
--- database coupling: the same three operations back the board action, the CLI
--- and the doctor check. Its obligations are stated here because getting them
--- wrong is silent — a mis-measured repo claims to be in sync, and a
--- precondition checked too late corrupts a working tree.
+-- database coupling: the same three operations back the board action and the
+-- CLI. Its obligations are stated here because getting them wrong is silent —
+-- a mis-measured repo claims to be in sync, and a precondition checked too
+-- late corrupts a working tree.
 contract RepoSyncEngine {
     ahead_behind: (repo_path: String, base_branch: String) -> AheadBehind
     fetch_base_error: (repo_path: String, base_branch: String) -> String
@@ -154,8 +161,8 @@ enum SyncFailure {
 -- RepoSyncState is the current drift measurement for one repository. At most
 -- one exists per repo_path. It is a measurement, not a record: every consumer
 -- establishes it for itself (the board refreshes it on the events below, the
--- CLI and the doctor check compute it when they run), so it crosses no process
--- boundary and needs no persistence.
+-- CLI computes it when it runs), so it crosses no process boundary and needs
+-- no persistence.
 entity RepoSyncState {
     repo_path: String        -- absolute path to the repository's primary checkout; identifies the measurement
     base_branch: String      -- the repository's own default branch, as measured
@@ -217,7 +224,7 @@ rule RefreshRepoSyncState {
             -- Non-fatal by design: the previously known counts are kept, so a
             -- slow or offline network leaves the drift indicator undisturbed
             -- rather than blanking it. Only the error is recorded, for the CLI
-            -- table and the doctor check to report.
+            -- table to report.
             state.last_fetch_error = fetch_error
         else:
             state.base_branch = base
@@ -484,22 +491,26 @@ rule SyncRepoViaCli {
 
 -- UnmeasuredIsNeverPresentedAsClean: a repository whose counts could not be
 -- read is presented as unknown, never as in sync. Every consumer honours this
--- the same way — the status-bar segment hides, the CLI row shows no counts, the
--- doctor check reports nothing about drift — so no surface can quietly claim a
--- repository is clean on the strength of a failed measurement.
+-- the same way — the status-bar segment hides and the CLI row shows no
+-- counts — so no surface can quietly claim a repository is clean on the
+-- strength of a failed measurement. This is also why `dispatch doctor` carries
+-- no drift check at all: doctor performs no fetch, so any measurement it took
+-- would run against refs it never refreshed, and reporting on that basis would
+-- violate this invariant outright rather than merely risk it. See the header
+-- note and doctor.allium.
 
 -- OneRepoSetForDriftMeasurement: drift is measured over the saved repo paths
 -- (core/SavedRepoPaths) and nothing else, on every surface — the startup
--- refresh, the board indicator, `dispatch repo status`, `dispatch repo sync`
--- with no path, and doctor's repo-sync check. The doctor check therefore does
--- NOT use doctor's wider "known repo" union (saved paths plus every distinct
--- task repo_path); it is the single exception to that union, so that no surface
--- can report drift for a repository another surface silently omits. A repo with
--- tasks but no saved path is a degenerate state — task creation saves the path —
--- and doctor's worktrees check already reports it as its own anomaly, so
--- reporting drift for it too would only add noise. Not expressible as a state
--- assertion: it constrains which repositories every consumer enumerates, not
--- what any single RepoSyncState looks like.
+-- refresh, the board indicator, `dispatch repo status`, and `dispatch repo
+-- sync` with no path. All four agree on this same set, so no surface can
+-- report drift for a repository another surface silently omits, and none
+-- needs to reconcile against doctor's wider "known repo" union (saved paths
+-- plus every distinct task repo_path) because doctor measures no drift at
+-- all. A repo with tasks but no saved path is a degenerate state — task
+-- creation saves the path — and doctor's worktrees check already reports it
+-- as its own anomaly. Not expressible as a state assertion: it constrains
+-- which repositories every consumer enumerates, not what any single
+-- RepoSyncState looks like.
 
 -- SyncNeverAutomatic: a push to a shared branch happens only in response to an
 -- explicit operator action — the confirmed [o] prompt or `dispatch repo sync`.
@@ -566,8 +577,7 @@ surface RepoDriftIndicator {
     @guarantee NoStalenessBeyondTheLastMeasurement
         -- The segment shows the most recent successful measurement. A failed
         -- fetch leaves the previous counts in place rather than blanking the
-        -- segment; the failure itself is reported through the CLI and the
-        -- doctor check, not here.
+        -- segment; the failure itself is reported through the CLI, not here.
 
     @guidance
         -- Rendered as a compact `main ↑3↓1`-style segment beside the existing
