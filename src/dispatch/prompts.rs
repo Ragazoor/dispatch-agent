@@ -7,9 +7,26 @@ use crate::service::embeddings::{
     RagRankParams,
 };
 
-/// Plugin dir flag added to all Claude agent invocations so dispatched agents
-/// discover the dispatch plugin's skills and commands (e.g. /wrap-up).
-pub(super) const DISPATCH_PLUGIN_DIR: &str = "--plugin-dir ~/.claude/plugins/local/dispatch";
+/// Flags added to all Claude agent invocations. `--plugin-dir` so dispatched
+/// agents discover the dispatch plugin's skills and commands (e.g. /wrap-up);
+/// `--settings` so every session reports its subscription budget windows via
+/// the `dispatch statusline` decorator (see docs/specs/dispatch.allium:
+/// TokenBudgetIndicator).
+///
+/// Both paths are fixed literals on purpose. This string is interpolated into
+/// shell command lines sent through `tmux send-keys`, so a runtime path could
+/// break argument splitting on any `$HOME` containing a space; and a `const`
+/// cannot hold a runtime value anyway. Runtime paths live inside the settings
+/// file, written by `src/setup/statusline.rs`.
+///
+/// Built with `concat!` rather than a backslash line-continuation inside the
+/// literal: a `\` at end-of-line inside a Rust string swallows the newline
+/// *and* all leading whitespace on the next line, which can silently collapse
+/// or duplicate the space between the two flags.
+pub(super) const DISPATCH_PLUGIN_DIR: &str = concat!(
+    "--plugin-dir ~/.claude/plugins/local/dispatch",
+    " --settings ~/.claude/dispatch-statusline.json"
+);
 
 /// Epic context passed to prompt builders so agents know about their epic.
 pub struct EpicContext {

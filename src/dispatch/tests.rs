@@ -2954,3 +2954,29 @@ fn toggle_agent_tree_pane_propagates_list_panes_query_failure() {
     let err = toggle_agent_tree_pane("task-42", &mock).unwrap_err();
     assert!(err.to_string().contains("list-panes failed"), "got: {err}");
 }
+
+#[test]
+fn all_spawn_sites_inject_the_statusline_settings_file() {
+    // Every dispatch-spawned session must report budget windows, so the
+    // --settings overlay has to be on the agent, resume, and main-session
+    // command lines alike. See docs/specs/dispatch.allium: TokenBudgetIndicator.
+    assert!(
+        crate::dispatch::prompts::DISPATCH_PLUGIN_DIR
+            .contains("--settings ~/.claude/dispatch-statusline.json"),
+        "spawn constant must inject the statusline settings overlay, got: {}",
+        crate::dispatch::prompts::DISPATCH_PLUGIN_DIR
+    );
+}
+
+#[test]
+fn spawn_constant_contains_no_whitespace_hazard() {
+    // The constant is interpolated into a shell command string sent through
+    // tmux send_keys, so it must contain only fixed literal paths. A runtime
+    // path here would break on any $HOME containing a space.
+    for token in crate::dispatch::prompts::DISPATCH_PLUGIN_DIR.split_whitespace() {
+        assert!(
+            !token.contains('$'),
+            "no runtime interpolation allowed in the spawn constant: {token}"
+        );
+    }
+}
