@@ -334,7 +334,7 @@ pub(super) async fn run_setup_in(
     // 2b. Status line — dispatch-owned settings file that chains to the
     // user's existing statusLine.command (see src/setup/statusline.rs).
     let chain = statusline::discover_chain(&paths.claude_dir);
-    let snapshot_path = data_dir.join("rate-limits.json");
+    let snapshot_path = data_dir.join(statusline::RATE_LIMITS_FILE_NAME);
     match statusline::write_settings_file(&paths.statusline_path, &snapshot_path, chain.as_deref())
     {
         Ok(true) => println!(

@@ -21,6 +21,20 @@ use std::path::Path;
 /// run — see the module doc comment above.
 pub(crate) const SETTINGS_FILE_NAME: &str = "dispatch-statusline.json";
 
+/// The fixed snapshot file name, under the data directory (the database's
+/// parent).
+///
+/// Shared because two independent sites must agree on it: setup bakes this path
+/// into the generated `--snapshot` argument (`src/setup/mod.rs`), and the TUI
+/// reads it back (`src/runtime/mod.rs`). If those two ever disagreed the badge
+/// would silently never appear — indistinguishable from "no subscription data" —
+/// so the name lives in one place rather than as two literals.
+///
+/// Tests deliberately keep their own literal instead of importing this: an
+/// expectation derived from the same constant as the code under test asserts
+/// nothing.
+pub(crate) const RATE_LIMITS_FILE_NAME: &str = "rate-limits.json";
+
 /// POSIX single-quoting: wrap in `'…'` and replace each embedded `'` with
 /// `'\''`. The generated string is run through `sh -c`, so an unquoted path
 /// containing a space would split into two arguments.

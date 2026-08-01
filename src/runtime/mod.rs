@@ -425,7 +425,9 @@ impl TuiRuntime {
             .parent()
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf();
-        let budget_snapshot_path = data_dir.clone().join("rate-limits.json");
+        let budget_snapshot_path = data_dir
+            .clone()
+            .join(crate::setup::statusline::RATE_LIMITS_FILE_NAME);
 
         // Best-effort: recreate ~/.claude/dispatch-statusline.json if it's
         // missing. Every dispatch-spawned Claude session is launched with
