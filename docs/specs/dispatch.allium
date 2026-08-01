@@ -283,12 +283,6 @@ rule DispatchTask {
         -- sole exception: it launches with --permission-mode plan so
         -- investigation stays read-only. The prompt content — not the
         -- permission flag — differentiates the other modes.
-        -- Task-agent dispatches launch Claude in auto mode by default —
-        -- i.e. without a --permission-mode flag — so agents can edit
-        -- files without per-edit approval. The Research agent is the
-        -- sole exception: it launches with --permission-mode plan so
-        -- investigation stays read-only. The prompt content — not the
-        -- permission flag — differentiates the other modes.
 
         -- == Unified prompt skeleton ==
         -- Every task-agent prompt produced by build_prompt /
