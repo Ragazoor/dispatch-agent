@@ -99,60 +99,163 @@ impl StartPoint {
 pub(super) struct ProvisionResult {
     pub(super) worktree_path: String,
     pub(super) tmux_window: String,
-    /// `Some(...)` when every `git fetch origin <base>` attempt failed;
-    /// injected as a note into the agent's own prompt in `dispatch_with_prompt`.
+    /// `Some(...)` when there is no `origin/<base>` to base on and the local
+    /// branch was used instead. Injected into the agent's prompt as a `Note:`
+    /// line by `dispatch_with_prompt`.
     pub(super) fetch_warning: Option<String>,
+    /// The ref the branch was created from. `None` when no base was given.
+    /// The caller needs it to point the rebase preamble at the same ref.
+    pub(super) start_point: Option<StartPoint>,
+    /// True when the worktree directory already existed and `git worktree add`
+    /// was skipped, so the branch may still hold a previous attempt's state.
+    pub(super) reused_worktree: bool,
 }
 
-/// Attempt `git fetch origin <base>` up to `FETCH_MAX_ATTEMPTS` times,
-/// sleeping `FETCH_RETRY_DELAY` between attempts. Returns `Ok(())` on the
-/// first success, or `Err(<last stderr/error text>)` once every attempt has
-/// failed.
-fn fetch_origin_with_retry(
+/// `git ls-remote --exit-code` returns this when no ref matched — as opposed to
+/// 128, which means it could not reach the remote at all.
+const LS_REMOTE_NO_MATCHING_REF: i32 = 2;
+
+/// The outcome of making `origin/<base>` current before provisioning.
+#[derive(Debug)]
+enum FetchOutcome {
+    /// `origin/<base>` is up to date locally.
+    Fetched,
+    /// There is no `origin/<base>` to fetch. Carries the message shown to the
+    /// agent as a `Note:` line.
+    NoOriginRef(String),
+}
+
+/// Why a `git fetch origin <base>` failed.
+enum FetchFailure {
+    /// Nothing to fetch: no `origin` remote, or origin has no such branch.
+    NoOriginRef(String),
+    /// Origin has the branch, or we could not even determine that. Either way
+    /// this is infrastructure, not a missing ref.
+    Unreachable,
+}
+
+/// Classify a fetch failure without pattern-matching git's stderr text.
+///
+/// `git fetch` exits 128 for a missing ref, an unresolvable host and an
+/// unreadable remote alike, so its own status cannot classify.
+/// `git ls-remote --exit-code` can: 2 means "no matching ref", 128 means "could
+/// not reach the remote". Anything we cannot positively identify as a missing
+/// ref is treated as unreachable — the safe polarity, since only a recognised
+/// 404 earns the local-branch fallback.
+fn classify_fetch_failure(
     runner: &dyn ProcessRunner,
     repo_path: &str,
     base: &str,
     timeout: Duration,
-) -> Result<(), String> {
+) -> FetchFailure {
+    if !crate::git::has_origin_remote(repo_path, runner) {
+        return FetchFailure::NoOriginRef("no origin remote is configured".to_string());
+    }
+    let refspec = format!("refs/heads/{base}");
+    let probe = runner.run_with_timeout(
+        "git",
+        &[
+            "-C",
+            repo_path,
+            "ls-remote",
+            "--exit-code",
+            "origin",
+            &refspec,
+        ],
+        timeout,
+    );
+    match probe {
+        Ok(output) if output.status.code() == Some(LS_REMOTE_NO_MATCHING_REF) => {
+            FetchFailure::NoOriginRef(format!("origin has no branch {base}"))
+        }
+        _ => FetchFailure::Unreachable,
+    }
+}
+
+/// Make `origin/<base>` current, or establish that there is no such ref.
+///
+/// An infrastructure failure is retried up to `FETCH_MAX_ATTEMPTS` and then
+/// aborts the dispatch: a worktree silently branched off a stale local ref is
+/// worse than a dispatch that refuses to start. A missing ref is not retried —
+/// retrying a branch that does not exist cannot succeed — and is not an error,
+/// because local `<base>` is then the only ref there is.
+fn fetch_origin(
+    runner: &dyn ProcessRunner,
+    repo_path: &str,
+    base: &str,
+    timeout: Duration,
+) -> Result<FetchOutcome> {
     let mut last_err = String::new();
     for attempt in 1..=FETCH_MAX_ATTEMPTS {
         match runner.run_with_timeout("git", &["-C", repo_path, "fetch", "origin", base], timeout) {
-            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) if output.status.success() => return Ok(FetchOutcome::Fetched),
             Ok(output) => last_err = stderr_str(&output),
             Err(e) => last_err = e.to_string(),
+        }
+        // Classify once, on the first failure: the answer cannot change between
+        // attempts, and a 404 must not burn the retry budget.
+        if attempt == 1 {
+            if let FetchFailure::NoOriginRef(reason) =
+                classify_fetch_failure(runner, repo_path, base, timeout)
+            {
+                tracing::info!(base, %reason, "no origin ref to fetch; using the local branch");
+                return Ok(FetchOutcome::NoOriginRef(format!(
+                    "Could not fetch origin/{base} ({reason}); this worktree is based on \
+                     the local {base} branch."
+                )));
+            }
         }
         if attempt < FETCH_MAX_ATTEMPTS {
             std::thread::sleep(FETCH_RETRY_DELAY);
         }
     }
-    Err(last_err)
+    tracing::warn!(base, error = %last_err, "could not reach origin; aborting dispatch");
+    anyhow::bail!(
+        "Could not reach origin to fetch {base} after {FETCH_MAX_ATTEMPTS} attempts: {last_err}"
+    )
 }
 
-/// Resolve the git start point for a new worktree branch: fetch `origin/<base>`
-/// (retried, see `fetch_origin_with_retry`) and use it on success, or fall
-/// back to the bare local `<base>` once every attempt fails. Owns the full
-/// fallback policy (which ref to use, what the warning says) so callers don't
-/// have to re-derive it themselves.
-fn resolve_start_point(
-    runner: &dyn ProcessRunner,
-    repo_path: &str,
-    base: &str,
-    timeout: Duration,
-) -> (String, Option<String>) {
-    match fetch_origin_with_retry(runner, repo_path, base, timeout) {
-        Ok(()) => (format!("origin/{base}"), None),
-        Err(err) => {
-            tracing::warn!(
-                base,
-                error = %err,
-                "git fetch origin failed after retries, falling back to local branch"
-            );
-            let warning = format!(
-                "Could not fetch origin/{base} after {FETCH_MAX_ATTEMPTS} attempts \
-                 ({err}); using local branch, which may be stale."
-            );
-            (base.to_string(), Some(warning))
+/// What a worktree is being based on, and whether local history may be
+/// preferred over origin's.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum BaseRef<'a> {
+    /// The repo's base branch. Local `<base>` may legitimately hold commits
+    /// origin lacks, so the two are compared and the one with unique commits
+    /// wins.
+    Branch(&'a str),
+    /// A PR's head branch. Always `origin/<branch>`, never compared: a review
+    /// must see exactly the PR's code, and a stale local branch of the same
+    /// name would silently poison it.
+    ///
+    /// Not yet constructed by the sole production caller
+    /// (`dispatch::agents::dispatch_with_prompt`, which still always passes
+    /// `BaseRef::Branch` for every task including PR reviews) — wiring that up
+    /// is a separate, later change. Exercised directly by
+    /// `provision_worktree_never_measures_a_pr_head_branch`.
+    #[allow(dead_code)]
+    PrHead(&'a str),
+}
+
+impl BaseRef<'_> {
+    fn name(&self) -> &str {
+        match self {
+            BaseRef::Branch(b) | BaseRef::PrHead(b) => b,
         }
+    }
+}
+
+/// Choose the ref a new worktree branch starts from, given a fetch that just
+/// succeeded so both refs are current.
+///
+/// Local `<base>` wins only on a positive `ahead > 0` reading. That polarity is
+/// load-bearing: `ahead_behind` yields `None` whenever local `<base>` does not
+/// resolve, which is the normal case for a base branch the human never checked
+/// out, and preferring local there would fail `git worktree add`.
+fn select_start_point(runner: &dyn ProcessRunner, repo_path: &str, base: &str) -> StartPoint {
+    let base = base.to_string();
+    match crate::repo_sync::ahead_behind(repo_path, &base, runner) {
+        Some(counts) if counts.ahead > 0 => StartPoint::Local { base },
+        _ => StartPoint::Remote { base },
     }
 }
 
@@ -166,7 +269,7 @@ fn resolve_start_point(
 pub(super) fn provision_worktree(
     task: &Task,
     runner: &dyn ProcessRunner,
-    base_branch: Option<&str>,
+    base: Option<BaseRef<'_>>,
     timeout: Duration,
 ) -> Result<ProvisionResult> {
     let repo_path = validate_repo_path(&task.repo_path).map_err(|e| anyhow::anyhow!(e))?;
@@ -175,26 +278,40 @@ pub(super) fn provision_worktree(
     let worktree_path = format!("{repo_path}/.worktrees/{worktree_name}");
     let tmux_window = build_tmux_window_name(task.id);
 
-    tracing::info!(task_id = task.id.0, %worktree_path, ?base_branch, "provisioning worktree");
+    tracing::info!(task_id = task.id.0, %worktree_path, ?base, "provisioning worktree");
 
     fs::create_dir_all(format!("{repo_path}/.worktrees"))
         .context("failed to create .worktrees directory")?;
 
-    // Fetch origin/<base_branch> unconditionally — even when reusing an
-    // existing worktree directory — so `origin/<base>` stays fresh for
-    // whatever rebases onto it later (the agent's own rebase preamble, or a
-    // manual sync). Soft-fail: if fetch is unavailable (no origin, no
-    // network), fall back to the local branch and continue — dispatch is not
-    // blocked.
-    let (start_point, fetch_warning): (Option<String>, Option<String>) = match base_branch {
-        Some(base) => {
-            let (sp, warning) = resolve_start_point(runner, &repo_path, base, timeout);
-            (Some(sp), warning)
-        }
+    // The fetch runs unconditionally — even when reusing an existing worktree
+    // directory — so `origin/<base>` stays fresh for whatever rebases onto it
+    // later. An unreachable origin aborts here rather than quietly producing a
+    // worktree based on a stale local ref.
+    let (start_point, fetch_warning): (Option<StartPoint>, Option<String>) = match base {
+        Some(base_ref) => match fetch_origin(runner, &repo_path, base_ref.name(), timeout)? {
+            FetchOutcome::Fetched => {
+                let sp = match base_ref {
+                    BaseRef::PrHead(b) => StartPoint::Remote {
+                        base: b.to_string(),
+                    },
+                    BaseRef::Branch(b) => select_start_point(runner, &repo_path, b),
+                };
+                (Some(sp), None)
+            }
+            FetchOutcome::NoOriginRef(warning) => (
+                Some(StartPoint::Local {
+                    base: base_ref.name().to_string(),
+                }),
+                Some(warning),
+            ),
+        },
         None => (None, None),
     };
 
-    if std::path::Path::new(&worktree_path).exists() {
+    let start_ref = start_point.as_ref().map(StartPoint::git_ref);
+
+    let reused_worktree = std::path::Path::new(&worktree_path).exists();
+    if reused_worktree {
         tracing::info!(task_id = task.id.0, %worktree_path, "worktree already exists, reusing");
     } else {
         let mut args = vec![
@@ -206,7 +323,7 @@ pub(super) fn provision_worktree(
             "-B",
             &worktree_name,
         ];
-        if let Some(sp) = start_point.as_deref() {
+        if let Some(sp) = start_ref.as_deref() {
             args.push(sp);
         }
         let output = runner
@@ -226,10 +343,20 @@ pub(super) fn provision_worktree(
         .context("failed to set tmux window dispatch dir")?;
     tmux::ensure_split_hook(runner).context("failed to ensure tmux split hook")?;
 
+    tracing::info!(
+        task_id = task.id.0,
+        base = start_point.as_ref().map(StartPoint::base),
+        start_ref = start_ref.as_deref(),
+        reused_worktree,
+        "worktree provisioned"
+    );
+
     Ok(ProvisionResult {
         worktree_path,
         tmux_window,
         fetch_warning,
+        start_point,
+        reused_worktree,
     })
 }
 
@@ -361,6 +488,181 @@ mod gitignore_tests {
             "target/ retained on its own line"
         );
         assert!(after.ends_with(".dispatch/\n"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod fetch_tests {
+    use super::*;
+    use crate::process::MockProcessRunner;
+    use std::time::Duration;
+
+    const T: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn successful_fetch_reports_fetched() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        assert!(matches!(
+            fetch_origin(&mock, "/repo", "main", T).unwrap(),
+            FetchOutcome::Fetched
+        ));
+        assert_eq!(mock.recorded_calls().len(), 1, "no classification needed");
+    }
+
+    #[test]
+    fn missing_origin_remote_is_not_retried() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::fail("no such remote"), // git fetch
+            MockProcessRunner::fail("no origin"),      // git remote get-url origin
+        ]);
+        let outcome = fetch_origin(&mock, "/repo", "main", T).unwrap();
+        let FetchOutcome::NoOriginRef(warning) = outcome else {
+            panic!("expected NoOriginRef");
+        };
+        assert!(warning.contains("origin remote"), "got: {warning}");
+        assert_eq!(
+            mock.recorded_calls().len(),
+            2,
+            "one fetch, one classification — no retries: {:?}",
+            mock.recorded_calls()
+        );
+    }
+
+    #[test]
+    fn branch_absent_from_origin_is_not_retried() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::fail("couldn't find remote ref"), // git fetch
+            MockProcessRunner::ok(),                             // git remote get-url origin
+            MockProcessRunner::fail_with_code(2, ""),            // git ls-remote --exit-code
+        ]);
+        let outcome = fetch_origin(&mock, "/repo", "nosuch", T).unwrap();
+        let FetchOutcome::NoOriginRef(warning) = outcome else {
+            panic!("expected NoOriginRef");
+        };
+        assert!(warning.contains("nosuch"), "got: {warning}");
+        assert_eq!(mock.recorded_calls().len(), 3, "no retries after a 404");
+    }
+
+    #[test]
+    fn unreachable_origin_is_retried_then_aborts() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::fail("Could not resolve host"), // fetch 1
+            MockProcessRunner::ok(),                           // remote get-url origin
+            MockProcessRunner::fail_with_code(128, ""),        // ls-remote: unreachable
+            MockProcessRunner::fail("Could not resolve host"), // fetch 2
+            MockProcessRunner::fail("Could not resolve host"), // fetch 3
+        ]);
+        let err = fetch_origin(&mock, "/repo", "main", T).unwrap_err();
+        assert!(
+            err.to_string().contains("Could not reach origin"),
+            "got: {err}"
+        );
+        assert_eq!(
+            mock.recorded_calls().len(),
+            5,
+            "classify once, then retry the fetch: {:?}",
+            mock.recorded_calls()
+        );
+    }
+
+    #[test]
+    fn existing_ref_that_fails_to_fetch_aborts_rather_than_using_local() {
+        // ls-remote finds the ref, so origin is reachable and the branch is
+        // there — a fetch that still fails is infrastructure, never a 404.
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::fail("early EOF"),
+            MockProcessRunner::ok(), // remote get-url origin
+            MockProcessRunner::ok(), // ls-remote: exit 0, ref exists
+            MockProcessRunner::fail("early EOF"),
+            MockProcessRunner::fail("early EOF"),
+        ]);
+        assert!(fetch_origin(&mock, "/repo", "main", T).is_err());
+    }
+
+    #[test]
+    fn fetch_succeeding_on_retry_reports_fetched() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::fail("early EOF"),
+            MockProcessRunner::ok(), // remote get-url origin
+            MockProcessRunner::fail_with_code(128, ""), // ls-remote: unreachable
+            MockProcessRunner::ok(), // fetch 2 succeeds
+        ]);
+        assert!(matches!(
+            fetch_origin(&mock, "/repo", "main", T).unwrap(),
+            FetchOutcome::Fetched
+        ));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod selection_tests {
+    use super::*;
+    use crate::process::MockProcessRunner;
+
+    // `git rev-list --count --left-right <base>...origin/<base>` prints
+    // "<ahead>\t<behind>".
+    fn counts(ahead: u32, behind: u32) -> anyhow::Result<std::process::Output> {
+        MockProcessRunner::ok_with_stdout(format!("{ahead}\t{behind}\n").as_bytes())
+    }
+
+    #[test]
+    fn local_wins_when_it_holds_commits_origin_lacks() {
+        let mock = MockProcessRunner::new(vec![counts(3, 0)]);
+        assert_eq!(
+            select_start_point(&mock, "/repo", "main"),
+            StartPoint::Local {
+                base: "main".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn origin_wins_when_local_is_behind() {
+        let mock = MockProcessRunner::new(vec![counts(0, 2)]);
+        assert_eq!(
+            select_start_point(&mock, "/repo", "main"),
+            StartPoint::Remote {
+                base: "main".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn origin_wins_when_the_two_are_level() {
+        let mock = MockProcessRunner::new(vec![counts(0, 0)]);
+        assert_eq!(
+            select_start_point(&mock, "/repo", "main"),
+            StartPoint::Remote {
+                base: "main".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn diverged_takes_local_silently() {
+        let mock = MockProcessRunner::new(vec![counts(3, 2)]);
+        assert_eq!(
+            select_start_point(&mock, "/repo", "main"),
+            StartPoint::Local {
+                base: "main".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn unmeasurable_falls_to_origin_not_local() {
+        // This is what "local <base> does not exist" looks like — a base branch
+        // the human never checked out. Preferring local here would hand
+        // `git worktree add` a ref that is not there.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("unknown revision")]);
+        assert_eq!(
+            select_start_point(&mock, "/repo", "develop"),
+            StartPoint::Remote {
+                base: "develop".to_string()
+            }
+        );
     }
 }
 

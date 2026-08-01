@@ -11,7 +11,7 @@ use super::prompts::{
     build_tmux_window_name, parse_tmux_window_task_id, pr_rebase_preamble, rebase_preamble,
     EpicContext, LearningInjections, PromptContext, DISPATCH_PLUGIN_DIR,
 };
-use super::worktree::provision_worktree;
+use super::worktree::{provision_worktree, BaseRef, StartPoint};
 
 /// Width of the `dispatch agent-tree` companion pane, as a percentage of the
 /// agent window — narrower than [`tmux::split_window_horizontal`]'s 40%
@@ -160,7 +160,12 @@ fn dispatch_with_prompt(
         }
     };
 
-    let provision = provision_worktree(task, runner, Some(&effective_base), SUBPROCESS_TIMEOUT)?;
+    let provision = provision_worktree(
+        task,
+        runner,
+        Some(BaseRef::Branch(&effective_base)),
+        SUBPROCESS_TIMEOUT,
+    )?;
 
     let preamble = match &provision.fetch_warning {
         Some(warning) => format!("{preamble}\n\nNote: {warning}"),
@@ -196,7 +201,13 @@ fn dispatch_with_prompt(
 
     spawn_agent_tree_pane(&provision.tmux_window, task.id, runner);
 
-    tracing::info!(task_id = task.id.0, worktree = %provision.worktree_path, "agent dispatched");
+    tracing::info!(
+        task_id = task.id.0,
+        worktree = %provision.worktree_path,
+        base = provision.start_point.as_ref().map(StartPoint::base),
+        reused_worktree = provision.reused_worktree,
+        "agent dispatched"
+    );
 
     Ok(DispatchResult {
         worktree_path: provision.worktree_path,

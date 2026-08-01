@@ -2358,13 +2358,14 @@ async fn dispatch_task_recalculates_epic_status() {
 
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]));
     let state = Arc::new(McpState::new(
         McpDeps {

@@ -5,7 +5,7 @@ use super::prompts::{
     rebase_preamble, task_block, tdd_instruction, wrap_up_instruction, EpicContext,
     LearningInjections, PromptContext,
 };
-use super::worktree::provision_worktree;
+use super::worktree::{provision_worktree, BaseRef, StartPoint};
 use super::*;
 
 use crate::models::{EpicId, Task, TaskId, TaskStatus};
@@ -726,7 +726,8 @@ fn dispatch_reuses_existing_worktree() {
 
     let mock = MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
-        MockProcessRunner::ok(), // git fetch origin main
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         // git worktree add is skipped (dir exists)
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
@@ -746,12 +747,12 @@ fn dispatch_reuses_existing_worktree() {
             .all(|(prog, args)| !(prog == "git" && args.iter().any(|a| a == "worktree"))),
         "git worktree add should be skipped for existing worktree"
     );
-    assert_eq!(calls[1].0, "tmux");
-    assert_eq!(calls[1].1[0], "new-window");
     assert_eq!(calls[2].0, "tmux");
-    assert_eq!(calls[2].1[0], "set-option");
+    assert_eq!(calls[2].1[0], "new-window");
     assert_eq!(calls[3].0, "tmux");
-    assert_eq!(calls[3].1[0], "set-hook");
+    assert_eq!(calls[3].1[0], "set-option");
+    assert_eq!(calls[4].0, "tmux");
+    assert_eq!(calls[4].1[0], "set-hook");
 }
 
 #[test]
@@ -760,26 +761,27 @@ fn dispatch_sends_claude_command() {
 
     let mock = MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook (after-split-window)
-        MockProcessRunner::ok(),                    // tmux send-keys -l (the claude command)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // tmux send-keys -l (the claude command)
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = make_task(&repo_path);
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    // The literal send-keys call (index 4) carries the claude invocation
+    // The literal send-keys call (index 5) carries the claude invocation
     assert!(
-        calls[4].1.iter().any(|a| a.contains("claude")),
+        calls[5].1.iter().any(|a| a.contains("claude")),
         "send-keys should include claude"
     );
     assert!(
-        !calls[4].1.iter().any(|a| a.contains("--permission-mode")),
+        !calls[5].1.iter().any(|a| a.contains("--permission-mode")),
         "dispatch_agent send-keys should omit --permission-mode (auto/default)"
     );
 }
@@ -790,20 +792,21 @@ fn dispatch_agent_uses_default_permission_mode() {
 
     let mock = MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = make_task(&repo_path);
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    let send_keys_arg = find_call_arg(&calls, 5, "claude");
     assert!(
         !send_keys_arg.contains("--permission-mode"),
         "dispatch_agent should use default (auto) mode — no --permission-mode flag, got: {send_keys_arg}"
@@ -815,13 +818,14 @@ fn dispatch_agent_splits_agent_tree_companion_pane_after_send_keys() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook (after-split-window)
-        MockProcessRunner::ok(),                    // tmux send-keys -l (claude command)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // tmux send-keys -l (claude command)
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = make_task(&repo_path);
@@ -853,13 +857,14 @@ fn dispatch_agent_succeeds_even_if_companion_pane_split_fails() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                   // git fetch origin main
-        MockProcessRunner::ok(),                   // tmux new-window
-        MockProcessRunner::ok(),                   // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                   // tmux set-hook (after-split-window)
-        MockProcessRunner::ok(),                   // tmux send-keys -l (claude command)
-        MockProcessRunner::ok(),                   // tmux send-keys Enter
-        MockProcessRunner::fail("no target pane"), // tmux split-window fails
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // tmux send-keys -l (claude command)
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::fail("no target pane"),    // tmux split-window fails
     ]);
 
     let task = make_task(&repo_path);
@@ -875,20 +880,21 @@ fn research_agent_uses_plan_permission_mode() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = make_task(&repo_path);
     research_agent(&task, &mock, None, None).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    let send_keys_arg = find_call_arg(&calls, 5, "claude");
     assert!(
         send_keys_arg.contains("--permission-mode plan"),
         "research_agent should use --permission-mode plan to keep investigation read-only, got: {send_keys_arg}"
@@ -900,20 +906,21 @@ fn quick_dispatch_agent_uses_default_permission_mode() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = make_task(&repo_path);
     quick_dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    let send_keys_arg = find_call_arg(&calls, 5, "claude");
     assert!(
         !send_keys_arg.contains("--permission-mode"),
         "quick_dispatch_agent should use default (auto) mode — no --permission-mode flag, got: {send_keys_arg}"
@@ -957,10 +964,11 @@ fn dispatch_pr_review_task_bases_worktree_on_pr_head_branch() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"feature-x\nfalse\n"), // gh pr view
         MockProcessRunner::ok(),                                  // git fetch origin feature-x
-        MockProcessRunner::ok(), // git worktree add origin/feature-x
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option
-        MockProcessRunner::ok(), // tmux set-hook
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // git worktree add origin/feature-x
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option
+        MockProcessRunner::ok(),                      // tmux set-hook
     ]);
 
     let task = pr_review_task(&repo_path);
@@ -987,12 +995,13 @@ fn dispatch_pr_review_task_prompt_rebases_onto_pr_branch() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"feature-x\nfalse\n"), // gh pr view
         MockProcessRunner::ok(),                                  // git fetch origin feature-x
-        MockProcessRunner::ok(),                                  // tmux new-window
-        MockProcessRunner::ok(),                                  // tmux set-option
-        MockProcessRunner::ok(),                                  // tmux set-hook
-        MockProcessRunner::ok(),                                  // tmux send-keys -l
-        MockProcessRunner::ok(),                                  // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"),               // tmux split-window (agent-tree)
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = pr_review_task(&repo_path);
@@ -1019,9 +1028,9 @@ fn dispatch_prompt_includes_fetch_warning_when_fetch_fails() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::fail("fatal: could not read from remote repository"),
-        MockProcessRunner::fail("fatal: could not read from remote repository"),
-        MockProcessRunner::fail("fatal: could not read from remote repository"),
+        MockProcessRunner::fail("fatal: could not read from remote repository"), // git fetch
+        MockProcessRunner::ok(),                  // git remote get-url origin
+        MockProcessRunner::fail_with_code(2, ""), // git ls-remote --exit-code (404)
         // git worktree add is skipped (dir exists)
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
@@ -1053,7 +1062,8 @@ fn dispatch_prompt_has_no_warning_when_fetch_succeeds() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin main
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         // git worktree add is skipped (dir exists)
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
@@ -1080,11 +1090,12 @@ fn dispatch_non_review_task_skips_gh_and_keeps_base_rebase() {
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin main
-        MockProcessRunner::ok(), // git worktree add origin/main
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option
-        MockProcessRunner::ok(), // tmux set-hook
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // git worktree add origin/main
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option
+        MockProcessRunner::ok(),                      // tmux set-hook
     ]);
 
     // make_task has tag None / url None — a plain implementation task.
@@ -1106,6 +1117,7 @@ fn dispatch_review_task_pr_resolution_failure_falls_back_to_base() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::fail("gh: not authenticated"), // gh pr view fails
         MockProcessRunner::ok(),                          // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"),     // git rev-list --count --left-right
         MockProcessRunner::ok(),                          // git worktree add origin/main
         MockProcessRunner::ok(),                          // tmux new-window
         MockProcessRunner::ok(),                          // tmux set-option
@@ -1129,6 +1141,7 @@ fn dispatch_review_task_fork_pr_falls_back_to_base() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"patch-1\ntrue\n"), // gh pr view: fork PR
         MockProcessRunner::ok(),                               // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"),          // git rev-list --count --left-right
         MockProcessRunner::ok(),                               // git worktree add origin/main
         MockProcessRunner::ok(),                               // tmux new-window
         MockProcessRunner::ok(),                               // tmux set-option
@@ -1142,6 +1155,42 @@ fn dispatch_review_task_fork_pr_falls_back_to_base() {
         worktree_add_start_point(&mock.recorded_calls()),
         "origin/main",
         "fork PR should fall back to the base branch"
+    );
+}
+
+#[test]
+fn provision_worktree_never_measures_a_pr_head_branch() {
+    let (_dir, repo_path) = make_test_repo();
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin feature-x
+        MockProcessRunner::ok(), // git worktree add origin/feature-x
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option
+        MockProcessRunner::ok(), // tmux set-hook
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::PrHead("feature-x")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
+
+    let calls = mock.recorded_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.contains(&"rev-list".to_string())),
+        "a PR head branch must never be compared against a local ref: {calls:?}"
+    );
+    assert_eq!(
+        result.start_point,
+        Some(StartPoint::Remote {
+            base: "feature-x".to_string()
+        })
     );
 }
 
@@ -1199,25 +1248,31 @@ fn provision_worktree_with_base_branch_passes_start_point() {
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin 99-prev-task
-        MockProcessRunner::ok(), // git worktree add (with origin/99-prev-task)
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // git fetch origin 99-prev-task
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // git worktree add (with origin/99-prev-task)
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
     ]);
 
     let task = make_task(&repo_path);
-    let result =
-        provision_worktree(&task, &mock, Some("99-prev-task"), SUBPROCESS_TIMEOUT).unwrap();
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("99-prev-task")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
 
     let calls = mock.recorded_calls();
     // call[0] = fetch
     assert_eq!(calls[0].0, "git");
     assert!(calls[0].1.contains(&"fetch".to_string()));
     assert!(calls[0].1.contains(&"99-prev-task".to_string()));
-    // call[1] = worktree add — start point is now origin/<base>
-    assert_eq!(calls[1].0, "git");
-    let git_args = &calls[1].1;
+    // call[2] = worktree add — start point is now origin/<base>
+    assert_eq!(calls[2].0, "git");
+    let git_args = &calls[2].1;
     assert_eq!(
         git_args.last().unwrap(),
         "origin/99-prev-task",
@@ -1234,15 +1289,22 @@ fn provision_worktree_fetches_origin_before_create() {
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin main
-        MockProcessRunner::ok(), // git worktree add
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // git worktree add
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
     ]);
 
     let task = make_task(&repo_path);
-    provision_worktree(&task, &mock, Some("main"), SUBPROCESS_TIMEOUT).unwrap();
+    provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("main")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
 
     let calls = mock.recorded_calls();
     // call[0] = git fetch origin main
@@ -1254,36 +1316,42 @@ fn provision_worktree_fetches_origin_before_create() {
     );
     assert!(calls[0].1.contains(&"origin".to_string()));
     assert!(calls[0].1.contains(&"main".to_string()));
-    // call[1] = git worktree add ... origin/main
-    assert_eq!(calls[1].0, "git");
-    assert!(calls[1].1.contains(&"worktree".to_string()));
+    // call[2] = git worktree add ... origin/main
+    assert_eq!(calls[2].0, "git");
+    assert!(calls[2].1.contains(&"worktree".to_string()));
     assert_eq!(
-        calls[1].1.last().unwrap(),
+        calls[2].1.last().unwrap(),
         "origin/main",
         "worktree add should use origin/main as start point, got: {:?}",
-        calls[1].1
+        calls[2].1
     );
 }
 
 #[test]
 fn provision_worktree_fetch_failure_falls_back_to_local_after_retries() {
-    // Every fetch attempt fails → worktree add should use the local branch
-    // (no error propagated), and a warning should be attached to the result.
+    // A fetch that fails and classifies as "no origin ref" (a 404 from
+    // ls-remote) is not retried, and the local branch is used — no error.
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::fail("fatal: 'origin' does not appear to be a git repository"),
-        MockProcessRunner::fail("fatal: 'origin' does not appear to be a git repository"),
-        MockProcessRunner::fail("fatal: 'origin' does not appear to be a git repository"),
-        MockProcessRunner::ok(), // git worktree add
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::fail("fatal: couldn't find remote ref main"), // git fetch
+        MockProcessRunner::ok(),                  // git remote get-url origin
+        MockProcessRunner::fail_with_code(2, ""), // git ls-remote --exit-code (404)
+        MockProcessRunner::ok(),                  // git worktree add
+        MockProcessRunner::ok(),                  // tmux new-window
+        MockProcessRunner::ok(),                  // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                  // tmux set-hook (after-split-window)
     ]);
 
     let task = make_task(&repo_path);
     // Should NOT return an error — soft fail
-    let result = provision_worktree(&task, &mock, Some("main"), SUBPROCESS_TIMEOUT).unwrap();
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("main")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
 
     let calls = mock.recorded_calls();
     let fetch_attempts = calls
@@ -1291,8 +1359,8 @@ fn provision_worktree_fetch_failure_falls_back_to_local_after_retries() {
         .filter(|(prog, args)| prog == "git" && args.contains(&"fetch".to_string()))
         .count();
     assert_eq!(
-        fetch_attempts, 3,
-        "expected exactly 3 fetch attempts before giving up, got: {calls:?}"
+        fetch_attempts, 1,
+        "a 404-classified fetch failure must not be retried, got: {calls:?}"
     );
     // call[3] = worktree add using local "main" (not "origin/main")
     assert_eq!(calls[3].0, "git");
@@ -1304,7 +1372,7 @@ fn provision_worktree_fetch_failure_falls_back_to_local_after_retries() {
     );
     let warning = result
         .fetch_warning
-        .expect("expected a fetch_warning when all fetch attempts fail");
+        .expect("expected a fetch_warning when there is no origin ref");
     assert!(
         warning.contains("main"),
         "warning should mention the base branch, got: {warning}"
@@ -1313,13 +1381,17 @@ fn provision_worktree_fetch_failure_falls_back_to_local_after_retries() {
 
 #[test]
 fn provision_worktree_retries_fetch_before_falling_back() {
-    // First two fetch attempts fail, third succeeds → no fallback, no warning.
+    // First fetch fails and classifies as unreachable (not a 404) → retried;
+    // second fetch fails too; third succeeds → no fallback, no warning.
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::fail("fatal: unable to access 'origin': transient network error"),
+        MockProcessRunner::ok(), // git remote get-url origin
+        MockProcessRunner::fail_with_code(128, ""), // git ls-remote --exit-code (unreachable)
         MockProcessRunner::fail("fatal: unable to access 'origin': transient network error"),
         MockProcessRunner::ok(), // third fetch attempt succeeds
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         MockProcessRunner::ok(), // git worktree add
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option @dispatch_dir
@@ -1327,7 +1399,13 @@ fn provision_worktree_retries_fetch_before_falling_back() {
     ]);
 
     let task = make_task(&repo_path);
-    let result = provision_worktree(&task, &mock, Some("main"), SUBPROCESS_TIMEOUT).unwrap();
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("main")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
 
     let calls = mock.recorded_calls();
     let fetch_attempts = calls
@@ -1339,7 +1417,7 @@ fn provision_worktree_retries_fetch_before_falling_back() {
         "expected 3 fetch attempts (2 failures + 1 success), got: {calls:?}"
     );
     assert_eq!(
-        calls[3].1.last().unwrap(),
+        calls[6].1.last().unwrap(),
         "origin/main",
         "should use origin/main once fetch eventually succeeds, got: {calls:?}"
     );
@@ -1355,15 +1433,22 @@ fn provision_worktree_fetch_uses_custom_base_branch() {
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin develop
-        MockProcessRunner::ok(), // git worktree add
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // git fetch origin develop
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // git worktree add
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
     ]);
 
     let task = make_task(&repo_path);
-    provision_worktree(&task, &mock, Some("develop"), SUBPROCESS_TIMEOUT).unwrap();
+    provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("develop")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
 
     let calls = mock.recorded_calls();
     assert!(
@@ -1372,10 +1457,10 @@ fn provision_worktree_fetch_uses_custom_base_branch() {
         calls[0].1
     );
     assert_eq!(
-        calls[1].1.last().unwrap(),
+        calls[2].1.last().unwrap(),
         "origin/develop",
         "worktree add should use origin/develop, got: {:?}",
-        calls[1].1
+        calls[2].1
     );
 }
 
@@ -1387,14 +1472,21 @@ fn provision_worktree_still_fetches_when_dir_exists() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin main
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
     ]);
 
     let task = make_task(&repo_path);
-    provision_worktree(&task, &mock, Some("main"), SUBPROCESS_TIMEOUT).unwrap();
+    provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("main")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
 
     let calls = mock.recorded_calls();
     assert_eq!(
@@ -1574,6 +1666,7 @@ fn dispatch_uses_task_base_branch_in_prompt() {
     let mock = MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
         MockProcessRunner::ok(), // git fetch origin master
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         // git worktree add is skipped (dir exists)
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
@@ -1605,7 +1698,8 @@ fn dispatch_fails_fast_if_git_fails() {
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                   // git fetch origin main (succeeds)
+        MockProcessRunner::ok(), // git fetch origin main (succeeds)
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         MockProcessRunner::fail("not a git repo"), // git worktree add fails
     ]);
 
@@ -1615,8 +1709,8 @@ fn dispatch_fails_fast_if_git_fails() {
     let calls = mock.recorded_calls();
     assert_eq!(
         calls.len(),
-        2,
-        "only git fetch + git worktree add should have been called (no detect_default_branch)"
+        3,
+        "only git fetch + rev-list + git worktree add should have been called (no detect_default_branch)"
     );
 }
 
@@ -1626,7 +1720,8 @@ fn quick_dispatch_reuses_existing_worktree() {
 
     let mock = MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
-        MockProcessRunner::ok(), // git fetch origin main
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         // git worktree add is skipped (dir exists)
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
@@ -1646,8 +1741,8 @@ fn quick_dispatch_reuses_existing_worktree() {
             .all(|(prog, args)| !(prog == "git" && args.iter().any(|a| a == "worktree"))),
         "git worktree add should be skipped for existing worktree"
     );
-    assert_eq!(calls[1].0, "tmux");
-    assert_eq!(calls[1].1[0], "new-window");
+    assert_eq!(calls[2].0, "tmux");
+    assert_eq!(calls[2].1[0], "new-window");
 }
 
 #[test]
@@ -1656,13 +1751,14 @@ fn quick_dispatch_sends_rename_prompt() {
 
     let mock = MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook (after-split-window)
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = make_task(&repo_path);
@@ -2121,13 +2217,14 @@ fn dispatch_agent_uses_task_base_branch_in_prompt() {
 
     // No detect_default_branch call expected — task.base_branch is used directly
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin develop
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin develop
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let mut task = make_task(&repo_path);
@@ -2158,20 +2255,21 @@ fn dispatch_agent_includes_plugin_dir() {
 
     let mock = MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
 
     let task = make_task(&repo_path);
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    let send_keys_arg = find_call_arg(&calls, 5, "claude");
     assert!(
         send_keys_arg.contains("--plugin-dir"),
         "dispatch_agent should include --plugin-dir, got: {send_keys_arg}"
@@ -2217,13 +2315,14 @@ fn resume_agent_includes_plugin_dir() {
 
 fn dispatch_mock() -> MockProcessRunner {
     MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ])
 }
 
@@ -2247,7 +2346,7 @@ fn dispatch_agent_launches_the_runners_claude_binary() {
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    let send_keys_arg = find_call_arg(&calls, 5, "claude");
     // The binary rides as bash's `$0`, after the script body.
     assert!(
         send_keys_arg.ends_with("/stub/bin/claude-stub"),
@@ -2265,7 +2364,7 @@ fn dispatch_agent_launches_the_runners_dispatch_binary_in_the_companion_pane() {
 
     // The companion pane is spawned via `split-window --`, so the binary is a
     // plain argv element rather than part of a shell string.
-    let split = &mock.recorded_calls()[6].1;
+    let split = &mock.recorded_calls()[7].1;
     assert!(
         split.contains(&"/stub/bin/dispatch-stub".to_string()),
         "companion pane must exec the runner's dispatch binary, got: {split:?}"
@@ -2302,15 +2401,15 @@ fn agent_launchers_default_to_bare_binary_names() {
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 4, "claude");
+    let send_keys_arg = find_call_arg(&calls, 5, "claude");
     assert!(
         send_keys_arg.ends_with("' claude"),
         "the default must be the bare, unquoted name, got: {send_keys_arg}"
     );
     assert!(
-        calls[6].1.contains(&"dispatch".to_string()),
+        calls[7].1.contains(&"dispatch".to_string()),
         "the default companion binary must be the bare name, got: {:?}",
-        calls[6].1
+        calls[7].1
     );
 }
 
@@ -2618,41 +2717,32 @@ fn branch_from_worktree_returns_none_for_root() {
 
 #[test]
 fn provision_worktree_kills_git_fetch_on_timeout_and_falls_back() {
-    // git fetch times out → process is killed and treated as soft-fail (fallback to local branch).
-    // Before fix (using run): mock sleeps 100ms then succeeds → start_point = "origin/main".
-    // After fix (using run_with_timeout): timeout error caught → falls back to local "main".
+    // git fetch times out on every attempt → classified as unreachable
+    // (never a 404), retried to exhaustion, then aborts. A worktree silently
+    // based on a stale local ref is worse than a dispatch that refuses to
+    // start, so no tmux window is ever created.
     let (_dir, repo_path) = make_test_repo();
     let short_timeout = Duration::from_millis(10);
 
     let mock = MockProcessRunner::new_with_delays(vec![
         (Some(Duration::from_millis(100)), MockProcessRunner::ok()), // git fetch attempt 1 → timeout (killed)
+        (None, MockProcessRunner::ok()),                             // git remote get-url origin
+        (None, MockProcessRunner::ok()), // git ls-remote --exit-code (unreachable: not code 2)
         (Some(Duration::from_millis(100)), MockProcessRunner::ok()), // git fetch attempt 2 → timeout (killed)
         (Some(Duration::from_millis(100)), MockProcessRunner::ok()), // git fetch attempt 3 → timeout (killed)
-        (None, MockProcessRunner::ok()), // git worktree add (local fallback)
-        (None, MockProcessRunner::ok()), // tmux new-window
-        (None, MockProcessRunner::ok()), // tmux set-option
-        (None, MockProcessRunner::ok()), // tmux set-hook
     ]);
 
     let task = make_task(&repo_path);
-    // Soft-fail: provision_worktree succeeds despite fetch timeout
-    let result = provision_worktree(&task, &mock, Some("main"), short_timeout);
+    let result = provision_worktree(&task, &mock, Some(BaseRef::Branch("main")), short_timeout);
     assert!(
-        result.is_ok(),
-        "fetch timeout should soft-fail, got: {result:?}"
+        result.is_err(),
+        "an unreachable origin must abort provisioning rather than fall back to local, got: {result:?}"
     );
 
-    // After fetch timeout, worktree add must use local "main" (not "origin/main")
     let calls = mock.recorded_calls();
-    let worktree_call = calls
-        .iter()
-        .find(|c| c.1.contains(&"worktree".to_string()))
-        .expect("expected git worktree add call");
-    assert_eq!(
-        worktree_call.1.last().unwrap(),
-        "main",
-        "after fetch timeout, start point should be local 'main', got: {:?}",
-        worktree_call.1
+    assert!(
+        !calls.iter().any(|(prog, _)| prog == "tmux"),
+        "aborting must happen before any tmux window is created, got: {calls:?}"
     );
 }
 
@@ -2714,13 +2804,14 @@ fn assert_worktree_confinement(prompt: &str) {
 fn dispatch_agent_prompt_includes_worktree_confinement() {
     let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
     let task = make_task(&repo_path);
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
@@ -2731,13 +2822,14 @@ fn dispatch_agent_prompt_includes_worktree_confinement() {
 fn research_agent_prompt_is_correct() {
     let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
     let task = make_task(&repo_path);
     research_agent(&task, &mock, None, None).unwrap();
@@ -2757,13 +2849,14 @@ fn research_agent_prompt_is_correct() {
 fn quick_dispatch_agent_prompt_includes_worktree_confinement() {
     let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
     let task = make_task(&repo_path);
     quick_dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
@@ -2784,28 +2877,29 @@ fn quick_dispatch_agent_prompt_includes_worktree_confinement() {
 fn dispatch_agent_opens_tmux_window_in_worktree_not_parent_repo() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]);
     let task = make_task(&repo_path);
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    // Call 1 is `tmux new-window …` (call 0 is the git fetch); its `-c <dir>`
-    // argument sets the window cwd.
-    assert_eq!(calls[1].0, "tmux");
-    assert_eq!(calls[1].1[0], "new-window");
-    let c_pos = calls[1]
+    // Call 2 is `tmux new-window …` (call 0 is the git fetch, call 1 the
+    // rev-list); its `-c <dir>` argument sets the window cwd.
+    assert_eq!(calls[2].0, "tmux");
+    assert_eq!(calls[2].1[0], "new-window");
+    let c_pos = calls[2]
         .1
         .iter()
         .position(|a| a == "-c")
         .expect("new-window should pass -c <working_dir>");
-    let cwd = &calls[1].1[c_pos + 1];
+    let cwd = &calls[2].1[c_pos + 1];
     // Pinning the exact worktree path both proves the window opens *inside* the
     // worktree and (transitively) that it is not the bare parent repo — the
     // worktree-escape guarantee this test exists to lock down.
@@ -2828,7 +2922,8 @@ fn dispatch_agent_opens_tmux_window_in_worktree_not_parent_repo() {
 fn dispatch_agent_propagates_tmux_new_window_failure() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin main
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         // git worktree add is skipped (dir exists); first tmux call fails.
         MockProcessRunner::fail("no server running on /tmp/tmux-1000/default"),
     ]);
@@ -2850,11 +2945,12 @@ fn dispatch_agent_propagates_tmux_new_window_failure() {
 fn dispatch_agent_propagates_send_keys_failure() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::fail("can't find pane"), // tmux send-keys -l fails
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::fail("can't find pane"),   // tmux send-keys -l fails
     ]);
     let task = make_task(&repo_path);
     let result = dispatch_agent(&task, &mock, None, &LearningInjections::default(), None);

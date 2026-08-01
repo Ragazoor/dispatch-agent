@@ -875,7 +875,8 @@ async fn exec_dispatch_sends_dispatched_message() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockProcessRunner::new(vec![
         // No detect_default_branch call — task.base_branch is used directly
-        MockProcessRunner::ok(), // git fetch origin main
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
         // git worktree add is skipped (dir pre-created above)
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
@@ -1513,13 +1514,14 @@ async fn exec_quick_dispatch_creates_task_and_dispatches() {
         // detect_default_branch (resolved to "main")
         MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
         // provision_worktree: fetch runs, then dir exists so git worktree add is skipped
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook (after-split-window)
-        MockProcessRunner::ok(),                    // tmux send-keys -l (claude command)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(),                      // tmux send-keys -l (claude command)
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
     let tasks = db.list_all().await.unwrap();
@@ -1623,13 +1625,14 @@ async fn exec_quick_dispatch_with_epic_dispatches_successfully() {
     let mock = Arc::new(MockProcessRunner::new(vec![
         // detect_default_branch (resolved to "main")
         MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l (claude command)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l (claude command)
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
     let tasks = db.list_all().await.unwrap();

@@ -1440,13 +1440,14 @@ async fn wrap_up_rebase_clears_conflict_substatus_on_non_conflict_error() {
 /// split-window call must return a pane id.
 fn dispatch_runner_script() -> Arc<MockProcessRunner> {
     Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                    // git fetch origin main
-        MockProcessRunner::ok(),                    // tmux new-window
-        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                    // tmux set-hook
-        MockProcessRunner::ok(),                    // tmux send-keys -l (writes prompt file)
-        MockProcessRunner::ok(),                    // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l (writes prompt file)
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
     ]))
 }
 
