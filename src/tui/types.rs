@@ -188,9 +188,6 @@ pub enum Message {
     /// Local-first repo sync messages — see
     /// [`crate::tui::messages::RepoSyncMessage`].
     RepoSync(crate::tui::messages::RepoSyncMessage),
-    /// Wrap-up flow messages (rebase only — PR creation is agent-driven via the
-    /// `/wrap-up` skill). See [`crate::tui::messages::WrapUpMessage`].
-    WrapUp(crate::tui::messages::WrapUpMessage),
     /// Tips overlay messages — see [`crate::tui::messages::TipsMessage`].
     Tips(crate::tui::messages::TipsMessage),
     /// Knowledge-base overlay messages — see [`crate::tui::messages::LearningMessage`].
@@ -297,14 +294,12 @@ pub enum InputMode {
     /// `select.pending_done` (one entry for a single move, N for a batch),
     /// which is why the variant carries no payload.
     ConfirmDone,
-    ConfirmWrapUp(TaskId),
     ConfirmDetachTmux(Vec<TaskId>),
     // Epic input modes
     InputEpicTitle,
     InputEpicDescription,
     ConfirmDeleteEpic,
     ConfirmArchiveEpic,
-    ConfirmEpicWrapUp(EpicId),
     ReparentEpic(EpicId),
     ConfirmReparentEpic {
         epic_id: EpicId,
@@ -1004,19 +999,6 @@ pub struct EpicDraft {
 }
 
 // ---------------------------------------------------------------------------
-// MergeQueue — state for batch epic wrap-up
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct MergeQueue {
-    pub epic_id: EpicId,
-    pub task_ids: Vec<TaskId>,
-    pub completed: usize,
-    pub current: Option<TaskId>,
-    pub failed: Option<TaskId>,
-}
-
-// ---------------------------------------------------------------------------
 // SubtaskStats — pre-computed per-epic subtask status counts
 // ---------------------------------------------------------------------------
 
@@ -1043,7 +1025,6 @@ impl SubtaskStats {
         epic: &Epic,
         all_tasks: &[Task],
         children_map: &HashMap<EpicId, Vec<EpicId>>,
-        active_merge_epic: Option<EpicId>,
     ) -> Self {
         let epic_ids = crate::models::descendant_epic_ids_with_map(epic.id, children_map);
 
@@ -1069,7 +1050,7 @@ impl SubtaskStats {
             }
         }
 
-        let substatus = crate::models::epic_substatus(epic, &owned, active_merge_epic);
+        let substatus = crate::models::epic_substatus(epic, &owned);
 
         SubtaskStats {
             backlog,
@@ -1211,7 +1192,7 @@ mod tests {
             make_test_task(2, TaskStatus::Done, Some(1)),
         ];
         let cm = crate::models::build_children_map(&epics);
-        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm, None);
+        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm);
         assert_eq!(stats.running, 1);
         assert_eq!(stats.done, 1);
         assert_eq!(stats.total, 2);
@@ -1226,7 +1207,7 @@ mod tests {
             make_test_task(3, TaskStatus::Done, Some(2)),
         ];
         let cm = crate::models::build_children_map(&epics);
-        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm, None);
+        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm);
         assert_eq!(stats.backlog, 1);
         assert_eq!(stats.running, 1);
         assert_eq!(stats.done, 1);
@@ -1242,7 +1223,7 @@ mod tests {
         ];
         let tasks = vec![make_test_task(1, TaskStatus::Running, Some(3))];
         let cm = crate::models::build_children_map(&epics);
-        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm, None);
+        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm);
         assert_eq!(stats.running, 1);
         assert_eq!(stats.total, 1);
     }
@@ -1255,7 +1236,7 @@ mod tests {
             make_test_task(2, TaskStatus::Archived, Some(2)),
         ];
         let cm = crate::models::build_children_map(&epics);
-        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm, None);
+        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm);
         assert_eq!(stats.running, 1);
         assert_eq!(stats.total, 1);
     }
@@ -1268,7 +1249,7 @@ mod tests {
             make_test_task(2, TaskStatus::Running, None), // unowned — must not count
         ];
         let cm = crate::models::build_children_map(&epics);
-        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm, None);
+        let stats = SubtaskStats::for_epic(&epics[0], &tasks, &cm);
         assert_eq!(stats.running, 1);
         assert_eq!(stats.total, 1);
     }
@@ -1288,7 +1269,7 @@ mod tests {
         let tasks = vec![blocked_task];
 
         let cm = crate::models::build_children_map(&epics);
-        let stats = SubtaskStats::for_epic(&parent, &tasks, &cm, None);
+        let stats = SubtaskStats::for_epic(&parent, &tasks, &cm);
         assert_eq!(stats.substatus, EpicSubstatus::Blocked(1));
     }
 

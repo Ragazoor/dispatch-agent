@@ -114,9 +114,7 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
             Span::styled("[f]", key),
             Span::styled(" filter repos  ", desc),
             Span::styled("[A]", key),
-            Span::styled(" filter active  ", desc),
-            Span::styled("[W]", key),
-            Span::styled(" wrap up", desc),
+            Span::styled(" filter active", desc),
         ]),
         Line::from(vec![
             Span::styled("  [T]", key),

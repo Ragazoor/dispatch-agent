@@ -257,7 +257,7 @@ impl TuiRuntime {
     /// while its session was already gone. Routing through
     /// [`crate::service::TaskServiceApi::close_session`] makes the teardown
     /// conditional on the write, so window and `tmux_window` can never disagree
-    /// (`FinishTaskSuccess` in `docs/specs/pr-workflow.allium`).
+    /// (`ExitSession` in `docs/specs/pr-workflow.allium`).
     ///
     /// Returns the teardown's `JoinHandle` when a window was killed (`None`
     /// when the close failed or there was no window), mirroring
@@ -805,70 +805,6 @@ impl TuiRuntime {
                 let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
                     format!("Cleanup failed: {e:#}"),
                 )));
-            }
-        });
-    }
-
-    pub(super) async fn exec_finish(
-        &self,
-        id: TaskId,
-        repo_path: String,
-        branch: String,
-        base_branch: String,
-        worktree: String,
-    ) {
-        let shared = match self
-            .database
-            .has_other_tasks_with_worktree(&worktree, id)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                self.send_system_error(format!("Finish check failed: {e:#}"));
-                return;
-            }
-        };
-
-        if shared {
-            tracing::info!(
-                task_id = id.0,
-                "worktree shared, detaching only (no rebase)"
-            );
-            self.detach_only(id).await;
-            let _ = self.msg_tx.send(Message::Task(
-                crate::tui::messages::TaskMessage::FinishComplete(id),
-            ));
-            return;
-        }
-
-        let tx = self.msg_tx.clone();
-        let runner = self.runner.clone();
-
-        tokio::task::spawn_blocking(move || {
-            match dispatch::finish_task(
-                &dispatch::FinishContext {
-                    repo_path: &repo_path,
-                    worktree: &worktree,
-                    branch: &branch,
-                    base_branch: &base_branch,
-                },
-                &*runner,
-            ) {
-                Ok(()) => {
-                    let _ = tx.send(Message::Task(
-                        crate::tui::messages::TaskMessage::FinishComplete(id),
-                    ));
-                }
-                Err(e) => {
-                    let is_conflict = matches!(e, dispatch::FinishError::RebaseConflict { .. });
-                    let _ = tx.send(Message::Task(
-                        crate::tui::messages::TaskMessage::FinishFailed {
-                            id,
-                            error: e.to_string(),
-                            is_conflict,
-                        },
-                    ));
-                }
             }
         });
     }

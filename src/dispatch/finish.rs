@@ -67,10 +67,10 @@ pub struct FinishContext<'a> {
 /// Rebase the task branch onto `base_branch` and fast-forward it. The git half
 /// of a finish and nothing else: no tmux teardown, no task write.
 ///
-/// Killing the session is the caller's job, and deliberately so — both finish
-/// paths gate the teardown on the task's terminal write landing first, so a task
-/// whose Done write failed keeps its live window (`FinishTaskSuccess` and
-/// `ExitSession` in `docs/specs/pr-workflow.allium`). The worktree is preserved
+/// Killing the session is the caller's job, and deliberately so — the caller
+/// gates the teardown on the task's terminal write landing first, so a task
+/// whose Done write failed keeps its live window (`ExitSession` in
+/// `docs/specs/pr-workflow.allium`). The worktree is preserved
 /// — it will be cleaned up when the task is archived.
 pub fn finish_task(
     ctx: &FinishContext,
@@ -201,7 +201,7 @@ mod tests {
 
     // finish_task is the git half only: a successful rebase + fast-forward
     // issues no tmux call at all. The teardown belongs to the caller, gated on
-    // the task's terminal write landing (FinishTaskSuccess in
+    // the task's terminal write landing (ExitSession in
     // docs/specs/pr-workflow.allium).
     #[test]
     fn finish_task_issues_no_tmux_command() {

@@ -25,4 +25,3 @@ mod split_pane;
 mod system;
 mod tips_projects;
 mod todos;
-mod wrap_up;

@@ -127,35 +127,10 @@ rule CreateEpic {
         -- the epic level.
 }
 
-rule EpicBatchWrapUp {
-    when: EpicBatchWrapUp(epic, rebase)
-
-    -- Rebase-only batch. PR creation is no longer batched from the
-    -- TUI — see WrapUpPr in pr-workflow.allium. Author bespoke PRs from
-    -- the agent /wrap-up skill instead.
-
-    let review_tasks = epic.subtasks where status = review and worktree != null
-
-    requires: review_tasks.count > 0
-
-    ensures:
-        for task in sort_by_order(review_tasks):
-            WrapUpRebase(task)
-
-    @guidance
-        -- Sequences rebase across all review tasks in an epic that
-        -- have a worktree. Tasks are processed one at a time in
-        -- sort_order (sort_order ascending, nulls treated as the task
-        -- id; no secondary id tie-break). On success, the next task is
-        -- processed automatically. On conflict or failure, the queue
-        -- pauses and reports the failing task — the user can resolve
-        -- the conflict and resume or cancel.
-        -- The MergeQueue tracks progress (completed count, current task,
-        -- failed task) and can be cancelled at any time (Esc).
-        -- A task is skipped if it is no longer eligible when reached
-        -- (e.g. status changed off review, worktree cleared, or no
-        -- branch can be derived from the worktree path).
-}
+-- There is no batch wrap-up for an epic. Each subtask's agent wraps its
+-- own work up through the MCP wrap_up tool (see pr-workflow.allium);
+-- there is no board-driven merge queue that sequences rebases across an
+-- epic's review tasks.
 
 rule MoveEpicForward {
     when: MoveEpicStatus(epic, forward)
@@ -757,11 +732,6 @@ rule AutoDispatchNextSubtask {
         -- may have turned chaining off. (The predecessor dispatch_next tool
         -- failed open, which was right for an explicit agent request; that
         -- reasoning does not transfer to an automatic trigger.)
-        --
-        -- The TUI finish path (W then r, FinishTaskSuccess in
-        -- pr-workflow.allium) does not emit SessionClosed and therefore does
-        -- not chain. Adding chaining to human-driven finishes is a separate
-        -- decision.
 }
 
 -- == Feed Task Identity Invariant ==
@@ -1129,8 +1099,7 @@ rule ProvisionManagedEpics {
     --     tasks with sub_status in {needs_input, stale, crashed, conflict};
     --     running sub-epics do not directly contribute to blocked count)
     --   running + no blocked          => active
-    --   review + active merge         => wrapping up
-    --   review + no active merge      => in review
+    --   review                        => in review
     --   done/archived                 => done
     --
     -- Epic cards show colored status indicators (●N) for each non-zero

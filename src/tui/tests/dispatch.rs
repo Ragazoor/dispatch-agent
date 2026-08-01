@@ -525,6 +525,12 @@ fn resumed_seeds_last_pre_tool_use_at() {
     assert!(persisted.last_pre_tool_use_at.is_some());
 }
 
+// `TaskMessage::FinishFailed` no longer exists — the TUI wrap-up entry
+// point (`W`) is gone, so the board never learns about a rebase conflict
+// via a TUI message. The MCP `wrap_up` tool sets `sub_status` directly via
+// `TaskService`, and the board picks it up on its next DB refresh. These
+// tests set the conflict flag directly to model that refresh.
+
 #[test]
 fn conflict_flag_clears_on_dispatch() {
     let mut app = App::new(vec![{
@@ -532,14 +538,7 @@ fn conflict_flag_clears_on_dispatch() {
         t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
         t
     }]);
-
-    app.update(Message::Task(
-        crate::tui::messages::TaskMessage::FinishFailed {
-            id: TaskId(1),
-            error: "conflict".to_string(),
-            is_conflict: true,
-        },
-    ));
+    app.find_task_mut(TaskId(1)).unwrap().sub_status = SubStatus::Conflict;
     assert!(app
         .find_task(TaskId(1))
         .is_some_and(|t| t.sub_status == SubStatus::Conflict));
@@ -560,14 +559,7 @@ fn conflict_flag_clears_on_move_backward() {
         t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
         t
     }]);
-
-    app.update(Message::Task(
-        crate::tui::messages::TaskMessage::FinishFailed {
-            id: TaskId(1),
-            error: "conflict".to_string(),
-            is_conflict: true,
-        },
-    ));
+    app.find_task_mut(TaskId(1)).unwrap().sub_status = SubStatus::Conflict;
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
         id: TaskId(1),

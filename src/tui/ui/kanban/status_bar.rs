@@ -218,22 +218,12 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
             "Filter repos: [1-9] toggle  [a] all  [q/Esc] close",
             Color::Cyan,
         ),
-        InputMode::ConfirmWrapUp(_) => hint_text(
-            app,
-            "Wrap up: [r] rebase  [p] create PR  [Esc] cancel",
-            Color::Yellow,
-        ),
         InputMode::InputPresetName => {
             hint("Enter preset name, [Enter] save, [Esc] cancel", Color::Cyan)
         }
         InputMode::ConfirmDeletePreset => hint("[A-Z] delete preset  [Esc] cancel", Color::Cyan),
         InputMode::ConfirmDeleteRepoPath => hint(
             "Delete repo path? y to confirm, any key to cancel",
-            Color::Yellow,
-        ),
-        InputMode::ConfirmEpicWrapUp(_) => hint_text(
-            app,
-            "Epic wrap up: [r] rebase all  [p] PR all  [Esc] cancel",
             Color::Yellow,
         ),
         InputMode::ConfirmDetachTmux(_) => {

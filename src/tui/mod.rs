@@ -237,7 +237,6 @@ pub struct App {
     pub(in crate::tui) select: SelectionState,
     pub(in crate::tui) filter: FilterState,
     pub(in crate::tui) search: SearchState,
-    pub(in crate::tui) merge_queue: Option<MergeQueue>,
     /// Task IDs with an in-flight dispatch, mapped to their start time.
     /// Membership prevents duplicate dispatches; start times drive the 60-second watchdog.
     pub(in crate::tui) dispatching: HashMap<TaskId, Instant>,
@@ -480,7 +479,6 @@ impl App {
             select: SelectionState::default(),
             filter: FilterState::default(),
             search: SearchState::default(),
-            merge_queue: None,
             dispatching: HashMap::new(),
             spinner_tick: 0,
             main_session_dir: None,
@@ -680,9 +678,6 @@ impl App {
         self.select.has_selection()
     }
 
-    pub fn merge_queue(&self) -> Option<&MergeQueue> {
-        self.merge_queue.as_ref()
-    }
     pub fn notifications_enabled(&self) -> bool {
         self.notifications_enabled
     }
@@ -1032,14 +1027,13 @@ impl App {
         &self,
         children_map: &HashMap<EpicId, Vec<EpicId>>,
     ) -> EpicStatsMap {
-        let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
         self.board
             .epics
             .iter()
             .map(|e| {
                 (
                     e.id,
-                    SubtaskStats::for_epic(e, &self.board.tasks, children_map, active_merge),
+                    SubtaskStats::for_epic(e, &self.board.tasks, children_map),
                 )
             })
             .collect()
@@ -1328,8 +1322,7 @@ impl App {
                         .iter()
                         .filter(|t| t.epic_id == Some(e.id) && t.status != TaskStatus::Archived)
                         .collect();
-                    let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
-                    epic_substatus(e, &subtasks, active_merge).column_priority()
+                    epic_substatus(e, &subtasks).column_priority()
                 };
                 (priority, e.sort_order.unwrap_or(e.id.0), e.id.0)
             }
@@ -1386,7 +1379,6 @@ impl App {
         let mut running_epic_priority: std::collections::HashMap<EpicId, u8> =
             std::collections::HashMap::new();
 
-        let active_merge = self.merge_queue.as_ref().map(|q| q.epic_id);
         for epic in self.visible_epics_for_effective_view() {
             let epic_parent = epic.status;
             if epic_parent != vcol.parent_status {
@@ -1399,7 +1391,7 @@ impl App {
                     .iter()
                     .filter(|t| t.epic_id == Some(epic.id) && t.status != TaskStatus::Archived)
                     .collect();
-                let substatus = epic_substatus(epic, &subtasks, active_merge);
+                let substatus = epic_substatus(epic, &subtasks);
                 running_epic_priority.insert(epic.id, substatus.column_priority());
                 let target_col = if matches!(substatus, EpicSubstatus::Blocked(_)) {
                     2

@@ -1,11 +1,10 @@
 -- allium: 3
 -- pr-workflow.allium
 --
--- Scope: PR creation, polling, merge detection, wrap-up flows, and the
---        rebase/merge finish paths for tasks.
+-- Scope: PR creation, polling, merge detection, and the agent-driven
+--        wrap-up / session-close flows for tasks.
 -- Excludes: Task creation and kanban lifecycle (see tasks.allium);
---           dispatch (see dispatch.allium); split pane (see split-pane.allium);
---           epic wrap-up (see epics.allium).
+--           dispatch (see dispatch.allium); split pane (see split-pane.allium).
 
 use "./core.allium" as core
 
@@ -203,12 +202,9 @@ rule WrapUpRebase {
         -- unconditional updated_at assertion here.
         --
         -- WrapUpRebase is the rebase mechanic only — it does NOT change
-        -- task.status or kill the tmux window. The Done transition for
-        -- the MCP path is owned by ExitSession (the agent must call
-        -- exit_session to close its session, which marks the task done
-        -- and kills tmux). The TUI path (W then r) emits FinishTask and
-        -- is governed by FinishTaskSuccess, which keeps its own Done
-        -- transition independent of this rule.
+        -- task.status or kill the tmux window. The Done transition is
+        -- owned by ExitSession (the agent must call exit_session to close
+        -- its session, which marks the task done and kills tmux).
         --
         -- Optimistically clears conflict sub_status before attempting the
         -- rebase, so the task is no longer visually flagged while the
@@ -237,19 +233,9 @@ rule WrapUpRebase {
         -- action = rebase, and the agent must call exit_session with
         -- action="rebase"; this action-recording is now symmetric across all
         -- three wrap-up actions (rebase, done, pr) — see ExitSession, which
-        -- owns the Done transition for every action's MCP path.
-        -- Available from both the TUI (W then r) and MCP (wrap_up tool with
-        -- action "rebase").
-        --
-        -- Shared-worktree TUI fast-path: when the TUI Finish path (W+r)
-        -- detects that another active task shares the same worktree,
-        -- it bypasses rebase / fast-forward entirely. Instead it patches
-        -- the task to clear worktree and tmux_window and emits
-        -- FinishComplete, advancing the task directly to Done. The MCP
-        -- wrap_up handler has no equivalent shared-worktree check —
-        -- it always invokes finish_task and attempts the rebase. This
-        -- asymmetry is intentional: the MCP path is agent-driven and
-        -- expects an isolated worktree per task.
+        -- owns the Done transition for every action.
+        -- Reachable only from MCP (the wrap_up tool with action "rebase");
+        -- there is no board entry point.
         --
         -- The wrap_up success response includes a "Verify before exiting:
         -- run `<c>`" sentence between the "session is NOT yet closed" line
@@ -267,22 +253,12 @@ rule WrapUpRebase {
         -- detached with no timeout, so it must not spin.
         -- This is fire-and-forget: it does not block the exit-token
         -- response, does not change task status, and a failure is logged
-        -- but never surfaced to the agent. The TUI Finish path (W+r) does
-        -- not trigger a re-index.
+        -- but never surfaced to the agent.
         --
-        -- The BranchRebased emission is, in practice, carried by the MCP
-        -- wrap-up path alone: WrapUpViaMcp declares the same emission and is
-        -- the only path that performs it. This rule's path is reachable only
-        -- through the [W] key, and [W] is a dead key in practice — humans do
-        -- not use it, and its removal is tracked separately. The consumer of
-        -- the emission is RefreshRepoSyncStateAfterRebase in repo-sync.allium,
-        -- whose own guidance records the matching side of this exemption; the
-        -- two notes are meant to be read together. Because the live wrap-up
-        -- path already emits, the drift refresh loses nothing by this path not
-        -- emitting. Do not "fix" this by adding an emission to the board's
-        -- finish path, and do not drop the ensures — the declaration stays
-        -- correct for the rule as specified; what is exempt is the board
-        -- path's implementation of it, pending [W]'s removal.
+        -- The BranchRebased emission is carried by the MCP wrap-up path,
+        -- which is now the only rebase path: WrapUpViaMcp declares the same
+        -- emission and performs it. Its consumer is
+        -- RefreshRepoSyncStateAfterRebase in repo-sync.allium.
 }
 
 rule WrapUpPr {
@@ -330,8 +306,9 @@ rule WrapUpPr {
         -- the work actually shipped. Letting the agent author the PR
         -- after implementation produces materially better PRs.
         --
-        -- The TUI W+p shortcut and the epic-merge MergeAction::Pr have both
-        -- been removed. Rebase remains as a TUI/MCP path (see WrapUpRebase).
+        -- There is no board entry point for any wrap-up action: the board's
+        -- wrap-up key and the epic merge queue have both been removed.
+        -- Wrap-up is agent-driven through the MCP wrap_up tool only.
         --
         -- The wrap_up success response (PR path) includes a "Verify before
         -- exiting: run `<c>`" instruction when task.repo_path has
@@ -365,7 +342,7 @@ rule WrapUpDone {
         -- integration: research tasks, planning tasks, tasks that edit
         -- only the repo root (e.g., config files already on the base branch).
         --
-        -- MCP path: wrap_up(action="done") no longer flips task.status to
+        -- wrap_up(action="done") does not flip task.status to
         -- done. It leaves the task running (its session is still alive) and
         -- issues an exit token recording action = done, exactly like
         -- wrap_up(action="rebase"). The Done transition and the tmux_window
@@ -373,14 +350,6 @@ rule WrapUpDone {
         -- runs the /retro skill before its commit step, ahead of wrap_up. This removes
         -- the old asymmetry where done flipped to Done immediately while
         -- rebase deferred to exit_session.
-        --
-        -- TUI path: W then d finishes directly via handle_wrap_up_done —
-        -- the task moves to Done and the tmux window is killed in one step
-        -- (via take_detach, the same helper ConfirmDone uses), with no
-        -- exit-token round trip. This mirrors how the TUI rebase path
-        -- (W then r) completes via FinishTaskSuccess rather than ExitSession;
-        -- the running -> done transition for the MCP path is owned by
-        -- ExitSession.
         --
         -- /wrap-up skill path: if task.wrap_up_mode = done (from get_task),
         -- or if the user selects "done" in Step 4, the skill calls
@@ -582,56 +551,14 @@ rule ExitSession {
         -- base_branch that already contains this task's work. A chain that
         -- stops, or fails, must never turn a successful close into an error;
         -- there is deliberately no agent-facing tool for triggering it.
-        -- The TUI finish path (W then r) completes via FinishTaskSuccess, not
-        -- this rule, so it emits no SessionClosed and does not chain.
 }
 
--- == Finish (Merge) ==
-
-rule FinishTaskSuccess {
-    when: FinishTask(task)
-
-    requires: task.status = review
-    requires: task.worktree != null
-
-    let branch = task.worktree.branch
-
-    -- Preconditions verified at execution time:
-    -- repo root must be on task.base_branch
-    -- merge must succeed (no conflicts)
-
-    ensures: BranchMerged(branch: branch, into: task.base_branch)
-    ensures: task.tmux_window = null
-    ensures: task.status = done
-    ensures: task.sub_status = core/SubStatus.default_for(done)
-    ensures: task.updated_at = now
-    ensures: task.sort_order = completion_recency_rank(now)
-
-    @guidance
-        -- Same finish_task path as WrapUpRebase. The implementation
-        -- rebases the task branch onto task.base_branch (after pulling
-        -- latest from origin), then fast-forwards task.base_branch to
-        -- the rebased branch, then persists done with a cleared
-        -- tmux_window, and only then kills the tmux window.
-        -- That last ordering is normative and matches ExitSession: the
-        -- teardown is gated on the terminal write landing, so a task
-        -- whose done write failed keeps BOTH its live window and its
-        -- tmux_window reference and the two can never disagree. finish_task
-        -- itself performs no tmux teardown — it is the git half only, shared
-        -- with the MCP wrap_up path, which never wanted a teardown at all.
-        -- Worktree is preserved after finish; it will be cleaned up
-        -- when the task is archived. If another active task shares the
-        -- same worktree, the worktree is detached from this task but
-        -- not removed from disk (same shared-worktree logic as FinishTaskSuccess).
-        -- completion_recency_rank(now) is the same completion-recency
-        -- helper used by ConfirmDone (tasks.allium): more-recently-completed
-        -- tasks sort first among Done items.
-}
+-- == Rebase Conflict ==
 
 rule FinishTaskConflict {
     when: RebaseConflict(task)
 
-    -- Fires when FinishTask's or WrapUpRebase's rebase encounters a conflict.
+    -- Fires when WrapUpRebase's rebase encounters a conflict.
     -- The rebase is aborted and the task is marked with conflict sub_status.
     -- The task may be in either running or review status at this point,
     -- so conflict is a valid sub_status for both parent statuses.
@@ -643,9 +570,8 @@ rule FinishTaskConflict {
         -- Conflict has the highest visual column priority (0, above
         -- crashed at 1). It appears in the Stale visual column alongside
         -- stale and crashed tasks.
-        -- Conflict is valid for both running and review tasks: review
-        -- tasks hit it during FinishTask (merge via TUI), running tasks
-        -- hit it during WrapUpRebase.
+        -- Conflict is valid for both running and review tasks: both hit
+        -- it during WrapUpRebase, which accepts either status.
         -- Staleness detection skips conflict tasks (they are not
         -- re-evaluated for inactivity).
         -- PR review polling skips overwriting conflict sub_status.

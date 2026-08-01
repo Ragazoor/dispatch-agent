@@ -372,22 +372,6 @@ impl App {
                 self.input.mode = InputMode::SearchTasks;
                 vec![key_event("search_tasks", "/")]
             }
-            KeyCode::Char('W') => {
-                let mut cmds = self.dispatch_selection(
-                    |s, id| {
-                        s.update(Message::WrapUp(crate::tui::messages::WrapUpMessage::Start(
-                            id,
-                        )))
-                    },
-                    |s, id| {
-                        s.update(Message::WrapUp(
-                            crate::tui::messages::WrapUpMessage::EpicStart(id),
-                        ))
-                    },
-                );
-                cmds.push(key_event("wrap_up", "W"));
-                cmds
-            }
             KeyCode::Char('L') => {
                 if let Some(id) = self.selected_epic_id() {
                     return self.dispatch_keyed(

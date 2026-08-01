@@ -1120,8 +1120,8 @@ async fn get_epic_with_subtasks() {
 // epic chain on its Result, so `Err` must mean "the write did not land" and
 // nothing else — see ExitSession in docs/specs/pr-workflow.allium.
 
-/// A running task with a worktree and a tmux window — what `exit_session` and
-/// the TUI finish path both close.
+/// A running task with a worktree and a tmux window — what `exit_session`
+/// closes.
 async fn running_task_with_window(
     db: &Arc<dyn db::TaskStore>,
     epic_id: Option<EpicId>,

@@ -160,7 +160,6 @@ pub enum EpicSubstatus {
     Blocked(usize),
     // Review
     InReview,
-    WrappingUp,
     // Done
     Done,
 }
@@ -173,7 +172,6 @@ impl EpicSubstatus {
             Self::Active => "active".into(),
             Self::Blocked(n) => format!("{n} blocked"),
             Self::InReview => "in review".into(),
-            Self::WrappingUp => "wrapping up".into(),
             Self::Done => "done".into(),
         }
     }
@@ -184,7 +182,6 @@ impl EpicSubstatus {
         match self {
             Self::Blocked(_) => SubStatus::NeedsInput.column_priority(),
             Self::Active => SubStatus::Active.column_priority(),
-            Self::WrappingUp => SubStatus::Approved.column_priority(),
             Self::InReview => SubStatus::AwaitingReview.column_priority(),
             Self::Unplanned | Self::Planned | Self::Done => SubStatus::None.column_priority(),
         }
@@ -196,28 +193,16 @@ impl EpicSubstatus {
             Self::Blocked(_) => "needs input",
             Self::Active => "active",
             Self::InReview => "awaiting review",
-            Self::WrappingUp => "approved",
             Self::Unplanned | Self::Planned | Self::Done => "",
         }
     }
 }
 
-/// Derive epic substatus from current state. `active_merge_epic` is the epic_id
-/// of the currently active merge queue, if any.
-pub fn epic_substatus(
-    epic: &Epic,
-    subtasks: &[&Task],
-    active_merge_epic: Option<EpicId>,
-) -> EpicSubstatus {
+/// Derive epic substatus from current state.
+pub fn epic_substatus(epic: &Epic, subtasks: &[&Task]) -> EpicSubstatus {
     match epic.status {
         TaskStatus::Done | TaskStatus::Archived => EpicSubstatus::Done,
-        TaskStatus::Review => {
-            if active_merge_epic == Some(epic.id) {
-                EpicSubstatus::WrappingUp
-            } else {
-                EpicSubstatus::InReview
-            }
-        }
+        TaskStatus::Review => EpicSubstatus::InReview,
         TaskStatus::Running => {
             let blocked_count = subtasks
                 .iter()
@@ -413,7 +398,6 @@ mod tests {
         assert_eq!(EpicSubstatus::Blocked(1).label(), "1 blocked");
         assert_eq!(EpicSubstatus::Blocked(5).label(), "5 blocked");
         assert_eq!(EpicSubstatus::InReview.label(), "in review");
-        assert_eq!(EpicSubstatus::WrappingUp.label(), "wrapping up");
         assert_eq!(EpicSubstatus::Done.label(), "done");
     }
 
@@ -422,7 +406,6 @@ mod tests {
         assert_eq!(EpicSubstatus::Blocked(2).header_label(), "needs input");
         assert_eq!(EpicSubstatus::Active.header_label(), "active");
         assert_eq!(EpicSubstatus::InReview.header_label(), "awaiting review");
-        assert_eq!(EpicSubstatus::WrappingUp.header_label(), "approved");
     }
 
     #[test]
@@ -443,10 +426,6 @@ mod tests {
             SubStatus::Active.column_priority()
         );
         assert_eq!(
-            EpicSubstatus::WrappingUp.column_priority(),
-            SubStatus::Approved.column_priority()
-        );
-        assert_eq!(
             EpicSubstatus::InReview.column_priority(),
             SubStatus::AwaitingReview.column_priority()
         );
@@ -463,7 +442,7 @@ mod tests {
     #[test]
     fn epic_substatus_archived_yields_done() {
         let epic = make_epic(1, TaskStatus::Archived, None, None);
-        assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::Done);
+        assert_eq!(epic_substatus(&epic, &[]), EpicSubstatus::Done);
     }
 
     #[test]
@@ -472,21 +451,11 @@ mod tests {
             let epic = make_epic(1, TaskStatus::Running, None, None);
             let t = make_task(1, TaskStatus::Running, sub, None);
             assert_eq!(
-                epic_substatus(&epic, &[&t], None),
+                epic_substatus(&epic, &[&t]),
                 EpicSubstatus::Blocked(1),
                 "{sub:?}"
             );
         }
-    }
-
-    #[test]
-    fn epic_substatus_wrapping_up_requires_matching_epic_id() {
-        // active_merge_epic is a DIFFERENT epic → InReview, not WrappingUp
-        let epic = make_epic(1, TaskStatus::Review, None, None);
-        assert_eq!(
-            epic_substatus(&epic, &[], Some(EpicId(99))),
-            EpicSubstatus::InReview
-        );
     }
 
     #[test]
@@ -763,7 +732,7 @@ mod tests {
             status: TaskStatus::Backlog,
             ..test_epic()
         };
-        assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::Unplanned);
+        assert_eq!(epic_substatus(&epic, &[]), EpicSubstatus::Unplanned);
     }
 
     #[test]
@@ -773,7 +742,7 @@ mod tests {
             status: TaskStatus::Backlog,
             ..test_epic()
         };
-        assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::Planned);
+        assert_eq!(epic_substatus(&epic, &[]), EpicSubstatus::Planned);
     }
 
     #[test]
@@ -791,10 +760,7 @@ mod tests {
             status: TaskStatus::Backlog,
             ..test_task()
         };
-        assert_eq!(
-            epic_substatus(&epic, &[&t1, &t2], None),
-            EpicSubstatus::Active
-        );
+        assert_eq!(epic_substatus(&epic, &[&t1, &t2]), EpicSubstatus::Active);
     }
 
     #[test]
@@ -813,10 +779,7 @@ mod tests {
             sub_status: SubStatus::None,
             ..test_task()
         };
-        assert_eq!(
-            epic_substatus(&epic, &[&t1, &t2], None),
-            EpicSubstatus::Active
-        );
+        assert_eq!(epic_substatus(&epic, &[&t1, &t2]), EpicSubstatus::Active);
     }
 
     #[test]
@@ -835,7 +798,7 @@ mod tests {
             ..test_task()
         };
         assert_eq!(
-            epic_substatus(&epic, &[&t1, &t2], None),
+            epic_substatus(&epic, &[&t1, &t2]),
             EpicSubstatus::Blocked(1)
         );
     }
@@ -857,7 +820,7 @@ mod tests {
             ..test_task()
         };
         assert_eq!(
-            epic_substatus(&epic, &[&t1, &t2], None),
+            epic_substatus(&epic, &[&t1, &t2]),
             EpicSubstatus::Blocked(1)
         );
     }
@@ -884,7 +847,7 @@ mod tests {
             ..test_task()
         };
         assert_eq!(
-            epic_substatus(&epic, &[&t1, &t2, &t3], None),
+            epic_substatus(&epic, &[&t1, &t2, &t3]),
             EpicSubstatus::Blocked(2)
         );
     }
@@ -895,19 +858,7 @@ mod tests {
             status: TaskStatus::Review,
             ..test_epic()
         };
-        assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::InReview);
-    }
-
-    #[test]
-    fn epic_substatus_wrapping_up() {
-        let epic = Epic {
-            status: TaskStatus::Review,
-            ..test_epic()
-        };
-        assert_eq!(
-            epic_substatus(&epic, &[], Some(EpicId(1))),
-            EpicSubstatus::WrappingUp
-        );
+        assert_eq!(epic_substatus(&epic, &[]), EpicSubstatus::InReview);
     }
 
     #[test]
@@ -916,7 +867,7 @@ mod tests {
             status: TaskStatus::Done,
             ..test_epic()
         };
-        assert_eq!(epic_substatus(&epic, &[], None), EpicSubstatus::Done);
+        assert_eq!(epic_substatus(&epic, &[]), EpicSubstatus::Done);
     }
 
     // --- descendant_task_ids ---

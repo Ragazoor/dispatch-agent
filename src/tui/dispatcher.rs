@@ -28,8 +28,6 @@ pub(in crate::tui) fn dispatch(app: &mut App, msg: Message) -> Vec<Command> {
         Message::RepoPathsUpdated(paths) => app.handle_repo_paths_updated(paths),
         Message::BaseBranchesUpdated(map) => app.handle_base_branches_updated(map),
 
-        // ── Task wrap-up ──
-        Message::WrapUp(wm) => wm.route(app),
         Message::ClearSelection => app.handle_clear_selection(),
         Message::SelectAllColumn => app.handle_select_all_column(),
 
@@ -37,7 +35,7 @@ pub(in crate::tui) fn dispatch(app: &mut App, msg: Message) -> Vec<Command> {
         Message::Input(im) => im.route(app),
         Message::Editor(em) => em.route(app),
 
-        // ── Epic CRUD, lifecycle, wrap-up ──
+        // ── Epic CRUD, lifecycle ──
         Message::Epic(em) => em.route(app),
 
         // ── PR flow: creation, merge, review state ──

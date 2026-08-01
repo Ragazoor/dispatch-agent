@@ -10,7 +10,7 @@ use ratatui::{
 use crate::models::{format_age, Epic, EpicSubstatus, Staleness, SubStatus, Task, TaskStatus};
 use crate::tui::{App, EpicStatsMap};
 
-use super::super::palette::{CYAN, FG, FLASH_BG, GREEN, MUTED, PURPLE};
+use super::super::palette::{CYAN, FG, FLASH_BG, MUTED, PURPLE};
 use super::super::shared::{staleness_color, truncate};
 use super::{column_color, cursor_bg_color, status_icon};
 
@@ -379,7 +379,6 @@ fn epic_substatus_color(substatus: &EpicSubstatus) -> Color {
     match substatus {
         EpicSubstatus::Blocked(_) => Color::Yellow,
         EpicSubstatus::InReview => CYAN,
-        EpicSubstatus::WrappingUp => GREEN,
         EpicSubstatus::Active | EpicSubstatus::Unplanned | EpicSubstatus::Planned => MUTED,
         EpicSubstatus::Done => MUTED,
     }

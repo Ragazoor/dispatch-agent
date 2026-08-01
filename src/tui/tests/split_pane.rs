@@ -1,5 +1,5 @@
 use super::*;
-use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
+use crate::models::{SubStatus, TaskId, TaskStatus};
 use crossterm::event::KeyCode;
 
 #[test]
@@ -360,8 +360,14 @@ fn confirm_quit_with_active_split_emits_exit_split_mode() {
     );
 }
 
+// `TaskMessage::FinishComplete` no longer exists — the TUI wrap-up entry
+// point (`W`) is gone, so tmux_window can no longer be cleared by a
+// board-driven finish. `ConfirmDone` (Review -> Done, e.g. via `L`) is one
+// of the surviving paths that clears tmux_window and exercises the same
+// `SplitPaneRespawnOnWindowCleared` rule (docs/specs/split-pane.allium).
+
 #[test]
-fn finish_complete_respawns_split_pane_for_pinned_task() {
+fn confirm_done_respawns_split_pane_for_pinned_task() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
         t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
@@ -372,8 +378,13 @@ fn finish_complete_respawns_split_pane_for_pinned_task() {
     app.board.split.right_pane_id = Some("%5".to_string());
     app.board.split.pinned_task_id = Some(TaskId(1));
 
-    let cmds = app.update(Message::Task(
-        crate::tui::messages::TaskMessage::FinishComplete(TaskId(1)),
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
+        id: TaskId(1),
+        direction: MoveDirection::Forward,
+    }));
+    assert_eq!(app.input.mode, InputMode::ConfirmDone);
+    let cmds = app.update(Message::Input(
+        crate::tui::messages::InputMessage::ConfirmDone,
     ));
 
     assert!(
@@ -394,7 +405,7 @@ fn finish_complete_respawns_split_pane_for_pinned_task() {
 }
 
 #[test]
-fn finish_complete_no_respawn_for_non_pinned_task() {
+fn confirm_done_no_respawn_for_non_pinned_task() {
     let mut app = App::new(vec![
         {
             let mut t = make_task(1, TaskStatus::Review);
@@ -412,8 +423,12 @@ fn finish_complete_no_respawn_for_non_pinned_task() {
     app.board.split.right_pane_id = Some("%5".to_string());
     app.board.split.pinned_task_id = Some(TaskId(2));
 
-    let cmds = app.update(Message::Task(
-        crate::tui::messages::TaskMessage::FinishComplete(TaskId(1)),
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
+        id: TaskId(1),
+        direction: MoveDirection::Forward,
+    }));
+    let cmds = app.update(Message::Input(
+        crate::tui::messages::InputMessage::ConfirmDone,
     ));
 
     assert!(
@@ -431,7 +446,7 @@ fn finish_complete_no_respawn_for_non_pinned_task() {
 }
 
 #[test]
-fn finish_complete_no_respawn_without_split() {
+fn confirm_done_no_respawn_without_split() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
         t.worktree = Some("/repo/.worktrees/1-task-1".to_string());
@@ -440,8 +455,12 @@ fn finish_complete_no_respawn_without_split() {
     }]);
     // split is NOT active (default)
 
-    let cmds = app.update(Message::Task(
-        crate::tui::messages::TaskMessage::FinishComplete(TaskId(1)),
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
+        id: TaskId(1),
+        direction: MoveDirection::Forward,
+    }));
+    let cmds = app.update(Message::Input(
+        crate::tui::messages::InputMessage::ConfirmDone,
     ));
 
     assert!(
@@ -573,51 +592,4 @@ fn confirm_quit_with_split_no_pinned_task_kills_pane() {
         )),
         "should emit Split(Exit) with no restore_window for empty split"
     );
-}
-
-#[test]
-fn epic_wrap_up_respawns_split_pane_only_once() {
-    let mut app = App::new(vec![
-        make_review_subtask(1, 10, 2),
-        make_review_subtask(2, 10, 1),
-    ]);
-    app.board.epics = vec![make_epic(10)];
-    app.board.split.active = true;
-    app.board.split.right_pane_id = Some("%5".to_string());
-    app.board.split.pinned_task_id = Some(TaskId(2));
-    app.input.mode = InputMode::ConfirmEpicWrapUp(EpicId(10));
-    app.update(Message::WrapUp(
-        crate::tui::messages::WrapUpMessage::EpicRebase,
-    ));
-
-    // First task completes — this is the pinned one
-    let cmds1 = app.update(Message::Task(
-        crate::tui::messages::TaskMessage::FinishComplete(TaskId(2)),
-    ));
-    let respawn_count_1 = cmds1
-        .iter()
-        .filter(|c| {
-            matches!(
-                c,
-                Command::Split(crate::tui::commands::SplitCommand::RespawnPane { .. })
-            )
-        })
-        .count();
-    assert_eq!(respawn_count_1, 1, "should respawn once for pinned task");
-    assert_eq!(app.board.split.pinned_task_id, None);
-
-    // Second task completes — no longer pinned
-    let cmds2 = app.update(Message::Task(
-        crate::tui::messages::TaskMessage::FinishComplete(TaskId(1)),
-    ));
-    let respawn_count_2 = cmds2
-        .iter()
-        .filter(|c| {
-            matches!(
-                c,
-                Command::Split(crate::tui::commands::SplitCommand::RespawnPane { .. })
-            )
-        })
-        .count();
-    assert_eq!(respawn_count_2, 0, "should NOT respawn for non-pinned task");
 }

@@ -378,15 +378,10 @@ rule RefreshRepoSyncStateAfterRebase {
         -- happen, and ahead > 0 is the normal state immediately after every
         -- rebase wrap-up.
         --
-        -- The board's own finish path is deliberately exempt, and that exemption
-        -- is to be left as it stands. Only the MCP wrap-up emits BranchRebased;
-        -- the board's finish path emits no refresh. That path is reachable only
-        -- through the [W] key — both emitters of the board finish command, the
-        -- single-task wrap-up and the epic merge queue, sit behind it — and [W]
-        -- is a dead key in practice: humans do not use it, and its removal is
-        -- tracked separately. The after-rebase refresh therefore correctly rides
-        -- on the MCP path alone. Do not add a refresh to the board's finish path
-        -- to satisfy this rule.
+        -- The MCP wrap-up is the only path that rebases and fast-forwards a
+        -- base branch, so it is the only emitter of BranchRebased. The board
+        -- has no finish path of its own: the wrap-up key and the epic merge
+        -- queue that once sat behind it are gone.
 }
 
 rule RefreshRepoSyncStateAfterSync {

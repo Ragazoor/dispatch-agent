@@ -292,17 +292,6 @@ async fn dispatch_task(
             rt.exec_cleanup(id, repo_path, worktree, tmux_window).await;
             vec![]
         }
-        Finish {
-            id,
-            repo_path,
-            branch,
-            base_branch,
-            worktree,
-        } => {
-            rt.exec_finish(id, repo_path, branch, base_branch, worktree)
-                .await;
-            vec![]
-        }
         CloseSession(task) => {
             drop(rt.exec_close_session(app, task).await);
             vec![]

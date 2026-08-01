@@ -1348,120 +1348,21 @@ async fn detach_only_clears_worktree_and_tmux_window() {
     );
 }
 
-#[tokio::test]
-async fn exec_finish_sends_complete_when_shared_worktree() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let mut app = App::new(db.list_all().await.unwrap());
-
-    // Create two tasks sharing the same worktree
-    for title in ["Task A", "Task B"] {
-        rt.exec_insert_task(
-            &mut app,
-            tui::TaskDraft {
-                title: title.into(),
-                description: "desc".into(),
-                repo_path: "/repo".into(),
-                ..Default::default()
-            },
-            None,
-        )
-        .await;
-    }
-    let id_a = app.tasks()[0].id;
-    let id_b = app.tasks()[1].id;
-    let worktree = "/repo/.worktrees/1-task-a";
-    for id in [id_a, id_b] {
-        db.patch_task(
-            id,
-            &db::TaskPatch::new()
-                .status(models::TaskStatus::Running)
-                .worktree(Some(worktree))
-                .tmux_window(Some("task-1")),
-        )
-        .await
-        .unwrap();
-    }
-
-    rt.exec_finish(
-        id_a,
-        "/repo".into(),
-        "1-task-a".into(),
-        "main".into(),
-        worktree.into(),
-    )
-    .await;
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(msg, Message::Task(crate::tui::messages::TaskMessage::FinishComplete(tid)) if tid == id_a),
-        "Expected FinishComplete for id_a when worktree is shared, got: {msg:?}"
-    );
-    // Task A detached, task B still has the worktree
-    let task_a = db.get_task(id_a).await.unwrap().unwrap();
-    assert!(task_a.worktree.is_none());
-}
-
-#[tokio::test]
-async fn exec_finish_happy_path_sends_complete() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // remote get-url (no remote)
-        MockProcessRunner::ok(),                      // git rebase main (from worktree)
-        MockProcessRunner::ok(),                      // git merge --ff-only (fast-forward)
-                                                      // Worktree is preserved; cleanup happens later during archive.
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Test",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Done,
-    )
-    .await
-    .unwrap();
-    let id = task.id;
-
-    rt.exec_finish(
-        id,
-        "/repo".into(),
-        "1-test".into(),
-        "main".into(),
-        "/repo/.worktrees/1-test".into(),
-    )
-    .await;
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(msg, Message::Task(crate::tui::messages::TaskMessage::FinishComplete(tid)) if tid == id),
-        "Expected FinishComplete, got: {msg:?}"
-    );
-}
+// `TaskCommand::Finish` / `exec_finish` no longer exist — the TUI wrap-up
+// entry point (`W`) that used to dispatch them is gone. Wrap-up rebase/merge
+// is now exclusively the MCP `wrap_up` tool's job (see
+// src/mcp/handlers/tasks/wrap_up.rs), which drives `dispatch::finish_task`
+// directly rather than through this runtime command.
 
 // -- exec_close_session ----------------------------------------------------
 //
-// FinishTaskSuccess (docs/specs/pr-workflow.allium): the tmux teardown follows
+// ExitSession (docs/specs/pr-workflow.allium): the tmux teardown follows
 // the Done write and is gated on it, so a task whose terminal write failed keeps
 // BOTH its live window and its tmux_window reference. `finish_task` used to kill
 // the window itself, before that write — the opposite order.
 
 /// A Running task with a worktree and a tmux window, plus the in-memory clone
-/// `handle_finish_complete` hands to `CloseSession` (Done already applied
-/// optimistically).
+/// passed to `CloseSession` (Done already applied optimistically).
 async fn task_ready_to_close(db: &Arc<Database>) -> models::Task {
     let task = create_task_returning(
         &**db,
@@ -1577,112 +1478,6 @@ async fn exec_close_session_leaves_the_window_alive_when_the_done_write_fails() 
         Some("task-1"),
         "the tmux_window reference survives, so it can never disagree with the live window"
     );
-}
-
-#[tokio::test]
-async fn exec_finish_conflict_sends_failed() {
-    use crate::process::exit_fail;
-    use std::process::Output;
-
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // remote get-url (no remote)
-        Ok(Output {
-            status: exit_fail(),
-            stdout: b"".to_vec(),
-            stderr:
-                b"CONFLICT (content): Merge conflict in file.rs\nerror: could not apply abc1234\n"
-                    .to_vec(),
-        }),
-        MockProcessRunner::ok_with_stdout(b"UU file.rs\n"), // status --porcelain (mid-rebase, conflicted)
-        MockProcessRunner::ok(),                            // git rebase --abort
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Test",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Done,
-    )
-    .await
-    .unwrap();
-    let id = task.id;
-
-    rt.exec_finish(
-        id,
-        "/repo".into(),
-        "1-test".into(),
-        "main".into(),
-        "/repo/.worktrees/1-test".into(),
-    )
-    .await;
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    let Message::Task(crate::tui::messages::TaskMessage::FinishFailed {
-        id: tid,
-        is_conflict,
-        ..
-    }) = msg
-    else {
-        panic!("Expected FinishFailed, got: {msg:?}");
-    };
-    assert_eq!(tid, id);
-    assert!(is_conflict, "Expected is_conflict=true");
-}
-
-#[tokio::test]
-async fn exec_finish_not_on_main_sends_failed() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"feature-branch\n"), // rev-parse HEAD (not main)
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Test",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Done,
-    )
-    .await
-    .unwrap();
-    let id = task.id;
-
-    rt.exec_finish(
-        id,
-        "/repo".into(),
-        "1-test".into(),
-        "main".into(),
-        "/repo/.worktrees/1-test".into(),
-    )
-    .await;
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    let Message::Task(crate::tui::messages::TaskMessage::FinishFailed {
-        id: tid,
-        is_conflict,
-        ..
-    }) = msg
-    else {
-        panic!("Expected FinishFailed, got: {msg:?}");
-    };
-    assert_eq!(tid, id);
-    assert!(!is_conflict, "Expected is_conflict=false for not-on-main");
 }
 
 #[tokio::test]

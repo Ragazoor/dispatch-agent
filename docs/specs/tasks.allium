@@ -298,8 +298,8 @@ rule ConfirmDone {
         -- Done items (implementation detail: the negated current
         -- timestamp in milliseconds, so lower Integer values are more
         -- recent). The identical mechanism sets task.sort_order at every
-        -- other transition into done: PrMerged, PrClosed,
-        -- FinishTaskSuccess, and ExitSession's non-pr branch (all in
+        -- other transition into done: PrMerged, PrClosed, and
+        -- ExitSession's non-pr branch (all in
         -- pr-workflow.allium), and epics.allium's MoveEpicForward when
         -- entering done. Leaving done (MoveTaskBackward, ArchiveTask when
         -- the task was done) clears task.sort_order back to null.
@@ -459,7 +459,7 @@ rule ArchiveTask {
         -- Best-effort branch deletion.
         -- If another active task shares the same worktree, the
         -- worktree is detached from this task but not removed
-        -- from disk (same shared-worktree logic as FinishTaskSuccess).
+        -- from disk.
         -- The task.status = done check reads the pre-archive status
         -- (evaluated before the status = archived assignment below), so
         -- only a task that was actually Done has its sort_order cleared.
@@ -693,8 +693,8 @@ rule EditTask {
 -- preconditions and the ConfirmDone rule requiring review status.
 -- Exception: PrMerged transitions are automatic because the PR merge on
 -- GitHub constitutes human confirmation via the code review process.
--- WrapUpRebase is human-initiated (TUI W+r or MCP wrap_up tool) and
--- transitions directly to done.
+-- WrapUpRebase is agent-initiated (the MCP wrap_up tool); its Done
+-- transition is applied by the agent's subsequent exit_session call.
 
 -- DispatchMcpToolsAreTransparent: Dispatch MCP tool calls (get_task,
 -- wrap_up, update_task, etc.) must not trigger automatic status

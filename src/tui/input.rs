@@ -85,8 +85,6 @@ impl App {
                 InputMode::ConfirmArchiveEpic => self.handle_key_confirm_archive_epic(key),
 
                 InputMode::ConfirmDone => self.handle_key_confirm_done(key),
-                InputMode::ConfirmWrapUp(_) => self.handle_key_confirm_wrap_up(key),
-                InputMode::ConfirmEpicWrapUp(_) => self.handle_key_confirm_epic_wrap_up(key),
                 InputMode::ConfirmDetachTmux(_) => self.handle_key_confirm_detach_tmux(key),
                 InputMode::Help => self.handle_key_help(key),
                 InputMode::RepoFilter => self.handle_key_repo_filter(key),

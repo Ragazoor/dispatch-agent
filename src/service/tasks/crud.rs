@@ -40,10 +40,10 @@ pub struct UpdateTaskResult {
 }
 
 /// What a session close makes of the task — the terminal status half of
-/// `ExitSession` / `FinishTaskSuccess` (`docs/specs/pr-workflow.allium`).
+/// `ExitSession` (`docs/specs/pr-workflow.allium`).
 #[derive(Debug, Clone)]
 pub enum CloseSessionOutcome {
-    /// `rebase` / `done`, and the TUI finish path: the task is finished.
+    /// `rebase` / `done`: the task is finished.
     Done,
     /// `pr`: the task moves to Review carrying the PR url.
     Review { pr_url: crate::models::TaskUrl },

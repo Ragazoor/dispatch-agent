@@ -20,7 +20,6 @@ pub mod system;
 pub mod task;
 pub mod tips;
 pub mod todos;
-pub mod wrap_up;
 
 pub use budget::BudgetMessage;
 pub use editor::EditorMessage;
@@ -38,4 +37,3 @@ pub use system::SystemMessage;
 pub use task::TaskMessage;
 pub use tips::TipsMessage;
 pub use todos::TodoMessage;
-pub use wrap_up::WrapUpMessage;

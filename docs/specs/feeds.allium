@@ -469,7 +469,7 @@ rule UpsertFeedTasks {
     --     EXCEPT when the existing task's status is done: the re-poll
     --     sort_order update is skipped in that case, so a completion-order
     --     value already on the task (set by ConfirmDone/PrMerged/PrClosed/
-    --     FinishTaskSuccess/ExitSession — see tasks.allium and
+    --     ExitSession — see tasks.allium and
     --     pr-workflow.allium) is never clobbered by the feed's severity-
     --     rank re-poll. Only newly-inserted tasks, or re-polls of a
     --     non-done task, take the feed's sort_order.

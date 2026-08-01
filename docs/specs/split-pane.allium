@@ -145,7 +145,7 @@ rule SplitPaneRespawnOnWindowCleared {
     -- Fires whenever a lifecycle event clears a pinned task's tmux_window.
     -- The trigger is the clearing of task.tmux_window, not the specific
     -- event type. This covers all paths:
-    --   - WrapUpRebase / FinishTaskSuccess (rebase completes → Done)
+    --   - ExitSession (agent closes its session → Done)
     --   - PrMerged (PR merged on GitHub → Done)
     --   - ConfirmDone (manual move into Done from any non-Done status)
     --   - ArchiveTask (any status → Archived)

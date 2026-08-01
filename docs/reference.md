@@ -24,7 +24,6 @@
 | `e` | Edit task in editor (opens in a separate tmux window) |
 | `D` | Quick dispatch — pick repo and dispatch immediately |
 | `Shift+L` / `Shift+H` | Move task forward / backward |
-| `W` | Wrap up — commit and rebase. PR creation is agent-driven (run the `/wrap-up` skill from the agent session) |
 | `Space` | Activate the task: jump to the agent's tmux window if one exists, otherwise dispatch (Backlog) or resume (Running/Review/Done with a worktree). On a Running task with no worktree at all (the `⚠ no worktree` card) it opens the kill-and-retry dialog instead. Replaces the former `d` key |
 | `Prefix+Space` | (tmux global) Jump back from an agent's window to the dispatch TUI — press your tmux prefix, then Space |
 | `Prefix+e` | (tmux global) Show/hide the agent-tree companion pane in whichever agent window you press it in — press your tmux prefix, then `e`. A no-op in windows that aren't agent windows. Like `Prefix+Space`, it is bound while the board TUI runs and unbound when it exits, so the pane can't be toggled with the board closed |

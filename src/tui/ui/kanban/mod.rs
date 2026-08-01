@@ -502,9 +502,6 @@ pub(in crate::tui) fn action_hints(
                 push_hint("x", "done");
             }
             TaskStatus::Review => {
-                if task.worktree.is_some() {
-                    push_hint("W", "wrap up");
-                }
                 if task.tmux_window.is_some() {
                     push_hint("Space", "session");
                     push_hint("T", "detach");
@@ -561,7 +558,6 @@ pub(in crate::tui) fn epic_action_hints(epic: &Epic, key_color: Color) -> Vec<Sp
     push_hint("Space", "board");
     push_hint("Enter", "detail");
     push_hint("e", "edit");
-    push_hint("W", "wrap up");
     push_hint("U", "auto dispatch");
     if epic.feed_command.is_some() {
         push_hint("r", "refresh");

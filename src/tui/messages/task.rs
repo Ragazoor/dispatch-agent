@@ -87,12 +87,6 @@ pub enum TaskMessage {
         direction: MoveDirection,
     },
     BatchArchive(Vec<TaskId>),
-    FinishComplete(TaskId),
-    FinishFailed {
-        id: TaskId,
-        error: String,
-        is_conflict: bool,
-    },
     DetachTmux(TaskId),
     BatchDetachTmux(Vec<TaskId>),
     // Move-to-epic tree picker (the `m` key on a task card).
@@ -153,12 +147,6 @@ impl TaskMessage {
                 app.handle_batch_move_tasks(ids, direction)
             }
             TaskMessage::BatchArchive(ids) => app.handle_batch_archive_tasks(ids),
-            TaskMessage::FinishComplete(id) => app.handle_finish_complete(id),
-            TaskMessage::FinishFailed {
-                id,
-                error,
-                is_conflict,
-            } => app.handle_finish_failed(id, error, is_conflict),
             TaskMessage::DetachTmux(id) => app.handle_detach_tmux(vec![id]),
             TaskMessage::BatchDetachTmux(ids) => app.handle_detach_tmux(ids),
             TaskMessage::StartMoveToEpic(id) => app.handle_start_move_to_epic(id),
