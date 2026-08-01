@@ -714,6 +714,35 @@ mod tests {
     }
 
     #[test]
+    fn fresh_worktree_with_no_origin_ref_gets_the_note_and_no_preamble() {
+        // The decoupled case: nothing to rebase onto, but the agent must still be
+        // told its base is local-only. An earlier design attached the warning to
+        // the preamble, which silently dropped it on exactly this row.
+        let sp = StartPoint::Local {
+            base: "main".to_string(),
+        };
+        let preamble = select_preamble(None, Some(&sp), false);
+        let head = compose_prompt_head(&preamble, Some("origin has no branch main"));
+
+        assert!(
+            preamble.is_empty(),
+            "fresh worktree emits no preamble: {preamble:?}"
+        );
+        assert!(
+            head.contains("Note: origin has no branch main"),
+            "got: {head}"
+        );
+        assert!(
+            !head.contains("git rebase"),
+            "nothing to rebase onto: {head}"
+        );
+        assert!(
+            !head.contains("reused from a previous attempt"),
+            "got: {head}"
+        );
+    }
+
+    #[test]
     fn learning_instruction_references_learnings_skill() {
         let text = learning_tools_instruction();
         assert!(
