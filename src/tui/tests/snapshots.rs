@@ -987,3 +987,50 @@ fn snapshot_tips_overlay_new_tip_shows_badge() {
     let rendered = render_to_string(&mut app, 120, 40);
     insta::assert_snapshot!(rendered);
 }
+
+#[test]
+fn snapshot_top_row_budget_indicator_fresh() {
+    use crate::models::budget::{BudgetSnapshot, BudgetWindow};
+
+    // render_top_indicators reads the real wall clock for `now`, so a fresh
+    // snapshot must be captured close to it, not at a fixed epoch.
+    let now = chrono::Utc::now().timestamp();
+    let mut app = make_app();
+    app.budget = Some(BudgetSnapshot {
+        five_hour: Some(BudgetWindow {
+            used_percentage: 23.4,
+            resets_at: now + 8040,
+        }),
+        seven_day: Some(BudgetWindow {
+            used_percentage: 41.2,
+            resets_at: now + 345_600,
+        }),
+        captured_at: now,
+    });
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}
+
+#[test]
+fn snapshot_top_row_budget_indicator_stale() {
+    use crate::models::budget::{BudgetSnapshot, BudgetWindow};
+
+    // captured_at far enough in the past (relative to render_top_indicators'
+    // real wall-clock "now") to exceed BUDGET_STALE_AFTER (600s).
+    let now = chrono::Utc::now().timestamp();
+    let captured_at = now - 1_020;
+    let mut app = make_app();
+    app.budget = Some(BudgetSnapshot {
+        five_hour: Some(BudgetWindow {
+            used_percentage: 91.0,
+            resets_at: captured_at + 8040,
+        }),
+        seven_day: Some(BudgetWindow {
+            used_percentage: 41.2,
+            resets_at: captured_at + 345_600,
+        }),
+        captured_at,
+    });
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}

@@ -49,11 +49,6 @@ pub(in crate::tui) const BUDGET_POLL_TICKS: u64 = 5;
 
 /// Age after which the budget indicator dims and shows its age. Mirrors
 /// config.budget_stale_after.
-///
-/// Not read by production code until Task 7 (rendering) lands — only pinned
-/// down by a test in this task. `#[allow(dead_code)]` is temporary; remove it
-/// once Task 7's renderer consumes this constant.
-#[allow(dead_code)]
 pub(in crate::tui) const BUDGET_STALE_AFTER: Duration = Duration::from_secs(600);
 
 /// Whether the stale-learning cleanup background job runs.
