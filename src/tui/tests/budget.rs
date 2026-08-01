@@ -190,4 +190,45 @@ mod render_glue {
             "pre-existing bell badge must survive: {row:?}"
         );
     }
+
+    /// Regression test for the emoji-width undercount (dispatch.allium:
+    /// `@guarantee DegradesWhenRowTooNarrow` — pre-existing badges must never
+    /// be clipped). `render_top_indicators` sums `used_width` in *codepoints*
+    /// (`"\u{1F514} [N]"` is 5 codepoints) but ratatui measures the bell
+    /// badge at 6 *display columns* (the emoji is double-width). At the exact
+    /// width where the budget text's degraded form fills the miscounted
+    /// budget precisely, the composed line is one column wider than `area`,
+    /// and `Alignment::Right` truncates the right edge — clipping `[N]` down
+    /// to `[N`. width=32 with no repo filter (used_width=5, real width=6) and
+    /// the two-window+countdown budget text (27 columns incl. trailing
+    /// spaces) reproduces exactly that: 32 - 5 == 27 "fits", but the real
+    /// total is 33.
+    #[test]
+    fn narrow_width_never_clips_the_bell_badge() {
+        let now = chrono::Utc::now().timestamp();
+        let mut app = make_app();
+        app.set_notifications_enabled(true);
+        app.budget = Some(BudgetSnapshot {
+            five_hour: Some(BudgetWindow {
+                used_percentage: 23.4,
+                resets_at: now + 8070,
+            }),
+            seven_day: Some(BudgetWindow {
+                used_percentage: 41.2,
+                resets_at: now + 349_200,
+            }),
+            captured_at: now,
+        });
+
+        let row = top_row(&mut app, 32);
+
+        assert!(
+            row.contains('\u{1F514}'),
+            "bell badge must not be dropped: {row:?}"
+        );
+        assert!(
+            row.trim_end().ends_with("[N]"),
+            "bell badge must render intact, not truncated to '[N': {row:?}"
+        );
+    }
 }

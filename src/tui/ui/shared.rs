@@ -198,7 +198,16 @@ pub(in crate::tui::ui) fn render_top_indicators(frame: &mut Frame, app: &App, ar
     // given only the width the existing badges leave over — it is never allowed
     // to push them off-screen (dispatch.allium: TokenBudgetIndicator degradation).
     let used_width: usize = parts.iter().map(|s| s.content.chars().count()).sum();
-    let budget_width_budget = (area.width as usize).saturating_sub(used_width);
+    // `used_width` sums codepoints, but the bell/no-bell badge
+    // ("\u{1F514} [N]" / "\u{1F515} [N]") is one codepoint narrower than its
+    // display width — the emoji renders double-width under ratatui's
+    // unicode-width measurement, which `Paragraph`/`Alignment::Right` actually
+    // use to lay out and truncate the line. Reserve one extra column here so
+    // that undercount can never make the composed line one column too wide
+    // and get its right edge (the pre-existing badges) clipped. Do not remove
+    // this as a stray off-by-one — see docs/specs/dispatch.allium's
+    // `@guarantee DegradesWhenRowTooNarrow`.
+    let budget_width_budget = (area.width as usize).saturating_sub(used_width + 1);
     let budget = super::budget::budget_spans(
         app.budget.as_ref(),
         chrono::Utc::now().timestamp(),
