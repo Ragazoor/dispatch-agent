@@ -131,6 +131,11 @@ rule DispatchTask {
     ensures: task.status = running
     ensures: task.sub_status = core/SubStatus.default_for(running)
     ensures: task.last_pre_tool_use_at = now
+    ensures:
+        for entry in core/SubagentEntries where task = task:
+            not exists entry
+    ensures: task.live_subagents = 0
+    ensures: task.stop_pending = false
     ensures: task.worktree = core/Worktree.created(
         path: task.repo_path + "/.worktrees/" + task.id + "-" + slugify(task.title),
         branch: task.id + "-" + slugify(task.title)
@@ -139,6 +144,19 @@ rule DispatchTask {
     ensures: AgentLaunched(task: task, mode: standard)
 
     @guidance
+        -- == Subagent state reset ==
+        -- A fresh dispatch clears every core/SubagentEntry left over from a
+        -- prior run of this task (a backlog task should never carry live
+        -- subagents from before) and resets live_subagents to 0. stop_pending
+        -- is cleared too, but the HookSubagentStop drain path does NOT run
+        -- here even if it was set: this rule already moves the task into
+        -- Running, and draining to Review in the same write would leave a
+        -- task freshly-dispatched-and-in-Review. The dispatch is the more
+        -- informative outcome and wins. Clearing stop_pending unconditionally
+        -- still matters — otherwise the bit would survive into the new
+        -- session and fire a spurious flip the next time a subagent hook
+        -- landed on the drain path (see agent-health.allium).
+        --
         -- == The claim, and precondition timing ==
         -- The backlog precondition is not a read: it is an atomic claim, and it
         -- is the same claim on every entry point (the TUI dispatch key and its

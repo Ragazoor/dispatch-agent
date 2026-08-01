@@ -27,6 +27,16 @@ rule DetachTmux {
     ensures:
         if task.sub_status in {stale, crashed}:
             task.sub_status = core/SubStatus.default_for(task.status)
+    ensures:
+        for entry in core/SubagentEntries where task = task:
+            not exists entry
+        task.live_subagents = 0
+        if task.stop_pending and task.status = running:
+            task.status = review
+            task.sub_status = core/SubStatus.default_for(review)
+            task.last_pre_tool_use_at = null
+            task.last_notification_at = null
+            task.stop_pending = false
 
     @guidance
         -- Kills the tmux window for a task while preserving the
@@ -41,6 +51,13 @@ rule DetachTmux {
         -- uppercase). Always shows a confirmation prompt
         -- ("Detach tmux panel? [y/n]") before detaching, whether the
         -- target is a single task or a batch of multi-selected tasks.
+        -- Also clears every core/SubagentEntry for the task and resets
+        -- live_subagents to 0, then runs the drain path (see
+        -- agent-health.allium: HookSubagentStop) — detaching drops the
+        -- agent along with any subagents it spawned, so a stop_pending
+        -- task that had been waiting on them to finish resolves to
+        -- Review right here rather than staying stuck in Running with no
+        -- agent left to drain it.
 }
 
 rule BatchDetachTmux {

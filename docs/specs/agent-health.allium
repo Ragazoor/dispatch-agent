@@ -29,6 +29,8 @@ rule ClassifyAgentActivity {
         ensures:
             if task.last_notification_at != null and (task.last_pre_tool_use_at = null or task.last_notification_at > task.last_pre_tool_use_at):
                 task.sub_status = needs_input
+            else if task.live_subagents > 0:
+                task.sub_status = active
             else if task.last_pre_tool_use_at != null and now - task.last_pre_tool_use_at <= config.active_threshold:
                 task.sub_status = active
             else:
@@ -87,6 +89,10 @@ rule ClassifyAgentActivity {
         -- "stale" with no minute suffix rather than "stale · 0m".
         -- Only tasks with a live tmux_window are classified (tasks without
         -- one have no running agent to observe).
+        -- Live subagents outrank the staleness threshold but lose to
+        -- needs_input: a permission prompt genuinely needs a human even
+        -- while subagents churn, so hiding it behind a subagent count would
+        -- trade one misreport for a worse one.
 }
 
 rule DetectCrashedAgent {
@@ -98,6 +104,11 @@ rule DetectCrashedAgent {
     ensures: task.sub_status = crashed
     ensures: task.tmux_window = null
     ensures:
+        for entry in core/SubagentEntries where task = task:
+            not exists entry
+    ensures: task.live_subagents = 0
+    ensures: task.stop_pending = false
+    ensures:
         if notifications_enabled:
             DesktopNotification(
                 task: task,
@@ -106,6 +117,13 @@ rule DetectCrashedAgent {
             )
 
     @guidance
+        -- Clears every SubagentEntry for the task and resets live_subagents
+        -- to 0, but does NOT run the HookSubagentStop drain path even if
+        -- stop_pending was set. This rule already assigns sub_status =
+        -- crashed; draining to Review in the same write would leave the
+        -- task Crashed-and-in-Review. Crashed is the more informative
+        -- state and wins. stop_pending is still cleared, so the bit cannot
+        -- survive into the next session and fire a spurious flip later.
         -- Triggered by the WindowGone message, which is sent when the
         -- runtime detects that the task's tmux window no longer exists.
         -- The tmux_window reference is cleared by the same write that sets
@@ -229,10 +247,113 @@ rule HookStop {
 
     requires: task.status = running
 
-    ensures: task.status = review
-    ensures: task.sub_status = core/SubStatus.default_for(review)
-    ensures: task.last_pre_tool_use_at = null
-    ensures: task.last_notification_at = null
+    ensures:
+        if task.live_subagents > 0:
+            task.stop_pending = true
+        else:
+            task.status = review
+            task.sub_status = core/SubStatus.default_for(review)
+            task.last_pre_tool_use_at = null
+            task.last_notification_at = null
+            task.stop_pending = false
+
+    @guidance
+        -- Stop does not fire inside subagents (Claude Code fires
+        -- SubagentStop there instead), so a Stop arriving with live
+        -- subagents is legitimate — it means the main agent finished its
+        -- turn while background subagents keep working. Flipping to Review
+        -- there is what put tasks in Review with work still in flight.
+        -- Suppressing it here just defers the same effect: HookSubagentStop
+        -- (or one of the other drain points) applies it once the last
+        -- subagent drains.
+}
+
+-- == Subagent Counting ==
+-- SubagentStart/SubagentStop bracket a subagent's lifetime; SessionStart
+-- marks a fresh claude process. Together with session fencing, these keep
+-- core/SubagentEntry and task.live_subagents accurate with no TTL — see
+-- the "Drift" discussion in the guidance below.
+
+rule HookSubagentStart {
+    when: SubagentStart(task, agent_id, session_id)
+
+    ensures:
+        let existing = core/SubagentEntry{task, agent_id}
+        if exists existing:
+            existing.session_id = session_id
+        else:
+            core/SubagentEntry.created(task: task, agent_id: agent_id, session_id: session_id, started_at: now)
+        let live = core/SubagentEntries where task = task
+        task.live_subagents = live.count
+
+    @guidance
+        -- Idempotent: a replayed start for the same agent_id does not
+        -- double-count — the join lookup above finds the existing row and
+        -- refreshes its session_id in place instead of creating a second
+        -- one. Any entry whose session_id differs from the incoming one is
+        -- evicted first — see SubagentSessionFence, which fires on the
+        -- same trigger.
+}
+
+rule HookSubagentStop {
+    when: SubagentStop(task, agent_id, session_id)
+
+    ensures:
+        not exists core/SubagentEntry{task, agent_id}
+        let live = core/SubagentEntries where task = task
+        task.live_subagents = live.count
+        if task.live_subagents = 0 and task.stop_pending and task.status = running:
+            task.status = review
+            task.sub_status = core/SubStatus.default_for(review)
+            task.last_pre_tool_use_at = null
+            task.last_notification_at = null
+            task.stop_pending = false
+
+    @guidance
+        -- An unrecognised agent_id is a no-op, not a count underflow: the
+        -- join lookup finds nothing, the removal is trivially satisfied,
+        -- and live_subagents is simply recomputed from the table either
+        -- way. The conditional block is the "drain path" referenced by the
+        -- clear points on DetectCrashedAgent, DetachTmux (see
+        -- split-pane.allium) and DispatchTask (see dispatch.allium).
+}
+
+rule SubagentSessionFence {
+    when: SubagentStart(task, _, incoming_session_id) or SubagentStop(task, _, incoming_session_id)
+
+    ensures:
+        for entry in core/SubagentEntries where task = task and session_id != incoming_session_id:
+            not exists entry
+
+    @guidance
+        -- A new claude process means a new session_id, so entries from a
+        -- dead session are provably dead. This is the drift bound: there
+        -- is deliberately no TTL. Any threshold short enough to reclaim a
+        -- phantom promptly is short enough to sweep a legitimately
+        -- long-running subagent.
+}
+
+rule ClearSubagentsOnSessionStart {
+    when: SessionStart(task)
+
+    ensures:
+        for entry in core/SubagentEntries where task = task:
+            not exists entry
+        task.live_subagents = 0
+        if task.stop_pending and task.status = running:
+            task.status = review
+            task.sub_status = core/SubStatus.default_for(review)
+            task.last_pre_tool_use_at = null
+            task.last_notification_at = null
+            task.stop_pending = false
+
+    @guidance
+        -- Fires when a fresh claude process starts, a session is resumed,
+        -- or the transcript is cleared in the task's tmux window. Clears
+        -- unconditionally rather than fencing on a prior session_id — a
+        -- SessionStart payload carries no previous session to compare
+        -- against, unlike SubagentStart/SubagentStop. Drain path applies:
+        -- see HookSubagentStop.
 }
 
 rule HookUserPromptSubmit {

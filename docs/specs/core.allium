@@ -233,6 +233,8 @@ entity Task {
     external_id: String?  -- stable identifier for tasks sourced from a feed epic (see feeds.allium); null for hand-created tasks. Unique per (epic, external_id) when set.
     last_pre_tool_use_at: Timestamp?  -- wallclock of the most recent PreToolUse hook; null when the agent has never tooled (or after Stop)
     last_notification_at: Timestamp?  -- wallclock of the most recent Notification hook; null when no notification is pending (or after Stop)
+    live_subagents: Integer = 0  -- count of subagents currently executing for this task; a denormalised count of SubagentEntry rows, rewritten alongside every mutation and clear point (see agent-health.allium)
+    stop_pending: Boolean = false  -- a Stop hook arrived while subagents were live; flip to review once they drain (see agent-health.allium: HookStop / HookSubagentStop)
     pr_learnings_gate_shown_at: Timestamp?  -- set once when the PrLearningsGate fires; null means the gate has never fired for this task
     wrap_up_mode: WrapUpMode?  -- preferred wrap-up path; null means decide at wrap-up time
     auto_run_plan: Boolean = false  -- when true and plan_path is set, build_prompt's
@@ -304,6 +306,18 @@ entity Task {
     -- only when the url is pr-typed; otherwise null. Not persisted; computed
     -- on demand.
     pr_number: if url != null and url.url_type = pr: pr_number_from_url(url.url) else: null
+}
+
+-- A live subagent, as reported by the SubagentStart/SubagentStop Claude
+-- Code hooks. The table is the authority for Task.live_subagents, which
+-- is a denormalised count rewritten from it by every mutation and clear
+-- point (see agent-health.allium). started_at is retained for diagnostics
+-- only; no rule branches on it.
+entity SubagentEntry {
+    task: Task
+    agent_id: String
+    session_id: String
+    started_at: Timestamp
 }
 
 entity Epic {
