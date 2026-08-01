@@ -15,7 +15,11 @@ use serde_json::json;
 use std::path::Path;
 
 /// The fixed file name, under the resolved `~/.claude` directory.
-pub(super) const SETTINGS_FILE_NAME: &str = "dispatch-statusline.json";
+///
+/// `pub(crate)`: also read by `runtime::bootstrap` (`src/runtime/mod.rs`),
+/// which recreates this file at TUI startup if `dispatch setup` was never
+/// run — see the module doc comment above.
+pub(crate) const SETTINGS_FILE_NAME: &str = "dispatch-statusline.json";
 
 /// POSIX single-quoting: wrap in `'…'` and replace each embedded `'` with
 /// `'\''`. The generated string is run through `sh -c`, so an unquoted path
@@ -25,7 +29,7 @@ pub(super) fn shell_quote(s: &str) -> String {
 }
 
 /// Build the statusLine command string.
-pub(super) fn build_command(snapshot_path: &Path, chain: Option<&str>) -> String {
+pub(crate) fn build_command(snapshot_path: &Path, chain: Option<&str>) -> String {
     let mut cmd = format!(
         "dispatch statusline --snapshot {}",
         shell_quote(&snapshot_path.display().to_string())
@@ -43,7 +47,7 @@ pub(super) fn build_command(snapshot_path: &Path, chain: Option<&str>) -> String
 /// **recursion-guard** case where the user's command is already a
 /// `dispatch statusline` invocation. Chaining to ourselves would loop; the
 /// honest outcome is an empty status line, with the reporter still running.
-pub(super) fn discover_chain(claude_dir: &Path) -> Option<String> {
+pub(crate) fn discover_chain(claude_dir: &Path) -> Option<String> {
     let text = std::fs::read_to_string(claude_dir.join("settings.json")).ok()?;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     let command = value
@@ -60,7 +64,7 @@ pub(super) fn discover_chain(claude_dir: &Path) -> Option<String> {
 
 /// Write the settings file. Returns whether the on-disk content changed, so
 /// setup can report accurately and stay idempotent.
-pub(super) fn write_settings_file(
+pub(crate) fn write_settings_file(
     path: &Path,
     snapshot_path: &Path,
     chain: Option<&str>,

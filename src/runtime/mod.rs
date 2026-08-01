@@ -108,6 +108,34 @@ fn teardown_tmux_for_tui(original_name: Option<&str>, runner: &dyn ProcessRunner
     }
 }
 
+/// Best-effort recreation of `~/.claude/dispatch-statusline.json`, the
+/// dispatch-owned statusLine settings file every dispatch-spawned Claude
+/// session is launched with via `--settings`. `dispatch setup` normally
+/// writes this file (`setup::run_setup_in`); this is a safety net for a user
+/// who pulled a branch introducing that dependency without re-running setup.
+///
+/// Reuses `setup::statusline`'s command-building logic rather than
+/// duplicating the format string, which would let the two drift.
+///
+/// Synchronous (touches the filesystem) — callers must run this on a
+/// blocking thread (`tokio::task::spawn_blocking`), never inline in an async
+/// context.
+fn ensure_statusline_settings_file(snapshot_path: &Path) -> Result<()> {
+    let claude_dir = crate::setup::claude_dir()?;
+    ensure_statusline_settings_file_in(&claude_dir, snapshot_path)
+}
+
+/// Injectable core of [`ensure_statusline_settings_file`]: takes the
+/// `~/.claude` directory explicitly so tests can point it at a temp dir
+/// instead of the real `$HOME`.
+fn ensure_statusline_settings_file_in(claude_dir: &Path, snapshot_path: &Path) -> Result<()> {
+    std::fs::create_dir_all(claude_dir)?;
+    let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
+    let chain = crate::setup::statusline::discover_chain(claude_dir);
+    crate::setup::statusline::write_settings_file(&settings_path, snapshot_path, chain.as_deref())?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Bootstrap — composition root for TuiRuntime startup
 // ---------------------------------------------------------------------------
@@ -398,6 +426,29 @@ impl TuiRuntime {
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf();
         let budget_snapshot_path = data_dir.clone().join("rate-limits.json");
+
+        // Best-effort: recreate ~/.claude/dispatch-statusline.json if it's
+        // missing. Every dispatch-spawned Claude session is launched with
+        // `--settings ~/.claude/dispatch-statusline.json` (the spawn constant
+        // in src/dispatch/prompts.rs); `claude` refuses to start at all if
+        // that file doesn't exist. Normally `dispatch setup` writes it, but a
+        // user who pulls a branch that added this dependency without
+        // re-running setup would otherwise get a dead pane on every dispatch.
+        // Must never block or fail startup — see docs/reference.md
+        // Troubleshooting for the user-facing recovery path.
+        {
+            let snapshot_path = budget_snapshot_path.clone();
+            match tokio::task::spawn_blocking(move || {
+                ensure_statusline_settings_file(&snapshot_path)
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!("Failed to ensure statusline settings file: {e:#}"),
+                Err(e) => tracing::warn!("Statusline settings bootstrap task panicked: {e}"),
+            }
+        }
+
         let (mcp_notify_tx, mcp_notify_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
         let feed_notify_tx = mcp_notify_tx.clone();
         let mcp_deps = mcp::McpDeps {

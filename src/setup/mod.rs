@@ -8,7 +8,7 @@
 mod config;
 mod hooks;
 mod plugins;
-mod statusline;
+pub(crate) mod statusline;
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -384,6 +384,7 @@ pub(super) struct UninstallPaths {
     pub legacy_mcp_path: PathBuf,
     pub plugin_path: PathBuf,
     pub db_path: PathBuf,
+    pub statusline_path: PathBuf,
 }
 
 impl UninstallPaths {
@@ -395,6 +396,7 @@ impl UninstallPaths {
             legacy_mcp_path: claude_dir.join(".mcp.json"),
             plugin_path: plugins::plugin_dir()?,
             db_path: crate::default_db_path(),
+            statusline_path: claude_dir.join(statusline::SETTINGS_FILE_NAME),
         })
     }
 }
@@ -418,6 +420,7 @@ pub(super) fn run_uninstall_in(
         legacy_mcp_path,
         plugin_path,
         db_path,
+        statusline_path,
     } = paths;
 
     // Show what will be removed
@@ -431,6 +434,7 @@ pub(super) fn run_uninstall_in(
         "  Legacy MCP:  mcpServers.dispatch from {} (if present)",
         legacy_mcp_path.display()
     );
+    eprintln!("  Status line: {} (if present)", statusline_path.display());
     if purge {
         eprintln!("  Database:    {}", db_path.display());
     }
@@ -472,6 +476,19 @@ pub(super) fn run_uninstall_in(
         }
         Ok(false) => {}
         Err(e) => eprintln!("Warning: failed to clean up legacy MCP config: {e}"),
+    }
+
+    // Status line settings file — dispatch-owned, written by `dispatch setup`
+    // (see src/setup/statusline.rs). Best-effort: a missing file is a no-op.
+    match fs::remove_file(statusline_path) {
+        Ok(()) => {
+            println!("Removed status line settings file");
+            any_removed = true;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            println!("Status line settings file not found, skipping")
+        }
+        Err(e) => eprintln!("Warning: failed to remove status line settings file: {e}"),
     }
 
     // Note: ~/.claude/settings.json is intentionally not touched. Dispatch no
@@ -811,7 +828,8 @@ mod tests {
 
     /// Build a fully-populated uninstall layout under a temp dir: a plugin
     /// directory with a file, a `~/.claude.json` carrying the dispatch MCP
-    /// entry, an empty legacy file, and a `db_path` that does not yet exist.
+    /// entry, an empty legacy file, a statusline settings file, and a
+    /// `db_path` that does not yet exist.
     fn uninstall_layout(root: &Path) -> UninstallPaths {
         let plugin_path = root.join("plugins").join("local").join("dispatch");
         fs::create_dir_all(&plugin_path).unwrap();
@@ -829,11 +847,16 @@ mod tests {
         )
         .unwrap();
 
+        let statusline_path = root.join(".claude").join(statusline::SETTINGS_FILE_NAME);
+        fs::create_dir_all(statusline_path.parent().unwrap()).unwrap();
+        fs::write(&statusline_path, "{}").unwrap();
+
         UninstallPaths {
             mcp_path,
             legacy_mcp_path: root.join(".claude").join(".mcp.json"),
             plugin_path,
             db_path: root.join("dispatch").join("tasks.db"),
+            statusline_path,
         }
     }
 
@@ -855,7 +878,24 @@ mod tests {
             mcp["mcpServers"]["github"].is_object(),
             "unrelated MCP servers must be preserved"
         );
+        assert!(
+            !paths.statusline_path.exists(),
+            "statusline settings file must be removed"
+        );
         assert_eq!(confirmer.confirm_call_count(), 1, "one 'Continue?' prompt");
+    }
+
+    #[test]
+    fn run_uninstall_in_statusline_file_missing_is_a_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = uninstall_layout(dir.path());
+        fs::remove_file(&paths.statusline_path).unwrap();
+        let confirmer = FakeConfirmer::new(vec![true], vec![]);
+
+        // Must not error just because the statusline file was already absent.
+        run_uninstall_in(&paths, &confirmer, false, false).unwrap();
+
+        assert!(!paths.statusline_path.exists());
     }
 
     #[test]
@@ -953,6 +993,7 @@ mod tests {
             legacy_mcp_path: dir.path().join(".mcp.json"),
             plugin_path: dir.path().join("plugin"),
             db_path: dir.path().join("dispatch").join("tasks.db"),
+            statusline_path: dir.path().join(statusline::SETTINGS_FILE_NAME),
         };
         let confirmer = FakeConfirmer::new(vec![true], vec![]);
 

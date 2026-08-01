@@ -3493,6 +3493,62 @@ async fn apply_tmux_focus_warning_returns_status_info_when_disabled() {
 }
 
 // ---------------------------------------------------------------------------
+// ensure_statusline_settings_file — Finding 1: bootstrap safety net for the
+// dispatch-owned statusline settings file (see src/setup/statusline.rs).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ensure_statusline_settings_file_creates_when_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let claude_dir = dir.path().join("claude");
+    let snapshot_path = dir.path().join("data").join("rate-limits.json");
+
+    ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+
+    let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
+    assert!(settings_path.exists(), "settings file must be created");
+    let content = std::fs::read_to_string(&settings_path).unwrap();
+    assert!(content.contains("dispatch statusline"));
+}
+
+#[test]
+fn ensure_statusline_settings_file_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let claude_dir = dir.path().join("claude");
+    let snapshot_path = dir.path().join("data").join("rate-limits.json");
+
+    ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+    let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
+    let first = std::fs::read_to_string(&settings_path).unwrap();
+
+    // A normal TUI start on an already-configured machine must not rewrite
+    // the file (setup's write_settings_file already guarantees this; this
+    // asserts bootstrap doesn't bypass that guarantee).
+    ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+    let second = std::fs::read_to_string(&settings_path).unwrap();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn ensure_statusline_settings_file_errors_when_directory_unwritable() {
+    // Point `claude_dir` at a path whose parent is a *file*, not a directory
+    // — `create_dir_all` fails deterministically without touching real
+    // permission bits (which vary by OS/CI and can be blocked by sandboxing).
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a directory").unwrap();
+    let claude_dir = blocker.join("claude");
+    let snapshot_path = dir.path().join("rate-limits.json");
+
+    let result = ensure_statusline_settings_file_in(&claude_dir, &snapshot_path);
+
+    assert!(
+        result.is_err(),
+        "must surface an error rather than silently doing nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // exec_trigger_epic_feed
 // ---------------------------------------------------------------------------
 
