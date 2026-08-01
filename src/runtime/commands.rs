@@ -292,10 +292,6 @@ async fn dispatch_task(
             rt.exec_cleanup(id, repo_path, worktree, tmux_window).await;
             vec![]
         }
-        CloseSession(task) => {
-            drop(rt.exec_close_session(app, task).await);
-            vec![]
-        }
         CheckWindow { id, window } => {
             drop(rt.exec_check_window(id, window));
             vec![]

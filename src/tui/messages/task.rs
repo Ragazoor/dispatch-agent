@@ -1,4 +1,4 @@
-//! Task lifecycle, dispatch, retry, selection, finish, detach messages.
+//! Task lifecycle, dispatch, retry, selection, detach messages.
 
 use crate::models::{DispatchMode, EpicId, Task, TaskId};
 

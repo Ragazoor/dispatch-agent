@@ -130,8 +130,9 @@ async fn finish_wrap_up_simple(
     )
 }
 
-/// Optimistically clears a `Conflict` sub_status before rebasing, matching
-/// the TUI behavior.
+/// Optimistically clears a `Conflict` sub_status before rebasing, so the task
+/// is no longer visually flagged while the rebase runs (`WrapUpRebase` in
+/// `docs/specs/pr-workflow.allium`).
 async fn clear_conflict_sub_status_if_set(state: &McpState, task: &Task) {
     if task.sub_status == SubStatus::Conflict {
         let clear =

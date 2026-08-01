@@ -55,11 +55,12 @@ pub struct ClosedSession {
     /// The tmux window the close cleared, or `None` if the task had none. The
     /// caller tears this window down — and only ever reaches it by holding an
     /// `Ok`, which is the point of the call.
+    ///
+    /// No `sort_order_after_write` twin of [`UpdateTaskResult`]'s: the sole
+    /// caller is the MCP `exit_session` handler, which holds no in-memory copy
+    /// of the task to write back to. It notifies task-changed and the board
+    /// re-reads the row.
     pub window: Option<String>,
-    /// Whether this close wrote `sort_order`, and to what — same contract as
-    /// [`UpdateTaskResult::sort_order_after_write`]. The TUI holds its own copy
-    /// of the task and cannot compute the completion-recency rank itself.
-    pub sort_order_after_write: Option<Option<i64>>,
 }
 
 pub struct TaskService {
@@ -259,8 +260,6 @@ impl TaskService {
             patch = patch.sort_order(so);
         }
 
-        let sort_order_after_write = patch.sort_order;
-
         self.db.patch_task(task_id, &patch).await?;
 
         // Everything past the write is infallible on purpose — see the doc
@@ -272,7 +271,6 @@ impl TaskService {
 
         Ok(ClosedSession {
             window: prior.tmux_window,
-            sort_order_after_write,
         })
     }
 

@@ -1348,137 +1348,18 @@ async fn detach_only_clears_worktree_and_tmux_window() {
     );
 }
 
-// `TaskCommand::Finish` / `exec_finish` no longer exist — the TUI wrap-up
-// entry point (`W`) that used to dispatch them is gone. Wrap-up rebase/merge
-// is now exclusively the MCP `wrap_up` tool's job (see
-// src/mcp/handlers/tasks/wrap_up.rs), which drives `dispatch::finish_task`
-// directly rather than through this runtime command.
-
-// -- exec_close_session ----------------------------------------------------
-//
-// ExitSession (docs/specs/pr-workflow.allium): the tmux teardown follows
-// the Done write and is gated on it, so a task whose terminal write failed keeps
-// BOTH its live window and its tmux_window reference. `finish_task` used to kill
-// the window itself, before that write — the opposite order.
-
-/// A Running task with a worktree and a tmux window, plus the in-memory clone
-/// passed to `CloseSession` (Done already applied optimistically).
-async fn task_ready_to_close(db: &Arc<Database>) -> models::Task {
-    let task = create_task_returning(
-        &**db,
-        "Test",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Review,
-    )
-    .await
-    .unwrap();
-    db.patch_task(
-        task.id,
-        &db::TaskPatch::new()
-            .worktree(Some("/repo/.worktrees/1-test"))
-            .tmux_window(Some("task-1")),
-    )
-    .await
-    .unwrap();
-    let mut in_memory = db.get_task(task.id).await.unwrap().unwrap();
-    in_memory.status = models::TaskStatus::Done;
-    in_memory.tmux_window = None;
-    in_memory
-}
-
-#[tokio::test]
-async fn exec_close_session_kills_the_window_only_after_the_done_write() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"task-1\n"), // tmux list-windows (has_window)
-        MockProcessRunner::ok(),                        // tmux kill-window
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-    let mut app = App::new(db.list_all().await.unwrap());
-    let task = task_ready_to_close(&db).await;
-    let id = task.id;
-
-    let teardown = rt.exec_close_session(&mut app, task).await;
-
-    // The write has landed by the time exec_close_session returns; the teardown
-    // is the only thing still in flight.
-    let persisted = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(persisted.status, models::TaskStatus::Done);
-    assert!(persisted.tmux_window.is_none());
-    assert!(
-        persisted.worktree.is_some(),
-        "the worktree survives a finish; it is removed on archive"
-    );
-
-    teardown
-        .expect("a task with a window gets a teardown")
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    assert!(
-        calls
-            .iter()
-            .any(|(prog, args)| prog == "tmux" && args.iter().any(|a| a == "kill-window")),
-        "the window must be killed once the Done write landed, got: {calls:?}"
-    );
-}
-
-/// A task service whose `close_session` always fails, so the terminal write
-/// cannot land. Every other method inherits the panicking `TaskServiceApiStub`
-/// default.
-struct FailingCloseTaskService;
-
-#[async_trait::async_trait]
-impl crate::service::TaskServiceApiStub for FailingCloseTaskService {
-    async fn close_session(
-        &self,
-        _task_id: TaskId,
-        _outcome: crate::service::CloseSessionOutcome,
-    ) -> Result<crate::service::ClosedSession, crate::service::ServiceError> {
-        Err(crate::service::ServiceError::Internal(anyhow::anyhow!(
-            "simulated persistence failure"
-        )))
-    }
-}
-
-crate::task_service_api!(service_api_stub_bridge, FailingCloseTaskService);
-
-#[tokio::test]
-async fn exec_close_session_leaves_the_window_alive_when_the_done_write_fails() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![]));
-    let mut rt = make_runtime(db.clone(), tx, mock.clone()).await;
-    rt.task_svc = Arc::new(FailingCloseTaskService);
-    let mut app = App::new(db.list_all().await.unwrap());
-    let task = task_ready_to_close(&db).await;
-    let id = task.id;
-
-    let teardown = rt.exec_close_session(&mut app, task).await;
-
-    assert!(
-        teardown.is_none(),
-        "a failed close must not tear the session down"
-    );
-    assert!(
-        mock.recorded_calls().is_empty(),
-        "no tmux command may be issued when the close did not persist"
-    );
-    let persisted = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(
-        persisted.status,
-        models::TaskStatus::Review,
-        "the task keeps the status it had"
-    );
-    assert_eq!(
-        persisted.tmux_window.as_deref(),
-        Some("task-1"),
-        "the tmux_window reference survives, so it can never disagree with the live window"
-    );
-}
+// `TaskCommand::Finish`/`exec_finish` and `TaskCommand::CloseSession`/
+// `exec_close_session` no longer exist — the TUI wrap-up entry point (`W`)
+// that used to dispatch them is gone. Wrap-up rebase/merge and session close
+// are now exclusively the MCP `wrap_up`/`exit_session` tools' job (see
+// src/mcp/handlers/tasks/wrap_up.rs), which drive `dispatch::finish_task` and
+// `TaskService::close_session` directly rather than through a runtime
+// command. The ExitSession ordering invariant — the tmux teardown follows the
+// terminal write and is gated on it, so a task whose write failed keeps BOTH
+// its live window and its `tmux_window` reference — is covered at that layer
+// by `exit_session_failed_close_leaves_the_task_unchanged` and
+// `exit_session_failed_close_issues_no_kill_window` in
+// src/mcp/handlers/tests/tasks/dispatch.rs.
 
 #[tokio::test]
 async fn exec_send_notification_calls_notify_send() {

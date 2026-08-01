@@ -210,7 +210,7 @@ impl TuiRuntime {
     /// If the write carried a `sort_order`, patch that one field onto
     /// the in-memory task immediately. The service — not the caller — computes
     /// it on a Done transition (`sort_order_for_status_transition`, run inside
-    /// `update_task` and `close_session` alike), so without this the board keeps
+    /// `update_task`), so without this the board keeps
     /// whatever the caller's snapshot held until the next refresh ~2s later: a
     /// freshly-completed task renders at the *bottom* of Done, and one that just
     /// left Done stays pinned to the top of the column it landed in.
@@ -246,50 +246,6 @@ impl TuiRuntime {
         app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
             task,
         )));
-    }
-
-    /// Persist a finished task's terminal state, then — only if that write
-    /// landed — tear down its tmux window.
-    ///
-    /// The ordering is the point. `finish_task` used to kill the window itself,
-    /// *before* the Done write, which is the opposite of the rule the MCP close
-    /// follows: a failed terminal write would leave a task still marked Review
-    /// while its session was already gone. Routing through
-    /// [`crate::service::TaskServiceApi::close_session`] makes the teardown
-    /// conditional on the write, so window and `tmux_window` can never disagree
-    /// (`ExitSession` in `docs/specs/pr-workflow.allium`).
-    ///
-    /// Returns the teardown's `JoinHandle` when a window was killed (`None`
-    /// when the close failed or there was no window), mirroring
-    /// [`Self::exec_check_window`]: the command loop drops it, tests await it.
-    pub(super) async fn exec_close_session(
-        &self,
-        app: &mut App,
-        task: models::Task,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let id = task.id;
-        let closed = match self
-            .task_svc
-            .close_session(id, crate::service::CloseSessionOutcome::Done)
-            .await
-        {
-            Ok(closed) => closed,
-            Err(e) => {
-                app.update(Message::System(crate::tui::messages::SystemMessage::Error(
-                    Self::db_error("closing task session", e),
-                )));
-                return None;
-            }
-        };
-        app.dirty_since_refresh = true;
-        self.write_back_task_sort_order(app, id, closed.sort_order_after_write);
-        let window = closed.window?;
-        let runner = self.runner.clone();
-        Some(tokio::task::spawn_blocking(move || {
-            if let Err(e) = tmux::kill_window_if_present(&window, &*runner) {
-                tracing::warn!(task_id = id.0, "finish: failed to kill tmux window: {e}");
-            }
-        }))
     }
 
     /// Write `last_pre_tool_use_at` for a freshly running task. Used after
