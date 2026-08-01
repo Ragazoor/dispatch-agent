@@ -103,6 +103,11 @@ dispatch update <task-id> <status>
 dispatch list [--status <status>]
 dispatch plan <task-id> <plan-path>
 
+# statusLine decorator (wired into ~/.claude/dispatch-statusline.json by
+# `dispatch setup`) — records rate-limit windows, then chains to the
+# previous statusLine command
+dispatch statusline --snapshot <path> [--chain <command>]
+
 # Local-first repo sync (see docs/specs/repo-sync.allium)
 dispatch repo status [--no-fetch]   # one drift row per saved repo path; read-only
 dispatch repo sync [<path>]         # sync one saved repo path, or every one
@@ -215,7 +220,8 @@ are dropped with a warning rather than failing the whole feed.
 
 1. **MCP server** — registers the dispatch server in `~/.claude.json` (user-global). Earlier dispatch versions wrote to `~/.claude/.mcp.json`, which Claude Code never read; setup now cleans that up.
 2. **Plugin** — installs hooks, skills, and commands to `~/.claude/plugins/local/dispatch/`
-3. **Tmux** — enables `focus-events` globally (needed for split-view focus indicator)
+3. **Status line** — writes `~/.claude/dispatch-statusline.json`, a `--settings` file loaded by every dispatch-spawned Claude session that wires the `dispatch statusline` decorator in as `statusLine.command`, chaining to whatever command was previously configured in `~/.claude/settings.json`. The decorator records the subscription rate-limit windows from the hook payload to `<data_dir>/rate-limits.json` (`~/.local/share/dispatch/rate-limits.json` by default), which the TUI polls to render the budget badge in the top row. `dispatch tui` also recreates this file at startup if it's missing, so a broken/deleted file self-heals on next launch — see Troubleshooting below.
+4. **Tmux** — enables `focus-events` globally (needed for split-view focus indicator)
 
 `~/.claude/settings.json` is not modified by setup — dispatch tool permissions are managed by the user or via Claude Code's interactive prompts.
 
@@ -267,6 +273,12 @@ Verify the dispatch plugin is installed: `ls ~/.claude/plugins/local/dispatch/ho
 
 **Skills not available (`/wrap-up`)**
 The dispatch plugin may not be installed. Run `dispatch setup` to install it.
+
+**Agents fail to start with `Settings file not found`**
+`~/.claude/dispatch-statusline.json` is missing — every dispatch-spawned Claude session is launched with `--settings` pointing at it (see Setup above). Run `dispatch setup` to recreate it, or restart `dispatch tui`, which recreates the file automatically if it's absent.
+
+**Budget badge not showing in the top row**
+The status line isn't wired up, or no rate-limit payload has arrived yet. Run `dispatch setup` to (re)write `~/.claude/dispatch-statusline.json`, then start (or restart) a dispatch-spawned Claude session — the badge appears once its statusLine hook has fired at least once. Chain drift (an out-of-band edit to `~/.claude/settings.json`'s `statusLine.command` after setup ran) and schema drift (an unrecognised hook payload shape) are documented here rather than enforced by a `doctor` check; re-running `dispatch setup` re-discovers the current chain.
 
 **Agent window disappeared but task is still Running**
 Press `Space` on the Running task to reopen a tmux window in the existing worktree and resume the agent.

@@ -13,6 +13,7 @@ to look.
 | `src/cli/mod.rs` | CLI submodule declarations (`agent_tree`, `caller_headers`) |
 | `src/cli/caller_headers.rs` | `dispatch caller-headers` — pure CWD→identity-header resolver used as Claude Code's `headersHelper`, so an agent's MCP calls carry `X-Caller-Task-Id`. No DB, no network, no async |
 | `src/cli/agent_tree.rs` | `dispatch agent-tree <task_id>` — standalone ratatui companion-pane renderer, deliberately not part of the board TUI's `App`/message loop. Converts subtask 3's `agent_tree::TreeNode` into `tui_tree_widget` items with `[Modified]`/`[Read]` badges (`build_tree_items`), tracks manual expand/collapse across redraws so only newly-touched directories auto-open (`RenderState`), maps one key press onto that view state in a terminal-free `handle_key` (vim motions and arrows as aliases), and `run()` polls the task's file-events JSONL on a 1-second timer (see `docs/specs/agent-tree.allium`'s `AgentTreeCompanionPane` surface) |
+| `src/cli/statusline.rs` | `dispatch statusline` decorator: records the subscription rate-limit windows from Claude Code's statusLine hook payload to a snapshot file, then runs the user's previous statusLine command and prints its output verbatim. Never fails (always exits 0) and never opens the database — see the module doc comment |
 | `src/runtime/mod.rs` | Async event loop (`tokio::select!`), bridges TUI ↔ MCP ↔ shell commands; `TICK_INTERVAL`, `execute_commands` |
 | `src/runtime/commands.rs` | `Command` side-effect dispatcher (called by `execute_commands`) |
 | `src/runtime/tasks.rs` | Per-command runtime handlers for tasks (refresh, dispatch, finish, etc.) |
@@ -90,6 +91,7 @@ to look.
 | `src/agent_tree.rs` | Pure JSONL-events→tree logic: `build_tree(root, jsonl)` parses a task's file-events log into an in-memory `TreeNode` tree with Read/Modified badges (Modified wins) and auto-expansion flags on touched directories. No I/O, no rendering (see `docs/specs/agent-tree.allium`'s `RefreshAgentTree` rule) |
 | `src/setup/mod.rs` | First-run setup entry point |
 | `src/setup/{config,plugins,hooks}.rs` | MCP config merging, plugin installation, git hook installation |
+| `src/setup/statusline.rs` | Generates `~/.claude/dispatch-statusline.json`, the `--settings` file that wires the `dispatch statusline` decorator into every dispatch-spawned Claude session; discovers the user's pre-existing statusLine command to chain to |
 | `src/mcp/mod.rs` | MCP server bootstrap (Axum router), `McpState`, `McpEvent` notification enum |
 | `src/mcp/identity.rs` | `CallerIdentity` / `IdentityError` and `from_headers` — parses `X-Caller-Task-Id` / `X-Caller-Kind` into a typed caller |
 | `src/mcp/middleware.rs` | `extract_caller_identity` Axum middleware — attaches `Result<CallerIdentity, IdentityError>` to every request's extensions |

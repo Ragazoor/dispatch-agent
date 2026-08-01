@@ -79,6 +79,7 @@ rm src/dispatch/snapshots/*.snap.new                 # always clean up
 | Agent-facing skill copy (`plugin/skills/*/SKILL.md`) | `mod tests` in `src/setup/plugins.rs` (via `skill_body`) |
 | tmux semantics — which pane, which cwd, how many panes, which window a name resolves to | `tests/tmux_lifecycle.rs` (topology/cwd) / `tests/tmux_split_hook.rs` (keystroke routing) / `tests/tmux_window_targets.rs` (exact window-name resolution under prefix collisions), shared rig in `tests/tmux_harness/mod.rs` |
 | tmux argv shape — that we sent the right command string | `MockProcessRunner` tests inline in `src/tmux.rs` |
+| A `pub(in crate::tui::ui)`-or-narrower helper (unreachable from `src/tui/tests/`) | inline in the owning module, e.g. `staleness_color`/`feed_role_label` in `src/tui/ui/shared.rs`, `budget_spans` in `src/tui/ui/budget.rs` |
 
 The last two rows are a real split, not two spellings of the same thing: a mock proves *which command we sent*, a real tmux server proves *what tmux did with it*. Read the "`MockProcessRunner` vs a real tmux server" section of `docs/conventions.md` before picking one — guessing wrong is how #3781 and #3782 stayed green while broken.
 
