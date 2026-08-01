@@ -8,7 +8,7 @@ use crate::tmux;
 
 use super::prompts::{
     build_and_record_injections, build_prompt, build_quick_dispatch_prompt, build_research_prompt,
-    build_tmux_window_name, parse_tmux_window_task_id, pr_rebase_preamble, rebase_preamble,
+    build_tmux_window_name, compose_prompt_head, parse_tmux_window_task_id, select_preamble,
     EpicContext, LearningInjections, PromptContext, DISPATCH_PLUGIN_DIR,
 };
 use super::worktree::{provision_worktree, BaseRef, StartPoint};
@@ -147,35 +147,32 @@ fn dispatch_with_prompt(
         _ => None,
     };
 
-    // A PR-based review worktree rebases onto the PR branch (to pull later
-    // pushes); every other task rebases onto the repo's base branch.
-    let (effective_base, preamble) = match pr_branch {
-        Some(branch) => {
-            let preamble = pr_rebase_preamble(&branch);
-            (branch, preamble)
-        }
-        None => {
-            let preamble = rebase_preamble(&resolved);
-            (resolved, preamble)
-        }
+    // Match on a reference: `select_preamble` needs `pr_branch` after
+    // provisioning, so the `Some` arm clones rather than moving. The `None` arm
+    // may move `resolved`, which is unused thereafter.
+    let effective_base: String = match &pr_branch {
+        Some(branch) => branch.clone(),
+        None => resolved,
+    };
+    // A PR head branch is never compared against a local ref — a review must
+    // see exactly the PR's code.
+    let base_ref = match &pr_branch {
+        Some(_) => BaseRef::PrHead(&effective_base),
+        None => BaseRef::Branch(&effective_base),
     };
 
-    let provision = provision_worktree(
-        task,
-        runner,
-        Some(BaseRef::Branch(&effective_base)),
-        SUBPROCESS_TIMEOUT,
-    )?;
+    let provision = provision_worktree(task, runner, Some(base_ref), SUBPROCESS_TIMEOUT)?;
 
-    let preamble = match &provision.fetch_warning {
-        Some(warning) => format!("{preamble}\n\nNote: {warning}"),
-        None => preamble,
-    };
+    let preamble = select_preamble(
+        pr_branch.as_deref(),
+        provision.start_point.as_ref(),
+        provision.reused_worktree,
+    );
+    let head = compose_prompt_head(&preamble, provision.fetch_warning.as_deref());
 
     let prompt = make_prompt();
     let full_prompt = format!(
-        "{preamble}\n\n\
-         Always work from this worktree folder — do not `cd` to the parent repo \
+        "{head}Always work from this worktree folder — do not `cd` to the parent repo \
          or other directories.\n\n\
          {prompt}"
     );

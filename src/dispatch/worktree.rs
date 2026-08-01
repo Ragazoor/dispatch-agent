@@ -227,12 +227,9 @@ pub(super) enum BaseRef<'a> {
     /// must see exactly the PR's code, and a stale local branch of the same
     /// name would silently poison it.
     ///
-    /// Not yet constructed by the sole production caller
-    /// (`dispatch::agents::dispatch_with_prompt`, which still always passes
-    /// `BaseRef::Branch` for every task including PR reviews) — wiring that up
-    /// is a separate, later change. Exercised directly by
+    /// Constructed by `dispatch::agents::dispatch_with_prompt` whenever a
+    /// review task resolves a PR head branch. Exercised directly by
     /// `provision_worktree_never_measures_a_pr_head_branch`.
-    #[allow(dead_code)]
     PrHead(&'a str),
 }
 

@@ -2,7 +2,7 @@
 use super::prompts::{
     allium_instruction, build_prompt, build_quick_dispatch_prompt, build_tmux_window_name,
     epic_preamble, mcp_tools_instruction, parse_tmux_window_task_id, plan_and_attach_instruction,
-    rebase_preamble, task_block, tdd_instruction, wrap_up_instruction, EpicContext,
+    reused_rebase_preamble, task_block, tdd_instruction, wrap_up_instruction, EpicContext,
     LearningInjections, PromptContext,
 };
 use super::worktree::{provision_worktree, BaseRef, StartPoint};
@@ -538,29 +538,6 @@ fn build_quick_dispatch_prompt_includes_epic_context() {
 }
 
 #[test]
-fn rebase_preamble_prepended_to_all_prompts() {
-    let body = build_prompt(
-        TaskId(1),
-        "Task",
-        "Desc",
-        None,
-        None,
-        &PromptContext::default(),
-    );
-    let full = format!(
-        "{}\n\n\
-         Always work from this worktree folder — do not `cd` to the parent repo \
-         or other directories.\n\n\
-         {body}",
-        rebase_preamble("main")
-    );
-    assert!(full.contains("git fetch origin main"));
-    assert!(full.contains("git rebase origin/main"));
-    assert!(full.starts_with("Before starting work"));
-    assert!(full.contains("Always work from this worktree folder"));
-}
-
-#[test]
 fn no_plan_prompts_reference_brainstorming_skill() {
     let standard = build_prompt(TaskId(1), "T", "D", None, None, &PromptContext::default());
     let quick = build_quick_dispatch_prompt(TaskId(1), "T", "D", None, &PromptContext::default());
@@ -753,6 +730,33 @@ fn dispatch_reuses_existing_worktree() {
     assert_eq!(calls[3].1[0], "set-option");
     assert_eq!(calls[4].0, "tmux");
     assert_eq!(calls[4].1[0], "set-hook");
+}
+
+#[test]
+fn dispatch_reused_worktree_prompt_carries_the_reuse_preamble() {
+    let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),                      // git fetch origin main
+        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list (level)
+        MockProcessRunner::ok(),                      // tmux new-window
+        MockProcessRunner::ok(),                      // tmux set-option
+        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(),                      // tmux send-keys -l
+        MockProcessRunner::ok(),                      // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent tree)
+    ]);
+
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+
+    let prompt = std::fs::read_to_string(worktree_dir.join(".claude-prompt")).unwrap();
+    assert!(
+        prompt.contains("reused from a previous attempt"),
+        "got: {prompt}"
+    );
+    assert!(prompt.contains("git rebase origin/main"), "got: {prompt}");
+    assert!(prompt.contains("Always work from this worktree folder"));
 }
 
 #[test]
@@ -985,6 +989,37 @@ fn dispatch_pr_review_task_bases_worktree_on_pr_head_branch() {
         worktree_add_start_point(&calls),
         "origin/feature-x",
         "worktree should start from the PR head branch"
+    );
+}
+
+#[test]
+fn dispatch_pr_review_task_never_measures_the_pr_head_branch() {
+    // End-to-end version of `provision_worktree_never_measures_a_pr_head_branch`:
+    // dispatch_agent on a pr-review task with a PR URL must construct
+    // `BaseRef::PrHead`, not `BaseRef::Branch`, so no ahead/behind comparison
+    // (git rev-list) ever runs against the PR's head branch.
+    let (_dir, repo_path) = make_test_repo();
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"feature-x\nfalse\n"), // gh pr view
+        MockProcessRunner::ok(),                                  // git fetch origin feature-x
+        MockProcessRunner::ok(),                                  // git worktree add
+        MockProcessRunner::ok(),                                  // tmux new-window
+        MockProcessRunner::ok(),                                  // tmux set-option
+        MockProcessRunner::ok(),                                  // tmux set-hook
+    ]);
+
+    let task = pr_review_task(&repo_path);
+    // Prompt write fails (mock didn't create the worktree dir) — that's fine, the
+    // calls we assert on were recorded during provisioning beforehand.
+    let _ = dispatch_agent(&task, &mock, None, &LearningInjections::default(), None);
+
+    let calls = mock.recorded_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.contains(&"rev-list".to_string())),
+        "a PR-review dispatch must never compare the PR head branch against a local ref: {calls:?}"
     );
 }
 
@@ -1328,7 +1363,7 @@ fn provision_worktree_fetches_origin_before_create() {
 }
 
 #[test]
-fn provision_worktree_fetch_failure_falls_back_to_local_after_retries() {
+fn provision_worktree_fetch_failure_falls_back_to_local_without_retry() {
     // A fetch that fails and classifies as "no origin ref" (a 404 from
     // ls-remote) is not retried, and the local branch is used — no error.
     let (_dir, repo_path) = make_test_repo();
@@ -1507,7 +1542,10 @@ fn provision_worktree_still_fetches_when_dir_exists() {
 
 #[test]
 fn rebase_preamble_with_base_branch() {
-    let preamble = rebase_preamble("99-prev-task");
+    let sp = StartPoint::Remote {
+        base: "99-prev-task".to_string(),
+    };
+    let preamble = reused_rebase_preamble(&sp);
     assert!(
         preamble.contains("git fetch origin 99-prev-task"),
         "should fetch the base branch first, got: {preamble}"
@@ -1524,7 +1562,10 @@ fn rebase_preamble_with_base_branch() {
 
 #[test]
 fn rebase_preamble_uses_given_target() {
-    let preamble = rebase_preamble("develop");
+    let sp = StartPoint::Remote {
+        base: "develop".to_string(),
+    };
+    let preamble = reused_rebase_preamble(&sp);
     assert!(
         preamble.contains("git fetch origin develop"),
         "should fetch the given target, got: {preamble}"
@@ -2716,7 +2757,7 @@ fn branch_from_worktree_returns_none_for_root() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn provision_worktree_kills_git_fetch_on_timeout_and_falls_back() {
+fn provision_worktree_kills_git_fetch_on_timeout_and_aborts() {
     // git fetch times out on every attempt → classified as unreachable
     // (never a 404), retried to exhaustion, then aborts. A worktree silently
     // based on a stale local ref is worse than a dispatch that refuses to

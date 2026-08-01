@@ -7,6 +7,8 @@ use crate::service::embeddings::{
     RagRankParams,
 };
 
+use super::worktree::StartPoint;
+
 /// Flags added to all Claude agent invocations. `--plugin-dir` so dispatched
 /// agents discover the dispatch plugin's skills and commands (e.g. /wrap-up);
 /// `--settings` so every session reports its subscription budget windows via
@@ -66,14 +68,66 @@ pub(super) fn parse_tmux_window_task_id(window: &str) -> Option<TaskId> {
     window.strip_prefix("task-")?.parse().ok()
 }
 
-pub(super) fn rebase_preamble(target: &str) -> String {
+/// Preamble for a worktree reused from a previous attempt.
+///
+/// Reuse is the only non-PR case where a rebase does real work: a fresh
+/// worktree's branch *is* its start point, so rebasing onto that ref can only
+/// report "up to date". The rebase targets whichever ref provisioning chose —
+/// pointing a local-based branch at `origin/<base>` would replay local `<base>`'s
+/// unpushed commits under new SHAs, which then collide with the wrap-up rebase
+/// onto local `<base>`.
+pub(super) fn reused_rebase_preamble(start_point: &StartPoint) -> String {
     format!(
-        "Before starting work, fetch and rebase your branch onto the latest {target}:\n\
+        "This worktree was reused from a previous attempt and may contain \
+         uncommitted changes or commits from that run. Check `git status` and \
+         `git log` first, then bring the branch up to date:\n\
          ```\n\
-         git fetch origin {target}\n\
-         git rebase origin/{target}\n\
-         ```"
+         git fetch origin {base}\n\
+         git rebase {target}\n\
+         ```\n\
+         If the rebase reports unstaged changes, commit or stash them first.",
+        base = start_point.base(),
+        target = start_point.git_ref(),
     )
+}
+
+/// Which rebase preamble — if any — a dispatch gets. The whole rule, in one
+/// pure function, evaluated *after* provisioning so it can see the resolved ref.
+///
+/// Takes no fetch warning: the `Note:` is composed separately by
+/// [`compose_prompt_head`], which is what keeps this a three-row table.
+pub(super) fn select_preamble(
+    pr_branch: Option<&str>,
+    start_point: Option<&StartPoint>,
+    reused: bool,
+) -> String {
+    if let Some(branch) = pr_branch {
+        return pr_rebase_preamble(branch);
+    }
+    match start_point {
+        Some(sp) if reused => reused_rebase_preamble(sp),
+        _ => String::new(),
+    }
+}
+
+/// Everything that precedes the "Always work from this worktree folder" line:
+/// the preamble (possibly empty) and the fetch `Note:` (possibly absent), each
+/// separated from what follows by a blank line.
+///
+/// The two are independent — a fresh worktree based on a local-only branch has
+/// a warning worth surfacing and no preamble to attach it to.
+pub(super) fn compose_prompt_head(preamble: &str, fetch_warning: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if !preamble.is_empty() {
+        parts.push(preamble.to_string());
+    }
+    if let Some(warning) = fetch_warning {
+        parts.push(format!("Note: {warning}"));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    format!("{}\n\n", parts.join("\n\n"))
 }
 
 /// Preamble for review tasks whose worktree is based on a PR branch.
@@ -561,6 +615,102 @@ mod tests {
             !text.contains("rebase main"),
             "must not rebase onto the base branch, got: {text}"
         );
+    }
+
+    #[test]
+    fn reused_preamble_targets_a_local_start_point() {
+        let sp = StartPoint::Local {
+            base: "develop".to_string(),
+        };
+        let text = reused_rebase_preamble(&sp);
+        assert!(text.contains("git fetch origin develop"), "got: {text}");
+        assert!(text.contains("git rebase develop"), "got: {text}");
+        assert!(
+            !text.contains("git rebase origin/develop"),
+            "must not drag a local-based branch back onto origin: {text}"
+        );
+        assert!(
+            text.contains("git status"),
+            "tells the agent to inspect first"
+        );
+        assert!(!text.contains("main"), "no literal main: {text}");
+    }
+
+    #[test]
+    fn reused_preamble_targets_a_remote_start_point() {
+        let sp = StartPoint::Remote {
+            base: "develop".to_string(),
+        };
+        let text = reused_rebase_preamble(&sp);
+        assert!(text.contains("git fetch origin develop"), "got: {text}");
+        assert!(text.contains("git rebase origin/develop"), "got: {text}");
+    }
+
+    #[test]
+    fn select_preamble_is_empty_for_a_fresh_worktree() {
+        let sp = StartPoint::Remote {
+            base: "main".to_string(),
+        };
+        assert_eq!(select_preamble(None, Some(&sp), false), "");
+    }
+
+    #[test]
+    fn select_preamble_uses_reuse_wording_for_a_reused_worktree() {
+        let sp = StartPoint::Local {
+            base: "main".to_string(),
+        };
+        let text = select_preamble(None, Some(&sp), true);
+        assert!(
+            text.contains("reused from a previous attempt"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("git rebase main"),
+            "mirrors the start point: {text}"
+        );
+    }
+
+    #[test]
+    fn select_preamble_prefers_the_pr_branch_regardless_of_reuse() {
+        let sp = StartPoint::Remote {
+            base: "renovate/serde-1.x".to_string(),
+        };
+        for reused in [true, false] {
+            let text = select_preamble(Some("renovate/serde-1.x"), Some(&sp), reused);
+            assert!(
+                text.contains("git rebase origin/renovate/serde-1.x"),
+                "reused={reused}, got: {text}"
+            );
+            assert!(
+                !text.contains("reused from a previous attempt"),
+                "reused={reused}"
+            );
+        }
+    }
+
+    #[test]
+    fn prompt_head_carries_the_warning_even_with_no_preamble() {
+        // The fresh + no-origin-ref case: nothing to rebase onto, but the agent
+        // must still be told its base is local-only.
+        let head = compose_prompt_head("", Some("origin has no branch main"));
+        assert!(
+            head.contains("Note: origin has no branch main"),
+            "got: {head}"
+        );
+        assert!(!head.starts_with('\n'), "no leading blank line: {head:?}");
+    }
+
+    #[test]
+    fn prompt_head_is_empty_when_there_is_nothing_to_say() {
+        assert_eq!(compose_prompt_head("", None), "");
+    }
+
+    #[test]
+    fn prompt_head_combines_preamble_and_warning() {
+        let head = compose_prompt_head("REBASE", Some("stale"));
+        assert!(head.starts_with("REBASE"), "got: {head}");
+        assert!(head.contains("Note: stale"), "got: {head}");
+        assert!(head.ends_with("\n\n"), "separates from the body: {head:?}");
     }
 
     #[test]
