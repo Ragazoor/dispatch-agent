@@ -435,6 +435,17 @@ impl MockProcessRunner {
             stderr: stderr.as_bytes().to_vec(),
         })
     }
+
+    /// Failed Output with a specific exit code. `fail` hardcodes 1, which cannot
+    /// express the codes `git ls-remote --exit-code` uses to distinguish "no
+    /// matching ref" (2) from "could not reach the remote" (128).
+    pub fn fail_with_code(code: i32, stderr: &str) -> Result<Output> {
+        Ok(Output {
+            status: exit_code(code),
+            stdout: vec![],
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
 }
 
 impl ProcessRunner for MockProcessRunner {
@@ -477,6 +488,15 @@ pub fn exit_fail() -> std::process::ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     // Raw status word: exit code 1 = 1 << 8 = 256
     std::process::ExitStatus::from_raw(1 << 8)
+}
+
+/// An `ExitStatus` carrying a specific exit code, for callers that classify on
+/// the code rather than the message (e.g. `git ls-remote --exit-code`).
+#[cfg(unix)]
+pub fn exit_code(code: i32) -> std::process::ExitStatus {
+    use std::os::unix::process::ExitStatusExt;
+    // Raw status word: the exit code lives in the high byte.
+    std::process::ExitStatus::from_raw(code << 8)
 }
 
 // ---------------------------------------------------------------------------
@@ -688,5 +708,13 @@ mod tests {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
         let result = mock.run_with_timeout("git", &["status"], Duration::from_millis(1));
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn fail_with_code_reports_the_requested_exit_code() {
+        let out = MockProcessRunner::fail_with_code(2, "no matching ref").unwrap();
+        assert_eq!(out.status.code(), Some(2));
+        assert!(!out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stderr), "no matching ref");
     }
 }
