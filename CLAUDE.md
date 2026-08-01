@@ -38,7 +38,12 @@ cargo test --test epic_lifecycle          # integration: full epic lifecycle
 cargo test --test cli                     # CLI subcommand smoke tests
 cargo test tui::tests::scenarios          # key-sequence integration tests
 cargo test tui::tests::snapshots          # ratatui buffer rendering tests
+cargo test --test tmux_lifecycle          # real tmux: window/pane topology and cwd
+cargo test --test tmux_split_hook         # real tmux: which pane keystrokes reach
+cargo test --test tmux_window_targets     # real tmux: window-name resolution
 ```
+
+**The full suite needs `tmux` on `PATH`.** The three `--test tmux_*` targets above drive a real tmux server (private `-L` socket, `-f /dev/null`, drop-guard teardown — see `tests/tmux_harness/mod.rs`). Without tmux they print `skipping: tmux not available on PATH` and pass, so a green local run is not proof they ran. Under `CI` the same check hard-fails instead of skipping, and `.github/workflows/ci.yml` installs tmux in both the `test` and `coverage` jobs so the skip path never masks a regression there.
 
 Suite is green; if a runtime test fails locally, suspect timing — `spawn_blocking`-based tests are timing-sensitive.
 
@@ -108,7 +113,7 @@ RUST_LOG=dispatch_tui=debug cargo run -- tui      # then tail the log file (see 
 
 Required on `PATH` at runtime, with **no startup preflight** — nothing checks binary availability, so a missing binary surfaces as a failed shell command mid-operation:
 
-- **tmux** (`src/tmux.rs`) — every window/pane operation.
+- **tmux** (`src/tmux.rs`) — every window/pane operation. Also a **test** dependency: the `tmux_*` integration targets need it (see "Running tests").
 - **git** (`src/git.rs`, `src/dispatch/worktree.rs`, `src/dispatch/finish.rs`) — worktrees, rebase, branch detection.
 - **gh** (`src/dispatch/mod.rs`, and the `scripts/fetch-*.sh` feed commands) — PR status and feed data. Network calls.
 - **claude** — spawned inside the tmux window by `src/dispatch/agents.rs` as `claude --plugin-dir ~/.claude/plugins/local/dispatch …`; that plugin dir is installed by `cargo run -- setup`.
