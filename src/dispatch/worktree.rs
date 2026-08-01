@@ -64,6 +64,37 @@ pub(crate) fn ensure_dispatch_dir_and_gitignore(worktree: &Path) -> Result<()> {
         .with_context(|| format!("failed to write {}", gitignore_path.display()))
 }
 
+/// Which ref a worktree branch was created from — and therefore what the agent
+/// should rebase onto if it ever needs to.
+///
+/// Both arms carry the bare branch name because the `git fetch origin <base>`
+/// line is identical either way; only the rebase target differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum StartPoint {
+    /// `origin/<base>`: origin is at least as new as local `<base>`.
+    Remote { base: String },
+    /// Bare local `<base>`: it carries commits `origin/<base>` does not, or
+    /// origin has no such branch at all.
+    Local { base: String },
+}
+
+impl StartPoint {
+    /// The ref to hand `git worktree add`, and to rebase onto.
+    pub(super) fn git_ref(&self) -> String {
+        match self {
+            StartPoint::Remote { base } => format!("origin/{base}"),
+            StartPoint::Local { base } => base.clone(),
+        }
+    }
+
+    /// The bare branch name, for the `git fetch origin <base>` line.
+    pub(super) fn base(&self) -> &str {
+        match self {
+            StartPoint::Remote { base } | StartPoint::Local { base } => base,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ProvisionResult {
     pub(super) worktree_path: String,
@@ -330,5 +361,29 @@ mod gitignore_tests {
             "target/ retained on its own line"
         );
         assert!(after.ends_with(".dispatch/\n"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod start_point_tests {
+    use super::*;
+
+    #[test]
+    fn remote_start_point_refs_origin_and_keeps_the_bare_base() {
+        let sp = StartPoint::Remote {
+            base: "develop".to_string(),
+        };
+        assert_eq!(sp.git_ref(), "origin/develop");
+        assert_eq!(sp.base(), "develop");
+    }
+
+    #[test]
+    fn local_start_point_refs_the_bare_branch() {
+        let sp = StartPoint::Local {
+            base: "develop".to_string(),
+        };
+        assert_eq!(sp.git_ref(), "develop");
+        assert_eq!(sp.base(), "develop");
     }
 }
