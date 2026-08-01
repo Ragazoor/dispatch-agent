@@ -636,9 +636,11 @@ mod tests {
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
+        // A node is identified by its own name segment, so a child's
+        // selection path is [parent, child] — see `build_tree_items`.
         assert_eq!(
             rig.selected(),
-            vec!["src".to_string(), "src/lib.rs".to_string()]
+            vec!["src".to_string(), "lib.rs".to_string()]
         );
 
         rig.press(KeyCode::Char('h'));
