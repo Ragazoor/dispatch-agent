@@ -65,8 +65,21 @@ fn setup_or_skip() -> Option<Fixture> {
 }
 
 fn setup() -> Fixture {
+    setup_with(seed_repo)
+}
+
+/// The no-`origin`-remote variant of `setup_or_skip`, for the fallback path
+/// that has no working local `origin` to fetch from at all.
+fn setup_no_origin_or_skip() -> Option<Fixture> {
+    if !tmux_available_or_skip() {
+        return None;
+    }
+    Some(setup_with(seed_repo_no_origin))
+}
+
+fn setup_with(seed: fn(&Path) -> PathBuf) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let repo = seed_repo(dir.path());
+    let repo = seed(dir.path());
     let board_log = dir.path().join("board.log");
 
     let server = TmuxServer::start();
@@ -92,15 +105,16 @@ fn setup() -> Fixture {
 }
 
 /// A git repo with a working local `origin`, which is what `provision_worktree`
-/// expects: on a successful fetch `resolve_start_point` returns `origin/<base>`
-/// and `git worktree add` is given that as its start point.
+/// expects: on a successful fetch `select_start_point` compares local `<base>`
+/// against `origin/<base>` and only prefers local when it holds commits origin
+/// lacks; otherwise `git worktree add` is given `origin/<base>` as its start
+/// point.
 ///
-/// The origin is not cosmetic. Without it all three
-/// `fetch_origin_with_retry` attempts fail, and `FETCH_RETRY_DELAY` is
-/// `#[cfg(test)] 0ms` only for the *library's* own unit tests — an integration
-/// test links the library in its normal build, so each dispatch would pay
-/// 2 x 500ms of real sleep and then exercise the stale-fallback path instead of
-/// the normal one.
+/// The origin is not cosmetic. Without it all three `fetch_origin` attempts
+/// fail, and `FETCH_RETRY_DELAY` is `#[cfg(test)] 0ms` only for the *library's*
+/// own unit tests — an integration test links the library in its normal build,
+/// so each dispatch would pay 2 x 500ms of real sleep and then exercise the
+/// stale-fallback path instead of the normal one.
 fn seed_repo(root: &Path) -> PathBuf {
     let origin = root.join("origin.git");
     let repo = root.join("repo");
@@ -114,6 +128,19 @@ fn seed_repo(root: &Path) -> PathBuf {
         &["remote", "add", "origin", origin.to_str().unwrap()],
     );
     git(&repo, &["push", "-q", "origin", "main"]);
+    repo
+}
+
+/// A git repo with a commit on `main` and **no `origin` remote at all** — the
+/// state `classify_fetch_failure`'s `has_origin_remote` check falls back on.
+/// Kept separate from `seed_repo` rather than parameterising it, since other
+/// tests depend on `seed_repo`'s existing shape (a working local `origin`).
+fn seed_repo_no_origin(root: &Path) -> PathBuf {
+    let repo = root.join("repo");
+    git(root, &["init", "-q", "-b", "main", repo.to_str().unwrap()]);
+    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+    git(&repo, &["add", "README.md"]);
+    git(&repo, &["commit", "-qm", "seed"]);
     repo
 }
 
@@ -140,6 +167,24 @@ fn git(cwd: &Path, args: &[&str]) {
         args,
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// Like `git`, but returns trimmed stdout — for queries such as `rev-parse`.
+fn git_stdout(cwd: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("run git");
+    assert!(
+        out.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn task(id: i64, repo: &Path) -> Task {
@@ -794,6 +839,87 @@ fn splitting_the_main_session_window_sends_no_keystrokes() {
         "a split in the main-session window must receive nothing, got: {got:?}"
     );
     fx.assert_board_untouched();
+}
+
+// ---------------------------------------------------------------------------
+// Worktree start point — local vs. origin `<base>`
+// ---------------------------------------------------------------------------
+
+/// This asks a *git* question, not a tmux one. It lives in this file only
+/// because this is the one harness with a real repo, a real `origin` and a real
+/// dispatch — a mock cannot answer it, because a mock never runs
+/// `git worktree add` for real. Do not "simplify" it onto `MockProcessRunner`.
+#[test]
+fn fresh_dispatch_prefers_local_base_when_it_is_ahead_of_origin() {
+    // `setup_or_skip` wraps `tmux_available_or_skip`, which skips locally when
+    // tmux is missing but hard-fails under `CI` — so this cannot quietly stop
+    // running. This is the file's established guard pattern.
+    let Some(fx) = setup_or_skip() else { return };
+
+    // Land a commit on local main WITHOUT pushing — exactly what the rebase
+    // wrap-up path produces, and the drift this task exists to respect.
+    std::fs::write(fx.repo.join("landed.txt"), "from a finished task\n").unwrap();
+    git(&fx.repo, &["add", "landed.txt"]);
+    git(&fx.repo, &["commit", "-qm", "landed but unpushed"]);
+
+    let local_main = git_stdout(&fx.repo, &["rev-parse", "main"]);
+    let origin_main = git_stdout(&fx.repo, &["rev-parse", "origin/main"]);
+    assert_ne!(local_main, origin_main, "fixture must actually be ahead");
+
+    let result = fx.dispatch(4242);
+
+    let branch = git_stdout(&fx.repo, &["rev-parse", "4242-some-task"]);
+    assert_eq!(
+        branch, local_main,
+        "worktree must start from local main, which holds the landed work"
+    );
+    assert_ne!(
+        branch, origin_main,
+        "must not start from the stale origin ref"
+    );
+    assert!(std::path::Path::new(&result.worktree_path).exists());
+}
+
+/// #3804's premise, preserved: with local and origin level, the branch is the
+/// start point, which is what makes a fresh dispatch's rebase a no-op.
+#[test]
+fn fresh_dispatch_with_level_base_starts_from_origin() {
+    let Some(fx) = setup_or_skip() else { return };
+    let result = fx.dispatch(4243);
+
+    let branch = git_stdout(&fx.repo, &["rev-parse", "4243-some-task"]);
+    assert_eq!(branch, git_stdout(&fx.repo, &["rev-parse", "origin/main"]));
+    assert!(std::path::Path::new(&result.worktree_path).exists());
+}
+
+/// The no-`origin`-remote row of the start-point behaviour table: with no
+/// `origin` configured at all, `classify_fetch_failure`'s `has_origin_remote`
+/// check must short-circuit straight to the local-branch fallback, without
+/// burning the fetch retry budget, and the dispatch must still succeed.
+///
+/// The agent's prompt carries a `Note:` line explaining the local-only base
+/// (`fetch_origin`'s `NoOriginRef` warning, surfaced by `dispatch_with_prompt`),
+/// but reading `.claude-prompt` back out is racy: the launched shell consumes
+/// and deletes it, and there is no deterministic signal to wait on without a
+/// wall-clock sleep (banned by `check-no-test-sleep.sh`). So this test asserts
+/// only the git-level facts; the prompt text itself is unit-tested elsewhere
+/// (`src/dispatch/prompts.rs`'s `Note: origin has no branch` assertions).
+#[test]
+fn fresh_dispatch_falls_back_to_local_base_with_no_origin_remote() {
+    let Some(fx) = setup_no_origin_or_skip() else {
+        return;
+    };
+
+    let local_main = git_stdout(&fx.repo, &["rev-parse", "main"]);
+
+    let result = fx.dispatch(4244);
+
+    let branch = git_stdout(&fx.repo, &["rev-parse", "4244-some-task"]);
+    assert_eq!(
+        branch, local_main,
+        "with no origin remote at all, the worktree must fall back to local main"
+    );
+    assert!(std::path::Path::new(&result.worktree_path).exists());
 }
 
 /// tmux reports `#{pane_current_path}` through the OS, so `/tmp` may come back
