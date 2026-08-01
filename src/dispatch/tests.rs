@@ -2969,6 +2969,23 @@ fn all_spawn_sites_inject_the_statusline_settings_file() {
 }
 
 #[test]
+fn spawn_constant_has_exactly_one_space_between_flags() {
+    // A substring `.contains()` check only anchors on what comes AFTER
+    // "--settings", so it can't catch a doubled space, a missing space, or a
+    // reordering before that point — exactly the whitespace-swallowing hazard
+    // a Rust string-literal line-continuation (`\`) can silently introduce.
+    // Assert the full exact value so any such regression fails here instead
+    // of shipping a broken `claude` command line to `tmux send-keys`.
+    assert_eq!(
+        crate::dispatch::prompts::DISPATCH_PLUGIN_DIR,
+        "--plugin-dir ~/.claude/plugins/local/dispatch --settings ~/.claude/dispatch-statusline.json",
+        "spawn constant must be exactly this string, with exactly one space between \
+         the --plugin-dir and --settings flags — a doubled/missing space here breaks \
+         argument splitting on the `claude` command line sent through tmux send-keys"
+    );
+}
+
+#[test]
 fn spawn_constant_contains_no_whitespace_hazard() {
     // The constant is interpolated into a shell command string sent through
     // tmux send_keys, so it must contain only fixed literal paths. A runtime
