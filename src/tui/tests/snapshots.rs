@@ -993,17 +993,23 @@ fn snapshot_top_row_budget_indicator_fresh() {
     use crate::models::budget::{BudgetSnapshot, BudgetWindow};
 
     // render_top_indicators reads the real wall clock for `now`, so a fresh
-    // snapshot must be captured close to it, not at a fixed epoch.
+    // snapshot must be captured close to it, not at a fixed epoch. `now` here
+    // and the `now` read inside render_top_indicators can differ by up to a
+    // second or two (two separate Utc::now().timestamp() calls, and the
+    // render's call always happens at or after this one — never before).
+    // Offsets below are chosen mid-bucket (e.g. 8070s sits in the middle of
+    // the "2h14m" second-range, not at its 8040s boundary with "2h13m") so
+    // that skew can never flip the rendered digit and flake the snapshot.
     let now = chrono::Utc::now().timestamp();
     let mut app = make_app();
     app.budget = Some(BudgetSnapshot {
         five_hour: Some(BudgetWindow {
             used_percentage: 23.4,
-            resets_at: now + 8040,
+            resets_at: now + 8070,
         }),
         seven_day: Some(BudgetWindow {
             used_percentage: 41.2,
-            resets_at: now + 345_600,
+            resets_at: now + 349_200,
         }),
         captured_at: now,
     });
@@ -1016,17 +1022,27 @@ fn snapshot_top_row_budget_indicator_stale() {
     use crate::models::budget::{BudgetSnapshot, BudgetWindow};
 
     // captured_at far enough in the past (relative to render_top_indicators'
-    // real wall-clock "now") to exceed BUDGET_STALE_AFTER (600s).
+    // real wall-clock "now") to exceed BUDGET_STALE_AFTER (600s). 1_020s (17m)
+    // is mid-bucket for the "17m old" age label too: the label only flips at
+    // a 60s boundary (1_020..1_079 all render "17m"), and skew between this
+    // `now` and render_top_indicators' own `Utc::now()` call only ever adds a
+    // second or two, never subtracts — so it cannot cross either boundary.
     let now = chrono::Utc::now().timestamp();
     let captured_at = now - 1_020;
     let mut app = make_app();
     app.budget = Some(BudgetSnapshot {
         five_hour: Some(BudgetWindow {
             used_percentage: 91.0,
-            resets_at: captured_at + 8040,
+            resets_at: captured_at + 8070,
         }),
         seven_day: Some(BudgetWindow {
             used_percentage: 41.2,
+            // Not 349_200: this offset is added to `captured_at` (already
+            // 1_020s in the past), so its effective countdown is 1_020s
+            // smaller than the fresh test's. 345_600 here lands mid-bucket
+            // at 344_580s ("3d", with ~1_019s of margin to the next
+            // boundary) — safe as-is; only the fresh test's 345_600 sat
+            // exactly on a boundary.
             resets_at: captured_at + 345_600,
         }),
         captured_at,
