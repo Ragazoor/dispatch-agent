@@ -227,7 +227,6 @@ The setup is idempotent — safe to run on every install or upgrade.
 |-----------|---------|
 | `/wrap-up` skill | Commit, rebase, or author + create a draft PR when a task is complete (PR title and body are written by the agent based on the actual diff) |
 | `task-status-hook` | Automatically transitions task status (running/review/needs_input) |
-| `task-usage-hook` | Reports token usage per task |
 
 To verify the plugin is installed:
 ```bash

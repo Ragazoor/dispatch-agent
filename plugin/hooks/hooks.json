@@ -25,10 +25,6 @@
         {
           "type": "command",
           "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/task-status-hook"
-        },
-        {
-          "type": "command",
-          "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/task-usage-hook"
         }
       ]
     }],

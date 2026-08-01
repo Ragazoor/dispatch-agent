@@ -268,7 +268,7 @@ rule ArchiveEpic {
         --
         -- Implementation note: archive does not exercise the DELETE
         -- code path, so it is unaffected by foreign-key references
-        -- from other tables (e.g. task_usage, learnings.source_task_id)
+        -- from other tables (e.g. learnings.source_task_id)
         -- to the tasks being archived.
         --
         -- If the currently active view is on the archived epic, the

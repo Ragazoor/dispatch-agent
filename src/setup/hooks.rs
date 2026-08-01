@@ -19,22 +19,9 @@ mod tests {
             .expect("task-status-hook must be UTF-8")
     }
 
-    fn usage_hook_script() -> &'static str {
-        PLUGIN_DIR
-            .get_file("hooks/scripts/task-usage-hook")
-            .expect("task-usage-hook must be embedded")
-            .contents_utf8()
-            .expect("task-usage-hook must be UTF-8")
-    }
-
     #[test]
     fn hook_script_is_valid_bash() {
         assert!(hook_script().starts_with("#!/usr/bin/env bash"));
-    }
-
-    #[test]
-    fn usage_hook_script_is_valid_bash() {
-        assert!(usage_hook_script().starts_with("#!/usr/bin/env bash"));
     }
 
     #[test]
@@ -127,10 +114,9 @@ mod tests {
     #[test]
     fn hook_script_extracts_task_id_from_git_branch() {
         // Agents commonly cd into subdirectories of the worktree. The hook
-        // must still resolve the task ID — `task-usage-hook` already does
-        // this via `git branch --show-current`; `task-status-hook` must
-        // do the same so PreToolUse/Stop/Notification keep firing when
-        // the agent's cwd is below the worktree root.
+        // must still resolve the task ID via `git branch --show-current` so
+        // PreToolUse/Stop/Notification keep firing when the agent's cwd is
+        // below the worktree root.
         let s = hook_script();
         assert!(
             s.contains("git") && s.contains("branch"),
