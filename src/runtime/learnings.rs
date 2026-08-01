@@ -125,6 +125,9 @@ mod tests {
             editor_session: Arc::new(std::sync::Mutex::new(None)),
             emb_svc,
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         }
     }
 
@@ -343,6 +346,9 @@ mod tests {
             editor_session: Arc::new(std::sync::Mutex::new(None)),
             emb_svc,
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let mut app = App::new(vec![]);
 

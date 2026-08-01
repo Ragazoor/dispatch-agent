@@ -298,9 +298,15 @@ struct TuiRuntime {
     /// Stored as an `AtomicI64` so it can be updated through the shared `&self`
     /// reference used in `execute_commands`.
     last_change_count: AtomicI64,
+    /// Path to the budget snapshot file (`<data_dir>/rate-limits.json`), written
+    /// by the statusLine hook of every dispatch-spawned Claude session. Read off
+    /// the event loop by `exec_refresh_budget`. See docs/specs/dispatch.allium:
+    /// TokenBudgetIndicator.
+    budget_snapshot_path: std::path::PathBuf,
 }
 
 mod agents;
+mod budget;
 mod commands;
 mod editor;
 mod epics;
@@ -391,6 +397,7 @@ impl TuiRuntime {
             .parent()
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf();
+        let budget_snapshot_path = data_dir.clone().join("rate-limits.json");
         let (mcp_notify_tx, mcp_notify_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
         let feed_notify_tx = mcp_notify_tx.clone();
         let mcp_deps = mcp::McpDeps {
@@ -469,6 +476,7 @@ impl TuiRuntime {
             editor_session: Arc::new(std::sync::Mutex::new(None)),
             emb_svc,
             last_change_count: AtomicI64::new(-1),
+            budget_snapshot_path,
         };
 
         // Load initial todo open-count so the board footer shows it immediately.

@@ -204,6 +204,8 @@ pub enum Message {
     /// Managed-feed config popup messages — see
     /// [`crate::tui::messages::ManagedFeedConfigMessage`].
     ManagedFeedConfig(crate::tui::messages::ManagedFeedConfigMessage),
+    /// Budget-indicator messages — see [`crate::tui::messages::BudgetMessage`].
+    Budget(crate::tui::messages::BudgetMessage),
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +268,9 @@ pub enum Command {
     /// Managed-feed config side-effect commands — see
     /// [`crate::tui::commands::ManagedFeedCommand`].
     ManagedFeed(crate::tui::commands::ManagedFeedCommand),
+    /// Budget-indicator side-effect commands — see
+    /// [`crate::tui::commands::BudgetCommand`].
+    Budget(crate::tui::commands::BudgetCommand),
 }
 
 // ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@
 //! enough to navigate quickly.
 
 mod agent;
+mod budget;
 mod epics;
 mod feeds;
 mod forms;

@@ -159,6 +159,7 @@ impl App {
         cmds.extend(self.tick_split_pane_check());
         cmds.extend(self.tick_stale_learning());
         cmds.extend(self.tick_main_session_poll());
+        cmds.extend(self.tick_budget_poll());
         cmds.extend(self.tick_db_refresh());
 
         self.mark_tick_dirty(&status_before, flash_count_before);
@@ -382,6 +383,20 @@ impl App {
             self.ticks_since_main_session_poll = 0;
             return vec![Command::MainSession(
                 crate::tui::commands::MainSessionCommand::CheckLiveness,
+            )];
+        }
+        vec![]
+    }
+
+    /// Poll the budget snapshot file on a fixed multiple of the tick. Drives the
+    /// top-row budget indicator. See docs/specs/dispatch.allium:
+    /// TokenBudgetIndicator.
+    fn tick_budget_poll(&mut self) -> Vec<Command> {
+        self.ticks_since_budget_poll = self.ticks_since_budget_poll.saturating_add(1);
+        if self.ticks_since_budget_poll >= crate::tui::BUDGET_POLL_TICKS {
+            self.ticks_since_budget_poll = 0;
+            return vec![Command::Budget(
+                crate::tui::commands::BudgetCommand::Refresh,
             )];
         }
         vec![]

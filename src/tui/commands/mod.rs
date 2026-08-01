@@ -4,6 +4,7 @@
 //! migrated into per-domain inner enums. Each module here owns one domain's
 //! side-effect commands.
 
+pub mod budget;
 pub mod editor;
 pub mod epic;
 pub mod feed;
@@ -19,6 +20,7 @@ pub mod task;
 pub mod tips;
 pub mod todos;
 
+pub use budget::BudgetCommand;
 pub use editor::EditorCommand;
 pub use epic::EpicCommand;
 pub use feed::FeedCommand;

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use crate::tui::commands::BudgetCommand;
+
 /// Full `Command` match dispatch — one entry per variant, in `Command` enum order.
 ///
 /// Returns any follow-on commands that should be added to the execution queue.
@@ -87,6 +89,10 @@ pub(super) async fn dispatch(
         }
         Todo(cmd) => {
             dispatch_todo(rt, app, cmd).await;
+            vec![]
+        }
+        Budget(BudgetCommand::Refresh) => {
+            drop(rt.exec_refresh_budget());
             vec![]
         }
     }

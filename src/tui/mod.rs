@@ -42,6 +42,20 @@ pub(in crate::tui) const PR_POLL_INTERVAL: Duration = Duration::from_secs(30);
 /// the DB-refresh fallback cadence.
 pub(in crate::tui) const MAIN_SESSION_POLL_TICKS: u64 = 5;
 
+/// Number of ticks between budget-snapshot reads. At `TICK_INTERVAL` (2s) this
+/// is 10s — mirrors config.budget_poll_interval (see docs/specs/core.allium
+/// config and dispatch.allium: TokenBudgetIndicator).
+pub(in crate::tui) const BUDGET_POLL_TICKS: u64 = 5;
+
+/// Age after which the budget indicator dims and shows its age. Mirrors
+/// config.budget_stale_after.
+///
+/// Not read by production code until Task 7 (rendering) lands — only pinned
+/// down by a test in this task. `#[allow(dead_code)]` is temporary; remove it
+/// once Task 7's renderer consumes this constant.
+#[allow(dead_code)]
+pub(in crate::tui) const BUDGET_STALE_AFTER: Duration = Duration::from_secs(600);
+
 /// Whether the stale-learning cleanup background job runs.
 /// Mirrors config.stale_learning_cleanup_enabled (see docs/specs/core.allium config).
 pub(crate) const STALE_LEARNING_CLEANUP_ENABLED: bool = true;
@@ -245,6 +259,11 @@ pub struct App {
     /// Ticks elapsed since the last main-session liveness poll. Reset to 0 on
     /// each poll; the poll fires when this reaches `MAIN_SESSION_POLL_TICKS`.
     pub(in crate::tui) ticks_since_main_session_poll: u64,
+    /// Latest budget snapshot read from `<data_dir>/rate-limits.json`. `None`
+    /// when absent or unreadable — the steady state for non-subscription auth.
+    /// Derived live, never persisted (dispatch.allium: TokenBudgetIndicator).
+    pub(in crate::tui) budget: Option<crate::models::budget::BudgetSnapshot>,
+    pub(in crate::tui) ticks_since_budget_poll: u64,
     /// Derived layout state (epic stats, anchor cache, task index, and their
     /// fingerprints) computed from `board.tasks`/`board.epics`. See
     /// [`LayoutCache`] for coherence details.
@@ -472,6 +491,8 @@ impl App {
             main_session_dir: None,
             main_session_alive: false,
             ticks_since_main_session_poll: 0,
+            budget: None,
+            ticks_since_budget_poll: 0,
             layout: LayoutCache::default(),
             dirty: true,
             dirty_since_refresh: true,

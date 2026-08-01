@@ -590,6 +590,9 @@ mod learning_editor_tests {
             editor_session: Arc::new(std::sync::Mutex::new(None)),
             emb_svc,
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         }
     }
 
@@ -1031,6 +1034,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let app = App::new(vec![]);
         (rt, app)
@@ -1110,6 +1116,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let mut app = App::new(vec![task.clone()]);
 
@@ -1170,6 +1179,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let mut app = App::new(vec![task.clone()]);
 
@@ -1224,6 +1236,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         // Pre-set a url on the task.
         rt.task_svc
@@ -1286,6 +1301,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let mut app = App::new(vec![task.clone()]);
 
@@ -1335,6 +1353,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         // Pre-set a tag on the task.
         rt.task_svc
@@ -1400,6 +1421,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let mut app = App::new(vec![task.clone()]);
 
@@ -1457,6 +1481,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let mut app = App::new(vec![task.clone()]);
 
@@ -1515,6 +1542,9 @@ mod tests {
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
             last_change_count: std::sync::atomic::AtomicI64::new(-1),
+            budget_snapshot_path: std::path::PathBuf::from(
+                "/nonexistent-test-path/rate-limits.json",
+            ),
         };
         let mut app = App::new(vec![task.clone()]);
 

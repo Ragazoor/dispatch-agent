@@ -61,5 +61,8 @@ pub(in crate::tui) fn dispatch(app: &mut App, msg: Message) -> Vec<Command> {
 
         // ── Managed-feed config popup ──
         Message::ManagedFeedConfig(mfm) => mfm.route(app),
+
+        // ── Budget indicator ──
+        Message::Budget(bm) => bm.route(app),
     }
 }
