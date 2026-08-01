@@ -53,8 +53,8 @@ existing `task-status-hook` script with no matcher:
 
 | Event | New arm in `task-status-hook` |
 |---|---|
-| `SubagentStart` | `dispatch hook-subagent "$ID" start --agent-id "$AGENT_ID"` |
-| `SubagentStop` | `dispatch hook-subagent "$ID" stop --agent-id "$AGENT_ID"` |
+| `SubagentStart` | `dispatch hook-subagent "$ID" start --agent-id "$AGENT_ID" --session-id "$SESSION_ID"` |
+| `SubagentStop` | `dispatch hook-subagent "$ID" stop --agent-id "$AGENT_ID" --session-id "$SESSION_ID"` |
 | `SessionStart` | `dispatch hook-subagent "$ID" clear` |
 
 Task-ID extraction reuses the existing branch-name logic
@@ -66,9 +66,10 @@ tool calls reaching it is correct behaviour — it is what keeps the parent task
 activity timestamp fresh — and filtering on `agent_id` there would reintroduce
 the staleness problem this design is trying to remove.
 
-`agent_type` is captured by neither arm. Nothing in this design consumes it: the
-render is a count, the classifier is a `> 0` test, and the TTL sweep keys off
-`started_at`. Adding the column later, if the label ever grows to name agent
+`agent_type` is captured by neither arm. (`session_id` is, and is load-bearing —
+see "Drift".) Nothing in this design consumes it: the
+render is a count, the classifier is a `> 0` test, and drift reclamation keys off
+`session_id`. Adding the column later, if the label ever grows to name agent
 types, is a one-line migration against a table that already exists.
 
 ### Storage
@@ -79,6 +80,7 @@ Migration 81:
 CREATE TABLE task_subagents (
   task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   agent_id   TEXT    NOT NULL,
+  session_id TEXT    NOT NULL,
   started_at TEXT    NOT NULL,
   PRIMARY KEY (task_id, agent_id)
 );
@@ -90,23 +92,19 @@ ALTER TABLE tasks ADD COLUMN stop_pending   INTEGER NOT NULL DEFAULT 0;
 
 The table is the authority. `INSERT OR REPLACE` makes a duplicate `SubagentStart`
 idempotent; `DELETE` by `(task_id, agent_id)` makes an unrecognised
-`SubagentStop` a no-op rather than a count underflow. Per-row `started_at` is
-what the TTL sweep needs.
+`SubagentStop` a no-op rather than a count underflow. `started_at` is retained
+for diagnostics only — nothing in the design branches on it.
 
 `tasks.live_subagents` is a denormalised `COUNT(*)`, rewritten from the table
 inside the same transaction as every mutation. It exists so the classifier and
 the card render read one integer off the task row instead of forcing a join into
-every task query. The sweep recomputes it, so the two cannot drift for long.
+every task query. It is rewritten from the table by every mutation and every
+clear point, so the two have no window in which to disagree.
 
 ### Health semantics
 
-All changes land in `docs/specs/agent-health.allium`.
-
-New config constant alongside `active_threshold`:
-
-```
-subagent_ttl: Duration = 60.minutes
-```
+All changes land in `docs/specs/agent-health.allium`. No new config constant —
+see "Drift" below for why there is no tuned threshold anywhere in this design.
 
 **`ClassifyAgentActivity`** gains one branch, below `needs_input` and above the
 threshold check:
@@ -132,21 +130,56 @@ else:                   status = review, ...         -- unchanged
 **New `HookSubagentStart`**: upserts the entry, recomputes `live_subagents`.
 
 **New `HookSubagentStop`**: removes the entry, recomputes `live_subagents`, and
-when the count reaches zero *and* `stop_pending` is set, applies the deferred
-`HookStop` effects (status → review, sub_status → default, timestamps cleared,
-`stop_pending` → false).
+runs the *drain path* — when the count reaches zero and `stop_pending` is set,
+apply the deferred `HookStop` effects (status → review, sub_status → default,
+timestamps cleared, `stop_pending` → false).
 
-**New `SweepStaleSubagents`**: on Tick, deletes entries older than
-`subagent_ttl`, recomputes the count, and runs the identical drain path as
-`HookSubagentStop`. This is not optional. Without it a leaked entry pins the task
-to Running *and* strands a `stop_pending` task that can never reach Review —
-the one way this feature could permanently break a task.
+### Drift
 
-**Clear points** — reset both the entries and `stop_pending`:
+`SubagentStop` is reliable in normal operation, so the design trusts it rather
+than second-guessing it on a timer. Reclaiming a leaked entry uses two
+mechanisms, neither of which has a tunable constant.
 
-- `SessionStart` (a fresh Claude session provably has zero live subagents)
-- `DispatchTask` and crash-retry
-- `HookUserPromptSubmit` (a human resuming voids any pending stop)
+**Session fencing.** Every hook payload carries `session_id`, stored on the row.
+Any subagent hook write first deletes rows for that task whose `session_id`
+differs from the incoming one. A new `claude` process means a new `session_id`,
+so entries from a dead session are provably dead — no threshold and no judgement
+call. This holds even if `SessionStart` never fires or the hook is not installed.
+
+**Structural clear points**, each an event already detected. They split by
+whether the triggering rule already owns the task's resulting status:
+
+| Signal | Rule | Clears entries | Then |
+|---|---|---|---|
+| Session starts, resumes, or is cleared | new `SessionStart` arm | yes | drain path |
+| Detach | `DetachTmux` / `BatchDetachTmux` (`docs/specs/split-pane.allium:21`) | yes | drain path |
+| tmux window gone | `DetectCrashedAgent` (`docs/specs/agent-health.allium:92`) | yes | clear `stop_pending`, no flip |
+| Dispatch or retry | `DispatchTask` | yes | clear `stop_pending`, no flip |
+
+*Drain path* means the same effect as `HookSubagentStop`: if the clear drops the
+count to zero while `stop_pending` is set, apply the deferred `HookStop` effects.
+This is the load-bearing property — a reset never strands a task in Running with
+an unresolved `stop_pending`, it resolves it.
+
+The bottom two rows deliberately skip the flip. `DetectCrashedAgent` sets
+`sub_status = crashed` and `DispatchTask` moves the task into Running; draining
+to Review in the same breath would produce a task that is Crashed *and* in Review,
+or freshly dispatched *and* in Review. In both cases the triggering rule's status
+is the more informative one and wins. They still clear `stop_pending`, so the bit
+cannot survive into the next session and fire a spurious flip later.
+
+**Known uncovered case**: the `claude` process dies but its tmux window survives.
+No hook arrives and no window-gone signal fires, so the task stays pinned in
+Running with a phantom count until it is detached, retried, or a new session
+starts in that window. This is accepted rather than fixed. The scenario already
+misbehaves today for the same root cause — a dead process emits no `PreToolUse`
+either — and it fails toward a visible Running rather than a wrong Review.
+Closing it properly means probing pane liveness on the tick, which changes crash
+detection for every task and belongs in its own task.
+
+An earlier draft of this design used a per-entry TTL sweep instead. It was
+dropped: the threshold is unfalsifiable — short enough to reclaim a phantom
+promptly is short enough to sweep a legitimately long-running subagent.
 
 ### Render
 
@@ -172,18 +205,20 @@ a single variant.
 
 TDD order. Spec first, then tests, then code, per the repo convention.
 
-1. **Spec** (`allium:tend` on `agent-health.allium`): `subagent_ttl`, the new
-   `ClassifyAgentActivity` branch, conditional `HookStop`, and the three new
-   rules `HookSubagentStart` / `HookSubagentStop` / `SweepStaleSubagents`.
+1. **Spec** (`allium:tend` on `agent-health.allium`): the new
+   `ClassifyAgentActivity` branch, conditional `HookStop`, and the two new rules
+   `HookSubagentStart` / `HookSubagentStop`, plus the clear-point amendments to
+   `DetectCrashedAgent`, `DetachTmux` and `DispatchTask`.
 2. **DB** (`src/db/tests/`): migration 81 applies and bumps
    `LATEST_SCHEMA_VERSION`; duplicate start is idempotent; unknown stop is a
-   no-op; `live_subagents` equals `COUNT(*)` after every mutation; the sweep
-   drops only entries past `subagent_ttl`.
+   no-op; `live_subagents` equals `COUNT(*)` after every mutation; a write
+   bearing a new `session_id` evicts the previous session's rows.
 3. **Service**: classifier precedence (subagents beat stale, lose to
    `needs_input`); `Stop` with live subagents sets `stop_pending` without moving
-   status; the last `SubagentStop` performs the deferred flip; the TTL sweep
-   performs the same deferred flip; each clear point resets entries and
-   `stop_pending`.
+   status; the last `SubagentStop` performs the deferred flip; the session fence
+   and detach also perform it when they drain the last entry; **crash and
+   dispatch clear `stop_pending` without flipping** — assert the task is not
+   left simultaneously Crashed-and-Review or freshly-dispatched-and-Review.
 4. **Hook script** (`src/setup/hooks.rs`, stub-`dispatch` with JSON on stdin,
    matching the existing arm tests): each new arm invokes the right command;
    missing `agent_id` is a silent no-op; `hooks.json` registers all three events.
@@ -200,10 +235,14 @@ Verification gate: `cargo fmt --check && cargo test && ./scripts/check-doc-paths
   events. Gives you spawns but no reliable completion signal for background
   agents, so the count only ever grows.
 - **A bare integer column** with increment/decrement instead of a table. Loses
-  idempotency (a replayed hook double-counts) and has no `started_at`, so the
-  TTL sweep the drift bound depends on becomes impossible.
+  idempotency (a replayed hook double-counts) and has nowhere to record
+  `session_id`, so session fencing becomes impossible.
+- **A per-entry TTL sweep** as the drift bound. Any threshold short enough to
+  reclaim a phantom promptly is short enough to sweep a legitimately long-running
+  subagent, and the constant cannot be validated against anything.
 - **Letting `Stop` flip to Review and pulling the task back on the next
   `SubagentStart`.** Visible flicker through Review, and it fires the epic
   auto-dispatch chain, which reacts to review transitions.
-- **Reclaiming leaks from tmux liveness alone**, with no TTL. Misses the case
-  where the `claude` process dies but the tmux window survives.
+- **Reclaiming leaks from tmux liveness alone.** Window-gone is one of the four
+  clear points, but on its own it misses a `/clear`ed or restarted session inside
+  a window that never died — which session fencing catches exactly.
