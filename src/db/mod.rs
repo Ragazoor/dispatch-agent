@@ -95,6 +95,8 @@ patch_struct! {
         nullable last_notification_at: chrono::DateTime<chrono::Utc>,
         nullable wrap_up_mode: WrapUpMode,
         plain    auto_run_plan: bool,
+        plain    live_subagents: i64,
+        plain    stop_pending: bool,
     }
 }
 

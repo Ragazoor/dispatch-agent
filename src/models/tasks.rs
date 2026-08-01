@@ -314,6 +314,15 @@ pub struct Task {
     pub last_notification_at: Option<DateTime<Utc>>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
+    /// Number of subagents currently executing for this task. Denormalised
+    /// `COUNT(*)` over `task_subagents`, rewritten by every mutation and
+    /// every clear point. Read by `classify_agent_activity` (live subagents
+    /// outrank staleness) and by the running card label.
+    pub live_subagents: i64,
+    /// A `Stop` hook arrived while subagents were still live, so the
+    /// Running -> Review flip was deferred. The last `SubagentStop` to drain
+    /// the count performs it. See `HookStop` in `docs/specs/agent-health.allium`.
+    pub stop_pending: bool,
 }
 
 impl Task {
@@ -1532,6 +1541,8 @@ mod model_tests {
             last_notification_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            live_subagents: 0,
+            stop_pending: false,
         }
     }
 

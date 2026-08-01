@@ -139,6 +139,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (78, migrate_v78_create_task_watchers),
     (79, migrate_v79_backfill_done_sort_order),
     (80, migrate_v80_drop_agent_status),
+    (81, migrate_v81_create_task_subagents),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1171,6 +1172,37 @@ pub(super) fn migrate_v80_drop_agent_status(conn: &Connection) -> Result<()> {
                     format!("Failed to drop agent_status from {table} (migration v80)")
                 })?;
         }
+    }
+    Ok(())
+}
+
+/// Creates `task_subagents` (one row per live subagent, keyed by
+/// `(task_id, agent_id)`) and adds `tasks.live_subagents` /
+/// `tasks.stop_pending`. See `SubagentEntry` in `docs/specs/core.allium` and
+/// the `live_subagents` / `stop_pending` fields in `docs/specs/agent-health.allium`.
+pub(super) fn migrate_v81_create_task_subagents(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_subagents (
+             task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+             agent_id   TEXT    NOT NULL,
+             session_id TEXT    NOT NULL,
+             started_at TEXT    NOT NULL,
+             PRIMARY KEY (task_id, agent_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_task_subagents_task
+             ON task_subagents(task_id);",
+    )
+    .context("Failed to create task_subagents (migration v81)")?;
+
+    if !column_exists(conn, "tasks", "live_subagents") {
+        conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN live_subagents INTEGER NOT NULL DEFAULT 0",
+        )
+        .context("Failed to add tasks.live_subagents (migration v81)")?;
+    }
+    if !column_exists(conn, "tasks", "stop_pending") {
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN stop_pending INTEGER NOT NULL DEFAULT 0")
+            .context("Failed to add tasks.stop_pending (migration v81)")?;
     }
     Ok(())
 }

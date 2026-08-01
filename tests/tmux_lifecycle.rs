@@ -211,6 +211,8 @@ fn task(id: i64, repo: &Path) -> Task {
         last_notification_at: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        live_subagents: 0,
+        stop_pending: false,
     }
 }
 

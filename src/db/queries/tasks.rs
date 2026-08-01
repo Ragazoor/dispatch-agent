@@ -87,6 +87,8 @@ struct OwnedTaskPatch {
     last_notification_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
     wrap_up_mode: Option<Option<WrapUpMode>>,
     auto_run_plan: Option<bool>,
+    live_subagents: Option<i64>,
+    stop_pending: Option<bool>,
 }
 
 impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
@@ -110,6 +112,8 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             last_notification_at,
             wrap_up_mode,
             auto_run_plan,
+            live_subagents,
+            stop_pending,
         } = *p;
         Self {
             status,
@@ -129,6 +133,8 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             last_notification_at,
             wrap_up_mode,
             auto_run_plan,
+            live_subagents,
+            stop_pending,
         }
     }
 }
@@ -375,6 +381,8 @@ impl super::super::TaskCrud for Database {
                 "wrap_up_mode"
             );
             set_field!(sets, values, patch.auto_run_plan, "auto_run_plan");
+            set_field!(sets, values, patch.live_subagents, "live_subagents");
+            set_field!(sets, values, patch.stop_pending, "stop_pending");
 
             sets.push("updated_at = datetime('now')");
             values.push(Box::new(id.0));

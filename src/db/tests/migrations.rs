@@ -2,6 +2,47 @@
 use super::*;
 
 #[tokio::test]
+async fn migration_81_creates_task_subagents_and_columns() {
+    let db = in_memory_db().await;
+    let has = db
+        .db_call(|conn| {
+            let table: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_subagents'",
+                [],
+                |r| r.get(0),
+            )?;
+            let live: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='live_subagents'",
+                [],
+                |r| r.get(0),
+            )?;
+            let pending: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='stop_pending'",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((table, live, pending))
+        })
+        .await
+        .expect("query schema");
+    assert_eq!(
+        has,
+        (1, 1, 1),
+        "migration 81 must create the table and both columns"
+    );
+}
+
+#[tokio::test]
+async fn new_task_defaults_to_zero_subagents_and_no_pending_stop() {
+    let db = in_memory_db().await;
+    let task = create_task_returning(&db, "t", "d", "/r", None, TaskStatus::Backlog)
+        .await
+        .expect("create task");
+    assert_eq!(task.live_subagents, 0);
+    assert!(!task.stop_pending);
+}
+
+#[tokio::test]
 async fn fresh_db_sets_performance_pragmas() {
     let db = in_memory_db().await;
     let (synchronous, cache_size, temp_store): (i64, i64, i64) = db

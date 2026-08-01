@@ -374,6 +374,8 @@ mod tests {
             last_notification_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            live_subagents: 0,
+            stop_pending: false,
         }
     }
 
@@ -599,6 +601,8 @@ mod tests {
             last_notification_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            live_subagents: 0,
+            stop_pending: false,
         };
         assert!(task.epic_id.is_none());
     }
@@ -629,6 +633,8 @@ mod tests {
             last_notification_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            live_subagents: 0,
+            stop_pending: false,
         };
         assert_eq!(task.epic_id, Some(EpicId(5)));
     }
@@ -722,6 +728,8 @@ mod tests {
             last_notification_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            live_subagents: 0,
+            stop_pending: false,
         }
     }
 
