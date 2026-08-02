@@ -26,15 +26,33 @@ pub fn detect_default_branch(repo_path: &str, runner: &dyn ProcessRunner) -> Str
 
 /// Whether the repo has an `origin` remote configured.
 ///
-/// A spawn failure and a non-zero exit are treated alike — neither yields a
-/// usable remote — so callers get one boolean rather than a nested result.
-/// Callers decide what absence *means*: [`crate::dispatch::finish::finish_task`]
-/// skips its pull, while [`crate::repo_sync::sync_repo`] refuses outright.
-pub(crate) fn has_origin_remote(repo_path: &str, runner: &dyn ProcessRunner) -> bool {
+/// Three outcomes, not two: `Ok(true)` and `Ok(false)` are the probe's own
+/// answers, while `Err` means the probe could not be run at all and so answered
+/// nothing. Collapsing the third into `Ok(false)` here would report "no origin
+/// remote configured" as a positive finding on the strength of a failure to
+/// look — which is exactly the wrong direction for callers that branch on
+/// absence.
+///
+/// Callers decide what each outcome *means*, and all three answer differently:
+///
+/// - [`crate::dispatch::finish::finish_task`] skips its pull on `Ok(false)` but
+///   fails outright on `Err`, because a git it cannot spawn is a real failure it
+///   should name rather than rebase past.
+/// - `classify_fetch_failure` (`src/dispatch/worktree.rs`) grants the
+///   local-branch fallback only on `Ok(false)`; an `Err` is unreachable-origin,
+///   since a failure to look identifies nothing.
+/// - [`crate::repo_sync::sync_repo`] deliberately treats both as `NoRemote` —
+///   for that operation "nothing to sync against" is the same fact either way,
+///   a carve-out stated in `docs/specs/repo-sync.allium` under
+///   `PreconditionsPrecedeEveryWrite`.
+pub(crate) fn has_origin_remote(
+    repo_path: &str,
+    runner: &dyn ProcessRunner,
+) -> std::result::Result<bool, String> {
     runner
         .run("git", &["-C", repo_path, "remote", "get-url", "origin"])
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .map_err(|e| format!("Failed to check for an origin remote: {e}"))
 }
 
 /// The repo's currently checked-out branch name.
@@ -193,6 +211,57 @@ mod tests {
     fn detect_default_branch_falls_back_when_runner_errors() {
         let runner = MockProcessRunner::new(vec![Err(anyhow::anyhow!("git not on PATH"))]);
         assert_eq!(detect_default_branch("/repo", &runner), "main");
+    }
+
+    // --- has_origin_remote ---
+
+    #[test]
+    fn has_origin_remote_reports_a_configured_remote() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"git@github.com:org/repo.git\n",
+        )]);
+        assert_eq!(has_origin_remote("/repo", &runner), Ok(true));
+    }
+
+    #[test]
+    fn has_origin_remote_reports_a_repo_without_one() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::fail(
+            "error: No such remote 'origin'",
+        )]);
+        assert_eq!(has_origin_remote("/repo", &runner), Ok(false));
+    }
+
+    // The point of the Result: a probe that could not be *run* is not a positive
+    // finding that there is no remote, and callers must be able to tell the two
+    // apart rather than have `git.rs` collapse them on their behalf.
+    #[test]
+    fn has_origin_remote_distinguishes_a_probe_that_could_not_be_run() {
+        let runner = MockProcessRunner::new(vec![Err(anyhow::anyhow!("git not on PATH"))]);
+        let err = has_origin_remote("/repo", &runner)
+            .expect_err("a probe that cannot be run is not an answer");
+        assert!(
+            err.contains("git not on PATH"),
+            "the failure must carry why the probe could not run, got: {err}"
+        );
+    }
+
+    #[test]
+    fn has_origin_remote_invokes_remote_get_url_origin() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        let _ = has_origin_remote("/some/repo", &runner);
+        let calls = runner.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "git");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "-C".to_string(),
+                "/some/repo".to_string(),
+                "remote".to_string(),
+                "get-url".to_string(),
+                "origin".to_string(),
+            ]
+        );
     }
 
     #[test]

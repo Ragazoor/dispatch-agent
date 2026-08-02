@@ -154,8 +154,17 @@ fn classify_fetch_failure(
     base: &str,
     timeout: Duration,
 ) -> FetchFailure {
-    if !crate::git::has_origin_remote(repo_path, runner) {
-        return FetchFailure::NoOriginRef("no origin remote is configured".to_string());
+    match crate::git::has_origin_remote(repo_path, runner) {
+        // The probe ran and found no origin: a positive identification, so the
+        // local-branch fallback is earned.
+        Ok(false) => {
+            return FetchFailure::NoOriginRef("no origin remote is configured".to_string())
+        }
+        Ok(true) => {}
+        // The probe could not be run at all, so it identified nothing. Reading
+        // that as "no origin remote" would hand the local-branch fallback to a
+        // failure to look — the exact inversion of this function's rule.
+        Err(_) => return FetchFailure::Unreachable,
     }
     let refspec = format!("refs/heads/{base}");
     let probe = runner.run_with_timeout(
@@ -283,9 +292,6 @@ pub(super) fn provision_worktree(
 
     tracing::info!(task_id = task.id.0, %worktree_path, ?base, "provisioning worktree");
 
-    fs::create_dir_all(format!("{repo_path}/.worktrees"))
-        .context("failed to create .worktrees directory")?;
-
     // The fetch runs unconditionally — even when reusing an existing worktree
     // directory — so `origin/<base>` stays fresh for whatever rebases onto it
     // later. An unreachable origin aborts here rather than quietly producing a
@@ -338,6 +344,14 @@ pub(super) fn provision_worktree(
     if reused_worktree {
         tracing::info!(task_id = task.id.0, %worktree_path, "worktree already exists, reusing");
     } else {
+        // Deliberately below the fetch and inside this branch: the directory
+        // exists only to hold the worktree `git worktree add` is about to
+        // create, so a provisioning attempt that gives up before that point
+        // leaves nothing behind. Hoisting it back above the fetch reintroduces
+        // an empty `.worktrees/` on every aborted dispatch.
+        fs::create_dir_all(format!("{repo_path}/.worktrees"))
+            .context("failed to create .worktrees directory")?;
+
         let mut args = vec![
             "-C",
             &repo_path,
@@ -549,6 +563,33 @@ mod fetch_tests {
             mock.recorded_calls().len(),
             2,
             "one fetch, one classification — no retries: {:?}",
+            mock.recorded_calls()
+        );
+    }
+
+    // A remote probe that cannot be *run* identifies nothing, so it must not
+    // earn the local-branch fallback the way a probe that ran and found no
+    // origin does. Treating a spawn failure as "no origin remote" would invert
+    // classify_fetch_failure's own rule — only a positive identification of a
+    // missing ref may fall back to local.
+    #[test]
+    fn an_unrunnable_remote_probe_is_treated_as_unreachable_not_as_a_missing_ref() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::fail("Could not resolve host"), // fetch 1
+            Err(anyhow::anyhow!("git: command not found")),    // remote get-url origin
+            MockProcessRunner::fail("Could not resolve host"), // fetch 2
+            MockProcessRunner::fail("Could not resolve host"), // fetch 3
+        ]);
+        let err = fetch_origin(&mock, "/repo", "main", T)
+            .expect_err("an unidentified failure must abort, not fall back to local");
+        assert!(
+            err.to_string().contains("Could not reach origin"),
+            "got: {err}"
+        );
+        assert_eq!(
+            mock.recorded_calls().len(),
+            4,
+            "the probe short-circuits ls-remote, then the fetch is retried: {:?}",
             mock.recorded_calls()
         );
     }

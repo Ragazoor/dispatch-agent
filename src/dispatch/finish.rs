@@ -104,8 +104,12 @@ pub fn finish_task(
         });
     }
 
-    // 3. Pull latest base branch (skip if no remote configured)
-    let has_remote = crate::git::has_origin_remote(repo_path, runner);
+    // 3. Pull latest base branch (skip if no remote configured). A probe that
+    //    could not be run at all is *not* "no remote": it means git could not be
+    //    spawned, which is a failure worth naming rather than a licence to skip
+    //    the pull and rebase anyway.
+    let has_remote =
+        crate::git::has_origin_remote(repo_path, runner).map_err(FinishError::Other)?;
 
     if has_remote {
         let output = runner
@@ -260,6 +264,31 @@ mod tests {
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to fast-forward")),
             "ff-only runner error should map to FinishError::Other, got: {err}"
+        );
+    }
+
+    // A remote probe that could not be *run* is a git failure, not a finding
+    // that there is no remote — so it stops the operation rather than silently
+    // skipping the pull and rebasing against a base that was never refreshed.
+    #[test]
+    fn finish_task_reports_a_remote_probe_that_could_not_be_run() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
+            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
+            Err(anyhow::anyhow!("git: command not found")), // remote get-url
+        ]);
+
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
+
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("command not found")),
+            "a probe that cannot run must carry why, got: {err}"
+        );
+        let calls = mock.recorded_calls();
+        assert_eq!(
+            calls.len(),
+            3,
+            "nothing beyond the remote probe may run: {calls:?}"
         );
     }
 

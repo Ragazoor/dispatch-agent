@@ -131,7 +131,10 @@ contract RepoSyncEngine {
         -- One carve-out, deliberate: a remote probe that cannot be run at all
         -- and one that reports no origin are the same fact for this operation —
         -- there is nothing to sync against — so both report no_remote rather
-        -- than splitting the second into `other`.
+        -- than splitting the second into `other`. The probe itself does
+        -- distinguish them, and other callers act on the difference (see
+        -- WrapUpRebase step 3 in pr-workflow.allium); collapsing them is this
+        -- operation's own choice, not something the probe decides for it.
 
     @invariant FetchPrecedesCounting
         -- The fetch runs unconditionally, before the counts that decide whether
@@ -163,6 +166,14 @@ contract RepoSyncEngine {
         -- ahead_behind reads `rev-list --count --left-right <base>...origin/<base>`
         -- and yields nothing when that ref pair does not resolve or the output
         -- does not parse.
+        --
+        -- Every subprocess the engine issues is bounded by a timeout — the
+        -- fetch and the push because they touch the network, the rev-list
+        -- because walking history can block on a repository lock. None of them
+        -- may wedge a caller: the same counts back the TUI's drift poll and the
+        -- dispatch path. A subprocess that times out is simply one that
+        -- answered nothing, which the surrounding logic already handles as
+        -- unmeasurable.
         --
         -- fetch_base yields nothing on success and the failure message
         -- otherwise. A failed fetch is non-fatal to a *refresh*: the previously

@@ -122,6 +122,11 @@ fn count_range(base_branch: &str) -> String {
 /// does not resolve (no remote, never fetched) or when the output cannot be
 /// parsed. A repository that cannot be measured must not be reported as clean
 /// (`UnmeasurableIsNotInSync`).
+///
+/// Bounded by [`SUBPROCESS_TIMEOUT`] like every other subprocess here: walking
+/// history can block on a lock, and this runs on the dispatch path and the TUI's
+/// drift poll, neither of which may hang on it. A timed-out walk is simply an
+/// unmeasurable one.
 pub fn ahead_behind(
     repo_path: &str,
     base_branch: &str,
@@ -129,7 +134,7 @@ pub fn ahead_behind(
 ) -> Option<AheadBehind> {
     let repo_path = expand_tilde(repo_path);
     let output = runner
-        .run(
+        .run_with_timeout(
             "git",
             &[
                 "-C",
@@ -139,6 +144,7 @@ pub fn ahead_behind(
                 "--left-right",
                 &count_range(base_branch),
             ],
+            SUBPROCESS_TIMEOUT,
         )
         .ok()?;
     if !output.status.success() {
@@ -200,9 +206,11 @@ pub fn sync_repo(
 
     // --- Preconditions, all before any write ---
 
-    // 1. An origin remote must exist. Both a spawn failure and a non-zero exit
-    //    mean the same thing here: nothing to sync against.
-    if !crate::git::has_origin_remote(&repo, runner) {
+    // 1. An origin remote must exist. Both a probe that cannot be run and one
+    //    that reports no origin mean the same thing here — nothing to sync
+    //    against — so both report NoRemote rather than splitting the first into
+    //    Other. Spec: PreconditionsPrecedeEveryWrite's stated carve-out.
+    if !crate::git::has_origin_remote(&repo, runner).unwrap_or(false) {
         return Err(SyncError::NoRemote);
     }
 
@@ -612,6 +620,43 @@ mod tests {
         );
     }
 
+    // Every subprocess this engine issues is bounded. rev-list walks history and
+    // can take a lock, so an unbounded one wedges whatever called it — the TUI's
+    // drift poll, or a dispatch that is waiting to provision a worktree.
+    #[test]
+    fn ahead_behind_bounds_the_rev_list_with_the_subprocess_timeout() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"0\t0\n")]);
+        let _ = ahead_behind(REPO, BASE, &mock);
+        assert_eq!(
+            mock.recorded_timeouts(),
+            vec![Some(SUBPROCESS_TIMEOUT)],
+            "rev-list must be bounded like every other subprocess here"
+        );
+    }
+
+    #[test]
+    fn sync_repo_bounds_every_subprocess_that_can_block_on_the_network_or_a_lock() {
+        let mock = MockProcessRunner::new(responses(vec![
+            MockProcessRunner::ok(),                      // fetch
+            MockProcessRunner::ok_with_stdout(b"3\t0\n"), // rev-list
+            MockProcessRunner::ok(),                      // push
+        ]));
+        sync_repo(REPO, BASE, &mock).expect("an ahead repo pushes");
+        const MUST_BE_BOUNDED: [&str; 3] = ["fetch", "rev-list", "push"];
+        for ((program, args), timeout) in mock
+            .recorded_calls()
+            .into_iter()
+            .zip(mock.recorded_timeouts())
+        {
+            if args.iter().any(|a| MUST_BE_BOUNDED.contains(&a.as_str())) {
+                assert!(
+                    timeout.is_some(),
+                    "{program} {args:?} must be bounded, but was run unbounded"
+                );
+            }
+        }
+    }
+
     // ---------------------------------------------------------------------
     // fetch_base
     // ---------------------------------------------------------------------
@@ -668,6 +713,28 @@ mod tests {
         assert!(
             matches!(err, SyncError::NoRemote),
             "a missing remote must be its own failure, got: {err}"
+        );
+        assert_eq!(
+            mock.recorded_calls().len(),
+            1,
+            "nothing beyond the remote probe may run: {:?}",
+            mock.recorded_calls()
+        );
+    }
+
+    // PreconditionsPrecedeEveryWrite's stated carve-out: a probe that cannot be
+    // run at all and one that reports no origin are the same fact *for this
+    // operation* — there is nothing to sync against — so both report NoRemote
+    // rather than splitting the first into Other. Pinned here so that giving
+    // has_origin_remote a distinguishable failure channel (which other callers
+    // do use) cannot silently change what sync reports.
+    #[test]
+    fn sync_repo_reports_no_remote_when_the_probe_cannot_be_run() {
+        let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("git not on PATH"))]);
+        let err = sync_repo(REPO, BASE, &mock).unwrap_err();
+        assert!(
+            matches!(err, SyncError::NoRemote),
+            "an unrunnable remote probe still means nothing to sync against, got: {err}"
         );
         assert_eq!(
             mock.recorded_calls().len(),

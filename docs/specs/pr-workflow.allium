@@ -218,6 +218,14 @@ rule WrapUpRebase {
         --      never masquerades as a rebase conflict.
         --   3. If origin remote exists, `git pull origin <base_branch>`
         --      in the repo root (skipped when no remote is configured).
+        --      "No remote" here means the probe ran and found none. A probe
+        --      that could not be run at all is a different fact and aborts
+        --      the whole operation, because rebasing past a base that was
+        --      never refreshed on the strength of a failure to look is how
+        --      an unrelated git problem turns into a silent stale rebase.
+        --      (repo-sync.allium's SyncRepo deliberately collapses the two
+        --      into no_remote instead — for that operation both mean
+        --      "nothing to sync against".)
         --   4. `git rebase <base_branch>` from the task's worktree.
         --      On conflict: abort the rebase and emit RebaseConflict,
         --      naming the actual conflicted file(s) parsed from git's

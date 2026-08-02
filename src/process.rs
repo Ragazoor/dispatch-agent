@@ -237,6 +237,10 @@ enum WindowLookup {
 
 pub struct MockProcessRunner {
     calls: Mutex<Vec<(String, Vec<String>)>>,
+    /// The timeout each recorded call was made with, positionally aligned with
+    /// `calls`. Kept apart from `calls` so the `(program, args)` tuples every
+    /// existing assertion destructures stay the shape they are.
+    timeouts: Mutex<Vec<Option<Duration>>>,
     responses: Mutex<VecDeque<(Option<Duration>, Result<Output>)>>,
     window_lookup: WindowLookup,
     binaries: AgentBinaries,
@@ -255,6 +259,7 @@ impl MockProcessRunner {
     pub fn new_with_delays(responses: Vec<(Option<Duration>, Result<Output>)>) -> Self {
         Self {
             calls: Mutex::new(Vec::new()),
+            timeouts: Mutex::new(Vec::new()),
             responses: Mutex::new(VecDeque::from(responses)),
             window_lookup: WindowLookup::AnyName(Mutex::new(Vec::new())),
             binaries: AgentBinaries::default(),
@@ -376,10 +381,28 @@ impl MockProcessRunner {
         self.calls.lock().unwrap().clone()
     }
 
+    /// The timeout each recorded call was made with — `None` for a plain
+    /// [`ProcessRunner::run`], `Some(d)` for a
+    /// [`ProcessRunner::run_with_timeout`]. Positionally aligned with
+    /// [`Self::recorded_calls`].
+    ///
+    /// Whether a subprocess is bounded is invisible in its argv, so without this
+    /// the only way to test it is to let an unbounded call hang — which fails a
+    /// regression by timing the suite out rather than by asserting.
+    #[allow(clippy::unwrap_used)] // test helper — panics on poisoned mutex (programming error)
+    pub fn recorded_timeouts(&self) -> Vec<Option<Duration>> {
+        self.timeouts.lock().unwrap().clone()
+    }
+
     /// Record a call and pop the next queued (delay, response) pair.
     /// Panics if no response is queued — same contract as `run` / `run_with_timeout`.
     #[allow(clippy::unwrap_used)] // test helper — panics on poisoned mutex (programming error)
-    fn record_and_pop(&self, program: &str, args: &[&str]) -> (Option<Duration>, Result<Output>) {
+    fn record_and_pop(
+        &self,
+        program: &str,
+        args: &[&str],
+        timeout: Option<Duration>,
+    ) -> (Option<Duration>, Result<Output>) {
         // Deliberately before the recording: an out-of-band window lookup is
         // neither queued nor recorded, so `calls[N]` indices stay stable.
         if let Some(listing) = self.answer_window_lookup(program, args) {
@@ -389,6 +412,7 @@ impl MockProcessRunner {
             program.to_string(),
             args.iter().map(|s| s.to_string()).collect(),
         ));
+        self.timeouts.lock().unwrap().push(timeout);
         self.responses
             .lock()
             .unwrap()
@@ -450,7 +474,7 @@ impl MockProcessRunner {
 
 impl ProcessRunner for MockProcessRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output> {
-        let (delay, response) = self.record_and_pop(program, args);
+        let (delay, response) = self.record_and_pop(program, args, None);
         if let Some(d) = delay {
             std::thread::sleep(d);
         }
@@ -458,7 +482,7 @@ impl ProcessRunner for MockProcessRunner {
     }
 
     fn run_with_timeout(&self, program: &str, args: &[&str], timeout: Duration) -> Result<Output> {
-        let (delay, response) = self.record_and_pop(program, args);
+        let (delay, response) = self.record_and_pop(program, args, Some(timeout));
         if let Some(d) = delay {
             if d >= timeout {
                 anyhow::bail!("{program} timed out after {timeout:?}");
@@ -714,5 +738,53 @@ mod tests {
         assert_eq!(out.status.code(), Some(2));
         assert!(!out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stderr), "no matching ref");
+    }
+
+    // Whether a call was bounded is not visible in its argv, so the mock records
+    // it separately — otherwise "this subprocess is bounded" can only be tested
+    // by letting an unbounded one hang, which fails the suite by timing out
+    // rather than by asserting.
+    #[test]
+    fn mock_records_the_timeout_each_call_was_made_with() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok(), MockProcessRunner::ok()]);
+        mock.run("git", &["status"]).unwrap();
+        mock.run_with_timeout("git", &["fetch"], Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            mock.recorded_timeouts(),
+            vec![None, Some(Duration::from_secs(5))],
+            "an unbounded call records no timeout, a bounded one records its own"
+        );
+        assert_eq!(
+            mock.recorded_timeouts().len(),
+            mock.recorded_calls().len(),
+            "timeouts must line up positionally with the calls they belong to"
+        );
+    }
+
+    // Out-of-band window lookups are not recorded as calls, so they must not
+    // shift the timeouts out of alignment with them either.
+    #[test]
+    fn mock_timeouts_stay_aligned_across_an_out_of_band_window_lookup() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        let _ = mock.run(
+            "tmux",
+            &[
+                "list-panes",
+                "-a",
+                "-f",
+                "#{==:#{window_name},task-1}",
+                "-F",
+                crate::tmux::WINDOW_PANE_FORMAT,
+            ],
+        );
+        mock.run_with_timeout("git", &["fetch"], Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(
+            mock.recorded_timeouts(),
+            vec![Some(Duration::from_secs(5))],
+            "the intercepted lookup records neither a call nor a timeout"
+        );
+        assert_eq!(mock.recorded_calls().len(), 1);
     }
 }

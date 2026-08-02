@@ -221,7 +221,10 @@ rule DispatchTask {
         --   attempted up to a small maximum number of times (currently 3) with
         --   a short delay between attempts — and if every attempt still
         --   fails, the dispatch ABORTS: no worktree is created, no tmux
-        --   window opens, no agent launches.
+        --   window opens, no agent launches. Nothing is left on disk either —
+        --   the `.worktrees/` directory is created immediately before the
+        --   worktree it holds, not before the fetch, so an aborted dispatch
+        --   leaves no empty directory behind.
         --
         -- == Start-point selection ==
         -- On a successful fetch, the worktree's start point is chosen by
