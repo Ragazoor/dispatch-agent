@@ -72,23 +72,16 @@ case "$EVENT" in
         fi
         ;;
     UserPromptSubmit)   dispatch hook "$ID" user_prompt_submit ;;
-    SubagentStart)
+    SubagentStart|SubagentStop)
         # Subagent lifecycle. Deliberately does NOT fire `dispatch hook
-        # pre_tool_use` — this is not a tool call, and stamping activity from
-        # it would mask a genuinely idle agent. The subagent's own tool calls
+        # pre_tool_use` — these are not tool calls, and stamping activity from
+        # them would mask a genuinely idle agent. The subagent's own tool calls
         # already fire PreToolUse/PostToolUse against this same worktree.
         AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // empty')
         SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
         [ -z "$AGENT_ID" ] && exit 0
-        dispatch hook-subagent "$ID" start \
-            --agent-id "$AGENT_ID" --session-id "$SESSION_ID"
-        ;;
-    SubagentStop)
-        # See SubagentStart above: not a tool call, no activity stamp.
-        AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // empty')
-        SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
-        [ -z "$AGENT_ID" ] && exit 0
-        dispatch hook-subagent "$ID" stop \
+        if [ "$EVENT" = "SubagentStart" ]; then VERB=start; else VERB=stop; fi
+        dispatch hook-subagent "$ID" "$VERB" \
             --agent-id "$AGENT_ID" --session-id "$SESSION_ID"
         ;;
     SessionStart)

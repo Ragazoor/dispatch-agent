@@ -37,7 +37,7 @@ mod tests {
             "hook must handle UserPromptSubmit"
         );
         assert!(
-            s.contains("SubagentStart)") && s.contains("SubagentStop)"),
+            s.contains("SubagentStart") && s.contains("SubagentStop"),
             "hook must handle the subagent lifecycle events"
         );
         assert!(s.contains("SessionStart)"), "hook must handle SessionStart");
