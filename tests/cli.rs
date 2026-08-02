@@ -653,6 +653,14 @@ async fn hook_subagent_start_then_stop_round_trips() {
         String::from_utf8_lossy(&out.stderr)
     );
 
+    let conn = Database::open(db.path()).await.unwrap();
+    let task = conn.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        task.live_subagents, 1,
+        "expected live_subagents to be 1 after start"
+    );
+    drop(conn);
+
     let out = binary()
         .args([
             "--db",
@@ -671,6 +679,13 @@ async fn hook_subagent_start_then_stop_round_trips() {
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = Database::open(db.path()).await.unwrap();
+    let task = conn.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        task.live_subagents, 0,
+        "expected live_subagents to be 0 after the matching stop"
     );
 }
 
@@ -696,6 +711,48 @@ async fn hook_subagent_on_missing_task_exits_zero() {
         out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Missing `--agent-id`/`--session-id` must no-op: exit 0 and no write at all,
+/// not just "exit 0 for some other reason".
+#[tokio::test]
+async fn hook_subagent_missing_agent_id_is_a_silent_noop() {
+    let db = NamedTempFile::new().unwrap();
+    let db_path = db.path().to_str().unwrap();
+    let id = seed_running_task(db.path(), "Subagent Missing Agent Id", SubStatus::Active).await;
+
+    let out = binary()
+        .args(["--db", db_path, "hook-subagent", &id.0.to_string(), "start"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = Database::open(db.path()).await.unwrap();
+    let task = conn.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        task.live_subagents, 0,
+        "a start missing --agent-id/--session-id must not write anything"
+    );
+}
+
+#[tokio::test]
+async fn hook_subagent_unknown_action_fails() {
+    let db = NamedTempFile::new().unwrap();
+    let db_path = db.path().to_str().unwrap();
+    let id = seed_running_task(db.path(), "Subagent Bad Action", SubStatus::Active).await;
+
+    let out = binary()
+        .args(["--db", db_path, "hook-subagent", &id.0.to_string(), "bogus"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "expected failure for an unrecognised action"
     );
 }
 
