@@ -50,7 +50,7 @@ pub(super) fn subagent_start(
     now: DateTime<Utc>,
 ) -> Result<i64> {
     let tx = conn
-        .transaction()
+        .unchecked_transaction()
         .context("Failed to open subagent_start transaction")?;
     fence_session(&tx, task_id, session_id)?;
     tx.execute(
@@ -72,7 +72,7 @@ pub(super) fn subagent_stop(
     session_id: &str,
 ) -> Result<i64> {
     let tx = conn
-        .transaction()
+        .unchecked_transaction()
         .context("Failed to open subagent_stop transaction")?;
     fence_session(&tx, task_id, session_id)?;
     tx.execute(
@@ -88,7 +88,7 @@ pub(super) fn subagent_stop(
 
 pub(super) fn subagent_clear(conn: &mut Connection, task_id: i64) -> Result<()> {
     let tx = conn
-        .transaction()
+        .unchecked_transaction()
         .context("Failed to open subagent_clear transaction")?;
     tx.execute(
         "DELETE FROM task_subagents WHERE task_id = ?1",

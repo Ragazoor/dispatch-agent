@@ -260,6 +260,8 @@ The canonical implementation is in `TaskService` (`src/service/tasks/crud.rs` �
 
 Both closures receive a `&mut rusqlite::Connection`, must be `Send + 'static`, and return `Result<R>`. Errors are routed back through `tokio_rusqlite::Error::Other` and surfaced as `anyhow::Error`. Clone any borrowed `&str`/slice arguments to owned values before moving them into the closure.
 
+**`db_call` is not a transaction, and "single writer" is per-process.** Neither entry point opens one — a closure issuing four statements runs them as four implicit transactions, and another writer can interleave between them. The single-writer connection serialises writes *within one `Database` instance*; it says nothing across processes, and dispatch routinely runs several at once (every Claude Code hook invokes its own `dispatch` CLI process, each opening the same file). So a multi-statement closure that must be atomic has to say so: open one explicitly with `conn.unchecked_transaction()`, do the work against the `tx`, and `tx.commit()`. See `src/db/queries/subagents.rs` for the read-modify-write shape (fence, mutate, recount, update) and `src/db/queries/tasks.rs` for two more. Getting this wrong is not hypothetical — a read-then-write pair split across two hook processes silently desynchronised a denormalised counter in task #3755.
+
 Every `*Store` trait method is `async fn` and uses whichever entry point matches its access pattern — `db_call_read` for pure reads (`TaskRead`, `EpicRead`, `SettingsStore`, `LearningStore`, `LearningRetrievalStore`, `TodoStore`, `UsageStore`), `db_call` for anything that mutates. Callers `.await` each store call the same way regardless of which one it uses underneath.
 
 ## Inline-mutation boundary
