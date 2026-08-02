@@ -140,6 +140,18 @@ Emit `CONVERGED: yes` ONLY when ALL hold:
 Resolving an open question and committing that resolution counts as "changed this run," even if
 steps 3-8 didn't otherwise execute.
 
+Two ways runs have falsely claimed convergence. Both are disqualifying:
+
+- **Something left "pending a decision" is divergence.** If you flag code as newly-dead, note an
+  item you did not resolve, or defer anything to a later run, that is `CONVERGED: no` — name it in
+  the `SUMMARY`. A report whose own prose lists an open item while its label says `yes` contradicts
+  itself, and the driver acts on the label.
+- **Deleting a test requires naming its replacement.** When a deletion removes coverage and you
+  believe the behaviour is still covered elsewhere, do not assert equivalence in the abstract —
+  name the surviving test by function and file, and confirm it asserts the same direction. "A test
+  that the failure case does nothing" does NOT cover "the success case does the thing"; if only the
+  negative direction survives, the invariant lost coverage and this is `CONVERGED: no`.
+
 ## Guardrails (non-negotiable)
 
 - Never skip the rebase step.

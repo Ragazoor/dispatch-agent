@@ -413,18 +413,31 @@ impl ChainFixture {
 
     /// Await the completion signal for `exit_session`'s detached tmux teardown.
     /// Only valid on a fixture built via [`ChainFixture::with_bg_done`].
+    ///
+    /// Bounded, like the `bg_done.recv()` in `src/mcp/handlers/tests/usage.rs`: a
+    /// teardown that never signals is a real regression, and an unbounded await
+    /// would hang the whole suite instead of reporting it. This is a deadline on
+    /// a completion signal, not a wall-clock wait for work to finish — the loop
+    /// still returns the instant `KillWindow` arrives.
     async fn wait_for_kill_window_done(&mut self) {
         let rx = self
             .bg_done_rx
             .as_mut()
             .expect("wait_for_kill_window_done requires ChainFixture::with_bg_done");
-        loop {
-            match rx.recv().await {
-                Some(crate::mcp::BackgroundWrite::KillWindow) => break,
-                Some(_) => continue,
-                None => panic!("bg-done channel closed before the kill-window teardown completed"),
+        let wait = async {
+            loop {
+                match rx.recv().await {
+                    Some(crate::mcp::BackgroundWrite::KillWindow) => break,
+                    Some(_) => continue,
+                    None => {
+                        panic!("bg-done channel closed before the kill-window teardown completed")
+                    }
+                }
             }
-        }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), wait)
+            .await
+            .expect("timed out waiting for the kill-window teardown to signal completion");
     }
 
     async fn build(task_svc_override: Option<Arc<dyn crate::service::TaskServiceApi>>) -> Self {

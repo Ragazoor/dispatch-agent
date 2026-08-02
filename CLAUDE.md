@@ -139,7 +139,7 @@ The Allium specs in `docs/specs/` are the **source of truth** for domain logic:
 - `tasks.allium` — task lifecycle (creation, status movement, reorder, archive, copy, editor)
 - `dispatch.allium` — dispatching tasks, retry flows, repo-path persistence
 - `agent-health.allium` — activity classification, crash detection, notifications, Claude Code hooks
-- `pr-workflow.allium` — PR creation, polling, merge detection, wrap-up, finish paths
+- `pr-workflow.allium` — PR creation, polling, merge detection, and the agent-driven wrap-up/exit-session flow (there is no board-initiated finish path — wrap-up is MCP-only)
 - `split-pane.allium` — split-pane lifecycle, focus border, jump-to-agent, pin, swap, tmux detach
 - `agent-tree.allium` — agent file tree panel: PostToolUse file-event capture, companion-pane lifecycle inside each agent's tmux window, tree/badge rendering
 - `mcp-task-tools.allium` — MCP tools for task management and the CLI plan-attachment surface

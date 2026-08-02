@@ -644,10 +644,43 @@ mod tests {
             .expect("allium-loop skill must have an 'Each Iteration' section")
     }
 
+    /// Both halves of the loop's convergence gate, added after two iterations of
+    /// one run reported `CONVERGED: yes` while their own prose named an
+    /// unresolved item. The driver acts on the label, not the prose, so a
+    /// self-contradicting report ends the loop with work still outstanding —
+    /// and nothing in the loop's output reveals that, which is what makes
+    /// losing this copy a silent regression rather than a visible one.
+    #[test]
+    fn allium_loop_convergence_gate_rejects_deferred_and_uncovered_work() {
+        let section = section_after(
+            skill_file("allium-loop", "prompt.md"),
+            "Emit `CONVERGED: yes` ONLY when ALL hold:",
+        )
+        .expect("allium-loop prompt must state its CONVERGED criteria");
+        assert!(
+            section.contains("pending a decision"),
+            "the convergence gate must keep disqualifying work left pending a \
+             later run — a flagged-but-unresolved item is divergence"
+        );
+        assert!(
+            section.contains("name the surviving test"),
+            "the convergence gate must keep requiring a deleted test's \
+             replacement to be named, not asserted in the abstract"
+        );
+    }
+
     /// Read an embedded skill's `SKILL.md` by skill name, for tests that assert
     /// on skill copy.
     fn skill_body(skill: &str) -> &'static str {
-        let path = format!("skills/{skill}/SKILL.md");
+        skill_file(skill, "SKILL.md")
+    }
+
+    /// Read any embedded file from a skill directory. `SKILL.md` is the common
+    /// case ([`skill_body`]); allium-loop also ships the `prompt.md` that its
+    /// per-iteration agents actually run from, and that copy needs the same
+    /// deletion-is-a-regression protection.
+    fn skill_file(skill: &str, file: &str) -> &'static str {
+        let path = format!("skills/{skill}/{file}");
         PLUGIN_DIR
             .get_file(&path)
             .unwrap_or_else(|| panic!("{path} must be embedded"))
