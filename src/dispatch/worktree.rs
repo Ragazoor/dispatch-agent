@@ -99,9 +99,10 @@ impl StartPoint {
 pub(super) struct ProvisionResult {
     pub(super) worktree_path: String,
     pub(super) tmux_window: String,
-    /// `Some(...)` when there is no `origin/<base>` to base on and the local
-    /// branch was used instead. Injected into the agent's prompt as a `Note:`
-    /// line by `dispatch_with_prompt`.
+    /// `Some(...)` when `origin/<base>` could not be made current: either there
+    /// is no such ref (and the local branch was used instead), or the worktree
+    /// was being reused and origin turned out to be unreachable. Injected into
+    /// the agent's prompt as a `Note:` line by `dispatch_with_prompt`.
     pub(super) fetch_warning: Option<String>,
     /// The ref the branch was created from. `None` when no base was given.
     /// The caller needs it to point the rebase preamble at the same ref.
@@ -123,6 +124,31 @@ enum FetchOutcome {
     /// There is no `origin/<base>` to fetch. Carries the message shown to the
     /// agent as a `Note:` line.
     NoOriginRef(String),
+    /// Origin could not be reached, and provisioning does not need it to be.
+    /// Only ever produced under [`FetchPolicy::BestEffort`] — under `Required`
+    /// this same condition aborts. Carries the `Note:` line.
+    Unreachable(String),
+}
+
+/// Whether provisioning still needs origin to be reachable.
+///
+/// The distinction is not a preference but a consequence of what the resolved
+/// ref is about to be *used for*.
+#[derive(Debug, Clone, Copy)]
+enum FetchPolicy {
+    /// A fresh worktree is about to be branched from the resolved ref, so an
+    /// unreachable origin must abort: a worktree silently based on a stale
+    /// local ref is worse than a dispatch that refuses to start.
+    Required,
+    /// The worktree directory already exists, so `git worktree add` is skipped
+    /// and no ref is consumed to create anything — the resolved ref feeds only
+    /// the rebase preamble. One attempt still runs, because the spec wants
+    /// `origin/<base>` kept fresh for whatever rebases onto it later and the
+    /// repo-sync drift indicator reads that ref. But failure is a warning, and
+    /// neither the retry budget nor the classification probe is spent: both
+    /// exist to serve the abort decision this policy does not make, and each
+    /// costs a full `SUBPROCESS_TIMEOUT` against an unresponsive network.
+    BestEffort,
 }
 
 /// Why a `git fetch origin <base>` failed.
@@ -187,21 +213,31 @@ fn classify_fetch_failure(
     }
 }
 
-/// Make `origin/<base>` current, or establish that there is no such ref.
+/// Make `origin/<base>` current, or establish that it cannot be made current.
 ///
-/// An infrastructure failure is retried up to `FETCH_MAX_ATTEMPTS` and then
-/// aborts the dispatch: a worktree silently branched off a stale local ref is
-/// worse than a dispatch that refuses to start. A missing ref is not retried —
-/// retrying a branch that does not exist cannot succeed — and is not an error,
-/// because local `<base>` is then the only ref there is.
+/// Under [`FetchPolicy::Required`] an infrastructure failure is retried up to
+/// `FETCH_MAX_ATTEMPTS` and then aborts the dispatch: a worktree silently
+/// branched off a stale local ref is worse than a dispatch that refuses to
+/// start. A missing ref is not retried — retrying a branch that does not exist
+/// cannot succeed — and is not an error, because local `<base>` is then the
+/// only ref there is.
+///
+/// Under [`FetchPolicy::BestEffort`] a single attempt runs and any failure
+/// yields [`FetchOutcome::Unreachable`] without classifying or retrying. See
+/// that variant's doc comment for why both are dead weight there.
 fn fetch_origin(
     runner: &dyn ProcessRunner,
     repo_path: &str,
     base: &str,
     timeout: Duration,
+    policy: FetchPolicy,
 ) -> Result<FetchOutcome> {
+    let max_attempts = match policy {
+        FetchPolicy::Required => FETCH_MAX_ATTEMPTS,
+        FetchPolicy::BestEffort => 1,
+    };
     let mut last_err = String::new();
-    for attempt in 1..=FETCH_MAX_ATTEMPTS {
+    for attempt in 1..=max_attempts {
         match runner.run_with_timeout("git", &["-C", repo_path, "fetch", "origin", base], timeout) {
             Ok(output) if output.status.success() => return Ok(FetchOutcome::Fetched),
             Ok(output) => last_err = stderr_str(&output),
@@ -209,7 +245,7 @@ fn fetch_origin(
         }
         // Classify once, on the first failure: the answer cannot change between
         // attempts, and a 404 must not burn the retry budget.
-        if attempt == 1 {
+        if attempt == 1 && matches!(policy, FetchPolicy::Required) {
             if let FetchFailure::NoOriginRef(reason) =
                 classify_fetch_failure(runner, repo_path, base, timeout)
             {
@@ -220,14 +256,34 @@ fn fetch_origin(
                 )));
             }
         }
-        if attempt < FETCH_MAX_ATTEMPTS {
+        if attempt < max_attempts {
             std::thread::sleep(FETCH_RETRY_DELAY);
         }
     }
-    tracing::warn!(base, error = %last_err, "could not reach origin; aborting dispatch");
-    anyhow::bail!(
-        "Could not reach origin to fetch {base} after {FETCH_MAX_ATTEMPTS} attempts: {last_err}"
-    )
+    // Every attempt failed without classifying as a 404. The policy alone
+    // decides what that means.
+    match policy {
+        FetchPolicy::BestEffort => {
+            tracing::warn!(
+                base,
+                error = %last_err,
+                "could not reach origin; reusing the existing worktree anyway"
+            );
+            Ok(FetchOutcome::Unreachable(format!(
+                "Could not reach origin to fetch {base} ({last_err}); this worktree was reused \
+                 from a previous attempt, so nothing needed the network. `origin/{base}` may be \
+                 stale — re-run the fetch yourself once you are back online."
+            )))
+        }
+        FetchPolicy::Required => {
+            tracing::warn!(base, error = %last_err, "could not reach origin; aborting dispatch");
+            anyhow::bail!(
+                "Could not reach origin to fetch {base} after {FETCH_MAX_ATTEMPTS} attempts: \
+                 {last_err}. Check network connectivity and that origin is reachable \
+                 (`git -C <repo> fetch origin {base}`), then dispatch again."
+            )
+        }
+    }
 }
 
 /// What a worktree is being based on, and whether local history may be
@@ -292,10 +348,16 @@ pub(super) fn provision_worktree(
 
     tracing::info!(task_id = task.id.0, %worktree_path, ?base, "provisioning worktree");
 
+    // Measured before the fetch, because it decides the fetch policy: on the
+    // reuse path `git worktree add` is skipped, so no ref is consumed to create
+    // anything and an unreachable origin has nothing to corrupt.
+    let reused_worktree = std::path::Path::new(&worktree_path).exists();
+
     // The fetch runs unconditionally — even when reusing an existing worktree
     // directory — so `origin/<base>` stays fresh for whatever rebases onto it
-    // later. An unreachable origin aborts here rather than quietly producing a
-    // worktree based on a stale local ref.
+    // later. On a fresh worktree an unreachable origin aborts here rather than
+    // quietly producing a worktree based on a stale local ref; on the reuse
+    // path it is downgraded to a warning. See `FetchPolicy`.
     //
     // `select_start_point` (below) runs on the reuse path too, and that is
     // deliberate rather than wasted work: `reused_rebase_preamble` targets
@@ -303,8 +365,14 @@ pub(super) fn provision_worktree(
     // leave that preamble pointing at the wrong ref — the same
     // `git rebase origin/main`-onto-a-local-based-branch history-duplication
     // hazard this branch exists to remove.
+    let policy = if reused_worktree {
+        FetchPolicy::BestEffort
+    } else {
+        FetchPolicy::Required
+    };
     let (start_point, fetch_warning): (Option<StartPoint>, Option<String>) = match base {
-        Some(base_ref) => match fetch_origin(runner, &repo_path, base_ref.name(), timeout)? {
+        Some(base_ref) => match fetch_origin(runner, &repo_path, base_ref.name(), timeout, policy)?
+        {
             FetchOutcome::Fetched => {
                 let sp = match base_ref {
                     BaseRef::PrHead(b) => StartPoint::Remote {
@@ -334,13 +402,38 @@ pub(super) fn provision_worktree(
                      of the same name"
                 ),
             },
+            // Reuse path only. Nothing is being created from this ref, so the
+            // choice only sets the preamble's rebase target.
+            FetchOutcome::Unreachable(warning) => match base_ref {
+                // `origin/<base>` could not be refreshed, so pointing the
+                // preamble at it risks replaying local <base>'s unpushed
+                // commits under new SHAs. Local <base> is the ref we can vouch
+                // for, and the one wrap-up rebases onto.
+                BaseRef::Branch(b) => (
+                    Some(StartPoint::Local {
+                        base: b.to_string(),
+                    }),
+                    Some(warning),
+                ),
+                // A review must never be handed a local branch of the same
+                // name — see `BaseRef::PrHead`. The reused worktree already
+                // holds the PR's code from the previous attempt, so staying
+                // pinned to the origin ref is both safe and honest: if the
+                // preamble's rebase cannot reach it, the agent sees that
+                // directly, and the `Note:` explains why.
+                BaseRef::PrHead(b) => (
+                    Some(StartPoint::Remote {
+                        base: b.to_string(),
+                    }),
+                    Some(warning),
+                ),
+            },
         },
         None => (None, None),
     };
 
     let start_ref = start_point.as_ref().map(StartPoint::git_ref);
 
-    let reused_worktree = std::path::Path::new(&worktree_path).exists();
     if reused_worktree {
         tracing::info!(task_id = task.id.0, %worktree_path, "worktree already exists, reusing");
     } else {
@@ -542,7 +635,7 @@ mod fetch_tests {
     fn successful_fetch_reports_fetched() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
         assert!(matches!(
-            fetch_origin(&mock, "/repo", "main", T).unwrap(),
+            fetch_origin(&mock, "/repo", "main", T, FetchPolicy::Required).unwrap(),
             FetchOutcome::Fetched
         ));
         assert_eq!(mock.recorded_calls().len(), 1, "no classification needed");
@@ -554,7 +647,7 @@ mod fetch_tests {
             MockProcessRunner::fail("no such remote"), // git fetch
             MockProcessRunner::fail("no origin"),      // git remote get-url origin
         ]);
-        let outcome = fetch_origin(&mock, "/repo", "main", T).unwrap();
+        let outcome = fetch_origin(&mock, "/repo", "main", T, FetchPolicy::Required).unwrap();
         let FetchOutcome::NoOriginRef(warning) = outcome else {
             panic!("expected NoOriginRef");
         };
@@ -580,7 +673,7 @@ mod fetch_tests {
             MockProcessRunner::fail("Could not resolve host"), // fetch 2
             MockProcessRunner::fail("Could not resolve host"), // fetch 3
         ]);
-        let err = fetch_origin(&mock, "/repo", "main", T)
+        let err = fetch_origin(&mock, "/repo", "main", T, FetchPolicy::Required)
             .expect_err("an unidentified failure must abort, not fall back to local");
         assert!(
             err.to_string().contains("Could not reach origin"),
@@ -601,7 +694,7 @@ mod fetch_tests {
             MockProcessRunner::ok(),                             // git remote get-url origin
             MockProcessRunner::fail_with_code(2, ""),            // git ls-remote --exit-code
         ]);
-        let outcome = fetch_origin(&mock, "/repo", "nosuch", T).unwrap();
+        let outcome = fetch_origin(&mock, "/repo", "nosuch", T, FetchPolicy::Required).unwrap();
         let FetchOutcome::NoOriginRef(warning) = outcome else {
             panic!("expected NoOriginRef");
         };
@@ -618,7 +711,7 @@ mod fetch_tests {
             MockProcessRunner::fail("Could not resolve host"), // fetch 2
             MockProcessRunner::fail("Could not resolve host"), // fetch 3
         ]);
-        let err = fetch_origin(&mock, "/repo", "main", T).unwrap_err();
+        let err = fetch_origin(&mock, "/repo", "main", T, FetchPolicy::Required).unwrap_err();
         assert!(
             err.to_string().contains("Could not reach origin"),
             "got: {err}"
@@ -642,7 +735,7 @@ mod fetch_tests {
             MockProcessRunner::fail("early EOF"),
             MockProcessRunner::fail("early EOF"),
         ]);
-        assert!(fetch_origin(&mock, "/repo", "main", T).is_err());
+        assert!(fetch_origin(&mock, "/repo", "main", T, FetchPolicy::Required).is_err());
     }
 
     #[test]
@@ -654,9 +747,66 @@ mod fetch_tests {
             MockProcessRunner::ok(), // fetch 2 succeeds
         ]);
         assert!(matches!(
-            fetch_origin(&mock, "/repo", "main", T).unwrap(),
+            fetch_origin(&mock, "/repo", "main", T, FetchPolicy::Required).unwrap(),
             FetchOutcome::Fetched
         ));
+    }
+
+    // ------------------------------------------------------------------
+    // FetchPolicy::BestEffort — the reuse path (#3843)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn best_effort_reports_unreachable_instead_of_aborting() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("Could not resolve host")]);
+        let outcome = fetch_origin(&mock, "/repo", "main", T, FetchPolicy::BestEffort)
+            .expect("a best-effort fetch never aborts the dispatch");
+        let FetchOutcome::Unreachable(warning) = outcome else {
+            panic!("expected Unreachable, got: {outcome:?}");
+        };
+        assert!(warning.contains("main"), "got: {warning}");
+    }
+
+    // The budget, asserted at the unit level: one subprocess, not five. Against
+    // a blackholing network each avoided call is a full SUBPROCESS_TIMEOUT.
+    #[test]
+    fn best_effort_spends_exactly_one_subprocess_on_a_failure() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("Could not resolve host")]);
+        let _ = fetch_origin(&mock, "/repo", "main", T, FetchPolicy::BestEffort);
+        assert_eq!(
+            mock.recorded_calls().len(),
+            1,
+            "no classification probe and no retries: {:?}",
+            mock.recorded_calls()
+        );
+    }
+
+    // A 404 and an unreachable host both land on Unreachable here. That is the
+    // point: the two only diverge because Required has to decide whether to
+    // abort, and BestEffort never does.
+    #[test]
+    fn best_effort_does_not_classify_a_missing_branch() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail(
+            "couldn't find remote ref nosuch",
+        )]);
+        let outcome = fetch_origin(&mock, "/repo", "nosuch", T, FetchPolicy::BestEffort).unwrap();
+        assert!(
+            matches!(outcome, FetchOutcome::Unreachable(_)),
+            "got: {outcome:?}"
+        );
+        assert_eq!(mock.recorded_calls().len(), 1, "no ls-remote probe");
+    }
+
+    // The happy path is unchanged: origin still gets refreshed on reuse, which
+    // is what keeps the repo-sync drift indicator honest.
+    #[test]
+    fn best_effort_still_fetches_successfully() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        assert!(matches!(
+            fetch_origin(&mock, "/repo", "main", T, FetchPolicy::BestEffort).unwrap(),
+            FetchOutcome::Fetched
+        ));
+        assert_eq!(mock.recorded_calls().len(), 1);
     }
 }
 

@@ -1059,12 +1059,17 @@ fn dispatch_prompt_includes_fetch_warning_when_fetch_fails() {
     // Pre-create the worktree dir so `git worktree add` is skipped (its
     // mocked response would otherwise not actually create the directory the
     // real implementation later writes `.claude-prompt` into).
+    //
+    // That pre-creation also puts this test on the REUSE path, so the fetch is
+    // best-effort: one attempt, no `remote get-url`/`ls-remote` classification
+    // probe, and a failure that warns instead of aborting. What is under test
+    // either way is the threading — a fetch warning must reach the agent's own
+    // prompt as a `Note:`, not just a server-side log line.
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
 
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::fail("fatal: could not read from remote repository"), // git fetch
-        MockProcessRunner::ok(),                  // git remote get-url origin
-        MockProcessRunner::fail_with_code(2, ""), // git ls-remote --exit-code (404)
+        // classification and retries are skipped on the reuse path
         // git worktree add is skipped (dir exists)
         MockProcessRunner::ok(),                    // tmux new-window
         MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
@@ -1616,6 +1621,200 @@ fn provision_worktree_still_fetches_when_dir_exists() {
             .iter()
             .all(|(prog, args)| !(prog == "git" && args.contains(&"worktree".to_string()))),
         "git worktree add should be skipped when the dir already exists, got: {calls:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reuse path vs an unreachable origin (#3843)
+//
+// On the reuse path `git worktree add` is skipped, so no ref is consumed to
+// create anything: the resolved start point feeds only the rebase preamble.
+// An unreachable origin therefore has nothing to corrupt, and aborting there
+// costs an offline user a dispatch that needed no network at all.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn provision_worktree_reuse_survives_an_unreachable_origin() {
+    // Dir already exists + every fetch fails ⇒ the dispatch still proceeds,
+    // based on local <base>, with a Note: for the agent.
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: unable to access 'origin': network is unreachable"),
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("main")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .expect("a reused worktree needs no network, so an unreachable origin must not abort");
+
+    assert_eq!(
+        result.start_point,
+        Some(StartPoint::Local {
+            base: "main".to_string()
+        }),
+        "an unfetchable origin/<base> must not be the rebase target: it would replay \
+         local <base>'s unpushed commits under new SHAs"
+    );
+    let warning = result
+        .fetch_warning
+        .expect("the agent must be told in its prompt that origin could not be reached");
+    assert!(
+        warning.contains("main"),
+        "the warning should name the base branch, got: {warning}"
+    );
+
+    let calls = mock.recorded_calls();
+    assert!(
+        calls.iter().any(|(prog, _)| prog == "tmux"),
+        "the agent's tmux window must still be created, got: {calls:?}"
+    );
+}
+
+#[test]
+fn provision_worktree_reuse_does_not_retry_or_probe_an_unreachable_origin() {
+    // The budget test. Both the retry loop and the ls-remote classification
+    // probe exist to serve the abort decision — retries to smooth a transient
+    // failure before aborting, the probe to tell a 404 (fall back) from infra
+    // (abort). With no abort on this path both classes end the same way, so
+    // each extra network call buys nothing and costs a full SUBPROCESS_TIMEOUT.
+    // Downgrading the abort without this assertion would leave the ~4 minutes
+    // of offline blocking exactly where they were.
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: unable to access 'origin': network is unreachable"),
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+    ]);
+
+    let task = make_task(&repo_path);
+    provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("main")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .expect("reuse + unreachable origin must not abort");
+
+    let calls = mock.recorded_calls();
+    let fetches = calls
+        .iter()
+        .filter(|(prog, args)| prog == "git" && args.contains(&"fetch".to_string()))
+        .count();
+    assert_eq!(
+        fetches, 1,
+        "the reuse path keeps origin fresh with a single best-effort attempt, never a \
+         retry budget, got: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|(_, args)| !args.contains(&"ls-remote".to_string())),
+        "classifying the failure changes nothing on the reuse path, so the probe must \
+         not be run, got: {calls:?}"
+    );
+}
+
+#[test]
+fn provision_worktree_reuse_of_a_pr_head_keeps_the_remote_start_point() {
+    // BaseRef::PrHead must never yield a Local start point — a stale local
+    // branch of the same name would let a review examine the wrong code. The
+    // existing worktree already holds the PR's code from the previous attempt,
+    // so reuse is safe; only the preamble's rebase target is at stake.
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: unable to access 'origin': network is unreachable"),
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::PrHead("feature-x")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .expect("a reused PR-review worktree already holds the PR's code");
+
+    assert_eq!(
+        result.start_point,
+        Some(StartPoint::Remote {
+            base: "feature-x".to_string()
+        }),
+        "a PR head must stay pinned to origin/<head>, never fall back to a local branch \
+         of the same name"
+    );
+    assert!(
+        result.fetch_warning.is_some(),
+        "the agent must be told its rebase target may be unreachable"
+    );
+}
+
+#[test]
+fn provision_worktree_fresh_still_spends_the_full_budget_before_aborting() {
+    // Regression guard: the reuse-path shortcut above must not leak onto the
+    // fresh path, where the resolved ref really does create the branch and a
+    // stale local ref is the failure #3810 exists to prevent.
+    let (_dir, repo_path) = make_test_repo();
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: unable to access 'origin': network is unreachable"),
+        MockProcessRunner::ok(), // git remote get-url origin
+        MockProcessRunner::fail_with_code(128, ""), // git ls-remote --exit-code (unreachable)
+        MockProcessRunner::fail("fatal: unable to access 'origin': network is unreachable"),
+        MockProcessRunner::fail("fatal: unable to access 'origin': network is unreachable"),
+    ]);
+
+    let task = make_task(&repo_path);
+    let err = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Branch("main")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .expect_err("a fresh worktree must not be branched off a stale local ref");
+
+    let calls = mock.recorded_calls();
+    let fetches = calls
+        .iter()
+        .filter(|(prog, args)| prog == "git" && args.contains(&"fetch".to_string()))
+        .count();
+    assert_eq!(
+        fetches, 3,
+        "the fresh path still retries to exhaustion, got: {calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(_, args)| args.contains(&"ls-remote".to_string())),
+        "the fresh path still classifies, because 404 and infra diverge there: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|(prog, _)| prog == "tmux"),
+        "aborting must happen before any tmux window is created, got: {calls:?}"
+    );
+
+    // The error names a next step, not just the cause and the attempt count.
+    let msg = err.to_string();
+    assert!(
+        msg.contains("network") || msg.contains("connectivity"),
+        "the error should point at what to check, got: {msg}"
+    );
+    assert!(
+        msg.contains("retry") || msg.contains("dispatch again") || msg.contains("try again"),
+        "the error should say what to do once connectivity is back, got: {msg}"
     );
 }
 

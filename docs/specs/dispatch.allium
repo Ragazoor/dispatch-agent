@@ -201,11 +201,36 @@ rule DispatchTask {
         -- already exists, only the `git worktree add` step is skipped; the
         -- fetch still runs.
         --
+        -- == Fresh vs reused decides how hard the fetch tries ==
+        -- Whether the worktree directory already exists is measured BEFORE the
+        -- fetch, because it decides how much the fetch is allowed to cost and
+        -- whether its failure is fatal. The two paths differ because the
+        -- resolved ref is used for different things:
+        --
+        -- - FRESH — the ref is about to become the worktree's branch, via
+        --   `git worktree add`. Getting it wrong bakes stale history into the
+        --   branch, so origin MUST be reachable. The classification and retry
+        --   rules below apply in full.
+        -- - REUSED — `git worktree add` is skipped entirely, so no ref is
+        --   consumed to create anything; the resolved ref feeds only the
+        --   rebase preamble. A single best-effort fetch attempt still runs (to
+        --   keep `origin/<base_branch>` fresh for later rebases and for the
+        --   repo-sync drift indicator), but it is NOT classified and NOT
+        --   retried, and any failure is a warning rather than an abort. Both
+        --   the classification probe and the retry budget exist solely to
+        --   serve the abort decision this path does not make, and each costs a
+        --   further bounded-subprocess timeout against an unresponsive
+        --   network — so an offline re-dispatch of a task whose worktree is
+        --   still on disk waits for one fetch, not for a probe plus three
+        --   fetches. See the reuse rows in the start-point table below for
+        --   which ref is chosen when that fetch fails.
+        --
         -- == Fetch failure is classified, not blanket-tolerated ==
-        -- A failed fetch is never treated as one uniform case, and it is never
-        -- classified by matching git's stderr text — only by exit code. Once
-        -- `git fetch origin <base_branch>` fails, `git ls-remote --exit-code
-        -- origin refs/heads/<base_branch>` is run to tell apart:
+        -- On the FRESH path a failed fetch is never treated as one uniform
+        -- case, and it is never classified by matching git's stderr text —
+        -- only by exit code. Once `git fetch origin <base_branch>` fails,
+        -- `git ls-remote --exit-code origin refs/heads/<base_branch>` is run
+        -- to tell apart:
         --
         -- - 404-class — no origin remote is configured at all, or origin has
         --   no branch by that name (ls-remote exits 2). This is NOT an error:
@@ -224,7 +249,9 @@ rule DispatchTask {
         --   window opens, no agent launches. Nothing is left on disk either —
         --   the `.worktrees/` directory is created immediately before the
         --   worktree it holds, not before the fetch, so an aborted dispatch
-        --   leaves no empty directory behind.
+        --   leaves no empty directory behind. The abort message names both the
+        --   cause and a next step (check connectivity, then dispatch again),
+        --   because the condition is usually the operator's to fix.
         --
         -- == Start-point selection ==
         -- On a successful fetch, the worktree's start point is chosen by
@@ -244,6 +271,31 @@ rule DispatchTask {
         -- `git worktree add -B <branch> <path> <selected ref>`, where
         -- `<selected ref>` is whichever of local <base_branch> or
         -- `origin/<base_branch>` was selected above.
+        --
+        -- When the best-effort fetch on the REUSED path fails, there is no
+        -- trustworthy comparison to make — `origin/<base_branch>` is exactly
+        -- the ref that could not be refreshed — so the ahead/behind
+        -- measurement is skipped and the start point is fixed by the kind of
+        -- base instead:
+        --
+        -- - a base branch resolves to local <base_branch>. It is the ref whose
+        --   freshness is not in doubt, and the one wrap-up rebases onto, so
+        --   the preamble and wrap-up agree. Pointing the preamble at an
+        --   unrefreshed `origin/<base_branch>` would risk replaying local
+        --   <base_branch>'s unpushed commits under new SHAs — the same
+        --   history-duplication hazard the selection rule above exists to
+        --   avoid.
+        -- - a PR head branch stays pinned to `origin/<headRefName>`, never
+        --   local. The carve-out below is absolute: a review must never be
+        --   handed a local branch of the same name. Nothing is poisoned by
+        --   staying pinned, because the reused worktree already holds the PR's
+        --   code from the previous attempt; if the preamble's rebase then
+        --   cannot reach the origin ref, the agent sees that directly and the
+        --   "Note: ..." line explains why.
+        --
+        -- Either way a "Note: ..." line tells the agent that origin could not
+        -- be reached and that its worktree was reused, so nothing needed the
+        -- network.
         --
         -- Review tasks (tag pr-review or dependabot) that carry a PR URL are
         -- an explicit carve-out from all of the above: their worktree is
@@ -268,7 +320,11 @@ rule DispatchTask {
         -- is created, no tmux window opens, no agent launches. It does not
         -- fall back to <base_branch> either, because the worktree
         -- provisioning step does not know the task's base branch at that
-        -- point.
+        -- point. This abort, like the infra-class one, is a FRESH-path rule:
+        -- a reused review worktree already holds the PR's code, classifies
+        -- nothing, and stays pinned to `origin/<headRefName>` with a warning
+        -- (see the reuse rows above). What never varies is the carve-out
+        -- itself — no path ever bases a review on a local branch.
         -- For these PR-based worktrees the reused-worktree preamble (see
         -- below) also targets the PR branch (`git fetch origin <headRefName>`
         -- + `git rebase origin/<headRefName>`) rather than the base branch,
