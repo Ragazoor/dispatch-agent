@@ -735,9 +735,19 @@ impl TaskService {
         let Some(patch) = patch else {
             return Ok(());
         };
-        let status_changed = patch.status.is_some();
+        // Recalculate only when the patch actually moved task.status: an
+        // immediate Stop flip (Running -> Review) or a UserPromptSubmit that
+        // resumed a Review task (Review -> Running). A deferred Stop (only
+        // stop_pending set) and a UserPromptSubmit that merely refreshes an
+        // already-Running task are plain activity signals and must not pay
+        // for a recalculation on this hot path.
+        let recalc = match kind {
+            HookEventKind::Stop => patch.status.is_some(),
+            HookEventKind::UserPromptSubmit => was_review,
+            _ => false,
+        };
         self.db.patch_task(id, &patch).await?;
-        if status_changed {
+        if recalc {
             self.recalculate_epic_for_task(id).await;
         }
         Ok(())
