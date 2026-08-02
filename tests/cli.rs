@@ -1188,3 +1188,50 @@ fn repo_sync_attempts_every_target_and_fails_the_exit_code() {
         "one failure must not abandon the rest, got: {combined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// statusline
+// ---------------------------------------------------------------------------
+
+/// The decorator runs several times a second in every dispatch-spawned Claude
+/// session, so any database work there would be pure waste. The module keeps no
+/// `Database` import, but that is a source property; this asserts the observable
+/// one — running the subcommand brings no database into existence. See
+/// docs/specs/dispatch.allium: StatusLineDecorator
+/// (`@guarantee NeverReadsOrWritesTheDatabase`).
+#[test]
+fn statusline_creates_no_database_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    let db_path = tmp.path().join("tasks.db");
+    let snapshot = tmp.path().join("rate-limits.json");
+
+    let mut child = binary()
+        .args([
+            "--db",
+            db_path.to_str().unwrap(),
+            "statusline",
+            "--snapshot",
+            snapshot.to_str().unwrap(),
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"rate_limits":{"five_hour":{"used_percentage":5.0,"resets_at":9}}}"#)
+        .unwrap();
+    let status = child.wait().unwrap();
+
+    assert!(status.success(), "the decorator must always exit 0");
+    assert!(
+        snapshot.exists(),
+        "the snapshot must have been published, or this proves nothing about the DB"
+    );
+    assert!(
+        !db_path.exists(),
+        "the statusline subcommand must not create a database file"
+    );
+}

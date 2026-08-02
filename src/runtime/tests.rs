@@ -17,6 +17,23 @@ async fn db_error_formats_consistently() {
     );
 }
 
+#[test]
+fn startup_commands_prime_the_budget_snapshot() {
+    // App::new leaves budget: None and tick_budget_poll increments before
+    // comparing, so the first tick-driven poll is BUDGET_POLL_TICKS away. Without
+    // a startup read the badge is blank for the first ~10s of every session even
+    // when a warm snapshot is already on disk. dispatch.allium:
+    // TokenBudgetIndicator
+    // (@guarantee RefreshedAtStartupThenPeriodicallyNoRedrawWhenUnchanged).
+    assert!(
+        startup_commands().iter().any(|c| matches!(
+            c,
+            Command::Budget(crate::tui::commands::BudgetCommand::Refresh)
+        )),
+        "startup must read the budget snapshot once before the first poll"
+    );
+}
+
 #[tokio::test]
 async fn setup_tmux_for_tui_renames_window_and_binds_key() {
     let mock = MockProcessRunner::new(vec![

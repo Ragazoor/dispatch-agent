@@ -18,15 +18,22 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-/// Wall-clock budget for the chained command. If it has not closed its stdout
-/// (i.e. exited or otherwise finished producing output) within this time, it
-/// is killed and the chain yields an empty string — consistent with this
-/// module's "any failure -> blank status line" philosophy. The real chained
+/// Wall-clock budget for the chained command, covering **both** phases: it
+/// closing its stdout (i.e. finishing producing output) and it exiting. On
+/// expiry it is killed and the chain yields an empty string — consistent with
+/// this module's "any failure -> blank status line" philosophy. The real chained
 /// command runs several `git -C` invocations, which can block on a lock, NFS,
-/// or a network remote, so this bound is load-bearing, not decorative.
+/// or a network remote, so this bound is load-bearing, not decorative. See
+/// docs/specs/dispatch.allium: StatusLineDecorator
+/// (`@guarantee ChainedCommandIsBounded`).
 const CHAIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Poll step for the bounded post-output wait in [`reap_before`]. Short enough
+/// that the common case — the child has already exited by the time its stdout
+/// closes — costs one `try_wait` and no sleep at all.
+const WAIT_POLL_STEP: Duration = Duration::from_millis(5);
 
 /// Parse the payload and atomically publish a snapshot. Returns whether a
 /// snapshot was written. Never panics; every failure is a silent `false`.
@@ -80,7 +87,11 @@ fn write_atomically(path: &Path, text: &str) -> bool {
 /// 1. **A never-exiting child hangs forever.** The chained command (in
 ///    practice, several `git -C` invocations) can block on a lock, NFS, or a
 ///    network remote. `timeout` bounds the wait; on expiry the child is
-///    killed rather than awaited indefinitely.
+///    killed rather than awaited indefinitely. `timeout` is one deadline
+///    spanning both waits — for output and for exit — because a child that
+///    closes stdout and keeps running (`exec 1>&-; …`, or a wrapper whose last
+///    stage exits while a sibling holds the process group) would otherwise slip
+///    past the first bound into an unbounded `wait`.
 /// 2. **Bidirectional-pipe deadlock.** Writing all of `stdin` before draining
 ///    the child's stdout deadlocks once the payload exceeds the pipe buffer
 ///    (~64 KiB on Linux) for a command that echoes as it reads (`cat`, `tee`,
@@ -124,9 +135,10 @@ fn run_chain(chain: &str, stdin: &str, timeout: Duration) -> String {
         }
     }
 
-    match rx.recv_timeout(timeout) {
+    let deadline = Instant::now() + timeout;
+    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(buf) => {
-            let _ = child.wait();
+            reap_before(&mut child, deadline);
             String::from_utf8_lossy(&buf).into_owned()
         }
         Err(_) => {
@@ -136,6 +148,31 @@ fn run_chain(chain: &str, stdin: &str, timeout: Duration) -> String {
             let _ = child.wait();
             String::new()
         }
+    }
+}
+
+/// Wait for `child` to exit, but never past `deadline`. Almost always returns
+/// on the first `try_wait`: a command that has closed its stdout has normally
+/// exited. The exception is what this exists for — a chain that closes stdout
+/// and keeps running must not hold the decorator open, so on expiry the child
+/// is killed and reaped rather than awaited.
+///
+/// The same deadline/`try_wait`/kill shape appears in
+/// `RealProcessRunner::run_with_timeout` (`src/process.rs`), which cannot be
+/// reused here: it takes a program and arguments, and this child needs the
+/// payload written to its stdin.
+fn reap_before(child: &mut std::process::Child, deadline: Instant) {
+    loop {
+        // Anything but "still running" — exited, or unwaitable — means done.
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        std::thread::sleep(WAIT_POLL_STEP);
     }
 }
 
@@ -251,6 +288,76 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_writers_never_publish_foreign_or_torn_bytes() {
+        // The property the unique temp name exists for: every Claude session
+        // writes this same path concurrently, so a reader must see either no
+        // snapshot or one writer's complete bytes — never a blend of two, never
+        // a truncation. dispatch.allium: StatusLineDecorator (@guarantee
+        // PublishedSnapshotIsAlwaysWholeAndFromOneWriter).
+        //
+        // Barrier-synchronised rather than timed: both writers are released at
+        // once and the reader is bounded by iteration count, so there is nothing
+        // to sleep on and nothing to flake on. A read that finds no file yet is
+        // fine; only a *parsed* snapshot is asserted against.
+        const ROUNDS: usize = 200;
+        const WRITERS: [(f64, i64); 2] = [(11.0, 1), (99.0, 2)];
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("rate-limits.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS.len() + 1));
+
+        let writers: Vec<_> = WRITERS
+            .iter()
+            .map(|&(pct, captured_at)| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let payload = format!(
+                        r#"{{"rate_limits":{{"five_hour":{{"used_percentage":{pct},"resets_at":7}}}}}}"#
+                    );
+                    barrier.wait();
+                    for _ in 0..ROUNDS {
+                        assert!(record_snapshot(&payload, &path, captured_at));
+                    }
+                })
+            })
+            .collect();
+
+        barrier.wait();
+        let mut observed = 0;
+        for _ in 0..ROUNDS * 4 {
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let snap: BudgetSnapshot = serde_json::from_str(&text)
+                .unwrap_or_else(|e| panic!("torn snapshot published: {e}: {text:?}"));
+            let pair = (snap.five_hour.unwrap().used_percentage, snap.captured_at);
+            assert!(
+                WRITERS.contains(&pair),
+                "blended snapshot: percentage {} paired with captured_at {}",
+                pair.0,
+                pair.1
+            );
+            observed += 1;
+        }
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        assert!(observed > 0, "reader never observed a published snapshot");
+
+        // Both writers' temp files were renamed; none accumulated.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected only the snapshot, got {entries:?}"
+        );
+    }
+
+    #[test]
     fn run_returns_zero_without_chain() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("rate-limits.json");
@@ -310,6 +417,22 @@ mod tests {
         assert_eq!(
             out, "",
             "a hung chain command must yield empty output, not hang"
+        );
+    }
+
+    #[test]
+    fn chain_that_closes_stdout_but_keeps_running_does_not_hang() {
+        // `exec 1>&-` closes stdout immediately, so the stdout reader finishes
+        // at once and the timeout on it never fires — the wait for the child to
+        // *exit* is what has to be bounded. dispatch.allium:
+        // StatusLineDecorator (@guarantee ChainedCommandIsBounded).
+        let start = std::time::Instant::now();
+        let out = run_chain("exec 1>&- ; sleep 30", PAYLOAD, Duration::from_millis(100));
+        assert_eq!(out, "", "no output was produced before stdout closed");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the wait for the child to exit must be bounded by the same budget, took {:?}",
+            start.elapsed()
         );
     }
 

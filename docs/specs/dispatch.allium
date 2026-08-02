@@ -22,6 +22,14 @@ config {
     -- entries on every write; callers never manage the cap (see the
     -- BranchHistoryCapped invariant).
     max_base_branches_per_repo: Integer = 10
+
+    -- Wall-clock budget for the command the status-line decorator chains to
+    -- (see StatusLineDecorator). Covers both the chained command producing its
+    -- output and its exit: the decorator abandons it at the deadline rather
+    -- than waiting on either. Deliberately short — Claude Code re-runs the
+    -- decorator on a sub-second debounce, and the chained command in practice
+    -- shells out to git, which can block on a lock, NFS or a network remote.
+    statusline_chain_timeout: Duration = 2.seconds
 }
 
 ------------------------------------------------------------
@@ -1281,15 +1289,97 @@ surface TokenBudgetIndicator {
     @guarantee DerivedLiveNeverPersisted
         -- read from the snapshot file off the event loop; never stored in the
         -- database and never part of Board state
-    @guarantee RefreshedPeriodicallyNoRedrawWhenUnchanged
-        -- refreshed every core/config.budget_poll_interval, a fixed multiple
-        -- of core/config.tick_interval; an unchanged refresh does not force
-        -- a redraw
+    @guarantee RefreshedAtStartupThenPeriodicallyNoRedrawWhenUnchanged
+        -- read once when the board opens, so a snapshot already on disk shows
+        -- immediately rather than after the first poll interval, then refreshed
+        -- every core/config.budget_poll_interval, a fixed multiple of
+        -- core/config.tick_interval; an unchanged refresh does not force a
+        -- redraw
     @guarantee PassiveNotNavigable
         -- display-only; not selectable, focusable, or a navigation target
     @guidance -- rendered by render_top_indicators, prepended so it sits left of
               -- the bell; the status bar was rejected as a site because its
               -- hint text already overflows the terminal width and is clipped
+}
+
+surface StatusLineDecorator {
+    facing operator: User
+    -- prose: `dispatch statusline --snapshot <path> [--chain <command>]`, the
+    -- process that produces the data TokenBudgetIndicator reads. It is wired as
+    -- the statusLine command of every dispatch-spawned Claude session, so it
+    -- runs several times a second in every session, for the whole life of every
+    -- session. That frequency, and the fact that a failure here breaks the
+    -- operator's status line rather than anything of ours, is what every
+    -- guarantee below is about.
+    --
+    -- It has exactly two jobs: record the subscription windows from the payload
+    -- Claude Code hands it on stdin, and stand in for the status line the
+    -- operator had before dispatch took the slot over.
+
+    -- Whether the payload carried subscription windows to publish.
+    let payload_reports_windows = status_payload_has_rate_limits()
+
+    -- The command the decorator stands in for, if any. Absent when the operator
+    -- had no status line, or when theirs is itself a dispatch statusline
+    -- invocation (see NeverChainsToItself).
+    let chained_command = discovered_chain()
+
+    exposes:
+        payload_reports_windows
+        chained_command
+
+    @guarantee AlwaysSucceeds
+        -- Every path exits successfully and prints at most an empty status
+        -- line: an unparseable payload, a payload without subscription windows,
+        -- an unwritable snapshot location, a chained command that is missing,
+        -- fails, or outlives its budget. A blank status line is the worst
+        -- outcome the operator can be shown; a broken one is not available.
+
+    @guarantee NeverReadsOrWritesTheDatabase
+        -- The decorator never touches the task database — not to read it, and
+        -- not by bringing it into existence. At this invocation rate, across
+        -- every session, database work here would be pure waste.
+
+    @guarantee PublishedSnapshotIsAlwaysWholeAndFromOneWriter
+        -- Every session publishes to the same snapshot location concurrently. A
+        -- reader therefore either sees no snapshot or sees one complete set of
+        -- windows written by a single session — never a blend of two writers'
+        -- values, never a partially written one. The last write wins, which is
+        -- correct because the windows are account-global: every session reports
+        -- the same figures. Publishing also leaves nothing behind but the
+        -- snapshot itself.
+
+    @guarantee SnapshotIndependentOfChain
+        -- The snapshot is published whatever the chained command does, and
+        -- before waiting on it. The budget readout never depends on a status
+        -- line the operator configured for unrelated reasons.
+
+    @guarantee ChainedOutputReproducedVerbatim
+        -- With a chained command, the payload reaches it unchanged and its
+        -- output is reproduced unchanged, whatever the payload's size. The
+        -- operator's status line looks exactly as it did before dispatch
+        -- occupied the slot.
+
+    @guarantee ChainedCommandIsBounded
+        -- One budget of config.statusline_chain_timeout covers the chained
+        -- command's output AND its exit. A command that never produces output
+        -- and one that produces output but never exits are both abandoned at
+        -- the deadline and leave nothing running behind them. Neither can hold
+        -- the decorator — and so Claude Code's status line — open.
+
+    @guarantee NeverChainsToItself
+        -- When the status line the decorator would stand in for is itself a
+        -- dispatch statusline invocation, nothing is chained. An empty status
+        -- line with the windows still being recorded is the honest outcome;
+        -- recursion is not.
+
+    @guidance
+        -- Implemented by src/cli/statusline.rs. The command string, including
+        -- the discovered chain and the quoted snapshot location, is generated by
+        -- src/setup/statusline.rs into a dispatch-owned settings file that every
+        -- spawn site passes to `claude` — deliberately never the operator's own
+        -- settings file. src/runtime/mod.rs recreates that file at startup if it
+        -- is missing, because `claude` refuses to start without it.
 }
 
 ------------------------------------------------------------

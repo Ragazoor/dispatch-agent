@@ -711,6 +711,20 @@ fn apply_loop_event(app: &mut App, event: LoopEvent, rt: &TuiRuntime) -> Vec<Com
     }
 }
 
+/// Commands executed once, before the event loop's first iteration.
+///
+/// The list exists so "what runs at startup" is one value a test can read,
+/// rather than a sequence of inline calls in `run_loop`. Everything here must be
+/// something the tick loop would do anyway, just sooner: startup priming, never
+/// startup-only behaviour.
+fn startup_commands() -> Vec<Command> {
+    // Read the budget snapshot now instead of waiting out the first
+    // BUDGET_POLL_TICKS, so a snapshot already on disk shows on the first frame.
+    vec![Command::Budget(
+        crate::tui::commands::BudgetCommand::Refresh,
+    )]
+}
+
 async fn run_loop<B: Backend>(
     app: &mut App,
     terminal: &mut Terminal<B>,
@@ -727,6 +741,8 @@ async fn run_loop<B: Backend>(
     if let Some(feed_runner) = rt.feed_runner.take() {
         feed_runner.start();
     }
+
+    execute_commands(app, startup_commands(), rt, terminal, key_rx).await?;
 
     let mut last_render = std::time::Instant::now() - MIN_FRAME_INTERVAL; // allow first frame
 

@@ -3370,16 +3370,80 @@ fn toggle_agent_tree_pane_propagates_list_panes_query_failure() {
     assert!(err.to_string().contains("list-panes failed"), "got: {err}");
 }
 
+/// Assert one spawn site's `tmux send-keys` payload carries both spawn flags.
+///
+/// Asserting on the *payload* rather than on `DISPATCH_PLUGIN_DIR` is the point:
+/// a new spawn site that built its `claude` command line without interpolating
+/// the constant would satisfy any assertion about the constant itself.
+fn assert_spawn_flags(site: &str, payload: &str) {
+    assert!(
+        payload.contains("--plugin-dir ~/.claude/plugins/local/dispatch"),
+        "{site} must spawn claude with the dispatch plugin dir, got: {payload}"
+    );
+    assert!(
+        payload.contains("--settings ~/.claude/dispatch-statusline.json"),
+        "{site} must spawn claude with the statusline settings overlay, got: {payload}"
+    );
+}
+
 #[test]
 fn all_spawn_sites_inject_the_statusline_settings_file() {
     // Every dispatch-spawned session must report budget windows, so the
     // --settings overlay has to be on the agent, resume, and main-session
-    // command lines alike. See docs/specs/dispatch.allium: TokenBudgetIndicator.
-    assert!(
-        crate::dispatch::prompts::DISPATCH_PLUGIN_DIR
-            .contains("--settings ~/.claude/dispatch-statusline.json"),
-        "spawn constant must inject the statusline settings overlay, got: {}",
-        crate::dispatch::prompts::DISPATCH_PLUGIN_DIR
+    // command lines alike. See docs/specs/dispatch.allium: TokenBudgetIndicator
+    // and StatusLineDecorator. `claude` also refuses to start at all when that
+    // settings file is absent, so a site that dropped the flag would spawn a
+    // session with no budget reporting, and one that kept it while the file went
+    // missing would spawn no session at all.
+    //
+    // These three are the whole set: `DISPATCH_PLUGIN_DIR` is interpolated in
+    // exactly three places in src/dispatch/agents.rs — dispatch_with_prompt (all
+    // agent dispatches funnel through it), resume_agent, create_main_session.
+
+    // 1. dispatch_agent -> dispatch_with_prompt
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),                    // git fetch origin main
+        MockProcessRunner::ok(),                    // tmux new-window
+        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                    // tmux set-hook
+        MockProcessRunner::ok(),                    // tmux send-keys -l
+        MockProcessRunner::ok(),                    // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+    ]);
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+    assert_spawn_flags(
+        "dispatch_agent",
+        &find_call_arg(&mock.recorded_calls(), 4, "claude"),
+    );
+
+    // 2. resume_agent
+    let (_resume_dir, worktree_path) = make_test_repo();
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),                    // tmux new-window
+        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                    // tmux set-hook
+        MockProcessRunner::ok(),                    // tmux send-keys -l
+        MockProcessRunner::ok(),                    // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(b"%9\n"), // tmux split-window (agent-tree)
+    ]);
+    resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
+    assert_spawn_flags(
+        "resume_agent",
+        &find_call_arg(&mock.recorded_calls(), 3, "claude"),
+    );
+
+    // 3. create_main_session
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux send-keys -l
+        MockProcessRunner::ok(), // tmux send-keys Enter
+    ]);
+    create_main_session("/home/user", &mock).unwrap();
+    assert_spawn_flags(
+        "create_main_session",
+        &find_call_arg(&mock.recorded_calls(), 1, "claude"),
     );
 }
 

@@ -72,17 +72,6 @@ fn repeated_absent_snapshot_does_not_mark_dirty() {
     assert!(!app.dirty);
 }
 
-#[test]
-fn budget_stale_after_is_ten_minutes() {
-    // Not consumed until Task 7 (rendering), but pinned here so the constant
-    // isn't flagged dead by clippy in the meantime and its value is locked
-    // down against accidental drift.
-    assert_eq!(
-        crate::tui::BUDGET_STALE_AFTER,
-        std::time::Duration::from_secs(600)
-    );
-}
-
 /// The render *glue* in `render_top_indicators` (`src/tui/ui/shared.rs`) —
 /// computing `used_width` over the pre-existing badges, `saturating_sub`ing
 /// it from `area.width`, calling `budget_spans`, and splicing the result at
@@ -188,6 +177,75 @@ mod render_glue {
         assert!(
             row.contains('\u{1F514}'),
             "pre-existing bell badge must survive: {row:?}"
+        );
+    }
+
+    /// The same app, switched into epic view on an epic that lights up every
+    /// epic-only badge: `auto dispatch [U]  ` (19), `role:my-reviews  ` (17)
+    /// and `group:on [R]  ` (14), on top of `[1/2 repos]  ` (13) and the bell
+    /// (5 codepoints, 6 display columns). That is the widest the top row ever
+    /// gets — 68 codepoints of pre-existing badges, so `render_top_indicators`
+    /// hands the budget span only `width - 69` (68 plus the emoji-undercount
+    /// reserve).
+    fn epic_view_app_with_every_badge_and_budget() -> crate::tui::App {
+        use crate::models::{EpicId, FeedRole};
+        use crate::tui::types::{BoardSelection, ViewMode};
+
+        let mut app = app_with_badges_and_budget();
+        let mut epic = crate::tui::tests::helpers::make_epic(10);
+        epic.auto_dispatch = true;
+        epic.group_by_repo = true;
+        epic.feed_role = FeedRole::MyReviews;
+        app.board.epics = vec![epic];
+        app.board.view_mode = ViewMode::Epic {
+            epic_id: EpicId(10),
+            selection: BoardSelection::new_for_epic(),
+            parent: Box::new(ViewMode::Board(BoardSelection::new())),
+        };
+        // board.epics was mutated directly, bypassing the message system.
+        app.invalidate_layout_cache();
+        app
+    }
+
+    /// Epic view is the case the design called for alongside board view, and the
+    /// one most likely to squeeze the budget span: at width 88 the budget gets
+    /// 19 columns, so the full two-window form (27, with countdowns) cannot fit
+    /// but the countdown-less form (16) can. Every epic badge must survive.
+    #[test]
+    fn epic_view_badges_squeeze_the_budget_but_are_never_dropped() {
+        let mut app = epic_view_app_with_every_badge_and_budget();
+        let row = top_row(&mut app, 88);
+        assert!(row.contains("auto dispatch [U]"), "got {row:?}");
+        assert!(row.contains("role:my-reviews"), "got {row:?}");
+        assert!(row.contains("group:on [R]"), "got {row:?}");
+        assert!(row.contains("[1/2 repos]"), "got {row:?}");
+        assert!(
+            row.trim_end().ends_with("[N]"),
+            "bell badge must render intact, not truncated to '[N': {row:?}"
+        );
+        assert!(row.contains("5h 23%"), "got {row:?}");
+        assert!(row.contains("7d 41%"), "got {row:?}");
+        assert!(
+            !row.contains('\u{00B7}'),
+            "countdowns should have been dropped to fit: {row:?}"
+        );
+    }
+
+    /// At width 72 the budget span gets 3 columns — no degradation level fits,
+    /// so it must vanish entirely rather than push an epic badge off-screen.
+    #[test]
+    fn very_narrow_epic_view_drops_budget_entirely_but_keeps_epic_badges() {
+        let mut app = epic_view_app_with_every_badge_and_budget();
+        let row = top_row(&mut app, 72);
+        assert!(!row.contains("5h"), "budget badge must be gone: {row:?}");
+        assert!(!row.contains("7d"), "budget badge must be gone: {row:?}");
+        assert!(row.contains("auto dispatch [U]"), "got {row:?}");
+        assert!(row.contains("role:my-reviews"), "got {row:?}");
+        assert!(row.contains("group:on [R]"), "got {row:?}");
+        assert!(row.contains("[1/2 repos]"), "got {row:?}");
+        assert!(
+            row.trim_end().ends_with("[N]"),
+            "bell badge must render intact: {row:?}"
         );
     }
 
