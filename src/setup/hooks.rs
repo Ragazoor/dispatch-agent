@@ -740,6 +740,32 @@ mod tests {
     }
 
     #[test]
+    fn session_start_hook_excludes_compact_and_fork_sources() {
+        // Claude Code's SessionStart `source` values are startup, resume,
+        // clear, compact and fork. Only the first three mean "the previous
+        // turn is over and any subagent rows left behind are dead".
+        //
+        //   compact — fires on *auto* compaction too, in the middle of a live
+        //             fan-out. Clearing there wipes a genuine live count that
+        //             session fencing cannot restore: the still-running
+        //             subagents share this session id, so their eventual
+        //             SubagentStops are no-op deletes.
+        //   fork    — a fork is a different session; wiping the original's
+        //             count from it is simply wrong.
+        //
+        // Matching on the three safe sources is what keeps that from
+        // regressing, so pin the matcher rather than merely the registration.
+        let value = hooks_json_value();
+        let matcher = value["hooks"]["SessionStart"][0]["matcher"]
+            .as_str()
+            .expect("SessionStart entry must carry a matcher");
+        assert_eq!(
+            matcher, "startup|resume|clear",
+            "SessionStart must not fire on compact or fork"
+        );
+    }
+
+    #[test]
     fn hooks_json_registers_user_prompt_submit_hook() {
         let value = hooks_json_value();
         let commands = hook_commands_for_event(&value, "UserPromptSubmit");

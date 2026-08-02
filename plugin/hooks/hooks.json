@@ -53,6 +53,7 @@
       }]
     }],
     "SessionStart": [{
+      "matcher": "startup|resume|clear",
       "hooks": [{
         "type": "command",
         "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/task-status-hook"
