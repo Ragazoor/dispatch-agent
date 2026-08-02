@@ -4,7 +4,7 @@ use std::sync::Arc;
 use super::{CreateTaskParams, ListTasksFilter, TaskService, UpdateTaskParams};
 use crate::db::{self, Database, EpicCrud, EpicRead, TaskRead};
 use crate::models::{
-    EpicId, HookEventKind, NotificationKind, SubStatus, TaskId, TaskStatus, TaskTag,
+    EpicId, HookEventKind, NotificationKind, SubStatus, SubagentEvent, TaskId, TaskStatus, TaskTag,
 };
 use crate::service::epics::{CreateEpicParams, EpicService, UpdateEpicParams};
 use crate::service::{FieldUpdate, ServiceError};
@@ -2750,6 +2750,249 @@ async fn record_hook_event_unknown_task_returns_not_found() {
     let svc = task_svc(&db);
     let err = svc
         .record_hook_event(TaskId(99_999), HookEventKind::PreToolUse)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ServiceError::NotFound(_)), "got {err:?}");
+}
+
+// -- record_subagent_event -------------------------------------------------
+
+#[tokio::test]
+async fn stop_with_live_subagents_defers_the_review_flip() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "a Stop with live subagents must not move the task to Review"
+    );
+    assert!(task.stop_pending, "the deferred flip must be recorded");
+}
+
+#[tokio::test]
+async fn last_subagent_stop_performs_the_deferred_flip() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "draining the last subagent flips to Review"
+    );
+    assert!(!task.stop_pending, "the pending bit must be consumed");
+    assert!(task.last_pre_tool_use_at.is_none());
+    assert!(task.last_notification_at.is_none());
+}
+
+#[tokio::test]
+async fn subagent_stop_with_others_still_live_does_not_flip() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    for a in ["a1", "a2"] {
+        svc.record_subagent_event(
+            id,
+            SubagentEvent::Start {
+                agent_id: a.into(),
+                session_id: "s1".into(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "one of two draining must not flip"
+    );
+    assert!(task.stop_pending);
+}
+
+#[tokio::test]
+async fn stop_with_no_subagents_flips_immediately_as_before() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "unchanged behaviour when nothing is in flight"
+    );
+    assert!(!task.stop_pending);
+}
+
+#[tokio::test]
+async fn subagent_stop_without_a_pending_stop_leaves_status_alone() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "draining without a pending Stop is not a reason to move to Review"
+    );
+}
+
+#[tokio::test]
+async fn clear_drains_and_performs_a_pending_flip() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+
+    svc.record_subagent_event(id, SubagentEvent::Clear)
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "SessionStart must resolve, not strand"
+    );
+    assert_eq!(task.live_subagents, 0);
+    assert!(!task.stop_pending);
+}
+
+#[tokio::test]
+async fn user_prompt_submit_voids_a_pending_stop() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+    svc.record_hook_event(id, HookEventKind::UserPromptSubmit)
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert!(
+        !task.stop_pending,
+        "a human resuming voids the deferred flip"
+    );
+    assert_eq!(task.status, TaskStatus::Running);
+}
+
+#[tokio::test]
+async fn record_subagent_event_unknown_task_returns_not_found() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let err = svc
+        .record_subagent_event(
+            TaskId(99_999),
+            SubagentEvent::Start {
+                agent_id: "a1".into(),
+                session_id: "s1".into(),
+            },
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, ServiceError::NotFound(_)), "got {err:?}");

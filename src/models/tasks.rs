@@ -736,6 +736,27 @@ impl HookEventKind {
     }
 }
 
+/// A Claude Code subagent lifecycle event, forwarded by `task-status-hook`
+/// via `dispatch hook-subagent`. Deliberately separate from [`HookEventKind`]:
+/// these carry an `agent_id` and `session_id` and mutate `task_subagents`,
+/// where `HookEventKind` variants are timestamp-only signals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubagentEvent {
+    /// Claude Code `SubagentStart`.
+    Start {
+        agent_id: String,
+        session_id: String,
+    },
+    /// Claude Code `SubagentStop`.
+    Stop {
+        agent_id: String,
+        session_id: String,
+    },
+    /// Claude Code `SessionStart` — a fresh session provably has no live
+    /// subagents, so every entry for the task is dropped.
+    Clear,
+}
+
 /// The `notification_type` field on Claude Code's `Notification` hook payload,
 /// forwarded by `task-status-hook` as the `--kind` argument. The agent-view-only
 /// values `agent_needs_input` / `agent_completed` are intentionally absent:

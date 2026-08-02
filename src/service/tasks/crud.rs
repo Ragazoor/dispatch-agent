@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::db::{self, CreateTaskRequest, TaskPatch};
 use crate::models::{
     classify_agent_activity, sort_order_for_status_transition, EpicId, HookEventKind,
-    NotificationBehavior, SubStatus, Task, TaskId, TaskStatus, DEFAULT_BASE_BRANCH,
+    NotificationBehavior, SubStatus, SubagentEvent, Task, TaskId, TaskStatus, DEFAULT_BASE_BRANCH,
 };
 use crate::service::ServiceError;
 
@@ -703,18 +703,31 @@ impl TaskService {
                         .sub_status(SubStatus::NeedsInput),
                 })
             }
-            HookEventKind::Stop if task.status == TaskStatus::Running => Some(
-                TaskPatch::new()
-                    .status(TaskStatus::Review)
-                    .last_pre_tool_use_at(None)
-                    .last_notification_at(None),
-            ),
+            // A Stop with live subagents is legitimate — Stop does not fire
+            // inside subagents, so this means the main agent finished its
+            // turn while background subagents keep working. Defer the flip;
+            // the last SubagentStop drains it. See HookStop in
+            // agent-health.allium.
+            HookEventKind::Stop if task.status == TaskStatus::Running => {
+                if task.live_subagents > 0 {
+                    Some(TaskPatch::new().stop_pending(true))
+                } else {
+                    Some(
+                        TaskPatch::new()
+                            .status(TaskStatus::Review)
+                            .last_pre_tool_use_at(None)
+                            .last_notification_at(None)
+                            .stop_pending(false),
+                    )
+                }
+            }
             HookEventKind::UserPromptSubmit if task.status == TaskStatus::Running || was_review => {
                 Some(
                     TaskPatch::new()
                         .status(TaskStatus::Running)
                         .sub_status(SubStatus::default_for(TaskStatus::Running))
-                        .last_pre_tool_use_at(Some(now)),
+                        .last_pre_tool_use_at(Some(now))
+                        .stop_pending(false),
                 )
             }
             _ => None,
@@ -722,10 +735,66 @@ impl TaskService {
         let Some(patch) = patch else {
             return Ok(());
         };
+        let status_changed = patch.status.is_some();
         self.db.patch_task(id, &patch).await?;
-        if matches!(kind, HookEventKind::Stop)
-            || (matches!(kind, HookEventKind::UserPromptSubmit) && was_review)
-        {
+        if status_changed {
+            self.recalculate_epic_for_task(id).await;
+        }
+        Ok(())
+    }
+
+    /// Record a subagent lifecycle event and, when it drains the last
+    /// subagent for a task carrying a deferred Stop, apply that Stop.
+    ///
+    /// See `HookSubagentStart` / `HookSubagentStop` in
+    /// `docs/specs/agent-health.allium`.
+    pub async fn record_subagent_event(
+        &self,
+        id: TaskId,
+        event: SubagentEvent,
+    ) -> Result<(), ServiceError> {
+        let task = self
+            .db
+            .get_task(id)
+            .await?
+            .ok_or_else(|| ServiceError::NotFound(format!("Task {} not found", id.0)))?;
+        let now = self.clock.now();
+
+        let (live, drains) = match &event {
+            SubagentEvent::Start {
+                agent_id,
+                session_id,
+            } => (
+                self.db
+                    .subagent_start(id, agent_id, session_id, now)
+                    .await?,
+                false,
+            ),
+            SubagentEvent::Stop {
+                agent_id,
+                session_id,
+            } => (self.db.subagent_stop(id, agent_id, session_id).await?, true),
+            SubagentEvent::Clear => {
+                self.db.subagent_clear(id).await?;
+                (0, true)
+            }
+        };
+
+        // Drain path: the deferred Stop lands only when the count actually
+        // reaches zero and a Stop was withheld while the task is still
+        // Running.
+        if drains && live == 0 && task.stop_pending && task.status == TaskStatus::Running {
+            self.db
+                .patch_task(
+                    id,
+                    &TaskPatch::new()
+                        .status(TaskStatus::Review)
+                        .sub_status(SubStatus::default_for(TaskStatus::Review))
+                        .last_pre_tool_use_at(None)
+                        .last_notification_at(None)
+                        .stop_pending(false),
+                )
+                .await?;
             self.recalculate_epic_for_task(id).await;
         }
         Ok(())

@@ -246,6 +246,16 @@ macro_rules! task_service_api {
                 kind: $crate::models::HookEventKind
             ) -> Result<(), $crate::service::ServiceError>;
 
+            /// Record a subagent lifecycle event and, when it drains the last
+            /// subagent for a task carrying a deferred Stop, apply that Stop.
+            /// See `HookSubagentStart` / `HookSubagentStop` in
+            /// `docs/specs/agent-health.allium`.
+            async fn record_subagent_event(
+                &self,
+                id: $crate::models::TaskId,
+                event: $crate::models::SubagentEvent
+            ) -> Result<(), $crate::service::ServiceError>;
+
             /// Select and atomically claim the epic's next backlog subtask,
             /// moving it to `Running` before any provisioning happens. Exclusive
             /// under concurrency — see `AutoDispatchNextSubtask` in
