@@ -34,6 +34,7 @@
 | `v` | Toggle select |
 | `a` | Select all in column |
 | `J` / `K` | Reorder task up / down |
+| `/` | Search tasks — live bar; a task matches when the query fuzzy-matches its title **or** is a digit prefix of its id (`38` → `#38`, `#380`, `#3837`; a leading `#` is optional). `Enter` keeps the query (shown as a `[/query]` badge), `Esc` in the bar restores the previous query, `Esc` on the board clears it |
 | `f` | Filter by repo path |
 | `A` | Toggle filter: show only tasks with an active tmux session |
 | `N` | Toggle notification panel |

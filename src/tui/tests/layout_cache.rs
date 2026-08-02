@@ -635,6 +635,45 @@ fn fuzzy_matches_lower_accepts_already_lowercased_query() {
 }
 
 // ---------------------------------------------------------------------------
+// id_digits_query / id_prefix_matches — the id half of the board search
+// ---------------------------------------------------------------------------
+
+#[test]
+fn id_digits_query_extracts_plain_digits() {
+    assert_eq!(super::id_digits_query("3837"), Some("3837"));
+}
+
+#[test]
+fn id_digits_query_strips_one_leading_hash() {
+    assert_eq!(super::id_digits_query("#3837"), Some("3837"));
+    assert_eq!(
+        super::id_digits_query("##3837"),
+        None,
+        "only one leading '#' is stripped"
+    );
+}
+
+#[test]
+fn id_digits_query_rejects_non_digit_payloads() {
+    assert_eq!(super::id_digits_query("38a"), None);
+    assert_eq!(super::id_digits_query("a38"), None);
+    assert_eq!(super::id_digits_query("38 "), None);
+    assert_eq!(super::id_digits_query("#"), None, "empty payload");
+    assert_eq!(super::id_digits_query(""), None);
+}
+
+#[test]
+fn id_prefix_matches_is_a_prefix_not_a_substring() {
+    assert!(super::id_prefix_matches(3837, "38"));
+    assert!(super::id_prefix_matches(38, "38"));
+    assert!(
+        !super::id_prefix_matches(1385, "38"),
+        "substring hit must not count as a prefix hit"
+    );
+    assert!(!super::id_prefix_matches(9, "38"));
+}
+
+// ---------------------------------------------------------------------------
 // task_index — O(1) lookup in find_task_mut
 // ---------------------------------------------------------------------------
 

@@ -773,15 +773,26 @@ value FlattenedView {
 --   row (cursor position 0, Space to toggle).
 --   The filter is session-scoped and does not persist across app restarts.
 
--- == Title Search Filter ==
+-- == Task Search Filter ==
 
--- title_search_filter:
---   When view.search_query is non-empty, only tasks whose title matches the
---   query are included in tasks_for_current_view. Match is a case-insensitive
---   forward subsequence (every query char appears in the title, in order),
---   the same predicate used by the repo-path picker (fuzzy_matches). An empty
---   query matches every task. This filter is applied in addition to the repo
---   filter and the only-active filter (logical AND).
+-- task_search_filter:
+--   When view.search_query is non-empty, only tasks matching the query are
+--   included in tasks_for_current_view. A task matches when EITHER predicate
+--   holds (logical OR):
+--     title match: a case-insensitive forward subsequence of task.title (every
+--       query char appears in the title, in order) — the same predicate used by
+--       the repo-path picker (fuzzy_matches).
+--     id-prefix match: the query, after stripping one optional leading '#', is
+--       non-empty and consists entirely of ASCII digits, and the decimal
+--       spelling of task.id starts with those digits. So "38" matches #38,
+--       #380 and #3837 (progressive narrowing as the user types) but not
+--       #1385; "#3837" matches #3837; "3a" and a bare "#" have no digit
+--       payload and so fall back to title matching alone.
+--   The id-prefix predicate applies to tasks only. Epic cards are never
+--   narrowed by the search query (see epic visibility under the repo and
+--   only-active filters).
+--   An empty query matches every task. This filter is applied in addition to
+--   the repo filter and the only-active filter (logical AND).
 --   Lifecycle: the [/] key opens a live search bar and the board narrows as
 --   the user types. [Enter] keeps the query active and closes the bar (the
 --   filter persists, with a [/query] indicator shown on the board). [Esc]

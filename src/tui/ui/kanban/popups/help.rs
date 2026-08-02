@@ -106,7 +106,7 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
             Span::styled("[a]", key),
             Span::styled(" select all   ", desc),
             Span::styled("[/]", key),
-            Span::styled(" search titles", desc),
+            Span::styled(" search titles/ids", desc),
         ]),
         Line::from(vec![
             Span::styled("  [v]", key),

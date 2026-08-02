@@ -47,6 +47,100 @@ fn empty_search_query_is_noop() {
 }
 
 #[test]
+fn search_query_matches_task_id_prefix() {
+    let mut app = App::new(vec![
+        test_task(38, "alpha"),
+        test_task(380, "beta"),
+        test_task(3837, "gamma"),
+        test_task(9, "delta"),
+    ]);
+    app.search.query = "38".to_string();
+    let mut ids: Vec<i64> = app
+        .tasks_for_current_view()
+        .iter()
+        .map(|t| t.id.0)
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![38, 380, 3837]);
+}
+
+#[test]
+fn search_query_matches_task_id_with_hash_prefix() {
+    let mut app = App::new(vec![test_task(3837, "alpha"), test_task(9, "beta")]);
+    app.search.query = "#3837".to_string();
+    let ids: Vec<i64> = app
+        .tasks_for_current_view()
+        .iter()
+        .map(|t| t.id.0)
+        .collect();
+    assert_eq!(ids, vec![3837]);
+}
+
+#[test]
+fn search_query_id_match_unions_with_title_match() {
+    let mut app = App::new(vec![
+        test_task(3837, "alpha"),
+        test_task(7, "fix 3837 regression"),
+        test_task(9, "beta"),
+    ]);
+    app.search.query = "3837".to_string();
+    let mut ids: Vec<i64> = app
+        .tasks_for_current_view()
+        .iter()
+        .map(|t| t.id.0)
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![7, 3837]);
+}
+
+#[test]
+fn search_query_non_numeric_does_not_id_match() {
+    let mut app = App::new(vec![test_task(3837, "alpha"), test_task(9, "beta")]);
+    // "38a" has a non-digit payload, so no id matching happens and neither
+    // title is a subsequence match.
+    app.search.query = "38a".to_string();
+    assert!(app.tasks_for_current_view().is_empty());
+}
+
+#[test]
+fn search_query_bare_hash_does_not_id_match() {
+    let mut app = App::new(vec![test_task(3837, "alpha"), test_task(9, "beta")]);
+    // A lone "#" leaves an empty digit payload: title-only matching, and no
+    // title contains '#'.
+    app.search.query = "#".to_string();
+    assert!(app.tasks_for_current_view().is_empty());
+}
+
+#[test]
+fn search_query_id_prefix_is_not_a_substring_match() {
+    let mut app = App::new(vec![test_task(1385, "alpha"), test_task(38, "beta")]);
+    app.search.query = "38".to_string();
+    let ids: Vec<i64> = app
+        .tasks_for_current_view()
+        .iter()
+        .map(|t| t.id.0)
+        .collect();
+    assert_eq!(ids, vec![38]);
+}
+
+#[test]
+fn search_id_match_composes_with_repo_filter() {
+    let mut app = App::new(vec![
+        test_task_repo(3837, "alpha", "/repo/a"),
+        test_task_repo(3838, "beta", "/repo/b"),
+    ]);
+    app.filter.repos.insert("/repo/a".to_string());
+    app.filter.mode = RepoFilterMode::Include;
+    app.search.query = "383".to_string();
+    let ids: Vec<i64> = app
+        .tasks_for_current_view()
+        .iter()
+        .map(|t| t.id.0)
+        .collect();
+    assert_eq!(ids, vec![3837]); // repo filter AND id-prefix match
+}
+
+#[test]
 fn search_composes_with_repo_filter() {
     let mut app = App::new(vec![
         test_task_repo(1, "alpha task", "/repo/a"),

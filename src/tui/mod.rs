@@ -351,6 +351,22 @@ pub(in crate::tui) fn fuzzy_matches_lower(path: &str, query_lower: &str) -> bool
     true
 }
 
+/// The digit payload of a board-search query, if it can address a task by id:
+/// the query with one optional leading `#` stripped, provided the remainder is
+/// non-empty and entirely ASCII digits. `None` for anything else (`"38a"`,
+/// `"a38"`, a lone `"#"`, an empty query), which means title-only matching.
+pub(in crate::tui) fn id_digits_query(query: &str) -> Option<&str> {
+    let digits = query.strip_prefix('#').unwrap_or(query);
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(digits)
+}
+
+/// Returns true if the decimal spelling of `id` starts with `digits` (a payload
+/// from [`id_digits_query`]). Prefix, not substring: `"38"` matches `3837` but
+/// not `1385`.
+pub(in crate::tui) fn id_prefix_matches(id: i64, digits: &str) -> bool {
+    id.to_string().starts_with(digits)
+}
+
 /// Returns true if every character in `query` appears in `path` as a
 /// forward subsequence (case-insensitive). An empty query matches everything.
 pub(in crate::tui) fn fuzzy_matches(path: &str, query: &str) -> bool {
@@ -892,7 +908,7 @@ impl App {
             .collect()
     }
 
-    /// True when a title-search query is active (non-empty).
+    /// True when a board-search query is active (non-empty).
     pub(in crate::tui) fn search_active(&self) -> bool {
         !self.search.query.is_empty()
     }
@@ -910,7 +926,12 @@ impl App {
         let repo_match = |t: &&Task| self.repo_matches(&t.repo_path);
         let active_match = |t: &&Task| self.filter.task_matches(t);
         let query_lower = self.search.query.to_lowercase();
-        let search_match = |t: &&Task| fuzzy_matches_lower(&t.title, &query_lower);
+        // Parsed once per call, not per task: this is the render hot path.
+        let id_digits = id_digits_query(&self.search.query);
+        let search_match = |t: &&Task| {
+            fuzzy_matches_lower(&t.title, &query_lower)
+                || id_digits.is_some_and(|digits| id_prefix_matches(t.id.0, digits))
+        };
         match self.effective_view_mode() {
             BoardViewMode::Board(_) => self
                 .board

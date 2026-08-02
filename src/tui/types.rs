@@ -275,7 +275,8 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
-    /// Live title-search bar. The board filters in place as the user types.
+    /// Live task-search bar (title or task id). The board filters in place as
+    /// the user types.
     SearchTasks,
     InputTitle,
     InputDescription,
@@ -654,11 +655,12 @@ impl FilterState {
 }
 
 // ---------------------------------------------------------------------------
-// SearchState — live title search over the task board
+// SearchState — live title/id search over the task board
 // ---------------------------------------------------------------------------
 
-/// Title-search state. `query` empty = no filtering. `saved` holds the query
-/// to restore if the user cancels the search bar with Esc.
+/// Task-search state: the query matches a task title (fuzzy subsequence) or a
+/// task id (digit prefix, optional leading `#`). `query` empty = no filtering.
+/// `saved` holds the query to restore if the user cancels the search bar with Esc.
 #[derive(Debug, Clone, Default)]
 pub struct SearchState {
     pub query: String,
