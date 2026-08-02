@@ -76,6 +76,12 @@ macro_rules! patch_struct {
 
 patch_struct! {
     /// Builder for selective task field updates.
+    ///
+    /// `live_subagents` is deliberately **absent**: it is a denormalised
+    /// `COUNT(*)` over `task_subagents`, owned exclusively by the transactional
+    /// writes in [`queries::subagents`]. Leaving it out of the patch surface
+    /// makes "no handler can desync the count" a compile-time property rather
+    /// than a convention. `stop_pending` is patch-driven and stays.
     pub struct TaskPatch<'a> {
         plain    status:       TaskStatus,
         nullable plan_path:    &'a str,
@@ -95,7 +101,6 @@ patch_struct! {
         nullable last_notification_at: chrono::DateTime<chrono::Utc>,
         nullable wrap_up_mode: WrapUpMode,
         plain    auto_run_plan: bool,
-        plain    live_subagents: i64,
         plain    stop_pending: bool,
     }
 }
