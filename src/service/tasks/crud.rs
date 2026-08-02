@@ -667,7 +667,12 @@ impl TaskService {
         let was_review = task.status == TaskStatus::Review;
         let patch = match kind {
             HookEventKind::PreToolUse if task.status == TaskStatus::Running => {
-                let activity = classify_agent_activity(Some(now), task.last_notification_at, now);
+                let activity = classify_agent_activity(
+                    Some(now),
+                    task.last_notification_at,
+                    task.live_subagents,
+                    now,
+                );
                 Some(
                     TaskPatch::new()
                         .last_pre_tool_use_at(Some(now))

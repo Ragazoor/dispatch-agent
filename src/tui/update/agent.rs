@@ -295,6 +295,7 @@ impl App {
                 let activity = crate::models::classify_agent_activity(
                     t.last_pre_tool_use_at,
                     t.last_notification_at,
+                    t.live_subagents,
                     now,
                 );
                 let target = activity.to_sub_status();
