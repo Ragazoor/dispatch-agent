@@ -361,6 +361,43 @@ The consequence that trips people up: under the two out-of-band policies the loo
 
 A mock still can't verify that a target *resolved* correctly — it records argv, not tmux's reading of it. Exact-name resolution is covered by the `window_target` unit tests in `src/tmux.rs` plus `tests/tmux_window_targets.rs` against a real server.
 
+### Driving a dispatch: `DispatchScript`, never a hand-written queue
+
+A dispatch is not one call, it is a sequence: `git symbolic-ref`? → `gh pr view`? → `git fetch` (×1 or ×`FETCH_MAX_ATTEMPTS`) → `git remote get-url` + `git ls-remote`? → `git rev-list`? → `git worktree add`? → `new-window` → `set-option` → `set-hook` → two `send-keys` → `split-window`.
+
+Six of those steps are conditional, and the conditions interact:
+
+- `fetch_origin` runs under `FetchPolicy::Required` for a fresh worktree and `BestEffort` for a reused one, so the retry budget is 3 or 1.
+- `classify_fetch_failure`'s two probes land **between** attempt 1 and attempt 2, and only under `Required`.
+- `select_start_point`'s `rev-list` runs only after a fetch succeeded, and only for `BaseRef::Branch` — never for a PR head.
+
+So every index after the fetch depends on choices the test made earlier, which is precisely what ~45 sites each re-derived by hand.
+
+**Never hand-write that queue.** Declare the shape with `DispatchScript` (`src/dispatch/mock_sequence.rs`) and let it derive both the responses and the indices:
+
+```rust
+let script = DispatchScript::dispatch();      // reused worktree, fetch ok, full launch
+let mock = script.runner();
+dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
+
+let calls = mock.recorded_calls();
+let arg = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
+script.assert_matches(&calls);                 // the sequence is exactly what was declared
+```
+
+Three constructors name the families — `dispatch()`, `resume()` (tmux tail only), `provision()` (stops after the split hook) — and the modifiers name one axis each: `fresh_worktree()`, `no_fetch()`, `fetch_succeeds_on_attempt(n)`, `fetch_finds_no_origin_ref()`, `fetch_is_unreachable()`, `fetch_times_out(d)`, `local_ahead(n)`, `detecting_default_branch(b)`, `pr_head(PrHead::…)`, `fails_at(Step)`.
+
+The fetch modifiers are not interchangeable, and the distinctions are load-bearing. `fetch_is_unreachable()` aborts a fresh dispatch but only warns on the reuse path; `fetch_finds_no_origin_ref()` is never retried, because retrying a branch that does not exist cannot succeed; `fetch_times_out(d)` queues a *success* that arrives too late, so it still fails if `provision_worktree` regresses to the unbounded `run` — a plain failure would not.
+
+Two habits matter:
+
+- Use `script.index_of(Step::X)` in place of a literal `calls[4]`. The index then comes from the same declaration as the responses, so the two cannot drift apart.
+- Call `script.assert_matches(&calls)` wherever the sequence itself is load-bearing — that an aborted dispatch issues no tmux call, that a PR-head path issues no extra git query, that resume touches git not at all. It rejects an extra, missing, or reordered call, which a `vec![ok(), ok(), …]` with trailing comments cannot.
+
+**Adding a subprocess call to `provision_worktree` or `dispatch_with_prompt`?** Add a `Step` and one line to `DispatchScript::steps()`. The self-tests in `mock_sequence.rs` drive a real dispatch and will fail until you do; every call site then follows for free. #3810 added one call the old way and had to hand-edit ~30 test functions, renumbering indices — and still left a stale entry behind.
+
+`DispatchScript` assumes the `AnyName` window-lookup policy above (response index == recorded-call index). A test on `with_queued_window_lookup()` cannot use one.
+
 ## No `tokio::time::sleep` in tests
 
 Tests must never sleep on the wall clock to "wait for" background work or to cross a duration threshold. Wall-clock sleeps are flaky on slow CI (the work may not be done when the timer fires) and needlessly slow the suite. `./scripts/check-no-test-sleep.sh` enforces this in the pre-push hook, rejecting `tokio::time::sleep(` anywhere under `src/`/`tests/` **and** `std::thread::sleep(` in test files (anything under `tests/`, under a `src/**/tests/` directory, or named `tests.rs`). Production `std::thread::sleep` (e.g. `src/process.rs`, `src/runtime/mod.rs`) is unaffected. Inline `#[cfg(test)] mod tests` blocks inside production files are a blind spot of the grep-level check — keep sleeps out of them by review.

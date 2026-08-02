@@ -6,6 +6,11 @@ use crate::process::ProcessRunner;
 mod agents;
 mod finish;
 pub(crate) mod git_output;
+/// Shared `MockProcessRunner` scripts for the dispatch call sequence. Lives here
+/// rather than in a test module because the sequence it declares is this
+/// module's own, and three other test suites drive it.
+#[cfg(test)]
+pub(crate) mod mock_sequence;
 mod prompts;
 mod split_panes;
 mod trust;

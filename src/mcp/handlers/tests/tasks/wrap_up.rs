@@ -2357,16 +2357,10 @@ async fn dispatch_task_recalculates_epic_status() {
     std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
 
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                      // git fetch origin main
-        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
-        MockProcessRunner::ok(),                      // tmux new-window
-        MockProcessRunner::ok(),                      // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                      // tmux set-hook
-        MockProcessRunner::ok(),                      // tmux send-keys -l
-        MockProcessRunner::ok(),                      // tmux send-keys Enter
-        MockProcessRunner::ok_with_stdout(b"%9\n"),   // tmux split-window (agent-tree)
-    ]));
+    // The worktree dir is pre-created below, so this is the reused-worktree
+    // shape — see `src/dispatch/mock_sequence.rs`.
+    let runner: Arc<dyn ProcessRunner> =
+        crate::dispatch::mock_sequence::DispatchScript::dispatch().shared_runner();
     let state = Arc::new(McpState::new(
         McpDeps {
             db: db.clone(),

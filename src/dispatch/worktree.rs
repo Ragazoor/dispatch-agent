@@ -22,7 +22,10 @@ const DISPATCH_GITIGNORE_LINE: &str = ".dispatch/";
 /// provisioning. Smooths over transient failures (e.g. ref-lock contention
 /// when two dispatches fetch the same repo concurrently) without needing to
 /// pattern-match git's stderr text.
-const FETCH_MAX_ATTEMPTS: u32 = 3;
+/// `pub(super)` so `mock_sequence`'s scripts and the retry tests reference the
+/// budget instead of mirroring the number — a mirrored `3` silently queues the
+/// wrong response count the moment this changes.
+pub(super) const FETCH_MAX_ATTEMPTS: u32 = 3;
 // Zero delay under `cfg(test)` so the retry tests below don't spend real
 // wall-clock time sleeping — flagged by adversarial review of this plan,
 // which pointed out a fixed 500ms delay would cost ~1s of real sleep per
