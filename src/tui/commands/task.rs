@@ -104,8 +104,11 @@ pub enum TaskCommand {
     /// Drop every `task_subagents` entry for a task. `drain: true` runs the
     /// drain path (a pending Stop lands as a Review flip); `drain: false`
     /// clears the entries and `stop_pending` but leaves status alone, for
-    /// callers that already own the resulting status. See the clear-point
-    /// table in `docs/specs/agent-health.allium`.
+    /// callers that already own the resulting status. See the drain-path
+    /// `@guidance` on `HookSubagentStop` (`docs/specs/agent-health.allium:317-318`),
+    /// which names the clear points on `DetectCrashedAgent`, `DetachTmux`
+    /// (`split-pane.allium`) and `DispatchTask` (`dispatch.allium`), and the
+    /// `ClearSubagentsOnSessionStart` rule (`docs/specs/agent-health.allium:336`).
     ClearSubagents {
         id: TaskId,
         drain: bool,
