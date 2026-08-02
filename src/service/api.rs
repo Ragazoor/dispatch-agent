@@ -256,13 +256,26 @@ macro_rules! task_service_api {
                 event: $crate::models::SubagentEvent
             ) -> Result<(), $crate::service::ServiceError>;
 
-            /// Clear a task's subagent entries **without** the drain path, for
-            /// callers that already own the resulting status (crash,
-            /// dispatch). See `record_subagent_event` for the draining twin.
+            /// Clear a task's subagent entries and void any pending Stop
+            /// **without** the drain path — for callers that already own the
+            /// resulting status (crash, dispatch) and for `SessionStart`, where
+            /// the deferred Stop belongs to a finished turn. See
+            /// `record_subagent_event` for the draining twin.
             async fn clear_subagents_no_drain(
                 &self,
                 id: $crate::models::TaskId
             ) -> Result<(), $crate::service::ServiceError>;
+
+            /// Apply a Stop that was deferred but has no subagent left to drain
+            /// it. Conditional and idempotent: it writes only while the task is
+            /// still Running with `stop_pending` set and `live_subagents = 0`.
+            /// Returns whether the flip applied. See
+            /// `ReconcileStrandedPendingStop` in
+            /// `docs/specs/agent-health.allium`.
+            async fn apply_pending_stop(
+                &self,
+                id: $crate::models::TaskId
+            ) -> Result<bool, $crate::service::ServiceError>;
 
             /// Select and atomically claim the epic's next backlog subtask,
             /// moving it to `Running` before any provisioning happens. Exclusive

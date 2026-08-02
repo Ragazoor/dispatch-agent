@@ -588,6 +588,30 @@ impl super::super::TaskCrud for Database {
             .await
     }
 
+    async fn try_apply_pending_stop(&self, id: TaskId) -> Result<bool> {
+        self.db_call(move |conn| {
+            let review = TaskStatus::Review;
+            let rows = conn
+                .execute(
+                    "UPDATE tasks \
+                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = NULL, \
+                         last_notification_at = NULL, stop_pending = 0, \
+                         updated_at = datetime('now') \
+                     WHERE id = ?3 AND status = ?4 AND stop_pending = 1 \
+                       AND live_subagents = 0",
+                    params![
+                        review.as_str(),
+                        SubStatus::default_for(review).as_str(),
+                        id.0,
+                        TaskStatus::Running.as_str(),
+                    ],
+                )
+                .context("Failed to apply pending stop")?;
+            Ok(rows == 1)
+        })
+        .await
+    }
+
     async fn try_claim_next_backlog_task(
         &self,
         epic_id: EpicId,

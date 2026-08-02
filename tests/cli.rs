@@ -689,6 +689,66 @@ async fn hook_subagent_start_then_stop_round_trips() {
     );
 }
 
+/// `SessionStart` (the only producer of `hook-subagent … clear`) must void a
+/// stale pending Stop, not apply it. A resume in particular keeps the task
+/// Running deliberately — `handle_retry_resume` launches `claude --continue`
+/// with no prompt — so draining here would land the task in Review with a live
+/// agent in its window and no `UserPromptSubmit` to rescue it.
+#[tokio::test]
+async fn hook_subagent_clear_voids_a_pending_stop_without_flipping_to_review() {
+    let db = NamedTempFile::new().unwrap();
+    let db_path = db.path().to_str().unwrap();
+    let id = seed_running_task(db.path(), "Subagent Clear No Drain", SubStatus::Active).await;
+
+    for args in [
+        vec![
+            "hook-subagent",
+            &id.0.to_string(),
+            "start",
+            "--agent-id",
+            "a1",
+            "--session-id",
+            "s1",
+        ],
+        vec!["hook", &id.0.to_string(), "stop"],
+    ] {
+        let mut full = vec!["--db", db_path];
+        full.extend(args.iter().copied());
+        let out = binary().args(&full).output().unwrap();
+        assert!(
+            out.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    let conn = Database::open(db.path()).await.unwrap();
+    let task = conn.get_task(id).await.unwrap().unwrap();
+    assert!(task.stop_pending, "precondition: the Stop must be deferred");
+    assert_eq!(task.status, TaskStatus::Running);
+    drop(conn);
+
+    let out = binary()
+        .args(["--db", db_path, "hook-subagent", &id.0.to_string(), "clear"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = Database::open(db.path()).await.unwrap();
+    let task = conn.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "a fresh/resumed/cleared session must not apply the previous turn's Stop"
+    );
+    assert!(!task.stop_pending, "the stale pending Stop must be voided");
+    assert_eq!(task.live_subagents, 0, "the entries must still be cleared");
+}
+
 #[tokio::test]
 async fn hook_subagent_on_missing_task_exits_zero() {
     let db = NamedTempFile::new().unwrap();

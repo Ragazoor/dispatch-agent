@@ -49,7 +49,10 @@ for longer than `active_threshold`.
 ### Capture
 
 Register three new events in `plugin/hooks/hooks.json`, all pointing at the
-existing `task-status-hook` script with no matcher:
+existing `task-status-hook` script. `SubagentStart`/`SubagentStop` take no
+matcher; `SessionStart` is scoped to `startup|resume|clear`, excluding `compact`
+(which fires on *auto* compaction mid-run and would wipe a genuine live count
+the session fence cannot restore) and `fork` (a different session entirely):
 
 | Event | New arm in `task-status-hook` |
 |---|---|
@@ -151,22 +154,38 @@ whether the triggering rule already owns the task's resulting status:
 
 | Signal | Rule | Clears entries | Then |
 |---|---|---|---|
-| Session starts, resumes, or is cleared | new `SessionStart` arm | yes | drain path |
-| Detach | `DetachTmux` / `BatchDetachTmux` (`docs/specs/split-pane.allium:21`) | yes | drain path |
-| tmux window gone | `DetectCrashedAgent` (`docs/specs/agent-health.allium:92`) | yes | clear `stop_pending`, no flip |
+| Detach | `DetachTmux` / `BatchDetachTmux` (`docs/specs/split-pane.allium`) | yes | drain path |
+| Session starts, resumes, or is cleared | `ClearSubagentsOnSessionStart` | yes | clear `stop_pending`, no flip |
+| tmux window gone | `DetectCrashedAgent` (`docs/specs/agent-health.allium`) | yes | clear `stop_pending`, no flip |
 | Dispatch or retry | `DispatchTask` | yes | clear `stop_pending`, no flip |
 
 *Drain path* means the same effect as `HookSubagentStop`: if the clear drops the
 count to zero while `stop_pending` is set, apply the deferred `HookStop` effects.
-This is the load-bearing property — a reset never strands a task in Running with
-an unresolved `stop_pending`, it resolves it.
+Detach is the only clear point that does this. It assigns no outcome status of
+its own — a detach just removes the agent that was going to drain the count —
+so resolving the deferred Stop there is both safe and useful.
 
-The bottom two rows deliberately skip the flip. `DetectCrashedAgent` sets
-`sub_status = crashed` and `DispatchTask` moves the task into Running; draining
-to Review in the same breath would produce a task that is Crashed *and* in Review,
-or freshly dispatched *and* in Review. In both cases the triggering rule's status
-is the more informative one and wins. They still clear `stop_pending`, so the bit
+The other three rows deliberately skip the flip; the rule that owns the
+resulting status wins. `DetectCrashedAgent` sets `sub_status = crashed` and
+`DispatchTask` moves the task into Running; draining to Review in the same
+breath would produce a task that is Crashed *and* in Review, or freshly
+dispatched *and* in Review.
+
+`SessionStart` skips it for a different reason: a new, resumed or cleared
+session means the previous turn is over, so the Stop that turn deferred is
+*stale* and must be voided rather than applied. Resume makes this concrete —
+`handle_retry_resume` deliberately keeps the task Running and launches
+`claude --continue` with no prompt, so draining there would land the task in
+Review with a live agent in its window and no `UserPromptSubmit` coming to
+rescue it. (This corrects the original design, which listed `SessionStart` as
+a draining clear point.) All three still clear `stop_pending`, so the bit
 cannot survive into the next session and fire a spurious flip later.
+
+Because no clear point now covers the case where `HookStop` and the last
+`HookSubagentStop` interleave across two hook processes — leaving Running +
+`stop_pending` + zero live subagents with nothing to drain it — a tick-level
+reconciler (`ReconcileStrandedPendingStop`) applies the withheld flip via a
+single conditional `UPDATE`.
 
 **Known uncovered case**: the `claude` process dies but its tmux window survives.
 No hook arrives and no window-gone signal fires, so the task stays pinned in
@@ -175,7 +194,8 @@ starts in that window. This is accepted rather than fixed. The scenario already
 misbehaves today for the same root cause — a dead process emits no `PreToolUse`
 either — and it fails toward a visible Running rather than a wrong Review.
 Closing it properly means probing pane liveness on the tick, which changes crash
-detection for every task and belongs in its own task.
+detection for every task and belongs in its own task. `ReconcileStrandedPendingStop`
+covers the sub-case where a deferred Stop is the only thing holding the task.
 
 An earlier draft of this design used a per-entry TTL sweep instead. It was
 dropped: the threshold is unfalsifiable — short enough to reclaim a phantom
@@ -215,10 +235,12 @@ TDD order. Spec first, then tests, then code, per the repo convention.
    bearing a new `session_id` evicts the previous session's rows.
 3. **Service**: classifier precedence (subagents beat stale, lose to
    `needs_input`); `Stop` with live subagents sets `stop_pending` without moving
-   status; the last `SubagentStop` performs the deferred flip; the session fence
-   and detach also perform it when they drain the last entry; **crash and
+   status; the last `SubagentStop` performs the deferred flip; detach also
+   performs it when it drains the last entry; **session start, crash and
    dispatch clear `stop_pending` without flipping** — assert the task is not
-   left simultaneously Crashed-and-Review or freshly-dispatched-and-Review.
+   left simultaneously Crashed-and-Review or freshly-dispatched-and-Review, and
+   that a resumed session stays Running; the stranded Running +
+   `stop_pending` + zero-count state is reconciled on tick.
 4. **Hook script** (`src/setup/hooks.rs`, stub-`dispatch` with JSON on stdin,
    matching the existing arm tests): each new arm invokes the right command;
    missing `agent_id` is a silent no-op; `hooks.json` registers all three events.

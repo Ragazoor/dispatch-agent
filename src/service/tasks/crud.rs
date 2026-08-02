@@ -810,16 +810,49 @@ impl TaskService {
         Ok(())
     }
 
-    /// Clear a task's subagent entries **without** the drain path, for callers
-    /// that already own the resulting status (crash, dispatch). Running the
-    /// drain path here would leave a task Crashed-and-in-Review or
-    /// freshly-dispatched-and-in-Review.
+    /// Clear a task's subagent entries and void any pending Stop **without**
+    /// the drain path.
+    ///
+    /// Three callers: crash and dispatch-claim already own the resulting status
+    /// (running the drain path there would leave a task Crashed-and-in-Review
+    /// or freshly-dispatched-and-in-Review), and `SessionStart` — where a Stop
+    /// deferred by the *previous* turn is stale by definition and must be
+    /// voided, not applied. See `ClearSubagentsOnSessionStart` in
+    /// `docs/specs/agent-health.allium`.
+    ///
+    /// `NotFound` for an unknown task, matching `record_subagent_event`: the
+    /// hook CLI turns that into a silent skip rather than a failed tool call.
     pub async fn clear_subagents_no_drain(&self, id: TaskId) -> Result<(), ServiceError> {
+        if self.db.get_task(id).await?.is_none() {
+            return Err(ServiceError::NotFound(format!("Task {} not found", id.0)));
+        }
         self.db.subagent_clear(id).await?;
         self.db
             .patch_task(id, &TaskPatch::new().stop_pending(false))
             .await?;
         Ok(())
+    }
+
+    /// Apply a Stop that was deferred but has no subagent left to drain it.
+    ///
+    /// The drain points all run "read task → decide → write" across process
+    /// boundaries (every Claude Code hook is its own `dispatch` process), so a
+    /// `Stop` and the last `SubagentStop` can interleave into `Running` +
+    /// `stop_pending` + `live_subagents = 0` with nothing left to resolve it —
+    /// the task never leaves Running without a human. This is the reconciler
+    /// for that state, driven from the tick.
+    ///
+    /// One conditional write, so it is safe to call speculatively: if a new
+    /// subagent started in the meantime, or another process already applied the
+    /// flip, the `WHERE` clause simply matches nothing. Returns whether it
+    /// applied. See `ReconcileStrandedPendingStop` in
+    /// `docs/specs/agent-health.allium`.
+    pub async fn apply_pending_stop(&self, id: TaskId) -> Result<bool, ServiceError> {
+        let applied = self.db.try_apply_pending_stop(id).await?;
+        if applied {
+            self.recalculate_epic_for_task(id).await;
+        }
+        Ok(applied)
     }
 
     /// Mark that the PR-learnings reminder has been shown for this task.

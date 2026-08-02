@@ -129,9 +129,8 @@ async fn arm_sync_count_abort(db: &Database) {
 
 async fn subagent_rows(db: &Database, task_id: i64) -> Vec<String> {
     db.db_call(move |conn| {
-        let mut stmt = conn.prepare(
-            "SELECT agent_id FROM task_subagents WHERE task_id = ?1 ORDER BY agent_id",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT agent_id FROM task_subagents WHERE task_id = ?1 ORDER BY agent_id")?;
         let rows = stmt
             .query_map([task_id], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -263,4 +262,105 @@ async fn entries_are_scoped_per_task() {
         "two tasks must not share a subagent row"
     );
     assert_eq!(db.get_task(a.id).await.unwrap().unwrap().live_subagents, 1);
+}
+
+// ---------------------------------------------------------------------------
+// try_apply_pending_stop — the stranded-state reconciler's conditional write
+// ---------------------------------------------------------------------------
+
+async fn set_running_with_pending_stop(db: &Database, task: &Task) {
+    db.patch_task(
+        task.id,
+        &crate::db::TaskPatch::new()
+            .status(TaskStatus::Running)
+            .stop_pending(true),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn apply_pending_stop_flips_a_stranded_running_task_to_review() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running_with_pending_stop(&db, &task).await;
+
+    assert!(db.try_apply_pending_stop(task.id).await.unwrap());
+
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.status, TaskStatus::Review);
+    assert_eq!(
+        reread.sub_status,
+        SubStatus::default_for(TaskStatus::Review)
+    );
+    assert!(!reread.stop_pending);
+    assert!(reread.last_pre_tool_use_at.is_none());
+    assert!(reread.last_notification_at.is_none());
+}
+
+#[tokio::test]
+async fn apply_pending_stop_is_idempotent() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running_with_pending_stop(&db, &task).await;
+
+    assert!(db.try_apply_pending_stop(task.id).await.unwrap());
+    assert!(
+        !db.try_apply_pending_stop(task.id).await.unwrap(),
+        "the second call must write nothing — stop_pending is already consumed"
+    );
+}
+
+#[tokio::test]
+async fn apply_pending_stop_does_nothing_while_a_subagent_is_live() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running_with_pending_stop(&db, &task).await;
+    db.subagent_start(task.id, "a1", "s1", Utc::now())
+        .await
+        .unwrap();
+
+    assert!(
+        !db.try_apply_pending_stop(task.id).await.unwrap(),
+        "live_subagents = 0 is part of the WHERE, so a subagent that started \
+         between the caller's read and this write cannot be flipped out from under"
+    );
+    assert_eq!(
+        db.get_task(task.id).await.unwrap().unwrap().status,
+        TaskStatus::Running
+    );
+}
+
+#[tokio::test]
+async fn apply_pending_stop_does_nothing_without_a_pending_stop() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    db.patch_task(
+        task.id,
+        &crate::db::TaskPatch::new().status(TaskStatus::Running),
+    )
+    .await
+    .unwrap();
+
+    assert!(!db.try_apply_pending_stop(task.id).await.unwrap());
+}
+
+#[tokio::test]
+async fn apply_pending_stop_does_nothing_for_a_task_that_left_running() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    db.patch_task(
+        task.id,
+        &crate::db::TaskPatch::new()
+            .status(TaskStatus::Done)
+            .stop_pending(true),
+    )
+    .await
+    .unwrap();
+
+    assert!(!db.try_apply_pending_stop(task.id).await.unwrap());
+    assert_eq!(
+        db.get_task(task.id).await.unwrap().unwrap().status,
+        TaskStatus::Done
+    );
 }

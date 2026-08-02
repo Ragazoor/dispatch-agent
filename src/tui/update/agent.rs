@@ -163,6 +163,7 @@ impl App {
 
         let mut cmds = self.tick_window_checks();
         cmds.extend(self.tick_sub_status());
+        cmds.extend(self.tick_stranded_pending_stop());
         cmds.extend(self.tick_pr_poll());
         cmds.extend(self.tick_split_pane_check());
         cmds.extend(self.tick_stale_learning());
@@ -318,6 +319,41 @@ impl App {
                 crate::tui::commands::TaskCommand::BatchPatchSubStatus { updates },
             )]
         }
+    }
+
+    /// Reconcile tasks stranded with a deferred Stop that nothing is left to
+    /// drain: `Running`, `stop_pending`, and `live_subagents = 0`.
+    ///
+    /// Every Claude Code hook runs in its own `dispatch` process, so the main
+    /// agent's `Stop` and the last `SubagentStop` each do read-decide-write
+    /// against separate connections. Interleaved, the `Stop` can set
+    /// `stop_pending` *after* the count has already reached zero — and then
+    /// there is no subagent left to drain it, `Stop` will not re-fire, and
+    /// `PreToolUse` never touches status. The task sits in Running forever
+    /// short of a user action. This applies the withheld flip.
+    ///
+    /// The mutation is a single conditional `UPDATE` in the service layer, so
+    /// emitting from a possibly-stale board snapshot cannot flip a task whose
+    /// state has since moved on. `stop_pending` is cleared locally too, so the
+    /// same task is not re-submitted on every tick until the next DB refresh.
+    fn tick_stranded_pending_stop(&mut self) -> Vec<Command> {
+        let stranded: Vec<TaskId> = self
+            .board
+            .tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Running && t.stop_pending && t.live_subagents == 0)
+            .map(|t| t.id)
+            .collect();
+
+        stranded
+            .into_iter()
+            .map(|id| {
+                if let Some(task) = self.find_task_mut(id) {
+                    task.stop_pending = false;
+                }
+                Command::Task(crate::tui::commands::TaskCommand::ApplyPendingStop { id })
+            })
+            .collect()
     }
 
     /// Poll PR status for review tasks with open PRs, throttled per task by

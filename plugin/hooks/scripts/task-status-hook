@@ -86,7 +86,14 @@ case "$EVENT" in
         ;;
     SessionStart)
         # A fresh session provably has zero live subagents, so drop any
-        # entries a dead session left behind.
+        # entries a dead session left behind. Registered with matcher
+        # "startup|resume|clear" (hooks.json) — never on compact (which fires
+        # mid-run on *auto* compaction and would wipe a genuine live count) or
+        # fork (a different session entirely).
+        #
+        # Non-draining: any Stop deferred by the previous turn is stale here, so
+        # `clear` voids it rather than applying it. Resume in particular keeps
+        # the task Running on purpose.
         dispatch hook-subagent "$ID" clear
         ;;
     *)                  exit 0 ;;

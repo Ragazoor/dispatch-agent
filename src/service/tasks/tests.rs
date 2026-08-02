@@ -2971,8 +2971,10 @@ async fn subagent_stop_without_a_pending_stop_leaves_status_alone() {
     );
 }
 
+/// The draining `Clear` variant — reached only from detach, which owns no
+/// status of its own. `SessionStart` uses `clear_subagents_no_drain` instead.
 #[tokio::test]
-async fn clear_drains_and_performs_a_pending_flip() {
+async fn detach_clear_drains_and_performs_a_pending_flip() {
     let db = test_db().await;
     let svc = task_svc(&db);
     let id = create_running_task(&svc, SubStatus::Active).await;
@@ -2998,10 +3000,97 @@ async fn clear_drains_and_performs_a_pending_flip() {
     assert_eq!(
         task.status,
         TaskStatus::Review,
-        "SessionStart must resolve, not strand"
+        "a detach removes the agent that would have drained the count, so the \
+         deferred Stop must resolve rather than strand"
     );
     assert_eq!(task.live_subagents, 0);
     assert!(!task.stop_pending);
+}
+
+/// The non-draining twin, used by `SessionStart` and by the crash /
+/// dispatch-claim paths: entries and `stop_pending` go, status stays.
+#[tokio::test]
+async fn clear_no_drain_voids_a_pending_stop_without_flipping_to_review() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+
+    svc.clear_subagents_no_drain(id).await.unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "a stale Stop from the previous turn must be voided, not applied"
+    );
+    assert_eq!(task.live_subagents, 0);
+    assert!(!task.stop_pending);
+}
+
+/// The stranded state: `Stop` and the last `SubagentStop` interleaving across
+/// two hook processes leaves Running + `stop_pending` + zero live subagents,
+/// with nothing left to drain it. The tick reconciler resolves it.
+#[tokio::test]
+async fn apply_pending_stop_resolves_a_stranded_task() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    // Reproduce the interleaving: the Stop is recorded while a subagent is
+    // live, then the subagent's stop is applied by a path that already saw
+    // stop_pending = false (here: the DB write directly, standing in for the
+    // other process's read-decide-write).
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+    db.subagent_stop(id, "a1", "s1").await.unwrap();
+
+    let stranded = svc.get_task(id).await.unwrap();
+    assert_eq!(stranded.status, TaskStatus::Running);
+    assert!(stranded.stop_pending);
+    assert_eq!(stranded.live_subagents, 0);
+
+    assert!(svc.apply_pending_stop(id).await.unwrap());
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Review);
+    assert!(!task.stop_pending);
+    assert!(
+        !svc.apply_pending_stop(id).await.unwrap(),
+        "a second pass must be a no-op"
+    );
+}
+
+#[tokio::test]
+async fn clear_no_drain_on_a_missing_task_is_not_found() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    assert!(matches!(
+        svc.clear_subagents_no_drain(TaskId(9999)).await,
+        Err(crate::service::ServiceError::NotFound(_))
+    ));
 }
 
 #[tokio::test]

@@ -207,11 +207,13 @@ impl TuiRuntime {
         }
     }
 
-    /// Clear a task's subagent entries. `drain: true` (detach, SessionStart)
-    /// runs the drain path so a deferred Stop lands; `drain: false` (crash,
-    /// dispatch claim) clears without draining, because the caller already
-    /// owns the resulting status and draining would race it into a
-    /// contradictory Review state. A failed clear is logged, not surfaced —
+    /// Clear a task's subagent entries. `drain: true` (detach — the only
+    /// draining caller) runs the drain path so a deferred Stop lands;
+    /// `drain: false` (crash, dispatch claim) clears without draining, because
+    /// the caller already owns the resulting status and draining would race it
+    /// into a contradictory Review state. `SessionStart` also clears without
+    /// draining, but via the hook CLI rather than this command — see
+    /// `cmd_hook_subagent`. A failed clear is logged, not surfaced —
     /// it degrades to a phantom count, which is recoverable, and an error
     /// popup on a background cleanup would be worse than the drift.
     pub(super) async fn exec_clear_subagents(&self, id: models::TaskId, drain: bool) {
@@ -224,6 +226,24 @@ impl TuiRuntime {
         };
         if let Err(e) = result {
             tracing::warn!(task_id = id.0, error = %e, "failed to clear subagent entries");
+        }
+    }
+
+    /// Apply a deferred Stop that has no subagent left to drain it. The write
+    /// is conditional in SQL, so this is safe to call speculatively; a `true`
+    /// return means the board moved and needs a refresh. Failures are logged,
+    /// not surfaced — the tick will simply try again.
+    pub(super) async fn exec_apply_pending_stop(
+        &self,
+        app: &mut crate::tui::App,
+        id: models::TaskId,
+    ) {
+        match self.task_svc.apply_pending_stop(id).await {
+            Ok(true) => app.dirty_since_refresh = true,
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(task_id = id.0, error = %e, "failed to apply deferred stop");
+            }
         }
     }
 

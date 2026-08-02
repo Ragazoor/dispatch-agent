@@ -2418,3 +2418,79 @@ fn stalled_chain_card_yields_to_the_dispatching_spinner() {
         "the stale failure must not mask the retry"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Stranded deferred-Stop reconciler (ReconcileStrandedPendingStop)
+// ---------------------------------------------------------------------------
+
+fn apply_pending_stop_ids(cmds: &[Command]) -> Vec<TaskId> {
+    cmds.iter()
+        .filter_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::ApplyPendingStop { id }) => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn tick_applies_a_deferred_stop_with_no_subagent_left_to_drain_it() {
+    // Running + stop_pending + live_subagents == 0 is unreachable by any
+    // in-order sequence: it only happens when the main agent's Stop and the
+    // last SubagentStop interleave across two dispatch processes. Nothing
+    // else resolves it — Stop will not re-fire, and PreToolUse never touches
+    // status — so the tick must.
+    let mut task = make_task(1, TaskStatus::Running);
+    task.tmux_window = Some("win-1".to_string());
+    task.stop_pending = true;
+    task.live_subagents = 0;
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+    assert_eq!(apply_pending_stop_ids(&cmds), vec![TaskId(1)]);
+}
+
+#[test]
+fn tick_does_not_apply_a_deferred_stop_while_subagents_are_live() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.tmux_window = Some("win-1".to_string());
+    task.stop_pending = true;
+    task.live_subagents = 2;
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+    assert!(
+        apply_pending_stop_ids(&cmds).is_empty(),
+        "the subagents still running are what the Stop is waiting on"
+    );
+}
+
+#[test]
+fn tick_ignores_tasks_without_a_pending_stop() {
+    let mut running = make_task(1, TaskStatus::Running);
+    running.tmux_window = Some("win-1".to_string());
+    // A Review task that somehow still carries the bit is not this
+    // reconciler's business either — it has already left Running.
+    let mut review = make_task(2, TaskStatus::Review);
+    review.stop_pending = true;
+    let mut app = App::new(vec![running, review]);
+
+    let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+    assert!(apply_pending_stop_ids(&cmds).is_empty());
+}
+
+#[test]
+fn tick_emits_the_reconciler_only_once_per_stranded_task() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.tmux_window = Some("win-1".to_string());
+    task.stop_pending = true;
+    let mut app = App::new(vec![task]);
+
+    let first = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+    assert_eq!(apply_pending_stop_ids(&first), vec![TaskId(1)]);
+
+    // The DB write is conditional so a repeat would be harmless, but the
+    // local bit is cleared so the next tick does not re-submit it while
+    // waiting for the refresh to land.
+    let second = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+    assert!(apply_pending_stop_ids(&second).is_empty());
+}

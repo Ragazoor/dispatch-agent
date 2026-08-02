@@ -348,22 +348,32 @@ async fn cmd_hook_subagent(
     // A start/stop with no agent_id/session_id carries no information — the
     // shell hook already guards this, but a bare CLI call must not panic or
     // half-write.
+    //
+    // `clear` (SessionStart) is deliberately the *non-draining* variant. A new,
+    // resumed or cleared session means the previous turn is over, so a Stop
+    // deferred by that turn is stale and must be voided rather than applied:
+    // resume in particular keeps the task Running on purpose (see
+    // `handle_retry_resume`), and draining here would strand it in Review with
+    // a live agent and no UserPromptSubmit coming. The draining variant
+    // (`SubagentEvent::Clear`) is reached only from detach, whose rule owns no
+    // status of its own. See `ClearSubagentsOnSessionStart` in
+    // `docs/specs/agent-health.allium`.
     let event = match action.as_str() {
-        "clear" => models::SubagentEvent::Clear,
+        "clear" => None,
         "start" | "stop" => {
             let (Some(agent_id), Some(session_id)) = (agent_id, session_id) else {
                 return Ok(());
             };
             if action == "start" {
-                models::SubagentEvent::Start {
+                Some(models::SubagentEvent::Start {
                     agent_id,
                     session_id,
-                }
+                })
             } else {
-                models::SubagentEvent::Stop {
+                Some(models::SubagentEvent::Stop {
                     agent_id,
                     session_id,
-                }
+                })
             }
         }
         other => anyhow::bail!("Invalid subagent action: {other}. Valid: start, stop, clear"),
@@ -372,7 +382,11 @@ async fn cmd_hook_subagent(
     init_app_log_subscriber(data_dir)?;
     let database = db::Database::open(db).await?;
     let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
-    match svc.record_subagent_event(models::TaskId(id), event).await {
+    let outcome = match event {
+        Some(event) => svc.record_subagent_event(models::TaskId(id), event).await,
+        None => svc.clear_subagents_no_drain(models::TaskId(id)).await,
+    };
+    match outcome {
         Ok(()) => {}
         Err(service::ServiceError::NotFound(_)) => {
             eprintln!("Task {} not found, skipping", id);

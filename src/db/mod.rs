@@ -210,6 +210,15 @@ pub trait TaskCrud: TaskRead {
     async fn subagent_stop(&self, id: TaskId, agent_id: &str, session_id: &str) -> Result<i64>;
     /// Remove every live-subagent row for `id` and zero `live_subagents`.
     async fn subagent_clear(&self, id: TaskId) -> Result<()>;
+    /// Apply a deferred Stop that has no subagent left to drain it: move the
+    /// task to `Review`, clear both hook timestamps and `stop_pending`.
+    ///
+    /// One conditional statement — `status = 'running' AND stop_pending = 1 AND
+    /// live_subagents = 0` is part of the `WHERE`, not a prior read — so it can
+    /// neither race a concurrent hook process into a wrong flip nor apply twice.
+    /// Returns whether it wrote. See `ReconcileStrandedPendingStop` in
+    /// `docs/specs/agent-health.allium`.
+    async fn try_apply_pending_stop(&self, id: TaskId) -> Result<bool>;
     /// Atomically select *and* claim `epic_id`'s next backlog subtask for
     /// dispatch: the first one ordered by `COALESCE(sort_order, id)` then `id`
     /// moves to `Running` with the default running sub-status and

@@ -320,25 +320,36 @@ rule HookSubagentStop {
         -- way. The conditional block is the "drain path".
         --
         -- Four structural points clear a task's subagent entries. Exactly
-        -- two of them run this drain path; the other two clear without
+        -- one of them runs this drain path; the other three clear without
         -- draining, and the split is what keeps a task from ever being
         -- simultaneously Crashed-and-in-Review or
-        -- freshly-dispatched-and-in-Review:
-        --   - ClearSubagentsOnSessionStart (below) and DetachTmux (see
-        --     split-pane.allium) DO run the drain path. Neither rule
-        --     assigns an outcome status of its own — a fresh session or a
-        --     detach just removes the agent that was going to drain the
-        --     count itself — so applying the deferred Stop here is safe
-        --     and is exactly what unsticks a stop_pending task with no
-        --     agent left to finish the job.
+        -- freshly-dispatched-and-in-Review. The rule that owns the
+        -- resulting status wins:
+        --   - DetachTmux (see split-pane.allium) DOES run the drain path.
+        --     It assigns no outcome status of its own — a detach just
+        --     removes the agent that was going to drain the count itself —
+        --     so applying the deferred Stop is safe there, and is exactly
+        --     what unsticks a stop_pending task with no agent left to
+        --     finish the job.
         --   - DetectCrashedAgent and DispatchTask do NOT run the drain
         --     path. Both already assign the task's resulting status in the
         --     same write (crashed / running respectively), and draining
         --     alongside that write would leave the task in both states at
         --     once — the more informative status wins, so drain is
-        --     skipped. Both still clear stop_pending unconditionally so
-        --     the bit cannot survive into a later session and fire a
-        --     spurious flip; see their own guidance for the detail.
+        --     skipped.
+        --   - ClearSubagentsOnSessionStart (below) does NOT run the drain
+        --     path either, for a different reason: a new/resumed/cleared
+        --     session means the previous turn is over, so the Stop that
+        --     turn deferred is stale and gets voided rather than applied.
+        --     See its own guidance.
+        -- All three non-draining points still clear stop_pending
+        -- unconditionally, so the bit cannot survive into a later session
+        -- and fire a spurious flip.
+        --
+        -- ReconcileStrandedPendingStop (below) is the backstop for the one
+        -- case none of these four cover: the deferred Stop and the last
+        -- SubagentStop landing in separate processes and interleaving, so
+        -- the bit is set after the count has already reached zero.
 }
 
 rule SubagentSessionFence {
@@ -363,7 +374,40 @@ rule ClearSubagentsOnSessionStart {
         for entry in core/SubagentEntries where task = task:
             not exists entry
         task.live_subagents = 0
-        if task.stop_pending and task.status = running:
+    ensures: task.stop_pending = false
+
+    @guidance
+        -- Fires when a fresh claude process starts, a session is resumed,
+        -- or the transcript is cleared in the task's tmux window. Clears
+        -- unconditionally rather than fencing on a prior session_id — a
+        -- SessionStart payload carries no previous session to compare
+        -- against, unlike SubagentStart/SubagentStop.
+        --
+        -- Does NOT run the drain path. A new, resumed or cleared session
+        -- means the previous turn is over, so a Stop that turn deferred is
+        -- stale: it is voided, not applied. Resume makes this concrete —
+        -- RetryResume (dispatch.allium) deliberately keeps the task Running
+        -- and continues the existing conversation with no prompt, so
+        -- draining here would land the task in Review with a live agent in
+        -- its window and no UserPromptSubmit coming to rescue it. This is
+        -- the same "the rule that owns the resulting status wins" split as
+        -- DetectCrashedAgent and DispatchTask; see the HookSubagentStop
+        -- guidance.
+        --
+        -- Registered on the startup, resume and clear sources only. compact
+        -- is excluded because it fires on *auto* compaction too, mid
+        -- fan-out: clearing there wipes a genuine live count that the
+        -- session fence cannot restore, since the still-running subagents
+        -- share this session id and their eventual SubagentStops become
+        -- no-op deletes. fork is excluded because a fork is a different
+        -- session and must not wipe the original's count.
+}
+
+rule ReconcileStrandedPendingStop {
+    -- Backstop for a deferred Stop that has no subagent left to drain it.
+    when: Tick()
+    for task in core/Tasks where status = running and stop_pending and live_subagents = 0:
+        ensures:
             task.status = review
             task.sub_status = core/SubStatus.default_for(review)
             task.last_pre_tool_use_at = null
@@ -371,12 +415,25 @@ rule ClearSubagentsOnSessionStart {
             task.stop_pending = false
 
     @guidance
-        -- Fires when a fresh claude process starts, a session is resumed,
-        -- or the transcript is cleared in the task's tmux window. Clears
-        -- unconditionally rather than fencing on a prior session_id — a
-        -- SessionStart payload carries no previous session to compare
-        -- against, unlike SubagentStart/SubagentStop. Drain path applies:
-        -- see HookSubagentStop.
+        -- Every Claude Code hook runs as its own dispatch process against its
+        -- own connection, so HookStop and HookSubagentStop each do
+        -- read-decide-write with no shared transaction. Interleaved, the Stop
+        -- can set stop_pending *after* the count has already reached zero.
+        -- Nothing else resolves that: no subagent is left to drain it, Stop
+        -- does not re-fire, HookPreToolUse never writes status, and
+        -- ClassifyAgentActivity only touches sub_status. Without this rule the
+        -- task sits in Running until a human moves it.
+        --
+        -- The write is conditional on all three predicates in the same
+        -- statement rather than re-read and then applied, so a subagent that
+        -- starts between the tick's board snapshot and the write cannot be
+        -- flipped out from under, and a concurrent hook cannot apply the flip
+        -- twice. That also makes the rule idempotent and safe to evaluate on
+        -- every tick.
+        --
+        -- Partially covers the separate "dead claude process, live tmux
+        -- window" case: a task stranded that way is reclaimed as soon as its
+        -- deferred Stop is the thing holding it.
 }
 
 rule HookUserPromptSubmit {
@@ -387,8 +444,14 @@ rule HookUserPromptSubmit {
     ensures: task.status = running
     ensures: task.sub_status = core/SubStatus.default_for(running)
     ensures: task.last_pre_tool_use_at = now
+    ensures: task.stop_pending = false
 
     @guidance
+        -- A human resuming the conversation voids any deferred Stop: the
+        -- turn that withheld it is over, and this rule now owns the
+        -- resulting status (running). Leaving the bit set would let a later
+        -- drain point flip the task to Review underneath an active turn.
+        --
         -- Fires when the user submits a new prompt in the Claude Code
         -- session, before the agent has taken any action. It is the
         -- earliest available signal that a human has resumed the

@@ -104,13 +104,23 @@ pub enum TaskCommand {
     /// Drop every `task_subagents` entry for a task. `drain: true` runs the
     /// drain path (a pending Stop lands as a Review flip); `drain: false`
     /// clears the entries and `stop_pending` but leaves status alone, for
-    /// callers that already own the resulting status. See the drain-path
-    /// `@guidance` on `HookSubagentStop` (`docs/specs/agent-health.allium:317-318`),
-    /// which names the clear points on `DetectCrashedAgent`, `DetachTmux`
-    /// (`split-pane.allium`) and `DispatchTask` (`dispatch.allium`), and the
-    /// `ClearSubagentsOnSessionStart` rule (`docs/specs/agent-health.allium:336`).
+    /// callers that already own the resulting status. `DetachTmux` is the only
+    /// draining caller. See the drain-path `@guidance` on `HookSubagentStop`
+    /// (`docs/specs/agent-health.allium`), which names the clear points on
+    /// `DetectCrashedAgent`, `DetachTmux` (`split-pane.allium`) and
+    /// `DispatchTask` (`dispatch.allium`), and the
+    /// `ClearSubagentsOnSessionStart` rule (`docs/specs/agent-health.allium`).
     ClearSubagents {
         id: TaskId,
         drain: bool,
+    },
+    /// Apply a Stop that was deferred but has no subagent left to drain it.
+    /// Emitted by the tick reconciler for the stranded `Running` +
+    /// `stop_pending` + `live_subagents = 0` state that two interleaving hook
+    /// processes can produce. Conditional at the DB level, so a speculative
+    /// emission is harmless. See `ReconcileStrandedPendingStop`
+    /// (`docs/specs/agent-health.allium`).
+    ApplyPendingStop {
+        id: TaskId,
     },
 }
