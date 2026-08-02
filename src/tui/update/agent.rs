@@ -152,6 +152,18 @@ impl App {
     /// a named `tick_*` sub-step below; this composes them and folds their
     /// commands into a single batch. Each sub-step owns its own dirty-marking, so
     /// command order carries no repaint significance.
+    ///
+    /// The call order below is **not** load-bearing, and in particular
+    /// `tick_window_checks` before `tick_stranded_pending_stop` is not what keeps
+    /// a crashed task out of Review. `tick_window_checks` takes `&self` and only
+    /// emits `BatchCheckWindows`, which the runtime fires and forgets onto a
+    /// blocking thread; the resulting `WindowGone` cannot be observed until a
+    /// later iteration of the event loop, so no tick can both crash a task and
+    /// reconcile it. What actually enforces the split is `handle_agent_crashed`
+    /// clearing `stop_pending` (in memory, for this reconciler) and
+    /// `clear_subagents_no_drain` clearing it in the DB, plus the conditional
+    /// `UPDATE` behind `ApplyPendingStop`. Do not add an ordering comment here
+    /// claiming otherwise — see the note on that line in `handle_agent_crashed`.
     pub(in crate::tui) fn handle_tick(&mut self) -> Vec<Command> {
         let status_before = self.status.message.clone();
         let flash_count_before = self.agents.message_flash.len();
@@ -492,6 +504,17 @@ impl App {
             task.sub_status = SubStatus::Crashed;
             task.tmux_window = None;
             task.live_subagents = 0;
+            // Load-bearing, not bookkeeping: `tick_stranded_pending_stop`
+            // reconciles off this in-memory board, and a crashed task now
+            // matches its other two predicates (still Running, zero
+            // subagents). Leave the bit set and the very next tick emits an
+            // `ApplyPendingStop` for a task this handler just marked Crashed
+            // — the Crashed-and-in-Review contradiction
+            // `docs/specs/agent-health.allium` forbids (`DetectCrashedAgent`
+            // ensures `stop_pending = false`; the DB half of the same clear
+            // is `clear_subagents_no_drain`, reached via the `ClearSubagents`
+            // command below). Pinned by
+            // `a_crash_suppresses_the_reconciler_instead_of_racing_it_into_review`.
             task.stop_pending = false;
         }
         if let Some(task) = self.find_task(id) {

@@ -2494,3 +2494,33 @@ fn tick_emits_the_reconciler_only_once_per_stranded_task() {
     let second = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
     assert!(apply_pending_stop_ids(&second).is_empty());
 }
+
+#[test]
+fn a_crash_suppresses_the_reconciler_instead_of_racing_it_into_review() {
+    // DetectCrashedAgent owns the resulting status, so it clears stop_pending
+    // in memory as well as in the DB. The reconciler reads the in-memory
+    // board: leave the bit set and the very next tick emits a Review flip for
+    // a task the crash handler just marked Crashed — the Crashed-and-in-Review
+    // contradiction docs/specs/agent-health.allium forbids.
+    let mut task = make_task(1, TaskStatus::Running);
+    task.tmux_window = Some("win-1".to_string());
+    task.stop_pending = true;
+    // One live subagent, so the task is not yet stranded: the crash is what
+    // drops the count to zero, which is exactly the state the reconciler acts
+    // on.
+    task.live_subagents = 1;
+    let mut app = App::new(vec![task]);
+
+    app.update(Message::Task(
+        crate::tui::messages::TaskMessage::WindowGone(TaskId(1)),
+    ));
+    let crashed = app.find_task(TaskId(1)).expect("task 1 still on the board");
+    assert_eq!(crashed.sub_status, SubStatus::Crashed);
+    assert_eq!(crashed.live_subagents, 0);
+
+    let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+    assert!(
+        apply_pending_stop_ids(&cmds).is_empty(),
+        "a Crashed task must not also be flipped to Review by the reconciler"
+    );
+}
