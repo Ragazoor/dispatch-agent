@@ -624,6 +624,82 @@ fn hook_unknown_task_skips() {
 }
 
 // ---------------------------------------------------------------------------
+// hook-subagent
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn hook_subagent_start_then_stop_round_trips() {
+    let db = NamedTempFile::new().unwrap();
+    let db_path = db.path().to_str().unwrap();
+    let id = seed_running_task(db.path(), "Subagent Test", SubStatus::Active).await;
+
+    let out = binary()
+        .args([
+            "--db",
+            db_path,
+            "hook-subagent",
+            &id.0.to_string(),
+            "start",
+            "--agent-id",
+            "a1",
+            "--session-id",
+            "s1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let out = binary()
+        .args([
+            "--db",
+            db_path,
+            "hook-subagent",
+            &id.0.to_string(),
+            "stop",
+            "--agent-id",
+            "a1",
+            "--session-id",
+            "s1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+async fn hook_subagent_on_missing_task_exits_zero() {
+    let db = NamedTempFile::new().unwrap();
+    // A hook must never fail the agent's tool call just because the task is gone.
+    let out = binary()
+        .args([
+            "--db",
+            db.path().to_str().unwrap(),
+            "hook-subagent",
+            "9999",
+            "start",
+            "--agent-id",
+            "a1",
+            "--session-id",
+            "s1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // verify-feed
 // ---------------------------------------------------------------------------
 

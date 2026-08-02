@@ -90,6 +90,24 @@ enum Commands {
         #[arg(long = "kind")]
         notification_kind: Option<String>,
     },
+    /// Record a Claude Code subagent lifecycle event (SubagentStart /
+    /// SubagentStop / SessionStart) for a task. Maintains the live subagent
+    /// count that gates staleness and the deferred Stop-to-Review flip; see
+    /// `docs/specs/agent-health.allium`.
+    HookSubagent {
+        /// Task ID
+        id: i64,
+        /// Action: start | stop | clear
+        action: String,
+        /// Subagent identifier from the payload's `agent_id` field. Required
+        /// for start and stop; ignored for clear.
+        #[arg(long = "agent-id")]
+        agent_id: Option<String>,
+        /// Session identifier from the payload's `session_id` field. Used to
+        /// fence entries left behind by a dead session.
+        #[arg(long = "session-id")]
+        session_id: Option<String>,
+    },
     /// Append a file-touch event (Read/Write/Edit/NotebookEdit) to a task's
     /// file-events JSONL log (see `docs/specs/agent-tree.allium`). Deliberately
     /// independent of `Hook`/`HookEventKind` — this command never touches
@@ -311,6 +329,50 @@ async fn cmd_hook(
     let database = db::Database::open(db).await?;
     let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
     match svc.record_hook_event(models::TaskId(id), parsed).await {
+        Ok(()) => {}
+        Err(service::ServiceError::NotFound(_)) => {
+            eprintln!("Task {} not found, skipping", id);
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
+}
+
+async fn cmd_hook_subagent(
+    db: &std::path::Path,
+    id: i64,
+    action: String,
+    agent_id: Option<String>,
+    session_id: Option<String>,
+) -> Result<()> {
+    // A start/stop with no agent_id/session_id carries no information — the
+    // shell hook already guards this, but a bare CLI call must not panic or
+    // half-write.
+    let event = match action.as_str() {
+        "clear" => models::SubagentEvent::Clear,
+        "start" | "stop" => {
+            let (Some(agent_id), Some(session_id)) = (agent_id, session_id) else {
+                return Ok(());
+            };
+            if action == "start" {
+                models::SubagentEvent::Start {
+                    agent_id,
+                    session_id,
+                }
+            } else {
+                models::SubagentEvent::Stop {
+                    agent_id,
+                    session_id,
+                }
+            }
+        }
+        other => anyhow::bail!("Invalid subagent action: {other}. Valid: start, stop, clear"),
+    };
+    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
+    init_app_log_subscriber(data_dir)?;
+    let database = db::Database::open(db).await?;
+    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
+    match svc.record_subagent_event(models::TaskId(id), event).await {
         Ok(()) => {}
         Err(service::ServiceError::NotFound(_)) => {
             eprintln!("Task {} not found, skipping", id);
@@ -633,6 +695,12 @@ async fn main() -> Result<()> {
             kind,
             notification_kind,
         } => cmd_hook(&cli.db, id, kind, notification_kind).await?,
+        Commands::HookSubagent {
+            id,
+            action,
+            agent_id,
+            session_id,
+        } => cmd_hook_subagent(&cli.db, id, action, agent_id, session_id).await?,
         Commands::HookFileEvent { id, tool, path } => {
             cmd_hook_file_event(&cli.db, id, tool, path).await?
         }
