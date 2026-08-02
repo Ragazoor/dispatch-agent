@@ -137,6 +137,14 @@ impl App {
         if new_task.sub_status != SubStatus::NeedsInput {
             self.agents.notified_needs_input.remove(&new_task.id);
         }
+        // A stalled chain leaves its subtask in backlog, so a row that has left
+        // backlog by any route — retried, or moved by hand — is no longer
+        // stalled (PersistsUntilRedispatched in docs/specs/epics.allium). A row
+        // still IN backlog keeps its marker: the chain's own refresh arrives
+        // moments after the failure and must not erase it.
+        if new_task.status != TaskStatus::Backlog {
+            self.agents.auto_dispatch_failed.remove(&new_task.id);
+        }
         cmds
     }
 

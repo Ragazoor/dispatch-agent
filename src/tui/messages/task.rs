@@ -54,6 +54,16 @@ pub enum TaskMessage {
     /// winner's task back to Backlog mid-provision.
     DispatchAbandoned(TaskId),
     MarkDispatching(TaskId),
+    /// An epic's auto-dispatch chain failed to provision the subtask it claimed,
+    /// so the chain has stopped (`SurfaceAutoDispatchFailure` in
+    /// docs/specs/epics.allium). Arrives from the MCP server rather than from a
+    /// board-initiated dispatch, so it carries no spinner to drain: the claim is
+    /// already released by the time it is sent.
+    AutoDispatchFailed {
+        task_id: TaskId,
+        epic_id: EpicId,
+        reason: String,
+    },
     Edited(TaskEdit),
     QuickDispatch {
         repo_path: String,
@@ -124,6 +134,11 @@ impl TaskMessage {
             TaskMessage::DispatchFailed(id) => app.handle_dispatch_failed(id),
             TaskMessage::DispatchAbandoned(id) => app.handle_dispatch_abandoned(id),
             TaskMessage::MarkDispatching(id) => app.handle_mark_dispatching(id),
+            TaskMessage::AutoDispatchFailed {
+                task_id,
+                epic_id,
+                reason,
+            } => app.handle_auto_dispatch_failed(task_id, epic_id, reason),
             TaskMessage::Edited(edit) => app.handle_task_edited(edit),
             TaskMessage::QuickDispatch { repo_path, epic_id } => {
                 app.handle_quick_dispatch(repo_path, epic_id)

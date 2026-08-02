@@ -805,6 +805,11 @@ impl App {
             return;
         }
         self.dispatching.insert(id, Instant::now());
+        // A retry is the resolution to a stalled chain, so starting one clears
+        // the failure marker (PersistsUntilRedispatched in
+        // docs/specs/epics.allium) — and keeps a stale marker from masking the
+        // retry's own spinner.
+        self.agents.auto_dispatch_failed.remove(&id);
         if let Some(msg) = self.dispatching_status_text() {
             self.set_status_sticky(msg);
         }

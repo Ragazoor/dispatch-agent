@@ -5642,3 +5642,31 @@ async fn apply_loop_event_branch_rebased_without_a_repo_refreshes_nothing() {
         "an unresolvable repository must not be measured"
     );
 }
+
+/// `SurfaceAutoDispatchFailure` (docs/specs/epics.allium): the chain's failure
+/// event reaches the board as a message, so the marker, the status line and the
+/// notification are all decided by the app rather than by the loop.
+#[tokio::test]
+async fn apply_loop_event_auto_dispatch_failed_marks_the_subtask() {
+    let (rt, mut app) = test_runtime().await;
+
+    let cmds = apply_loop_event(
+        &mut app,
+        LoopEvent::Mcp(mcp::McpEvent::AutoDispatchFailed {
+            task_id: TaskId(1),
+            epic_id: crate::models::EpicId(9),
+            reason: "no such repo".to_string(),
+        }),
+        &rt,
+    );
+
+    assert!(
+        app.auto_dispatch_failed(TaskId(1)),
+        "the failure must reach the board's marker, got commands: {cmds:?}"
+    );
+    let status = app.status_message().unwrap_or_default();
+    assert!(
+        status.contains("no such repo"),
+        "the reason must reach the status line, got: {status}"
+    );
+}

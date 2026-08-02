@@ -871,6 +871,82 @@ async fn exit_session_chain_reverts_claim_when_dispatch_fails() {
     );
 }
 
+/// A failed chained dispatch must be visible to the operator, not only to
+/// `app.log`. `SurfaceAutoDispatchFailure` (docs/specs/epics.allium) turns the
+/// failure into an `AutoDispatchFailed` event carrying the subtask, its epic and
+/// the reason; the board renders it from there.
+///
+/// The event is asserted ahead of `TaskChanged` for the same subtask: it is the
+/// fact the failure established, so a consumer that reloads the row first would
+/// paint the reverted card before it knows the card is stalled.
+#[tokio::test]
+async fn exit_session_chain_reports_a_failed_dispatch_to_the_board() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(
+            Some(epic_id),
+            "Doomed",
+            Some(10),
+            Some("/nonexistent/dispatch-chain-repo"),
+        )
+        .await;
+
+    fx.close(closing, WrapUpAction::Done).await;
+
+    loop {
+        match fx.notify_rx.recv().await {
+            Some(crate::mcp::McpEvent::AutoDispatchFailed {
+                task_id,
+                epic_id: eid,
+                reason,
+            }) => {
+                assert_eq!(task_id, next);
+                assert_eq!(eid, epic_id);
+                assert!(
+                    !reason.is_empty(),
+                    "the event must carry why the dispatch failed"
+                );
+                break;
+            }
+            Some(crate::mcp::McpEvent::TaskChanged(id)) if id == next => {
+                panic!("TaskChanged for the reverted subtask arrived before AutoDispatchFailed")
+            }
+            Some(_) => continue,
+            None => panic!("notification channel closed before the failure was reported"),
+        }
+    }
+}
+
+/// A chained dispatch that SUCCEEDS reports no failure. Guards against the
+/// event being emitted unconditionally, which would mark every chained subtask
+/// as stalled.
+#[tokio::test]
+async fn exit_session_chain_reports_no_failure_when_dispatch_succeeds() {
+    let mut fx = ChainFixture::new().await;
+    let epic_id = fx.epic(true).await;
+    let closing = fx.closing_subtask(Some(epic_id)).await;
+    let next = fx
+        .backlog_subtask(Some(epic_id), "Successor", Some(10), None)
+        .await;
+
+    fx.close(closing, WrapUpAction::Done).await;
+
+    // TaskChanged is sent after the outcome is decided, so anything the failure
+    // path would have emitted is already in the channel by the time it arrives.
+    loop {
+        match fx.notify_rx.recv().await {
+            Some(crate::mcp::McpEvent::TaskChanged(id)) if id == next => break,
+            Some(crate::mcp::McpEvent::AutoDispatchFailed { .. }) => {
+                panic!("a successful chained dispatch must report no failure")
+            }
+            Some(_) => continue,
+            None => panic!("notification channel closed before dispatch completed"),
+        }
+    }
+}
+
 // -- a close whose terminal write does not take effect -----------------------
 //
 // `ExitSession` (docs/specs/pr-workflow.allium) and `ExitSessionViaMcp`

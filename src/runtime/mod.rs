@@ -681,6 +681,22 @@ fn apply_loop_event(app: &mut App, event: LoopEvent, rt: &TuiRuntime) -> Vec<Com
                     drop(rt.exec_refresh_repo_sync(repo_path, false));
                     vec![]
                 }
+                mcp::McpEvent::AutoDispatchFailed {
+                    task_id,
+                    epic_id,
+                    reason,
+                } => {
+                    // No refresh is spawned here: the chain sends TaskChanged
+                    // for the released subtask right behind this, so reloading
+                    // the row is already covered.
+                    app.update(Message::Task(
+                        crate::tui::messages::TaskMessage::AutoDispatchFailed {
+                            task_id,
+                            epic_id,
+                            reason,
+                        },
+                    ))
+                }
                 mcp::McpEvent::MessageSent { to_task_id } => {
                     app.update(Message::System(
                         crate::tui::messages::SystemMessage::MessageReceived(to_task_id),

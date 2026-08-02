@@ -47,6 +47,7 @@ enum CardIndicator {
         spinner_frame: u8,
     },
     Unprovisioned,
+    AutoDispatchFailed,
     Conflict,
     DetachedReview {
         pr_label: String,
@@ -101,6 +102,14 @@ fn classify_card_indicator(
     // watchdog window.
     if task.is_unprovisioned() && !app.dispatch_may_be_in_flight(task, now) {
         return CardIndicator::Unprovisioned;
+    }
+    // A subtask an epic chain claimed and then failed to provision. It sits in
+    // backlog looking exactly like one that was never dispatched, so without
+    // this the stalled epic is invisible (AutoDispatchFailureIndicator in
+    // docs/specs/epics.allium). Below the dispatching check on purpose: a retry
+    // in flight outranks the failure it is resolving.
+    if app.auto_dispatch_failed(task.id) {
+        return CardIndicator::AutoDispatchFailed;
     }
     if task.sub_status == SubStatus::Conflict {
         return CardIndicator::Conflict;
@@ -182,6 +191,9 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
             (format!("{glyph} dispatching\u{2026}"), Color::Yellow)
         }
         CardIndicator::Unprovisioned => ("\u{26a0} no worktree".to_string(), Color::Red),
+        CardIndicator::AutoDispatchFailed => {
+            ("\u{26a0} auto-dispatch failed".to_string(), Color::Red)
+        }
         CardIndicator::Conflict => ("\u{26a0} rebase conflict".to_string(), Color::Red),
         CardIndicator::DetachedReview { pr_label } => (format!("\u{25cb} {pr_label}"), Color::Cyan),
         CardIndicator::Detached => ("\u{25cb} detached".to_string(), MUTED),

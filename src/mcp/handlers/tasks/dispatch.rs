@@ -111,6 +111,11 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
             tokio::task::spawn_blocking(move || do_dispatch(&next_task, &*runner, inputs)).await;
 
         let mut launched = false;
+        // Why the chain stopped, when it stopped after claiming. Reported to the
+        // board below (SurfaceAutoDispatchFailure in docs/specs/epics.allium) —
+        // logging alone leaves a stalled epic indistinguishable from a finished
+        // one.
+        let mut failure: Option<String> = None;
         match result {
             Ok(Ok(dispatch_result)) => {
                 launched = true;
@@ -132,6 +137,7 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
                     task_id = next_id.0,
                     "auto_dispatch_next: dispatch failed: {e:#}"
                 );
+                failure = Some(format!("{e:#}"));
                 release_claim(&*task_svc, next_id).await;
             }
             Err(e) => {
@@ -139,11 +145,22 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
                     task_id = next_id.0,
                     "auto_dispatch_next: blocking task panicked: {e}"
                 );
+                failure = Some(format!("dispatch worker died: {e}"));
                 release_claim(&*task_svc, next_id).await;
             }
         }
 
         if let Some(tx) = notify_tx {
+            // Sent ahead of the row reloads: the stall is the fact this attempt
+            // established, and a consumer that reloaded first would paint the
+            // released card before knowing it is stalled.
+            if let Some(reason) = failure {
+                let _ = tx.send(crate::mcp::McpEvent::AutoDispatchFailed {
+                    task_id: next_id,
+                    epic_id,
+                    reason,
+                });
+            }
             // RefreshRepoSyncStateAfterDispatch: the chain provisioned a worktree
             // and fetched origin/<base>, so the board's drift measurement is
             // stale. Sent ahead of the row reloads because it is the fact the

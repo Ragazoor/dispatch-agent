@@ -710,8 +710,9 @@ rule AutoDispatchNextSubtask {
         -- plan-less research-tagged subtask reaches DispatchResearchTask
         -- instead. If the dispatch fails, the subtask is
         -- reverted to backlog with the default backlog sub_status, the
-        -- last_pre_tool_use_at the claim seeded is cleared again, and a warning
-        -- is logged, leaving it dispatchable exactly as before the chain fired.
+        -- last_pre_tool_use_at the claim seeded is cleared again, and
+        -- AutoDispatchFailed is emitted (see SurfaceAutoDispatchFailure),
+        -- leaving it dispatchable exactly as before the chain fired.
         -- That release is itself conditional, mirroring the claim: it applies
         -- only while the subtask is still running with no worktree, so a task
         -- that was provisioned or moved on during the dispatch attempt is left
@@ -724,14 +725,61 @@ rule AutoDispatchNextSubtask {
         -- No chain failure can fail the close. By the time this rule runs the
         -- closing task has already reached its terminal status and its session
         -- has been torn down, so reporting an error here would tell the agent
-        -- its session failed to close when it did not. A missing epic, a claim
-        -- error and a failed dispatch are each logged at warn and nothing more. A DB error while READING auto_dispatch is fail-CLOSED —
+        -- its session failed to close when it did not. So the failure travels
+        -- to the OPERATOR instead of to the closing agent: a failed dispatch
+        -- emits AutoDispatchFailed, which SurfaceAutoDispatchFailure turns into
+        -- board-visible evidence. A missing epic and a claim error stay
+        -- log-only, because both fail before a subtask has been selected: there
+        -- is no card to mark and no id to name, and both are indistinguishable
+        -- from the normal stops above. A DB error while READING auto_dispatch is fail-CLOSED —
         -- the chain simply stops, indistinguishable from the normal stops above.
         -- Nothing requested this chain, so the conservative default is to launch
         -- no agent: failing open would start an agent on an epic whose operator
         -- may have turned chaining off. (The predecessor dispatch_next tool
         -- failed open, which was right for an explicit agent request; that
         -- reasoning does not transfer to an automatic trigger.)
+}
+
+rule SurfaceAutoDispatchFailure {
+    when: AutoDispatchFailed(task, epic, reason)
+
+    ensures: ChainStallMarked(task: task, epic: epic, reason: reason)
+    ensures:
+        if notifications_enabled:
+            DesktopNotification(
+                task: task,
+                urgency: urgent,
+                about: auto_dispatch_failed
+            )
+
+    @guidance
+        -- AutoDispatchFailed is emitted by AutoDispatchNextSubtask when the
+        -- chained dispatch it started does not provision — the provisioning
+        -- itself failed, or the worker died attempting it. Both arms have
+        -- already released the claim by the time this fires, so the subtask is
+        -- back in backlog and the epic has stopped progressing. Without this
+        -- rule the only evidence is a warn line in the application log, which
+        -- no operator is watching: an epic that stalls on a transient network
+        -- failure looks identical to one that has run out of backlog subtasks.
+        --
+        -- Three surfaces, deliberately, because they fail at different
+        -- distances from the board. The status message (see
+        -- AutoDispatchFailureIndicator) reaches an operator who is looking at
+        -- it; the desktop notification reaches one who is not, and is gated on
+        -- notifications_enabled exactly as NotifyNeedsInput and NotifyReview
+        -- are (agent-health.allium); ChainStallMarked is what remains once both
+        -- have passed, and is the only one that is still there an hour later.
+        -- Urgency is urgent rather than normal: unlike a review becoming
+        -- available, nothing further happens on this epic until a human acts.
+        --
+        -- Nothing here reports back to the closing agent. Its session is
+        -- already closed and its close already succeeded; see the "No chain
+        -- failure can fail the close" paragraph in AutoDispatchNextSubtask.
+        --
+        -- The two log-only stops (unresolvable epic, claim error) do not reach
+        -- this rule, and that is a scope decision rather than an omission: both
+        -- fail before a subtask is selected, so neither can supply the task
+        -- this rule marks.
 }
 
 -- == Feed Task Identity Invariant ==
@@ -1105,6 +1153,68 @@ rule ProvisionManagedEpics {
     -- Epic cards show colored status indicators (●N) for each non-zero
     -- child count by parent status, using the column palette colors.
     -- Sub-epic children are counted alongside task children in the indicators.
+
+------------------------------------------------------------
+-- Surfaces
+------------------------------------------------------------
+
+surface AutoDispatchFailureIndicator {
+    facing user: User
+
+    -- What ChainStallMarked (see SurfaceAutoDispatchFailure) looks like on the
+    -- board: a subtask whose chained dispatch failed and was released back to
+    -- backlog. Evaluated per rendered card, not only for the selected one.
+    --
+    -- The marked set is implementation-internal and is NOT persisted. It does
+    -- not need to be: the chain runs inside the board's own process, so the
+    -- marker is exactly as durable as the failure that produced it, and a
+    -- board that has been restarted since is observing the epic afresh rather
+    -- than replaying a stall it has already forgotten.
+
+    context task: core/Task
+
+    let chain_stalled = auto_dispatch_failed(task)
+
+    exposes:
+        chain_stalled
+
+    @guarantee StatusMessageNamesTheSubtask
+        -- The failure raises a status message naming the subtask, so an
+        -- operator watching the board learns which chain stopped and why
+        -- rather than only that something did. It is an ordinary transient
+        -- message and expires on the usual status_message_expiry; the card
+        -- indicator below is what carries the fact afterwards.
+
+    @guarantee PersistsUntilRedispatched
+        -- Unlike every other transient board signal, the card indicator does
+        -- not decay on a timer. A stalled chain stays stalled until a human
+        -- acts, so the evidence stays until a human acts: it is cleared when
+        -- the subtask is dispatched again, when it leaves backlog by any other
+        -- route (someone moved it, or another entry point claimed it), and
+        -- when the task itself is removed from the board. Nothing else clears
+        -- it. This is the whole point of the surface — a chain that died at
+        -- 02:00 must still be visible at 09:00.
+
+    @guarantee DispatchingOutranksIt
+        -- While a dispatch is in flight for the subtask, the card shows the
+        -- dispatching feedback (DispatchingFeedback in dispatch.allium), not
+        -- this indicator. Retrying is the resolution, so a stale failure must
+        -- never mask the retry's own spinner.
+
+    @guarantee DistinctFromOrdinaryBacklog
+        -- The indicator replaces the ordinary backlog age/plan indicator and
+        -- is rendered in the same alarming style as the conflict, crashed and
+        -- unprovisioned indicators. A released subtask is otherwise
+        -- byte-identical to one that was never dispatched, which is precisely
+        -- the confusion this removes.
+
+    @guidance
+        -- The epic header's auto-dispatch indicator (green = auto, muted =
+        -- manual; see ToggleAutoDispatch) says only whether chaining is ON. It
+        -- cannot say whether chaining is WORKING, and an operator reading a
+        -- green indicator over a stalled epic is being actively misled. This
+        -- surface is where "the chain tried and failed" lives.
+}
 
 ------------------------------------------------------------
 -- Open Questions

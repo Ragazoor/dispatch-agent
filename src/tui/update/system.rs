@@ -155,6 +155,54 @@ impl App {
         vec![]
     }
 
+    /// An epic's auto-dispatch chain claimed a subtask, failed to provision it,
+    /// and released it back to backlog — so the epic has stopped progressing
+    /// (`SurfaceAutoDispatchFailure` in docs/specs/epics.allium).
+    ///
+    /// Three surfaces, because they fail at different distances from the board:
+    /// the status message reaches an operator who is looking at it, the
+    /// notification one who is not, and the marker is what is still there an
+    /// hour later. Only the marker is durable; see
+    /// [`crate::tui::types::AgentTracking::auto_dispatch_failed`].
+    ///
+    /// No claim is released here: the chain released it before sending this.
+    pub(in crate::tui) fn handle_auto_dispatch_failed(
+        &mut self,
+        task_id: TaskId,
+        epic_id: crate::models::EpicId,
+        reason: String,
+    ) -> Vec<Command> {
+        self.set_status(format!(
+            "Auto-dispatch of #{} failed — epic #{} stalled: {reason}",
+            task_id.0, epic_id.0
+        ));
+        self.agents.auto_dispatch_failed.insert(task_id, reason);
+
+        if self.notifications_enabled {
+            let title = self
+                .find_task(task_id)
+                .map(|t| t.title.clone())
+                .unwrap_or_default();
+            vec![Command::System(
+                crate::tui::commands::SystemCommand::SendNotification {
+                    title: format!("Task #{}: {title}", task_id.0),
+                    body: "Epic auto-dispatch failed — chain stopped".to_string(),
+                    // Urgent, unlike a task becoming reviewable: nothing further
+                    // happens on this epic until a human acts.
+                    urgent: true,
+                },
+            )]
+        } else {
+            vec![]
+        }
+    }
+
+    /// Whether the subtask's last chained dispatch failed and left the epic
+    /// stalled (`AutoDispatchFailureIndicator` in docs/specs/epics.allium).
+    pub fn auto_dispatch_failed(&self, id: TaskId) -> bool {
+        self.agents.auto_dispatch_failed.contains_key(&id)
+    }
+
     pub(in crate::tui) fn handle_description_editor_result(
         &mut self,
         value: String,
