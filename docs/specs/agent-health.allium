@@ -93,6 +93,10 @@ rule ClassifyAgentActivity {
         -- needs_input: a permission prompt genuinely needs a human even
         -- while subagents churn, so hiding it behind a subagent count would
         -- trade one misreport for a worse one.
+        -- Card label: an Active running task with live_subagents = 0 renders
+        -- just "running". A positive count appends the subagent count:
+        -- "running · 1 agent" (singular) or "running · N agents" for N > 1
+        -- (plural), read straight from task.live_subagents.
 }
 
 rule DetectCrashedAgent {
@@ -313,9 +317,28 @@ rule HookSubagentStop {
         -- An unrecognised agent_id is a no-op, not a count underflow: the
         -- join lookup finds nothing, the removal is trivially satisfied,
         -- and live_subagents is simply recomputed from the table either
-        -- way. The conditional block is the "drain path" referenced by the
-        -- clear points on DetectCrashedAgent, DetachTmux (see
-        -- split-pane.allium) and DispatchTask (see dispatch.allium).
+        -- way. The conditional block is the "drain path".
+        --
+        -- Four structural points clear a task's subagent entries. Exactly
+        -- two of them run this drain path; the other two clear without
+        -- draining, and the split is what keeps a task from ever being
+        -- simultaneously Crashed-and-in-Review or
+        -- freshly-dispatched-and-in-Review:
+        --   - ClearSubagentsOnSessionStart (below) and DetachTmux (see
+        --     split-pane.allium) DO run the drain path. Neither rule
+        --     assigns an outcome status of its own — a fresh session or a
+        --     detach just removes the agent that was going to drain the
+        --     count itself — so applying the deferred Stop here is safe
+        --     and is exactly what unsticks a stop_pending task with no
+        --     agent left to finish the job.
+        --   - DetectCrashedAgent and DispatchTask do NOT run the drain
+        --     path. Both already assign the task's resulting status in the
+        --     same write (crashed / running respectively), and draining
+        --     alongside that write would leave the task in both states at
+        --     once — the more informative status wins, so drain is
+        --     skipped. Both still clear stop_pending unconditionally so
+        --     the bit cannot survive into a later session and fire a
+        --     spurious flip; see their own guidance for the detail.
 }
 
 rule SubagentSessionFence {

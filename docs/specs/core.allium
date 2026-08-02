@@ -306,6 +306,15 @@ entity Task {
     -- only when the url is pr-typed; otherwise null. Not persisted; computed
     -- on demand.
     pr_number: if url != null and url.url_type = pr: pr_number_from_url(url.url) else: null
+
+    -- live_subagents is a denormalised count of this task's SubagentEntry
+    -- rows (see SubagentEntry below); every mutation and clear point
+    -- rewrites both in the same write, so they cannot disagree (see
+    -- agent-health.allium: HookSubagentStart / HookSubagentStop and the
+    -- four clear points documented there).
+    invariant LiveSubagentCountMatchesEntries {
+        live_subagents = (SubagentEntries where task = this).count
+    }
 }
 
 -- A live subagent, as reported by the SubagentStart/SubagentStop Claude
