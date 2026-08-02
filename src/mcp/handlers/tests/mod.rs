@@ -38,6 +38,19 @@ async fn test_state_with_overrides(
     notify_tx: Option<mpsc::UnboundedSender<crate::mcp::McpEvent>>,
     task_svc: Option<Arc<dyn crate::service::TaskServiceApi>>,
 ) -> (Arc<McpState>, Arc<dyn db::TaskStore>) {
+    test_state_with_overrides_and_bg_done(runner, notify_tx, task_svc, None).await
+}
+
+/// Like [`test_state_with_overrides`], but also installs a completion signal
+/// for fire-and-forget background writes (usage, trajectory, the
+/// `exit_session` tmux teardown), so a test can await one deterministically
+/// instead of sleeping.
+async fn test_state_with_overrides_and_bg_done(
+    runner: Arc<dyn ProcessRunner>,
+    notify_tx: Option<mpsc::UnboundedSender<crate::mcp::McpEvent>>,
+    task_svc: Option<Arc<dyn crate::service::TaskServiceApi>>,
+    bg_write_done_tx: Option<mpsc::UnboundedSender<BackgroundWrite>>,
+) -> (Arc<McpState>, Arc<dyn db::TaskStore>) {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
     let mut state = McpState::new(
         McpDeps {
@@ -51,6 +64,7 @@ async fn test_state_with_overrides(
     if let Some(task_svc) = task_svc {
         state.task_svc = task_svc;
     }
+    state.test_hooks.bg_write_done_tx = bg_write_done_tx;
     (Arc::new(state), db)
 }
 
@@ -62,20 +76,10 @@ async fn test_state() -> Arc<McpState> {
 /// fire-and-forget background write. Returns the receiver so the test can await
 /// the write (e.g. usage recording) deterministically instead of sleeping.
 async fn test_state_with_bg_done() -> (Arc<McpState>, mpsc::UnboundedReceiver<BackgroundWrite>) {
-    let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
     let (tx, rx) = mpsc::unbounded_channel();
-    let mut state = McpState::new(
-        McpDeps {
-            db,
-            runner,
-            embedding_service: EmbeddingService::new_test(),
-            data_dir: std::env::temp_dir(),
-        },
-        None,
-    );
-    state.test_hooks.bg_write_done_tx = Some(tx);
-    (Arc::new(state), rx)
+    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+    let (state, _db) = test_state_with_overrides_and_bg_done(runner, None, None, Some(tx)).await;
+    (state, rx)
 }
 
 async fn test_state_with_db() -> (Arc<McpState>, Arc<dyn db::TaskStore>) {

@@ -345,6 +345,11 @@ struct ChainFixture {
     /// The same runner the state holds, kept concrete so a test can inspect
     /// which commands the close path actually issued.
     runner: Arc<MockProcessRunner>,
+    /// Only set by [`ChainFixture::with_bg_done`]: fires with
+    /// [`crate::mcp::BackgroundWrite::KillWindow`] after `exit_session`'s
+    /// detached tmux teardown completes, so a test can await it deterministically
+    /// instead of sleeping.
+    bg_done_rx: Option<tokio::sync::mpsc::UnboundedReceiver<crate::mcp::BackgroundWrite>>,
 }
 
 impl ChainFixture {
@@ -373,6 +378,53 @@ impl ChainFixture {
     /// dispatches without claiming is caught rather than silently passing.
     async fn with_lost_claim() -> Self {
         Self::build(Some(Arc::new(LostClaimTaskService))).await
+    }
+
+    /// Like [`ChainFixture::new`], but wires a completion signal for
+    /// `exit_session`'s detached tmux teardown, so a test can await it via
+    /// [`ChainFixture::wait_for_kill_window_done`] instead of sleeping.
+    async fn with_bg_done() -> Self {
+        let runner = Arc::new(MockProcessRunner::new(
+            (0..24).map(|_| MockProcessRunner::ok()).collect(),
+        ));
+        let dir = tempfile::TempDir::new().unwrap();
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        std::fs::create_dir_all(dir.path().join(".worktrees")).unwrap();
+
+        let (notify_tx, notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
+        let (bg_tx, bg_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::BackgroundWrite>();
+        let (state, db) = test_state_with_overrides_and_bg_done(
+            runner.clone() as Arc<dyn ProcessRunner>,
+            Some(notify_tx),
+            None,
+            Some(bg_tx),
+        )
+        .await;
+        Self {
+            _dir: dir,
+            repo_path,
+            db,
+            state,
+            notify_rx,
+            runner,
+            bg_done_rx: Some(bg_rx),
+        }
+    }
+
+    /// Await the completion signal for `exit_session`'s detached tmux teardown.
+    /// Only valid on a fixture built via [`ChainFixture::with_bg_done`].
+    async fn wait_for_kill_window_done(&mut self) {
+        let rx = self
+            .bg_done_rx
+            .as_mut()
+            .expect("wait_for_kill_window_done requires ChainFixture::with_bg_done");
+        loop {
+            match rx.recv().await {
+                Some(crate::mcp::BackgroundWrite::KillWindow) => break,
+                Some(_) => continue,
+                None => panic!("bg-done channel closed before the kill-window teardown completed"),
+            }
+        }
     }
 
     async fn build(task_svc_override: Option<Arc<dyn crate::service::TaskServiceApi>>) -> Self {
@@ -406,6 +458,7 @@ impl ChainFixture {
             db,
             state,
             notify_rx,
+            bg_done_rx: None,
             runner,
         }
     }
@@ -890,10 +943,10 @@ async fn exit_session_failed_close_leaves_the_task_unchanged() {
 /// The negative assertion is deterministic rather than a timing snapshot: on this
 /// branch nothing is spawned, so no pending task exists that could still issue a
 /// kill after the call returns. (The positive counterpart — a persisting close
-/// DOES kill the window — is not asserted anywhere: the teardown is a detached,
-/// never-joined `spawn_blocking` with no completion signal, and waiting for it
-/// would be exactly the timing-dependent pattern `scripts/check-no-test-sleep.sh`
-/// exists to reject.)
+/// DOES kill the window — is
+/// [`exit_session_successful_close_kills_the_tmux_window`], below: the teardown
+/// is a detached, never-joined `spawn_blocking`, but `BackgroundWrite::KillWindow`
+/// gives it a completion signal a test can await instead of sleeping.)
 #[tokio::test]
 async fn exit_session_failed_close_issues_no_kill_window() {
     let fx = ChainFixture::with_failing_close().await;
@@ -905,6 +958,61 @@ async fn exit_session_failed_close_issues_no_kill_window() {
     assert!(
         kills.is_empty(),
         "a close that did not persist must leave the tmux window alive, but it ran: {kills:?}"
+    );
+}
+
+/// The positive direction of the same `close_persisted` gate
+/// (`docs/specs/pr-workflow.allium`: `ExitSession`): a *successful* close issues
+/// exactly one `tmux kill-window` for the closing task's window, and only after
+/// the terminal Done write has landed. Without a window leak — the exact bug
+/// this test exists to prevent — a closed task's tmux window would survive
+/// forever.
+///
+/// `ChainFixture::with_bg_done` gives the detached teardown spawned by
+/// `exit_session` a completion signal (`BackgroundWrite::KillWindow`) so this
+/// test can await it deterministically instead of sleeping — see the
+/// "No `tokio::time::sleep` in tests" section of `docs/conventions.md`.
+#[tokio::test]
+async fn exit_session_successful_close_kills_the_tmux_window() {
+    let mut fx = ChainFixture::with_bg_done().await;
+    let closing = fx.closing_subtask(None).await;
+    let window = fx
+        .db
+        .get_task(closing)
+        .await
+        .unwrap()
+        .unwrap()
+        .tmux_window
+        .expect("closing_subtask must have a tmux window");
+
+    let resp = fx.close(closing, WrapUpAction::Done).await;
+    assert!(resp.error.is_none(), "close must succeed: {:?}", resp.error);
+
+    // The Done write is synchronous and already landed by the time `close`
+    // returns; only the teardown is detached, so this is the point that needs
+    // awaiting.
+    fx.wait_for_kill_window_done().await;
+
+    assert_eq!(
+        fx.db.get_task(closing).await.unwrap().unwrap().status,
+        TaskStatus::Done,
+        "the kill-window signal must not fire before the terminal write lands"
+    );
+
+    // `kill_window` resolves the window name to tmux's pane-id target
+    // (`window_target` in `src/tmux.rs`) before issuing `kill-window`, so the
+    // command carries `%N`, not the literal window name — resolve the same way
+    // `MockProcessRunner`'s permissive `AnyName` lookup would have.
+    let pane_id = fx.runner.pane_id_of(&window);
+    let kills = fx.kill_window_calls();
+    assert_eq!(
+        kills.len(),
+        1,
+        "expected exactly one tmux kill-window call, got: {kills:?}"
+    );
+    assert!(
+        kills[0].1.iter().any(|arg| arg == &pane_id),
+        "expected kill-window to target {pane_id:?} (window {window:?}), got: {kills:?}"
     );
 }
 

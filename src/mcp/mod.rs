@@ -65,6 +65,10 @@ pub enum BackgroundWrite {
     Usage,
     /// A trajectory entry was appended.
     Trajectory,
+    /// `exit_session`'s detached tmux teardown (`kill_window`) ran to
+    /// completion — fired whether or not a window existed to kill. See
+    /// `close_persisted` in `docs/specs/pr-workflow.allium`.
+    KillWindow,
 }
 
 /// The wrap-up action a task is being closed out with. Shared between

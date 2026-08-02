@@ -402,15 +402,22 @@ pub(crate) async fn handle_exit_session(
     // pre-read task: it is the row the close actually cleared.
     let tmux_window = closed.window;
     let runner = state.runner.clone();
+    let bg_done = state.test_hooks.bg_write_done_tx.clone();
     tokio::task::spawn_blocking(move || {
         if let Some(window) = &tmux_window {
             let _ = crate::tmux::kill_window(window, &*runner);
         }
+        if let Some(tx) = &bg_done {
+            let _ = tx.send(crate::mcp::BackgroundWrite::KillWindow);
+        }
     });
 
-    // SessionClosed fires last — after the terminal patch, the change
-    // notifications and the window teardown — so the next subtask's worktree is
-    // cut from a base_branch that already contains this task's work. See
+    // SessionClosed fires after the terminal patch and the change
+    // notifications, so the next subtask's worktree is cut from a base_branch
+    // that already contains this task's work. The kill-window teardown above is
+    // issued before this point but is detached and never awaited, so its
+    // completion is NOT part of this ordering — the window may die before or
+    // after SessionClosed and whatever the chain does. See
     // AutoDispatchNextSubtask in docs/specs/epics.allium. Never fails the close:
     // `auto_dispatch_next` swallows every chain problem.
     let text = match task.epic_id {

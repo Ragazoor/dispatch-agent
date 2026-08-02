@@ -366,11 +366,6 @@ rule ExitSession {
     requires:
         if action = pr: pr_url != null and pr_url != ""
 
-    -- Bound before the ensures below so the conditional teardown there still
-    -- names the window after task.tmux_window has been cleared in the same
-    -- branch.
-    let window = task.tmux_window
-
     -- The terminal write — status, sub_status, url and the cleared
     -- tmux_window reference, applied as one patch — can fail at the
     -- persistence layer. Whether it took effect gates the terminal mutation,
@@ -382,6 +377,18 @@ rule ExitSession {
     -- reference names is still alive, still hosting a live agent, because
     -- nothing killed it. The guidance below records how that reads on the board.
     let close_persisted = terminal_close_persisted(task)
+
+    -- The window the teardown below names comes from the CLOSE OUTCOME — a
+    -- read of task.tmux_window taken immediately before the terminal patch, by
+    -- the same call that applies it — not from task.tmux_window as read at the
+    -- top of this rule. That earlier read and the patch are separated by
+    -- everything above (token/action/pr_url validation), so a concurrent
+    -- writer has a whole window to move tmux_window in between; re-reading
+    -- immediately before the patch narrows that gap to nothing but is still
+    -- not atomic with the patch itself — the two are still two separate reads
+    -- of the database. Only meaningful when close_persisted, which is the only
+    -- branch that uses it.
+    let window = closed_session_window(task)
 
     ensures:
         ExitTokenConsumed(task: task)
@@ -401,10 +408,14 @@ rule ExitSession {
                 task.sort_order = completion_recency_rank(now)
             task.updated_at = now
 
-    -- Emitted last, after every mutation above and after the session teardown,
-    -- so an epic chain keyed on it (AutoDispatchNextSubtask in epics.allium)
-    -- sees the closed task in its terminal state. Conditional on the same
-    -- write: a close that did not take effect must not chain.
+    -- Emitted after the terminal mutation and after the task/epic-changed
+    -- notifications have landed, so an epic chain keyed on it
+    -- (AutoDispatchNextSubtask in epics.allium) sees the closed task in its
+    -- terminal state. The tmux teardown is ISSUED before this point but is
+    -- fire-and-forget: nothing waits for it, so its completion is not ordered
+    -- against SessionClosed or against anything the chain then does — the kill
+    -- may land before or after. Conditional on the same write: a close that did
+    -- not take effect must not chain.
     ensures:
         if close_persisted:
             SessionClosed(task: task)
@@ -540,9 +551,14 @@ rule ExitSession {
         -- never observe it mid-session — the review-visible state and the
         -- session-ended state become true in the same instant.
         --
-        -- SessionClosed fires last, after the terminal mutation, the
-        -- task/epic-changed notifications and the tmux teardown, and only when
-        -- that terminal mutation took effect (see the failed-write path above).
+        -- SessionClosed fires after the terminal mutation and the
+        -- task/epic-changed notifications, and only when that terminal mutation
+        -- took effect (see the failed-write path above). The kill-window
+        -- teardown is issued just before it, but as detached work that is never
+        -- awaited, so it is NOT part of that ordering: the window may die before
+        -- or after SessionClosed and whatever the chain does. The guarantee is
+        -- "after the terminal write and its notifications", not "after the
+        -- window is gone".
         -- It is fire-and-forget. Its only consumer today is automatic epic
         -- chaining
         -- (AutoDispatchNextSubtask in epics.allium): if the closed task belongs
