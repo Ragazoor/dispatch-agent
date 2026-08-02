@@ -59,6 +59,7 @@ to look.
 | `src/db/migrations.rs` | Versioned schema migrations (`MIGRATIONS` array, `migrate_vN_*` functions, `LATEST_SCHEMA_VERSION`) |
 | `src/db/queries/mod.rs` | `impl TaskStore for Database` — fans out across the per-domain query files; `set_field!` macro and the soft-fail row decoders (`row_to_task`, `row_to_epic`) |
 | `src/db/queries/{tasks,epics,learnings,settings,todos,usage}.rs` | CRUD per domain |
+| `src/db/queries/subagents.rs` | `task_subagents` CRUD with session fencing, keeping `tasks.live_subagents` in step |
 | `src/db/tests/mod.rs` | Database unit tests entry point |
 | `src/db/tests/{tasks,epics,learnings,settings,todos,usage,migrations,async_handle,read_pool}.rs` | Tests per domain, plus the async-handle and read-pool behaviour tests |
 | `src/dispatch/mod.rs` | Dispatch module root: PR-status polling via `gh` (`check_pr_status`, `pr_head_branch`) and repo-path/URL helpers (`repo_name_from_path`, `extract_github_repo`, `resolve_repo_path`, `resolve_feed_item_repo_paths`) |
