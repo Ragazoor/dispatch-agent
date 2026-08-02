@@ -7,6 +7,7 @@ mod learnings;
 mod migrations;
 mod read_pool;
 mod settings;
+mod subagents;
 mod tasks;
 mod todos;
 mod usage;

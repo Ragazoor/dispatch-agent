@@ -185,6 +185,26 @@ pub trait TaskCrud: TaskRead {
     /// caller should block), `false` if it was already set or the task does not
     /// exist (caller should allow the PR).
     async fn mark_pr_learnings_gate_shown(&self, id: TaskId) -> Result<bool>;
+    /// Record a live subagent starting for `id`. Rows belonging to any session
+    /// other than `session_id` are evicted first (a new `claude` process means
+    /// a new session, so stale rows from a dead session are provably dead),
+    /// then the `(task_id, agent_id)` row is upserted. Returns the resulting
+    /// live count. Replaying the same `(agent_id, session_id)` is idempotent —
+    /// it does not double-count.
+    async fn subagent_start(
+        &self,
+        id: TaskId,
+        agent_id: &str,
+        session_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<i64>;
+    /// Record a live subagent stopping for `id`. Rows belonging to any session
+    /// other than `session_id` are evicted first, then the `(task_id,
+    /// agent_id)` row is deleted if present. Returns the resulting live count.
+    /// An `agent_id` that was never started is a no-op, not an underflow.
+    async fn subagent_stop(&self, id: TaskId, agent_id: &str, session_id: &str) -> Result<i64>;
+    /// Remove every live-subagent row for `id` and zero `live_subagents`.
+    async fn subagent_clear(&self, id: TaskId) -> Result<()>;
     /// Atomically select *and* claim `epic_id`'s next backlog subtask for
     /// dispatch: the first one ordered by `COALESCE(sort_order, id)` then `id`
     /// moves to `Running` with the default running sub-status and

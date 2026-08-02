@@ -563,6 +563,35 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
+    async fn subagent_start(
+        &self,
+        id: TaskId,
+        agent_id: &str,
+        session_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<i64> {
+        let agent_id = agent_id.to_string();
+        let session_id = session_id.to_string();
+        self.db_call(move |conn| {
+            super::subagents::subagent_start(conn, id.0, &agent_id, &session_id, now)
+        })
+        .await
+    }
+
+    async fn subagent_stop(&self, id: TaskId, agent_id: &str, session_id: &str) -> Result<i64> {
+        let agent_id = agent_id.to_string();
+        let session_id = session_id.to_string();
+        self.db_call(move |conn| {
+            super::subagents::subagent_stop(conn, id.0, &agent_id, &session_id)
+        })
+        .await
+    }
+
+    async fn subagent_clear(&self, id: TaskId) -> Result<()> {
+        self.db_call(move |conn| super::subagents::subagent_clear(conn, id.0))
+            .await
+    }
+
     async fn try_claim_next_backlog_task(
         &self,
         epic_id: EpicId,
