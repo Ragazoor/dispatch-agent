@@ -1877,10 +1877,20 @@ async fn dispatch_task_dependabot_tag_routes_through_dispatch_agent() {
 
 #[tokio::test]
 async fn dispatch_task_returns_error_when_dispatch_fails() {
-    // First mock call fails (tmux new-window fails) → dispatch errors out.
-    let fx = ChainFixture::with_runner(Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("tmux: no server running"),
-    ])))
+    // `tmux new-window` fails → dispatch errors out.
+    //
+    // This used to queue a single failure and call it "the new-window call", but
+    // `backlog_subtask` pre-creates the worktree and sets base_branch, so the
+    // first call is `git fetch`: the lone response was consumed there and
+    // `new-window` then found an empty queue. `do_dispatch` runs under
+    // `spawn_blocking`, so the mock's panic surfaced as a `JoinError` — the very
+    // error this test asserts on. It passed on the mock breaking, not on
+    // dispatch failing.
+    let fx = ChainFixture::with_runner(
+        crate::dispatch::mock_sequence::DispatchScript::dispatch()
+            .fails_at(crate::dispatch::mock_sequence::Step::NewWindow)
+            .shared_runner(),
+    )
     .await;
     let task_id = fx.backlog_subtask(None, "Backlog Task", None, None).await;
 
