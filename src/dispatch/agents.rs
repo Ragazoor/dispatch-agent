@@ -147,18 +147,13 @@ fn dispatch_with_prompt(
         _ => None,
     };
 
-    // Match on a reference: `select_preamble` needs `pr_branch` after
-    // provisioning, so the `Some` arm clones rather than moving. The `None` arm
-    // may move `resolved`, which is unused thereafter.
-    let effective_base: String = match &pr_branch {
-        Some(branch) => branch.clone(),
-        None => resolved,
-    };
     // A PR head branch is never compared against a local ref — a review must
-    // see exactly the PR's code.
-    let base_ref = match &pr_branch {
-        Some(_) => BaseRef::PrHead(&effective_base),
-        None => BaseRef::Branch(&effective_base),
+    // see exactly the PR's code — so the two cases pick different `BaseRef`
+    // variants. Borrowing throughout: `pr_branch` is still needed for
+    // `select_preamble` after provisioning, and `resolved` is unused hereafter.
+    let base_ref = match pr_branch.as_deref() {
+        Some(branch) => BaseRef::PrHead(branch),
+        None => BaseRef::Branch(&resolved),
     };
 
     let provision = provision_worktree(task, runner, Some(base_ref), SUBPROCESS_TIMEOUT)?;

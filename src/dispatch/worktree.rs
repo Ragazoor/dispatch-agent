@@ -142,6 +142,12 @@ enum FetchFailure {
 /// not reach the remote". Anything we cannot positively identify as a missing
 /// ref is treated as unreachable — the safe polarity, since only a recognised
 /// 404 earns the local-branch fallback.
+///
+/// Private to this module on purpose: [`crate::repo_sync`] runs a very similar
+/// fetch but has no need to tell a deleted upstream branch from a network blip.
+/// If it ever grows that need, lift this and `LS_REMOTE_NO_MATCHING_REF` into
+/// `src/git.rs` beside the other shared preflight helpers rather than writing a
+/// second answer to the same question.
 fn classify_fetch_failure(
     runner: &dyn ProcessRunner,
     repo_path: &str,

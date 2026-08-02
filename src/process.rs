@@ -485,9 +485,7 @@ pub fn exit_ok() -> std::process::ExitStatus {
 
 #[cfg(unix)]
 pub fn exit_fail() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    // Raw status word: exit code 1 = 1 << 8 = 256
-    std::process::ExitStatus::from_raw(1 << 8)
+    exit_code(1)
 }
 
 /// An `ExitStatus` carrying a specific exit code, for callers that classify on
