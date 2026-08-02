@@ -110,11 +110,11 @@ fn setup_with(seed: fn(&Path) -> PathBuf) -> Fixture {
 /// lacks; otherwise `git worktree add` is given `origin/<base>` as its start
 /// point.
 ///
-/// The origin is not cosmetic. Without it all three `fetch_origin` attempts
-/// fail, and `FETCH_RETRY_DELAY` is `#[cfg(test)] 0ms` only for the *library's*
-/// own unit tests — an integration test links the library in its normal build,
-/// so each dispatch would pay 2 x 500ms of real sleep and then exercise the
-/// stale-fallback path instead of the normal one.
+/// The origin is not cosmetic. Without it, `classify_fetch_failure`'s
+/// `has_origin_remote` check short-circuits `fetch_origin` to a missing-ref
+/// outcome on the first attempt — one call, no retries, no sleep — and every
+/// dispatch would exercise the stale-fallback path instead of the normal one.
+/// (`seed_repo_no_origin`, below, is the fixture that deliberately does that.)
 fn seed_repo(root: &Path) -> PathBuf {
     let origin = root.join("origin.git");
     let repo = root.join("repo");

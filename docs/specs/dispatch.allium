@@ -253,6 +253,19 @@ rule DispatchTask {
         -- compared against a local branch of the same name). This soft-falls
         -- back to <base_branch> on any gh failure, empty output, or a
         -- cross-repository (fork) PR whose head branch is not on origin.
+        -- That fallback happens before the head branch is resolved to a
+        -- fetch target; it does not apply once a PR head branch has been
+        -- chosen. If the subsequent `git fetch origin <headRefName>` then
+        -- classifies as 404-class — origin no longer has that branch, e.g.
+        -- it was merged and deleted after `gh pr view` resolved it — the
+        -- 404-class local-branch fallback described above does NOT apply to
+        -- a PR head branch. A stale local branch of the same name would let
+        -- a review silently examine the wrong code, so this instead ABORTS
+        -- the dispatch with an error naming the missing branch: no worktree
+        -- is created, no tmux window opens, no agent launches. It does not
+        -- fall back to <base_branch> either, because the worktree
+        -- provisioning step does not know the task's base branch at that
+        -- point.
         -- For these PR-based worktrees the reused-worktree preamble (see
         -- below) also targets the PR branch (`git fetch origin <headRefName>`
         -- + `git rebase origin/<headRefName>`) rather than the base branch,

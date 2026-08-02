@@ -284,6 +284,13 @@ pub(super) fn provision_worktree(
     // directory — so `origin/<base>` stays fresh for whatever rebases onto it
     // later. An unreachable origin aborts here rather than quietly producing a
     // worktree based on a stale local ref.
+    //
+    // `select_start_point` (below) runs on the reuse path too, and that is
+    // deliberate rather than wasted work: `reused_rebase_preamble` targets
+    // whatever `start_point` reports, so skipping the measurement here would
+    // leave that preamble pointing at the wrong ref — the same
+    // `git rebase origin/main`-onto-a-local-based-branch history-duplication
+    // hazard this branch exists to remove.
     let (start_point, fetch_warning): (Option<StartPoint>, Option<String>) = match base {
         Some(base_ref) => match fetch_origin(runner, &repo_path, base_ref.name(), timeout)? {
             FetchOutcome::Fetched => {
@@ -295,12 +302,26 @@ pub(super) fn provision_worktree(
                 };
                 (Some(sp), None)
             }
-            FetchOutcome::NoOriginRef(warning) => (
-                Some(StartPoint::Local {
-                    base: base_ref.name().to_string(),
-                }),
-                Some(warning),
-            ),
+            FetchOutcome::NoOriginRef(warning) => match base_ref {
+                // A base branch has no other candidate ref: local `<base>` is
+                // the only thing that exists, so falling back to it (with a
+                // `Note:` the agent can see) is the right call.
+                BaseRef::Branch(b) => (
+                    Some(StartPoint::Local {
+                        base: b.to_string(),
+                    }),
+                    Some(warning),
+                ),
+                // A PR head branch must never fall back to a local branch of
+                // the same name — see `BaseRef::PrHead`'s doc comment. If
+                // origin doesn't have it, there is nothing safe to base the
+                // review on, so abort rather than silently reviewing the
+                // wrong code.
+                BaseRef::PrHead(b) => anyhow::bail!(
+                    "origin has no branch {b}; refusing to base a PR review on a local branch \
+                     of the same name"
+                ),
+            },
         },
         None => (None, None),
     };

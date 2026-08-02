@@ -968,11 +968,10 @@ fn dispatch_pr_review_task_bases_worktree_on_pr_head_branch() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"feature-x\nfalse\n"), // gh pr view
         MockProcessRunner::ok(),                                  // git fetch origin feature-x
-        MockProcessRunner::ok_with_stdout(b"0\t0\n"), // git rev-list --count --left-right
-        MockProcessRunner::ok(),                      // git worktree add origin/feature-x
-        MockProcessRunner::ok(),                      // tmux new-window
-        MockProcessRunner::ok(),                      // tmux set-option
-        MockProcessRunner::ok(),                      // tmux set-hook
+        MockProcessRunner::ok(), // git worktree add origin/feature-x
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option
+        MockProcessRunner::ok(), // tmux set-hook
     ]);
 
     let task = pr_review_task(&repo_path);
@@ -1121,7 +1120,7 @@ fn dispatch_prompt_has_no_warning_when_fetch_succeeds() {
 }
 
 #[test]
-fn dispatch_non_review_task_skips_gh_and_keeps_base_rebase() {
+fn dispatch_non_review_task_skips_gh_and_bases_worktree_on_origin() {
     let (_dir, repo_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
@@ -1279,6 +1278,46 @@ fn provision_worktree_skips_git_when_dir_exists() {
 }
 
 #[test]
+fn provision_worktree_reports_reused_worktree_false_when_dir_missing() {
+    let (_dir, repo_path) = make_test_repo();
+    // Do NOT pre-create the worktree dir — the "fresh" path.
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git worktree add
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(&task, &mock, None, SUBPROCESS_TIMEOUT).unwrap();
+
+    assert!(
+        !result.reused_worktree,
+        "a freshly created worktree directory must report reused_worktree == false"
+    );
+}
+
+#[test]
+fn provision_worktree_reports_reused_worktree_true_when_dir_exists() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(&task, &mock, None, SUBPROCESS_TIMEOUT).unwrap();
+
+    assert!(
+        result.reused_worktree,
+        "a pre-existing worktree directory must report reused_worktree == true"
+    );
+}
+
+#[test]
 fn provision_worktree_with_base_branch_passes_start_point() {
     let (_dir, repo_path) = make_test_repo();
 
@@ -1411,6 +1450,46 @@ fn provision_worktree_fetch_failure_falls_back_to_local_without_retry() {
     assert!(
         warning.contains("main"),
         "warning should mention the base branch, got: {warning}"
+    );
+}
+
+#[test]
+fn provision_worktree_pr_head_missing_from_origin_aborts_rather_than_using_local() {
+    // Mirrors provision_worktree_fetch_failure_falls_back_to_local_without_retry's
+    // mock shape, but with BaseRef::PrHead: origin missing the PR's head branch
+    // must abort, never fall back to a local branch of the same name.
+    let (_dir, repo_path) = make_test_repo();
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("fatal: couldn't find remote ref feature-x"), // git fetch
+        MockProcessRunner::ok(),                  // git remote get-url origin
+        MockProcessRunner::fail_with_code(2, ""), // git ls-remote --exit-code (404)
+    ]);
+
+    let task = make_task(&repo_path);
+    let err = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::PrHead("feature-x")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains("feature-x"),
+        "error should name the missing branch, got: {err}"
+    );
+
+    let calls = mock.recorded_calls();
+    assert!(
+        calls
+            .iter()
+            .all(|(prog, args)| !(prog == "git" && args.contains(&"worktree".to_string()))),
+        "must not create a worktree from a stale local branch: {calls:?}"
+    );
+    assert!(
+        calls.iter().all(|(prog, _)| prog != "tmux"),
+        "must not open a tmux window when the review has no safe ref to base on: {calls:?}"
     );
 }
 
