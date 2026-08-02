@@ -36,6 +36,11 @@ mod tests {
             s.contains("UserPromptSubmit)"),
             "hook must handle UserPromptSubmit"
         );
+        assert!(
+            s.contains("SubagentStart)") && s.contains("SubagentStop)"),
+            "hook must handle the subagent lifecycle events"
+        );
+        assert!(s.contains("SessionStart)"), "hook must handle SessionStart");
     }
 
     #[test]
@@ -467,6 +472,82 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn hook_forwards_subagent_start_and_stop() {
+        for (event, verb) in [("SubagentStart", "start"), ("SubagentStop", "stop")] {
+            let (_tmp, repo, script_path, observed, path_env) =
+                spawn_hook_harness(&format!("221-sub-{verb}"));
+            let payload = format!(
+                r#"{{"cwd":"{}","hook_event_name":"{event}","agent_id":"sub_01ABC","session_id":"sess_9"}}"#,
+                repo.display()
+            );
+            invoke_hook(&script_path, &repo, &path_env, &payload);
+
+            let log = std::fs::read_to_string(&observed).unwrap_or_default();
+            assert!(
+                log.contains("hook-subagent 221 ")
+                    && log.contains(verb)
+                    && log.contains("--agent-id sub_01ABC")
+                    && log.contains("--session-id sess_9"),
+                "expected {event} forwarded as {verb}; got: {log:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_forwards_session_start_as_clear() {
+        let (_tmp, repo, script_path, observed, path_env) = spawn_hook_harness("222-sess");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"SessionStart","session_id":"sess_9"}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path_env, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-subagent 222 clear"),
+            "SessionStart must clear the task's subagent entries; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_ignores_subagent_event_without_agent_id() {
+        let (_tmp, repo, script_path, observed, path_env) = spawn_hook_harness("223-noid");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"SubagentStart","session_id":"sess_9"}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path_env, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            !log.contains("hook-subagent"),
+            "a payload with no agent_id must be a silent no-op; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn subagent_events_do_not_stamp_activity() {
+        // SubagentStart/Stop are not tool calls. Stamping last_pre_tool_use_at
+        // from them would mask a genuinely idle agent.
+        let (_tmp, repo, script_path, observed, path_env) = spawn_hook_harness("224-noact");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"SubagentStart","agent_id":"a1","session_id":"s1"}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path_env, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            !log.contains("hook 224 pre_tool_use"),
+            "subagent lifecycle events must not fire the activity signal; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
     fn run(args: &[&str], cwd: &std::path::Path) {
         let status = std::process::Command::new(args[0])
             .args(&args[1..])
@@ -643,6 +724,18 @@ mod tests {
         assert!(
             value["hooks"]["UserPromptSubmit"].is_array(),
             "missing UserPromptSubmit"
+        );
+        assert!(
+            value["hooks"]["SubagentStart"].is_array(),
+            "missing SubagentStart"
+        );
+        assert!(
+            value["hooks"]["SubagentStop"].is_array(),
+            "missing SubagentStop"
+        );
+        assert!(
+            value["hooks"]["SessionStart"].is_array(),
+            "missing SessionStart"
         );
     }
 
