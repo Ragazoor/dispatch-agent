@@ -62,7 +62,9 @@ enum CardIndicator {
         inactive_mins: Option<u64>,
     },
     Blocked,
-    Running,
+    Running {
+        subagents: u32,
+    },
     ReviewPr {
         pr_label: String,
     },
@@ -139,7 +141,9 @@ fn classify_card_indicator(
         return CardIndicator::Blocked;
     }
     if status == TaskStatus::Running {
-        return CardIndicator::Running;
+        return CardIndicator::Running {
+            subagents: task.live_subagents.max(0) as u32,
+        };
     }
     if let (TaskStatus::Review, Some(u)) = (status, task.url.as_ref()) {
         let pr_label = u.label();
@@ -206,10 +210,15 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
             (label, Color::Yellow)
         }
         CardIndicator::Blocked => ("\u{25c9} blocked".to_string(), Color::Yellow),
-        CardIndicator::Running => (
-            format!("{} running", status_icon(TaskStatus::Running)),
-            CYAN,
-        ),
+        CardIndicator::Running { subagents } => {
+            let icon = status_icon(TaskStatus::Running);
+            let label = match subagents {
+                0 => format!("{icon} running"),
+                1 => format!("{icon} running \u{00b7} 1 agent"),
+                n => format!("{icon} running \u{00b7} {n} agents"),
+            };
+            (label, CYAN)
+        }
         CardIndicator::ReviewPr { pr_label } => (format!("\u{25cf} {pr_label}"), Color::Cyan),
         CardIndicator::DoneMerged { pr_label } => {
             (format!("\u{2714} {pr_label} merged"), Color::Green)
@@ -491,6 +500,7 @@ pub(super) fn render_epic_item(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::models::SubStatus;
@@ -586,7 +596,7 @@ mod tests {
         );
         assert_eq!(
             classify_card_indicator(&task, task.status, &app, now),
-            CardIndicator::Running,
+            CardIndicator::Running { subagents: 0 },
         );
     }
 
@@ -625,7 +635,37 @@ mod tests {
         let app = App::new(vec![]);
         assert_eq!(
             classify_card_indicator(&task, task.status, &app, now),
-            CardIndicator::Running,
+            CardIndicator::Running { subagents: 0 },
+        );
+    }
+
+    fn label_of(indicator: CardIndicator) -> String {
+        render_card_indicator(indicator, &[])
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn running_card_shows_subagent_count() {
+        let text = label_of(CardIndicator::Running { subagents: 3 });
+        assert!(text.contains("running \u{00b7} 3 agents"), "got: {text:?}");
+    }
+
+    #[test]
+    fn running_card_uses_the_singular_for_one_subagent() {
+        let text = label_of(CardIndicator::Running { subagents: 1 });
+        assert!(text.contains("running \u{00b7} 1 agent"), "got: {text:?}");
+        assert!(!text.contains("1 agents"), "got: {text:?}");
+    }
+
+    #[test]
+    fn running_card_omits_the_suffix_at_zero() {
+        let text = label_of(CardIndicator::Running { subagents: 0 });
+        assert!(
+            !text.contains("agent"),
+            "zero subagents must render no suffix; got: {text:?}"
         );
     }
 

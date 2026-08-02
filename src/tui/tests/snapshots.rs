@@ -306,6 +306,19 @@ fn snapshot_card_dispatching_indicator() {
     insta::assert_snapshot!(rendered);
 }
 
+/// Locks the live-subagent-count suffix on a running card's second line.
+#[test]
+fn snapshot_card_running_with_subagents() {
+    let mut t = make_task(1, TaskStatus::Running);
+    t.title = "running with subagents".to_string();
+    t.live_subagents = 3;
+
+    let mut app = App::new(vec![t]);
+    app.spinner_tick = 0;
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}
+
 #[test]
 fn snapshot_input_epic_title_form() {
     use super::super::types::{EpicDraft, InputMode};
