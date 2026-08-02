@@ -1377,6 +1377,33 @@ async fn claim_next_backlog_task_is_exclusive_under_concurrency() {
 }
 
 #[tokio::test]
+async fn claim_next_backlog_task_clears_leftover_subagents_without_flipping() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let (epic_id, ids) = epic_with_backlog_subtasks(&db, 1).await;
+
+    // Leftovers from a previous run of this same task.
+    db.subagent_start(ids[0], "stale", "old-session", chrono::Utc::now())
+        .await
+        .unwrap();
+    db.patch_task(ids[0], &crate::db::TaskPatch::new().stop_pending(true))
+        .await
+        .unwrap();
+
+    let claimed = svc.claim_next_backlog_task(epic_id).await.unwrap().unwrap();
+    assert_eq!(claimed.id, ids[0]);
+
+    let task = db.get_task(ids[0]).await.unwrap().unwrap();
+    assert_eq!(task.live_subagents, 0, "a fresh dispatch starts from zero");
+    assert!(!task.stop_pending);
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "dispatch owns the status; the drain path must not flip it to Review"
+    );
+}
+
+#[tokio::test]
 async fn claim_next_backlog_task_epic_not_found() {
     let db = test_db().await;
     let svc = task_svc(&db);
@@ -1412,6 +1439,32 @@ async fn claim_backlog_task_moves_the_task_running_without_provisioning() {
     assert!(
         claimed.worktree.is_none(),
         "the claim runs ahead of provisioning"
+    );
+}
+
+#[tokio::test]
+async fn dispatch_claim_clears_leftover_subagents_without_flipping() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    // Leftovers from a previous run of this same task.
+    db.subagent_start(id, "stale", "old-session", chrono::Utc::now())
+        .await
+        .unwrap();
+    db.patch_task(id, &crate::db::TaskPatch::new().stop_pending(true))
+        .await
+        .unwrap();
+
+    assert!(svc.claim_backlog_task(id).await.unwrap());
+
+    let task = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(task.live_subagents, 0, "a fresh dispatch starts from zero");
+    assert!(!task.stop_pending);
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "dispatch owns the status; the drain path must not flip it to Review"
     );
 }
 
@@ -2979,6 +3032,38 @@ async fn user_prompt_submit_voids_a_pending_stop() {
         "a human resuming voids the deferred flip"
     );
     assert_eq!(task.status, TaskStatus::Running);
+}
+
+/// Regression test: `live_subagents` is hook-owned, like
+/// `last_pre_tool_use_at`. A stale in-memory snapshot riding a generic
+/// `update_task` call must not zero it.
+#[tokio::test]
+async fn generic_persist_does_not_clobber_the_subagent_count() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    let snapshot = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(snapshot.live_subagents, 0);
+
+    db.subagent_start(id, "a1", "s1", chrono::Utc::now())
+        .await
+        .unwrap();
+
+    // Persist the *stale* snapshot, which still says zero.
+    svc.update_task(
+        UpdateTaskParams::for_task(id)
+            .status(snapshot.status)
+            .sub_status(snapshot.sub_status),
+    )
+    .await
+    .unwrap();
+
+    let reread = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        reread.live_subagents, 1,
+        "a generic persist must not overwrite the hook-owned count"
+    );
 }
 
 #[tokio::test]

@@ -256,6 +256,14 @@ macro_rules! task_service_api {
                 event: $crate::models::SubagentEvent
             ) -> Result<(), $crate::service::ServiceError>;
 
+            /// Clear a task's subagent entries **without** the drain path, for
+            /// callers that already own the resulting status (crash,
+            /// dispatch). See `record_subagent_event` for the draining twin.
+            async fn clear_subagents_no_drain(
+                &self,
+                id: $crate::models::TaskId
+            ) -> Result<(), $crate::service::ServiceError>;
+
             /// Select and atomically claim the epic's next backlog subtask,
             /// moving it to `Running` before any provisioning happens. Exclusive
             /// under concurrency — see `AutoDispatchNextSubtask` in

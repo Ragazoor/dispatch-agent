@@ -207,6 +207,26 @@ impl TuiRuntime {
         }
     }
 
+    /// Clear a task's subagent entries. `drain: true` (detach, SessionStart)
+    /// runs the drain path so a deferred Stop lands; `drain: false` (crash,
+    /// dispatch claim) clears without draining, because the caller already
+    /// owns the resulting status and draining would race it into a
+    /// contradictory Review state. A failed clear is logged, not surfaced —
+    /// it degrades to a phantom count, which is recoverable, and an error
+    /// popup on a background cleanup would be worse than the drift.
+    pub(super) async fn exec_clear_subagents(&self, id: models::TaskId, drain: bool) {
+        let result = if drain {
+            self.task_svc
+                .record_subagent_event(id, models::SubagentEvent::Clear)
+                .await
+        } else {
+            self.task_svc.clear_subagents_no_drain(id).await
+        };
+        if let Err(e) = result {
+            tracing::warn!(task_id = id.0, error = %e, "failed to clear subagent entries");
+        }
+    }
+
     /// If the write carried a `sort_order`, patch that one field onto
     /// the in-memory task immediately. The service — not the caller — computes
     /// it on a Done transition (`sort_order_for_status_transition`, run inside

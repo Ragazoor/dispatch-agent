@@ -455,12 +455,19 @@ impl App {
         if let Some(task) = self.find_task_mut(id) {
             task.sub_status = SubStatus::Crashed;
             task.tmux_window = None;
+            task.live_subagents = 0;
+            task.stop_pending = false;
         }
         if let Some(task) = self.find_task(id) {
             cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
                 task.clone(),
             )));
         }
+        // No-drain: the task is already going to `Crashed`, and draining here
+        // would race that with a Review flip, leaving it Crashed-and-in-Review.
+        cmds.push(Command::Task(
+            crate::tui::commands::TaskCommand::ClearSubagents { id, drain: false },
+        ));
         self.set_status(format!("Task {id} agent crashed - press d to retry",));
 
         if self.notifications_enabled {

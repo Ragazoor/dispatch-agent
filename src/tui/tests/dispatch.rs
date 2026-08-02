@@ -860,6 +860,31 @@ fn crashed_detection_sets_substatus_and_persists() {
 }
 
 #[test]
+fn crash_emits_a_non_draining_subagent_clear() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Running)]);
+    if let Some(t) = app.find_task_mut(TaskId(1)) {
+        t.live_subagents = 2;
+        t.stop_pending = true;
+    }
+
+    let cmds = app.handle_agent_crashed(TaskId(1));
+
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::ClearSubagents { id, drain: false }) if *id == TaskId(1)
+        )),
+        "a crash must clear subagents without draining to Review"
+    );
+    assert_eq!(
+        app.find_task(TaskId(1)).unwrap().live_subagents,
+        0,
+        "the board repaints immediately, without waiting for the DB round trip"
+    );
+    assert!(!app.find_task(TaskId(1)).unwrap().stop_pending);
+}
+
+#[test]
 fn crashed_skips_non_running_task() {
     let mut app = App::new(vec![make_task(3, TaskStatus::Review)]);
 

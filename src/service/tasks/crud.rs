@@ -810,6 +810,18 @@ impl TaskService {
         Ok(())
     }
 
+    /// Clear a task's subagent entries **without** the drain path, for callers
+    /// that already own the resulting status (crash, dispatch). Running the
+    /// drain path here would leave a task Crashed-and-in-Review or
+    /// freshly-dispatched-and-in-Review.
+    pub async fn clear_subagents_no_drain(&self, id: TaskId) -> Result<(), ServiceError> {
+        self.db.subagent_clear(id).await?;
+        self.db
+            .patch_task(id, &TaskPatch::new().stop_pending(false))
+            .await?;
+        Ok(())
+    }
+
     /// Mark that the PR-learnings reminder has been shown for this task.
     ///
     /// Returns `true` if this call set the flag (first `gh pr create` →
@@ -848,6 +860,9 @@ impl TaskService {
         let Some(claimed_id) = self.db.try_claim_next_backlog_task(epic_id, now).await? else {
             return Ok(None);
         };
+        // No-drain: a claim moves the task *into* Running; draining a
+        // leftover count here would race that with a Review flip.
+        self.clear_subagents_no_drain(claimed_id).await?;
         self.recalculate_epic(epic_id).await;
         // Re-read rather than mirroring the claim's SET list here: the row is
         // the truth, and hand-copying it silently drifts (the DB also stamps
@@ -883,6 +898,9 @@ impl TaskService {
         {
             return Ok(false);
         }
+        // No-drain: a claim moves the task *into* Running; draining a
+        // leftover count here would race that with a Review flip.
+        self.clear_subagents_no_drain(task_id).await?;
         self.recalculate_epic_for_task(task_id).await;
         Ok(true)
     }

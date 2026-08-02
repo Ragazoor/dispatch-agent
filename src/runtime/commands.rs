@@ -206,6 +206,10 @@ async fn dispatch_task(
             rt.exec_persist_task(app, task).await;
             vec![]
         }
+        ClearSubagents { id, drain } => {
+            rt.exec_clear_subagents(id, drain).await;
+            vec![]
+        }
         Insert { draft, epic_id } => {
             rt.exec_insert_task(app, draft, epic_id).await;
             vec![]

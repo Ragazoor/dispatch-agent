@@ -101,4 +101,13 @@ pub enum TaskCommand {
         updates: Vec<(TaskId, SubStatus)>,
     },
     RefreshFromDb,
+    /// Drop every `task_subagents` entry for a task. `drain: true` runs the
+    /// drain path (a pending Stop lands as a Review flip); `drain: false`
+    /// clears the entries and `stop_pending` but leaves status alone, for
+    /// callers that already own the resulting status. See the clear-point
+    /// table in `docs/specs/agent-health.allium`.
+    ClearSubagents {
+        id: TaskId,
+        drain: bool,
+    },
 }
