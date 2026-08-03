@@ -260,6 +260,7 @@ rule HookStop {
     ensures:
         if task.live_subagents > 0:
             task.stop_pending = true
+            task.stop_pending_at = now
         else:
             task.status = review
             task.sub_status = core/SubStatus.default_for(review)
@@ -284,6 +285,12 @@ rule HookStop {
         -- the last subagent may have drained in the interval. Deciding at
         -- write time means whichever process commits second observes the
         -- other's committed value and computes the correct outcome.
+        --
+        -- The defer branch records when this Stop fired, not when its write
+        -- landed: stop_pending_at is the hook's own event time, taken before
+        -- the write. HookUserPromptSubmit compares against it, and that
+        -- comparison is only sound if the value is independent of write
+        -- order — see its guidance.
         --
         -- The flip branch is deliberately conditioned on live_subagents = 0
         -- alone, with no stop_pending precondition: a Stop arriving with no
@@ -397,8 +404,11 @@ rule HookSubagentStop {
         --   - Every other writer of stop_pending —
         --     ClearSubagentsOnSessionStart, HookUserPromptSubmit,
         --     DispatchTask, DetectCrashedAgent, and the status writes
-        --     described above — only ever sets it to false, which moves
-        --     away from the state.
+        --     described above — never sets it to true: each either clears
+        --     it or leaves it alone (HookUserPromptSubmit is the one that
+        --     can leave it, and only when the deferred Stop is newer than
+        --     the prompt). Clearing moves away from the state, and leaving
+        --     it alone cannot enter one it was not already in.
         -- No write therefore commits into it, regardless of how many hook
         -- processes participate or in what order they commit.
         --
@@ -468,13 +478,51 @@ rule HookUserPromptSubmit {
     ensures: task.status = running
     ensures: task.sub_status = core/SubStatus.default_for(running)
     ensures: task.last_pre_tool_use_at = now
-    ensures: task.stop_pending = false
+    ensures:
+        if task.stop_pending_at = null or task.stop_pending_at < now:
+            task.stop_pending = false
 
     @guidance
-        -- A human resuming the conversation voids any deferred Stop: the
-        -- turn that withheld it is over, and this rule now owns the
-        -- resulting status (running). Leaving the bit set would let a later
-        -- drain point flip the task to Review underneath an active turn.
+        -- A human resuming the conversation voids the Stop deferred by the
+        -- turn that just ended: that turn is over, and this rule now owns
+        -- the resulting status (running). Leaving the bit set would let a
+        -- later drain point flip the task to Review underneath an active
+        -- turn.
+        --
+        -- The clear is conditional because "the turn that just ended" is
+        -- not the only Stop the bit can hold. Every Claude Code hook is a
+        -- separate OS process, so this rule's write can land *after* a Stop
+        -- belonging to the turn this very prompt started: the prompt fires
+        -- at t0, the agent's turn ends at t1 with subagents still live, the
+        -- Stop defers at t2, and this rule's write lands at t3. Voiding
+        -- there deletes a Stop that no drain will ever re-create —
+        -- HookSubagentStop's drain path requires the bit — so the task
+        -- stays running with no agent left to move it. Requiring the
+        -- deferred Stop to have fired strictly before this prompt
+        -- distinguishes the two: t_stop < now is last turn's Stop and is
+        -- voided, t_stop > now is this turn's and survives to be drained.
+        --
+        -- The comparison is against event times, not write times, and that
+        -- is what makes it sound. A generation counter — incremented here,
+        -- stamped by HookStop's defer — cannot work: at t2 the Stop reads
+        -- the counter before this rule's t3 write increments it, so its
+        -- recorded generation looks stale and the clear voids it anyway.
+        -- Any ordering derived from write order inherits the race the rule
+        -- is trying to resolve.
+        --
+        -- Ties are reachable, which is why they need a rule: the two events
+        -- are recorded at a finer resolution than the other hook timestamps
+        -- precisely because a Stop and the prompt that supersedes it can
+        -- fall inside the same second, and any resolution still admits a
+        -- pair too close to separate.
+        --
+        -- Ties (equal timestamps) preserve the bit. That is the safer
+        -- direction: a bit wrongly kept is resolved by the next drain or
+        -- the next prompt, whereas one wrongly voided strands the task in
+        -- running permanently. A null stop_pending_at is the one exception
+        -- — it means the deferred Stop predates the field, so it reads as
+        -- "fired before any prompt" and is voided, preserving the
+        -- unconditional behaviour those rows were written under.
         --
         -- Fires when the user submits a new prompt in the Claude Code
         -- session, before the agent has taken any action. It is the

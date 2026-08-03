@@ -817,6 +817,25 @@ pub enum StopOutcome {
     NoOp,
 }
 
+/// What the `UserPromptSubmit` hook's conditional write actually did.
+///
+/// Production reads one bit of this: whether to recalculate the task's epic,
+/// which is owed for a status change and so only for `Resumed`. The other two
+/// arms are split because tests assert on them — a refresh and a no-op are very
+/// different outcomes to get wrong — and for symmetry with [`StopOutcome`].
+/// Like it, the arms are decided by the row's committed state at write time. See
+/// `HookUserPromptSubmit` in `docs/specs/agent-health.allium`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserPromptOutcome {
+    /// The task was in `Review`: the human's prompt moved it back to `Running`.
+    Resumed,
+    /// The task was already `Running`: a plain activity refresh, no status move.
+    Refreshed,
+    /// The task was in neither `Running` nor `Review` (or does not exist).
+    /// Nothing was written.
+    NoOp,
+}
+
 /// Result of a subagent mutation that can drain the last live subagent.
 ///
 /// `applied_pending_stop` is reported rather than re-derived by the caller

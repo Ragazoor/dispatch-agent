@@ -143,6 +143,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (80, migrate_v80_drop_agent_status),
     (81, migrate_v81_create_task_subagents),
     (82, migrate_v82_resolve_stranded_pending_stops),
+    (83, migrate_v83_add_stop_pending_at),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1272,6 +1273,28 @@ pub(super) fn migrate_v82_resolve_stranded_pending_stops(conn: &Connection) -> R
             count = resolved,
             "migration v82: applied deferred stops that had no subagent left to drain them"
         );
+    }
+    Ok(())
+}
+
+/// Adds `tasks.stop_pending_at`: when the `Stop` that `stop_pending` defers
+/// actually fired.
+///
+/// `record_user_prompt_submit` (`src/db/queries/tasks.rs`) needs it to tell a
+/// Stop deferred by the previous turn — which a human resuming voids — from one
+/// deferred by the turn the arriving prompt itself started, whose write can land
+/// first because every hook is a separate process. Comparing *event* times is
+/// what makes that sound; anything derived from write order inherits the race.
+///
+/// Additive only, with no backfill. A row already carrying `stop_pending` gets a
+/// null, which reads as "the Stop fired before any prompt" — exactly the
+/// unconditional clear those rows were written under, so they keep their old
+/// behaviour. See the `stop_pending_at` field in `docs/specs/core.allium` and
+/// `HookUserPromptSubmit` in `docs/specs/agent-health.allium`.
+pub(super) fn migrate_v83_add_stop_pending_at(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "tasks", "stop_pending_at") {
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN stop_pending_at TEXT")
+            .context("Failed to add tasks.stop_pending_at (migration v83)")?;
     }
     Ok(())
 }

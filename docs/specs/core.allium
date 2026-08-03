@@ -235,6 +235,7 @@ entity Task {
     last_notification_at: Timestamp?  -- wallclock of the most recent Notification hook; null when no notification is pending (or after Stop)
     live_subagents: Integer = 0  -- count of subagents currently executing for this task; a denormalised count of SubagentEntry rows, rewritten alongside every mutation and clear point (see agent-health.allium)
     stop_pending: Boolean = false  -- a Stop hook arrived while subagents were live; flip to review once they drain (see agent-health.allium: HookStop / HookSubagentStop). Cleared by any status write that leaves running — see PendingStopOnlyWhileRunning below
+    stop_pending_at: Timestamp?  -- when the Stop that stop_pending defers actually fired (the hook's event time, not its write time). Meaningful only while stop_pending holds; the clear points leave it alone because every reader gates on the bit. HookUserPromptSubmit compares against it to tell a Stop deferred by an earlier turn from one deferred by the turn now starting — see its guidance. Null while the bit is set means the Stop predates the field, and reads as "fired before any prompt"
     pr_learnings_gate_shown_at: Timestamp?  -- set once when the PrLearningsGate fires; null means the gate has never fired for this task
     wrap_up_mode: WrapUpMode?  -- preferred wrap-up path; null means decide at wrap-up time
     auto_run_plan: Boolean = false  -- when true and plan_path is set, build_prompt's

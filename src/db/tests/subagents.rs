@@ -352,6 +352,11 @@ async fn entries_are_scoped_per_task() {
 // The deferred-Stop drain, applied inside the subagent transaction
 // ---------------------------------------------------------------------------
 
+/// Plants the bit through a patch, which leaves `stop_pending_at` null — the
+/// shape of a row written before that column existed, since the only writer that
+/// stamps it is `try_record_stop`'s defer branch. Use this only where the legacy
+/// shape is the point; for a Stop deferred the way production defers one, use
+/// [`task_with_a_stop_deferred_at`].
 async fn set_running_with_pending_stop(db: &Database, task: &Task) {
     db.patch_task(
         task.id,
@@ -366,12 +371,7 @@ async fn set_running_with_pending_stop(db: &Database, task: &Task) {
 /// A Running task with one live subagent and a Stop withheld waiting on it —
 /// the arrangement every drain test starts from.
 async fn task_with_a_live_subagent_and_a_deferred_stop(db: &Database) -> Task {
-    let task = make_task(db, "t").await;
-    db.subagent_start(task.id, "a1", "s1", Utc::now())
-        .await
-        .unwrap();
-    set_running_with_pending_stop(db, &task).await;
-    task
+    task_with_a_stop_deferred_at(db, Utc::now()).await
 }
 
 async fn assert_flipped_to_review(db: &Database, task: &Task) {
@@ -553,7 +553,7 @@ async fn record_stop_flips_immediately_when_no_subagent_is_live() {
     set_running(&db, &task).await;
 
     assert_eq!(
-        db.try_record_stop(task.id).await.unwrap(),
+        db.try_record_stop(task.id, Utc::now()).await.unwrap(),
         StopOutcome::Flipped
     );
     assert_flipped_to_review(&db, &task).await;
@@ -569,7 +569,7 @@ async fn record_stop_defers_while_a_subagent_is_live() {
         .unwrap();
 
     assert_eq!(
-        db.try_record_stop(task.id).await.unwrap(),
+        db.try_record_stop(task.id, Utc::now()).await.unwrap(),
         StopOutcome::Deferred
     );
     let reread = db.get_task(task.id).await.unwrap().unwrap();
@@ -592,7 +592,7 @@ async fn record_stop_is_a_noop_for_a_task_that_is_not_running() {
     let task = make_task(&db, "t").await;
 
     assert_eq!(
-        db.try_record_stop(task.id).await.unwrap(),
+        db.try_record_stop(task.id, Utc::now()).await.unwrap(),
         StopOutcome::NoOp
     );
     let reread = db.get_task(task.id).await.unwrap().unwrap();
@@ -612,7 +612,7 @@ async fn record_stop_flips_a_task_that_already_carries_a_pending_stop() {
     set_running_with_pending_stop(&db, &task).await;
 
     assert_eq!(
-        db.try_record_stop(task.id).await.unwrap(),
+        db.try_record_stop(task.id, Utc::now()).await.unwrap(),
         StopOutcome::Flipped
     );
     assert_flipped_to_review(&db, &task).await;
@@ -623,7 +623,234 @@ async fn record_stop_is_a_noop_for_an_unknown_task() {
     let db = in_memory_db().await;
 
     assert_eq!(
-        db.try_record_stop(TaskId(9999)).await.unwrap(),
+        db.try_record_stop(TaskId(9999), Utc::now()).await.unwrap(),
         StopOutcome::NoOp
+    );
+}
+
+// ---------------------------------------------------------------------------
+// record_user_prompt_submit — the UserPromptSubmit hook's conditional write
+// ---------------------------------------------------------------------------
+
+/// `stop_pending_at` is a DB-only column: nothing outside the two statements
+/// that need it reads it, so it is deliberately absent from `TASK_COLUMNS` and
+/// the `Task` model. Tests reach it through the writer connection.
+async fn stop_pending_at(db: &Database, id: TaskId) -> Option<String> {
+    db.db_call(move |conn| {
+        Ok(conn.query_row(
+            "SELECT stop_pending_at FROM tasks WHERE id = ?1",
+            [id.0],
+            |row| row.get::<_, Option<String>>(0),
+        )?)
+    })
+    .await
+    .unwrap()
+}
+
+/// A Running task with one live subagent whose Stop was deferred at `at` — the
+/// arrangement the conditional clear has to reason about. Goes through the real
+/// defer path so the recorded time is the one production would record.
+async fn task_with_a_stop_deferred_at(db: &Database, at: chrono::DateTime<Utc>) -> Task {
+    let task = make_task(db, "t").await;
+    set_running(db, &task).await;
+    db.subagent_start(task.id, "a1", "s1", at).await.unwrap();
+    assert_eq!(
+        db.try_record_stop(task.id, at).await.unwrap(),
+        StopOutcome::Deferred
+    );
+    task
+}
+
+/// The defer branch records when the Stop *fired*, not when its write landed —
+/// that is what makes `record_user_prompt_submit`'s comparison independent of
+/// write order.
+#[tokio::test]
+async fn record_stop_stamps_the_time_the_deferred_stop_fired() {
+    let db = in_memory_db().await;
+    let at = Utc::now();
+    let task = task_with_a_stop_deferred_at(&db, at).await;
+
+    assert_eq!(
+        stop_pending_at(&db, task.id).await.as_deref(),
+        Some(crate::db::queries::format_datetime_millis(at).as_str()),
+        "the deferred Stop must carry its own event time"
+    );
+}
+
+/// The immediate flip has no deferred Stop to time, so it records nothing.
+#[tokio::test]
+async fn record_stop_records_no_defer_time_when_it_flips() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running(&db, &task).await;
+
+    assert_eq!(
+        db.try_record_stop(task.id, Utc::now()).await.unwrap(),
+        StopOutcome::Flipped
+    );
+    assert_eq!(stop_pending_at(&db, task.id).await, None);
+}
+
+/// The turn that deferred the Stop is over: the human is starting a new one, so
+/// this rule owns the resulting status and the stale bit must go.
+#[tokio::test]
+async fn user_prompt_submit_voids_a_stop_deferred_before_the_prompt() {
+    let db = in_memory_db().await;
+    let deferred_at = Utc::now();
+    let task = task_with_a_stop_deferred_at(&db, deferred_at).await;
+
+    assert_eq!(
+        db.record_user_prompt_submit(task.id, deferred_at + chrono::Duration::seconds(1))
+            .await
+            .unwrap(),
+        UserPromptOutcome::Refreshed
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert!(
+        !reread.stop_pending,
+        "a Stop deferred by the previous turn is voided by the human resuming"
+    );
+    assert_eq!(reread.status, TaskStatus::Running);
+}
+
+/// The late-write race this whole conditional exists for: the prompt fired at
+/// t0, the turn it started ended at t1 with subagents live, the Stop deferred at
+/// t2, and only then did this write land. Voiding here would delete a Stop that
+/// no drain can re-create, leaving the task Running with nothing left to move
+/// it.
+#[tokio::test]
+async fn user_prompt_submit_preserves_a_stop_deferred_after_the_prompt() {
+    let db = in_memory_db().await;
+    let deferred_at = Utc::now();
+    let task = task_with_a_stop_deferred_at(&db, deferred_at).await;
+
+    assert_eq!(
+        db.record_user_prompt_submit(task.id, deferred_at - chrono::Duration::seconds(1))
+            .await
+            .unwrap(),
+        UserPromptOutcome::Refreshed
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert!(
+        reread.stop_pending,
+        "a Stop deferred after this prompt fired belongs to the turn the prompt \
+         started — the drain still owes it"
+    );
+    assert_eq!(reread.status, TaskStatus::Running);
+
+    let drain = db.subagent_stop(task.id, "a1", "s1").await.unwrap();
+    assert!(
+        drain.applied_pending_stop,
+        "the preserved Stop must still be drainable"
+    );
+}
+
+/// Ties preserve. A bit wrongly kept is resolved by the next drain or prompt; one
+/// wrongly voided strands the task in Running for good.
+#[tokio::test]
+async fn user_prompt_submit_preserves_a_stop_deferred_at_the_same_instant() {
+    let db = in_memory_db().await;
+    let at = Utc::now();
+    let task = task_with_a_stop_deferred_at(&db, at).await;
+
+    db.record_user_prompt_submit(task.id, at).await.unwrap();
+
+    assert!(db.get_task(task.id).await.unwrap().unwrap().stop_pending);
+}
+
+/// A row carrying the bit from before `stop_pending_at` existed reads as "the
+/// Stop fired before any prompt", which is exactly what the unconditional clear
+/// those rows were written under did.
+#[tokio::test]
+async fn user_prompt_submit_voids_a_pending_stop_with_no_recorded_defer_time() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running_with_pending_stop(&db, &task).await;
+    assert_eq!(stop_pending_at(&db, task.id).await, None);
+
+    db.record_user_prompt_submit(task.id, Utc::now())
+        .await
+        .unwrap();
+
+    assert!(!db.get_task(task.id).await.unwrap().unwrap().stop_pending);
+}
+
+#[tokio::test]
+async fn user_prompt_submit_resumes_a_review_task_to_running() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running(&db, &task).await;
+    db.try_record_stop(task.id, Utc::now()).await.unwrap();
+    assert_flipped_to_review(&db, &task).await;
+    let now = Utc::now();
+
+    assert_eq!(
+        db.record_user_prompt_submit(task.id, now).await.unwrap(),
+        UserPromptOutcome::Resumed,
+        "Review -> Running is the transition the caller recalculates epics for"
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.status, TaskStatus::Running);
+    assert_eq!(
+        reread.sub_status,
+        SubStatus::default_for(TaskStatus::Running)
+    );
+    assert!(reread.last_pre_tool_use_at.is_some());
+}
+
+#[tokio::test]
+async fn user_prompt_submit_refreshes_an_already_running_task() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running(&db, &task).await;
+    db.patch_task(
+        task.id,
+        &crate::db::TaskPatch::new().sub_status(SubStatus::NeedsInput),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        db.record_user_prompt_submit(task.id, Utc::now())
+            .await
+            .unwrap(),
+        UserPromptOutcome::Refreshed,
+        "an already-Running task is a plain activity refresh, not a resume"
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.status, TaskStatus::Running);
+    assert_eq!(
+        reread.sub_status,
+        SubStatus::default_for(TaskStatus::Running),
+        "the resume also clears needs_input"
+    );
+    assert!(reread.last_pre_tool_use_at.is_some());
+}
+
+#[tokio::test]
+async fn user_prompt_submit_is_a_noop_outside_running_and_review() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+
+    assert_eq!(
+        db.record_user_prompt_submit(task.id, Utc::now())
+            .await
+            .unwrap(),
+        UserPromptOutcome::NoOp
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.status, TaskStatus::Backlog);
+    assert!(reread.last_pre_tool_use_at.is_none());
+}
+
+#[tokio::test]
+async fn user_prompt_submit_is_a_noop_for_an_unknown_task() {
+    let db = in_memory_db().await;
+
+    assert_eq!(
+        db.record_user_prompt_submit(TaskId(9999), Utc::now())
+            .await
+            .unwrap(),
+        UserPromptOutcome::NoOp
     );
 }

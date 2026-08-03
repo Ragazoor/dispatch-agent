@@ -107,6 +107,29 @@ async fn migration_82_leaves_tasks_that_are_not_stranded_alone() {
     assert_eq!(running.status, TaskStatus::Running);
 }
 
+/// v83 adds the column `HookStop`'s defer branch stamps and
+/// `record_user_prompt_submit` compares against. Additive and idempotent, with
+/// no backfill: a null on a row that already carries `stop_pending` reads as
+/// "the Stop fired before any prompt", which is the unconditional behaviour
+/// those rows were written under.
+#[tokio::test]
+async fn migration_83_adds_stop_pending_at() {
+    let db = in_memory_db().await;
+    let column: i64 = db
+        .db_call(|conn| {
+            // Re-running it must be a no-op, not a duplicate-column error.
+            crate::db::migrations::migrate_v83_add_stop_pending_at(conn)?;
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='stop_pending_at'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .await
+        .expect("query schema");
+    assert_eq!(column, 1);
+}
+
 #[tokio::test]
 async fn new_task_defaults_to_zero_subagents_and_no_pending_stop() {
     let db = in_memory_db().await;

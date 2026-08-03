@@ -17,6 +17,16 @@ fn task_svc(db: &Arc<dyn db::TaskStore>) -> TaskService {
     task_svc_with_runner(db, crate::process::MockProcessRunner::unused())
 }
 
+/// A `TaskService` whose clock the caller drives. Hook-event ordering is
+/// compared at sub-second resolution (`stop_pending_at`), so two wall-clock
+/// reads in one test can tie; advance this instead.
+fn task_svc_with_fixed_clock(
+    db: &Arc<dyn db::TaskStore>,
+) -> (TaskService, crate::service::FixedClock) {
+    let clock = crate::service::FixedClock::new(chrono::Utc::now());
+    (task_svc(db).with_clock(Arc::new(clock.clone())), clock)
+}
+
 fn epic_svc(db: &Arc<dyn db::TaskStore>) -> EpicService {
     let d: Arc<dyn db::TaskAndEpicStore> = db.clone();
     EpicService::new(d)
@@ -3319,10 +3329,14 @@ async fn clear_no_drain_on_a_missing_task_is_not_found() {
     ));
 }
 
+/// The clock is injected and advanced rather than left on the wall clock: the
+/// void is conditional on the prompt having fired *after* the Stop it
+/// supersedes, so back-to-back calls sharing an instant would tie — and a tie
+/// preserves. A human resuming is never that fast; a test is.
 #[tokio::test]
 async fn user_prompt_submit_voids_a_pending_stop() {
     let db = test_db().await;
-    let svc = task_svc(&db);
+    let (svc, clock) = task_svc_with_fixed_clock(&db);
     let id = create_running_task(&svc, SubStatus::Active).await;
 
     svc.record_subagent_event(
@@ -3337,6 +3351,7 @@ async fn user_prompt_submit_voids_a_pending_stop() {
     svc.record_hook_event(id, HookEventKind::Stop)
         .await
         .unwrap();
+    clock.advance(chrono::Duration::seconds(1));
     svc.record_hook_event(id, HookEventKind::UserPromptSubmit)
         .await
         .unwrap();
@@ -3347,6 +3362,62 @@ async fn user_prompt_submit_voids_a_pending_stop() {
         "a human resuming voids the deferred flip"
     );
     assert_eq!(task.status, TaskStatus::Running);
+}
+
+/// The late-write race the conditional clear exists for, end to end. Every
+/// Claude Code hook is its own process, so a `UserPromptSubmit` write can land
+/// after the `Stop` of the very turn that prompt started. Voiding there would
+/// delete a Stop no drain can re-create; the task would sit in Running with no
+/// agent left to move it. The clock runs backwards between the two calls to
+/// stage exactly that ordering without depending on scheduling.
+#[tokio::test]
+async fn user_prompt_submit_that_lands_after_the_stop_it_races_keeps_it_pending() {
+    let db = test_db().await;
+    let (svc, clock) = task_svc_with_fixed_clock(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // The Stop fires at t2, after the prompt fired at t0 …
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+    assert!(svc.get_task(id).await.unwrap().stop_pending);
+
+    // … and only now does the prompt's own write land.
+    clock.advance(-chrono::Duration::seconds(1));
+    svc.record_hook_event(id, HookEventKind::UserPromptSubmit)
+        .await
+        .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert!(
+        task.stop_pending,
+        "the Stop belongs to the turn this prompt started — voiding it would \
+         strand the task in Running"
+    );
+    assert_eq!(task.status, TaskStatus::Running);
+
+    // And the drain still owes the flip.
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Review);
+    assert!(!task.stop_pending);
 }
 
 /// Regression test: `live_subagents` is hook-owned, like

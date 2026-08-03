@@ -4,7 +4,8 @@ use rusqlite::{params, OptionalExtension};
 use crate::set_field;
 
 use crate::models::{
-    EpicId, FeedItem, StopOutcome, SubStatus, SubagentDrain, TaskId, TaskStatus, WrapUpMode,
+    EpicId, FeedItem, StopOutcome, SubStatus, SubagentDrain, TaskId, TaskStatus, UserPromptOutcome,
+    WrapUpMode,
 };
 
 use super::super::{CreateTaskRequest, Database, TaskPatch};
@@ -619,7 +620,12 @@ impl super::super::TaskCrud for Database {
             .await
     }
 
-    async fn try_record_stop(&self, id: TaskId) -> Result<StopOutcome> {
+    async fn try_record_stop(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<StopOutcome> {
+        let deferred_at = super::format_datetime_millis(now);
         self.db_call(move |conn| {
             // One transaction so `live_subagents` cannot change between the two
             // statements — the flip and the deferral are decided against the
@@ -659,12 +665,17 @@ impl super::super::TaskCrud for Database {
                 // keep going. Withhold the flip; the last SubagentStop drains
                 // it. `live_subagents > 0` is explicit rather than implied by
                 // the statement above failing, so each reads independently.
+                //
+                // `stop_pending_at` records when this Stop *fired*, which is
+                // what `record_user_prompt_submit` orders itself against — see
+                // its comment for why a write-time value would not do.
                 let deferred = tx
                     .execute(
                         "UPDATE tasks \
-                         SET stop_pending = 1, updated_at = datetime('now') \
+                         SET stop_pending = 1, stop_pending_at = ?3, \
+                             updated_at = datetime('now') \
                          WHERE id = ?1 AND status = ?2 AND live_subagents > 0",
-                        params![id.0, TaskStatus::Running.as_str()],
+                        params![id.0, TaskStatus::Running.as_str(), deferred_at],
                     )
                     .context("Failed to defer stop")?;
                 if deferred == 1 {
@@ -676,6 +687,77 @@ impl super::super::TaskCrud for Database {
 
             tx.commit()
                 .context("Failed to commit try_record_stop transaction")?;
+            Ok(outcome)
+        })
+        .await
+    }
+
+    async fn record_user_prompt_submit(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<UserPromptOutcome> {
+        let activity_at = super::format_datetime(now);
+        let prompt_at = super::format_datetime_millis(now);
+        self.db_call(move |conn| {
+            // One transaction, for the same reason as `try_record_stop`:
+            // `db_call` opens none of its own, the single writer connection only
+            // serialises within this process, and every Claude Code hook is a
+            // separate `dispatch` process. The first statement is a write, so
+            // the deferred transaction takes the write lock immediately and the
+            // clear below cannot interleave with another hook's commit.
+            let tx = conn
+                .unchecked_transaction()
+                .context("Failed to open record_user_prompt_submit transaction")?;
+
+            // Same statement for both arms, differing only in the status it
+            // matches: from Review it is the resume this hook exists to drive,
+            // from Running an activity refresh whose `status` write is a no-op.
+            // Which one hit is read off the rowcount, so the Resumed/Refreshed
+            // distinction the caller needs never comes from a prior read.
+            // Re-setting sub_status is what clears needs_input when the human
+            // answers.
+            let running = TaskStatus::Running;
+            let apply_to = |from: TaskStatus| -> Result<usize> {
+                tx.execute(
+                    "UPDATE tasks \
+                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
+                         updated_at = datetime('now') \
+                     WHERE id = ?4 AND status = ?5",
+                    params![
+                        running.as_str(),
+                        SubStatus::default_for(running).as_str(),
+                        activity_at,
+                        id.0,
+                        from.as_str(),
+                    ],
+                )
+                .context("Failed to apply user prompt")
+            };
+            let outcome = if apply_to(TaskStatus::Review)? == 1 {
+                UserPromptOutcome::Resumed
+            } else if apply_to(running)? == 1 {
+                UserPromptOutcome::Refreshed
+            } else {
+                UserPromptOutcome::NoOp
+            };
+
+            // Void the deferred Stop this prompt supersedes — but only one that
+            // fired before the prompt did, and only for a task the statements
+            // above just left Running, so this decides in its own `WHERE` like
+            // they do. See `HookUserPromptSubmit` in
+            // `docs/specs/agent-health.allium` for why the comparison is against
+            // event times, why ties preserve, and why a null clears.
+            tx.execute(
+                "UPDATE tasks SET stop_pending = 0, updated_at = datetime('now') \
+                 WHERE id = ?1 AND status = ?2 AND stop_pending = 1 \
+                   AND (stop_pending_at IS NULL OR stop_pending_at < ?3)",
+                params![id.0, running.as_str(), prompt_at],
+            )
+            .context("Failed to void superseded pending stop")?;
+
+            tx.commit()
+                .context("Failed to commit record_user_prompt_submit transaction")?;
             Ok(outcome)
         })
         .await

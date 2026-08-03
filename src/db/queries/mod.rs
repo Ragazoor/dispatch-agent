@@ -292,9 +292,13 @@ pub(super) fn write_json_string_vec(values: &[String]) -> Result<String> {
     serde_json::to_string(values).context("Failed to serialize string list to JSON")
 }
 
-/// Parse SQLite `datetime('now')` output: "YYYY-MM-DD HH:MM:SS"
+/// Parse SQLite `datetime('now')` output: "YYYY-MM-DD HH:MM:SS", with optional
+/// fractional seconds so anything [`format_datetime_millis`] wrote also reads
+/// back. Keeping both writers parseable matters because bulk reads decode
+/// through `collect_decodable`, which *skips* an undecodable row — a column this
+/// function rejected would disappear rows from the board rather than error.
 pub(super) fn parse_datetime(s: &str) -> rusqlite::Result<DateTime<Utc>> {
-    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+    NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f")
         .map(|ndt| Utc.from_utc_datetime(&ndt))
         .map_err(|e| {
             rusqlite::Error::FromSqlConversionFailure(
@@ -309,6 +313,16 @@ pub(super) fn parse_datetime(s: &str) -> rusqlite::Result<DateTime<Utc>> {
 /// Pairs with [`parse_datetime`] — both use "YYYY-MM-DD HH:MM:SS".
 pub(super) fn format_datetime(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// Format a `DateTime<Utc>` for a TEXT timestamp column that is *ordered against
+/// another such value*, where whole seconds are too coarse — `stop_pending_at`,
+/// compared against the arriving `UserPromptSubmit`'s event time, is the case
+/// this exists for (`HookUserPromptSubmit` in `docs/specs/agent-health.allium`).
+/// Fixed-width fractional digits keep the lexicographic TEXT comparison in
+/// agreement with chronological order.
+pub(super) fn format_datetime_millis(dt: DateTime<Utc>) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
 /// Read a nullable TEXT timestamp column.

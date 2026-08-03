@@ -10,7 +10,7 @@ use std::path::Path;
 use crate::models::{
     Epic, EpicId, FeedItem, Learning, LearningId, LearningKind, LearningRetrieval, LearningScope,
     LearningStatus, LearningVerdict, RetrievalSource, StopOutcome, SubStatus, SubagentDrain, Task,
-    TaskId, TaskStatus, TaskTag, Todo, TodoId, WrapUpMode,
+    TaskId, TaskStatus, TaskTag, Todo, TodoId, UserPromptOutcome, WrapUpMode,
 };
 
 /// Number of decode soft-fails since process start: unknown enum values that
@@ -81,7 +81,12 @@ patch_struct! {
     /// `COUNT(*)` over `task_subagents`, owned exclusively by the transactional
     /// writes in [`queries::subagents`]. Leaving it out of the patch surface
     /// makes "no handler can desync the count" a compile-time property rather
-    /// than a convention. `stop_pending` is patch-driven and stays.
+    /// than a convention. `stop_pending` is patch-driven and stays — but for
+    /// *clearing* only: the sole writer that may set it true is
+    /// [`try_record_stop`](TaskCrud::try_record_stop)'s defer branch, which
+    /// stamps `stop_pending_at` in the same statement. Setting it true through a
+    /// patch would leave that timestamp stale or absent, and
+    /// `record_user_prompt_submit` decides against it.
     pub struct TaskPatch<'a> {
         plain    status:       TaskStatus,
         nullable plan_path:    &'a str,
@@ -247,7 +252,30 @@ pub trait TaskCrud: TaskRead {
     /// predicate is part of each statement, a concurrent hook process cannot
     /// interleave a stale decision — whichever commits second sees the other's
     /// value. See `HookStop` in `docs/specs/agent-health.allium`.
-    async fn try_record_stop(&self, id: TaskId) -> Result<StopOutcome>;
+    ///
+    /// `now` is when the hook *fired*, not when this write lands. The defer
+    /// branch stores it as `stop_pending_at` so
+    /// [`record_user_prompt_submit`](Self::record_user_prompt_submit) can order
+    /// the two events independently of which write commits first.
+    async fn try_record_stop(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<StopOutcome>;
+    /// Apply the `UserPromptSubmit` hook to `id`: resume a `Review` task to
+    /// `Running`, or refresh an already-`Running` one, and void the deferred
+    /// `Stop` the human's prompt supersedes.
+    ///
+    /// One transaction, and the `stop_pending` clear is **conditional**: only a
+    /// Stop that fired before `now` is voided, because one that fired after
+    /// belongs to the turn this prompt started and no drain could re-create it.
+    /// `HookUserPromptSubmit` in `docs/specs/agent-health.allium` carries the
+    /// full argument.
+    async fn record_user_prompt_submit(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<UserPromptOutcome>;
     /// Atomically select *and* claim `epic_id`'s next backlog subtask for
     /// dispatch: the first one ordered by `COALESCE(sort_order, id)` then `id`
     /// moves to `Running` with the default running sub-status and

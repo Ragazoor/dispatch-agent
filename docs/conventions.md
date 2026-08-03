@@ -327,6 +327,16 @@ Any `unsafe` block must have a `// SAFETY:` comment directly above it explaining
 
 `TaskService::update_task()` (`src/service/tasks/crud.rs`) reads the existing task to validate the requested sub-status before applying the patch. This is a TOCTOU window: a concurrent MCP call could change the task status between the read and the write. This is intentional and accepted — simultaneous status changes from two agents on the same task are considered a user error, and the window is too small to be worth a transaction-level fix.
 
+## Hook writes: decide in the statement, and order by event time
+
+Every Claude Code hook is a separate `dispatch` process, so the writer connection's serialisation buys nothing across them and a `get_task` snapshot can be stale before the write lands. Two rules follow, and the second is the one that is easy to miss.
+
+**Decide in the statement.** A hook write whose outcome depends on task state puts that state in its own `WHERE` and reads the rowcount, rather than branching on a prior read. `try_record_stop` and `record_user_prompt_submit` (`src/db/queries/tasks.rs`) both do this, each inside one `unchecked_transaction()` — `db_call` opens none of its own. Their return enums (`StopOutcome`, `UserPromptOutcome`) exist so the caller can act on what the write actually did (e.g. recalculate the epic) without re-reading and re-deciding.
+
+**A predicate over current columns cannot order two racing writes.** `record_user_prompt_submit` voids the deferred `Stop` a human's prompt supersedes — but not one deferred by the turn that prompt itself started, whose write can land first. No boolean over the live columns separates those, and neither does a generation counter incremented by one hook and stamped by the other: the stamping hook reads the pre-increment value, so anything derived from write order inherits the race. What works is each hook recording its own **event** time — `tasks.stop_pending_at`, written by the defer branch — and the other comparing against it. Event times are fixed before either write is attempted, so the comparison is the same whichever commits first. Ties break toward the outcome that self-corrects. See `HookStop` / `HookUserPromptSubmit` in `docs/specs/agent-health.allium`.
+
+Two consequences for tests. `stop_pending_at` is stored at millisecond resolution (`format_datetime_millis`, not `format_datetime`) because the two events can share a second. And a test that needs one hook to be observably later than another must inject a `FixedClock` and advance it — two wall-clock reads in the same test can land in the same millisecond and tie.
+
 ## Reparenting an epic — three guards, no immutability
 
 `parent_epic_id` **is** mutable: `EpicPatch` declares it `nullable` (`src/db/mod.rs:130`), `patch_epic` writes it (`src/db/queries/epics.rs:241`), `EpicService::update_epic` implements reparent-and-detach (`src/service/epics.rs:292`), and the TUI has a reparent picker (`src/tui/ui/kanban/popups/reparent_epic.rs`). Route reparenting through the service — it owns three guards a bare `patch_epic` skips:

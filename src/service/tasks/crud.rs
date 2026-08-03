@@ -10,7 +10,7 @@ use crate::db::{self, CreateTaskRequest, TaskPatch};
 use crate::models::{
     classify_agent_activity, clears_pending_stop, sort_order_for_status_transition, EpicId,
     HookEventKind, NotificationBehavior, StopOutcome, SubStatus, SubagentEvent, Task, TaskId,
-    TaskStatus, DEFAULT_BASE_BRANCH,
+    TaskStatus, UserPromptOutcome, DEFAULT_BASE_BRANCH,
 };
 use crate::service::ServiceError;
 
@@ -34,8 +34,8 @@ use crate::service::UrlUpdate;
 /// clear unbypassable for every caller: the invariant is spec'd per rule
 /// (tasks.allium, mcp-task-tools.allium, pr-workflow.allium) and the service
 /// layer is where this codebase keeps rules that read prior state. A generic
-/// patch primitive silently rewriting a column the caller did not name would
-/// also collide with the hook paths, which set `stop_pending` explicitly.
+/// patch primitive silently rewriting a column the caller did not name is also
+/// the wrong shape for a rule that only some transitions carry.
 fn with_status_transition(
     patch: TaskPatch,
     prior: TaskStatus,
@@ -686,7 +686,8 @@ impl TaskService {
     /// `sub_status`; both are no-ops on non-Running tasks. `UserPromptSubmit`
     /// additionally resumes a Review task straight to Running — it is the
     /// earliest signal that the human has continued the conversation — and
-    /// is a no-op outside {Running, Review}.
+    /// voids the deferred `Stop` that prompt supersedes; it is a no-op outside
+    /// {Running, Review}.
     pub async fn record_hook_event(
         &self,
         id: TaskId,
@@ -698,20 +699,36 @@ impl TaskService {
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("Task {} not found", id.0)))?;
 
-        // Stop is handled before the patch match, not inside it: its flip-or-
-        // defer branch is decided by the DB against the row's committed state,
-        // so it produces no TaskPatch and must not read `task` — another hook
-        // process can have invalidated that snapshot by the time we write. See
-        // HookStop in agent-health.allium.
+        // Stop and UserPromptSubmit are handled before the patch match, not
+        // inside it: both decide a branch against the row's committed state, so
+        // they produce no TaskPatch and must not read `task` — another hook
+        // process can have invalidated that snapshot by the time we write. For
+        // Stop that is the flip-or-defer choice; for UserPromptSubmit it is
+        // whether the deferred Stop it would void is one this prompt actually
+        // supersedes. See HookStop / HookUserPromptSubmit in
+        // agent-health.allium.
         if kind == HookEventKind::Stop {
-            if self.db.try_record_stop(id).await? == StopOutcome::Flipped {
+            if self.db.try_record_stop(id, self.clock.now()).await? == StopOutcome::Flipped {
+                self.recalculate_epic_for_task(id).await;
+            }
+            return Ok(());
+        }
+        if kind == HookEventKind::UserPromptSubmit {
+            // Recalculate only for the arm that moved status — Review ->
+            // Running. A refresh of an already-Running task is a plain activity
+            // signal and must not pay for a recalculation on this hot path.
+            if self
+                .db
+                .record_user_prompt_submit(id, self.clock.now())
+                .await?
+                == UserPromptOutcome::Resumed
+            {
                 self.recalculate_epic_for_task(id).await;
             }
             return Ok(());
         }
 
         let now = self.clock.now();
-        let was_review = task.status == TaskStatus::Review;
         let patch = match kind {
             HookEventKind::PreToolUse if task.status == TaskStatus::Running => {
                 let activity = classify_agent_activity(
@@ -750,29 +767,12 @@ impl TaskService {
                         .sub_status(SubStatus::NeedsInput),
                 })
             }
-            HookEventKind::UserPromptSubmit if task.status == TaskStatus::Running || was_review => {
-                Some(
-                    TaskPatch::new()
-                        .status(TaskStatus::Running)
-                        .sub_status(SubStatus::default_for(TaskStatus::Running))
-                        .last_pre_tool_use_at(Some(now))
-                        .stop_pending(false),
-                )
-            }
             _ => None,
         };
-        let Some(patch) = patch else {
-            return Ok(());
-        };
-        // Recalculate only when the patch actually moved task.status — here,
-        // only a UserPromptSubmit that resumed a Review task (Review ->
-        // Running). One that merely refreshes an already-Running task is a
-        // plain activity signal and must not pay for a recalculation on this
-        // hot path. Stop returned above, having done its own.
-        let recalc = matches!(kind, HookEventKind::UserPromptSubmit) && was_review;
-        self.db.patch_task(id, &patch).await?;
-        if recalc {
-            self.recalculate_epic_for_task(id).await;
+        // Neither remaining arm moves task.status, so no epic recalculation is
+        // owed here.
+        if let Some(patch) = patch {
+            self.db.patch_task(id, &patch).await?;
         }
         Ok(())
     }
