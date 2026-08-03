@@ -17,7 +17,6 @@ pub mod repo_sync;
 pub mod split;
 pub mod system;
 pub mod task;
-pub mod tips;
 pub mod todos;
 
 pub use budget::BudgetCommand;
@@ -33,5 +32,4 @@ pub use repo_sync::RepoSyncCommand;
 pub use split::SplitCommand;
 pub use system::SystemCommand;
 pub use task::TaskCommand;
-pub use tips::TipsCommand;
 pub use todos::TodoCommand;

@@ -68,14 +68,4 @@ impl TuiRuntime {
             }
         })
     }
-
-    pub(super) async fn exec_save_tips_state(
-        &self,
-        seen_up_to: u32,
-        show_mode: crate::models::TipsShowMode,
-    ) {
-        if let Err(e) = self.database.save_tips_state(seen_up_to, show_mode).await {
-            tracing::warn!("Failed to save tips state: {e:#}");
-        }
-    }
 }

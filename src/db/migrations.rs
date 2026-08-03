@@ -91,7 +91,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (33, migrate_v33_add_auto_dispatch),
     (34, migrate_v34_add_parent_epic_id),
     (35, migrate_v35_add_self_ref_check),
-    (36, migrate_v36_tips_state),
+    (36, migrate_v36_tips_state),         // superseded by v84
     (37, migrate_v37_pr_workflow_states), // pr_workflow_states created here — superseded by v51 drop
     (38, migrate_v38_feed_epic_columns),
     (39, migrate_v39_add_projects),
@@ -144,6 +144,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (81, migrate_v81_create_task_subagents),
     (82, migrate_v82_resolve_stranded_pending_stops),
     (83, migrate_v83_add_stop_pending_at),
+    (84, migrate_v84_drop_tips_state), // drops table created in v36
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -977,7 +978,7 @@ fn migrate_v39_add_projects(conn: &Connection) -> Result<()> {
     .context("Failed to add projects table (migration v39)")
 }
 
-fn migrate_v36_tips_state(conn: &Connection) -> Result<()> {
+pub(super) fn migrate_v36_tips_state(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tips_state (
             id         INTEGER PRIMARY KEY DEFAULT 1,
@@ -1297,6 +1298,20 @@ pub(super) fn migrate_v83_add_stop_pending_at(conn: &Connection) -> Result<()> {
             .context("Failed to add tasks.stop_pending_at (migration v83)")?;
     }
     Ok(())
+}
+
+/// Drops the singleton `tips_state` table created by v36. The startup tips
+/// popup was removed outright, so nothing reads or writes the watermark or the
+/// show mode any more.
+///
+/// v36 itself is deliberately left in place: it has run against production
+/// databases, and a database stamped below 36 still replays it on the way here.
+/// The pair creating-then-dropping across the replay is the normal cost of the
+/// append-only policy in this module's header — the alternative, editing v36,
+/// would rewrite recorded schema history.
+pub(super) fn migrate_v84_drop_tips_state(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS tips_state")
+        .context("Failed to drop tips_state (migration v84)")
 }
 
 pub(super) fn migrate_v42_drop_epic_tag(conn: &Connection) -> Result<()> {

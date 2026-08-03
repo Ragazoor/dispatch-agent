@@ -2,6 +2,66 @@
 use super::*;
 
 #[tokio::test]
+async fn a_fresh_db_has_no_tips_state_table() {
+    let db = in_memory_db().await;
+    let tables: i64 = db
+        .db_call(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tips_state'",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        tables, 0,
+        "v84 must leave no tips_state table behind on a fresh database"
+    );
+}
+
+/// v36 created `tips_state`; v84 drops it. The historical v36 entry stays in
+/// `MIGRATIONS` untouched, so an existing database still creates the table on
+/// its way forward and must then lose it — including when the row carries a
+/// non-default watermark and show mode.
+#[tokio::test]
+async fn migration_84_drops_a_populated_v36_tips_state_table() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    // The v36 schema, built by migrate_v36_tips_state itself so the fixture
+    // cannot drift from what shipped.
+    crate::db::migrations::migrate_v36_tips_state(&conn).unwrap();
+    conn.execute(
+        "UPDATE tips_state SET seen_up_to = 9, show_mode = 'new_only' WHERE id = 1",
+        [],
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v84_drop_tips_state(&conn).unwrap();
+
+    let remaining: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tips_state'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(remaining, 0, "v84 must drop the populated tips_state table");
+}
+
+/// The drop is unconditional DDL, so it must tolerate both a database that
+/// never had the table and a second application against one that has already
+/// lost it.
+#[tokio::test]
+async fn migration_84_is_idempotent_without_a_tips_state_table() {
+    use rusqlite::Connection as RawConn;
+    let conn = RawConn::open_in_memory().unwrap();
+    crate::db::migrations::migrate_v84_drop_tips_state(&conn).unwrap();
+    crate::db::migrations::migrate_v84_drop_tips_state(&conn).unwrap();
+}
+
+#[tokio::test]
 async fn migration_81_creates_task_subagents_and_columns() {
     let db = in_memory_db().await;
     let has = db

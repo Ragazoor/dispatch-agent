@@ -204,39 +204,6 @@ async fn delete_repo_path_removes_empty_preset() {
 }
 
 #[tokio::test]
-async fn tips_state_defaults_on_fresh_db() {
-    let db = in_memory_db().await;
-    let (seen_up_to, show_mode) = db.get_tips_state().await.unwrap();
-    assert_eq!(seen_up_to, 0);
-    assert_eq!(show_mode, crate::models::TipsShowMode::Always);
-}
-
-#[tokio::test]
-async fn tips_state_round_trip() {
-    let db = in_memory_db().await;
-    db.save_tips_state(7, crate::models::TipsShowMode::NewOnly)
-        .await
-        .unwrap();
-    let (seen_up_to, show_mode) = db.get_tips_state().await.unwrap();
-    assert_eq!(seen_up_to, 7);
-    assert_eq!(show_mode, crate::models::TipsShowMode::NewOnly);
-}
-
-#[tokio::test]
-async fn tips_state_overwrite() {
-    let db = in_memory_db().await;
-    db.save_tips_state(3, crate::models::TipsShowMode::NewOnly)
-        .await
-        .unwrap();
-    db.save_tips_state(5, crate::models::TipsShowMode::Never)
-        .await
-        .unwrap();
-    let (seen_up_to, show_mode) = db.get_tips_state().await.unwrap();
-    assert_eq!(seen_up_to, 5);
-    assert_eq!(show_mode, crate::models::TipsShowMode::Never);
-}
-
-#[tokio::test]
 async fn verify_command_default_is_none() {
     let db = in_memory_db().await;
     db.save_repo_path("/home/me/repo").await.unwrap();

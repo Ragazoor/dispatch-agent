@@ -219,7 +219,6 @@ pub(in crate::tui) struct InteractionState {
     /// The single one-shot "remember this until the next message" action in
     /// flight. See [`PendingAction`].
     pub(in crate::tui) pending: PendingAction,
-    pub(in crate::tui) tips: Option<TipsOverlayState>,
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +276,7 @@ pub struct App {
     /// without a DB round-trip. Loaded at startup, refreshed after a save.
     pub(in crate::tui) managed_feed_settings: ManagedFeedSettings,
     /// Transient overlay/picker state (pickers, in-progress popup edits, the
-    /// one-shot pending action, tips overlay). See [`InteractionState`].
+    /// one-shot pending action). See [`InteractionState`].
     pub(in crate::tui) interaction: InteractionState,
     /// Paths in `board.repo_paths` that do not exist on disk (`is_dir()` → false).
     /// Recomputed once in `handle_repo_paths_updated` so the render path is

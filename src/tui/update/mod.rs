@@ -23,5 +23,4 @@ mod retry;
 mod selection;
 mod split_pane;
 mod system;
-mod tips_projects;
 mod todos;

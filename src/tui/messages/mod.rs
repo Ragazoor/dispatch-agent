@@ -18,7 +18,6 @@ pub mod repo_sync;
 pub mod split;
 pub mod system;
 pub mod task;
-pub mod tips;
 pub mod todos;
 
 pub use budget::BudgetMessage;
@@ -35,5 +34,4 @@ pub use repo_sync::RepoSyncMessage;
 pub use split::SplitMessage;
 pub use system::SystemMessage;
 pub use task::TaskMessage;
-pub use tips::TipsMessage;
 pub use todos::TodoMessage;

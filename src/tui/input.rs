@@ -6,7 +6,7 @@ mod repo_filter;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, ColumnItem, Command, InputMode, Message, MoveDirection, ViewMode};
-use crate::models::{DispatchMode, EpicId, SubStatus, TaskId, TaskStatus, TaskTag, TipsShowMode};
+use crate::models::{DispatchMode, EpicId, SubStatus, TaskId, TaskStatus, TaskTag};
 
 fn key_event(action: &str, key: &str) -> Command {
     Command::RecordUsageEvent(crate::models::UsageEvent {
@@ -61,8 +61,6 @@ impl App {
             self.update(Message::System(
                 crate::tui::messages::SystemMessage::DismissError,
             ))
-        } else if self.interaction.tips.is_some() {
-            self.handle_key_tips(key)
         } else {
             match self.input.mode.clone() {
                 InputMode::Normal => self.handle_key_normal(key),
@@ -116,77 +114,6 @@ impl App {
 
         self.dirty = true;
         cmds
-    }
-
-    pub(in crate::tui) fn handle_key_tips(&mut self, key: KeyEvent) -> Vec<Command> {
-        match key.code {
-            KeyCode::Char('l') => {
-                let mut cmds = self.update(Message::Tips(crate::tui::messages::TipsMessage::Next));
-                cmds.push(key_event("browse_tips_next", "l"));
-                cmds
-            }
-            KeyCode::Right => {
-                let mut cmds = self.update(Message::Tips(crate::tui::messages::TipsMessage::Next));
-                cmds.push(key_event("browse_tips_next", "Right"));
-                cmds
-            }
-            KeyCode::Char('h') => {
-                let mut cmds = self.update(Message::Tips(crate::tui::messages::TipsMessage::Prev));
-                cmds.push(key_event("browse_tips_prev", "h"));
-                cmds
-            }
-            KeyCode::Left => {
-                let mut cmds = self.update(Message::Tips(crate::tui::messages::TipsMessage::Prev));
-                cmds.push(key_event("browse_tips_prev", "Left"));
-                cmds
-            }
-            KeyCode::Char('n') => {
-                // Toggles only between Always and NewOnly, so new_mode and its
-                // label are derived together — no exhaustive match over
-                // TipsShowMode (with a dead Never arm) is needed here.
-                let current_mode = self.interaction.tips.as_ref().map(|t| t.show_mode);
-                let (new_mode, label) = match current_mode {
-                    Some(TipsShowMode::NewOnly) => {
-                        (TipsShowMode::Always, "Tips: will show on every startup")
-                    }
-                    _ => (
-                        TipsShowMode::NewOnly,
-                        "Tips: will only show when there are new tips",
-                    ),
-                };
-                let mut cmds = self.update(Message::Tips(
-                    crate::tui::messages::TipsMessage::SetMode(new_mode),
-                ));
-                cmds.extend(self.update(Message::System(
-                    crate::tui::messages::SystemMessage::StatusInfo(label.to_string()),
-                )));
-                cmds.push(key_event("set_tips_mode", "n"));
-                cmds
-            }
-            KeyCode::Char('x') => {
-                let mut cmds = self.update(Message::Tips(
-                    crate::tui::messages::TipsMessage::SetMode(TipsShowMode::Never),
-                ));
-                cmds.extend(self.update(Message::System(
-                    crate::tui::messages::SystemMessage::StatusInfo(
-                        "Tips: disabled on startup".to_string(),
-                    ),
-                )));
-                cmds.push(key_event("disable_tips", "x"));
-                cmds
-            }
-            KeyCode::Char('q') => {
-                let mut cmds = self.update(Message::Tips(crate::tui::messages::TipsMessage::Close));
-                cmds.push(key_event("close_tips", "q"));
-                cmds
-            }
-            KeyCode::Esc => {
-                let mut cmds = self.update(Message::Tips(crate::tui::messages::TipsMessage::Close));
-                cmds.push(key_event("close_tips", "Esc"));
-                cmds
-            }
-            _ => vec![],
-        }
     }
 
     pub(in crate::tui) fn handle_key_task_detail(&mut self, key: KeyEvent) -> Vec<Command> {

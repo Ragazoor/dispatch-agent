@@ -968,40 +968,6 @@ fn snapshot_repo_filter_popup_cursor_on_repo() {
 }
 
 #[test]
-fn snapshot_tips_overlay_seen_tip() {
-    use crate::tui::messages::TipsMessage;
-    use crate::tui::Message;
-
-    let mut app = make_app();
-    // max_seen_id covers all tips, so no NEW badge is drawn.
-    app.update(Message::Tips(TipsMessage::Show {
-        tips: super::make_tips(),
-        starting_index: 1,
-        max_seen_id: 99,
-        show_mode: crate::models::TipsShowMode::Always,
-    }));
-    let rendered = render_to_string(&mut app, 120, 40);
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
-fn snapshot_tips_overlay_new_tip_shows_badge() {
-    use crate::tui::messages::TipsMessage;
-    use crate::tui::Message;
-
-    let mut app = make_app();
-    // max_seen_id below the current tip id => is_new() true => NEW badge shown.
-    app.update(Message::Tips(TipsMessage::Show {
-        tips: super::make_tips(),
-        starting_index: 0,
-        max_seen_id: 0,
-        show_mode: crate::models::TipsShowMode::Always,
-    }));
-    let rendered = render_to_string(&mut app, 120, 40);
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
 fn snapshot_top_row_budget_indicator_fresh() {
     use crate::models::budget::{BudgetSnapshot, BudgetWindow};
 

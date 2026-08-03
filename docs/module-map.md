@@ -22,12 +22,12 @@ to look.
 | `src/tui/dispatcher.rs` | `dispatch(app, msg)` — thin top-level router: one arm per outer `Message` domain, delegating to that domain's inner-enum `route(self, app)` method |
 | `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `system.rs`, `split.rs`, `todos.rs`, `learnings.rs`, `managed_feeds.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
 | `src/tui/commands/` | Per-domain inner `*Command` enums (`task.rs`, `epic.rs`, `editor.rs`, `feed.rs`, `split.rs`, `todos.rs`, …) — the command twin of `src/tui/messages/`. Variants of the outer `Command` enum are progressively migrated here. Unlike `messages/`, these are pure data: `Command` → effect stays centralised in `src/runtime/commands.rs` |
-| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `learnings.rs`, `lifecycle.rs`, `main_session.rs`, `managed_feeds.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `tips_projects.rs`, `todos.rs`) |
+| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `learnings.rs`, `lifecycle.rs`, `main_session.rs`, `managed_feeds.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `todos.rs`) |
 | `src/tui/input.rs` | Key event entry point, `text_edit_message()` caret routing, inline-mutation convention for UI-only state, unconditional `dirty = true` |
 | `src/tui/input/` | Per-mode key handlers: `normal.rs`, `confirm.rs`, `managed_feeds.rs`, `repo_filter.rs` |
 | `src/tui/text_caret.rs` | Pure single-line caret mechanics (`insert`, `delete_before`, `move_left`, `word_left`, `byte_offset`, …) shared by every text `InputMode` — see the caret convention in `docs/conventions.md` |
 | `src/tui/ui/mod.rs` | Rendering entry point — re-exports `render()`, thin dispatcher |
-| `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `tips.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`, `managed_feeds.rs`) |
+| `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`, `managed_feeds.rs`) |
 | `src/tui/ui/shared.rs` | Cross-board helpers: `refresh_status`, `truncate`, `fair_truncate_segments`, `push_hint_spans`, `caret_line` |
 | `src/tui/ui/palette.rs` | Tokyo Night color palette constants |
 | `src/tui/ui/{input_form,learnings,todos}.rs` | Overlay renderers (input forms, knowledge base panel, TODO overlay) |
@@ -38,7 +38,7 @@ to look.
 | `src/models/{epics,learnings,review,todos,usage}.rs` | Domain types per area. `review.rs` holds `ReviewDecision` and `pr_number_from_url` |
 | `src/models/url.rs` | `TaskUrl` / `UrlType` — the typed URL on a task (PR, issue, security alert), stored explicitly rather than sniffed |
 | `src/models/ids.rs` | `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId`/`TodoId` |
-| `src/models/string_enum.rs` | `define_str_enum!` macro behind `TaskStatus`/`SubStatus`/`TaskTag`/`WrapUpMode`/`TipsShowMode` string conversions |
+| `src/models/string_enum.rs` | `define_str_enum!` macro behind `TaskStatus`/`SubStatus`/`TaskTag`/`WrapUpMode` string conversions |
 | `src/models/paths.rs` | `expand_tilde` path utility |
 | `src/models/columns.rs` | `VisualColumn` kanban board layout |
 | `src/service/mod.rs` | Service module root: `ServiceError`, `FieldUpdate`, `UrlUpdate`, re-exports of all sub-module types |
@@ -87,7 +87,6 @@ to look.
 | `src/notify.rs` | Shared notification delivery (`write_message_file` / `notify_tmux` / `deliver`) — writes a message file into a task's worktree and injects a tmux nudge; used by `send_message` (`src/mcp/handlers/tasks/dispatch.rs`) and task-watcher completion notices (`src/service/tasks/watchers.rs`) |
 | `src/editor.rs` | External `$EDITOR` integration for editing task/epic fields |
 | `src/plan.rs` | Plan file parsing (extract title/description from markdown) |
-| `src/tips.rs` | Startup tips: `Tip` struct and the compile-time `include_str!` load of the numbered markdown files in `src/tips/` (see `docs/specs/tips.allium`) |
 | `src/file_events.rs` | Per-task file-events JSONL log: `append_file_event` appends one `{schema_version, timestamp, task_id, tool, path, operation}` line to `<data_dir>/file-events/<task_id>.jsonl`, called from `dispatch hook-file-event` (see `docs/specs/agent-tree.allium`'s `CaptureFileEvent` rule) |
 | `src/agent_tree.rs` | Pure JSONL-events→tree logic: `build_tree(root, jsonl)` parses a task's file-events log into an in-memory `TreeNode` tree with Read/Modified badges (Modified wins) and auto-expansion flags on touched directories. No I/O, no rendering (see `docs/specs/agent-tree.allium`'s `RefreshAgentTree` rule) |
 | `src/setup/mod.rs` | First-run setup entry point |

@@ -160,7 +160,6 @@ The Allium specs in `docs/specs/` are the **source of truth** for domain and int
 - `todo.allium` — personal TODO overlay (lightweight checklist, separate from the kanban board)
 - `repo-rag.allium` — per-repo semantic search: indexing and RAG-based doc search
 - `observability.allium` — trajectory persistence (per-task audit log of MCP tool calls) and slow-db-call latency warnings
-- `tips.allium` — startup tips popup (show/browse/dismiss)
 - `repo-sync.allium` — local-first repo sync: ahead/behind drift measurement, the sync operation and its typed failure vocabulary, and the surfaces that expose them
 
 Consult the relevant spec before changing core behavior. Use `allium:tend` and `allium:weed` skills to keep spec and code aligned.

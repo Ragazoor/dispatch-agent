@@ -1868,10 +1868,64 @@ fn typing_resets_repo_cursor_to_zero() {
     assert_eq!(app.input.repo_cursor, 0);
 }
 
+/// The retired startup tips popup used to sit in front of the board and swallow
+/// exactly these six keys (`docs/plans/3809-keybinding-pruning-implementation.md`
+/// §2). Nothing may intercept them on a freshly started app again: each one has
+/// to reach its board handler on the very first keypress.
 #[test]
-fn startup_never_returns_none() {
-    let tips = vec![make_tip_with_id(1), make_tip_with_id(2)];
-    assert!(determine_tips_start(&tips, 0, crate::models::TipsShowMode::Never).is_none());
+fn a_freshly_started_app_routes_the_formerly_intercepted_keys_to_the_board() {
+    // `q` reaches the board quit path, which asks for confirmation.
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('q')));
+    assert_eq!(
+        app.input.mode,
+        InputMode::ConfirmQuit,
+        "'q' must reach the board quit path from a fresh board"
+    );
+
+    // `h` / `l` move the column cursor.
+    let mut app = make_app();
+    let start = app.selected_column();
+    app.handle_key(make_key(KeyCode::Char('l')));
+    assert_ne!(
+        app.selected_column(),
+        start,
+        "'l' must move the column cursor from a fresh board"
+    );
+    app.handle_key(make_key(KeyCode::Char('h')));
+    assert_eq!(
+        app.selected_column(),
+        start,
+        "'h' must move it back from a fresh board"
+    );
+
+    // `n` opens the new-task form.
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('n')));
+    assert_eq!(
+        app.input.mode,
+        InputMode::InputTitle,
+        "'n' must open the new-task form from a fresh board"
+    );
+
+    // `x` reaches the archive handler, which confirms before moving anything.
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Char('x')));
+    assert_ne!(
+        app.input.mode,
+        InputMode::Normal,
+        "'x' must reach the board archive handler from a fresh board"
+    );
+
+    // `Esc` clears the selection and leaves the board in Normal mode — it must
+    // do that rather than being eaten by an overlay that never opened.
+    let mut app = make_app();
+    app.handle_key(make_key(KeyCode::Esc));
+    assert_eq!(
+        app.input.mode,
+        InputMode::Normal,
+        "Esc must leave a fresh board in Normal mode"
+    );
 }
 
 #[test]

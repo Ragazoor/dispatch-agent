@@ -20,7 +20,6 @@ pub mod repo_sync;
 pub mod runtime;
 pub mod service;
 pub mod setup;
-pub mod tips;
 pub mod tmux;
 pub mod tui;
 

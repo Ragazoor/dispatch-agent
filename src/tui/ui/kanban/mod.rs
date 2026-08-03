@@ -42,7 +42,7 @@ use columns::{compute_columns_data, render_columns};
 use popups::{
     render_error_popup, render_help_overlay, render_managed_feed_config_overlay,
     render_move_task_overlay, render_reparent_epic_overlay, render_repo_filter_overlay,
-    render_task_detail_overlay, render_tips_overlay,
+    render_task_detail_overlay,
 };
 use status_bar::render_status_bar;
 
@@ -181,7 +181,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_error_popup(frame, app, area);
     render_help_overlay(frame, app, area);
     render_repo_filter_overlay(frame, app, area);
-    render_tips_overlay(frame, app, area);
     render_task_detail_overlay(frame, app, area);
     render_learnings(frame, app, area);
     render_todos(frame, app, area);

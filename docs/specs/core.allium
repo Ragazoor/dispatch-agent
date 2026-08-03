@@ -52,8 +52,6 @@ enum FeedRole { none | reviews_parent | my_reviews | team_reviews | bots | cve }
 -- to MCP callers.
 enum EpicOrigin { manual | repo_group }
 
-enum TipsShowMode { always | new_only | never }
-
 -- Legacy alias: "ready" maps to backlog
 enum TaskStatus { backlog | running | review | done | archived }
 
@@ -181,7 +179,7 @@ enum WrapUpMode { rebase | pr | done }
 -- handle DB errors gracefully, so a hard error is safe.
 --
 -- This applies to all enum columns: TaskStatus, SubStatus, TaskTag,
--- WrapUpMode, LearningKind, LearningScope, LearningStatus, TipsShowMode.
+-- WrapUpMode, LearningKind, LearningScope and LearningStatus.
 -- It also applies to JSON-encoded columns (e.g. labels, tags): malformed
 -- JSON must return an error rather than an empty list.
 --
@@ -540,28 +538,6 @@ entity SplitPane {
         -- Reset to true on split entry and exit.
 }
 
--- TipsState persists the user's tips preferences across sessions.
--- There is exactly one row in the DB (singleton).
-entity TipsState {
-    seen_up_to: Integer    -- highest tip id shown in any previous session; 0 = never shown
-    show_mode: TipsShowMode
-
-    @guidance
-        -- Persisted to a single-row `tips_state` DB table (migration v36).
-        -- seen_up_to acts as a watermark: any Tip with id > seen_up_to is "new".
-        -- Updated on tips overlay close, reflecting the tip id viewed at that moment.
-}
-
--- Tip is a runtime-only concept (embedded at compile time, never persisted).
--- Tips are loaded from numbered markdown files in src/tips/ via include_str!.
-value Tip {
-    id: Integer       -- numeric prefix from filename (e.g., 001 → 1)
-    title: String     -- extracted from the first ## heading in the file
-    body: String      -- everything after the first ## heading
-
-    is_new(state): id > state.seen_up_to
-}
-
 ------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
@@ -582,7 +558,6 @@ config {
     -- Runtime code inspects `git symbolic-ref refs/remotes/origin/HEAD`
     -- first and only falls back to this literal when detection fails.
     default_branch: String = "main"
-    tips_show_mode: TipsShowMode = always
 
     -- Staleness thresholds used by card age rendering and Staleness::from_age.
     fresh_threshold: Duration = 3.days

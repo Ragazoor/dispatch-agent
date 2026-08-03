@@ -130,23 +130,6 @@ pub fn clears_pending_stop(prior: TaskStatus, next: TaskStatus) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// TipsShowMode
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TipsShowMode {
-    Always,
-    NewOnly,
-    Never,
-}
-
-define_str_enum!(TipsShowMode, "tips show mode" {
-    Always => "always",
-    NewOnly => "new_only",
-    Never => "never",
-});
-
-// ---------------------------------------------------------------------------
 // SubStatus
 // ---------------------------------------------------------------------------
 

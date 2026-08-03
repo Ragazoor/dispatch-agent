@@ -434,12 +434,6 @@ pub trait SettingsStore: Send + Sync {
         -> Result<()>;
     async fn delete_filter_preset(&self, name: &str) -> Result<()>;
     async fn list_filter_presets(&self) -> Result<Vec<(String, Vec<String>, String)>>;
-    async fn get_tips_state(&self) -> Result<(u32, crate::models::TipsShowMode)>;
-    async fn save_tips_state(
-        &self,
-        seen_up_to: u32,
-        show_mode: crate::models::TipsShowMode,
-    ) -> Result<()>;
     async fn get_verify_command(&self, path: &str) -> Result<Option<String>>;
     /// Set the verify command for a known repo path.
     ///

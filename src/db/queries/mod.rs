@@ -337,49 +337,6 @@ pub(super) fn read_optional_datetime(
     }
 }
 
-pub(super) fn get_tips_state(
-    conn: &rusqlite::Connection,
-) -> Result<(u32, crate::models::TipsShowMode)> {
-    use crate::models::TipsShowMode;
-    let result = conn.query_row(
-        "SELECT seen_up_to, show_mode FROM tips_state WHERE id = 1",
-        [],
-        |row| {
-            let seen_up_to: u32 = row.get(0)?;
-            let show_mode_str: String = row.get(1)?;
-            Ok((seen_up_to, show_mode_str))
-        },
-    );
-
-    match result {
-        Ok((seen_up_to, show_mode_str)) => {
-            let show_mode = show_mode_str.parse::<TipsShowMode>().map_err(|e| {
-                anyhow::anyhow!("unrecognised tips show_mode {:?}: {}", show_mode_str, e)
-            })?;
-            Ok((seen_up_to, show_mode))
-        }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok((0, TipsShowMode::Always)),
-        Err(e) => Err(e).context("Failed to read tips_state"),
-    }
-}
-
-pub(super) fn save_tips_state(
-    conn: &rusqlite::Connection,
-    seen_up_to: u32,
-    show_mode: crate::models::TipsShowMode,
-) -> Result<()> {
-    let rows = conn
-        .execute(
-            "UPDATE tips_state SET seen_up_to = ?1, show_mode = ?2 WHERE id = 1",
-            rusqlite::params![seen_up_to, show_mode.as_str()],
-        )
-        .context("Failed to save tips_state")?;
-    if rows != 1 {
-        anyhow::bail!("save_tips_state: expected 1 row updated, got {rows}");
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {

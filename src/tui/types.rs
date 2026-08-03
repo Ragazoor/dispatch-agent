@@ -7,35 +7,9 @@ pub(in crate::tui) const REPARENT_NO_PARENT_SENTINEL: &str = "__no_parent__";
 use ratatui::widgets::ListState;
 
 use crate::models::{
-    DispatchMode, Epic, EpicId, EpicSubstatus, Task, TaskId, TaskStatus, TaskTag, TipsShowMode,
-    TodoId, WrapUpMode, DEFAULT_BASE_BRANCH,
+    DispatchMode, Epic, EpicId, EpicSubstatus, Task, TaskId, TaskStatus, TaskTag, TodoId,
+    WrapUpMode, DEFAULT_BASE_BRANCH,
 };
-
-// ---------------------------------------------------------------------------
-// TipsOverlayState
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct TipsOverlayState {
-    pub tips: Vec<crate::tips::Tip>,
-    pub index: usize,
-    /// Highest tip id that was already seen before this session started.
-    /// Used to show the NEW badge on unseen tips.
-    pub max_seen_id: u32,
-    pub show_mode: TipsShowMode,
-}
-
-impl TipsOverlayState {
-    pub fn current_tip(&self) -> Option<&crate::tips::Tip> {
-        self.tips.get(self.index)
-    }
-
-    pub fn is_new(&self) -> bool {
-        self.current_tip()
-            .map(|t| t.id > self.max_seen_id)
-            .unwrap_or(false)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // MoveDirection
@@ -188,8 +162,6 @@ pub enum Message {
     /// Local-first repo sync messages — see
     /// [`crate::tui::messages::RepoSyncMessage`].
     RepoSync(crate::tui::messages::RepoSyncMessage),
-    /// Tips overlay messages — see [`crate::tui::messages::TipsMessage`].
-    Tips(crate::tui::messages::TipsMessage),
     /// Knowledge-base overlay messages — see [`crate::tui::messages::LearningMessage`].
     Learning(crate::tui::messages::LearningMessage),
     /// Personal TODO overlay messages — see [`crate::tui::messages::TodoMessage`].
@@ -249,8 +221,6 @@ pub enum Command {
     RepoSync(crate::tui::commands::RepoSyncCommand),
     /// PR flow side-effect commands — see [`crate::tui::commands::PrCommand`].
     Pr(crate::tui::commands::PrCommand),
-    /// Tips persistence commands — see [`crate::tui::commands::TipsCommand`].
-    Tips(crate::tui::commands::TipsCommand),
     /// Main session side-effect commands — see [`crate::tui::commands::MainSessionCommand`].
     MainSession(crate::tui::commands::MainSessionCommand),
     /// Knowledge-base overlay side-effect commands — see

@@ -490,21 +490,6 @@ impl TuiRuntime {
             app.update(msg);
         }
 
-        // Load tips and show popup if appropriate.
-        let tips = crate::tips::embedded_tips();
-        let (seen_up_to, show_mode) = database
-            .get_tips_state()
-            .await
-            .unwrap_or((0, crate::models::TipsShowMode::Always));
-        if let Some(starting_index) = tips_starting_index(&tips, seen_up_to, show_mode) {
-            app.update(Message::Tips(crate::tui::messages::TipsMessage::Show {
-                tips,
-                starting_index,
-                max_seen_id: seen_up_to,
-                show_mode,
-            }));
-        }
-
         // Build TuiRuntime.
         let (msg_tx, msg_rx) = mpsc::unbounded_channel::<Message>();
         let feed_runner =
@@ -901,37 +886,4 @@ fn parse_raw_presets(
 /// single keypresses.
 pub(crate) fn frame_ready(elapsed_since_render: Duration, dirty: bool) -> bool {
     dirty && elapsed_since_render >= MIN_FRAME_INTERVAL
-}
-
-/// Determines which index to start the tips overlay at, or `None` if tips
-/// should not be shown. Pure function — enables unit testing of startup logic.
-pub fn tips_starting_index(
-    tips: &[crate::tips::Tip],
-    seen_up_to: u32,
-    show_mode: crate::models::TipsShowMode,
-) -> Option<usize> {
-    use crate::models::TipsShowMode;
-
-    if tips.is_empty() {
-        return None;
-    }
-
-    match show_mode {
-        TipsShowMode::Never => None,
-        TipsShowMode::NewOnly | TipsShowMode::Always => {
-            if let Some(idx) = tips.iter().position(|t| t.id > seen_up_to) {
-                Some(idx)
-            } else if show_mode == TipsShowMode::Always {
-                // No new tips but show anyway — pick a time-based pseudo-random index
-                let idx = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .subsec_nanos() as usize)
-                    % tips.len();
-                Some(idx)
-            } else {
-                None // NewOnly + no new tips
-            }
-        }
-    }
 }

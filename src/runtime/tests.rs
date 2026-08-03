@@ -4202,22 +4202,6 @@ async fn toggle_group_by_repo_on_regroups_existing_tasks() {
 }
 
 // ---------------------------------------------------------------------------
-// exec_save_tips_state
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn exec_save_tips_state_persists_to_db() {
-    let (rt, _app) = test_runtime().await;
-
-    rt.exec_save_tips_state(7, models::TipsShowMode::NewOnly)
-        .await;
-
-    let (seen_up_to, show_mode) = rt.database.get_tips_state().await.unwrap();
-    assert_eq!(seen_up_to, 7);
-    assert_eq!(show_mode, models::TipsShowMode::NewOnly);
-}
-
-// ---------------------------------------------------------------------------
 // Frame rate cap
 // ---------------------------------------------------------------------------
 
@@ -5124,26 +5108,6 @@ mod command_dispatch {
                 .contains(&"/doomed".to_string()),
             "the path should no longer be known"
         );
-    }
-
-    #[tokio::test]
-    async fn dispatch_tips_save_state_persists_the_seen_watermark() {
-        use crate::tui::commands::TipsCommand;
-        let (rt, mut app) = test_runtime().await;
-
-        dispatch_one(
-            &rt,
-            &mut app,
-            Command::Tips(TipsCommand::SaveState {
-                seen_up_to: 4,
-                show_mode: crate::models::TipsShowMode::Never,
-            }),
-        )
-        .await;
-
-        let (seen_up_to, show_mode) = rt.database.get_tips_state().await.unwrap();
-        assert_eq!(seen_up_to, 4);
-        assert_eq!(show_mode, crate::models::TipsShowMode::Never);
     }
 
     #[tokio::test]

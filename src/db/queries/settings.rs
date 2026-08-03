@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use rusqlite::{params, OptionalExtension};
 
 use super::super::{Database, SettingsStore};
-use super::{get_tips_state, save_tips_state};
 
 #[async_trait::async_trait]
 impl super::super::SettingsStore for Database {
@@ -184,19 +183,6 @@ impl super::super::SettingsStore for Database {
                 .collect()
         })
         .await
-    }
-
-    async fn get_tips_state(&self) -> Result<(u32, crate::models::TipsShowMode)> {
-        self.db_call_read(move |conn| get_tips_state(conn)).await
-    }
-
-    async fn save_tips_state(
-        &self,
-        seen_up_to: u32,
-        show_mode: crate::models::TipsShowMode,
-    ) -> Result<()> {
-        self.db_call(move |conn| save_tips_state(conn, seen_up_to, show_mode))
-            .await
     }
 
     async fn get_verify_command(&self, path: &str) -> Result<Option<String>> {

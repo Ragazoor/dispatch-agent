@@ -67,11 +67,6 @@ pub(super) async fn dispatch(
             dispatch_split(rt, app, cmd);
             vec![]
         }
-        // Tips
-        Tips(cmd) => {
-            dispatch_tips(rt, cmd).await;
-            vec![]
-        }
         Learning(cmd) => {
             dispatch_learning(rt, app, cmd).await;
             vec![]
@@ -167,16 +162,6 @@ async fn dispatch_main_session(
         Open => rt.exec_open_main_session(app).await,
         Create => rt.exec_create_main_session(app).await,
         CheckLiveness => drop(rt.exec_check_main_session_liveness()),
-    }
-}
-
-async fn dispatch_tips(rt: &super::TuiRuntime, cmd: crate::tui::commands::TipsCommand) {
-    use crate::tui::commands::TipsCommand::*;
-    match cmd {
-        SaveState {
-            seen_up_to,
-            show_mode,
-        } => rt.exec_save_tips_state(seen_up_to, show_mode).await,
     }
 }
 
