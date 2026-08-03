@@ -813,6 +813,10 @@ surface AgentTreeCompanionPane {
         -- closed (or is a file), the cursor moves to its parent instead.
         CollapseSelectedAgentTreeNode(user, pane)      -- h, Left
 
+        -- Expand and toggle act on directories only. On a file node both are
+        -- no-ops: a file has nothing to open, so the pane's expansion state is
+        -- left untouched and a following collapse steps out to the parent on
+        -- the first press rather than the second.
         ExpandSelectedAgentTreeNode(user, pane)        -- l, Right
         ToggleSelectedAgentTreeNode(user, pane)        -- Space, Enter
 

@@ -36,6 +36,29 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
 }
 
+impl TreeNode {
+    /// Resolve a chain of name segments, relative to this node, to the node it
+    /// names — `None` if any segment matches no child. Segment chains are how
+    /// the companion pane's tree widget identifies a node (see
+    /// `build_tree_items` in `src/cli/agent_tree.rs`), so this is what turns a
+    /// widget selection back into a `TreeNode`.
+    ///
+    /// An empty path resolves to `self`. Callers that need to distinguish "the
+    /// root" from "nothing selected" must check for that themselves — the
+    /// synthetic root is a `Directory`, so it is otherwise indistinguishable
+    /// from a real directory selection.
+    pub fn node_at<S: AsRef<str>>(&self, path: &[S]) -> Option<&TreeNode> {
+        let mut current = self;
+        for segment in path {
+            current = current
+                .children
+                .iter()
+                .find(|c| c.name == segment.as_ref())?;
+        }
+        Some(current)
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RawFileEvent {
     path: String,
@@ -193,14 +216,6 @@ mod tests {
         )
     }
 
-    fn find<'a>(node: &'a TreeNode, path: &[&str]) -> Option<&'a TreeNode> {
-        let mut current = node;
-        for segment in path {
-            current = current.children.iter().find(|c| c.name == *segment)?;
-        }
-        Some(current)
-    }
-
     #[test]
     fn modified_wins_when_read_then_modified() {
         let jsonl = format!(
@@ -209,7 +224,7 @@ mod tests {
             event("/repo/src/lib.rs", "modified")
         );
         let tree = build_tree(&root(), &jsonl);
-        let node = find(&tree, &["src", "lib.rs"]).expect("node exists");
+        let node = tree.node_at(&["src", "lib.rs"]).expect("node exists");
         assert_eq!(node.badge, Some(FileOperation::Modified));
     }
 
@@ -221,7 +236,7 @@ mod tests {
             event("/repo/src/lib.rs", "read")
         );
         let tree = build_tree(&root(), &jsonl);
-        let node = find(&tree, &["src", "lib.rs"]).expect("node exists");
+        let node = tree.node_at(&["src", "lib.rs"]).expect("node exists");
         assert_eq!(node.badge, Some(FileOperation::Modified));
     }
 
@@ -229,7 +244,7 @@ mod tests {
     fn read_only_path_gets_read_badge() {
         let jsonl = event("/repo/README.md", "read");
         let tree = build_tree(&root(), &jsonl);
-        let node = find(&tree, &["README.md"]).expect("node exists");
+        let node = tree.node_at(&["README.md"]).expect("node exists");
         assert_eq!(node.badge, Some(FileOperation::Read));
     }
 
@@ -242,7 +257,7 @@ mod tests {
             event("/repo/a.rs", "read")
         );
         let tree = build_tree(&root(), &jsonl);
-        let node = find(&tree, &["a.rs"]).expect("node exists");
+        let node = tree.node_at(&["a.rs"]).expect("node exists");
         assert_eq!(node.badge, Some(FileOperation::Read));
     }
 
@@ -254,7 +269,7 @@ mod tests {
             event("/repo/a.rs", "modified")
         );
         let tree = build_tree(&root(), &jsonl);
-        let node = find(&tree, &["a.rs"]).expect("node exists");
+        let node = tree.node_at(&["a.rs"]).expect("node exists");
         assert_eq!(node.badge, Some(FileOperation::Modified));
     }
 
@@ -267,11 +282,11 @@ mod tests {
         );
         let tree = build_tree(&root(), &jsonl);
         assert_eq!(
-            find(&tree, &["a.rs"]).expect("a.rs exists").badge,
+            tree.node_at(&["a.rs"]).expect("a.rs exists").badge,
             Some(FileOperation::Read)
         );
         assert_eq!(
-            find(&tree, &["b.rs"]).expect("b.rs exists").badge,
+            tree.node_at(&["b.rs"]).expect("b.rs exists").badge,
             Some(FileOperation::Modified)
         );
     }
@@ -285,7 +300,7 @@ mod tests {
         );
         let tree = build_tree(&root(), &jsonl);
         assert_eq!(tree.children.len(), 1);
-        assert_eq!(find(&tree, &["a.rs"]).expect("a.rs exists").name, "a.rs");
+        assert_eq!(tree.node_at(&["a.rs"]).expect("a.rs exists").name, "a.rs");
     }
 
     #[test]
@@ -296,8 +311,8 @@ mod tests {
             event("/repo/b.rs", "read")
         );
         let tree = build_tree(&root(), &jsonl);
-        assert!(find(&tree, &["a.rs"]).is_none());
-        assert!(find(&tree, &["b.rs"]).is_some());
+        assert!(tree.node_at(&["a.rs"]).is_none());
+        assert!(tree.node_at(&["b.rs"]).is_some());
     }
 
     #[test]
@@ -325,11 +340,11 @@ mod tests {
         );
         let tree = build_tree(&root(), &jsonl);
         assert_eq!(
-            find(&tree, &["a.rs"]).expect("a.rs exists").badge,
+            tree.node_at(&["a.rs"]).expect("a.rs exists").badge,
             Some(FileOperation::Modified)
         );
         assert_eq!(
-            find(&tree, &["b.rs"]).expect("b.rs exists").badge,
+            tree.node_at(&["b.rs"]).expect("b.rs exists").badge,
             Some(FileOperation::Modified)
         );
     }
@@ -338,7 +353,7 @@ mod tests {
     fn directory_containing_touched_file_is_expanded() {
         let jsonl = event("/repo/src/lib.rs", "read");
         let tree = build_tree(&root(), &jsonl);
-        let dir = find(&tree, &["src"]).expect("dir exists");
+        let dir = tree.node_at(&["src"]).expect("dir exists");
         assert!(dir.expanded);
         assert_eq!(dir.kind, TreeNodeKind::Directory);
         assert_eq!(dir.badge, None);
@@ -349,10 +364,10 @@ mod tests {
         let jsonl = event("/repo/a/b/c/d.rs", "modified");
         let tree = build_tree(&root(), &jsonl);
         assert!(tree.expanded);
-        assert!(find(&tree, &["a"]).expect("a exists").expanded);
-        assert!(find(&tree, &["a", "b"]).expect("b exists").expanded);
-        assert!(find(&tree, &["a", "b", "c"]).expect("c exists").expanded);
-        let file = find(&tree, &["a", "b", "c", "d.rs"]).expect("file exists");
+        assert!(tree.node_at(&["a"]).expect("a exists").expanded);
+        assert!(tree.node_at(&["a", "b"]).expect("b exists").expanded);
+        assert!(tree.node_at(&["a", "b", "c"]).expect("c exists").expanded);
+        let file = tree.node_at(&["a", "b", "c", "d.rs"]).expect("file exists");
         assert!(!file.expanded);
         assert_eq!(file.badge, Some(FileOperation::Modified));
     }
@@ -361,7 +376,7 @@ mod tests {
     fn untouched_sibling_directory_does_not_appear() {
         let jsonl = event("/repo/a/b.rs", "read");
         let tree = build_tree(&root(), &jsonl);
-        assert!(find(&tree, &["c"]).is_none());
+        assert!(tree.node_at(&["c"]).is_none());
         assert_eq!(tree.children.len(), 1);
     }
 

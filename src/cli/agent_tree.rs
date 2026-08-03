@@ -233,13 +233,35 @@ pub enum KeyAction {
     Exit,
 }
 
+/// Whether the widget's current selection is a directory, and so has something
+/// to open. A selection path is exactly a node's chain of name segments below
+/// the root (see `build_tree_items` and `sync_expansion_at`), so resolving it is
+/// `TreeNode::node_at`.
+///
+/// Fails closed: `false` for an empty selection — which `node_at` would resolve
+/// to the root, itself a directory — and `false` for a path that resolves to
+/// nothing, i.e. a stale selection left over from before a rebuild.
+fn selected_is_directory(root: &TreeNode, selected: &[String]) -> bool {
+    if selected.is_empty() {
+        return false;
+    }
+    root.node_at(selected)
+        .is_some_and(|node| node.kind == TreeNodeKind::Directory)
+}
+
 /// Apply one key press to the view state — see `docs/specs/agent-tree.allium`'s
 /// `AgentTreeCompanionPane` surface for the bindings. Cursor and expansion keys
 /// each have a vim motion and an arrow key bound to the same action.
 ///
+/// Expand and toggle are directory-only, which is why `root` is a parameter:
+/// `tui_tree_widget`'s `open()` has no leaf guard, so without the tree to
+/// consult, Space or `l` on a *file* would record a phantom open that the next
+/// `h` silently consumes instead of stepping out to the parent (#3834).
+/// Collapse needs no guard — on a file it always falls through to stepping out.
+///
 /// Pure with respect to everything but `state`, so the loop's key handling is
 /// testable without a terminal or an event source.
-pub fn handle_key(state: &mut RenderState, key: KeyEvent) -> KeyAction {
+pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> KeyAction {
     // `TreeState`'s navigation methods return whether anything changed; the
     // loop redraws unconditionally, so the answer is discarded.
     match key.code {
@@ -256,10 +278,16 @@ pub fn handle_key(state: &mut RenderState, key: KeyEvent) -> KeyAction {
         KeyCode::Char('h') | KeyCode::Left => {
             state.tree_state.key_left();
         }
-        KeyCode::Char('l') | KeyCode::Right => {
+        // The expansion keys carry a directory guard, so on a file they fall
+        // through to the catch-all arm and do nothing at all.
+        KeyCode::Char('l') | KeyCode::Right
+            if selected_is_directory(root, state.tree_state.selected()) =>
+        {
             state.tree_state.key_right();
         }
-        KeyCode::Char(' ') | KeyCode::Enter => {
+        KeyCode::Char(' ') | KeyCode::Enter
+            if selected_is_directory(root, state.tree_state.selected()) =>
+        {
             state.tree_state.toggle_selected();
         }
         _ => {}
@@ -283,7 +311,7 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, root: &Path, events_path: &P
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if handle_key(&mut state, key) == KeyAction::Exit {
+            if handle_key(&mut state, &tree, key) == KeyAction::Exit {
                 return Ok(());
             }
             continue;
@@ -530,7 +558,11 @@ mod tests {
         /// Press a key, then redraw as the real loop does — so a following
         /// press sees the identifiers the new view actually rendered.
         fn press(&mut self, code: KeyCode) -> KeyAction {
-            let action = handle_key(&mut self.state, KeyEvent::new(code, KeyModifiers::NONE));
+            let action = handle_key(
+                &mut self.state,
+                &self.tree,
+                KeyEvent::new(code, KeyModifiers::NONE),
+            );
             self.draw();
             action
         }
@@ -565,8 +597,9 @@ mod tests {
     #[test]
     fn ctrl_c_exits_the_renderer() {
         let mut state = RenderState::new();
+        let tree = build_tree(&root(), "");
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(handle_key(&mut state, key), KeyAction::Exit);
+        assert_eq!(handle_key(&mut state, &tree, key), KeyAction::Exit);
     }
 
     #[test]
@@ -660,6 +693,51 @@ mod tests {
             rig.press(code);
             assert!(rig.is_open(&["src"]), "{code:?}");
         }
+    }
+
+    /// Expand and toggle are directory-only — `tui_tree_widget`'s `open()` has
+    /// no leaf guard, so an unguarded press on a file inserts that file's path
+    /// into `opened()` (#3834). Nothing renders differently, which is exactly
+    /// why this has to be asserted on the open set.
+    ///
+    /// Asserted over the *whole* set, not just the file's own path, so no
+    /// sibling directory's expansion is disturbed either. One press per rig:
+    /// `l` followed by Space on the same file would cancel out (open, then
+    /// toggle closed) and pass even unguarded.
+    #[test]
+    fn expanding_a_file_leaves_the_open_set_untouched() {
+        for code in [
+            KeyCode::Char(' '),
+            KeyCode::Enter,
+            KeyCode::Char('l'),
+            KeyCode::Right,
+        ] {
+            let mut rig = KeyRig::new(&three_node_log());
+            rig.press(KeyCode::Char('j'));
+            assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
+            let before = rig.state.tree_state.opened().clone();
+
+            assert_eq!(rig.press(code), KeyAction::Continue, "{code:?}");
+            assert_eq!(rig.state.tree_state.opened(), &before, "{code:?}");
+        }
+    }
+
+    /// The user-visible regression: a phantom open on a file is consumed by the
+    /// next `h`, so step-out silently needed two presses (#3834).
+    #[test]
+    fn h_after_space_on_a_file_steps_out_to_the_parent_in_one_press() {
+        let mut rig = KeyRig::new(&three_node_log());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(
+            rig.selected(),
+            vec!["src".to_string(), "lib.rs".to_string()]
+        );
+
+        rig.press(KeyCode::Char(' '));
+        rig.press(KeyCode::Char('h'));
+        assert_eq!(rig.selected(), vec!["src".to_string()]);
     }
 
     #[test]
