@@ -156,6 +156,11 @@ patch_struct! {
 #[async_trait::async_trait]
 pub trait TaskRead: Send + Sync {
     async fn get_task(&self, id: TaskId) -> Result<Option<Task>>;
+    /// Whether a task row exists, without materialising it. For callers whose
+    /// only question is existence — typically to honour a `NotFound` contract
+    /// before a mutation — where [`get_task`](Self::get_task) would decode every
+    /// column and discard the result.
+    async fn task_exists(&self, id: TaskId) -> Result<bool>;
     async fn list_all(&self) -> Result<Vec<Task>>;
     async fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
@@ -208,8 +213,18 @@ pub trait TaskCrud: TaskRead {
     /// agent_id)` row is deleted if present. Returns the resulting live count.
     /// An `agent_id` that was never started is a no-op, not an underflow.
     async fn subagent_stop(&self, id: TaskId, agent_id: &str, session_id: &str) -> Result<i64>;
-    /// Remove every live-subagent row for `id` and zero `live_subagents`.
+    /// Remove every live-subagent row for `id` and zero `live_subagents`,
+    /// leaving `stop_pending` untouched. For the draining clear point
+    /// (`DetachTmux`), which runs the drain path and so owns that bit itself —
+    /// clearing it here would apply it unconditionally, where
+    /// `docs/specs/split-pane.allium` clears it only for a Running task.
     async fn subagent_clear(&self, id: TaskId) -> Result<()>;
+    /// [`subagent_clear`](Self::subagent_clear) plus `stop_pending = 0`, in one
+    /// transaction. For the three non-draining clear points — `SessionStart`,
+    /// crash and dispatch-claim — which void a deferred Stop rather than apply
+    /// it, so the bit cannot survive into a later session and fire a spurious
+    /// flip. See `ClearSubagentsOnSessionStart` in `docs/specs/agent-health.allium`.
+    async fn subagent_clear_and_void_pending_stop(&self, id: TaskId) -> Result<()>;
     /// Apply a deferred Stop that has no subagent left to drain it: move the
     /// task to `Review`, clear both hook timestamps and `stop_pending`.
     ///

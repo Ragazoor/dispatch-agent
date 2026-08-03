@@ -756,6 +756,12 @@ impl TaskService {
     /// Record a subagent lifecycle event and, when it drains the last
     /// subagent for a task carrying a deferred Stop, apply that Stop.
     ///
+    /// A `Start` is handled on its own and returns before the drain path
+    /// exists: it inserts its row *before* the recount, so the resulting count
+    /// can never be zero and it can never drain. Keeping that as control flow
+    /// rather than a condition means the drain predicate does not have to encode
+    /// the invariant — nor silently depend on it.
+    ///
     /// See `HookSubagentStart` / `HookSubagentStop` in
     /// `docs/specs/agent-health.allium`.
     pub async fn record_subagent_event(
@@ -763,50 +769,64 @@ impl TaskService {
         id: TaskId,
         event: SubagentEvent,
     ) -> Result<(), ServiceError> {
-        let task = self
-            .db
-            .get_task(id)
-            .await?
-            .ok_or_else(|| ServiceError::NotFound(format!("Task {} not found", id.0)))?;
-        let now = self.clock.now();
-
-        let (live, drains) = match &event {
+        match event {
             SubagentEvent::Start {
                 agent_id,
                 session_id,
-            } => (
+            } => {
+                if !self.db.task_exists(id).await? {
+                    return Err(Self::task_not_found(id));
+                }
                 self.db
-                    .subagent_start(id, agent_id, session_id, now)
-                    .await?,
-                false,
-            ),
+                    .subagent_start(id, &agent_id, &session_id, self.clock.now())
+                    .await?;
+                Ok(())
+            }
             SubagentEvent::Stop {
                 agent_id,
                 session_id,
-            } => (self.db.subagent_stop(id, agent_id, session_id).await?, true),
-            SubagentEvent::Clear => {
-                self.db.subagent_clear(id).await?;
-                (0, true)
+            } => {
+                // Read before the mutation on purpose: the drain decision is
+                // made against the pre-mutation row.
+                let task = self.get_task(id).await?;
+                let live = self.db.subagent_stop(id, &agent_id, &session_id).await?;
+                self.drain_if_settled(&task, live).await
             }
-        };
-
-        // Drain path: the deferred Stop lands only when the count actually
-        // reaches zero and a Stop was withheld while the task is still
-        // Running.
-        if drains && live == 0 && task.stop_pending && task.status == TaskStatus::Running {
-            self.db
-                .patch_task(
-                    id,
-                    &TaskPatch::new()
-                        .status(TaskStatus::Review)
-                        .sub_status(SubStatus::default_for(TaskStatus::Review))
-                        .last_pre_tool_use_at(None)
-                        .last_notification_at(None)
-                        .stop_pending(false),
-                )
-                .await?;
-            self.recalculate_epic_for_task(id).await;
+            SubagentEvent::Clear => {
+                let task = self.get_task(id).await?;
+                self.db.subagent_clear(id).await?;
+                self.drain_if_settled(&task, 0).await
+            }
         }
+    }
+
+    /// The service's one spelling of "that task id doesn't exist". Callers that
+    /// need the row use [`get_task`](Self::get_task), which produces the same
+    /// error; this is for the existence-only checks, which have no row to fail on.
+    fn task_not_found(id: TaskId) -> ServiceError {
+        ServiceError::NotFound(format!("Task {} not found", id.0))
+    }
+
+    /// The drain path: the deferred Stop lands only when the count actually
+    /// reaches zero and a Stop was withheld while the task is still Running.
+    /// `task` is the pre-mutation snapshot; `live` the count the mutation
+    /// produced.
+    async fn drain_if_settled(&self, task: &Task, live: i64) -> Result<(), ServiceError> {
+        if live != 0 || !task.stop_pending || task.status != TaskStatus::Running {
+            return Ok(());
+        }
+        self.db
+            .patch_task(
+                task.id,
+                &TaskPatch::new()
+                    .status(TaskStatus::Review)
+                    .sub_status(SubStatus::default_for(TaskStatus::Review))
+                    .last_pre_tool_use_at(None)
+                    .last_notification_at(None)
+                    .stop_pending(false),
+            )
+            .await?;
+        self.recalculate_epic_for_task(task.id).await;
         Ok(())
     }
 
@@ -822,14 +842,17 @@ impl TaskService {
     ///
     /// `NotFound` for an unknown task, matching `record_subagent_event`: the
     /// hook CLI turns that into a silent skip rather than a failed tool call.
+    /// Existence is all this needs, so it does not materialise the row.
+    ///
+    /// Entries and `stop_pending` go in one writer round trip. Not just for the
+    /// saved trip: a partial clear-then-patch would leave `live_subagents = 0` +
+    /// `stop_pending` + Running, the stranded shape `try_apply_pending_stop`
+    /// then flips to Review — a spurious flip the single transaction rules out.
     pub async fn clear_subagents_no_drain(&self, id: TaskId) -> Result<(), ServiceError> {
-        if self.db.get_task(id).await?.is_none() {
-            return Err(ServiceError::NotFound(format!("Task {} not found", id.0)));
+        if !self.db.task_exists(id).await? {
+            return Err(Self::task_not_found(id));
         }
-        self.db.subagent_clear(id).await?;
-        self.db
-            .patch_task(id, &TaskPatch::new().stop_pending(false))
-            .await?;
+        self.db.subagent_clear_and_void_pending_stop(id).await?;
         Ok(())
     }
 

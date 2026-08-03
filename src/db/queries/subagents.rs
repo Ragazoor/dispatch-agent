@@ -86,7 +86,15 @@ pub(super) fn subagent_stop(
     Ok(count)
 }
 
-pub(super) fn subagent_clear(conn: &mut Connection, task_id: i64) -> Result<()> {
+/// Drop every entry for the task and zero `live_subagents`. `void_pending_stop`
+/// additionally clears `stop_pending` in the same transaction — see the two
+/// `subagent_clear*` methods on [`crate::db::TaskCrud`], the only callers, for
+/// which clear point wants which and why.
+pub(super) fn subagent_clear(
+    conn: &mut Connection,
+    task_id: i64,
+    void_pending_stop: bool,
+) -> Result<()> {
     let tx = conn
         .unchecked_transaction()
         .context("Failed to open subagent_clear transaction")?;
@@ -95,6 +103,13 @@ pub(super) fn subagent_clear(conn: &mut Connection, task_id: i64) -> Result<()> 
         params![task_id],
     )
     .context("Failed to clear task_subagents rows")?;
+    if void_pending_stop {
+        tx.execute(
+            "UPDATE tasks SET stop_pending = 0 WHERE id = ?1",
+            params![task_id],
+        )
+        .context("Failed to void pending stop")?;
+    }
     sync_count(&tx, task_id)?;
     tx.commit()
         .context("Failed to commit subagent_clear transaction")?;

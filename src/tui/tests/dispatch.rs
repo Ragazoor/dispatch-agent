@@ -872,7 +872,10 @@ fn crash_emits_a_non_draining_subagent_clear() {
     assert!(
         cmds.iter().any(|c| matches!(
             c,
-            Command::Task(crate::tui::commands::TaskCommand::ClearSubagents { id, drain: false }) if *id == TaskId(1)
+            Command::Task(crate::tui::commands::TaskCommand::ClearSubagents {
+                id,
+                mode: crate::models::DrainMode::NoDrain,
+            }) if *id == TaskId(1)
         )),
         "a crash must clear subagents without draining to Review"
     );

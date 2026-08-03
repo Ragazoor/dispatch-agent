@@ -207,22 +207,20 @@ impl TuiRuntime {
         }
     }
 
-    /// Clear a task's subagent entries. `drain: true` (detach — the only
-    /// draining caller) runs the drain path so a deferred Stop lands;
-    /// `drain: false` (crash, dispatch claim) clears without draining, because
-    /// the caller already owns the resulting status and draining would race it
-    /// into a contradictory Review state. `SessionStart` also clears without
-    /// draining, but via the hook CLI rather than this command — see
-    /// `cmd_hook_subagent`. A failed clear is logged, not surfaced —
-    /// it degrades to a phantom count, which is recoverable, and an error
-    /// popup on a background cleanup would be worse than the drift.
-    pub(super) async fn exec_clear_subagents(&self, id: models::TaskId, drain: bool) {
-        let result = if drain {
-            self.task_svc
-                .record_subagent_event(id, models::SubagentEvent::Clear)
-                .await
-        } else {
-            self.task_svc.clear_subagents_no_drain(id).await
+    /// Clear a task's subagent entries, draining or not per
+    /// [`DrainMode`](crate::models::DrainMode). `SessionStart` also
+    /// clears without draining, but via the hook CLI rather than this command —
+    /// see `cmd_hook_subagent`. A failed clear is logged, not surfaced — it
+    /// degrades to a phantom count, which is recoverable, and an error popup on
+    /// a background cleanup would be worse than the drift.
+    pub(super) async fn exec_clear_subagents(&self, id: models::TaskId, mode: models::DrainMode) {
+        let result = match mode {
+            models::DrainMode::Drain => {
+                self.task_svc
+                    .record_subagent_event(id, models::SubagentEvent::Clear)
+                    .await
+            }
+            models::DrainMode::NoDrain => self.task_svc.clear_subagents_no_drain(id).await,
         };
         if let Err(e) = result {
             tracing::warn!(task_id = id.0, error = %e, "failed to clear subagent entries");

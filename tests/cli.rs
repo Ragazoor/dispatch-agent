@@ -570,20 +570,21 @@ async fn hook_unknown_kind_fails() {
 /// happened to be logged this run.
 #[tokio::test]
 async fn hook_initialises_app_log_in_data_dir() {
+    assert_hook_initialises_app_log("hook", &["notification"]).await;
+}
+
+/// Run `dispatch <subcommand> <task-id> <rest…>` against a fresh data dir and
+/// assert it created `app.log` there. Shared by every `hook*` command's coverage
+/// of the prologue they all go through.
+async fn assert_hook_initialises_app_log(subcommand: &str, rest: &[&str]) {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let id = seed_task(&db_path, "Hook App Log Test").await;
 
-    let out = binary()
-        .args([
-            "--db",
-            db_path.to_str().unwrap(),
-            "hook",
-            &id.0.to_string(),
-            "notification",
-        ])
-        .output()
-        .unwrap();
+    let task_id = id.0.to_string();
+    let mut args = vec!["--db", db_path.to_str().unwrap(), subcommand, &task_id];
+    args.extend_from_slice(rest);
+    let out = binary().args(&args).output().unwrap();
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -593,7 +594,7 @@ async fn hook_initialises_app_log_in_data_dir() {
     let log_path = dir.path().join("app.log");
     assert!(
         log_path.exists(),
-        "expected `dispatch hook` to initialise a tracing subscriber writing to {}",
+        "expected `dispatch {subcommand}` to initialise a tracing subscriber writing to {}",
         log_path.display()
     );
 }
@@ -626,6 +627,15 @@ fn hook_unknown_task_skips() {
 // ---------------------------------------------------------------------------
 // hook-subagent
 // ---------------------------------------------------------------------------
+
+/// The `hook` twin of `hook_initialises_app_log_in_data_dir`. Every `hook*`
+/// command installs the subscriber through the same shared prologue, so both
+/// tests share one assertion body — that is what catches a prologue wired up on
+/// only one path, and it makes covering a third hook command a one-liner.
+#[tokio::test]
+async fn hook_subagent_initialises_app_log_in_data_dir() {
+    assert_hook_initialises_app_log("hook-subagent", &["clear"]).await;
+}
 
 #[tokio::test]
 async fn hook_subagent_start_then_stop_round_trips() {

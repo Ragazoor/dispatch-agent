@@ -1798,7 +1798,10 @@ fn confirm_detach_tmux_emits_a_draining_subagent_clear() {
     assert!(
         cmds.iter().any(|c| matches!(
             c,
-            Command::Task(crate::tui::commands::TaskCommand::ClearSubagents { id, drain: true }) if *id == TaskId(1)
+            Command::Task(crate::tui::commands::TaskCommand::ClearSubagents {
+                id,
+                mode: crate::models::DrainMode::Drain,
+            }) if *id == TaskId(1)
         )),
         "detach must clear subagents via the drain path — a genuinely finished agent's pending Stop should land"
     );

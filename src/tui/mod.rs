@@ -1731,7 +1731,10 @@ impl App {
             // Drain: the agent genuinely finished its turn, so a pending Stop
             // should land as the Review flip.
             cmds.push(Command::Task(
-                crate::tui::commands::TaskCommand::ClearSubagents { id, drain: true },
+                crate::tui::commands::TaskCommand::ClearSubagents {
+                    id,
+                    mode: crate::models::DrainMode::Drain,
+                },
             ));
         }
         cmds

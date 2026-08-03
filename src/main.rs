@@ -278,7 +278,11 @@ async fn cmd_update(
             id,
             only_if.as_deref().unwrap_or("?")
         ),
-        Err(e) if e.to_string().contains("not found") => {
+        // Same silent-skip contract as the hook commands (see
+        // `report_hook_outcome`), matched on the typed variant rather than the
+        // message text — `cli_update_task` returns a `ServiceError`, so there is
+        // no reason for this to break when a message is reworded.
+        Err(service::ServiceError::NotFound(_)) => {
             eprintln!("Task {} not found, skipping", id);
         }
         Err(e) => return Err(e.into()),
@@ -299,6 +303,39 @@ async fn cmd_pr_gate(db: &std::path::Path, id: i64) -> Result<()> {
         std::process::exit(2);
     }
     Ok(())
+}
+
+/// Shared prologue for the `hook*` commands: resolve the data dir, point the app
+/// log at it, and hand it back. Every hook runs as its own short-lived process,
+/// so each one has to install the subscriber itself or its warnings go nowhere.
+fn hook_data_dir(db: &std::path::Path) -> Result<&std::path::Path> {
+    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
+    init_app_log_subscriber(data_dir)?;
+    Ok(data_dir)
+}
+
+/// [`hook_data_dir`] plus the service the hook writes through.
+async fn open_hook_service(db: &std::path::Path) -> Result<service::TaskService> {
+    hook_data_dir(db)?;
+    let database = db::Database::open(db).await?;
+    Ok(service::TaskService::new_with_real_runner(
+        std::sync::Arc::new(database),
+    ))
+}
+
+/// Every hook command's outcome contract: a missing task is a silent skip, not a
+/// failure. A hook fires from a session whose task may since have been archived
+/// or deleted, and a non-zero exit there would surface in the agent's own
+/// terminal for something it cannot act on.
+fn report_hook_outcome(id: i64, outcome: Result<(), service::ServiceError>) -> Result<()> {
+    match outcome {
+        Ok(()) => Ok(()),
+        Err(service::ServiceError::NotFound(_)) => {
+            eprintln!("Task {} not found, skipping", id);
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 async fn cmd_hook(
@@ -324,18 +361,9 @@ async fn cmd_hook(
             )
         })?
     };
-    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
-    init_app_log_subscriber(data_dir)?;
-    let database = db::Database::open(db).await?;
-    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
-    match svc.record_hook_event(models::TaskId(id), parsed).await {
-        Ok(()) => {}
-        Err(service::ServiceError::NotFound(_)) => {
-            eprintln!("Task {} not found, skipping", id);
-        }
-        Err(e) => return Err(e.into()),
-    }
-    Ok(())
+    let svc = open_hook_service(db).await?;
+    let outcome = svc.record_hook_event(models::TaskId(id), parsed).await;
+    report_hook_outcome(id, outcome)
 }
 
 async fn cmd_hook_subagent(
@@ -378,22 +406,12 @@ async fn cmd_hook_subagent(
         }
         other => anyhow::bail!("Invalid subagent action: {other}. Valid: start, stop, clear"),
     };
-    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
-    init_app_log_subscriber(data_dir)?;
-    let database = db::Database::open(db).await?;
-    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
+    let svc = open_hook_service(db).await?;
     let outcome = match event {
         Some(event) => svc.record_subagent_event(models::TaskId(id), event).await,
         None => svc.clear_subagents_no_drain(models::TaskId(id)).await,
     };
-    match outcome {
-        Ok(()) => {}
-        Err(service::ServiceError::NotFound(_)) => {
-            eprintln!("Task {} not found, skipping", id);
-        }
-        Err(e) => return Err(e.into()),
-    }
-    Ok(())
+    report_hook_outcome(id, outcome)
 }
 
 async fn cmd_hook_file_event(
@@ -402,8 +420,7 @@ async fn cmd_hook_file_event(
     tool: String,
     path: String,
 ) -> Result<()> {
-    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
-    init_app_log_subscriber(data_dir)?;
+    let data_dir = hook_data_dir(db)?;
     dispatch_tui::file_events::append_file_event(data_dir, id, &tool, &path).await;
     Ok(())
 }

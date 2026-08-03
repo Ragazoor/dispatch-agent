@@ -206,8 +206,8 @@ async fn dispatch_task(
             rt.exec_persist_task(app, task).await;
             vec![]
         }
-        ClearSubagents { id, drain } => {
-            rt.exec_clear_subagents(id, drain).await;
+        ClearSubagents { id, mode } => {
+            rt.exec_clear_subagents(id, mode).await;
             vec![]
         }
         ApplyPendingStop { id } => {

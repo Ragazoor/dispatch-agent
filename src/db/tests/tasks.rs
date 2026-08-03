@@ -1456,6 +1456,30 @@ async fn delete_task_nonexistent_errors() {
 }
 
 // ---------------------------------------------------------------------------
+// Query coverage: task_exists
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn task_exists_tracks_creation_and_deletion() {
+    let db = in_memory_db().await;
+    assert!(
+        !db.task_exists(TaskId(9999)).await.unwrap(),
+        "an id that was never created must not exist"
+    );
+
+    let task = create_task_returning(&db, "t", "desc", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    assert!(db.task_exists(task.id).await.unwrap());
+
+    db.delete_task(task.id).await.unwrap();
+    assert!(
+        !db.task_exists(task.id).await.unwrap(),
+        "existence must follow the row, not a cache"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // upsert_feed_tasks
 // ---------------------------------------------------------------------------
 

@@ -752,9 +752,34 @@ pub enum SubagentEvent {
         agent_id: String,
         session_id: String,
     },
-    /// Claude Code `SessionStart` — a fresh session provably has no live
-    /// subagents, so every entry for the task is dropped.
+    /// Drop every entry for the task, then run the drain path. Reached only from
+    /// `DetachTmux` — detaching removes the agent that was going to drain the
+    /// count itself. `SessionStart` clears too, but *without* draining, so it
+    /// goes through `clear_subagents_no_drain` rather than this variant.
     Clear,
+}
+
+/// Whether clearing a task's subagent entries also runs the drain path.
+///
+/// Exactly one of the four structural clear points drains. See the drain-path
+/// `@guidance` on `HookSubagentStop` (`docs/specs/agent-health.allium`), which
+/// names the clear points on `DetectCrashedAgent`, `DetachTmux`
+/// (`split-pane.allium`) and `DispatchTask` (`dispatch.allium`), and the
+/// `ClearSubagentsOnSessionStart` rule (`docs/specs/agent-health.allium`).
+///
+/// Lives here beside [`SubagentEvent`] rather than in the TUI command module
+/// that first named it: the drain/no-drain split is spec'd domain behaviour, and
+/// the runtime and service layers both need the vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DrainMode {
+    /// Run the drain path: a Stop deferred while subagents were live lands now
+    /// as a Review flip. `DetachTmux` is the only caller — it assigns no
+    /// outcome status of its own, so applying the deferred Stop is safe there.
+    Drain,
+    /// Clear the entries and `stop_pending`, but leave status alone. For callers
+    /// that already own the resulting status (crash, dispatch-claim): draining
+    /// alongside their own write would leave the task in both states at once.
+    NoDrain,
 }
 
 /// The `notification_type` field on Claude Code's `Notification` hook payload,

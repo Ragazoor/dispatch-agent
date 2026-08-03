@@ -151,6 +151,19 @@ impl super::super::TaskRead for Database {
         .await
     }
 
+    async fn task_exists(&self, id: TaskId) -> Result<bool> {
+        self.db_call_read(move |conn| {
+            let found: Option<i64> = conn
+                .query_row("SELECT 1 FROM tasks WHERE id = ?1", params![id.0], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .context("Failed to check task existence")?;
+            Ok(found.is_some())
+        })
+        .await
+    }
+
     async fn list_all(&self) -> Result<Vec<crate::models::Task>> {
         self.db_call_read(move |conn| {
             let mut stmt = conn
@@ -584,8 +597,17 @@ impl super::super::TaskCrud for Database {
     }
 
     async fn subagent_clear(&self, id: TaskId) -> Result<()> {
-        self.db_call(move |conn| super::subagents::subagent_clear(conn, id.0))
-            .await
+        self.db_call(move |conn| {
+            super::subagents::subagent_clear(conn, id.0, /* void_pending_stop */ false)
+        })
+        .await
+    }
+
+    async fn subagent_clear_and_void_pending_stop(&self, id: TaskId) -> Result<()> {
+        self.db_call(move |conn| {
+            super::subagents::subagent_clear(conn, id.0, /* void_pending_stop */ true)
+        })
+        .await
     }
 
     async fn try_apply_pending_stop(&self, id: TaskId) -> Result<bool> {

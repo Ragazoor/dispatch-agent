@@ -212,6 +212,78 @@ async fn subagent_clear_rolls_back_the_delete_when_the_count_write_fails() {
     assert_eq!(subagent_rows(&db, task.id.0).await, vec!["a1".to_string()]);
 }
 
+// ---------------------------------------------------------------------------
+// subagent_clear_and_void_pending_stop — the non-draining clear's single write
+// ---------------------------------------------------------------------------
+
+/// Pins exactly which columns the non-draining clear writes: entries, the count
+/// and `stop_pending` — and, just as importantly, not `status`/`sub_status`.
+/// Voiding a deferred Stop is not applying it; the caller owns the status.
+#[tokio::test]
+async fn clear_and_void_pending_stop_writes_the_count_and_the_bit_only() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    let now = Utc::now();
+
+    db.subagent_start(task.id, "a1", "s1", now).await.unwrap();
+    db.subagent_start(task.id, "a2", "s1", now).await.unwrap();
+    set_running_with_pending_stop(&db, &task).await;
+    let before = db.get_task(task.id).await.unwrap().unwrap();
+
+    db.subagent_clear_and_void_pending_stop(task.id)
+        .await
+        .unwrap();
+
+    assert!(subagent_rows(&db, task.id.0).await.is_empty());
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.live_subagents, 0);
+    assert!(
+        !reread.stop_pending,
+        "the non-draining clear must void the deferred Stop in the same write"
+    );
+    assert_eq!(reread.status, TaskStatus::Running);
+    assert_eq!(reread.sub_status, before.sub_status);
+}
+
+/// The guard that keeps `DetachTmux`'s drain path from drifting: it reaches the
+/// DB through plain `subagent_clear`, and `split-pane.allium` clears
+/// `stop_pending` there only when the task is Running. Folding the clear into
+/// this method unconditionally would silently widen that rule.
+#[tokio::test]
+async fn plain_clear_leaves_stop_pending_alone() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running_with_pending_stop(&db, &task).await;
+
+    db.subagent_clear(task.id).await.unwrap();
+
+    assert!(
+        db.get_task(task.id).await.unwrap().unwrap().stop_pending,
+        "plain subagent_clear must not touch stop_pending — the drain path decides"
+    );
+}
+
+#[tokio::test]
+async fn clear_and_void_pending_stop_rolls_back_both_writes_when_the_count_write_fails() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    let now = Utc::now();
+
+    db.subagent_start(task.id, "a1", "s1", now).await.unwrap();
+    set_running_with_pending_stop(&db, &task).await;
+    arm_sync_count_abort(&db).await;
+
+    assert!(db
+        .subagent_clear_and_void_pending_stop(task.id)
+        .await
+        .is_err());
+    assert_eq!(subagent_rows(&db, task.id.0).await, vec!["a1".to_string()]);
+    assert!(
+        db.get_task(task.id).await.unwrap().unwrap().stop_pending,
+        "delete, stop_pending write and count write are one transaction"
+    );
+}
+
 #[tokio::test]
 async fn live_subagents_matches_the_table_after_interleaved_operations() {
     let db = in_memory_db().await;

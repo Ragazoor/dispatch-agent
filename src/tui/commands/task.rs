@@ -1,6 +1,6 @@
 //! Task-domain side-effect commands.
 
-use crate::models::{DispatchMode, EpicId, SubStatus, Task, TaskId};
+use crate::models::{DispatchMode, DrainMode, EpicId, SubStatus, Task, TaskId};
 
 use super::super::types::TaskDraft;
 
@@ -101,18 +101,11 @@ pub enum TaskCommand {
         updates: Vec<(TaskId, SubStatus)>,
     },
     RefreshFromDb,
-    /// Drop every `task_subagents` entry for a task. `drain: true` runs the
-    /// drain path (a pending Stop lands as a Review flip); `drain: false`
-    /// clears the entries and `stop_pending` but leaves status alone, for
-    /// callers that already own the resulting status. `DetachTmux` is the only
-    /// draining caller. See the drain-path `@guidance` on `HookSubagentStop`
-    /// (`docs/specs/agent-health.allium`), which names the clear points on
-    /// `DetectCrashedAgent`, `DetachTmux` (`split-pane.allium`) and
-    /// `DispatchTask` (`dispatch.allium`), and the
-    /// `ClearSubagentsOnSessionStart` rule (`docs/specs/agent-health.allium`).
+    /// Drop every `task_subagents` entry for a task. See [`DrainMode`] for what
+    /// the two modes mean and which callers pick which.
     ClearSubagents {
         id: TaskId,
-        drain: bool,
+        mode: DrainMode,
     },
     /// Apply a Stop that was deferred but has no subagent left to drain it.
     /// Emitted by the tick reconciler for the stranded `Running` +

@@ -525,7 +525,10 @@ impl App {
         // No-drain: the task is already going to `Crashed`, and draining here
         // would race that with a Review flip, leaving it Crashed-and-in-Review.
         cmds.push(Command::Task(
-            crate::tui::commands::TaskCommand::ClearSubagents { id, drain: false },
+            crate::tui::commands::TaskCommand::ClearSubagents {
+                id,
+                mode: crate::models::DrainMode::NoDrain,
+            },
         ));
         self.set_status(format!("Task {id} agent crashed - press d to retry",));
 

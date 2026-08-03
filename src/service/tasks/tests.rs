@@ -3155,21 +3155,69 @@ async fn generic_persist_does_not_clobber_the_subagent_count() {
     );
 }
 
+/// A `Start` can never drain: it inserts its row before the recount, so the
+/// resulting count is never zero. That is why the `Start` arm needs neither the
+/// task's status nor its `stop_pending`, and why it must not reach the drain
+/// path — asserted here against the hardest input, a task already stranded in
+/// Running + `stop_pending` + zero live subagents.
+#[tokio::test]
+async fn subagent_start_never_drains_a_pending_stop() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+    // The stranded state directly, rather than reproducing the interleaving via
+    // hook events — this test is about the subagent arm, not how it got there.
+    db.patch_task(id, &crate::db::TaskPatch::new().stop_pending(true))
+        .await
+        .unwrap();
+
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a2".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "a Start must never apply a deferred Stop"
+    );
+    assert!(task.stop_pending, "nor consume the pending bit");
+    assert_eq!(task.live_subagents, 1);
+}
+
 #[tokio::test]
 async fn record_subagent_event_unknown_task_returns_not_found() {
     let db = test_db().await;
     let svc = task_svc(&db);
-    let err = svc
-        .record_subagent_event(
-            TaskId(99_999),
-            SubagentEvent::Start {
-                agent_id: "a1".into(),
-                session_id: "s1".into(),
-            },
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(err, ServiceError::NotFound(_)), "got {err:?}");
+    // All three variants share the contract but no longer share one existence
+    // check: Start uses `task_exists`, Stop and Clear read the row they need for
+    // the drain decision. A fourth variant must remember to check too.
+    for event in [
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+        SubagentEvent::Clear,
+    ] {
+        let err = svc
+            .record_subagent_event(TaskId(99_999), event.clone())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ServiceError::NotFound(_)),
+            "got {err:?} for {event:?}"
+        );
+    }
 }
 
 // -- attach_plan ----------------------------------------------------------
