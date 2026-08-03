@@ -43,14 +43,10 @@ pub(super) fn install_plugin_in(base: &Path) -> Result<bool> {
 fn install_dir_recursive(dir: &Dir, base: &std::path::Path, changed: &mut bool) -> Result<()> {
     for file in dir.files() {
         let path = base.join(file.path());
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create {}", parent.display()))?;
-        }
         let content = file
             .contents_utf8()
             .with_context(|| format!("Non-UTF-8 plugin file: {}", file.path().display()))?;
-        *changed |= write_file_if_changed(&path, content, is_executable(file.path()))?;
+        *changed |= super::write_file_if_changed(&path, content, is_executable(file.path()))?;
     }
     for subdir in dir.dirs() {
         install_dir_recursive(subdir, base, changed)?;
@@ -114,22 +110,6 @@ fn remove_stale_recursive(
     Ok(())
 }
 
-fn write_file_if_changed(path: &std::path::Path, content: &str, executable: bool) -> Result<bool> {
-    if path.exists() {
-        let existing = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", path.display()))?;
-        if existing == content {
-            return Ok(false);
-        }
-    }
-    fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
-    if executable {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-            .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
-    }
-    Ok(true)
-}
-
 pub(super) fn plugin_needs_update_in(base: &std::path::Path) -> Result<bool> {
     if needs_update_recursive(&PLUGIN_DIR, base)? {
         return Ok(true);
@@ -141,9 +121,10 @@ fn needs_update_recursive(dir: &Dir, base: &std::path::Path) -> Result<bool> {
     for file in dir.files() {
         let path = base.join(file.path());
         let content = file.contents_utf8().unwrap_or("");
-        match fs::read_to_string(&path) {
-            Ok(existing) if existing == content => continue,
-            _ => return Ok(true),
+        // Same predicate the installer writes by, so "needs an update" and "was
+        // actually written" can never disagree.
+        if !super::file_is_up_to_date(&path, content) {
+            return Ok(true);
         }
     }
     for subdir in dir.dirs() {
@@ -951,46 +932,6 @@ mod tests {
                 file.path().display()
             );
         }
-    }
-
-    // -- write_file_if_changed --
-
-    #[test]
-    fn write_file_if_changed_creates_new() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("new.txt");
-        let changed = write_file_if_changed(&path, "hello", false).unwrap();
-        assert!(changed);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
-    }
-
-    #[test]
-    fn write_file_if_changed_skips_identical() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("same.txt");
-        fs::write(&path, "hello").unwrap();
-        let changed = write_file_if_changed(&path, "hello", false).unwrap();
-        assert!(!changed);
-    }
-
-    #[test]
-    fn write_file_if_changed_updates_stale() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("stale.txt");
-        fs::write(&path, "old").unwrap();
-        let changed = write_file_if_changed(&path, "new", false).unwrap();
-        assert!(changed);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
-    }
-
-    #[test]
-    fn write_file_if_changed_sets_executable_permission() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("script.sh");
-        write_file_if_changed(&path, "#!/bin/bash", true).unwrap();
-        let metadata = fs::metadata(&path).unwrap();
-        let mode = metadata.permissions().mode();
-        assert_eq!(mode & 0o755, 0o755, "should have executable permissions");
     }
 
     // -- Plugin removal --

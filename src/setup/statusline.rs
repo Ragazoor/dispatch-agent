@@ -78,6 +78,10 @@ pub(crate) fn discover_chain(claude_dir: &Path) -> Option<String> {
 
 /// Write the settings file. Returns whether the on-disk content changed, so
 /// setup can report accurately and stay idempotent.
+///
+/// The write-if-changed contract itself lives in [`super::write_file_if_changed`],
+/// shared with the plugin installer — including the parent-directory creation
+/// this path needs and the exact-bytes comparison both now use.
 pub(crate) fn write_settings_file(
     path: &Path,
     snapshot_path: &Path,
@@ -91,18 +95,7 @@ pub(crate) fn write_settings_file(
     }))
     .context("failed to serialize statusline settings")?;
 
-    if let Ok(existing) = std::fs::read_to_string(path) {
-        if existing.trim() == content.trim() {
-            return Ok(false);
-        }
-    }
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    std::fs::write(path, &content)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    Ok(true)
+    super::write_file_if_changed(path, &content, false)
 }
 
 #[cfg(test)]
@@ -213,6 +206,18 @@ mod tests {
             !write_settings_file(&path, Path::new("/d/rl.json"), Some("cs")).unwrap(),
             "second identical write must report no change"
         );
+    }
+
+    /// The one thing this file owns about writing: that it goes through the shared
+    /// helper at all rather than a bare `fs::write`. The write-if-changed contract
+    /// itself — exact-bytes comparison included — is asserted where it lives, in
+    /// `src/setup/mod.rs`.
+    #[test]
+    fn write_creates_missing_parent_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("claude").join("dispatch-statusline.json");
+        assert!(write_settings_file(&path, Path::new("/d/rl.json"), None).unwrap());
+        assert!(path.exists());
     }
 
     #[test]

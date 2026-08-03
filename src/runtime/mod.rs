@@ -129,7 +129,8 @@ fn ensure_statusline_settings_file(snapshot_path: &Path) -> Result<()> {
 /// `~/.claude` directory explicitly so tests can point it at a temp dir
 /// instead of the real `$HOME`.
 fn ensure_statusline_settings_file_in(claude_dir: &Path, snapshot_path: &Path) -> Result<()> {
-    std::fs::create_dir_all(claude_dir)?;
+    // No `create_dir_all` here: `write_settings_file` creates its parent, and
+    // `discover_chain` treats a missing directory as "nothing to chain to".
     let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
     let chain = crate::setup::statusline::discover_chain(claude_dir);
     crate::setup::statusline::write_settings_file(&settings_path, snapshot_path, chain.as_deref())?;

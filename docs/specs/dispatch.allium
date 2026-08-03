@@ -1384,6 +1384,13 @@ surface StatusLineDecorator {
         -- and one that produces output but never exits are both abandoned at
         -- the deadline and leave nothing running behind them. Neither can hold
         -- the decorator — and so Claude Code's status line — open.
+        --
+        -- An abandoned command contributes nothing: output it had already
+        -- produced is discarded along with it, and the operator sees the same
+        -- empty status line as for any other failure. A partial status line is
+        -- indistinguishable from a complete one, so showing half of what the
+        -- operator's own command meant to say would be a worse outcome than
+        -- showing none of it.
 
     @guarantee NeverChainsToItself
         -- When the status line the decorator would stand in for is itself a

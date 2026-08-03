@@ -90,6 +90,148 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+// ---------------------------------------------------------------------------
+// The bounded-child primitive
+// ---------------------------------------------------------------------------
+
+/// Poll step for the bounded wait for *exit*, after the child has closed its
+/// output. Short because that wait is normally already over on the first
+/// `try_wait` — a child that closed stdout has usually exited — so this only
+/// paces the pathological case it exists for.
+const EXIT_POLL_STEP: Duration = Duration::from_millis(5);
+
+/// Drain `pipe` to EOF on its own thread. The receiver yields the bytes once,
+/// which doubles as the signal that the child stopped writing to that stream.
+///
+/// A channel rather than a `JoinHandle`: the caller has to be able to give up on
+/// this at a deadline, and `join` cannot be bounded.
+fn drain(mut pipe: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        pipe.read_to_end(&mut buf).ok();
+        let _ = tx.send(buf);
+    });
+    rx
+}
+
+/// Give up on `child`: kill it, reap it so it cannot linger as an orphan or
+/// zombie, and describe the overrun. Output it had already produced is dropped
+/// with it — see [`run_bounded`].
+fn abandon(child: &mut std::process::Child, program: &str, timeout: Duration) -> anyhow::Error {
+    let _ = child.kill();
+    let _ = child.wait();
+    anyhow::anyhow!("{program} timed out after {timeout:?}")
+}
+
+/// Run `program` with `args` and kill it if it has not finished within `timeout`,
+/// returning its captured output.
+///
+/// **The one place a bounded child is spawned.** Both
+/// [`RealProcessRunner::run_with_timeout`] (git, worktree, tmux work) and the
+/// statusline decorator's chained command (`src/cli/statusline.rs`) go through
+/// here; a second hand-rolled kill-on-timeout is a bug, not a variation.
+///
+/// `timeout` is **one** deadline spanning both of the waits below. A child that
+/// produces no output and one that produces output but never exits are equally
+/// abandoned at it, killed and reaped, and reported as an error — nothing is
+/// returned from a child that overran, not even output it had already produced.
+///
+/// Three OS hazards it exists to handle:
+///
+/// 1. **A never-exiting child.** A subprocess can block on a lock, NFS, or a
+///    network remote. The wait for output is bounded by the deadline, and so is
+///    the wait for exit that follows it — a child that closes stdout and keeps
+///    running (`exec 1>&-; …`, or a wrapper whose last stage exits while a
+///    sibling holds the pipe) would otherwise slip past the first bound into an
+///    unbounded wait.
+/// 2. **Output-pipe deadlock.** Stdout and stderr are drained on background
+///    threads, so a child writing more than the pipe buffer holds never blocks
+///    on us. Waiting on stdout's EOF rather than polling for exit also means a
+///    child that finishes early is noticed immediately — this runs on Claude
+///    Code's statusline debounce, where a poll interval would be visible latency.
+/// 3. **Bidirectional-pipe deadlock.** With `stdin` present, writing all of it
+///    before draining stdout deadlocks against a child that echoes as it reads
+///    (`cat`, `tee`, `jq .`) once the payload exceeds the pipe buffer (~64 KiB on
+///    Linux): the child blocks on its full, undrained stdout while we block
+///    writing to its full, undrained stdin. The payload is written from its own
+///    thread, which also owns the pipe — so it closes, and the child sees EOF,
+///    when the write finishes. A child that never reads stdin merely gives that
+///    thread an ignored `EPIPE`.
+///
+/// With `stdin` absent the child's stdin is **inherited**, unchanged from what
+/// every git caller here has always had.
+pub(crate) fn run_bounded(
+    program: &str,
+    args: &[&str],
+    stdin: Option<&str>,
+    timeout: Duration,
+) -> Result<Output> {
+    use std::io::Write;
+
+    let mut command = std::process::Command::new(program);
+    command
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if stdin.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    }
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to spawn {program}"))?;
+
+    if let Some(payload) = stdin {
+        #[allow(clippy::expect_used)] // invariant: we set Stdio::piped() above
+        let mut pipe = child.stdin.take().expect("stdin is piped");
+        let payload = payload.to_string();
+        // Hazard 3: this must not run on the waiting thread. Both the payload and
+        // the pipe are moved in, so the pipe drops — closing the child's stdin —
+        // when the write completes or fails.
+        std::thread::spawn(move || {
+            let _ = pipe.write_all(payload.as_bytes());
+        });
+    }
+
+    #[allow(clippy::expect_used)] // invariant: we set Stdio::piped() above
+    let stdout_rx = drain(child.stdout.take().expect("stdout is piped"));
+    #[allow(clippy::expect_used)] // invariant: we set Stdio::piped() above
+    let stderr_rx = drain(child.stderr.take().expect("stderr is piped"));
+
+    let deadline = std::time::Instant::now() + timeout;
+    let remaining = || deadline.saturating_duration_since(std::time::Instant::now());
+
+    // Wait for the child to stop producing output. One wakeup, at EOF.
+    let Ok(stdout) = stdout_rx.recv_timeout(remaining()) else {
+        return Err(abandon(&mut child, program, timeout));
+    };
+
+    // Then for it to exit, on the same deadline (hazard 1).
+    let status = loop {
+        // Anything but "still running" — exited, or unwaitable — means done.
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Err(_) => return Err(abandon(&mut child, program, timeout)),
+            Ok(None) => {}
+        }
+        let left = remaining();
+        if left.is_zero() {
+            return Err(abandon(&mut child, program, timeout));
+        }
+        std::thread::sleep(EXIT_POLL_STEP.min(left));
+    };
+
+    // The child has exited, so stderr is at EOF too in every case but a
+    // grandchild holding the pipe — which the deadline covers rather than
+    // waiting out.
+    let stderr = stderr_rx.recv_timeout(remaining()).unwrap_or_default();
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 pub trait ProcessRunner: Send + Sync {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output>;
 
@@ -136,63 +278,9 @@ impl ProcessRunner for RealProcessRunner {
     }
 
     fn run_with_timeout(&self, program: &str, args: &[&str], timeout: Duration) -> Result<Output> {
-        use std::io::Read;
-        use std::sync::mpsc;
-
-        let mut child = std::process::Command::new(program)
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .with_context(|| format!("failed to spawn {program}"))?;
-
-        // Drain stdout/stderr on background threads to prevent pipe-buffer
-        // deadlock if the subprocess writes a large amount of output while
-        // we are sleeping between try_wait polls.
-        #[allow(clippy::expect_used)] // invariant: we set Stdio::piped() above
-        let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
-        #[allow(clippy::expect_used)] // invariant: we set Stdio::piped() above
-        let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
-
-        let (stdout_tx, stdout_rx) = mpsc::channel();
-        let (stderr_tx, stderr_rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            stdout_pipe.read_to_end(&mut buf).ok();
-            let _ = stdout_tx.send(buf);
-        });
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            stderr_pipe.read_to_end(&mut buf).ok();
-            let _ = stderr_tx.send(buf);
-        });
-
-        let deadline = std::time::Instant::now() + timeout;
-        let poll_interval = Duration::from_millis(50);
-
-        let status = loop {
-            if let Some(s) = child
-                .try_wait()
-                .with_context(|| format!("failed to poll {program}"))?
-            {
-                break s;
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                anyhow::bail!("{program} timed out after {timeout:?}");
-            }
-            std::thread::sleep(poll_interval);
-        };
-
-        let stdout = stdout_rx.recv().unwrap_or_default();
-        let stderr = stderr_rx.recv().unwrap_or_default();
-        Ok(Output {
-            status,
-            stdout,
-            stderr,
-        })
+        // No stdin payload: git and tmux subprocesses keep the inherited stdin
+        // they have always had. See [`run_bounded`] for the hazards handled.
+        run_bounded(program, args, None, timeout)
     }
 }
 
@@ -684,6 +772,92 @@ mod tests {
         assert!(
             msg.contains(MISSING_BINARY),
             "error should name the missing program, got: {msg}"
+        );
+    }
+
+    // --- run_bounded ---
+    //
+    // The one bounded-child primitive: `run_with_timeout` delegates to it, and so
+    // does the statusline decorator's chained command (`src/cli/statusline.rs`),
+    // which is why the stdin-writing hazards below live here rather than there.
+
+    #[test]
+    fn run_bounded_writes_stdin_and_returns_stdout() {
+        let out = run_bounded("cat", &[], Some("payload"), Duration::from_secs(5)).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "payload");
+    }
+
+    /// Writing all of stdin before draining stdout deadlocks once the payload
+    /// exceeds the pipe buffer (~64 KiB on Linux) against a child that echoes as
+    /// it reads: the child blocks on its full, undrained stdout while the parent
+    /// blocks writing more to the child's full, undrained stdin. The stdin writer
+    /// runs on its own thread precisely so neither side can stall.
+    #[test]
+    fn run_bounded_does_not_deadlock_on_a_large_payload() {
+        let payload = "x".repeat(200_000);
+        let out = run_bounded("cat", &[], Some(&payload), Duration::from_secs(5)).unwrap();
+        assert_eq!(out.stdout.len(), payload.len());
+        assert_eq!(String::from_utf8_lossy(&out.stdout), payload);
+    }
+
+    /// A child that never reads stdin gives the writer thread an `EPIPE`. That is
+    /// an ordinary outcome, not a failure: the call must still return the child's
+    /// output rather than hanging or propagating the write error.
+    #[test]
+    fn run_bounded_ignores_a_child_that_never_reads_stdin() {
+        let out = run_bounded("echo", &["hi"], Some("unread"), Duration::from_secs(5)).unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+    }
+
+    /// A child that closes stdout and keeps running would slip past any bound
+    /// placed on *output* alone into an unbounded wait. The deadline covers the
+    /// exit too. See docs/specs/dispatch.allium: StatusLineDecorator
+    /// (`@guarantee ChainedCommandIsBounded`).
+    #[test]
+    fn run_bounded_kills_a_child_that_closed_stdout_but_keeps_running() {
+        let start = std::time::Instant::now();
+        let result = run_bounded(
+            "sh",
+            &["-c", "exec 1>&- ; sleep 30"],
+            None,
+            Duration::from_millis(100),
+        );
+        assert!(result.is_err(), "expected a timeout error, got {result:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the wait for the child to exit must be bounded, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn run_bounded_reports_stderr_and_a_failing_exit_status() {
+        let out = run_bounded(
+            "sh",
+            &["-c", "echo oops >&2; exit 3"],
+            None,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(out.status.code(), Some(3));
+        assert_eq!(String::from_utf8_lossy(&out.stderr).trim(), "oops");
+    }
+
+    /// A child abandoned at the deadline contributes nothing — not even output it
+    /// produced before it stopped making progress. Deliberate, and stated in
+    /// docs/specs/dispatch.allium: StatusLineDecorator
+    /// (`@guarantee ChainedCommandIsBounded`), whose chained command is one caller.
+    #[test]
+    fn run_bounded_discards_output_from_a_child_that_then_overruns() {
+        let result = run_bounded(
+            "sh",
+            &["-c", "echo partial ; exec 1>&- ; sleep 30"],
+            None,
+            Duration::from_millis(100),
+        );
+        assert!(
+            result.is_err(),
+            "output before the overrun must not rescue it, got {result:?}"
         );
     }
 

@@ -14,11 +14,10 @@
 //!    no `Database` import and must keep it that way.
 
 use crate::models::budget::BudgetSnapshot;
-use std::io::{Read, Write};
+use crate::process::run_bounded;
+use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Wall-clock budget for the chained command, covering **both** phases: it
 /// closing its stdout (i.e. finishing producing output) and it exiting. On
@@ -29,11 +28,6 @@ use std::time::{Duration, Instant};
 /// docs/specs/dispatch.allium: StatusLineDecorator
 /// (`@guarantee ChainedCommandIsBounded`).
 const CHAIN_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// Poll step for the bounded post-output wait in [`reap_before`]. Short enough
-/// that the common case — the child has already exited by the time its stdout
-/// closes — costs one `try_wait` and no sleep at all.
-const WAIT_POLL_STEP: Duration = Duration::from_millis(5);
 
 /// Parse the payload and atomically publish a snapshot. Returns whether a
 /// snapshot was written. Never panics; every failure is a silent `false`.
@@ -79,100 +73,19 @@ fn write_atomically(path: &Path, text: &str) -> bool {
 }
 
 /// Run the chained command with `stdin` on its stdin, returning its stdout.
-/// Any failure — including a timeout — yields an empty string, a blank status
-/// line rather than a broken one.
 ///
-/// Two hazards this guards against:
-///
-/// 1. **A never-exiting child hangs forever.** The chained command (in
-///    practice, several `git -C` invocations) can block on a lock, NFS, or a
-///    network remote. `timeout` bounds the wait; on expiry the child is
-///    killed rather than awaited indefinitely. `timeout` is one deadline
-///    spanning both waits — for output and for exit — because a child that
-///    closes stdout and keeps running (`exec 1>&-; …`, or a wrapper whose last
-///    stage exits while a sibling holds the process group) would otherwise slip
-///    past the first bound into an unbounded `wait`.
-/// 2. **Bidirectional-pipe deadlock.** Writing all of `stdin` before draining
-///    the child's stdout deadlocks once the payload exceeds the pipe buffer
-///    (~64 KiB on Linux) for a command that echoes as it reads (`cat`, `tee`,
-///    `jq .`): the child blocks writing to its full, undrained stdout while
-///    the parent blocks writing more to the child's full, undrained stdin.
-///    Writing stdin from a separate thread lets the parent drain stdout
-///    concurrently, so neither side can fill its pipe buffer and stall.
+/// The subprocess mechanics — the payload written concurrently with the drain,
+/// and the whole of [`CHAIN_TIMEOUT`]'s bound — are
+/// [`crate::process::run_bounded`]'s, and documented there. All this adds is the
+/// translation of every failure into an empty string: a blank status line rather
+/// than a broken one.
 fn run_chain(chain: &str, stdin: &str, timeout: Duration) -> String {
-    let spawned = Command::new("sh")
-        .arg("-c")
-        .arg(chain)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn();
-    let Ok(mut child) = spawned else {
-        return String::new();
-    };
-
-    if let Some(mut pipe) = child.stdin.take() {
-        let payload = stdin.to_string();
-        // Runs on its own thread so the parent is free to drain stdout at
-        // the same time. The pipe is moved in and drops at the end of this
-        // closure, closing the child's stdin so it sees EOF. A child that
-        // never reads stdin at all is fine — `write_all` erroring is ignored.
-        let _ = std::thread::spawn(move || {
-            let _ = pipe.write_all(payload.as_bytes());
-        });
-    }
-
-    let (tx, rx) = mpsc::channel();
-    match child.stdout.take() {
-        Some(mut out) => {
-            std::thread::spawn(move || {
-                let mut buf = Vec::new();
-                let _ = out.read_to_end(&mut buf);
-                let _ = tx.send(buf);
-            });
-        }
-        None => {
-            let _ = tx.send(Vec::new());
-        }
-    }
-
-    let deadline = Instant::now() + timeout;
-    match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-        Ok(buf) => {
-            reap_before(&mut child, deadline);
-            String::from_utf8_lossy(&buf).into_owned()
-        }
-        Err(_) => {
-            // Timed out: the child never closed stdout within budget. Kill
-            // and reap it so it does not linger as an orphan/zombie.
-            let _ = child.kill();
-            let _ = child.wait();
-            String::new()
-        }
-    }
-}
-
-/// Wait for `child` to exit, but never past `deadline`. Almost always returns
-/// on the first `try_wait`: a command that has closed its stdout has normally
-/// exited. The exception is what this exists for — a chain that closes stdout
-/// and keeps running must not hold the decorator open, so on expiry the child
-/// is killed and reaped rather than awaited.
-///
-/// The same deadline/`try_wait`/kill shape appears in
-/// `RealProcessRunner::run_with_timeout` (`src/process.rs`), which cannot be
-/// reused here: it takes a program and arguments, and this child needs the
-/// payload written to its stdin.
-fn reap_before(child: &mut std::process::Child, deadline: Instant) {
-    loop {
-        // Anything but "still running" — exited, or unwaitable — means done.
-        if !matches!(child.try_wait(), Ok(None)) {
-            return;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return;
-        }
-        std::thread::sleep(WAIT_POLL_STEP);
+    match run_bounded("sh", &["-c", chain], Some(stdin), timeout) {
+        // Deliberately not conditioned on the exit status: a chain that exits
+        // non-zero having printed something still had a status line to show.
+        Ok(output) => String::from_utf8(output.stdout)
+            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+        Err(_) => String::new(),
     }
 }
 
@@ -420,36 +333,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn chain_that_closes_stdout_but_keeps_running_does_not_hang() {
-        // `exec 1>&-` closes stdout immediately, so the stdout reader finishes
-        // at once and the timeout on it never fires — the wait for the child to
-        // *exit* is what has to be bounded. dispatch.allium:
-        // StatusLineDecorator (@guarantee ChainedCommandIsBounded).
-        let start = std::time::Instant::now();
-        let out = run_chain("exec 1>&- ; sleep 30", PAYLOAD, Duration::from_millis(100));
-        assert_eq!(out, "", "no output was produced before stdout closed");
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "the wait for the child to exit must be bounded by the same budget, took {:?}",
-            start.elapsed()
-        );
-    }
-
-    #[test]
-    fn chain_that_echoes_a_large_payload_does_not_deadlock() {
-        // Comfortably larger than the ~64 KiB Linux pipe buffer. Padded as a
-        // JSON string value so the payload still parses if something were to
-        // feed it through record_snapshot, even though this test only
-        // exercises run_chain's stdin/stdout plumbing.
-        let padding = "x".repeat(200_000);
-        let payload = format!(
-            r#"{{"rate_limits":{{"five_hour":{{"used_percentage":1.0,"resets_at":1}}}},"padding":"{padding}"}}"#
-        );
-        let out = run_chain("cat", &payload, Duration::from_secs(5));
-        assert_eq!(
-            out, payload,
-            "a large payload must round-trip through an echoing chain without deadlocking"
-        );
-    }
+    // The subprocess hazards themselves — a chain that closes stdout and keeps
+    // running, and a payload past the pipe buffer against a chain that echoes as
+    // it reads — are asserted once, against the primitive that now owns them
+    // (`run_bounded` in src/process.rs). What stays here is what this decorator
+    // adds on top: every failure becomes a blank status line, and the payload
+    // reaches the chain at all.
 }

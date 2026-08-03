@@ -327,6 +327,14 @@ Two patterns have already caused bugs and must not be repeated:
 
   **Accepted exception:** `validate_repo_path` (`src/dispatch/worktree.rs`), called synchronously from `handle_submit_repo_path` (`src/tui/update/forms.rs`). It does only a `.exists()`/`.is_dir()` stat — no file content is read or parsed — on the low-frequency repo-path form-submit path (once per new task typed), unlike the `~/.claude.json` read-plus-`serde_json`-parse that motivated moving the `Space`-key trust check off the render thread (`CheckTrustAndDispatch` in `src/tui/commands/task.rs`). Keep it inline; don't route it through a `Command` unless it grows beyond a bare stat.
 
+## One bounded-child primitive: `run_bounded`
+
+Every subprocess that must not be allowed to hang goes through `run_bounded` (`src/process.rs`) — `RealProcessRunner::run_with_timeout` is a one-line delegation to it, and so is the statusline decorator's chained command (`src/cli/statusline.rs`). Don't hand-roll a second spawn/deadline/`kill`/`wait` loop; extend that one instead.
+
+It is not boilerplate. It handles three OS hazards that a fresh implementation tends to get partly right: a child that never exits, output-pipe deadlock while we wait, and — for callers that pass a stdin payload — the bidirectional-pipe deadlock against a child that echoes as it reads once the payload passes the ~64 KiB pipe buffer. This repo has already had two independent implementations of it, differing in mechanics and in which hazards each covered.
+
+Two properties are load-bearing and easy to break while "tidying" the wait. It waits on **stdout's EOF**, not on a poll timer, so a child that finishes early is noticed immediately — one of its callers is the statusline decorator, which runs on Claude Code's sub-second debounce, and a poll interval there is latency on every redraw. And the wait for *exit* that follows is bounded by the same deadline (paced by `EXIT_POLL_STEP`), because a child that closes stdout and keeps running would otherwise slip past the first bound into an unbounded wait. A child abandoned at the deadline yields an error and nothing else — output it had already produced is dropped with it, which for the statusline decorator is a spec guarantee (`ChainedCommandIsBounded` in `docs/specs/dispatch.allium`), not an implementation detail.
+
 ## `MockProcessRunner` vs a real tmux server
 
 Two test styles cover tmux, and they prove different things. Picking the wrong one is not a style preference — it is how a broken command stays green.
@@ -349,7 +357,7 @@ All three share the rig in `tests/tmux_harness/mod.rs`: a private `-L` socket, `
 
 ### Writing a mock tmux test: `MockProcessRunner`'s window-lookup policy
 
-Every `tmux::` helper that takes a window *name* first resolves it to a pane ID via `window_target` (`src/tmux.rs`) — an extra `list-panes` call, because tmux prefix-matches a bare `-t <name>`. `MockProcessRunner` therefore carries a `WindowLookup` policy (`src/process.rs:128`) deciding how that lookup is answered, and the default is **not** "from the response queue":
+Every `tmux::` helper that takes a window *name* first resolves it to a pane ID via `window_target` (`src/tmux.rs`) — an extra `list-panes` call, because tmux prefix-matches a bare `-t <name>`. `MockProcessRunner` therefore carries a `WindowLookup` policy (`src/process.rs:289`) deciding how that lookup is answered, and the default is **not** "from the response queue":
 
 | Policy | How the lookup is answered | When to use |
 |---|---|---|

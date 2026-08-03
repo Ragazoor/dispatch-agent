@@ -58,6 +58,53 @@ pub(super) fn write_json_file(path: &std::path::Path, value: &Value) -> Result<(
     fs::write(path, content + "\n").with_context(|| format!("Failed to write {}", path.display()))
 }
 
+/// Whether `path` already holds exactly `content` — the single definition of "this
+/// file is already up to date" for everything setup manages.
+///
+/// Two callers must agree on it or setup contradicts itself:
+/// [`write_file_if_changed`], which decides whether to write and what to report,
+/// and `plugins::plugin_needs_update_in`, which decides whether to *offer* an
+/// update. A file the predicate calls stale and the writer calls unchanged would
+/// be reported as needing an update forever.
+///
+/// **Exact bytes, deliberately.** The statusline settings file previously compared
+/// `.trim()`-normalized, which is what made the two disagree. Exact equality also
+/// rewrites a file something else edited back to the canonical content, and
+/// converges rather than flip-flopping. An unreadable or absent file is not up to
+/// date: the writer's own error is a better report than a read error here.
+fn file_is_up_to_date(path: &std::path::Path, content: &str) -> bool {
+    fs::read_to_string(path).is_ok_and(|existing| existing == content)
+}
+
+/// Write `content` at `path`, creating parent directories, and report whether the
+/// on-disk bytes actually changed. Every setup-managed file goes through this, so
+/// setup can be run repeatedly and only report what it really touched.
+///
+/// Shared by the plugin installer (`plugins::install_dir_recursive`) and the
+/// statusline settings file (`statusline::write_settings_file`) — it lives here
+/// rather than in either of them so there is one place to change what writing
+/// means. Up-to-dateness is [`file_is_up_to_date`]'s to define.
+///
+/// Deliberately unmarked rather than `pub(…)`: a private item in this module is
+/// already reachable from every child that needs it, and a filesystem write is
+/// not something the rest of the crate should be able to name.
+fn write_file_if_changed(path: &std::path::Path, content: &str, executable: bool) -> Result<bool> {
+    if file_is_up_to_date(path, content) {
+        return Ok(false);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    fs::write(path, content).with_context(|| format!("Failed to write {}", path.display()))?;
+    if executable {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("Failed to set permissions on {}", path.display()))?;
+    }
+    Ok(true)
+}
+
 // ---------------------------------------------------------------------------
 // Confirmation seam (mirrors `ProcessRunner` in src/process.rs)
 // ---------------------------------------------------------------------------
@@ -627,6 +674,68 @@ mod tests {
         write_json_file(&path, &value).unwrap();
         let read_back = read_json_file(&path).unwrap().unwrap();
         assert_eq!(read_back, value);
+    }
+
+    // -- write_file_if_changed --
+
+    #[test]
+    fn write_file_if_changed_creates_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        let changed = write_file_if_changed(&path, "hello", false).unwrap();
+        assert!(changed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn write_file_if_changed_skips_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("same.txt");
+        fs::write(&path, "hello").unwrap();
+        let changed = write_file_if_changed(&path, "hello", false).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn write_file_if_changed_updates_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stale.txt");
+        fs::write(&path, "old").unwrap();
+        let changed = write_file_if_changed(&path, "new", false).unwrap();
+        assert!(changed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_file_if_changed_creates_missing_parent_directories() {
+        // Both callers need this: the plugin path has nested skill/hook
+        // directories, and the statusline settings file can land in a
+        // `~/.claude` that does not exist yet.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("deeper").join("new.txt");
+        assert!(write_file_if_changed(&path, "hello", false).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    /// Exact bytes, not trim-normalized: `plugins::plugin_needs_update_in` asks
+    /// the same question with exact equality, and the two must not disagree.
+    #[test]
+    fn write_file_if_changed_rewrites_when_only_whitespace_differs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("padded.txt");
+        fs::write(&path, "hello\n").unwrap();
+        assert!(write_file_if_changed(&path, "hello", false).unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn write_file_if_changed_sets_executable_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script.sh");
+        write_file_if_changed(&path, "#!/bin/bash", true).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o755, 0o755, "should have executable permissions");
     }
 
     // -- Database removal --
