@@ -5,7 +5,7 @@
 --        per-repo embedding store and querying it by similarity.
 -- Includes: the index_repo and search_docs MCP tools, the RepoIndex and
 --           IndexedChunk entities, and the constants that govern batching,
---           similarity filtering and the scan limit.
+--           similarity filtering and result limits.
 -- Excludes: embedding model internals (the vector encoder is a black box);
 --           other MCP tools (see mcp-task-tools.allium); caller-identity
 --           extraction at the transport (see mcp-task-tools.allium and
@@ -28,11 +28,6 @@ entity RepoIndex {
 
     -- Distinct file paths that currently contribute chunks to the index.
     indexed_paths: chunks -> source_path
-
-    -- The search path scans at most max_scan_chunks rows. Beyond that bound,
-    -- a query can no longer see every chunk, so results may be incomplete.
-    -- This is a silent correctness boundary, not an error.
-    is_fully_scannable: chunk_count <= config.max_scan_chunks
 }
 
 -- IndexedChunk is one embedded slice of a source file. Files are chunked
@@ -72,10 +67,6 @@ config {
 
     -- Minimum cosine similarity for a chunk to be returned by search_docs.
     similarity_threshold: Decimal = 0.25
-
-    -- Maximum number of chunks search_docs scans per query. Repos with more
-    -- chunks than this may return incomplete results (the scan stops early).
-    max_scan_chunks: Integer = 1000
 
     -- Default and ceiling for the number of search results returned. The
     -- handler clamps a caller-supplied limit to [1, max_search_limit].
@@ -135,13 +126,6 @@ rule IndexRepoViaMcp {
         -- is greater than zero the caller must call index_repo again to
         -- continue; loop until files_remaining reaches zero.
         --
-        -- Scan-limit caveat: search_docs scans at most config.max_scan_chunks
-        -- (1000) chunks. A repo whose index grows past that bound can be fully
-        -- indexed yet still return incomplete search results, because the query
-        -- side stops scanning early. This is silent — no error is raised. See
-        -- the RepoIndex.is_fully_scannable derived value and the open question
-        -- below.
-        --
         -- Resolution / errors: an omitted repo_path resolves to the calling
         -- task's repo_path; a Session caller with no repo_path is a genuine
         -- bad-input case and is rejected with JSON-RPC -32602; an unknown
@@ -182,16 +166,22 @@ rule SearchDocsViaMcp {
         -- are returned; results are sorted by score descending and truncated
         -- to limit.
         --
+        -- Every chunk in the index is scored: the query places no bound on how
+        -- many rows it scans, so results are complete for the whole indexed
+        -- corpus. Anything indexed is reachable by search.
+        --
+        -- Completeness is bought with a full scan. There is no approximate
+        -- (ANN) index: every query reads all chunk rows and computes one cosine
+        -- similarity per chunk, so query cost grows linearly with chunk_count.
+        -- The remedy at scale is an approximate index, not a row bound on the
+        -- scan — a bound applied before scoring cannot know which rows matter.
+        --
         -- limit defaults to config.default_search_limit (5) and is capped at
         -- config.max_search_limit (20) at the handler boundary.
         --
         -- When the repo has never been indexed (no .dispatch/rag.db), the call
         -- returns an empty result set rather than an error — the caller should
         -- run index_repo first.
-        --
-        -- Scan-limit caveat: the query scans at most config.max_scan_chunks
-        -- (1000) chunk rows. In repos whose index exceeds that bound, relevant
-        -- chunks outside the scanned window are silently invisible to search.
         --
         -- Resolution / errors: identical to index_repo — omitted repo_path
         -- uses the caller task's repo; a Session caller without repo_path is
@@ -201,9 +191,3 @@ rule SearchDocsViaMcp {
         -- RepoIndexService::search_docs in src/service/repo_index/mod.rs, which
         -- delegates scoring to score_and_rank in the search submodule.
 }
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
-open question "search_docs scans at most config.max_scan_chunks (1000) rows. Repos whose index exceeds that bound return incomplete results with no warning to the caller or operator. Should the index surface a 'truncated' signal (e.g. on search_docs or index_repo responses) when chunk_count exceeds the scan limit, rather than failing silently?"

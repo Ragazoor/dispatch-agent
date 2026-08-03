@@ -302,6 +302,40 @@ mod tests {
         assert!(results[0].score > RAG_SIMILARITY_THRESHOLD);
     }
 
+    /// Search must score every stored chunk, not a bounded prefix of them.
+    ///
+    /// The test embedder scores every chunk identically (cosine 1.0, above the
+    /// threshold), so the result count *is* the number of rows scanned;
+    /// relevance ranking plays no part in what this asserts.
+    #[tokio::test]
+    async fn search_docs_scans_every_chunk_beyond_the_old_scan_bound() {
+        const OLD_SCAN_BOUND: usize = 1000;
+
+        let dir = tempfile::tempdir().unwrap();
+        let body: String = (0..OLD_SCAN_BOUND + 200)
+            .map(|s| format!("## Section {s}\n\nText {s}.\n\n"))
+            .collect();
+        std::fs::write(dir.path().join("doc.md"), body).unwrap();
+
+        let svc = RepoIndexService::new(EmbeddingService::new_test());
+        let indexed = svc.index_repo(dir.path(), BATCH_SIZE).await.unwrap();
+        assert!(
+            indexed.chunks_total > OLD_SCAN_BOUND,
+            "fixture must exceed the old scan bound, got {}",
+            indexed.chunks_total
+        );
+
+        let results = svc
+            .search_docs(dir.path(), "anything", indexed.chunks_total)
+            .await
+            .unwrap();
+        assert_eq!(
+            results.len(),
+            indexed.chunks_total,
+            "search must scan the whole index, not a bounded prefix"
+        );
+    }
+
     #[tokio::test]
     async fn search_docs_respects_limit() {
         let dir = tempfile::tempdir().unwrap();

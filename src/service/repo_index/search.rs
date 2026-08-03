@@ -12,13 +12,6 @@ use crate::service::embeddings::{
 use super::scan::open_rag_db;
 use super::SearchResult;
 
-/// Maximum number of chunk rows a single query scans.
-///
-/// A repo whose index exceeds this bound can return incomplete results: chunks
-/// outside the scanned window are silently invisible to search. This mirrors
-/// `config.max_scan_chunks` in `docs/specs/repo-rag.allium`.
-const MAX_SCAN_CHUNKS: usize = 1000;
-
 /// Score `rows` against `query_vec`, drop anything below `threshold`, sort by
 /// descending score, and truncate to `limit`.
 ///
@@ -52,17 +45,19 @@ pub(crate) fn score_and_rank(
     results
 }
 
-/// Read up to `MAX_SCAN_CHUNKS` chunk rows from the per-repo store and rank
-/// them against `query_vec`. Runs entirely on the calling (blocking) thread.
+/// Read every chunk row from the per-repo store and rank them against
+/// `query_vec`. Runs entirely on the calling (blocking) thread.
+///
+/// The scan is unbounded by design: no pre-scoring row limit is meaningful,
+/// because there is no order to sort by until similarity has been computed.
+/// Cost is therefore linear in the number of stored chunks.
 pub(crate) fn query_and_rank(
     repo_path: &Path,
     query_vec: &[f32],
     limit: usize,
 ) -> Result<Vec<SearchResult>> {
     let conn = open_rag_db(repo_path)?;
-    let sql =
-        format!("SELECT file_path, chunk_text, embedding FROM rag_chunks LIMIT {MAX_SCAN_CHUNKS}");
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare("SELECT file_path, chunk_text, embedding FROM rag_chunks")?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,

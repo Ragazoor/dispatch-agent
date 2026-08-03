@@ -123,7 +123,7 @@ Required on `PATH` at runtime, with **no startup preflight** — nothing checks 
 
 The agent launchers do **not** hardcode `claude` / `dispatch`: they read them from `ProcessRunner::agent_binaries()` (`src/process.rs`), which defaults to those bare names. That is the seam `tests/tmux_harness/mod.rs` uses to point them at stubs — never `PATH` manipulation. Interpolate via `claude_quoted()`, and keep every launch site at **one** quoting layer: `dispatch_with_prompt` passes the binary as bash's `$0` after its single-quoted script body precisely so it does not sit under two.
 
-POSIX-only. Embeddings/RAG (`src/service/embeddings.rs`) also make live calls.
+POSIX-only. Embeddings/RAG (`src/service/embeddings.rs`) run **locally** — `fastembed` does inference in-process on a dedicated OS thread, with no API key and no per-call network I/O. The only network activity is a one-time model download on first init.
 
 ## Verify Command
 
