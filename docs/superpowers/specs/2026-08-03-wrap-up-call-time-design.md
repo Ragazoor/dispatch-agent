@@ -87,15 +87,39 @@ Replace `run` with `run_with_timeout(..., SUBPROCESS_TIMEOUT)` at every site bel
 | `src/git.rs` | `git remote get-url origin` | lock |
 | `src/git.rs` | `git rev-parse --abbrev-ref HEAD` | lock |
 | `src/git.rs` | `git status --porcelain` | lock |
+| `src/git.rs` | `git symbolic-ref refs/remotes/origin/HEAD` | lock |
 | `src/repo_sync.rs` | `git merge --no-edit origin/<base>` | repo-root index lock |
 | `src/repo_sync.rs` | `git status --porcelain` (conflict read) | lock, mid-merge |
 | `src/repo_sync.rs` | `git merge --abort` | lock |
 
-The `src/git.rs` helpers already take `&dyn ProcessRunner`, so no signature changes are
-needed anywhere.
+`detect_default_branch` is in the list for the same reason as the other three: it is not
+called by `finish_task`, but it *is* issued by `measure_repo` on the sync path, so leaving it
+unbounded would keep `repo-sync.allium`'s claim false.
+
+The `src/git.rs` helpers already take `&dyn ProcessRunner`, so they need no signature
+changes.
 
 `SUBPROCESS_TIMEOUT` (60 s, in `src/process.rs`) is reused — no new constant, and no new
 configuration surface. The value is deliberately generous for the reason given above.
+
+### One testability seam
+
+`finish_task` gains a `timeout: Duration` field on its existing `FinishContext` struct,
+which `wrap_up`'s only production call site sets to `SUBPROCESS_TIMEOUT`. This follows the
+established precedent in `src/dispatch/worktree.rs`, whose `provision_worktree` already
+takes a timeout parameter documented as "use `SUBPROCESS_TIMEOUT` in production; pass a
+short duration in tests".
+
+It exists for a concrete reason rather than symmetry. `MockProcessRunner` only short-circuits
+a scripted delay inside `run_with_timeout`; in the unbounded `run` it *sleeps* for it. So a
+test that proves the bound is missing by scripting a 60 s stall would take 60 s to go red.
+With an injectable timeout the same test uses a 50 ms bound and is instant in both
+directions. There are three `FinishContext` construction sites — two test helpers and
+`wrap_up`'s — so the change is three lines.
+
+`sync_repo` and the `src/git.rs` helpers keep the constant inline: their tests assert the
+timeout was *passed* (via `recorded_timeouts()`) rather than that it fires, so they never
+script a delay and never sleep. No signature changes there.
 
 ### What this does and does not claim
 
