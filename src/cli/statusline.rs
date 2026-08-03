@@ -208,40 +208,57 @@ mod tests {
         // a truncation. dispatch.allium: StatusLineDecorator (@guarantee
         // PublishedSnapshotIsAlwaysWholeAndFromOneWriter).
         //
-        // Barrier-synchronised rather than timed: both writers are released at
-        // once and the reader is bounded by iteration count, so there is nothing
-        // to sleep on and nothing to flake on. A read that finds no file yet is
-        // fine; only a *parsed* snapshot is asserted against.
+        // Barrier-synchronised rather than timed, and gated on writer *progress*
+        // rather than on an iteration budget. The barrier alone is not enough: it
+        // only releases the writers, and under load the reader could burn through
+        // every attempt before either writer was scheduled far enough to complete
+        // its first rename, so the old `observed > 0` assertion was load-sensitive
+        // (#3855). Each writer now signals its first successful publish, and the
+        // reader waits for both before it starts reading. Since the snapshot is
+        // published by rename and never unlinked, every one of the reader's reads
+        // must then find a whole snapshot — a miss is a failure, not a `continue`.
         const ROUNDS: usize = 200;
         const WRITERS: [(f64, i64); 2] = [(11.0, 1), (99.0, 2)];
 
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("rate-limits.json");
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(WRITERS.len() + 1));
+        let (published_tx, published_rx) = std::sync::mpsc::channel();
 
         let writers: Vec<_> = WRITERS
             .iter()
             .map(|&(pct, captured_at)| {
                 let path = path.clone();
                 let barrier = barrier.clone();
+                let published_tx = published_tx.clone();
                 std::thread::spawn(move || {
                     let payload = format!(
                         r#"{{"rate_limits":{{"five_hour":{{"used_percentage":{pct},"resets_at":7}}}}}}"#
                     );
                     barrier.wait();
-                    for _ in 0..ROUNDS {
+                    for round in 0..ROUNDS {
                         assert!(record_snapshot(&payload, &path, captured_at));
+                        if round == 0 {
+                            let _ = published_tx.send(());
+                        }
                     }
                 })
             })
             .collect();
+        // Only the writers' clones may keep the channel alive, so a dead writer
+        // surfaces as a disconnect rather than a hang.
+        drop(published_tx);
 
         barrier.wait();
-        let mut observed = 0;
+        for _ in 0..WRITERS.len() {
+            published_rx
+                .recv()
+                .expect("a writer thread died before publishing its first snapshot");
+        }
+
         for _ in 0..ROUNDS * 4 {
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("published snapshot disappeared: {e}"));
             let snap: BudgetSnapshot = serde_json::from_str(&text)
                 .unwrap_or_else(|e| panic!("torn snapshot published: {e}: {text:?}"));
             let pair = (snap.five_hour.unwrap().used_percentage, snap.captured_at);
@@ -251,12 +268,10 @@ mod tests {
                 pair.0,
                 pair.1
             );
-            observed += 1;
         }
         for writer in writers {
             writer.join().unwrap();
         }
-        assert!(observed > 0, "reader never observed a published snapshot");
 
         // Both writers' temp files were renamed; none accumulated.
         let entries: Vec<_> = std::fs::read_dir(tmp.path())
