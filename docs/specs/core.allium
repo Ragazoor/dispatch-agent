@@ -234,7 +234,7 @@ entity Task {
     last_pre_tool_use_at: Timestamp?  -- wallclock of the most recent PreToolUse hook; null when the agent has never tooled (or after Stop)
     last_notification_at: Timestamp?  -- wallclock of the most recent Notification hook; null when no notification is pending (or after Stop)
     live_subagents: Integer = 0  -- count of subagents currently executing for this task; a denormalised count of SubagentEntry rows, rewritten alongside every mutation and clear point (see agent-health.allium)
-    stop_pending: Boolean = false  -- a Stop hook arrived while subagents were live; flip to review once they drain (see agent-health.allium: HookStop / HookSubagentStop)
+    stop_pending: Boolean = false  -- a Stop hook arrived while subagents were live; flip to review once they drain (see agent-health.allium: HookStop / HookSubagentStop). Cleared by any status write that leaves running — see PendingStopOnlyWhileRunning below
     pr_learnings_gate_shown_at: Timestamp?  -- set once when the PrLearningsGate fires; null means the gate has never fired for this task
     wrap_up_mode: WrapUpMode?  -- preferred wrap-up path; null means decide at wrap-up time
     auto_run_plan: Boolean = false  -- when true and plan_path is set, build_prompt's
@@ -314,6 +314,21 @@ entity Task {
     -- four clear points documented there).
     invariant LiveSubagentCountMatchesEntries {
         live_subagents = (SubagentEntries where task = this).count
+    }
+
+    -- A deferred Stop belongs to the turn the task was running when it
+    -- arrived. Only HookStop sets the bit, and it requires status =
+    -- running; every status write that leaves running clears it in the
+    -- same write (MoveTaskForward / MoveTaskBackward / ConfirmDone /
+    -- ArchiveTask in tasks.allium, UpdateTaskViaMcp in
+    -- mcp-task-tools.allium, ExitSession in pr-workflow.allium, and the
+    -- drain points in agent-health.allium). So the bit cannot outlive the
+    -- status it was recorded under, and cannot be waiting for a task that
+    -- a later move puts back into running —
+    -- ReconcileStrandedPendingStop (agent-health.allium) would otherwise
+    -- flip such a task straight back out of running on the next tick.
+    invariant PendingStopOnlyWhileRunning {
+        stop_pending implies status = running
     }
 }
 

@@ -353,8 +353,21 @@ rule HookSubagentStop {
         -- unconditionally, so the bit cannot survive into a later session
         -- and fire a spurious flip.
         --
+        -- Those four points are about the SubagentEntry rows. stop_pending
+        -- has one further clear point that touches no rows at all: any
+        -- status write that moves the task out of running clears it in the
+        -- same write — the manual moves and archive (tasks.allium), MCP
+        -- update_task (mcp-task-tools.allium) and the session close
+        -- (pr-workflow.allium: ExitSession). Without it a task moved
+        -- Running -> Review while a fan-out was still live keeps the bit,
+        -- and a later move back into Running hands
+        -- ReconcileStrandedPendingStop a task it flips straight back out on
+        -- the next tick. See core/Task's PendingStopOnlyWhileRunning
+        -- invariant, and ExitSession's guidance for the one thing the close
+        -- does NOT clear (the rows and live_subagents).
+        --
         -- ReconcileStrandedPendingStop (below) is the backstop for the one
-        -- case none of these four cover: the deferred Stop and the last
+        -- case none of these cover: the deferred Stop and the last
         -- SubagentStop landing in separate processes and interleaving, so
         -- the bit is set after the count has already reached zero.
 }

@@ -33,8 +33,7 @@ impl App {
                 None
             };
 
-            task.status = new_status;
-            task.sub_status = SubStatus::default_for(new_status);
+            Self::set_local_status(task, new_status);
 
             // Seed last_pre_tool_use_at on any transition into Running so the
             // next ClassifyAgentActivity tick does not render "stale · 0m"
@@ -113,8 +112,7 @@ impl App {
                     continue;
                 }
                 let detach = Self::take_detach(task);
-                task.status = TaskStatus::Done;
-                task.sub_status = SubStatus::default_for(TaskStatus::Done);
+                Self::set_local_status(task, TaskStatus::Done);
                 let task_clone = task.clone();
                 self.clear_agent_tracking(id);
                 if let Some(c) = detach {

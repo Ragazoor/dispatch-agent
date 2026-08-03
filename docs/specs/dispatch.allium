@@ -590,6 +590,11 @@ rule RetryFresh {
     ensures: task.tmux_window = null
     ensures: task.status = backlog
     ensures: task.sub_status = core/SubStatus.default_for(backlog)
+    -- Leaving running voids any deferred Stop. Reachable here more than
+    -- anywhere else: a crashed agent's task is still running, and retry-fresh
+    -- is what a human does about it. See core/Task's
+    -- PendingStopOnlyWhileRunning invariant.
+    ensures: task.stop_pending = false
     ensures: AgentLaunched(task: task, mode: standard)
 
     @guidance

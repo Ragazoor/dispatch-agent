@@ -79,8 +79,9 @@ impl App {
                 return vec![];
             }
             let cleanup = Self::take_cleanup(task);
-            task.status = TaskStatus::Backlog;
-            task.sub_status = SubStatus::None;
+            // Retry-fresh is the likeliest leaving-Running board write to carry
+            // a deferred Stop: a crashed task is still Running.
+            Self::set_local_status(task, TaskStatus::Backlog);
             let task_clone = task.clone();
             self.sync_board_selection();
 
@@ -110,8 +111,7 @@ impl App {
                 return vec![];
             }
             let cleanup = Self::take_cleanup(task);
-            task.status = TaskStatus::Archived;
-            task.sub_status = SubStatus::default_for(TaskStatus::Archived);
+            Self::set_local_status(task, TaskStatus::Archived);
             let task_clone = task.clone();
             self.clear_agent_tracking(id);
             self.sync_board_selection();

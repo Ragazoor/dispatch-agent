@@ -16,6 +16,13 @@ impl App {
             t.title = edit.title;
             t.description = edit.description;
             t.repo_path = edit.repo_path;
+            // Not `set_local_status`: the editor owns sub_status separately (it
+            // is not part of TaskEdit, so the current one is kept deliberately)
+            // and only the leaving-Running clear applies here. The editor may
+            // set any status from any other, Running -> Review included.
+            if crate::models::clears_pending_stop(t.status, edit.status) {
+                t.stop_pending = false;
+            }
             t.status = edit.status;
             t.plan_path = edit.plan_path;
             t.tag = edit.tag;

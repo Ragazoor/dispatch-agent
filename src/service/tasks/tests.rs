@@ -3083,6 +3083,169 @@ async fn apply_pending_stop_resolves_a_stranded_task() {
     );
 }
 
+/// Park a task in the shape a live fan-out plus a Stop hook leaves behind:
+/// Running, one live subagent, and the deferred flip recorded.
+async fn running_task_with_a_deferred_stop(svc: &TaskService) -> TaskId {
+    let id = create_running_task(svc, SubStatus::Active).await;
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Start {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
+    assert!(svc.get_task(id).await.unwrap().stop_pending);
+    id
+}
+
+#[tokio::test]
+async fn update_task_moving_out_of_running_clears_stop_pending() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+
+    for target in [TaskStatus::Review, TaskStatus::Backlog] {
+        let id = running_task_with_a_deferred_stop(&svc).await;
+        svc.update_task(UpdateTaskParams::for_task(id).status(target))
+            .await
+            .unwrap();
+        let task = svc.get_task(id).await.unwrap();
+        assert_eq!(task.status, target);
+        assert!(
+            !task.stop_pending,
+            "leaving Running must void the deferred Stop (target {target:?})"
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_task_staying_in_running_keeps_stop_pending() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = running_task_with_a_deferred_stop(&svc).await;
+
+    // A redundant Running write, and a write that carries no status at all:
+    // neither ends the turn the Stop was deferred under.
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Running))
+        .await
+        .unwrap();
+    assert!(svc.get_task(id).await.unwrap().stop_pending);
+
+    svc.update_task(UpdateTaskParams::for_task(id).title("renamed".to_string()))
+        .await
+        .unwrap();
+    assert!(svc.get_task(id).await.unwrap().stop_pending);
+}
+
+#[tokio::test]
+async fn cli_update_task_moving_out_of_running_clears_stop_pending() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+
+    let id = running_task_with_a_deferred_stop(&svc).await;
+    svc.cli_update_task(id, TaskStatus::Done, None, None)
+        .await
+        .unwrap();
+    assert!(!svc.get_task(id).await.unwrap().stop_pending);
+
+    // The conditional (`only_if`) branch takes a different write path.
+    let id = running_task_with_a_deferred_stop(&svc).await;
+    assert!(svc
+        .cli_update_task(id, TaskStatus::Review, Some(TaskStatus::Running), None)
+        .await
+        .unwrap());
+    assert!(!svc.get_task(id).await.unwrap().stop_pending);
+}
+
+#[tokio::test]
+async fn cli_update_task_skipped_by_only_if_keeps_stop_pending() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = running_task_with_a_deferred_stop(&svc).await;
+
+    assert!(!svc
+        .cli_update_task(id, TaskStatus::Review, Some(TaskStatus::Backlog), None)
+        .await
+        .unwrap());
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert!(
+        task.stop_pending,
+        "a write that did not happen must not clear the bit"
+    );
+}
+
+#[tokio::test]
+async fn close_session_clears_stop_pending() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+
+    let id = running_task_with_a_deferred_stop(&svc).await;
+    svc.close_session(id, crate::service::CloseSessionOutcome::Done)
+        .await
+        .unwrap();
+    assert!(!svc.get_task(id).await.unwrap().stop_pending);
+
+    let id = running_task_with_a_deferred_stop(&svc).await;
+    svc.close_session(
+        id,
+        crate::service::CloseSessionOutcome::Review {
+            pr_url: crate::models::TaskUrl::new(
+                "https://github.com/acme/repo/pull/1".to_string(),
+                crate::models::UrlType::Pr,
+            ),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!svc.get_task(id).await.unwrap().stop_pending);
+}
+
+/// The reported sequence, end to end (#3847): a Stop deferred during a live
+/// fan-out, the card dragged to Review, the subagents finishing, then the card
+/// dragged back to Running to keep working. Before the leaving-Running clear
+/// the bit survived step two, and the next tick flipped the card straight back
+/// to Review — where it stuck, undraggable without a re-dispatch.
+#[tokio::test]
+async fn moving_back_into_running_after_a_deferred_stop_does_not_re_flip() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = running_task_with_a_deferred_stop(&svc).await;
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Review))
+        .await
+        .unwrap();
+
+    // The subagent finishes after the move. The drain path is skipped (status
+    // is no longer Running), so nothing here clears the bit either.
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Running))
+        .await
+        .unwrap();
+
+    assert!(
+        !svc.apply_pending_stop(id).await.unwrap(),
+        "the reconciler must find nothing to apply"
+    );
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Running);
+    assert!(!task.stop_pending);
+}
+
 #[tokio::test]
 async fn clear_no_drain_on_a_missing_task_is_not_found() {
     let db = test_db().await;

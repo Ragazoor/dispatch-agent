@@ -8,14 +8,49 @@ use std::sync::Arc;
 
 use crate::db::{self, CreateTaskRequest, TaskPatch};
 use crate::models::{
-    classify_agent_activity, sort_order_for_status_transition, EpicId, HookEventKind,
-    NotificationBehavior, SubStatus, SubagentEvent, Task, TaskId, TaskStatus, DEFAULT_BASE_BRANCH,
+    classify_agent_activity, clears_pending_stop, sort_order_for_status_transition, EpicId,
+    HookEventKind, NotificationBehavior, SubStatus, SubagentEvent, Task, TaskId, TaskStatus,
+    DEFAULT_BASE_BRANCH,
 };
 use crate::service::ServiceError;
 
 use super::params::{CreateTaskParams, ListTasksFilter, UpdateTaskParams};
 use super::validators::build_task_patch;
 use crate::service::UrlUpdate;
+
+/// Add every field a status transition derives from the task's PRIOR status to
+/// `patch`, so the derived writes land in the same `UPDATE` as the status.
+///
+/// Two rules live here, and they are the complete set — a new status-writing
+/// service method gets both by calling this instead of remembering each:
+///
+/// - `sort_order`: set on entering Done, cleared on leaving it
+///   (`sort_order_for_status_transition`).
+/// - `stop_pending`: cleared on leaving Running (`clears_pending_stop`), which
+///   is what keeps `PendingStopOnlyWhileRunning` (`docs/specs/core.allium`)
+///   true and stops the tick reconciler flipping a re-Running card back out.
+///
+/// Deliberately NOT pushed down into `patch_task`'s SQL, which would make the
+/// clear unbypassable for every caller: the invariant is spec'd per rule
+/// (tasks.allium, mcp-task-tools.allium, pr-workflow.allium) and the service
+/// layer is where this codebase keeps rules that read prior state. A generic
+/// patch primitive silently rewriting a column the caller did not name would
+/// also collide with the hook paths, which set `stop_pending` explicitly.
+fn with_status_transition(
+    patch: TaskPatch,
+    prior: TaskStatus,
+    next: TaskStatus,
+    now: chrono::DateTime<chrono::Utc>,
+) -> TaskPatch {
+    let mut patch = patch;
+    if let Some(so) = sort_order_for_status_transition(prior, next, now) {
+        patch = patch.sort_order(so);
+    }
+    if clears_pending_stop(prior, next) {
+        patch = patch.stop_pending(false);
+    }
+    patch
+}
 
 /// Result of [`TaskService::update_task`]. Carries the updated task id plus
 /// presentation-relevant transition flags so MCP handlers can format their
@@ -157,13 +192,10 @@ impl TaskService {
         // sort_order is sitting on the in-memory Task struct alongside a
         // status change, so a defensive-only override would leave a task
         // that just left Done permanently pinned to the top of whatever
-        // column it lands in next.
+        // column it lands in next. Applied after `build_task_patch` for that
+        // reason.
         if let (Some(new_status), Some(p)) = (params.status, prior.as_ref()) {
-            if let Some(so) =
-                sort_order_for_status_transition(p.status, new_status, self.clock.now())
-            {
-                patch = patch.sort_order(so);
-            }
+            patch = with_status_transition(patch, p.status, new_status, self.clock.now());
         }
 
         // Resolve grouping target for an explicit epic relink (before the write).
@@ -254,11 +286,12 @@ impl TaskService {
         if let Some(url) = pr_url {
             patch = patch.url(Some(url));
         }
-        // Same completion-recency rule `update_task` applies on a Done
-        // transition, so a closed task sorts to the top of Done.
-        if let Some(so) = sort_order_for_status_transition(prior.status, status, self.clock.now()) {
-            patch = patch.sort_order(so);
-        }
+        // The same prior-status rules `update_task` applies: the
+        // completion-recency rank on entering Done, and the deferred-Stop clear
+        // — both outcomes here leave Running. What this close does NOT clear is
+        // the task's subagent rows or `live_subagents`; see the ExitSession
+        // guidance in `docs/specs/pr-workflow.allium`.
+        patch = with_status_transition(patch, prior.status, status, self.clock.now());
 
         self.db.patch_task(task_id, &patch).await?;
 
@@ -439,36 +472,37 @@ impl TaskService {
         // detect a transition away from Done regardless of what the new
         // status is, per sort_order_for_status_transition.
         let prior = self.db.get_task(task_id).await?;
-        let sort_order_override = prior
-            .as_ref()
-            .and_then(|p| sort_order_for_status_transition(p.status, new_status, self.clock.now()));
+
+        // One patch for both branches: the caller's sub_status plus everything
+        // the transition derives from the prior status. `status` rides along
+        // only when there is no `only_if` — the conditional branch writes it
+        // through `update_status_if` instead, as its compare-and-set.
+        //
+        // The prior status these rules read is the one the fetch above saw, not
+        // the one `update_status_if` matched; the two agree whenever the
+        // conditional write went through, since it only writes when the current
+        // status equals `expected`.
+        let mut patch = TaskPatch::new();
+        if only_if.is_none() {
+            patch = patch.status(new_status);
+        }
+        if let Some(ss) = sub_status {
+            patch = patch.sub_status(ss);
+        }
+        if let Some(p) = prior.as_ref() {
+            patch = with_status_transition(patch, p.status, new_status, self.clock.now());
+        }
 
         let updated = if let Some(expected) = only_if {
             let changed = self
                 .db
                 .update_status_if(task_id, new_status, expected)
                 .await?;
-            if changed {
-                let mut patch = crate::db::TaskPatch::new();
-                if let Some(ss) = sub_status {
-                    patch = patch.sub_status(ss);
-                }
-                if let Some(so) = sort_order_override {
-                    patch = patch.sort_order(so);
-                }
-                if patch.has_changes() {
-                    self.db.patch_task(task_id, &patch).await?;
-                }
+            if changed && patch.has_changes() {
+                self.db.patch_task(task_id, &patch).await?;
             }
             changed
         } else {
-            let mut patch = crate::db::TaskPatch::new().status(new_status);
-            if let Some(ss) = sub_status {
-                patch = patch.sub_status(ss);
-            }
-            if let Some(so) = sort_order_override {
-                patch = patch.sort_order(so);
-            }
             self.db.patch_task(task_id, &patch).await?;
             true
         };

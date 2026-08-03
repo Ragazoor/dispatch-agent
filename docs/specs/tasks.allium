@@ -206,6 +206,7 @@ rule MoveTaskForward {
     requires: task.status != archived
 
     let next = next_status(task.status)
+    let was_running = task.status = running
 
     -- Moving to Done requires explicit confirmation via ConfirmDone
     requires: next != done
@@ -213,6 +214,9 @@ rule MoveTaskForward {
     ensures: task.status = next
     ensures: task.sub_status = core/SubStatus.default_for(next)
     ensures: task.updated_at = now
+    ensures:
+        if was_running:
+            task.stop_pending = false
 
     @guidance
         -- Manual movement (forward or backward) clears the task's agent
@@ -220,6 +224,12 @@ rule MoveTaskForward {
         -- needs-input-notified markers, the last PR-poll timestamp, and the
         -- card message flash. Nothing else is cleared — there is no
         -- separate tmux-output or crash-detection state.
+        -- A move out of running also voids any deferred Stop
+        -- (task.stop_pending), because the bit belongs to the turn the task
+        -- was running under. was_running reads the pre-move status; an
+        -- ensures-block `if` would read the post-move one. See
+        -- core/Task's PendingStopOnlyWhileRunning invariant for why every
+        -- leaving-running write must do this.
         -- sub_status is always reset to the default for the new status.
         -- Any manual-move transition into Running (not just Review ->
         -- Running) also stamps last_pre_tool_use_at = now, so
@@ -241,6 +251,7 @@ rule MoveTaskBackward {
     requires: task.status != archived
 
     let prev = prev_status(task.status)
+    let was_running = task.status = running
 
     -- Kill tmux window when moving backward, but preserve worktree for resume
     ensures: task.status = prev
@@ -250,6 +261,9 @@ rule MoveTaskBackward {
     ensures:
         if prev = review:
             task.sort_order = null
+    ensures:
+        if was_running:
+            task.stop_pending = false
 
     @guidance
         -- Manual movement (forward or backward) clears the task's agent
@@ -257,6 +271,9 @@ rule MoveTaskBackward {
         -- needs-input-notified markers, the last PR-poll timestamp, and the
         -- card message flash. Nothing else is cleared — there is no
         -- separate tmux-output or crash-detection state.
+        -- A move out of running also voids any deferred Stop — see
+        -- MoveTaskForward's guidance and core/Task's
+        -- PendingStopOnlyWhileRunning invariant.
         -- sub_status is always reset to the default for the new status.
         -- The worktree is preserved so the task can be resumed later
         -- via ResumeTask.
@@ -273,11 +290,16 @@ rule ConfirmDone {
     requires: task.status != done
     requires: task.status != archived
 
+    let was_running = task.status = running
+
     ensures: task.status = done
     ensures: task.sub_status = core/SubStatus.default_for(done)
     ensures: task.tmux_window = null
     ensures: task.updated_at = now
     ensures: task.sort_order = completion_recency_rank(now)
+    ensures:
+        if was_running:
+            task.stop_pending = false
 
     @guidance
         -- Confirmation prompt for the transition into Done. Used by
@@ -286,7 +308,8 @@ rule ConfirmDone {
         -- already in Done or Archived are skipped rather than re-moved.
         -- The tmux window is killed but the worktree is preserved —
         -- unlike ArchiveTask, which removes it. As with MoveTaskForward,
-        -- the task's agent notification/poll tracking flags are cleared.
+        -- the task's agent notification/poll tracking flags are cleared,
+        -- and a deferred Stop is voided when the task was running.
         --
         -- Reached from forward movement only when the next status is Done
         -- (i.e. from Review). The 'x' key reaches it from *any* non-Done
@@ -443,10 +466,15 @@ rule ArchiveTask {
 
     requires: task.status != archived
 
+    let was_running = task.status = running
+
     ensures:
         if task.status = done:
             task.sort_order = null
     ensures: task.status = archived
+    ensures:
+        if was_running:
+            task.stop_pending = false
     ensures:
         if task.worktree != null:
             not exists task.worktree
@@ -463,6 +491,9 @@ rule ArchiveTask {
         -- The task.status = done check reads the pre-archive status
         -- (evaluated before the status = archived assignment below), so
         -- only a task that was actually Done has its sort_order cleared.
+        -- was_running is bound in the let block for the same reason, and
+        -- says so structurally: archiving a running task voids its
+        -- deferred Stop (see core/Task's PendingStopOnlyWhileRunning).
         --
         -- ArchiveKeyRouting: the handler accepts any non-archived task,
         -- but the TUI's 'x' key only routes *Done* tasks here. On a task
@@ -634,6 +665,12 @@ rule EditTask {
                 task.sort_order = completion_recency_rank(now)
             else if prior = done and edited.status != done:
                 task.sort_order = null
+            -- And the same leaving-running clear, for the same reason: the
+            -- editor routes through update_task, which applies every rule a
+            -- transition derives from the prior status. See core/Task's
+            -- PendingStopOnlyWhileRunning invariant.
+            if prior = running and edited.status != running:
+                task.stop_pending = false
         if edited.plan != "": task.plan_path = edited.plan
         else: task.plan_path = null
         if edited.tag != "": task.tag = edited.tag

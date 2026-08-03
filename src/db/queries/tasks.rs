@@ -271,6 +271,12 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
+    /// Writes `status` and `sub_status` only. It does NOT apply the rules a
+    /// status transition derives from the prior status (the Done sort_order rank
+    /// and the leaving-Running `stop_pending` clear) — its one caller,
+    /// `TaskService::cli_update_task`, follows up with a patch that does. A
+    /// second caller must do the same, or `PendingStopOnlyWhileRunning`
+    /// (`docs/specs/core.allium`) can be violated from here.
     async fn update_status_if(
         &self,
         id: TaskId,
@@ -702,6 +708,13 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
+    /// Moves Running -> Backlog without clearing `stop_pending`, and safely so:
+    /// the `worktree IS NULL` guard restricts it to a claim that never finished
+    /// provisioning, so no agent ever ran and no Stop hook can have fired for
+    /// this claim. The claim itself also cleared the bit on the way in (see
+    /// `DispatchTask` in `docs/specs/dispatch.allium`). Any relaxation of that
+    /// guard has to clear it — see `PendingStopOnlyWhileRunning`
+    /// (`docs/specs/core.allium`).
     async fn try_release_backlog_claim(&self, id: TaskId) -> Result<bool> {
         self.db_call(move |conn| {
             let backlog = TaskStatus::Backlog;

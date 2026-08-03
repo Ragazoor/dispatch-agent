@@ -91,6 +91,14 @@ rule UpdateTaskViaMcp {
         if status != null and prior_status = done:
             task.sort_order = null
     ensures:
+        -- Leaving running voids any deferred Stop, exactly as the manual
+        -- moves in tasks.allium do. Without this an agent that moves its own
+        -- task out of running and later back in would be flipped straight
+        -- back out by ReconcileStrandedPendingStop (agent-health.allium).
+        -- See core/Task's PendingStopOnlyWhileRunning invariant.
+        if status != null and status != running and prior_status = running:
+            task.stop_pending = false
+    ensures:
         if url != null:
             if url = "":
                 task.url = null      -- empty string clears the url (and its type)

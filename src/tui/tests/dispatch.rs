@@ -2435,6 +2435,14 @@ fn apply_pending_stop_ids(cmds: &[Command]) -> Vec<TaskId> {
         .collect()
 }
 
+/// A board holding one provisioned Running task that carries a deferred Stop.
+fn app_with_deferred_stop() -> App {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.tmux_window = Some("win-1".to_string());
+    task.stop_pending = true;
+    App::new(vec![task])
+}
+
 #[test]
 fn tick_applies_a_deferred_stop_with_no_subagent_left_to_drain_it() {
     // Running + stop_pending + live_subagents == 0 is unreachable by any
@@ -2442,11 +2450,8 @@ fn tick_applies_a_deferred_stop_with_no_subagent_left_to_drain_it() {
     // last SubagentStop interleave across two dispatch processes. Nothing
     // else resolves it — Stop will not re-fire, and PreToolUse never touches
     // status — so the tick must.
-    let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
-    task.stop_pending = true;
-    task.live_subagents = 0;
-    let mut app = App::new(vec![task]);
+    let mut app = app_with_deferred_stop();
+    assert_eq!(app.find_task(TaskId(1)).unwrap().live_subagents, 0);
 
     let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
     assert_eq!(apply_pending_stop_ids(&cmds), vec![TaskId(1)]);
@@ -2454,11 +2459,8 @@ fn tick_applies_a_deferred_stop_with_no_subagent_left_to_drain_it() {
 
 #[test]
 fn tick_does_not_apply_a_deferred_stop_while_subagents_are_live() {
-    let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
-    task.stop_pending = true;
-    task.live_subagents = 2;
-    let mut app = App::new(vec![task]);
+    let mut app = app_with_deferred_stop();
+    app.find_task_mut(TaskId(1)).unwrap().live_subagents = 2;
 
     let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
     assert!(
@@ -2481,12 +2483,58 @@ fn tick_ignores_tasks_without_a_pending_stop() {
     assert!(apply_pending_stop_ids(&cmds).is_empty());
 }
 
+/// The board's own copy must lose the bit the moment the card leaves Running,
+/// not only once the DB write round-trips back on a refresh — otherwise the
+/// next tick reads a stale snapshot and submits a reconciler pass for a task
+/// that is no longer Running. See #3847.
+#[test]
+fn moving_a_card_out_of_running_clears_the_local_pending_stop() {
+    for direction in [MoveDirection::Forward, MoveDirection::Backward] {
+        let mut app = app_with_deferred_stop();
+
+        app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
+            id: TaskId(1),
+            direction,
+        }));
+
+        let moved = app.find_task(TaskId(1)).unwrap();
+        assert_ne!(moved.status, TaskStatus::Running);
+        assert!(
+            !moved.stop_pending,
+            "moving {direction:?} out of Running must void the deferred Stop"
+        );
+
+        // And moving back in must not hand the reconciler a task to flip.
+        app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
+            id: TaskId(1),
+            direction: match direction {
+                MoveDirection::Forward => MoveDirection::Backward,
+                MoveDirection::Backward => MoveDirection::Forward,
+            },
+        }));
+        let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
+        assert!(apply_pending_stop_ids(&cmds).is_empty());
+    }
+}
+
+#[test]
+fn confirming_done_from_running_clears_the_local_pending_stop() {
+    let mut app = app_with_deferred_stop();
+
+    // 'x' on a non-Done card routes straight to the Done confirmation.
+    app.select.pending_done = vec![TaskId(1)];
+    app.update(Message::Input(
+        crate::tui::messages::InputMessage::ConfirmDone,
+    ));
+
+    let done = app.find_task(TaskId(1)).unwrap();
+    assert_eq!(done.status, TaskStatus::Done);
+    assert!(!done.stop_pending);
+}
+
 #[test]
 fn tick_emits_the_reconciler_only_once_per_stranded_task() {
-    let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
-    task.stop_pending = true;
-    let mut app = App::new(vec![task]);
+    let mut app = app_with_deferred_stop();
 
     let first = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
     assert_eq!(apply_pending_stop_ids(&first), vec![TaskId(1)]);

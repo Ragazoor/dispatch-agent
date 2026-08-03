@@ -111,6 +111,23 @@ pub fn sort_order_for_status_transition(
     }
 }
 
+/// Whether a status write from `prior` to `next` voids a deferred Stop
+/// (`Task::stop_pending`).
+///
+/// The bit records "a Stop hook arrived while subagents were still live", and
+/// it belongs to the turn the task was Running under. Any write that takes the
+/// task out of Running ends that turn, so the bit is cleared in the same patch
+/// — see `PendingStopOnlyWhileRunning` in `docs/specs/core.allium`. Leaving it
+/// set would hand `ReconcileStrandedPendingStop` a task to flip straight back
+/// out of Running the moment a human moves the card back in.
+///
+/// Arriving in Running is deliberately not a clear point: only `HookStop` sets
+/// the bit and it requires Running, so there is nothing to clear on the way in,
+/// and the dispatch claim already clears it explicitly.
+pub fn clears_pending_stop(prior: TaskStatus, next: TaskStatus) -> bool {
+    prior == TaskStatus::Running && next != TaskStatus::Running
+}
+
 // ---------------------------------------------------------------------------
 // TipsShowMode
 // ---------------------------------------------------------------------------
@@ -1911,6 +1928,39 @@ mod tests {
         let result =
             sort_order_for_status_transition(TaskStatus::Running, TaskStatus::Archived, now);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn leaving_running_clears_the_pending_stop() {
+        for next in [
+            TaskStatus::Review,
+            TaskStatus::Backlog,
+            TaskStatus::Done,
+            TaskStatus::Archived,
+        ] {
+            assert!(
+                clears_pending_stop(TaskStatus::Running, next),
+                "running -> {next:?} must void a deferred Stop"
+            );
+        }
+    }
+
+    #[test]
+    fn a_transition_that_does_not_leave_running_keeps_the_pending_stop() {
+        // Arriving in Running is not a clear point either: only HookStop sets
+        // the bit and it requires Running, so there is nothing to clear on the
+        // way in.
+        for (prior, next) in [
+            (TaskStatus::Running, TaskStatus::Running),
+            (TaskStatus::Backlog, TaskStatus::Running),
+            (TaskStatus::Review, TaskStatus::Running),
+            (TaskStatus::Review, TaskStatus::Done),
+        ] {
+            assert!(
+                !clears_pending_stop(prior, next),
+                "{prior:?} -> {next:?} must not void a deferred Stop"
+            );
+        }
     }
 
     #[test]

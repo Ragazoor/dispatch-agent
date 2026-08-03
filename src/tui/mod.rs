@@ -1657,6 +1657,27 @@ impl App {
         }
     }
 
+    /// Move a task's status on the board, in step with what the service layer
+    /// will write for the same transition: `sub_status` resets to the new
+    /// status's default, and a deferred Stop is voided when the card leaves
+    /// Running (`clears_pending_stop`, mirroring `PendingStopOnlyWhileRunning`
+    /// in `docs/specs/core.allium`).
+    ///
+    /// The `stop_pending` half is board coherence rather than correctness — the
+    /// DB write `Persist` carries is the authority, and the tick reconciler's
+    /// own write is conditional on the row. It exists so the board cannot show
+    /// a state the row does not have between a move and the next refresh.
+    ///
+    /// Every board mutation that lands a task in a new status should go through
+    /// here; the alternative is remembering two derived fields at each site.
+    pub(in crate::tui) fn set_local_status(task: &mut Task, next: TaskStatus) {
+        if crate::models::clears_pending_stop(task.status, next) {
+            task.stop_pending = false;
+        }
+        task.status = next;
+        task.sub_status = SubStatus::default_for(next);
+    }
+
     /// Take the tmux_window from a task and build a KillTmuxWindow command.
     /// Leaves the worktree intact so the task can be resumed later.
     pub(in crate::tui) fn take_detach(task: &mut Task) -> Option<Command> {

@@ -398,6 +398,8 @@ rule ExitSession {
     -- branch that uses it.
     let window = closed_session_window(task)
 
+    let was_running = task.status = running
+
     ensures:
         ExitTokenConsumed(task: task)
         -- The teardown is conditional on the same write as the terminal
@@ -414,6 +416,8 @@ rule ExitSession {
                 task.status = done
                 task.sub_status = core/SubStatus.default_for(done)
                 task.sort_order = completion_recency_rank(now)
+            if was_running:
+                task.stop_pending = false
             task.updated_at = now
 
     -- Emitted after the terminal mutation and after the task/epic-changed
@@ -470,6 +474,22 @@ rule ExitSession {
         --   • pr            → task.status = review, task.url = TaskUrl(pr_url,
         --                      url_type = pr) — this branch does not enter
         --                      done, so task.sort_order is untouched
+        -- Both branches leave running, so both clear task.stop_pending in the
+        -- same patch (core/Task's PendingStopOnlyWhileRunning). What they do
+        -- NOT clear is the task's core/SubagentEntry rows or its
+        -- live_subagents count — so this, the most common way a dispatched
+        -- task actually ends, is not one of the structural clear points
+        -- enumerated in agent-health.allium's HookSubagentStop guidance.
+        -- Harmless as it stands: only a running task's count is ever read
+        -- (ReconcileStrandedPendingStop and the drain path both require
+        -- status = running), a stale count is card text nobody renders
+        -- outside running, and the rows go on the next DispatchTask claim or
+        -- with the task's delete cascade. Left as documentation rather than
+        -- fixed: making the close a fifth clear point needs a decision about
+        -- whether it drains (it assigns its own terminal status, so by the
+        -- "the rule that owns the resulting status wins" split it should
+        -- not), and nothing observable depends on it today.
+        --
         -- The token is consumed and task/epic-changed is notified for all three
         -- actions (this notify previously existed only for the rebase path; the
         -- done and pr status/url mutations moved out of wrap_up into this single

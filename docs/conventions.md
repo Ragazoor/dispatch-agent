@@ -129,6 +129,14 @@ It mirrors `FieldUpdate` (same three-state semantics, same `Some(Some(_))`/`Some
 
 The service layer bridges the two patterns before writing a patch: `FieldUpdate::Set(v)` becomes `Some(Some(v))` and `FieldUpdate::Clear` becomes `Some(None)`. When adding a new nullable field, use `FieldUpdate` in `UpdateTaskParams`/`UpdateEpicParams` and double-Option in the corresponding patch struct.
 
+**`TaskPatch` is `TaskPatch<'a>` — it borrows its string arguments.** That is invisible at
+most call sites (`TaskPatch::new().status(s)` needs no annotation) but it blocks the obvious
+way to share patch-building between two branches: a closure `|p: TaskPatch| -> TaskPatch`
+cannot name the higher-ranked lifetime and fails to compile with "lifetime may not live long
+enough". Either build one patch up front and add the branch-specific fields conditionally
+(what `cli_update_task` in `src/service/tasks/crud.rs` does), or use a free function with an
+explicit `<'a>` — as `with_status_transition` in the same file does.
+
 ### OwnedTaskPatch (and OwnedCreateTaskRequest)
 
 `db_call` closures must be `Send + 'static`, so borrowed fields from `TaskPatch<'_>` cannot
@@ -249,6 +257,26 @@ Tests seed fixtures via the `#[cfg(test)]` write accessors `McpState::db_write()
 Any code that changes a task's **status** or its **epic linkage** (`epic_id`) must recalculate the affected epic(s). An epic's status is derived from its subtasks' statuses, so a task change that doesn't trigger a recalc leaves the parent epic showing a stale rollup.
 
 The canonical implementation is in `TaskService` (`src/service/tasks/crud.rs` — `recalculate_epic` / `recalculate_epic_for_task`, which call `db.recalculate_epic_status(epic_id)`). Task mutations that go through the service layer get this for free; this is the main reason mutations should not bypass the service (see the mutation-boundary section above). When a task moves between epics, both the old and the new parent must be recalculated.
+
+## Allium: expressing "on leaving state X"
+
+<!-- allow-phantom-symbol: transitions_from is the Allium keyword that does NOT exist; naming it is the point of this section -->
+Allium has `transitions_to` (and `becomes`) but **no `transitions_from`** — a rule keyed on
+"whenever a task leaves running" is not expressible, and `allium check` rejects the syntax.
+Nor can you read the pre-state inside `ensures`: an `if` there sees the *resulting* state, so
+`ensures: if task.status = running: …` alongside `ensures: task.status = review` is always
+false.
+
+Two constructs cover it, and both are in `tasks.allium`:
+
+- Bind the pre-state in the rule's `let` block — `let was_running = task.status = running` —
+  then guard on the binding (`MoveTaskForward`, `ConfirmDone`, `ArchiveTask`). Each rule that
+  performs the transition states the obligation itself.
+- Tie those per-rule clauses together with an entity-level `invariant` using `implies`
+  (`PendingStopOnlyWhileRunning` on `core/Task`), so the shared property has one home even
+  though its enforcement is stated per rule.
+
+Expect the duplication: it is the language's shape, not a smell to refactor away.
 
 ## DB access — `db_call` / `db_call_read`
 
