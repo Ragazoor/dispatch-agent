@@ -1396,6 +1396,37 @@ fn repo_sync_attempts_every_target_and_fails_the_exit_code() {
 // statusline
 // ---------------------------------------------------------------------------
 
+const STATUS_PAYLOAD: &[u8] =
+    br#"{"rate_limits":{"five_hour":{"used_percentage":5.0,"resets_at":9}}}"#;
+
+/// Run the decorator the way Claude Code does — payload on stdin — and return
+/// its output.
+fn run_statusline(db: &Path, snapshot: &Path, chain: Option<&str>) -> std::process::Output {
+    let mut command = binary();
+    command.args([
+        "--db",
+        db.to_str().unwrap(),
+        "statusline",
+        "--snapshot",
+        snapshot.to_str().unwrap(),
+    ]);
+    if let Some(chain) = chain {
+        command.args(["--chain", chain]);
+    }
+    let mut child = command
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(STATUS_PAYLOAD)
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
 /// The decorator runs several times a second in every dispatch-spawned Claude
 /// session, so any database work there would be pure waste. The module keeps no
 /// `Database` import, but that is a source property; this asserts the observable
@@ -1408,27 +1439,9 @@ fn statusline_creates_no_database_file() {
     let db_path = tmp.path().join("tasks.db");
     let snapshot = tmp.path().join("rate-limits.json");
 
-    let mut child = binary()
-        .args([
-            "--db",
-            db_path.to_str().unwrap(),
-            "statusline",
-            "--snapshot",
-            snapshot.to_str().unwrap(),
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(br#"{"rate_limits":{"five_hour":{"used_percentage":5.0,"resets_at":9}}}"#)
-        .unwrap();
-    let status = child.wait().unwrap();
+    let out = run_statusline(&db_path, &snapshot, None);
 
-    assert!(status.success(), "the decorator must always exit 0");
+    assert!(out.status.success(), "the decorator must always exit 0");
     assert!(
         snapshot.exists(),
         "the snapshot must have been published, or this proves nothing about the DB"
@@ -1437,4 +1450,75 @@ fn statusline_creates_no_database_file() {
         !db_path.exists(),
         "the statusline subcommand must not create a database file"
     );
+}
+
+/// The decorator does no async work, so it must start none of the machinery for
+/// it — a multi-thread tokio runtime would spin up one worker per core plus the
+/// reactor on every 300 ms debounce tick, in every session. See
+/// docs/specs/dispatch.allium: StatusLineDecorator (`@guarantee
+/// StartsNoAsyncRuntime`).
+///
+/// Observed rather than asserted from source: the chained command's parent *is*
+/// the `dispatch` process, so `/proc/$PPID/task` is that process's live thread
+/// count while the decorator waits on the chain. `run_bounded` accounts for at
+/// most three threads there (the stdin writer plus the two output drains) on top
+/// of `main`, hence the bound of 4 — an inequality, because the stdin writer may
+/// already have finished. Add a background thread to `run_bounded` and this
+/// bound needs revisiting.
+#[test]
+#[cfg(target_os = "linux")]
+fn statusline_starts_no_worker_thread_pool() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = run_statusline(
+        &tmp.path().join("tasks.db"),
+        &tmp.path().join("rate-limits.json"),
+        Some("ls /proc/$PPID/task | wc -l"),
+    );
+
+    assert!(out.status.success(), "the decorator must always exit 0");
+    let printed = String::from_utf8_lossy(&out.stdout);
+    let threads: usize = printed
+        .trim()
+        .parse()
+        .unwrap_or_else(|e| panic!("expected a thread count, got {printed:?}: {e}"));
+    assert!(
+        threads <= 4,
+        "statusline must run without a worker-thread pool, saw {threads} threads"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// caller-headers
+// ---------------------------------------------------------------------------
+
+/// The `headersHelper` runs on every MCP session start and reconnect. Its whole
+/// contract is one line of JSON on stdout and exit 0; these lock it at the
+/// process level, where the unit tests on `resolve_headers_for_path` cannot see
+/// it. See docs/specs/mcp-task-tools.allium (CreateTaskViaMcp guidance).
+#[test]
+fn caller_headers_emits_session_header_outside_a_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out = binary()
+        .arg("caller-headers")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "caller-headers must exit 0");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["X-Caller-Kind"], "session");
+}
+
+#[test]
+fn caller_headers_emits_task_header_inside_a_worktree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let wt = tmp.path().join(".worktrees").join("3840-some-slug");
+    std::fs::create_dir_all(&wt).unwrap();
+    let out = binary()
+        .arg("caller-headers")
+        .current_dir(&wt)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "caller-headers must exit 0");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["X-Caller-Task-Id"], "3840");
 }

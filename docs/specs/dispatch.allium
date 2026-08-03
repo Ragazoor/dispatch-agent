@@ -1363,6 +1363,13 @@ surface StatusLineDecorator {
         -- not by bringing it into existence. At this invocation rate, across
         -- every session, database work here would be pure waste.
 
+    @guarantee StartsNoAsyncRuntime
+        -- The decorator does no asynchronous work, and starts none of the
+        -- machinery for it: no worker-thread pool, no reactor. At several
+        -- invocations a second in every session, concurrently, setup it cannot
+        -- use is the same waste as database work (see
+        -- NeverReadsOrWritesTheDatabase).
+
     @guarantee PublishedSnapshotIsAlwaysWholeAndFromOneWriter
         -- Every session publishes to the same snapshot location concurrently. A
         -- reader therefore either sees no snapshot or sees one complete set of

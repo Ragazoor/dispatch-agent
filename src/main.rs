@@ -503,6 +503,20 @@ fn cmd_verify_feed(command: String) -> Result<()> {
     Ok(())
 }
 
+/// The statusLine decorator: read the hook payload from stdin, record it, chain,
+/// exit 0. Never returns — the exit code is unconditional (see
+/// `docs/specs/dispatch.allium`: StatusLineDecorator, `@guarantee
+/// AlwaysSucceeds`). Fully synchronous, and routed by `main` before any runtime
+/// exists (`@guarantee StartsNoAsyncRuntime`).
+fn cmd_statusline(snapshot: &str, chain: Option<&str>) -> ! {
+    let mut stdin = String::new();
+    let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
+    let now = chrono::Utc::now().timestamp();
+    let code =
+        dispatch_tui::cli::statusline::run(&stdin, std::path::Path::new(snapshot), chain, now);
+    std::process::exit(code);
+}
+
 fn cmd_caller_headers() -> Result<()> {
     let cwd = std::env::current_dir()?;
     let (stdout, code) = dispatch_tui::cli::caller_headers::resolve_headers_for_path(&cwd);
@@ -708,59 +722,76 @@ fn cmd_toggle_agent_tree_pane(db: &std::path::Path, window: String) -> Result<()
 // main — thin dispatcher
 // ---------------------------------------------------------------------------
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Argv in, one of two dispatchers out.
+///
+/// The subcommands handled here run entirely synchronously, so they must not pay
+/// for a tokio runtime: a multi-thread runtime costs a worker thread per core
+/// plus the reactor, built and torn down per process. `statusline` runs on Claude
+/// Code's ~300 ms statusLine debounce in every session concurrently, and
+/// `caller-headers` on every MCP session start/reconnect, so that setup is pure
+/// waste at exactly the frequency that matters. See `docs/specs/dispatch.allium`:
+/// StatusLineDecorator (`@guarantee StartsNoAsyncRuntime`).
+///
+/// This match is the only classifier: everything not named here falls through to
+/// the runtime and [`run_async`]. A subcommand added later therefore lands on the
+/// async path by default — correct, merely unoptimised.
+fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Tui { port } => cmd_tui(&cli.db, port).await?,
+        Commands::Statusline { snapshot, chain } => cmd_statusline(&snapshot, chain.as_deref()),
+        Commands::CallerHeaders => cmd_caller_headers(),
+        Commands::VerifyFeed { command } => cmd_verify_feed(command),
+        Commands::Uninstall { yes, purge } => dispatch_tui::setup::run_uninstall(yes, purge),
+        Commands::ToggleAgentTreePane { window } => cmd_toggle_agent_tree_pane(&cli.db, window),
+        command => tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(run_async(&cli.db, command)),
+    }
+}
+
+async fn run_async(db: &std::path::Path, command: Commands) -> Result<()> {
+    match command {
+        Commands::Tui { port } => cmd_tui(db, port).await?,
         Commands::Update {
             id,
             status,
             only_if,
             sub_status,
             needs_input,
-        } => cmd_update(&cli.db, id, status, only_if, sub_status, needs_input).await?,
+        } => cmd_update(db, id, status, only_if, sub_status, needs_input).await?,
         Commands::Hook {
             id,
             kind,
             notification_kind,
-        } => cmd_hook(&cli.db, id, kind, notification_kind).await?,
+        } => cmd_hook(db, id, kind, notification_kind).await?,
         Commands::HookSubagent {
             id,
             action,
             agent_id,
             session_id,
-        } => cmd_hook_subagent(&cli.db, id, action, agent_id, session_id).await?,
+        } => cmd_hook_subagent(db, id, action, agent_id, session_id).await?,
         Commands::HookFileEvent { id, tool, path } => {
-            cmd_hook_file_event(&cli.db, id, tool, path).await?
+            cmd_hook_file_event(db, id, tool, path).await?
         }
-        Commands::AgentTree { task_id } => cmd_agent_tree(&cli.db, task_id).await?,
-        Commands::Statusline { snapshot, chain } => {
-            let mut stdin = String::new();
-            let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin);
-            let now = chrono::Utc::now().timestamp();
-            let code = dispatch_tui::cli::statusline::run(
-                &stdin,
-                std::path::Path::new(&snapshot),
-                chain.as_deref(),
-                now,
-            );
-            std::process::exit(code);
-        }
-        Commands::PrGate { id } => cmd_pr_gate(&cli.db, id).await?,
-        Commands::List { status } => cmd_list(&cli.db, status).await?,
+        Commands::AgentTree { task_id } => cmd_agent_tree(db, task_id).await?,
+        Commands::PrGate { id } => cmd_pr_gate(db, id).await?,
+        Commands::List { status } => cmd_list(db, status).await?,
         Commands::Setup { port, yes } => {
-            dispatch_tui::setup::run_setup(port, yes, &cli.db).await?;
+            dispatch_tui::setup::run_setup(port, yes, db).await?;
         }
-        Commands::Uninstall { yes, purge } => dispatch_tui::setup::run_uninstall(yes, purge)?,
-        Commands::VerifyFeed { command } => cmd_verify_feed(command)?,
-        Commands::CallerHeaders => cmd_caller_headers()?,
-        Commands::Repo { action } => cmd_repo(&cli.db, action).await?,
-        Commands::PruneRepoPaths => cmd_prune_repo_paths(&cli.db).await?,
-        Commands::Plan { id, path } => cmd_plan(&cli.db, id, path).await?,
-        Commands::ToggleAgentTreePane { window } => {
-            cmd_toggle_agent_tree_pane(&cli.db, window)?;
+        Commands::Repo { action } => cmd_repo(db, action).await?,
+        Commands::PruneRepoPaths => cmd_prune_repo_paths(db).await?,
+        Commands::Plan { id, path } => cmd_plan(db, id, path).await?,
+        // Unreachable by construction: `main` matches these same patterns before
+        // any runtime exists, so they never reach the async path.
+        Commands::Statusline { .. }
+        | Commands::CallerHeaders
+        | Commands::VerifyFeed { .. }
+        | Commands::Uninstall { .. }
+        | Commands::ToggleAgentTreePane { .. } => {
+            unreachable!("synchronous subcommands are routed by main, not run_async")
         }
     }
 
