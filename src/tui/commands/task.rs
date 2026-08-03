@@ -107,13 +107,4 @@ pub enum TaskCommand {
         id: TaskId,
         mode: DrainMode,
     },
-    /// Apply a Stop that was deferred but has no subagent left to drain it.
-    /// Emitted by the tick reconciler for the stranded `Running` +
-    /// `stop_pending` + `live_subagents = 0` state that two interleaving hook
-    /// processes can produce. Conditional at the DB level, so a speculative
-    /// emission is harmless. See `ReconcileStrandedPendingStop`
-    /// (`docs/specs/agent-health.allium`).
-    ApplyPendingStop {
-        id: TaskId,
-    },
 }

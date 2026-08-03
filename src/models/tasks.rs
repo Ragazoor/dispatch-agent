@@ -118,8 +118,9 @@ pub fn sort_order_for_status_transition(
 /// it belongs to the turn the task was Running under. Any write that takes the
 /// task out of Running ends that turn, so the bit is cleared in the same patch
 /// — see `PendingStopOnlyWhileRunning` in `docs/specs/core.allium`. Leaving it
-/// set would hand `ReconcileStrandedPendingStop` a task to flip straight back
-/// out of Running the moment a human moves the card back in.
+/// set would carry a Stop from the earlier turn into the next one, where the
+/// drain would apply it and flip the task straight back out of Running the
+/// moment a human moves the card back in.
 ///
 /// Arriving in Running is deliberately not a clear point: only `HookStop` sets
 /// the bit and it requires Running, so there is nothing to clear on the way in,
@@ -797,6 +798,44 @@ pub enum DrainMode {
     /// that already own the resulting status (crash, dispatch-claim): draining
     /// alongside their own write would leave the task in both states at once.
     NoDrain,
+}
+
+/// What the `Stop` hook's conditional write actually did.
+///
+/// The three arms are decided by the row's committed state at write time, not
+/// by a prior read: every Claude Code hook is its own `dispatch` process, so a
+/// snapshot taken before the write can be stale by the time it lands. See
+/// `HookStop` in `docs/specs/agent-health.allium`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopOutcome {
+    /// No subagent was live: the task moved to `Review`.
+    Flipped,
+    /// Subagents were still live: the flip was withheld and `stop_pending` set.
+    /// The last `SubagentStop` applies it.
+    Deferred,
+    /// The task was not `Running` (or does not exist). Nothing was written.
+    NoOp,
+}
+
+/// Result of a subagent mutation that can drain the last live subagent.
+///
+/// `applied_pending_stop` is reported rather than re-derived by the caller
+/// because the flip happens inside the same transaction that recomputed the
+/// count — there is no point at which a caller could observe the two
+/// separately. See `HookSubagentStop` in `docs/specs/agent-health.allium`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubagentDrain {
+    /// `live_subagents` after the mutation.
+    ///
+    /// Informational — mirrors the count `subagent_start` returns. Do **not**
+    /// branch on it to decide whether a deferred `Stop` should apply: by the
+    /// time you read it the transaction has already made that decision, and
+    /// re-deciding out here is the read-then-write shape that made the
+    /// stranded state reachable in the first place. Use
+    /// `applied_pending_stop`.
+    pub live: i64,
+    /// Whether this write also applied a deferred `Stop`.
+    pub applied_pending_stop: bool,
 }
 
 /// The `notification_type` field on Claude Code's `Notification` hook payload,

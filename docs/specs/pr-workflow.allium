@@ -481,8 +481,8 @@ rule ExitSession {
         -- task actually ends, is not one of the structural clear points
         -- enumerated in agent-health.allium's HookSubagentStop guidance.
         -- Harmless as it stands: only a running task's count is ever read
-        -- (ReconcileStrandedPendingStop and the drain path both require
-        -- status = running), a stale count is card text nobody renders
+        -- (the drain path requires status = running), a stale count is card
+        -- text nobody renders
         -- outside running, and the rows go on the next DispatchTask claim or
         -- with the task's delete cascade. Left as documentation rather than
         -- fixed: making the close a fifth clear point needs a decision about

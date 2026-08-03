@@ -227,24 +227,6 @@ impl TuiRuntime {
         }
     }
 
-    /// Apply a deferred Stop that has no subagent left to drain it. The write
-    /// is conditional in SQL, so this is safe to call speculatively; a `true`
-    /// return means the board moved and needs a refresh. Failures are logged,
-    /// not surfaced — the tick will simply try again.
-    pub(super) async fn exec_apply_pending_stop(
-        &self,
-        app: &mut crate::tui::App,
-        id: models::TaskId,
-    ) {
-        match self.task_svc.apply_pending_stop(id).await {
-            Ok(true) => app.dirty_since_refresh = true,
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(task_id = id.0, error = %e, "failed to apply deferred stop");
-            }
-        }
-    }
-
     /// If the write carried a `sort_order`, patch that one field onto
     /// the in-memory task immediately. The service — not the caller — computes
     /// it on a Done transition (`sort_order_for_status_transition`, run inside

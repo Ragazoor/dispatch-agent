@@ -324,9 +324,8 @@ entity Task {
     -- mcp-task-tools.allium, ExitSession in pr-workflow.allium, and the
     -- drain points in agent-health.allium). So the bit cannot outlive the
     -- status it was recorded under, and cannot be waiting for a task that
-    -- a later move puts back into running —
-    -- ReconcileStrandedPendingStop (agent-health.allium) would otherwise
-    -- flip such a task straight back out of running on the next tick.
+    -- a later move puts back into running — where the next drain would
+    -- otherwise flip it straight back out of a status a human just chose.
     invariant PendingStopOnlyWhileRunning {
         stop_pending implies status = running
     }

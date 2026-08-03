@@ -114,6 +114,20 @@ pub(super) const TASK_COLUMNS: &str =
      created_at, updated_at, labels, last_pre_tool_use_at, last_notification_at, \
      wrap_up_mode, auto_run_plan, live_subagents, stop_pending";
 
+/// The `SET` list that applies a `Stop` — the one definition of what "the task
+/// finished its turn" writes. Shared by the two statements that can apply it:
+/// the immediate flip in `try_record_stop` and the drain in
+/// `apply_pending_stop_if_drained`. Binds `?1` = status, `?2` = sub_status; the
+/// caller supplies `?3` onward in its own `WHERE`, which is deliberately *not*
+/// shared — each predicate is a different concurrency argument and belongs
+/// inline where it can be read.
+///
+/// `migrate_v82_resolve_stranded_pending_stops` deliberately keeps its own copy
+/// instead of using this. See the note there.
+pub(super) const STOP_FLIP_SET: &str = "SET status = ?1, sub_status = ?2, \
+     last_pre_tool_use_at = NULL, last_notification_at = NULL, \
+     stop_pending = 0, updated_at = datetime('now')";
+
 /// Column list shared by all epic SELECT queries. Pair with `row_to_epic`.
 /// Order must match the field reads in `row_to_epic`.
 pub(super) const EPIC_COLUMNS: &str =

@@ -27,6 +27,8 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::models::{SubStatus, TaskStatus};
+
 pub(super) type Migration = (i64, fn(&Connection) -> Result<()>);
 
 fn table_exists(conn: &Connection, table: &str) -> bool {
@@ -140,6 +142,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (79, migrate_v79_backfill_done_sort_order),
     (80, migrate_v80_drop_agent_status),
     (81, migrate_v81_create_task_subagents),
+    (82, migrate_v82_resolve_stranded_pending_stops),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1203,6 +1206,72 @@ pub(super) fn migrate_v81_create_task_subagents(conn: &Connection) -> Result<()>
     if !column_exists(conn, "tasks", "stop_pending") {
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN stop_pending INTEGER NOT NULL DEFAULT 0")
             .context("Failed to add tasks.stop_pending (migration v81)")?;
+    }
+    Ok(())
+}
+
+/// Resolve tasks left stranded by the pre-conditional-write `Stop` handling.
+///
+/// Before the `Stop` hook and the subagent-drain became single conditional
+/// writes, each read the task, decided, then wrote. Across two `dispatch`
+/// processes those could interleave so `stop_pending` was set *after* the count
+/// had already reached zero, leaving `Running` + `stop_pending` +
+/// `live_subagents = 0`: nothing left to drain it, `Stop` does not re-fire, and
+/// `PreToolUse` never touches status. A tick reconciler used to sweep those up
+/// every 2s; it has been retired because the state is now unreachable.
+///
+/// Unreachable going forward, but not retroactive — a database written by the
+/// older code can still hold such a row, and with the reconciler gone nothing
+/// else would ever resolve it. This applies the withheld flip once.
+///
+/// The statement below spells out the same predicate and SET list as
+/// `apply_pending_stop_if_drained` (`src/db/queries/subagents.rs`) but must
+/// **not** be refactored to share `STOP_FLIP_SET` with it. A migration is a
+/// frozen historical record — see the "we do not squash migrations" note in
+/// this module's header — so binding it to a shared constant would let a later
+/// edit retroactively change what v82 did on databases that already ran it.
+/// Duplication is the correct choice here.
+///
+/// Epic status is intentionally not recalculated here: it only changes when
+/// *every* child is Done (`recalculate_epic_status_inner`), so moving a task
+/// from Running to Review cannot alter it.
+pub(super) fn migrate_v82_resolve_stranded_pending_stops(conn: &Connection) -> Result<()> {
+    // This is a data fix-up, not a schema change, so it is safe to skip when
+    // the columns it touches are not all present. The migration tests build
+    // synthetic partial `tasks` tables from various eras — v81 adds
+    // `stop_pending`/`live_subagents` to whatever table exists, which can leave
+    // those present while the hook timestamps are not.
+    for column in [
+        "status",
+        "sub_status",
+        "stop_pending",
+        "live_subagents",
+        "last_pre_tool_use_at",
+        "last_notification_at",
+    ] {
+        if !column_exists(conn, "tasks", column) {
+            return Ok(());
+        }
+    }
+    let resolved = conn
+        .execute(
+            "UPDATE tasks \
+             SET status = ?1, sub_status = ?2, \
+                 last_pre_tool_use_at = NULL, last_notification_at = NULL, \
+                 stop_pending = 0, updated_at = datetime('now') \
+             WHERE status = ?3 AND stop_pending = 1 AND live_subagents = 0",
+            rusqlite::params![
+                TaskStatus::Review.as_str(),
+                SubStatus::default_for(TaskStatus::Review).as_str(),
+                TaskStatus::Running.as_str(),
+            ],
+        )
+        .context("Failed to resolve stranded pending stops (migration v82)")?;
+    if resolved > 0 {
+        tracing::info!(
+            count = resolved,
+            "migration v82: applied deferred stops that had no subagent left to drain them"
+        );
     }
     Ok(())
 }

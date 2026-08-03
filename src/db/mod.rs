@@ -9,8 +9,8 @@ use std::path::Path;
 
 use crate::models::{
     Epic, EpicId, FeedItem, Learning, LearningId, LearningKind, LearningRetrieval, LearningScope,
-    LearningStatus, LearningVerdict, RetrievalSource, SubStatus, Task, TaskId, TaskStatus, TaskTag,
-    Todo, TodoId, WrapUpMode,
+    LearningStatus, LearningVerdict, RetrievalSource, StopOutcome, SubStatus, SubagentDrain, Task,
+    TaskId, TaskStatus, TaskTag, Todo, TodoId, WrapUpMode,
 };
 
 /// Number of decode soft-fails since process start: unknown enum values that
@@ -210,30 +210,44 @@ pub trait TaskCrud: TaskRead {
     ) -> Result<i64>;
     /// Record a live subagent stopping for `id`. Rows belonging to any session
     /// other than `session_id` are evicted first, then the `(task_id,
-    /// agent_id)` row is deleted if present. Returns the resulting live count.
-    /// An `agent_id` that was never started is a no-op, not an underflow.
-    async fn subagent_stop(&self, id: TaskId, agent_id: &str, session_id: &str) -> Result<i64>;
-    /// Remove every live-subagent row for `id` and zero `live_subagents`,
-    /// leaving `stop_pending` untouched. For the draining clear point
-    /// (`DetachTmux`), which runs the drain path and so owns that bit itself —
-    /// clearing it here would apply it unconditionally, where
-    /// `docs/specs/split-pane.allium` clears it only for a Running task.
-    async fn subagent_clear(&self, id: TaskId) -> Result<()>;
-    /// [`subagent_clear`](Self::subagent_clear) plus `stop_pending = 0`, in one
-    /// transaction. For the three non-draining clear points — `SessionStart`,
-    /// crash and dispatch-claim — which void a deferred Stop rather than apply
-    /// it, so the bit cannot survive into a later session and fire a spurious
-    /// flip. See `ClearSubagentsOnSessionStart` in `docs/specs/agent-health.allium`.
-    async fn subagent_clear_and_void_pending_stop(&self, id: TaskId) -> Result<()>;
-    /// Apply a deferred Stop that has no subagent left to drain it: move the
-    /// task to `Review`, clear both hook timestamps and `stop_pending`.
+    /// agent_id)` row is deleted if present. An `agent_id` that was never
+    /// started is a no-op, not an underflow.
     ///
-    /// One conditional statement — `status = 'running' AND stop_pending = 1 AND
-    /// live_subagents = 0` is part of the `WHERE`, not a prior read — so it can
-    /// neither race a concurrent hook process into a wrong flip nor apply twice.
-    /// Returns whether it wrote. See `ReconcileStrandedPendingStop` in
+    /// If this is the write that drains the last subagent of a task carrying a
+    /// deferred `Stop`, the flip to `Review` is applied **in the same
+    /// transaction** and reported in the result. See `HookSubagentStop` in
     /// `docs/specs/agent-health.allium`.
-    async fn try_apply_pending_stop(&self, id: TaskId) -> Result<bool>;
+    async fn subagent_stop(
+        &self,
+        id: TaskId,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<SubagentDrain>;
+    /// Remove every live-subagent row for `id`, zero `live_subagents`, and — if
+    /// that drained a task carrying a deferred `Stop` — apply the flip, all in
+    /// one transaction.
+    ///
+    /// For the draining clear point (`DetachTmux`), which owns that bit itself.
+    /// Note the flip's `WHERE` requires a Running task, which is why this is not
+    /// an unconditional `stop_pending = 0`: `docs/specs/split-pane.allium`
+    /// clears the bit only for a Running task.
+    async fn subagent_clear(&self, id: TaskId) -> Result<SubagentDrain>;
+    /// [`subagent_clear`](Self::subagent_clear) minus the drain, plus
+    /// `stop_pending = 0`, in one transaction. For the three non-draining clear
+    /// points — `SessionStart`, crash and dispatch-claim — which void a
+    /// deferred Stop rather than apply it, so the bit cannot survive into a
+    /// later session and fire a spurious flip. See
+    /// `ClearSubagentsOnSessionStart` in `docs/specs/agent-health.allium`.
+    async fn subagent_clear_and_void_pending_stop(&self, id: TaskId) -> Result<()>;
+    /// Apply the `Stop` hook to `id`, deciding against the row's committed
+    /// state rather than a prior read.
+    ///
+    /// One transaction holding two conditional statements: flip to `Review`
+    /// when nothing is live, else defer via `stop_pending`. Because the
+    /// predicate is part of each statement, a concurrent hook process cannot
+    /// interleave a stale decision — whichever commits second sees the other's
+    /// value. See `HookStop` in `docs/specs/agent-health.allium`.
+    async fn try_record_stop(&self, id: TaskId) -> Result<StopOutcome>;
     /// Atomically select *and* claim `epic_id`'s next backlog subtask for
     /// dispatch: the first one ordered by `COALESCE(sort_order, id)` then `id`
     /// moves to `Running` with the default running sub-status and

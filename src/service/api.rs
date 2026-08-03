@@ -266,17 +266,6 @@ macro_rules! task_service_api {
                 id: $crate::models::TaskId
             ) -> Result<(), $crate::service::ServiceError>;
 
-            /// Apply a Stop that was deferred but has no subagent left to drain
-            /// it. Conditional and idempotent: it writes only while the task is
-            /// still Running with `stop_pending` set and `live_subagents = 0`.
-            /// Returns whether the flip applied. See
-            /// `ReconcileStrandedPendingStop` in
-            /// `docs/specs/agent-health.allium`.
-            async fn apply_pending_stop(
-                &self,
-                id: $crate::models::TaskId
-            ) -> Result<bool, $crate::service::ServiceError>;
-
             /// Select and atomically claim the epic's next backlog subtask,
             /// moving it to `Running` before any provisioning happens. Exclusive
             /// under concurrency — see `AutoDispatchNextSubtask` in

@@ -31,7 +31,7 @@ rule DetachTmux {
         for entry in core/SubagentEntries where task = task:
             not exists entry
         task.live_subagents = 0
-        if task.stop_pending and task.status = running:
+        if task.live_subagents = 0 and task.stop_pending and task.status = running:
             task.status = review
             task.sub_status = core/SubStatus.default_for(review)
             task.last_pre_tool_use_at = null

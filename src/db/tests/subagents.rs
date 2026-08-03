@@ -22,8 +22,8 @@ async fn start_then_stop_returns_to_zero() {
         db.subagent_start(task.id, "a2", "s1", now).await.unwrap(),
         2
     );
-    assert_eq!(db.subagent_stop(task.id, "a1", "s1").await.unwrap(), 1);
-    assert_eq!(db.subagent_stop(task.id, "a2", "s1").await.unwrap(), 0);
+    assert_eq!(db.subagent_stop(task.id, "a1", "s1").await.unwrap().live, 1);
+    assert_eq!(db.subagent_stop(task.id, "a2", "s1").await.unwrap().live, 0);
 }
 
 #[tokio::test]
@@ -51,7 +51,8 @@ async fn unknown_stop_is_a_noop_not_an_underflow() {
     assert_eq!(
         db.subagent_stop(task.id, "never-started", "s1")
             .await
-            .unwrap(),
+            .unwrap()
+            .live,
         0,
         "an unrecognised agent_id must not drive the count negative"
     );
@@ -245,22 +246,33 @@ async fn clear_and_void_pending_stop_writes_the_count_and_the_bit_only() {
     assert_eq!(reread.sub_status, before.sub_status);
 }
 
-/// The guard that keeps `DetachTmux`'s drain path from drifting: it reaches the
-/// DB through plain `subagent_clear`, and `split-pane.allium` clears
-/// `stop_pending` there only when the task is Running. Folding the clear into
-/// this method unconditionally would silently widen that rule.
+/// The guard that keeps `DetachTmux`'s drain path from drifting: `split-pane.allium`
+/// clears `stop_pending` there only when the task is Running, as part of the flip.
+/// The draining clear must therefore leave the bit alone on a task that is not
+/// Running — replacing its conditional write with an unconditional
+/// `stop_pending = 0` would silently widen that rule.
 #[tokio::test]
-async fn plain_clear_leaves_stop_pending_alone() {
+async fn the_draining_clear_leaves_stop_pending_alone_on_a_non_running_task() {
     let db = in_memory_db().await;
     let task = make_task(&db, "t").await;
-    set_running_with_pending_stop(&db, &task).await;
+    db.patch_task(
+        task.id,
+        &crate::db::TaskPatch::new()
+            .status(TaskStatus::Done)
+            .stop_pending(true),
+    )
+    .await
+    .unwrap();
 
-    db.subagent_clear(task.id).await.unwrap();
+    let drain = db.subagent_clear(task.id).await.unwrap();
 
+    assert!(!drain.applied_pending_stop);
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
     assert!(
-        db.get_task(task.id).await.unwrap().unwrap().stop_pending,
-        "plain subagent_clear must not touch stop_pending — the drain path decides"
+        reread.stop_pending,
+        "status is part of the flip's WHERE, so a non-Running task keeps its bit"
     );
+    assert_eq!(reread.status, TaskStatus::Done);
 }
 
 #[tokio::test]
@@ -337,7 +349,7 @@ async fn entries_are_scoped_per_task() {
 }
 
 // ---------------------------------------------------------------------------
-// try_apply_pending_stop — the stranded-state reconciler's conditional write
+// The deferred-Stop drain, applied inside the subagent transaction
 // ---------------------------------------------------------------------------
 
 async fn set_running_with_pending_stop(db: &Database, task: &Task) {
@@ -351,14 +363,18 @@ async fn set_running_with_pending_stop(db: &Database, task: &Task) {
     .unwrap();
 }
 
-#[tokio::test]
-async fn apply_pending_stop_flips_a_stranded_running_task_to_review() {
-    let db = in_memory_db().await;
-    let task = make_task(&db, "t").await;
-    set_running_with_pending_stop(&db, &task).await;
+/// A Running task with one live subagent and a Stop withheld waiting on it —
+/// the arrangement every drain test starts from.
+async fn task_with_a_live_subagent_and_a_deferred_stop(db: &Database) -> Task {
+    let task = make_task(db, "t").await;
+    db.subagent_start(task.id, "a1", "s1", Utc::now())
+        .await
+        .unwrap();
+    set_running_with_pending_stop(db, &task).await;
+    task
+}
 
-    assert!(db.try_apply_pending_stop(task.id).await.unwrap());
-
+async fn assert_flipped_to_review(db: &Database, task: &Task) {
     let reread = db.get_task(task.id).await.unwrap().unwrap();
     assert_eq!(reread.status, TaskStatus::Review);
     assert_eq!(
@@ -371,42 +387,46 @@ async fn apply_pending_stop_flips_a_stranded_running_task_to_review() {
 }
 
 #[tokio::test]
-async fn apply_pending_stop_is_idempotent() {
+async fn the_last_subagent_stop_applies_a_deferred_stop() {
     let db = in_memory_db().await;
-    let task = make_task(&db, "t").await;
-    set_running_with_pending_stop(&db, &task).await;
+    let task = task_with_a_live_subagent_and_a_deferred_stop(&db).await;
 
-    assert!(db.try_apply_pending_stop(task.id).await.unwrap());
+    let drain = db.subagent_stop(task.id, "a1", "s1").await.unwrap();
+    assert_eq!(drain.live, 0);
     assert!(
-        !db.try_apply_pending_stop(task.id).await.unwrap(),
-        "the second call must write nothing — stop_pending is already consumed"
+        drain.applied_pending_stop,
+        "draining the last subagent must apply the withheld Stop in the same write"
     );
+    assert_flipped_to_review(&db, &task).await;
 }
 
 #[tokio::test]
-async fn apply_pending_stop_does_nothing_while_a_subagent_is_live() {
+async fn a_subagent_stop_that_does_not_drain_leaves_the_pending_stop_alone() {
     let db = in_memory_db().await;
     let task = make_task(&db, "t").await;
+    let now = Utc::now();
+    db.subagent_start(task.id, "a1", "s1", now).await.unwrap();
+    db.subagent_start(task.id, "a2", "s1", now).await.unwrap();
     set_running_with_pending_stop(&db, &task).await;
+
+    let drain = db.subagent_stop(task.id, "a1", "s1").await.unwrap();
+    assert_eq!(drain.live, 1);
+    assert!(
+        !drain.applied_pending_stop,
+        "one subagent is still live, so the Stop stays deferred"
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.status, TaskStatus::Running);
+    assert!(reread.stop_pending);
+}
+
+#[tokio::test]
+async fn draining_without_a_pending_stop_does_not_flip() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
     db.subagent_start(task.id, "a1", "s1", Utc::now())
         .await
         .unwrap();
-
-    assert!(
-        !db.try_apply_pending_stop(task.id).await.unwrap(),
-        "live_subagents = 0 is part of the WHERE, so a subagent that started \
-         between the caller's read and this write cannot be flipped out from under"
-    );
-    assert_eq!(
-        db.get_task(task.id).await.unwrap().unwrap().status,
-        TaskStatus::Running
-    );
-}
-
-#[tokio::test]
-async fn apply_pending_stop_does_nothing_without_a_pending_stop() {
-    let db = in_memory_db().await;
-    let task = make_task(&db, "t").await;
     db.patch_task(
         task.id,
         &crate::db::TaskPatch::new().status(TaskStatus::Running),
@@ -414,13 +434,23 @@ async fn apply_pending_stop_does_nothing_without_a_pending_stop() {
     .await
     .unwrap();
 
-    assert!(!db.try_apply_pending_stop(task.id).await.unwrap());
+    let drain = db.subagent_stop(task.id, "a1", "s1").await.unwrap();
+    assert_eq!(drain.live, 0);
+    assert!(!drain.applied_pending_stop);
+    assert_eq!(
+        db.get_task(task.id).await.unwrap().unwrap().status,
+        TaskStatus::Running,
+        "no Stop was ever withheld, so there is nothing to apply"
+    );
 }
 
 #[tokio::test]
-async fn apply_pending_stop_does_nothing_for_a_task_that_left_running() {
+async fn draining_a_task_that_left_running_does_not_flip() {
     let db = in_memory_db().await;
     let task = make_task(&db, "t").await;
+    db.subagent_start(task.id, "a1", "s1", Utc::now())
+        .await
+        .unwrap();
     db.patch_task(
         task.id,
         &crate::db::TaskPatch::new()
@@ -430,9 +460,170 @@ async fn apply_pending_stop_does_nothing_for_a_task_that_left_running() {
     .await
     .unwrap();
 
-    assert!(!db.try_apply_pending_stop(task.id).await.unwrap());
+    let drain = db.subagent_stop(task.id, "a1", "s1").await.unwrap();
+    assert!(!drain.applied_pending_stop);
     assert_eq!(
         db.get_task(task.id).await.unwrap().unwrap().status,
-        TaskStatus::Done
+        TaskStatus::Done,
+        "status is part of the WHERE — a task that left Running is not dragged back"
+    );
+}
+
+#[tokio::test]
+async fn a_second_drain_is_idempotent() {
+    let db = in_memory_db().await;
+    let task = task_with_a_live_subagent_and_a_deferred_stop(&db).await;
+
+    assert!(
+        db.subagent_stop(task.id, "a1", "s1")
+            .await
+            .unwrap()
+            .applied_pending_stop
+    );
+    assert!(
+        !db.subagent_stop(task.id, "a1", "s1")
+            .await
+            .unwrap()
+            .applied_pending_stop,
+        "the pending bit is consumed; a replayed SubagentStop must write nothing"
+    );
+}
+
+#[tokio::test]
+async fn subagent_clear_also_applies_a_deferred_stop() {
+    let db = in_memory_db().await;
+    let task = task_with_a_live_subagent_and_a_deferred_stop(&db).await;
+
+    // Detach reaches the draining variant — see DetachTmux in split-pane.allium.
+    assert!(
+        db.subagent_clear(task.id)
+            .await
+            .unwrap()
+            .applied_pending_stop
+    );
+    assert_flipped_to_review(&db, &task).await;
+}
+
+/// The property the retired tick reconciler existed to repair: the count
+/// reaching zero and the withheld Stop being applied must commit together, so
+/// a hook process killed partway cannot leave the task stranded in
+/// `Running + stop_pending + live_subagents = 0` with no hook left to fix it.
+#[tokio::test]
+async fn a_failed_drain_rolls_back_the_count_and_the_flip_together() {
+    let db = in_memory_db().await;
+    let task = task_with_a_live_subagent_and_a_deferred_stop(&db).await;
+
+    arm_sync_count_abort(&db).await;
+    assert!(db.subagent_stop(task.id, "a1", "s1").await.is_err());
+
+    assert_eq!(
+        subagent_rows(&db, task.id.0).await,
+        vec!["a1".to_string()],
+        "the entry must survive, so the count still reflects a live subagent"
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.live_subagents, 1);
+    assert_eq!(reread.status, TaskStatus::Running);
+    assert!(
+        reread.stop_pending,
+        "the deferred Stop must still be pending — the next SubagentStop drains it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// try_record_stop — the Stop hook's conditional write
+// ---------------------------------------------------------------------------
+
+async fn set_running(db: &Database, task: &Task) {
+    db.patch_task(
+        task.id,
+        &crate::db::TaskPatch::new()
+            .status(TaskStatus::Running)
+            .last_pre_tool_use_at(Some(Utc::now()))
+            .last_notification_at(Some(Utc::now())),
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn record_stop_flips_immediately_when_no_subagent_is_live() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running(&db, &task).await;
+
+    assert_eq!(
+        db.try_record_stop(task.id).await.unwrap(),
+        StopOutcome::Flipped
+    );
+    assert_flipped_to_review(&db, &task).await;
+}
+
+#[tokio::test]
+async fn record_stop_defers_while_a_subagent_is_live() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running(&db, &task).await;
+    db.subagent_start(task.id, "a1", "s1", Utc::now())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.try_record_stop(task.id).await.unwrap(),
+        StopOutcome::Deferred
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(
+        reread.status,
+        TaskStatus::Running,
+        "Stop does not fire inside subagents, so a Stop with live subagents \
+         means the main agent finished while they keep working"
+    );
+    assert!(reread.stop_pending);
+    assert!(
+        reread.last_pre_tool_use_at.is_some(),
+        "a deferred Stop is not an activity reset — the timestamps stay put"
+    );
+}
+
+#[tokio::test]
+async fn record_stop_is_a_noop_for_a_task_that_is_not_running() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+
+    assert_eq!(
+        db.try_record_stop(task.id).await.unwrap(),
+        StopOutcome::NoOp
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.status, TaskStatus::Backlog);
+    assert!(!reread.stop_pending);
+}
+
+/// There is deliberately no `stop_pending = 0` precondition on the flip. A Stop
+/// arriving at a row that already carries the bit with nothing live must still
+/// flip it — adding the precondition would make both statements miss and strand
+/// the row. This also matches the pre-existing behaviour, which branched on
+/// `live_subagents` alone and never consulted `stop_pending`.
+#[tokio::test]
+async fn record_stop_flips_a_task_that_already_carries_a_pending_stop() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running_with_pending_stop(&db, &task).await;
+
+    assert_eq!(
+        db.try_record_stop(task.id).await.unwrap(),
+        StopOutcome::Flipped
+    );
+    assert_flipped_to_review(&db, &task).await;
+}
+
+#[tokio::test]
+async fn record_stop_is_a_noop_for_an_unknown_task() {
+    let db = in_memory_db().await;
+
+    assert_eq!(
+        db.try_record_stop(TaskId(9999)).await.unwrap(),
+        StopOutcome::NoOp
     );
 }

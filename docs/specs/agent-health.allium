@@ -128,13 +128,12 @@ rule DetectCrashedAgent {
         -- task Crashed-and-in-Review. Crashed is the more informative
         -- state and wins. stop_pending is still cleared, so the bit cannot
         -- survive into the next session and fire a spurious flip later.
-        -- Clearing it is also what stops ReconcileStrandedPendingStop from
-        -- applying the flip a tick later: a crashed task satisfies that
-        -- rule's other two predicates (still running, zero subagents), so
-        -- the cleared bit is the only thing keeping the two apart. Nothing
-        -- about the order in which a tick evaluates its rules protects
-        -- this — the window check that produces WindowGone is asynchronous,
-        -- so the crash is never observed within the tick that requested it.
+        -- Keeping the crash out of Review does not depend on that clear,
+        -- nor on the order in which anything evaluates. A deferred Stop is
+        -- applied only inside the write that drains the count to zero (see
+        -- HookSubagentStop), and this rule's clear is the non-draining kind,
+        -- which never assigns status. So there is no separate step that
+        -- could observe a crashed task carrying the bit and flip it.
         -- Triggered by the WindowGone message, which is sent when the
         -- runtime detects that the task's tmux window no longer exists.
         -- The tmux_window reference is cleared by the same write that sets
@@ -277,6 +276,20 @@ rule HookStop {
         -- Suppressing it here just defers the same effect: HookSubagentStop
         -- (or one of the other drain points) applies it once the last
         -- subagent drains.
+        --
+        -- The branch is evaluated against the task's committed state as part
+        -- of the same atomic write, not against a value read beforehand.
+        -- Every Claude Code hook runs as its own OS process, so a count read
+        -- before the write can already be stale by the time the write lands:
+        -- the last subagent may have drained in the interval. Deciding at
+        -- write time means whichever process commits second observes the
+        -- other's committed value and computes the correct outcome.
+        --
+        -- The flip branch is deliberately conditioned on live_subagents = 0
+        -- alone, with no stop_pending precondition: a Stop arriving with no
+        -- live subagents flips the task even if stop_pending was already
+        -- set. Requiring the bit to be clear would leave a task carrying a
+        -- stale bit unable to take either branch.
 }
 
 -- == Subagent Counting ==
@@ -326,6 +339,12 @@ rule HookSubagentStop {
         -- and live_subagents is simply recomputed from the table either
         -- way. The conditional block is the "drain path".
         --
+        -- Recomputing live_subagents and applying the deferred Stop are ONE
+        -- atomic step, not a count write followed by a separate flip. There
+        -- is therefore no window in which the count has reached zero but the
+        -- flip has not been applied — not even if the hook process dies
+        -- partway, since it either commits the whole step or none of it.
+        --
         -- Four structural points clear a task's subagent entries. Exactly
         -- one of them runs this drain path; the other three clear without
         -- draining, and the split is what keeps a task from ever being
@@ -358,18 +377,36 @@ rule HookSubagentStop {
         -- status write that moves the task out of running clears it in the
         -- same write — the manual moves and archive (tasks.allium), MCP
         -- update_task (mcp-task-tools.allium) and the session close
-        -- (pr-workflow.allium: ExitSession). Without it a task moved
-        -- Running -> Review while a fan-out was still live keeps the bit,
-        -- and a later move back into Running hands
-        -- ReconcileStrandedPendingStop a task it flips straight back out on
-        -- the next tick. See core/Task's PendingStopOnlyWhileRunning
-        -- invariant, and ExitSession's guidance for the one thing the close
-        -- does NOT clear (the rows and live_subagents).
+        -- (pr-workflow.allium: ExitSession). A deferred Stop belongs to the
+        -- turn the task was running under, so letting the bit outlive that
+        -- turn would let a later drain flip the task out of a status a human
+        -- just chose. See core/Task's PendingStopOnlyWhileRunning invariant,
+        -- and ExitSession's guidance for the one thing the close does NOT
+        -- clear (the rows and live_subagents).
         --
-        -- ReconcileStrandedPendingStop (below) is the backstop for the one
-        -- case none of these cover: the deferred Stop and the last
-        -- SubagentStop landing in separate processes and interleaving, so
-        -- the bit is set after the count has already reached zero.
+        -- No backstop rule is needed for the "stranded" state — running AND
+        -- stop_pending AND live_subagents = 0. The argument is an invariant
+        -- over the writes, not an enumeration of interleavings:
+        --   - stop_pending is only ever set to true by a write whose
+        --     condition requires live_subagents > 0 (HookStop's defer
+        --     branch), so the instant the bit is set the count is non-zero.
+        --     The state cannot be created directly.
+        --   - live_subagents only reaches zero in a write that applies any
+        --     deferred Stop in the same atomic step, so the state cannot be
+        --     reached by the count falling either.
+        --   - Every other writer of stop_pending —
+        --     ClearSubagentsOnSessionStart, HookUserPromptSubmit,
+        --     DispatchTask, DetectCrashedAgent, and the status writes
+        --     described above — only ever sets it to false, which moves
+        --     away from the state.
+        -- No write therefore commits into it, regardless of how many hook
+        -- processes participate or in what order they commit.
+        --
+        -- The argument holds going forward, not retroactively: it is an
+        -- invariant over the writes as they are now, and an earlier revision
+        -- decided the same branches from a prior read rather than at write
+        -- time, which could strand a task. Rows written before the invariant
+        -- held are resolved once, on upgrade.
 }
 
 rule SubagentSessionFence {
@@ -421,39 +458,6 @@ rule ClearSubagentsOnSessionStart {
         -- share this session id and their eventual SubagentStops become
         -- no-op deletes. fork is excluded because a fork is a different
         -- session and must not wipe the original's count.
-}
-
-rule ReconcileStrandedPendingStop {
-    -- Backstop for a deferred Stop that has no subagent left to drain it.
-    when: Tick()
-    for task in core/Tasks where status = running and stop_pending and live_subagents = 0:
-        ensures:
-            task.status = review
-            task.sub_status = core/SubStatus.default_for(review)
-            task.last_pre_tool_use_at = null
-            task.last_notification_at = null
-            task.stop_pending = false
-
-    @guidance
-        -- Every Claude Code hook runs as its own dispatch process against its
-        -- own connection, so HookStop and HookSubagentStop each do
-        -- read-decide-write with no shared transaction. Interleaved, the Stop
-        -- can set stop_pending *after* the count has already reached zero.
-        -- Nothing else resolves that: no subagent is left to drain it, Stop
-        -- does not re-fire, HookPreToolUse never writes status, and
-        -- ClassifyAgentActivity only touches sub_status. Without this rule the
-        -- task sits in Running until a human moves it.
-        --
-        -- The write is conditional on all three predicates in the same
-        -- statement rather than re-read and then applied, so a subagent that
-        -- starts between the tick's board snapshot and the write cannot be
-        -- flipped out from under, and a concurrent hook cannot apply the flip
-        -- twice. That also makes the rule idempotent and safe to evaluate on
-        -- every tick.
-        --
-        -- Partially covers the separate "dead claude process, live tmux
-        -- window" case: a task stranded that way is reclaimed as soon as its
-        -- deferred Stop is the thing holding it.
 }
 
 rule HookUserPromptSubmit {

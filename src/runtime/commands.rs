@@ -210,10 +210,6 @@ async fn dispatch_task(
             rt.exec_clear_subagents(id, mode).await;
             vec![]
         }
-        ApplyPendingStop { id } => {
-            rt.exec_apply_pending_stop(app, id).await;
-            vec![]
-        }
         Insert { draft, epic_id } => {
             rt.exec_insert_task(app, draft, epic_id).await;
             vec![]

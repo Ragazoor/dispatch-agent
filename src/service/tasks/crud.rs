@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::db::{self, CreateTaskRequest, TaskPatch};
 use crate::models::{
     classify_agent_activity, clears_pending_stop, sort_order_for_status_transition, EpicId,
-    HookEventKind, NotificationBehavior, SubStatus, SubagentEvent, Task, TaskId, TaskStatus,
-    DEFAULT_BASE_BRANCH,
+    HookEventKind, NotificationBehavior, StopOutcome, SubStatus, SubagentEvent, Task, TaskId,
+    TaskStatus, DEFAULT_BASE_BRANCH,
 };
 use crate::service::ServiceError;
 
@@ -697,6 +697,19 @@ impl TaskService {
             .get_task(id)
             .await?
             .ok_or_else(|| ServiceError::NotFound(format!("Task {} not found", id.0)))?;
+
+        // Stop is handled before the patch match, not inside it: its flip-or-
+        // defer branch is decided by the DB against the row's committed state,
+        // so it produces no TaskPatch and must not read `task` — another hook
+        // process can have invalidated that snapshot by the time we write. See
+        // HookStop in agent-health.allium.
+        if kind == HookEventKind::Stop {
+            if self.db.try_record_stop(id).await? == StopOutcome::Flipped {
+                self.recalculate_epic_for_task(id).await;
+            }
+            return Ok(());
+        }
+
         let now = self.clock.now();
         let was_review = task.status == TaskStatus::Review;
         let patch = match kind {
@@ -737,24 +750,6 @@ impl TaskService {
                         .sub_status(SubStatus::NeedsInput),
                 })
             }
-            // A Stop with live subagents is legitimate — Stop does not fire
-            // inside subagents, so this means the main agent finished its
-            // turn while background subagents keep working. Defer the flip;
-            // the last SubagentStop drains it. See HookStop in
-            // agent-health.allium.
-            HookEventKind::Stop if task.status == TaskStatus::Running => {
-                if task.live_subagents > 0 {
-                    Some(TaskPatch::new().stop_pending(true))
-                } else {
-                    Some(
-                        TaskPatch::new()
-                            .status(TaskStatus::Review)
-                            .last_pre_tool_use_at(None)
-                            .last_notification_at(None)
-                            .stop_pending(false),
-                    )
-                }
-            }
             HookEventKind::UserPromptSubmit if task.status == TaskStatus::Running || was_review => {
                 Some(
                     TaskPatch::new()
@@ -769,17 +764,12 @@ impl TaskService {
         let Some(patch) = patch else {
             return Ok(());
         };
-        // Recalculate only when the patch actually moved task.status: an
-        // immediate Stop flip (Running -> Review) or a UserPromptSubmit that
-        // resumed a Review task (Review -> Running). A deferred Stop (only
-        // stop_pending set) and a UserPromptSubmit that merely refreshes an
-        // already-Running task are plain activity signals and must not pay
-        // for a recalculation on this hot path.
-        let recalc = match kind {
-            HookEventKind::Stop => patch.status.is_some(),
-            HookEventKind::UserPromptSubmit => was_review,
-            _ => false,
-        };
+        // Recalculate only when the patch actually moved task.status — here,
+        // only a UserPromptSubmit that resumed a Review task (Review ->
+        // Running). One that merely refreshes an already-Running task is a
+        // plain activity signal and must not pay for a recalculation on this
+        // hot path. Stop returned above, having done its own.
+        let recalc = matches!(kind, HookEventKind::UserPromptSubmit) && was_review;
         self.db.patch_task(id, &patch).await?;
         if recalc {
             self.recalculate_epic_for_task(id).await;
@@ -803,35 +793,41 @@ impl TaskService {
         id: TaskId,
         event: SubagentEvent,
     ) -> Result<(), ServiceError> {
-        match event {
+        if !self.db.task_exists(id).await? {
+            return Err(Self::task_not_found(id));
+        }
+
+        // Whether a deferred Stop applied is decided inside the same
+        // transaction that recomputes the count, so there is nothing to check
+        // out here — and no window in which the count has reached zero but the
+        // flip has not landed.
+        let applied_pending_stop = match event {
             SubagentEvent::Start {
                 agent_id,
                 session_id,
             } => {
-                if !self.db.task_exists(id).await? {
-                    return Err(Self::task_not_found(id));
-                }
+                // A Start can never drain: it only ever raises the count.
                 self.db
                     .subagent_start(id, &agent_id, &session_id, self.clock.now())
                     .await?;
-                Ok(())
+                false
             }
             SubagentEvent::Stop {
                 agent_id,
                 session_id,
             } => {
-                // Read before the mutation on purpose: the drain decision is
-                // made against the pre-mutation row.
-                let task = self.get_task(id).await?;
-                let live = self.db.subagent_stop(id, &agent_id, &session_id).await?;
-                self.drain_if_settled(&task, live).await
+                self.db
+                    .subagent_stop(id, &agent_id, &session_id)
+                    .await?
+                    .applied_pending_stop
             }
-            SubagentEvent::Clear => {
-                let task = self.get_task(id).await?;
-                self.db.subagent_clear(id).await?;
-                self.drain_if_settled(&task, 0).await
-            }
+            SubagentEvent::Clear => self.db.subagent_clear(id).await?.applied_pending_stop,
+        };
+
+        if applied_pending_stop {
+            self.recalculate_epic_for_task(id).await;
         }
+        Ok(())
     }
 
     /// The service's one spelling of "that task id doesn't exist". Callers that
@@ -839,29 +835,6 @@ impl TaskService {
     /// error; this is for the existence-only checks, which have no row to fail on.
     fn task_not_found(id: TaskId) -> ServiceError {
         ServiceError::NotFound(format!("Task {} not found", id.0))
-    }
-
-    /// The drain path: the deferred Stop lands only when the count actually
-    /// reaches zero and a Stop was withheld while the task is still Running.
-    /// `task` is the pre-mutation snapshot; `live` the count the mutation
-    /// produced.
-    async fn drain_if_settled(&self, task: &Task, live: i64) -> Result<(), ServiceError> {
-        if live != 0 || !task.stop_pending || task.status != TaskStatus::Running {
-            return Ok(());
-        }
-        self.db
-            .patch_task(
-                task.id,
-                &TaskPatch::new()
-                    .status(TaskStatus::Review)
-                    .sub_status(SubStatus::default_for(TaskStatus::Review))
-                    .last_pre_tool_use_at(None)
-                    .last_notification_at(None)
-                    .stop_pending(false),
-            )
-            .await?;
-        self.recalculate_epic_for_task(task.id).await;
-        Ok(())
     }
 
     /// Clear a task's subagent entries and void any pending Stop **without**
@@ -879,37 +852,16 @@ impl TaskService {
     /// Existence is all this needs, so it does not materialise the row.
     ///
     /// Entries and `stop_pending` go in one writer round trip. Not just for the
-    /// saved trip: a partial clear-then-patch would leave `live_subagents = 0` +
-    /// `stop_pending` + Running, the stranded shape `try_apply_pending_stop`
-    /// then flips to Review — a spurious flip the single transaction rules out.
+    /// saved trip: a partial clear-then-patch would briefly leave
+    /// `live_subagents = 0` + `stop_pending` + Running, so a `SubagentStart`
+    /// landing in that window would be counted against a task whose bit is
+    /// about to be wiped. The single transaction rules that out.
     pub async fn clear_subagents_no_drain(&self, id: TaskId) -> Result<(), ServiceError> {
         if !self.db.task_exists(id).await? {
             return Err(Self::task_not_found(id));
         }
         self.db.subagent_clear_and_void_pending_stop(id).await?;
         Ok(())
-    }
-
-    /// Apply a Stop that was deferred but has no subagent left to drain it.
-    ///
-    /// The drain points all run "read task → decide → write" across process
-    /// boundaries (every Claude Code hook is its own `dispatch` process), so a
-    /// `Stop` and the last `SubagentStop` can interleave into `Running` +
-    /// `stop_pending` + `live_subagents = 0` with nothing left to resolve it —
-    /// the task never leaves Running without a human. This is the reconciler
-    /// for that state, driven from the tick.
-    ///
-    /// One conditional write, so it is safe to call speculatively: if a new
-    /// subagent started in the meantime, or another process already applied the
-    /// flip, the `WHERE` clause simply matches nothing. Returns whether it
-    /// applied. See `ReconcileStrandedPendingStop` in
-    /// `docs/specs/agent-health.allium`.
-    pub async fn apply_pending_stop(&self, id: TaskId) -> Result<bool, ServiceError> {
-        let applied = self.db.try_apply_pending_stop(id).await?;
-        if applied {
-            self.recalculate_epic_for_task(id).await;
-        }
-        Ok(applied)
     }
 
     /// Mark that the PR-learnings reminder has been shown for this task.

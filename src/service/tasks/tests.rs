@@ -3040,19 +3040,18 @@ async fn clear_no_drain_voids_a_pending_stop_without_flipping_to_review() {
     assert!(!task.stop_pending);
 }
 
-/// The stranded state: `Stop` and the last `SubagentStop` interleaving across
-/// two hook processes leaves Running + `stop_pending` + zero live subagents,
-/// with nothing left to drain it. The tick reconciler resolves it.
+/// The interleaving that used to strand a task: the last `SubagentStop`
+/// commits *before* the `Stop`, so the drain sees no pending bit and the Stop
+/// then lands on a row whose count has already reached zero. Under the old
+/// read-decide-write it wrote `stop_pending = true` there, leaving Running +
+/// `stop_pending` + zero live subagents with nothing left to resolve it. The
+/// Stop's write is now conditional on the committed count, so it flips instead.
 #[tokio::test]
-async fn apply_pending_stop_resolves_a_stranded_task() {
+async fn a_stop_landing_after_the_last_drain_flips_instead_of_stranding() {
     let db = test_db().await;
     let svc = task_svc(&db);
     let id = create_running_task(&svc, SubStatus::Active).await;
 
-    // Reproduce the interleaving: the Stop is recorded while a subagent is
-    // live, then the subagent's stop is applied by a path that already saw
-    // stop_pending = false (here: the DB write directly, standing in for the
-    // other process's read-decide-write).
     svc.record_subagent_event(
         id,
         SubagentEvent::Start {
@@ -3062,25 +3061,76 @@ async fn apply_pending_stop_resolves_a_stranded_task() {
     )
     .await
     .unwrap();
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
     svc.record_hook_event(id, HookEventKind::Stop)
         .await
         .unwrap();
-    db.subagent_stop(id, "a1", "s1").await.unwrap();
-
-    let stranded = svc.get_task(id).await.unwrap();
-    assert_eq!(stranded.status, TaskStatus::Running);
-    assert!(stranded.stop_pending);
-    assert_eq!(stranded.live_subagents, 0);
-
-    assert!(svc.apply_pending_stop(id).await.unwrap());
 
     let task = svc.get_task(id).await.unwrap();
-    assert_eq!(task.status, TaskStatus::Review);
-    assert!(!task.stop_pending);
-    assert!(
-        !svc.apply_pending_stop(id).await.unwrap(),
-        "a second pass must be a no-op"
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "the Stop saw a committed count of zero and applied the flip"
     );
+    assert!(!task.stop_pending);
+    assert_eq!(task.live_subagents, 0);
+}
+
+/// Whichever order the two hook processes commit in, the task must end in
+/// Review and must never come to rest in the stranded triple. This is the
+/// assertion that replaces the retired tick reconciler and its test.
+#[tokio::test]
+async fn neither_hook_order_can_strand_a_task() {
+    for stop_first in [true, false] {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let id = create_running_task(&svc, SubStatus::Active).await;
+
+        svc.record_subagent_event(
+            id,
+            SubagentEvent::Start {
+                agent_id: "a1".into(),
+                session_id: "s1".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let drain = SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        };
+        if stop_first {
+            svc.record_hook_event(id, HookEventKind::Stop)
+                .await
+                .unwrap();
+            svc.record_subagent_event(id, drain).await.unwrap();
+        } else {
+            svc.record_subagent_event(id, drain).await.unwrap();
+            svc.record_hook_event(id, HookEventKind::Stop)
+                .await
+                .unwrap();
+        }
+
+        let task = svc.get_task(id).await.unwrap();
+        assert_eq!(
+            task.status,
+            TaskStatus::Review,
+            "stop_first = {stop_first} must still end in Review"
+        );
+        assert!(
+            !(task.status == TaskStatus::Running && task.stop_pending && task.live_subagents == 0),
+            "stop_first = {stop_first} left the task stranded"
+        );
+    }
 }
 
 /// Park a task in the shape a live fan-out plus a Stop hook leaves behind:
@@ -3209,8 +3259,9 @@ async fn close_session_clears_stop_pending() {
 /// The reported sequence, end to end (#3847): a Stop deferred during a live
 /// fan-out, the card dragged to Review, the subagents finishing, then the card
 /// dragged back to Running to keep working. Before the leaving-Running clear
-/// the bit survived step two, and the next tick flipped the card straight back
-/// to Review — where it stuck, undraggable without a re-dispatch.
+/// the bit survived step two, and the deferred Stop was applied against the
+/// new turn — flipping the card straight back to Review, where it stuck,
+/// undraggable without a re-dispatch.
 #[tokio::test]
 async fn moving_back_into_running_after_a_deferred_stop_does_not_re_flip() {
     let db = test_db().await;
@@ -3237,12 +3288,24 @@ async fn moving_back_into_running_after_a_deferred_stop_does_not_re_flip() {
         .await
         .unwrap();
 
-    assert!(
-        !svc.apply_pending_stop(id).await.unwrap(),
-        "the reconciler must find nothing to apply"
-    );
+    // A further drain must find nothing to apply: the bit was voided on the
+    // way out of Running, so the new turn does not inherit the old Stop.
+    svc.record_subagent_event(
+        id,
+        SubagentEvent::Stop {
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
     let task = svc.get_task(id).await.unwrap();
-    assert_eq!(task.status, TaskStatus::Running);
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "the card must stay where the human put it"
+    );
     assert!(!task.stop_pending);
 }
 

@@ -153,17 +153,14 @@ impl App {
     /// commands into a single batch. Each sub-step owns its own dirty-marking, so
     /// command order carries no repaint significance.
     ///
-    /// The call order below is **not** load-bearing, and in particular
-    /// `tick_window_checks` before `tick_stranded_pending_stop` is not what keeps
-    /// a crashed task out of Review. `tick_window_checks` takes `&self` and only
+    /// The call order below is **not** load-bearing. A sub-step only emits
+    /// `Command`s, and a command's effect cannot be observed within the tick
+    /// that produced it — `tick_window_checks`, for instance, takes `&self` and
     /// emits `BatchCheckWindows`, which the runtime fires and forgets onto a
-    /// blocking thread; the resulting `WindowGone` cannot be observed until a
-    /// later iteration of the event loop, so no tick can both crash a task and
-    /// reconcile it. What actually enforces the split is `handle_agent_crashed`
-    /// clearing `stop_pending` (in memory, for this reconciler) and
-    /// `clear_subagents_no_drain` clearing it in the DB, plus the conditional
-    /// `UPDATE` behind `ApplyPendingStop`. Do not add an ordering comment here
-    /// claiming otherwise — see the note on that line in `handle_agent_crashed`.
+    /// blocking thread, so the resulting `WindowGone` lands on a later
+    /// iteration of the event loop. No two sub-steps can interact through a
+    /// command, so reordering them changes nothing. Do not add an ordering
+    /// comment here claiming otherwise.
     pub(in crate::tui) fn handle_tick(&mut self) -> Vec<Command> {
         let status_before = self.status.message.clone();
         let flash_count_before = self.agents.message_flash.len();
@@ -175,7 +172,6 @@ impl App {
 
         let mut cmds = self.tick_window_checks();
         cmds.extend(self.tick_sub_status());
-        cmds.extend(self.tick_stranded_pending_stop());
         cmds.extend(self.tick_pr_poll());
         cmds.extend(self.tick_split_pane_check());
         cmds.extend(self.tick_stale_learning());
@@ -333,41 +329,6 @@ impl App {
         }
     }
 
-    /// Reconcile tasks stranded with a deferred Stop that nothing is left to
-    /// drain: `Running`, `stop_pending`, and `live_subagents = 0`.
-    ///
-    /// Every Claude Code hook runs in its own `dispatch` process, so the main
-    /// agent's `Stop` and the last `SubagentStop` each do read-decide-write
-    /// against separate connections. Interleaved, the `Stop` can set
-    /// `stop_pending` *after* the count has already reached zero — and then
-    /// there is no subagent left to drain it, `Stop` will not re-fire, and
-    /// `PreToolUse` never touches status. The task sits in Running forever
-    /// short of a user action. This applies the withheld flip.
-    ///
-    /// The mutation is a single conditional `UPDATE` in the service layer, so
-    /// emitting from a possibly-stale board snapshot cannot flip a task whose
-    /// state has since moved on. `stop_pending` is cleared locally too, so the
-    /// same task is not re-submitted on every tick until the next DB refresh.
-    fn tick_stranded_pending_stop(&mut self) -> Vec<Command> {
-        let stranded: Vec<TaskId> = self
-            .board
-            .tasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::Running && t.stop_pending && t.live_subagents == 0)
-            .map(|t| t.id)
-            .collect();
-
-        stranded
-            .into_iter()
-            .map(|id| {
-                if let Some(task) = self.find_task_mut(id) {
-                    task.stop_pending = false;
-                }
-                Command::Task(crate::tui::commands::TaskCommand::ApplyPendingStop { id })
-            })
-            .collect()
-    }
-
     /// Poll PR status for review tasks with open PRs, throttled per task by
     /// `PR_POLL_INTERVAL`. Records the poll timestamp for each task queried.
     fn tick_pr_poll(&mut self) -> Vec<Command> {
@@ -504,17 +465,18 @@ impl App {
             task.sub_status = SubStatus::Crashed;
             task.tmux_window = None;
             task.live_subagents = 0;
-            // Load-bearing, not bookkeeping: `tick_stranded_pending_stop`
-            // reconciles off this in-memory board, and a crashed task now
-            // matches its other two predicates (still Running, zero
-            // subagents). Leave the bit set and the very next tick emits an
-            // `ApplyPendingStop` for a task this handler just marked Crashed
-            // — the Crashed-and-in-Review contradiction
-            // `docs/specs/agent-health.allium` forbids (`DetectCrashedAgent`
-            // ensures `stop_pending = false`; the DB half of the same clear
-            // is `clear_subagents_no_drain`, reached via the `ClearSubagents`
-            // command below). Pinned by
-            // `a_crash_suppresses_the_reconciler_instead_of_racing_it_into_review`.
+            // Board bookkeeping, mirroring the authoritative DB clear in
+            // `clear_subagents_no_drain` (reached via the `ClearSubagents`
+            // command below) so the card does not render a pending Stop until
+            // the next refresh. `DetectCrashedAgent` in
+            // `docs/specs/agent-health.allium` ensures `stop_pending = false`.
+            //
+            // This used to be load-bearing: a tick reconciler read the bit off
+            // this in-memory board and would have flipped a just-Crashed task
+            // to Review. That reconciler is gone — the deferred Stop is now
+            // applied only inside the transaction that drains the count, and
+            // the no-drain clear never touches status — so nothing can produce
+            // the Crashed-and-in-Review contradiction from this bit any more.
             task.stop_pending = false;
         }
         if let Some(task) = self.find_task(id) {

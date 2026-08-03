@@ -32,6 +32,81 @@ async fn migration_81_creates_task_subagents_and_columns() {
     );
 }
 
+/// v82 is the one-shot replacement for the retired tick reconciler: a database
+/// written by the older read-then-write code can still hold a task stranded in
+/// `Running` + `stop_pending` + `live_subagents = 0`, and with the reconciler
+/// gone nothing else would ever resolve it. The migration is idempotent and
+/// conditional, so re-running it here against seeded rows is a faithful test.
+#[tokio::test]
+async fn migration_82_resolves_a_stranded_pending_stop() {
+    let db = in_memory_db().await;
+    let task = create_task_returning(&db, "t", "d", "/r", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    db.db_call(move |conn| {
+        conn.execute(
+            "UPDATE tasks SET status = 'running', sub_status = 'active', \
+             stop_pending = 1, live_subagents = 0, \
+             last_pre_tool_use_at = '2026-01-01T00:00:00Z', \
+             last_notification_at = '2026-01-01T00:00:00Z' WHERE id = ?1",
+            [task.id.0],
+        )?;
+        crate::db::migrations::migrate_v82_resolve_stranded_pending_stops(conn)
+    })
+    .await
+    .unwrap();
+
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(reread.status, TaskStatus::Review);
+    assert_eq!(
+        reread.sub_status,
+        SubStatus::default_for(TaskStatus::Review)
+    );
+    assert!(!reread.stop_pending);
+    assert!(reread.last_pre_tool_use_at.is_none());
+    assert!(reread.last_notification_at.is_none());
+}
+
+#[tokio::test]
+async fn migration_82_leaves_tasks_that_are_not_stranded_alone() {
+    let db = in_memory_db().await;
+    // A deferred Stop with a subagent still live is legitimately waiting.
+    let waiting = create_task_returning(&db, "waiting", "d", "/r", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+    // A plain running task with no Stop withheld.
+    let running = create_task_returning(&db, "running", "d", "/r", None, TaskStatus::Backlog)
+        .await
+        .unwrap();
+
+    db.db_call(move |conn| {
+        conn.execute(
+            "UPDATE tasks SET status = 'running', sub_status = 'active', \
+             stop_pending = 1, live_subagents = 2 WHERE id = ?1",
+            [waiting.id.0],
+        )?;
+        conn.execute(
+            "UPDATE tasks SET status = 'running', sub_status = 'active', \
+             stop_pending = 0, live_subagents = 0 WHERE id = ?1",
+            [running.id.0],
+        )?;
+        crate::db::migrations::migrate_v82_resolve_stranded_pending_stops(conn)
+    })
+    .await
+    .unwrap();
+
+    let waiting = db.get_task(waiting.id).await.unwrap().unwrap();
+    assert_eq!(
+        waiting.status,
+        TaskStatus::Running,
+        "subagents are still live — the Stop is legitimately deferred"
+    );
+    assert!(waiting.stop_pending);
+
+    let running = db.get_task(running.id).await.unwrap().unwrap();
+    assert_eq!(running.status, TaskStatus::Running);
+}
+
 #[tokio::test]
 async fn new_task_defaults_to_zero_subagents_and_no_pending_stop() {
     let db = in_memory_db().await;

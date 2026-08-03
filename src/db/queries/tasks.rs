@@ -3,7 +3,9 @@ use rusqlite::{params, OptionalExtension};
 
 use crate::set_field;
 
-use crate::models::{EpicId, FeedItem, SubStatus, TaskId, TaskStatus, WrapUpMode};
+use crate::models::{
+    EpicId, FeedItem, StopOutcome, SubStatus, SubagentDrain, TaskId, TaskStatus, WrapUpMode,
+};
 
 use super::super::{CreateTaskRequest, Database, TaskPatch};
 use super::{collect_decodable, row_to_task, write_json_string_vec, TASK_COLUMNS};
@@ -593,7 +595,12 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
-    async fn subagent_stop(&self, id: TaskId, agent_id: &str, session_id: &str) -> Result<i64> {
+    async fn subagent_stop(
+        &self,
+        id: TaskId,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<SubagentDrain> {
         let agent_id = agent_id.to_string();
         let session_id = session_id.to_string();
         self.db_call(move |conn| {
@@ -602,31 +609,39 @@ impl super::super::TaskCrud for Database {
         .await
     }
 
-    async fn subagent_clear(&self, id: TaskId) -> Result<()> {
-        self.db_call(move |conn| {
-            super::subagents::subagent_clear(conn, id.0, /* void_pending_stop */ false)
-        })
-        .await
+    async fn subagent_clear(&self, id: TaskId) -> Result<SubagentDrain> {
+        self.db_call(move |conn| super::subagents::subagent_clear(conn, id.0))
+            .await
     }
 
     async fn subagent_clear_and_void_pending_stop(&self, id: TaskId) -> Result<()> {
-        self.db_call(move |conn| {
-            super::subagents::subagent_clear(conn, id.0, /* void_pending_stop */ true)
-        })
-        .await
+        self.db_call(move |conn| super::subagents::subagent_clear_and_void_pending_stop(conn, id.0))
+            .await
     }
 
-    async fn try_apply_pending_stop(&self, id: TaskId) -> Result<bool> {
+    async fn try_record_stop(&self, id: TaskId) -> Result<StopOutcome> {
         self.db_call(move |conn| {
+            // One transaction so `live_subagents` cannot change between the two
+            // statements — the flip and the deferral are decided against the
+            // same committed state. `db_call` opens none of its own, and the
+            // single writer connection only serialises within this process:
+            // every Claude Code hook is a separate `dispatch` process.
+            let tx = conn
+                .unchecked_transaction()
+                .context("Failed to open try_record_stop transaction")?;
+
+            // Nothing live — apply the flip now. Deliberately *not* conditioned
+            // on `stop_pending`: the arriving Stop is itself the trigger, and a
+            // row already carrying a stale bit must still flip (requiring the
+            // bit to be clear here would make both statements miss).
             let review = TaskStatus::Review;
-            let rows = conn
+            let flipped = tx
                 .execute(
-                    "UPDATE tasks \
-                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = NULL, \
-                         last_notification_at = NULL, stop_pending = 0, \
-                         updated_at = datetime('now') \
-                     WHERE id = ?3 AND status = ?4 AND stop_pending = 1 \
-                       AND live_subagents = 0",
+                    &format!(
+                        "UPDATE tasks {} \
+                         WHERE id = ?3 AND status = ?4 AND live_subagents = 0",
+                        super::STOP_FLIP_SET
+                    ),
                     params![
                         review.as_str(),
                         SubStatus::default_for(review).as_str(),
@@ -634,8 +649,34 @@ impl super::super::TaskCrud for Database {
                         TaskStatus::Running.as_str(),
                     ],
                 )
-                .context("Failed to apply pending stop")?;
-            Ok(rows == 1)
+                .context("Failed to apply stop")?;
+
+            let outcome = if flipped == 1 {
+                StopOutcome::Flipped
+            } else {
+                // Subagents are still working: Stop does not fire inside them,
+                // so this means the main agent finished its turn while they
+                // keep going. Withhold the flip; the last SubagentStop drains
+                // it. `live_subagents > 0` is explicit rather than implied by
+                // the statement above failing, so each reads independently.
+                let deferred = tx
+                    .execute(
+                        "UPDATE tasks \
+                         SET stop_pending = 1, updated_at = datetime('now') \
+                         WHERE id = ?1 AND status = ?2 AND live_subagents > 0",
+                        params![id.0, TaskStatus::Running.as_str()],
+                    )
+                    .context("Failed to defer stop")?;
+                if deferred == 1 {
+                    StopOutcome::Deferred
+                } else {
+                    StopOutcome::NoOp
+                }
+            };
+
+            tx.commit()
+                .context("Failed to commit try_record_stop transaction")?;
+            Ok(outcome)
         })
         .await
     }

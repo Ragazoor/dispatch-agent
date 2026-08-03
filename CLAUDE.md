@@ -70,7 +70,8 @@ rm src/dispatch/snapshots/*.snap.new                 # always clean up
 | What you're testing | Where |
 |---|---|
 | TUI key handling / message flow | `src/tui/tests/` |
-| DB schema, CRUD, migrations | `src/db/tests/` |
+| DB schema, CRUD | `src/db/tests/` |
+| A database migration | `src/db/tests/migrations.rs` — the migration fn must be `pub(super)` to be callable from there. See "Adding a Database Migration" in `docs/how-to.md` for the column-guard rule. |
 | Service-layer business rules | inline in `src/service/<domain>/` |
 | MCP JSON-RPC handler behaviour | `src/mcp/handlers/tests/` |
 | Full task/epic lifecycle | `tests/` (integration tests) |
