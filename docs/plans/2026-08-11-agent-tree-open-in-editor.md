@@ -39,7 +39,7 @@
 | `src/main.rs` | Modify | `cmd_agent_tree` installs the app-log subscriber |
 | `src/dispatch/agents.rs` | Modify | `toggle_agent_tree_pane` / `resync_agent_tree_pane` use the tree-pane lookup |
 | `src/dispatch/split_panes.rs` | Modify | `join_task_window_into_pane` drains *all* companion panes |
-| `tests/tmux_harness/mod.rs` | Modify | `pane_option` and `pane_start_command` oracles |
+| `tests/tmux_harness/mod.rs` | Modify | `pane_option` oracle, plus `extra_stub` for a stand-in `$EDITOR` |
 | `tests/tmux_editor_pane.rs` | Create | Real-tmux coverage: pane count, focus, cwd, toggle target |
 | `docs/reference.md` | Modify | Companion-pane key table |
 
