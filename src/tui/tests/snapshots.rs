@@ -1029,3 +1029,16 @@ fn snapshot_top_row_budget_indicator_stale() {
     let rendered = render_to_string(&mut app, 120, 40);
     insta::assert_snapshot!(rendered);
 }
+
+#[test]
+fn snapshot_board_search_narrows_epic_cards() {
+    use super::make_epic_with_title;
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+    app.search.query = "login".to_string();
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}

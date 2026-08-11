@@ -328,3 +328,44 @@ fn search_narrows_board_to_matching_titles() {
         .collect();
     assert_eq!(titles, vec!["Add search feature".to_string()]);
 }
+
+#[test]
+fn search_narrows_epic_cards_and_esc_restores_them() {
+    use super::{make_epic_with_title, App};
+    use crossterm::event::KeyCode;
+
+    fn visible_epic_ids(app: &App) -> Vec<i64> {
+        let mut ids: Vec<i64> = app
+            .visible_epics_for_effective_view()
+            .map(|e| e.id.0)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+
+    let mut s = Scenario::with_app(app);
+    s.key(KeyCode::Char('/')).char_keys("login");
+    assert_eq!(
+        visible_epic_ids(&s.app),
+        vec![1],
+        "board narrows to matching epics while typing"
+    );
+
+    // Enter closes the bar but keeps the query active.
+    s.key(KeyCode::Enter);
+    assert_eq!(visible_epic_ids(&s.app), vec![1], "query persists on Enter");
+
+    // Esc on the board clears the query.
+    s.key(KeyCode::Esc);
+    assert_eq!(
+        visible_epic_ids(&s.app),
+        vec![1, 2],
+        "clearing the query restores every epic card"
+    );
+}
