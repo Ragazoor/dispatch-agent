@@ -346,44 +346,101 @@ pub fn set_window_dispatch_dir(
 }
 
 /// Install a single session-level `after-split-window` hook that reads the
-/// `@dispatch_dir` window option.  If the option is set on the window being
-/// split, the new pane `cd`s into that directory; otherwise nothing happens.
+/// `@dispatch_dir` window option. If the option is set on the window being split
+/// *and* the new pane did not already start in that directory, the pane is
+/// respawned there; otherwise nothing happens.
 ///
 /// This is idempotent — calling it multiple times replaces the same hook.
 ///
 /// # Why this hook exists (do not delete it)
 ///
-/// It is load-bearing, not a convenience: tmux resolves the start directory of a
-/// `split-window` invoked by an *external CLI client* — which is how dispatch, or
-/// any script, shells out to tmux — to the **invoking client's** cwd, not the
-/// split pane's directory. Without this hook every split inside an agent window
-/// lands in the dispatch process's cwd. Any refactor that removes the hook must
-/// first replace that guarantee by other means. Full history (issue #231, commit
-/// 8bf36803) and the behavioural contract live in the
+/// It is load-bearing, not a convenience. tmux never inherits the split pane's
+/// directory: a `split-window` invoked by an *external CLI client* — which is how
+/// dispatch, or any script, shells out to tmux — starts the new pane in the
+/// **invoking process's** cwd, and one the user triggers from an attached client
+/// starts it in the **session's** cwd. Neither is the worktree. Without this hook
+/// every user split inside an agent window lands outside it. Any refactor that
+/// removes the hook must first replace that guarantee by other means. Full
+/// history (issue #231, commit 8bf36803) and the behavioural contract live in the
 /// `AgentWindowSplitStartsInTaskWorktree` rule in docs/specs/split-pane.allium.
 ///
-/// # Why `send-keys` must carry `-t #{pane_id}`
+/// # Why the hook is a *fallback*
+///
+/// Dispatch's own splits name their start directory
+/// ([`split_window_horizontal_running`]'s `start_dir` → `split-window -c`), so
+/// they are correct at creation. The `#{pane_start_path}` half of the guard makes
+/// the hook skip them, which matters: `respawn-pane` would restart the companion
+/// process those panes were created to run.
+///
+/// # Why the correction is not `send-keys`
+///
+/// It used to be — `cd <dir>` + Enter typed at the new pane — and that is only
+/// correct if a shell happens to be reading. The agent-tree companion pane exits
+/// on `q`, so any worktree path containing that letter closed the pane the moment
+/// it opened. See `SplitDirectoryIsNeverKeystrokes` in the same spec.
+///
+/// # Why `respawn-pane` must carry `-t #{pane_id}`
 ///
 /// The target is mandatory, not decorative. `run-shell -bC` loses the enclosing
-/// command's target context, so an untargeted `send-keys` falls back to the
-/// session's **active** pane. Because dispatch opens the agent-tree companion
-/// pane by splitting the agent window in the background (`spawn_agent_tree_pane`)
-/// while the board is still focused, an untargeted hook typed `cd <worktree>`
-/// into the board TUI, where `c` fired the Copy-Task keybinding. `#{pane_id}` is
-/// expanded in the hook's own context — the newly created pane. Pane routing is
-/// only observable against a real tmux server, so it is covered by
-/// tests/tmux_split_hook.rs rather than by this file's mock-level test.
+/// command's target context, so an untargeted command falls back to the session's
+/// **active** pane. Because dispatch opens the agent-tree companion pane by
+/// splitting the agent window in the background (`spawn_agent_tree_pane`) while
+/// the board is still focused, the untargeted form of the old hook typed
+/// `cd <worktree>` into the board TUI, where `c` fired the Copy-Task keybinding
+/// (#3781). `#{pane_id}` is expanded in the hook's own context — the newly
+/// created pane. Pane routing is only observable against a real tmux server, so
+/// it is covered by tests/tmux_split_hook.rs rather than by this file's
+/// mock-level test.
+/// The tmux format [`ensure_split_hook`] tests before correcting a pane: true
+/// when the window carries `@dispatch_dir` *and* the new pane did not already
+/// start there.
+///
+/// Named rather than inlined so that a test can evaluate the real guard against
+/// a real pane (`display-message -p`) instead of restating it — whether a pane is
+/// selected for correction is the whole point of the hook, and a restated copy
+/// could agree with itself while disagreeing with what ships.
+pub const SPLIT_NEEDS_CORRECTION: &str =
+    "#{&&:#{@dispatch_dir},#{!=:#{pane_start_path},#{@dispatch_dir}}}";
+
 pub fn ensure_split_hook(runner: &dyn ProcessRunner) -> Result<()> {
-    // if-shell -F only format-expands its test argument, NOT the branch
-    // command.  send-keys doesn't expand formats either, so we wrap it in
-    // run-shell -C which does expand #{…} before executing the tmux command.
-    let hook_cmd = "if-shell -F '#{@dispatch_dir}' 'run-shell -bC \"send-keys -t #{pane_id} \\\"cd #{@dispatch_dir}\\\" Enter\"'";
+    // if-shell -F only format-expands its test argument, NOT the branch command.
+    // respawn-pane doesn't expand formats either, so we wrap it in run-shell -C
+    // which does expand #{…} before executing the tmux command.
+    //
+    // The innermost quotes around #{@dispatch_dir} are load-bearing: without
+    // them a worktree path containing a space silently resolves to $HOME.
+    let hook_cmd = format!(
+        "if-shell -F '{SPLIT_NEEDS_CORRECTION}' \
+         'run-shell -bC \"respawn-pane -k -t #{{pane_id}} -c \\\"#{{@dispatch_dir}}\\\"\"'"
+    );
     run_checked(
         runner,
-        &["set-hook", "after-split-window", hook_cmd],
+        &["set-hook", "after-split-window", &hook_cmd],
         "set-hook",
     )?;
     Ok(())
+}
+
+/// Read back a window's `@dispatch_dir` — the worktree path
+/// [`set_window_dispatch_dir`] stored on it. `None` when the option is unset,
+/// which is the normal answer for the board and the main session.
+///
+/// Lets the callers that hold only a window name (the agent-tree toggle and
+/// resync paths) name a start directory for a split, without threading the
+/// worktree through tmux and back out of the database. The window option is
+/// already the single source of truth the correction hook reads.
+///
+/// `window` goes through [`window_target`] like every other name-taking helper
+/// here, so a prefix-matched sibling window cannot answer for it.
+pub fn window_dispatch_dir(window: &str, runner: &dyn ProcessRunner) -> Result<Option<String>> {
+    let target = window_target(window, runner)?;
+    // -q so an unset option is an empty answer rather than an error.
+    let dir = run_checked_stdout(
+        runner,
+        &["show-options", "-wqv", "-t", &target, "@dispatch_dir"],
+        "show-options",
+    )?;
+    Ok((!dir.is_empty()).then_some(dir))
 }
 
 /// Check whether tmux has `focus-events` enabled globally.
@@ -519,10 +576,17 @@ pub fn split_window_horizontal(target_pane: &str, runner: &dyn ProcessRunner) ->
 /// (src/dispatch/agents.rs) passes the agent's `task-<id>` window. Names go
 /// through [`window_target`], so the companion pane cannot be opened inside a
 /// prefix-matched sibling's window; pane IDs pass through untouched.
+///
+/// `start_dir` becomes `split-window -c`, the new pane's working directory.
+/// Naming it is what makes the pane correct at creation instead of leaving it to
+/// the `after-split-window` correction hook, which would restart `command` —
+/// see [`ensure_split_hook`]. `None` leaves the directory to tmux, which picks
+/// the invoking process's cwd for an external CLI client like this one.
 pub fn split_window_horizontal_running(
     target: &str,
     size_pct: u8,
     command: &[&str],
+    start_dir: Option<&str>,
     runner: &dyn ProcessRunner,
 ) -> Result<String> {
     if command.is_empty() {
@@ -542,8 +606,12 @@ pub fn split_window_horizontal_running(
         "-P",
         "-F",
         "#{pane_id}",
-        "--",
     ];
+    if let Some(dir) = start_dir {
+        args.extend(["-c", dir]);
+    }
+    // `--` last: everything after it is the pane's command, not an option.
+    args.push("--");
     args.extend(command.iter().copied());
     run_checked_stdout(runner, &args, "split-window")
 }
@@ -1152,13 +1220,15 @@ mod tests {
         );
     }
 
-    /// Pins the hook string, including its `-t #{pane_id}` target. Note what this
-    /// test can and cannot do: it proves the argv we hand tmux, not what tmux
-    /// then does with it. The target's *behaviour* — that keystrokes reach the
-    /// new pane and not the board — is only observable against a real server, so
-    /// it is asserted in tests/tmux_split_hook.rs. A mock-level test of this hook
-    /// asserted the untargeted string verbatim and stayed green while the board
-    /// was being typed into.
+    /// Pins the hook string, including its `-t #{pane_id}` target, its
+    /// already-in-the-worktree guard, and the quotes around the interpolated
+    /// directory. Note what this test can and cannot do: it proves the argv we
+    /// hand tmux, not what tmux then does with it. The *behaviour* — which pane
+    /// is corrected, which is left alone, and that nothing is typed anywhere —
+    /// is only observable against a real server, so it is asserted in
+    /// tests/tmux_split_hook.rs. A mock-level test of this hook once asserted
+    /// the untargeted string verbatim and stayed green while the board was being
+    /// typed into.
     #[test]
     fn ensure_split_hook_issues_correct_tmux_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
@@ -1171,8 +1241,24 @@ mod tests {
             vec![
                 "set-hook",
                 "after-split-window",
-                "if-shell -F '#{@dispatch_dir}' 'run-shell -bC \"send-keys -t #{pane_id} \\\"cd #{@dispatch_dir}\\\" Enter\"'",
+                "if-shell -F '#{&&:#{@dispatch_dir},#{!=:#{pane_start_path},#{@dispatch_dir}}}' \
+                 'run-shell -bC \"respawn-pane -k -t #{pane_id} -c \\\"#{@dispatch_dir}\\\"\"'",
             ]
+        );
+    }
+
+    /// The correction must never be delivered as synthesised input — see
+    /// split-pane.allium's `SplitDirectoryIsNeverKeystrokes`. Asserted here as
+    /// well as behaviourally, so that reintroducing `send-keys` fails at the
+    /// cheapest possible layer.
+    #[test]
+    fn ensure_split_hook_never_sends_keys() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        ensure_split_hook(&mock).unwrap();
+        let hook = mock.recorded_calls()[0].1[2].clone();
+        assert!(
+            !hook.contains("send-keys"),
+            "the split correction must not type at a pane: {hook}"
         );
     }
 
@@ -1682,9 +1768,14 @@ mod tests {
     #[test]
     fn split_window_horizontal_running_issues_correct_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%9\n")]);
-        let pane_id =
-            split_window_horizontal_running("%1", 30, &["dispatch", "agent-tree", "42"], &mock)
-                .unwrap();
+        let pane_id = split_window_horizontal_running(
+            "%1",
+            30,
+            &["dispatch", "agent-tree", "42"],
+            None,
+            &mock,
+        )
+        .unwrap();
         assert_eq!(pane_id, "%9");
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
@@ -1711,13 +1802,45 @@ mod tests {
         );
     }
 
+    /// The start directory is what keeps a dispatch-created pane out of the
+    /// correction hook — see `ensure_split_hook`. Whether tmux honours it is a
+    /// real-server question (tests/tmux_split_hook.rs); this pins that we send it.
+    #[test]
+    fn split_window_horizontal_running_passes_the_start_directory() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%9\n")]);
+        split_window_horizontal_running(
+            "%1",
+            30,
+            &["dispatch", "agent-tree", "42"],
+            Some("/home/u/wt"),
+            &mock,
+        )
+        .unwrap();
+        let calls = mock.recorded_calls();
+        let args = &calls[0].1;
+        let at = args
+            .iter()
+            .position(|a| a == "-c")
+            .expect("expected -c in argv");
+        assert_eq!(args[at + 1], "/home/u/wt");
+        // Before `--`, or tmux would read it as part of the pane's command.
+        let sep = args.iter().position(|a| a == "--").expect("expected --");
+        assert!(at < sep, "-c must precede the command separator: {args:?}");
+    }
+
     #[test]
     fn split_window_horizontal_running_keeps_argv_elements_separate() {
         // A path with spaces must stay one argv element via the `--` exec
         // form, not get joined into a single shell string.
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%9\n")]);
-        split_window_horizontal_running("%1", 30, &["vim", "/tmp/dir with spaces/file.md"], &mock)
-            .unwrap();
+        split_window_horizontal_running(
+            "%1",
+            30,
+            &["vim", "/tmp/dir with spaces/file.md"],
+            None,
+            &mock,
+        )
+        .unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls[0].1.last().unwrap(), "/tmp/dir with spaces/file.md");
         assert_eq!(calls[0].1[calls[0].1.len() - 3], "--");
@@ -1727,16 +1850,21 @@ mod tests {
     #[test]
     fn split_window_horizontal_running_rejects_empty_command() {
         let mock = MockProcessRunner::new(vec![]);
-        let err = split_window_horizontal_running("%1", 30, &[], &mock).unwrap_err();
+        let err = split_window_horizontal_running("%1", 30, &[], None, &mock).unwrap_err();
         assert!(err.to_string().contains("command must not be empty"));
     }
 
     #[test]
     fn split_window_horizontal_running_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no target pane")]);
-        let err =
-            split_window_horizontal_running("%1", 30, &["dispatch", "agent-tree", "42"], &mock)
-                .unwrap_err();
+        let err = split_window_horizontal_running(
+            "%1",
+            30,
+            &["dispatch", "agent-tree", "42"],
+            None,
+            &mock,
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("split-window failed"),
             "got: {err}"

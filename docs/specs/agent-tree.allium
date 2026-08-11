@@ -382,6 +382,12 @@ rule SplitAgentTreePaneOnAgentLaunch {
         -- The size-and-command split helper described above is
         -- tmux::split_window_horizontal_running (src/tmux.rs), a sibling of the
         -- board's 40%-hardcoded split_window_horizontal, which is untouched.
+        -- It passes the task's worktree as the new pane's start directory
+        -- (`split-window -c`), which is what keeps the companion pane out of the
+        -- after-split-window correction hook — see split-pane.allium's
+        -- AgentWindowSplitStartsInTaskWorktree. The toggle and resync paths hold
+        -- only a window name, so they read the worktree back from that window's
+        -- @dispatch_dir option.
         -- spawn_agent_tree_pane (src/dispatch/agents.rs) calls it at
         -- config.agent_tree_pane_percent and is wired into dispatch_with_prompt
         -- — covering fresh dispatch, research dispatch and quick dispatch, and

@@ -32,8 +32,8 @@ use dispatch_tui::process::ProcessRunner;
 use dispatch_tui::tmux;
 
 use tmux_harness::{
-    await_stub_line, capture_cmd, read_now, stub_lines, tmux_available_or_skip, StubLine,
-    TmuxServer,
+    await_stub_line, canonical, capture_cmd, read_now, stub_lines, tmux_available_or_skip,
+    StubLine, TmuxServer,
 };
 
 /// The board TUI window. Created first so it is the session's active window —
@@ -678,7 +678,27 @@ fn swap_replaces_the_pinned_task_and_resyncs_the_companion() {
     // The window holding the outgoing content is renamed to A, and its companion
     // must be relaunched for A. Polls, because the resync kills and re-splits
     // asynchronously relative to the call returning.
-    fx.await_companion(a);
+    let companion = fx.await_companion(a);
+    // KNOWN GAP, pinned deliberately. The resync path holds only a window name,
+    // so it takes the split's start directory from that window's @dispatch_dir —
+    // but `swap-pane` exchanges *panes* while @dispatch_dir is a *window* option,
+    // so the renamed window still advertises the incoming task's worktree. The
+    // companion therefore starts in B's worktree while rendering A's tree.
+    //
+    // Harmless as it stands: `dispatch agent-tree` resolves its root from the DB
+    // by task id (src/cli/agent_tree.rs) and never reads cwd. It is not harmless
+    // for a *user* split in that window, which split-pane.allium's
+    // AgentWindowSplitStartsInTaskWorktree says must land in A's worktree and
+    // which this staleness sends to B's. That predates the -c/respawn rework —
+    // the old `cd` hook read the same stale option — and fixing it means
+    // rewriting @dispatch_dir at swap time, which needs the DB.
+    //
+    // Flip this to `{a}-some-task` when that is fixed.
+    assert!(
+        canonical(&companion.cwd).ends_with(&format!("{b}-some-task")),
+        "expected the known-stale @dispatch_dir (task {b}'s worktree), got: {:?}",
+        companion.cwd
+    );
     assert!(
         fx.server.has_window(&fx.window(a)),
         "the outgoing task's window should exist under its own name again; got {:?}",
@@ -829,15 +849,15 @@ fn main_session_window_has_a_single_pane() {
     );
 }
 
-/// Carrying no `@dispatch_dir` is what keeps the split hook's `if-shell -F`
-/// guard inert for this window, so a user splitting it by hand gets a plain pane
-/// rather than a `cd` typed into their session.
+/// Carrying no `@dispatch_dir` is what keeps the split-correction hook's
+/// `if-shell -F` guard inert for this window, so a user splitting it by hand
+/// gets a plain pane rather than one dragged into some task's worktree.
 #[test]
-fn splitting_the_main_session_window_sends_no_keystrokes() {
+fn splitting_the_main_session_window_is_never_corrected() {
     let Some(fx) = setup_or_skip() else { return };
     // Dispatch first: it installs the hook, and gives us a window that *does*
     // fire it to anchor against.
-    fx.dispatch(TASK_ID);
+    let dispatched = fx.dispatch(TASK_ID);
     let window =
         dispatch::create_main_session(fx.dir.path().to_str().unwrap(), &fx.server.runner())
             .expect("create_main_session");
@@ -847,31 +867,42 @@ fn splitting_the_main_session_window_sends_no_keystrokes() {
         "main session must carry no @dispatch_dir"
     );
 
+    // `None` for the start directory on both splits: naming one would make the
+    // hook skip them, and it is precisely the hook's behaviour under test here.
     let main_log = fx.dir.path().join("main_split.log");
-    tmux::split_window_horizontal_running(
+    let main_pane = tmux::split_window_horizontal_running(
         &window,
         30,
         &["sh", "-c", &capture_cmd(&main_log)],
+        None,
         &fx.server.runner(),
     )
     .expect("split main session");
 
     // Anchor: a split in the agent window *does* fire the hook, so by the time
-    // its `cd` has landed anything the main-session split misrouted would have
-    // landed too.
+    // that pane has been moved into the worktree, anything the main-session
+    // split had coming would have arrived too.
     let agent_log = fx.dir.path().join("agent_split.log");
-    tmux::split_window_horizontal_running(
+    let agent_pane = tmux::split_window_horizontal_running(
         &fx.window(TASK_ID),
         30,
         &["sh", "-c", &capture_cmd(&agent_log)],
+        None,
         &fx.server.runner(),
     )
     .expect("split agent window");
+    let worktree = canonical(&dispatched.worktree_path);
     assert!(
-        tmux_harness::poll_until(|| !read_now(&agent_log).trim().is_empty()),
-        "anchor split never fired the hook, so this test proves nothing"
+        tmux_harness::poll_until(|| canonical(&fx.server.pane_cwd(&agent_pane)) == worktree),
+        "anchor split was never corrected, so this test proves nothing"
     );
 
+    assert_ne!(
+        canonical(&fx.server.pane_cwd(&main_pane)),
+        worktree,
+        "a split in the main-session window must not be pulled into a task's \
+         worktree"
+    );
     let got = read_now(&main_log);
     assert!(
         got.trim().is_empty(),
@@ -959,12 +990,4 @@ fn fresh_dispatch_falls_back_to_local_base_with_no_origin_remote() {
         "with no origin remote at all, the worktree must fall back to local main"
     );
     assert!(std::path::Path::new(&result.worktree_path).exists());
-}
-
-/// tmux reports `#{pane_current_path}` through the OS, so `/tmp` may come back
-/// as `/private/tmp` and symlinked temp dirs differ from what the test built.
-fn canonical(p: &str) -> String {
-    std::fs::canonicalize(p)
-        .map(|c| c.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| p.to_string())
 }

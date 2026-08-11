@@ -2971,6 +2971,7 @@ async fn exec_swap_split_pane_renames_old_task_window() {
             // lookup matches on the binary and subcommand, not the id.
             MockProcessRunner::ok_with_stdout(b"%10 \n%11 agent_tree\n"),
             MockProcessRunner::ok(), // resync: kill-pane %11
+            MockProcessRunner::ok_with_stdout(b"/wt\n"), // resync: show-options @dispatch_dir
             MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
             MockProcessRunner::ok(), // resync: set-option, the new pane's role
         ])
@@ -2992,13 +2993,13 @@ async fn exec_swap_split_pane_renames_old_task_window() {
     // the correct (old) task.
     assert!(calls[2].1.contains(&"list-panes".to_string()));
     assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%11"]);
-    assert!(calls[4].1.contains(&"split-window".to_string()));
-    assert!(calls[4].1.contains(&"2".to_string()));
+    assert!(calls[5].1.contains(&"split-window".to_string()));
+    assert!(calls[5].1.contains(&"2".to_string()));
     // …and the respawned pane is marked, or the resynced window would read as
     // companion-less to the next toggle.
-    assert!(calls[5].1.contains(&"set-option".to_string()));
+    assert!(calls[6].1.contains(&"set-option".to_string()));
     // No further call — focus must NOT be transferred
-    assert_eq!(calls.len(), 6, "select-pane must not be called after swap");
+    assert_eq!(calls.len(), 7, "select-pane must not be called after swap");
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()

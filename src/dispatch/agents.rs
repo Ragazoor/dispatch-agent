@@ -67,10 +67,22 @@ pub fn companion_pane_ids(window: &str, runner: &dyn ProcessRunner) -> Result<Ve
 /// in the new pane, right after the agent's own command has been sent (see
 /// docs/specs/agent-tree.allium's `SplitAgentTreePaneOnAgentLaunch`).
 ///
+/// `worktree` becomes the new pane's start directory. Naming it keeps the pane
+/// out of the `after-split-window` correction hook, which would otherwise
+/// respawn it and restart the `dispatch agent-tree` process this call just
+/// launched — see `tmux::ensure_split_hook`. `None` is a soft fallback for a
+/// window whose worktree could not be resolved: the hook then corrects the pane,
+/// which costs one restart of a process that has barely started.
+///
 /// Best-effort: the companion pane is a decorative side view, not the
 /// critical path — a failure here is logged and does not fail the caller's
 /// dispatch/resume operation.
-fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn ProcessRunner) {
+fn spawn_agent_tree_pane(
+    tmux_window: &str,
+    task_id: TaskId,
+    worktree: Option<&str>,
+    runner: &dyn ProcessRunner,
+) {
     let id_arg = task_id.0.to_string();
     // Passed as argv (`split-window --`), so the binary needs no shell quoting.
     let dispatch_bin = runner.agent_binaries().dispatch;
@@ -78,6 +90,7 @@ fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn Proces
         tmux_window,
         AGENT_TREE_PANE_PERCENT,
         &[&dispatch_bin, AGENT_TREE_SUBCOMMAND, &id_arg],
+        worktree,
         runner,
     ) {
         Ok(pane) => pane,
@@ -112,6 +125,28 @@ fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn Proces
     }
 }
 
+/// The worktree a tmux window belongs to, read back from the `@dispatch_dir`
+/// option dispatch set when it created the window.
+///
+/// The toggle and resync paths are handed a window *name* and nothing else, so
+/// this is how they recover a start directory for the split. Best-effort by
+/// design: a failure here is logged and yields `None`, which
+/// [`spawn_agent_tree_pane`] treats as "let the correction hook handle it"
+/// rather than as a reason to skip the pane.
+fn window_worktree(window: &str, runner: &dyn ProcessRunner) -> Option<String> {
+    match tmux::window_dispatch_dir(window, runner) {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::warn!(
+                %window,
+                error = %e,
+                "failed to read @dispatch_dir; opening companion pane without a start directory"
+            );
+            None
+        }
+    }
+}
+
 /// Toggle the companion agent-tree pane in the given tmux window: kill it if
 /// currently shown, re-split and relaunch `dispatch agent-tree <task_id>` if
 /// hidden. `window` is a tmux window name (e.g. "task-42"), resolved by
@@ -128,7 +163,8 @@ pub fn toggle_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) -> Resul
     match agent_tree_pane_id(window, runner)? {
         Some(pane_id) => tmux::kill_pane(&pane_id, runner),
         None => {
-            spawn_agent_tree_pane(window, task_id, runner);
+            let worktree = window_worktree(window, runner);
+            spawn_agent_tree_pane(window, task_id, worktree.as_deref(), runner);
             Ok(())
         }
     }
@@ -159,7 +195,8 @@ pub fn resync_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) {
                     "failed to kill stale agent-tree companion pane before resync"
                 );
             }
-            spawn_agent_tree_pane(window, task_id, runner);
+            let worktree = window_worktree(window, runner);
+            spawn_agent_tree_pane(window, task_id, worktree.as_deref(), runner);
         }
         Ok(None) => {}
         Err(e) => {
@@ -257,7 +294,12 @@ fn dispatch_with_prompt(
     tmux::send_keys(&provision.tmux_window, &claude_cmd, runner)
         .context("failed to send keys to tmux window")?;
 
-    spawn_agent_tree_pane(&provision.tmux_window, task.id, runner);
+    spawn_agent_tree_pane(
+        &provision.tmux_window,
+        task.id,
+        Some(provision.worktree_path.as_str()),
+        runner,
+    );
 
     tracing::info!(
         task_id = task.id.0,
@@ -430,7 +472,7 @@ pub fn resume_agent(
     )
     .context("failed to send resume keys to tmux window")?;
 
-    spawn_agent_tree_pane(&tmux_window, task_id, runner);
+    spawn_agent_tree_pane(&tmux_window, task_id, Some(worktree_path), runner);
 
     tracing::info!(task_id = task_id.0, %tmux_window, "agent resumed");
 
@@ -515,6 +557,7 @@ mod tests {
             // list-panes: the companion is %9
             MockProcessRunner::ok_with_stdout(b"%1 \n%9 agent_tree\n"),
             MockProcessRunner::ok(),                     // kill-pane
+            MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window
             MockProcessRunner::ok(),                     // set-option: the role marker
         ])
@@ -522,7 +565,7 @@ mod tests {
 
         resync_agent_tree_pane("task-5", &mock);
 
-        let split = &mock.recorded_calls()[2].1;
+        let split = &mock.recorded_calls()[3].1;
         assert!(
             split.contains(&"/stub/bin/dispatch-stub".to_string()),
             "companion pane must exec the runner's dispatch binary, got: {split:?}"
@@ -535,6 +578,7 @@ mod tests {
             // list-panes: the companion is %9
             MockProcessRunner::ok_with_stdout(b"%1 \n%9 agent_tree\n"),
             MockProcessRunner::ok(),                     // kill-pane %9
+            MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window relaunch
             MockProcessRunner::ok(),                     // set-option: the role marker
         ]);
@@ -542,17 +586,24 @@ mod tests {
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 4);
         assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%9"]);
-        assert!(calls[2].1.contains(&"split-window".to_string()));
+        assert!(calls[3].1.contains(&"split-window".to_string()));
         // The window being split is targeted by its resolved pane ID, not its
         // name — otherwise the companion pane could open inside a
         // prefix-matched sibling's window (see `tmux::window_target`).
-        assert!(calls[2].1.contains(&mock.pane_id_of("task-5")));
-        assert!(calls[2].1.contains(&"5".to_string()));
-        assert!(calls[2].1.contains(&"agent-tree".to_string()));
+        assert!(calls[3].1.contains(&mock.pane_id_of("task-5")));
+        assert!(calls[3].1.contains(&"5".to_string()));
+        assert!(calls[3].1.contains(&"agent-tree".to_string()));
+        // The worktree read back from @dispatch_dir becomes the new pane's
+        // start directory, so the correction hook leaves it alone.
+        assert!(
+            calls[3].1.windows(2).any(|w| w == ["-c", "/wt"]),
+            "expected -c /wt in: {:?}",
+            calls[3].1
+        );
         // The respawn is a *new* pane, so it needs its own marker — otherwise a
         // resynced window would look companion-less to the next toggle.
         assert_eq!(
-            calls[3].1,
+            calls[4].1,
             vec![
                 "set-option",
                 "-p",
@@ -561,6 +612,30 @@ mod tests {
                 tmux::PANE_ROLE_OPTION,
                 tmux::PANE_ROLE_AGENT_TREE
             ]
+        );
+    }
+
+    /// A window whose `@dispatch_dir` cannot be read still gets its companion
+    /// pane — the split just goes out without a start directory, leaving the
+    /// correction hook to place it.
+    #[test]
+    fn resync_agent_tree_pane_spawns_without_a_start_dir_when_the_option_is_unset() {
+        let mock = MockProcessRunner::new(vec![
+            // list-panes: the companion is %9
+            MockProcessRunner::ok_with_stdout(b"%1 \n%9 agent_tree\n"),
+            MockProcessRunner::ok(),                     // kill-pane
+            MockProcessRunner::ok_with_stdout(b"\n"),    // show-options: unset
+            MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window
+            MockProcessRunner::ok(),                     // set-option: the role marker
+        ]);
+        resync_agent_tree_pane("task-5", &mock);
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 5);
+        assert!(calls[3].1.contains(&"split-window".to_string()));
+        assert!(
+            !calls[3].1.contains(&"-c".to_string()),
+            "no start directory to name, got: {:?}",
+            calls[3].1
         );
     }
 
@@ -577,13 +652,14 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1 \n%9 agent_tree\n"),
             MockProcessRunner::fail("kill-pane error"),
+            MockProcessRunner::ok_with_stdout(b"/wt\n"),
             MockProcessRunner::ok_with_stdout(b"%20\n"),
             MockProcessRunner::ok(), // set-option: the role marker
         ]);
         resync_agent_tree_pane("task-5", &mock);
         let calls = mock.recorded_calls();
-        assert_eq!(calls.len(), 4, "a respawn is still attempted");
-        assert!(calls[2].1.contains(&"split-window".to_string()));
+        assert_eq!(calls.len(), 5, "a respawn is still attempted");
+        assert!(calls[3].1.contains(&"split-window".to_string()));
     }
 
     #[test]

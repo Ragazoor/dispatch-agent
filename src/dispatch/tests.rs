@@ -3361,28 +3361,37 @@ fn toggle_agent_tree_pane_hides_when_companion_pane_present() {
 fn toggle_agent_tree_pane_shows_when_no_companion_pane() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"%3 \n"), // list-panes: single pane, unmarked
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
         MockProcessRunner::ok_with_stdout(COMPANION_PANE_ID), // split-window
         MockProcessRunner::ok(),                     // set-option: the role marker
     ]);
     toggle_agent_tree_pane("task-42", &mock).unwrap();
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 3);
-    assert_eq!(calls[1].0, "tmux");
-    assert_eq!(calls[1].1[0], "split-window");
+    assert_eq!(calls.len(), 4);
+    assert_eq!(calls[2].0, "tmux");
+    assert_eq!(calls[2].1[0], "split-window");
     assert!(
-        calls[1].1.iter().any(|a| a == "30%"),
+        calls[2].1.iter().any(|a| a == "30%"),
         "companion pane should use the 30% size, got: {:?}",
-        calls[1].1
+        calls[2].1
     );
     assert_eq!(
-        calls[1].1[calls[1].1.len() - 3..],
+        calls[2].1[calls[2].1.len() - 3..],
         vec![
             "dispatch".to_string(),
             "agent-tree".to_string(),
             "42".to_string(),
         ],
         "companion pane should run `dispatch agent-tree <task_id>`, got: {:?}",
-        calls[1].1
+        calls[2].1
+    );
+    // The toggle holds only a window name, so it recovers the worktree from
+    // @dispatch_dir and names it as the pane's start directory — which is what
+    // keeps the correction hook from respawning the pane it just created.
+    assert!(
+        calls[2].1.windows(2).any(|w| w == ["-c", "/wt"]),
+        "expected -c /wt in: {:?}",
+        calls[2].1
     );
 }
 

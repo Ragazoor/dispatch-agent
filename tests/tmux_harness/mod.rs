@@ -368,6 +368,54 @@ pub fn capture_cmd(path: &Path) -> String {
     format!("cat > {}", path.display())
 }
 
+/// Line [`capture_cmd_marked`] writes once per process start.
+pub const START_MARKER: &str = "__pane_started__";
+
+/// [`capture_cmd`] plus a start marker, so a test can tell whether a pane's
+/// process was *restarted* underneath it.
+///
+/// `respawn-pane` re-runs a pane's original command, which is invisible to a
+/// plain capture: the new `cat` simply reopens the same log. Counting
+/// [`START_MARKER`] distinguishes the two — one occurrence means the pane has run
+/// once, two means something respawned it. Appends (`>>`) rather than truncates
+/// for the same reason.
+pub fn capture_cmd_marked(path: &Path) -> String {
+    format!(
+        "echo {START_MARKER} >> {path}; exec cat >> {path}",
+        path = path.display()
+    )
+}
+
+/// How many times the pane writing to `path` has started — see
+/// [`capture_cmd_marked`].
+pub fn start_count(path: &Path) -> usize {
+    read_now(path)
+        .lines()
+        .filter(|line| line.trim() == START_MARKER)
+        .count()
+}
+
+/// Everything a pane received that was not written by [`capture_cmd_marked`]
+/// itself — i.e. keystrokes someone synthesised into it.
+pub fn typed_input(path: &Path) -> String {
+    read_now(path)
+        .lines()
+        .filter(|line| line.trim() != START_MARKER)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// Resolve a path the way tmux reports `#{pane_current_path}`: through the OS,
+/// so `/tmp` may come back as `/private/tmp` and a symlinked temp dir differs
+/// from the string the test built.
+pub fn canonical(p: &str) -> String {
+    std::fs::canonicalize(p)
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| p.to_string())
+}
+
 /// Poll until `path` is non-empty or the deadline expires, returning its
 /// contents (empty on timeout).
 pub fn read_when_written(path: &Path) -> String {
