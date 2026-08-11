@@ -279,6 +279,136 @@ fn epic_search_matches_ignores_task_in_a_different_epic() {
     assert!(app.epic_search_matches(EpicId(2)));
 }
 
+// ---------------------------------------------------------------------------
+// Finding 1 — a descendant only counts when the board would itself show it
+// ---------------------------------------------------------------------------
+
+#[test]
+fn epic_search_matches_task_hidden_by_repo_filter_is_not_a_dead_end() {
+    // Reviewer's repro: the epic's only query-matching subtask is excluded
+    // by the repo filter, and the subtask the filter keeps does not match
+    // the query. Keeping the card alive would be a dead end — entering the
+    // epic view would show zero tasks.
+    let mut matching = epic_child(10, 1, "Fix login bug");
+    matching.repo_path = "/repo/b".to_string();
+    let mut kept_by_filter = epic_child(11, 1, "Update invoices");
+    kept_by_filter.repo_path = "/repo/a".to_string();
+    let mut app = App::new(vec![matching, kept_by_filter]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    app.filter.repos.insert("/repo/a".to_string());
+    app.filter.mode = RepoFilterMode::Include;
+    app.search.query = "login".to_string();
+    assert!(!app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_task_inside_filtered_repo_keeps_the_epic() {
+    // Same epic, but this time the query-matching subtask is the one the
+    // repo filter keeps: the epic is a genuine drill-down target.
+    let mut matching = epic_child(10, 1, "Fix login bug");
+    matching.repo_path = "/repo/a".to_string();
+    let mut excluded = epic_child(11, 1, "Update invoices");
+    excluded.repo_path = "/repo/b".to_string();
+    let mut app = App::new(vec![matching, excluded]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    app.filter.repos.insert("/repo/a".to_string());
+    app.filter.mode = RepoFilterMode::Include;
+    app.search.query = "login".to_string();
+    assert!(app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_task_hidden_by_only_active_is_not_a_dead_end() {
+    // Only-active counterpart of the repo-filter dead-end above: the
+    // query-matching subtask has no live tmux window, and the subtask that
+    // does have one doesn't match the query.
+    let mut matching = epic_child(10, 1, "Fix login bug");
+    matching.tmux_window = None;
+    let mut active = epic_child(11, 1, "Update invoices");
+    active.tmux_window = Some("task-11".to_string());
+    let mut app = App::new(vec![matching, active]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    app.filter.only_active = true;
+    app.search.query = "login".to_string();
+    assert!(!app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_hidden_sub_epic_does_not_keep_parent_visible() {
+    // Sub-epic 2 matches by title ("login"), but its own subtask is
+    // excluded by the repo filter, so epic_repo_matches(2) is false — epic 2
+    // itself would not be rendered. It must not keep its parent (epic 1)
+    // visible either.
+    let mut hidden_task = epic_child(10, 2, "Some infra work");
+    hidden_task.repo_path = "/repo/b".to_string();
+    let mut app = App::new(vec![hidden_task]);
+    let mut sub = make_epic_with_title(2, "Login redesign");
+    sub.parent_epic_id = Some(EpicId(1));
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework"), sub];
+    app.filter.repos.insert("/repo/a".to_string());
+    app.filter.mode = RepoFilterMode::Include;
+    app.search.query = "login".to_string();
+    assert!(!app.epic_search_matches(EpicId(1)));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 3 — strict in-epic task filtering even when the epic matched by title
+// ---------------------------------------------------------------------------
+
+#[test]
+fn epic_matched_by_own_title_still_strictly_filters_subtasks_in_view() {
+    use crate::tui::messages::EpicMessage;
+    use crate::tui::types::Message;
+
+    let mut app = App::new(vec![epic_child(10, 1, "Refactor parser")]);
+    app.board.epics = vec![make_epic_with_title(1, "Login redesign")];
+    app.update(Message::Epic(EpicMessage::Enter(EpicId(1))));
+    app.search.query = "login".to_string();
+    // The epic is surfaced by its own title, but its only subtask does not
+    // match the query — the epic view shows no tasks, which may be none.
+    assert!(app.tasks_for_current_view().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Finding 4 — epic-side edge cases mirroring the task predicate's
+// ---------------------------------------------------------------------------
+
+#[test]
+fn epic_search_query_non_numeric_does_not_id_match() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic_with_title(3837, "alpha")];
+    // "38a" has a non-digit payload, so no id matching happens and the title
+    // is not a subsequence match either.
+    app.search.query = "38a".to_string();
+    assert!(!app.epic_search_matches(EpicId(3837)));
+}
+
+#[test]
+fn epic_search_query_bare_hash_does_not_id_match() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic_with_title(3837, "alpha")];
+    // A lone "#" leaves an empty digit payload: title-only matching, and the
+    // title does not contain '#'.
+    app.search.query = "#".to_string();
+    assert!(!app.epic_search_matches(EpicId(3837)));
+}
+
+#[test]
+fn epic_and_task_id_namespaces_are_independent() {
+    // Epic #1 and task #1 both exist; the two id sequences are separate and
+    // the predicates are independent, so both cards are shown.
+    let mut app = App::new(vec![test_task(1, "alpha")]);
+    app.board.epics = vec![make_epic_with_title(1, "beta")];
+    app.search.query = "1".to_string();
+    assert_eq!(visible_epic_ids(&app), vec![1]);
+    let ids: Vec<i64> = app
+        .tasks_for_current_view()
+        .iter()
+        .map(|t| t.id.0)
+        .collect();
+    assert_eq!(ids, vec![1]);
+}
+
 #[test]
 fn epic_search_matches_does_not_read_the_layout_cache() {
     // A stale cache must never answer for search: the layout fingerprint
@@ -339,28 +469,41 @@ fn search_keeps_epic_whose_subtask_matches() {
 
 #[test]
 fn search_on_epics_composes_with_repo_filter() {
-    let mut app = App::new(vec![]);
-    let mut child = epic_child(10, 1, "Fix login bug");
-    child.repo_path = "/repo/b".to_string();
-    app.board.tasks = vec![child];
-    app.board.epics = vec![make_epic_with_title(1, "Login redesign")];
+    let mut matching = epic_child(10, 1, "Fix login bug");
+    matching.repo_path = "/repo/a".to_string();
+    let mut non_matching = epic_child(11, 2, "Update invoices");
+    non_matching.repo_path = "/repo/a".to_string();
+    let mut app = App::new(vec![matching, non_matching]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
     app.filter.repos.insert("/repo/a".to_string());
     app.filter.mode = RepoFilterMode::Include;
     app.search.query = "login".to_string();
-    // Title matches, but the repo filter excludes the epic's only subtask.
-    assert_eq!(visible_epic_ids(&app), Vec::<i64>::new());
+    // Both epics' subtasks pass the repo filter; only epic 1's subtask also
+    // matches the query — proves the AND is real, not just "repo filter
+    // hides everything".
+    assert_eq!(visible_epic_ids(&app), vec![1]);
 }
 
 #[test]
 fn search_on_epics_composes_with_only_active_filter() {
-    let mut idle = epic_child(10, 1, "Fix login bug");
-    idle.tmux_window = None;
-    let mut app = App::new(vec![idle]);
-    app.board.epics = vec![make_epic_with_title(1, "Login redesign")];
+    let mut matching = epic_child(10, 1, "Fix login bug");
+    matching.tmux_window = Some("task-10".to_string());
+    let mut non_matching = epic_child(11, 2, "Update invoices");
+    non_matching.tmux_window = Some("task-11".to_string());
+    let mut app = App::new(vec![matching, non_matching]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
     app.filter.only_active = true;
     app.search.query = "login".to_string();
-    // Title matches, but no subtask has a live tmux window.
-    assert_eq!(visible_epic_ids(&app), Vec::<i64>::new());
+    // Both epics have an active subtask (only-active passes); only epic 1's
+    // subtask also matches the query — proves the AND is real, not just
+    // "only-active hides everything".
+    assert_eq!(visible_epic_ids(&app), vec![1]);
 }
 
 #[test]

@@ -813,12 +813,23 @@ value FlattenedView {
 --   that match the query, which may be none. Clearing the query is how the
 --   user sees an epic's full contents.
 --
---   Epics: an epic card is visible when own_match(epic) holds, OR when any
---   descendant sub-epic satisfies own_match, OR when any non-archived task in
---   the epic's subtree satisfies own_match. Archived tasks never keep an epic
---   visible. The descendant clause exists because a hierarchical board does not
---   render epic-owned tasks at all — the epic card is the only path to them, so
---   hiding it would make the match unreachable.
+--   Epics: an epic card is visible when own_match(epic) holds, OR when some
+--   descendant sub-epic satisfies own_match AND is itself visible under the
+--   repo and only-active filters, OR when some non-archived task in the
+--   epic's subtree satisfies own_match AND is itself visible under the repo
+--   and only-active filters (the same two predicates tasks_for_current_view
+--   applies to a task: filter.matches on repo_path, and the only-active
+--   filter). Archived tasks never keep an epic visible.
+--
+--   The "itself visible" clause on both the sub-epic and the task branch is
+--   load-bearing: a descendant the board would hide cannot keep its ancestor's
+--   card alive, because drilling into that card would be a dead end — the
+--   descendant that justified the card is not there to be found. The
+--   descendant clause exists at all because a hierarchical board does not
+--   render epic-owned tasks on the board itself — the epic card is the only
+--   path to them, so hiding the card would make a reachable match
+--   unreachable; gating the descendant by the repo and only-active filters
+--   keeps that reachability promise honest.
 --
 --   Epic ids and task ids are separate sequences, so one digit payload can match
 --   both an epic card and a task card. Both are shown.

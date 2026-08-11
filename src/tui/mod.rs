@@ -429,40 +429,43 @@ pub(in crate::tui) fn epic_active_matches_for_ids(
     })
 }
 
-/// Whether the epic (identified by `epic_ids` = the epic itself plus all its
-/// descendant epics) matches the active board-search query. `query_lower` is the
-/// lowercased query and `id_digits` its digit payload (see [`id_digits_query`]).
-///
-/// An epic matches when it or any descendant sub-epic has an own match (fuzzy
-/// title subsequence or id-prefix), or when any non-archived task in the subtree
-/// has an own match. Archived tasks never keep an epic visible. An empty query
-/// matches every epic.
-///
-/// Epic ids and task ids are separate sequences, so one digit payload can match
-/// both an epic card and a task card; both are shown. See board_search_filter
-/// in `docs/specs/core.allium`.
+/// Whether `title`/`id` themselves satisfy the board-search query: a
+/// case-insensitive forward-subsequence title match, or a decimal id-prefix
+/// match against `id_digits` (see [`id_digits_query`]). Shared by the task
+/// and epic own-match checks so the OR is expressed once. See
+/// board_search_filter in `docs/specs/core.allium`.
+pub(in crate::tui) fn own_search_match(
+    title: &str,
+    id: i64,
+    query_lower: &str,
+    id_digits: Option<&str>,
+) -> bool {
+    fuzzy_matches_lower(title, query_lower)
+        || id_digits.is_some_and(|digits| id_prefix_matches(id, digits))
+}
+
+/// Whether some non-archived task in the epic subtree named by `epic_ids`
+/// carries the epic's search match: the task has an own match (title or
+/// id-prefix) AND the board would actually show that task under the repo and
+/// only-active filters (`filter.matches` on its repo_path, and
+/// `filter.task_matches`) — the same two predicates `tasks_for_current_view`
+/// applies. A task the board would hide cannot keep an ancestor epic's card
+/// alive: drilling into that card would be a dead end. See
+/// board_search_filter in `docs/specs/core.allium`.
 pub(in crate::tui) fn epic_search_matches_for_ids(
     tasks: &[Task],
-    epics: &[Epic],
+    filter: &FilterState,
     epic_ids: &HashSet<EpicId>,
     query_lower: &str,
     id_digits: Option<&str>,
 ) -> bool {
-    if query_lower.is_empty() {
-        return true;
-    }
-    let own_match = |title: &str, id: i64| {
-        fuzzy_matches_lower(title, query_lower)
-            || id_digits.is_some_and(|digits| id_prefix_matches(id, digits))
-    };
-    epics
-        .iter()
-        .any(|e| epic_ids.contains(&e.id) && own_match(&e.title, e.id.0))
-        || tasks.iter().any(|t| {
-            matches!(t.epic_id, Some(eid) if epic_ids.contains(&eid))
-                && t.status != TaskStatus::Archived
-                && own_match(&t.title, t.id.0)
-        })
+    tasks.iter().any(|t| {
+        matches!(t.epic_id, Some(eid) if epic_ids.contains(&eid))
+            && t.status != TaskStatus::Archived
+            && own_search_match(&t.title, t.id.0, query_lower, id_digits)
+            && filter.matches(&t.repo_path)
+            && filter.task_matches(t)
+    })
 }
 
 /// Returns true when the buffer should be offered as a selectable "new path"
@@ -904,22 +907,68 @@ impl App {
 
     /// Whether the epic should be shown under the active board-search query.
     ///
+    /// `E`'s own title/id match needs no extra gating: callers (see
+    /// [`Self::visible_epics_for_effective_view`]) already require
+    /// `epic_matches(E) && epic_repo_matches(E)` before this predicate runs.
+    /// A descendant sub-epic or descendant task only counts toward `E`'s
+    /// match when it would itself be visible under the repo and only-active
+    /// filters — a descendant the board hides cannot keep `E`'s card alive,
+    /// since the card would then be a dead end. See board_search_filter in
+    /// `docs/specs/core.allium`.
+    ///
     /// Deliberately uncached, unlike [`Self::epic_matches`] and
     /// [`Self::epic_repo_matches`]: `layout.epic_filter_cache` is guarded by
     /// `compute_layout_fingerprint()`, which folds ids, status, parent and sort
     /// order but neither titles nor the query — a cached verdict would go stale
     /// on a title edit or a keystroke in the search bar. The empty-query fast
-    /// path keeps the non-searching render free.
+    /// path keeps the non-searching render free. `layout.children_map_cache`
+    /// (when present and fresh under the layout fingerprint) is reused to
+    /// build the descendant-id set in O(depth) rather than rebuilding the
+    /// whole children map on every call, with a soft fallback to a fresh
+    /// build when the cache is absent or stale.
     pub(in crate::tui) fn epic_search_matches(&self, epic_id: EpicId) -> bool {
         if !self.search_active() {
             return true;
         }
         let query_lower = self.search.query.to_lowercase();
         let id_digits = id_digits_query(&self.search.query);
-        let epic_ids = crate::models::descendant_epic_ids(epic_id, &self.board.epics);
+
+        if self
+            .board
+            .epics
+            .iter()
+            .any(|e| e.id == epic_id && own_search_match(&e.title, e.id.0, &query_lower, id_digits))
+        {
+            return true;
+        }
+
+        // The cache is only trustworthy when the layout fingerprint still
+        // matches the board it was built from — mirrors the self-heal check
+        // `cached_epic_stats()` performs, without this (immutable, `&self`)
+        // method rebuilding the cache itself.
+        let cache_is_fresh =
+            self.layout.layout_cache_fingerprint == Some(self.compute_layout_fingerprint());
+        let epic_ids = match &self.layout.children_map_cache {
+            Some(map) if cache_is_fresh => {
+                crate::models::descendant_epic_ids_with_map(epic_id, map)
+            }
+            _ => crate::models::descendant_epic_ids(epic_id, &self.board.epics),
+        };
+
+        let sub_epic_matches = self.board.epics.iter().any(|e| {
+            e.id != epic_id
+                && epic_ids.contains(&e.id)
+                && own_search_match(&e.title, e.id.0, &query_lower, id_digits)
+                && self.epic_matches(e.id)
+                && self.epic_repo_matches(e.id)
+        });
+        if sub_epic_matches {
+            return true;
+        }
+
         epic_search_matches_for_ids(
             &self.board.tasks,
-            &self.board.epics,
+            &self.filter,
             &epic_ids,
             &query_lower,
             id_digits,
