@@ -921,11 +921,7 @@ impl App {
     /// `compute_layout_fingerprint()`, which folds ids, status, parent and sort
     /// order but neither titles nor the query — a cached verdict would go stale
     /// on a title edit or a keystroke in the search bar. The empty-query fast
-    /// path keeps the non-searching render free. `layout.children_map_cache`
-    /// (when present and fresh under the layout fingerprint) is reused to
-    /// build the descendant-id set in O(depth) rather than rebuilding the
-    /// whole children map on every call, with a soft fallback to a fresh
-    /// build when the cache is absent or stale.
+    /// path keeps the non-searching render free.
     pub(in crate::tui) fn epic_search_matches(&self, epic_id: EpicId) -> bool {
         if !self.search_active() {
             return true;
@@ -933,27 +929,17 @@ impl App {
         let query_lower = self.search.query.to_lowercase();
         let id_digits = id_digits_query(&self.search.query);
 
-        if self
+        let own_match = self
             .board
             .epics
             .iter()
-            .any(|e| e.id == epic_id && own_search_match(&e.title, e.id.0, &query_lower, id_digits))
-        {
+            .find(|e| e.id == epic_id)
+            .is_some_and(|e| own_search_match(&e.title, e.id.0, &query_lower, id_digits));
+        if own_match {
             return true;
         }
 
-        // The cache is only trustworthy when the layout fingerprint still
-        // matches the board it was built from — mirrors the self-heal check
-        // `cached_epic_stats()` performs, without this (immutable, `&self`)
-        // method rebuilding the cache itself.
-        let cache_is_fresh =
-            self.layout.layout_cache_fingerprint == Some(self.compute_layout_fingerprint());
-        let epic_ids = match &self.layout.children_map_cache {
-            Some(map) if cache_is_fresh => {
-                crate::models::descendant_epic_ids_with_map(epic_id, map)
-            }
-            _ => crate::models::descendant_epic_ids(epic_id, &self.board.epics),
-        };
+        let epic_ids = crate::models::descendant_epic_ids(epic_id, &self.board.epics);
 
         let sub_epic_matches = self.board.epics.iter().any(|e| {
             e.id != epic_id
@@ -1056,10 +1042,7 @@ impl App {
         let query_lower = self.search.query.to_lowercase();
         // Parsed once per call, not per task: this is the render hot path.
         let id_digits = id_digits_query(&self.search.query);
-        let search_match = |t: &&Task| {
-            fuzzy_matches_lower(&t.title, &query_lower)
-                || id_digits.is_some_and(|digits| id_prefix_matches(t.id.0, digits))
-        };
+        let search_match = |t: &&Task| own_search_match(&t.title, t.id.0, &query_lower, id_digits);
         match self.effective_view_mode() {
             BoardViewMode::Board(_) => self
                 .board

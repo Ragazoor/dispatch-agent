@@ -871,7 +871,7 @@ fn snapshot_board_in_search_input_mode() {
     ]);
     app.search.query = "search".to_string();
     // While in SearchTasks input mode the status bar shows the live search
-    // prompt: "Search tasks: {query}_   [Enter] keep  [Esc] cancel".
+    // prompt: "Search board: {query}_   [Enter] keep  [Esc] cancel".
     app.input.mode = InputMode::SearchTasks;
     let rendered = render_to_string(&mut app, 120, 40);
     insta::assert_snapshot!(rendered);

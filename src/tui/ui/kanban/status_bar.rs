@@ -183,7 +183,7 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::Normal => normal_status_line(app),
         InputMode::SearchTasks => hint(
             format!(
-                "Search tasks: {}_   [Enter] keep  [Esc] cancel",
+                "Search board: {}_   [Enter] keep  [Esc] cancel",
                 app.search.query
             ),
             Color::Cyan,
