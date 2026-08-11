@@ -25,44 +25,72 @@ impl App {
 
     pub(in crate::tui) fn handle_key_todos(&mut self, key: KeyEvent) -> Vec<Command> {
         use crate::tui::messages::TodoMessage;
+        let label = super::key_label(key);
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.update(Message::Todo(TodoMessage::MoveSelection(1)))
+            KeyCode::Char('j') | KeyCode::Down => self.dispatch_keyed(
+                Message::Todo(TodoMessage::MoveSelection(1)),
+                "todo_move_selection",
+                &label,
+            ),
+            KeyCode::Char('k') | KeyCode::Up => self.dispatch_keyed(
+                Message::Todo(TodoMessage::MoveSelection(-1)),
+                "todo_move_selection",
+                &label,
+            ),
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.dispatch_keyed(Message::Todo(TodoMessage::Close), "close_todos", &label)
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.update(Message::Todo(TodoMessage::MoveSelection(-1)))
+            KeyCode::Char('a') => {
+                self.dispatch_keyed(Message::Todo(TodoMessage::Add), "todo_add", &label)
             }
-            KeyCode::Char('q') | KeyCode::Esc => self.update(Message::Todo(TodoMessage::Close)),
-            KeyCode::Char('a') => self.update(Message::Todo(TodoMessage::Add)),
             KeyCode::Char('e') => {
                 if let Some(id) = self.selected_todo_id() {
-                    self.update(Message::Todo(TodoMessage::Edit(id)))
+                    self.dispatch_keyed(Message::Todo(TodoMessage::Edit(id)), "todo_edit", &label)
                 } else {
                     vec![]
                 }
             }
             KeyCode::Char(' ') => {
                 if let Some(id) = self.selected_todo_id() {
-                    self.update(Message::Todo(TodoMessage::ToggleDone(id)))
+                    self.dispatch_keyed(
+                        Message::Todo(TodoMessage::ToggleDone(id)),
+                        "todo_toggle_done",
+                        &label,
+                    )
                 } else {
                     vec![]
                 }
             }
-            KeyCode::Char('J') => self.update(Message::Todo(TodoMessage::Reorder(1))),
-            KeyCode::Char('K') => self.update(Message::Todo(TodoMessage::Reorder(-1))),
-            KeyCode::Char('c') => self.update(Message::Todo(TodoMessage::ClearDone)),
+            KeyCode::Char('J') => self.dispatch_keyed(
+                Message::Todo(TodoMessage::Reorder(1)),
+                "todo_reorder",
+                &label,
+            ),
+            KeyCode::Char('K') => self.dispatch_keyed(
+                Message::Todo(TodoMessage::Reorder(-1)),
+                "todo_reorder",
+                &label,
+            ),
+            KeyCode::Char('c') => self.dispatch_keyed(
+                Message::Todo(TodoMessage::ClearDone),
+                "todo_clear_done",
+                &label,
+            ),
             KeyCode::Char('d') => {
-                if let Some(id) = self.selected_todo_id() {
-                    self.interaction.pending = PendingAction::TodoDelete(id);
-                    self.input.mode = crate::tui::types::InputMode::ConfirmDeleteTodo;
-                }
-                vec![]
+                let Some(id) = self.selected_todo_id() else {
+                    return vec![];
+                };
+                self.interaction.pending = PendingAction::TodoDelete(id);
+                self.input.mode = crate::tui::types::InputMode::ConfirmDeleteTodo;
+                vec![key_event("todo_delete_prompt", &label)]
             }
             KeyCode::Char('L') => {
                 if let Some(id) = self.selected_todo_id() {
-                    self.update(Message::Todo(
-                        crate::tui::messages::TodoMessage::LinkToTask(id),
-                    ))
+                    self.dispatch_keyed(
+                        Message::Todo(crate::tui::messages::TodoMessage::LinkToTask(id)),
+                        "todo_link_to_task",
+                        &label,
+                    )
                 } else {
                     vec![]
                 }
@@ -88,13 +116,16 @@ impl App {
                             t.linked = None;
                         }
                     }
-                    vec![Command::Todo(TodoCommand::Update {
-                        id,
-                        update: crate::service::TodoUpdate {
-                            linked: Some(None),
-                            ..Default::default()
-                        },
-                    })]
+                    vec![
+                        Command::Todo(TodoCommand::Update {
+                            id,
+                            update: crate::service::TodoUpdate {
+                                linked: Some(None),
+                                ..Default::default()
+                            },
+                        }),
+                        key_event("todo_unlink", &label),
+                    ]
                 } else {
                     vec![]
                 }
@@ -108,23 +139,33 @@ impl App {
                     }
                 });
                 if let Some(link) = linked {
-                    self.update(Message::Todo(
-                        crate::tui::messages::TodoMessage::JumpToLinked(link),
-                    ))
+                    self.dispatch_keyed(
+                        Message::Todo(crate::tui::messages::TodoMessage::JumpToLinked(link)),
+                        "todo_jump_to_linked",
+                        &label,
+                    )
                 } else {
                     vec![]
                 }
             }
             KeyCode::Tab => {
                 if let Some(id) = self.selected_todo_id() {
-                    self.update(Message::Todo(crate::tui::messages::TodoMessage::Nest(id)))
+                    self.dispatch_keyed(
+                        Message::Todo(crate::tui::messages::TodoMessage::Nest(id)),
+                        "todo_nest",
+                        &label,
+                    )
                 } else {
                     vec![]
                 }
             }
             KeyCode::BackTab => {
                 if let Some(id) = self.selected_todo_id() {
-                    self.update(Message::Todo(crate::tui::messages::TodoMessage::Unnest(id)))
+                    self.dispatch_keyed(
+                        Message::Todo(crate::tui::messages::TodoMessage::Unnest(id)),
+                        "todo_unnest",
+                        &label,
+                    )
                 } else {
                     vec![]
                 }
@@ -165,36 +206,6 @@ impl App {
         }
     }
 
-    /// Dispatch `msg` through [`Self::update`], then record the keybinding usage
-    /// event. Collapses the update-then-`key_event`-push pattern shared by the
-    /// message-dispatch arms of [`Self::handle_key_board_normal`] into a single
-    /// call, so those arms can't silently forget the telemetry push. Arms that
-    /// delegate to a `handle_key_*` sub-handler use [`Self::dispatch_handler_keyed`]
-    /// instead.
-    fn dispatch_keyed(&mut self, msg: Message, action: &str, key: &str) -> Vec<Command> {
-        let mut cmds = self.update(msg);
-        cmds.push(key_event(action, key));
-        cmds
-    }
-
-    /// Run a `handle_key_*` sub-handler, then record the keybinding usage event
-    /// only if the handler produced commands. Collapses the run-then-conditional-
-    /// `key_event`-push pattern shared by the sub-handler arms of
-    /// [`Self::handle_key_board_normal`] (where a no-op handler must not emit
-    /// telemetry), mirroring [`Self::dispatch_keyed`] for that cluster.
-    fn dispatch_handler_keyed(
-        &mut self,
-        handler: impl FnOnce(&mut Self) -> Vec<Command>,
-        action: &str,
-        key: &str,
-    ) -> Vec<Command> {
-        let mut cmds = handler(self);
-        if !cmds.is_empty() {
-            cmds.push(key_event(action, key));
-        }
-        cmds
-    }
-
     /// The main board/epic key match, split out from [`Self::handle_key_normal`]
     /// so the `gg`-chord pre-check can recurse into it for the current key
     /// once a pending `g` has been resolved (see [`PendingAction::GChord`]).
@@ -202,8 +213,9 @@ impl App {
         if let PendingAction::GChord(started) = self.interaction.pending {
             self.interaction.pending = PendingAction::None;
             if key.code == KeyCode::Char('g') && started.elapsed() <= GG_CHORD_TIMEOUT {
-                // Completed `gg` chord: jump to top of column.
-                return self.update(Message::NavigateRowFirst);
+                // Completed `gg` chord: jump to top of column. Recorded under
+                // the chord, not the key, so it stays separable from `[`.
+                return self.dispatch_keyed(Message::NavigateRowFirst, "navigate_row_first", "gg");
             }
             // Either a different key arrived, or the chord window expired:
             // the pending chord is simply abandoned (no action fires for the
@@ -211,21 +223,42 @@ impl App {
             return self.handle_key_board_normal(key);
         }
 
+        let label = super::key_label(key);
         match key.code {
             KeyCode::Char('q') => {
                 if matches!(self.board.view_mode, ViewMode::Epic { .. }) {
-                    self.update(Message::Epic(crate::tui::messages::EpicMessage::Exit))
+                    self.dispatch_keyed(
+                        Message::Epic(crate::tui::messages::EpicMessage::Exit),
+                        "exit_epic",
+                        &label,
+                    )
                 } else {
-                    self.update(Message::System(crate::tui::messages::SystemMessage::Quit))
+                    self.dispatch_keyed(
+                        Message::System(crate::tui::messages::SystemMessage::Quit),
+                        "quit",
+                        &label,
+                    )
                 }
             }
 
-            KeyCode::Char('h') | KeyCode::Left => self.update(Message::NavigateColumn(-1)),
-            KeyCode::Char('l') | KeyCode::Right => self.update(Message::NavigateColumn(1)),
-            KeyCode::Char('j') | KeyCode::Down => self.update(Message::NavigateRow(1)),
-            KeyCode::Char('k') | KeyCode::Up => self.update(Message::NavigateRow(-1)),
-            KeyCode::Char('[') => self.update(Message::NavigateRowFirst),
-            KeyCode::Char(']') => self.update(Message::NavigateRowLast),
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.dispatch_keyed(Message::NavigateColumn(-1), "navigate_column", &label)
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.dispatch_keyed(Message::NavigateColumn(1), "navigate_column", &label)
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.dispatch_keyed(Message::NavigateRow(1), "navigate_row", &label)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.dispatch_keyed(Message::NavigateRow(-1), "navigate_row", &label)
+            }
+            KeyCode::Char('[') => {
+                self.dispatch_keyed(Message::NavigateRowFirst, "navigate_row_first", &label)
+            }
+            KeyCode::Char(']') => {
+                self.dispatch_keyed(Message::NavigateRowLast, "navigate_row_last", &label)
+            }
             KeyCode::Char('J') => self.dispatch_keyed(
                 Message::Task(crate::tui::messages::TaskMessage::ReorderItem(1)),
                 "reorder_task_down",
@@ -323,7 +356,9 @@ impl App {
                 self.interaction.pending = PendingAction::GChord(Instant::now());
                 vec![]
             }
-            KeyCode::Char('G') => self.update(Message::NavigateRowLast),
+            KeyCode::Char('G') => {
+                self.dispatch_keyed(Message::NavigateRowLast, "navigate_row_last", &label)
+            }
 
             KeyCode::Char('p') => {
                 self.dispatch_handler_keyed(Self::handle_key_open_pr, "open_pr_url", "p")
@@ -519,7 +554,7 @@ impl App {
     /// `Enter` — open task detail, or toggle off select-all.
     fn handle_key_enter_normal(&mut self) -> Vec<Command> {
         if self.selection().on_select_all {
-            return self.update(Message::SelectAllColumn);
+            return self.dispatch_keyed(Message::SelectAllColumn, "clear_select_all", "Enter");
         }
         if let Some(task) = self.selected_task() {
             let id = task.id;
@@ -677,26 +712,36 @@ impl App {
         if self.search_active() {
             self.search.query.clear();
             self.sync_board_selection();
-            return vec![];
+            return vec![key_event("clear_search", "Esc")];
         }
         if matches!(self.board.view_mode, ViewMode::Epic { .. }) {
-            self.update(Message::Epic(crate::tui::messages::EpicMessage::Exit))
+            self.dispatch_keyed(
+                Message::Epic(crate::tui::messages::EpicMessage::Exit),
+                "exit_epic",
+                "Esc",
+            )
         } else if self.has_selection() || self.selection().on_select_all {
-            self.update(Message::ClearSelection)
+            self.dispatch_keyed(Message::ClearSelection, "clear_selection", "Esc")
         } else {
             vec![]
         }
     }
 
     pub(in crate::tui) fn handle_key_search(&mut self, key: KeyEvent) -> Vec<Command> {
+        // Typing is not an action: only leaving the mode (either way) is
+        // recorded, so the count reads as "searches run", not "characters
+        // typed".
+        let mut cmds = vec![];
         match key.code {
             KeyCode::Esc => {
                 self.search.query = self.search.saved.take().unwrap_or_default();
                 self.input.mode = InputMode::Normal;
+                cmds.push(key_event("search_cancel", "Esc"));
             }
             KeyCode::Enter => {
                 self.search.saved = None;
                 self.input.mode = InputMode::Normal;
+                cmds.push(key_event("search_commit", "Enter"));
             }
             KeyCode::Backspace => {
                 self.search.query.pop();
@@ -708,6 +753,6 @@ impl App {
         }
         // Query may have changed → recompute filtered columns and re-clamp the cursor.
         self.sync_board_selection();
-        vec![]
+        cmds
     }
 }

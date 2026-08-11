@@ -138,7 +138,7 @@ fn quick_dispatch_mode_esc_cancels() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     app.board.repo_paths = vec!["/repo1".to_string(), "/repo2".to_string()];
     app.input.mode = InputMode::QuickDispatch;
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -210,7 +210,7 @@ fn shift_d_in_epic_view_repo_selection_dispatches_with_epic_id() {
     app.handle_key(make_shift_key(KeyCode::Char('D')));
     // Move cursor to second repo, then Enter to select.
     app.handle_key(make_key(KeyCode::Down));
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(&cmds[0],
         Command::Task(crate::tui::commands::TaskCommand::QuickDispatch { ref draft, epic_id: Some(EpicId(10)) })
@@ -1038,7 +1038,7 @@ fn quick_dispatch_enter_selects_cursor_repo() {
     ];
     app.input.mode = InputMode::QuickDispatch;
     app.input.repo_cursor = 2; // third repo
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert_eq!(cmds.len(), 1);
     assert!(
         matches!(&cmds[0], Command::Task(crate::tui::commands::TaskCommand::QuickDispatch { ref draft, epic_id: None }) if draft.repo_path == "/repo3")
@@ -1104,7 +1104,7 @@ fn quick_dispatch_enter_selects_from_filtered_list() {
     app.input.mode = InputMode::QuickDispatch;
     app.input.set_buffer("api".to_string()); // matches index 0 and 2 of full list
     app.input.repo_cursor = 1; // second item in filtered list → "/api-gateway"
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert_eq!(cmds.len(), 1);
     assert!(
         matches!(&cmds[0], Command::Task(crate::tui::commands::TaskCommand::QuickDispatch { ref draft, .. }) if draft.repo_path == "/api-gateway")
@@ -1120,7 +1120,7 @@ fn quick_dispatch_enter_uses_buffer_as_new_repo_when_no_match() {
     app.input.mode = InputMode::QuickDispatch;
     app.input
         .set_buffer("/home/user/brand-new-project".to_string());
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert_eq!(cmds.len(), 1);
     assert!(
         matches!(&cmds[0], Command::Task(crate::tui::commands::TaskCommand::QuickDispatch { ref draft, .. })
@@ -1140,7 +1140,7 @@ fn quick_dispatch_enter_uses_buffer_when_cursor_on_new_entry() {
     app.input.mode = InputMode::QuickDispatch;
     app.input.set_buffer("/home/code/work".to_string());
     app.input.repo_cursor = 1; // cursor on new entry (past the 1 filtered result)
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert_eq!(cmds.len(), 1);
     assert!(
         matches!(&cmds[0], Command::Task(crate::tui::commands::TaskCommand::QuickDispatch { ref draft, .. })
@@ -1188,7 +1188,7 @@ fn quick_dispatch_enter_uses_cursor_within_filtered_list() {
     app.input.mode = InputMode::QuickDispatch;
     app.input.set_buffer("api".to_string()); // filtered: ["/api-service", "/api-gateway"]
     app.input.repo_cursor = 1; // pick second filtered item → "/api-gateway"
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert_eq!(cmds.len(), 1);
     assert!(
         matches!(&cmds[0], Command::Task(crate::tui::commands::TaskCommand::QuickDispatch { ref draft, .. }) if draft.repo_path == "/api-gateway")

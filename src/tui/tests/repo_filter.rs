@@ -1068,7 +1068,7 @@ fn handle_key_confirm_delete_repo_path_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmDeleteRepoPath;
     // Any non-y key returns to RepoFilter
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::RepoFilter);
 }

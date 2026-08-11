@@ -815,7 +815,7 @@ fn confirm_delete_epic_uppercase_y_deletes() {
 #[test]
 fn confirm_delete_epic_other_key_cancels() {
     let mut app = make_app_confirm_delete_epic();
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(app.status.message.is_none());
     assert_eq!(app.board.epics.len(), 1); // not deleted
@@ -827,7 +827,7 @@ fn confirm_delete_epic_no_epic_selected_is_noop() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     app.selection_mut().set_column(1); // cursor on task, not epic
     app.input.mode = InputMode::ConfirmDeleteEpic;
-    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('y'))));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds.is_empty()); // no deletion happened
 }
@@ -871,7 +871,7 @@ fn shift_g_on_single_item_column_with_epic_is_noop() {
     app.selection_mut().set_column(2);
     app.selection_mut().set_row(2, 0);
 
-    let cmds = app.handle_key(make_key(KeyCode::Char('G')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('G'))));
     assert!(
         cmds.is_empty(),
         "G on a single-item column emits no commands"
@@ -899,7 +899,7 @@ fn shift_g_jumps_to_last_row_in_column_with_an_epic() {
     app.selection_mut().set_column(2);
     app.selection_mut().set_row(2, 0);
 
-    let cmds = app.handle_key(make_key(KeyCode::Char('G')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('G'))));
     assert!(cmds.is_empty());
     assert!(
         !matches!(app.board.view_mode, ViewMode::Epic { .. }),
@@ -1536,7 +1536,7 @@ fn handle_key_normal_shift_h_on_epic_moves_backward() {
 fn handle_key_input_epic_title_routes_to_text_input() {
     let mut app = make_app();
     app.input.mode = InputMode::InputEpicTitle;
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -1546,7 +1546,7 @@ fn handle_key_input_epic_title_routes_to_text_input() {
 fn handle_key_input_epic_description_routes_to_text_input() {
     let mut app = make_app();
     app.input.mode = InputMode::InputEpicDescription;
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -1556,7 +1556,7 @@ fn handle_key_input_epic_description_routes_to_text_input() {
 fn handle_key_confirm_delete_epic_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmDeleteEpic;
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -1571,7 +1571,7 @@ fn handle_key_normal_epic_view_routes_correctly() {
         parent: Box::new(ViewMode::Board(BoardSelection::new())),
     };
     // 'q' in epic view exits to board (doesn't quit)
-    let cmds = app.handle_key(make_key(KeyCode::Char('q')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('q'))));
     assert!(cmds.is_empty());
     assert!(matches!(app.board.view_mode, ViewMode::Board(_)));
 }

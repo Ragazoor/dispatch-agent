@@ -55,7 +55,7 @@ fn repo_path_empty_uses_saved_path() {
     });
     app.input.buffer.clear();
 
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     // Now advances to InputBaseBranch with "main" pre-filled
     assert_eq!(app.input.mode, InputMode::InputBaseBranch);
     assert_eq!(app.input.buffer, "main");
@@ -130,7 +130,7 @@ fn repo_path_nonempty_used_as_is() {
     app.input.set_buffer("/tmp".to_string());
 
     // Submitting repo path now advances to InputBaseBranch
-    let cmds = app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let cmds = without_usage(app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
     assert_eq!(app.input.mode, InputMode::InputBaseBranch);
     assert_eq!(app.input.buffer, "main");
     assert!(cmds.is_empty());
@@ -396,7 +396,7 @@ fn confirm_delete_n_cancels() {
     let mut app = make_app();
     app.selection_mut().set_column(1);
     app.input.mode = InputMode::ConfirmDelete;
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert_eq!(app.board.tasks.len(), 4);
     assert!(cmds.is_empty());
@@ -408,7 +408,7 @@ fn confirm_delete_esc_cancels() {
     let mut app = make_app();
     app.selection_mut().set_column(1);
     app.input.mode = InputMode::ConfirmDelete;
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert_eq!(app.board.tasks.len(), 4);
     assert!(cmds.is_empty());
@@ -498,7 +498,7 @@ fn confirm_retry_esc_returns_to_normal() {
     let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
 
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds.is_empty());
 }
@@ -1119,7 +1119,7 @@ fn esc_clears_selection_and_exits_toggle() {
 fn handle_key_dismisses_error_popup() {
     let mut app = make_app();
     app.status.error_popup = Some("something went wrong".to_string());
-    let cmds = app.handle_key(make_key(KeyCode::Char('q')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('q'))));
     assert!(app.status.error_popup.is_none());
     assert!(cmds.is_empty());
 }
@@ -1462,7 +1462,7 @@ fn handle_key_tag_selects_bug() {
         ..Default::default()
     });
 
-    let cmds = app.handle_key(make_key(KeyCode::Char('b')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('b'))));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(
         &cmds[0],
@@ -1486,7 +1486,7 @@ fn handle_key_tag_skip_with_enter() {
         ..Default::default()
     });
 
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(
         &cmds[0],
@@ -2001,7 +2001,7 @@ fn handle_key_text_input_repo_enter_selects_cursor_repo() {
     app.input.buffer.clear();
     app.input.repo_cursor = 1;
 
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     // Advances to InputBaseBranch; task not created until wrap-up mode selected
     assert_eq!(app.input.mode, InputMode::InputBaseBranch);
     assert!(cmds.is_empty());
@@ -2029,7 +2029,7 @@ fn handle_key_text_input_enter_submits_typed_text() {
     });
     app.input.set_buffer("/tmp".to_string());
 
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     // Advances to InputBaseBranch; task not created until wrap-up mode selected
     assert_eq!(app.input.mode, InputMode::InputBaseBranch);
     assert!(cmds.is_empty());
@@ -2310,7 +2310,7 @@ fn handle_key_input_title_routes_to_text_input() {
     let mut app = make_app();
     app.input.mode = InputMode::InputTitle;
     // Esc cancels input
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2320,7 +2320,7 @@ fn handle_key_input_title_routes_to_text_input() {
 fn handle_key_input_description_routes_to_text_input() {
     let mut app = make_app();
     app.input.mode = InputMode::InputDescription;
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2330,7 +2330,7 @@ fn handle_key_input_description_routes_to_text_input() {
 fn handle_key_input_repo_path_routes_to_text_input() {
     let mut app = make_app();
     app.input.mode = InputMode::InputRepoPath;
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2341,7 +2341,7 @@ fn handle_key_confirm_delete_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmDelete;
     // 'n' cancels the delete
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2352,7 +2352,7 @@ fn handle_key_input_tag_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::InputTag;
     // Esc cancels tag input
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2363,7 +2363,7 @@ fn handle_key_quick_dispatch_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::QuickDispatch;
     // Esc cancels quick dispatch
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2374,7 +2374,7 @@ fn handle_key_confirm_retry_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmRetry(TaskId(1));
     // Esc cancels retry
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2384,7 +2384,7 @@ fn handle_key_confirm_retry_routes_correctly() {
 fn handle_key_confirm_detach_tmux_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmDetachTmux(vec![TaskId(1)]);
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2395,7 +2395,7 @@ fn handle_key_help_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::Help;
     // Any key exits help
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2406,7 +2406,7 @@ fn handle_key_confirm_quit_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmQuit;
     // 'n' cancels quit
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -2416,7 +2416,7 @@ fn handle_key_confirm_quit_routes_correctly() {
 fn handle_key_error_popup_dismisses_first() {
     let mut app = make_app();
     app.status.error_popup = Some("Some error".to_string());
-    let cmds = app.handle_key(make_key(KeyCode::Char('x')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('x'))));
     assert!(cmds.is_empty());
     assert!(app.status.error_popup.is_none());
 }
@@ -2425,7 +2425,7 @@ fn handle_key_error_popup_dismisses_first() {
 fn confirm_quit_without_split_emits_no_extra_commands() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmQuit;
-    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('y'))));
 
     assert!(app.should_quit);
     assert!(cmds.is_empty(), "no commands when split is not active");
@@ -2514,7 +2514,7 @@ fn submit_base_branch_transitions_to_wrap_up_mode() {
     });
     app.input.set_buffer("main".to_string());
 
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
 
     assert_eq!(
         app.input.mode,

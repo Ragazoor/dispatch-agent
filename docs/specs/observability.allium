@@ -1,11 +1,15 @@
 -- allium: 3
 -- observability.allium
 --
--- Scope: Observability — per-task audit log of MCP tool calls, slow-DB-call
---        latency warnings, and the decode-failure policy for rows read back
---        from the database.
+-- Scope: Observability — per-task audit log of MCP tool calls, feature-usage
+--        recording for TUI keybindings, slow-DB-call latency warnings, and the
+--        decode-failure policy for rows read back from the database.
 -- Includes: TrajectoryEntry value type, append-on-each-MCP-call rule,
 --           fire-and-forget error handling;
+--           FeatureUsageEvent value type and the rules deciding when a
+--           keypress is recorded (every keypress that takes effect, once),
+--           when it is not (a keypress that changes nothing), and how the
+--           event log stays bounded (oldest-first eviction at a row cap);
 --           SlowDbCallWarning value type and the DbCallSlowWarning rule that
 --           emits a warn-level log line when a DB call exceeds the configured
 --           latency threshold, on either dispatch path (the single writer
@@ -17,6 +21,10 @@
 -- Excludes: tmux pane capture, Claude lifecycle hooks (PreToolUse, Stop —
 --           see agent-health.allium), dispatch-internal commands, reader UIs,
 --           replay tooling.
+--           Reading recorded usage back out belongs to mcp-task-tools.allium
+--           (QueryUsageViaMcp); the keybinding-to-action mapping itself
+--           belongs to the spec owning each surface (core, tasks, epics,
+--           split-pane, todo, …), not here.
 --           Slow-db-call warnings reach a durable log file in two processes:
 --           the TUI and the `hook` one-shot subcommand -- both initialise a
 --           tracing subscriber writing to the same <data_dir>/app.log. The
@@ -84,6 +92,31 @@ value DecodeFallbackWarning {
                           -- readers compare deltas rather than absolutes
 }
 
+-- One recorded use of a countable feature. Unlike the two warning values
+-- above this one is persisted, and unlike TrajectoryEntry it is aggregated
+-- rather than read back individually: the only consumer counts and dates
+-- them per (category, action, detail, actor) group. It has no identity — two
+-- uses of the same key are two indistinguishable events, and that is the
+-- point.
+value FeatureUsageEvent {
+    category: UsageCategory
+    action:   String          -- what the use did, e.g. "navigate_row",
+                              -- named after the effect rather than the key,
+                              -- so a rebound key keeps its history
+    detail:   String?         -- the key as typed, e.g. "j", " ", "Enter",
+                              -- distinguishing which binding drove a shared
+                              -- action
+    actor:    UsageActor
+}
+
+------------------------------------------------------------
+-- Enumerations
+------------------------------------------------------------
+
+enum UsageCategory { keybinding | mcp_tool }
+
+enum UsageActor { human | agent }
+
 ------------------------------------------------------------
 -- Config
 ------------------------------------------------------------
@@ -92,6 +125,12 @@ config {
     trajectory_schema_version: String = "1.0.0"
     -- Subdirectory name within the dispatch data dir that holds trajectory files.
     trajectory_subdir: String = "trajectories"
+    -- Maximum number of feature-usage events retained. Recording an event
+    -- when the log is already at the cap evicts the oldest events, so the log
+    -- is a bounded sliding window rather than an ever-growing table. 100_000
+    -- is several months of recording at observed rates, which is the horizon
+    -- pruning decisions are taken over.
+    usage_event_row_cap: Integer = 100_000
     -- A DB call whose measured wall-clock elapsed time exceeds this many
     -- milliseconds is considered abnormally slow and triggers a warn log.
     -- The same threshold applies on both dispatch paths (writer and read pool).
@@ -184,6 +223,96 @@ rule TrajectoryWriteFailureIsSilent {
         -- and the caller is still not told.
         -- TrajectoryWriteWarning is observable via the standard tracing
         -- subscriber; it has no entity representation in this spec.
+}
+
+-- == Feature usage recording ==
+
+rule KeypressRecordsFeatureUsage {
+    -- Every keypress the TUI acts on records exactly one keybinding usage
+    -- event, naming the effect it had and the key that produced it. This is
+    -- the evidence base for deciding which bindings earn their place, so the
+    -- obligation is on the surface, not on a chosen subset of it: board
+    -- navigation, the task-detail and TODO overlays, the archive column,
+    -- every confirmation dialog and every picker all record, exactly as the
+    -- action keys do.
+    when: KeypressHandled(action, key, took_effect)
+
+    -- A keypress that changes nothing records nothing. Counting inert
+    -- keypresses would report a binding as used precisely when it is failing
+    -- to do anything, which inverts the signal this data exists to give:
+    -- pressing `e` with no card selected, `U` on an unlinked todo, or a key
+    -- that no arm claims at all leaves no trace.
+    requires: took_effect
+
+    -- Characters typed into a text field are data entry, not use of a
+    -- binding: recording them would drown every real action in keystroke
+    -- noise and answer a question nobody is asking. A text mode is recorded
+    -- once, when it is committed or abandoned.
+    requires: not is_text_entry(key)
+
+    ensures: FeatureUsageRecorded(
+        event: FeatureUsageEvent {
+            category: keybinding,
+            action: action,
+            detail: key,
+            actor: human
+        }
+    )
+
+    @guidance
+        -- One press, one event: a key whose handler fans out into several
+        -- commands still records once, and the count therefore reads as
+        -- "times pressed", not "work done".
+        -- action names the effect, not the key: two bindings for the same
+        -- effect share an action and are told apart by detail, and rebinding
+        -- a key preserves the action's history across the rename. That is
+        -- also why the count for an action retired and later reused under the
+        -- same name needs a `since` window to read correctly.
+        -- "Took effect" is judged by whether the handler produced any command
+        -- or state change, not by whether the user could see it: a key that
+        -- opens a dialog, moves a cursor, or dispatches an agent all count
+        -- equally. In the implementation this is the dispatch_keyed /
+        -- dispatch_handler_keyed pair in src/tui/input.rs — the latter only
+        -- records when the sub-handler returned a non-empty command list,
+        -- which is what keeps inert presses silent.
+        -- is_text_entry covers the printable characters, backspace and caret
+        -- motions of a text field, in every mode that has one — the task and
+        -- epic title/description fields, the repo-path, base-branch,
+        -- main-session-dir, todo and preset-name fields, the board search
+        -- query and the quick-dispatch filter. Their surrounding actions are
+        -- still recorded: the key that opened the field, the cursor moves in
+        -- a field that also drives a candidate list, and the submit or cancel
+        -- that closes it.
+        -- Recording is best-effort and off the critical path: the event is
+        -- written asynchronously and a failed write is neither retried nor
+        -- reported. A dropped event costs one count; blocking the key
+        -- handler on the database would cost the user their keystroke.
+        -- Agent-driven MCP tool calls record into the same log under the
+        -- mcp_tool category, so the two are queried together but never
+        -- conflated: category and actor both separate them.
+}
+
+rule FeatureUsageLogStaysBounded {
+    -- Recording is unconditional and uncapped at the call site, so the log
+    -- itself has to be the thing that stays bounded: retaining the most
+    -- recent config.usage_event_row_cap events and dropping older ones keeps
+    -- an always-on counter from growing without limit. Eviction is by age,
+    -- not by category, so no feature's history is protected from a noisier
+    -- one — a burst of navigation shortens the window for everything.
+    when: FeatureUsageRecorded(event)
+
+    ensures: OldestFeatureUsageEventsEvicted(
+        retained: config.usage_event_row_cap
+    )
+
+    @guidance
+        -- Enforced on every insert rather than by a periodic sweep, so the
+        -- bound holds continuously and no separate maintenance path can be
+        -- forgotten or fail. Below the cap the eviction is a no-op.
+        -- The consequence worth stating: counts are only complete within the
+        -- retained window. A total read from this log is a lower bound on
+        -- all-time use, which is why pruning decisions window by date rather
+        -- than trusting an all-time total.
 }
 
 -- == Slow DB call latency warning ==

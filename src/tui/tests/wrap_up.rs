@@ -25,7 +25,7 @@ fn confirm_done_n_cancels() {
     app.selection_mut().set_column(3);
 
     app.prompt_move_to_done(vec![TaskId(1)]);
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert_eq!(app.input.mode, InputMode::Normal);
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
     assert_eq!(task.status, TaskStatus::Review);
@@ -165,7 +165,7 @@ fn handle_key_confirm_done_routes_correctly() {
     let mut app = make_app();
     app.prompt_move_to_done(vec![TaskId(1)]);
     // 'n' cancels
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }

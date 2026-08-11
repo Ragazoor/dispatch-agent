@@ -103,7 +103,7 @@ fn enter_in_main_session_dir_mode_emits_submit_message() {
 fn enter_with_empty_buffer_cancels_main_session_dir() {
     let mut app = make_app();
     app.input.mode = InputMode::MainSessionDir;
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
     assert!(cmds.is_empty());
     assert_eq!(app.mode(), &InputMode::Normal);
 }
@@ -113,7 +113,7 @@ fn esc_in_main_session_dir_mode_returns_to_normal() {
     let mut app = make_app();
     app.input.mode = InputMode::MainSessionDir;
     app.input.set_buffer("/some/path".to_string());
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert!(cmds.is_empty());
     assert_eq!(app.mode(), &InputMode::Normal);
     assert_eq!(app.input_buffer(), "");

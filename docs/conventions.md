@@ -301,6 +301,20 @@ Key handlers in `src/tui/input.rs` follow two different patterns:
 
 The rule: if you're only changing what the screen looks like without touching external state, mutate inline. If the change needs to outlast the current render cycle or involve I/O, return a `Command`.
 
+## Keybinding telemetry — every arm records, no-ops stay silent
+
+Every key arm the TUI acts on records one keybinding usage event, and an arm that changes nothing records none (`KeypressRecordsFeatureUsage` in `docs/specs/observability.allium`). This is the data the periodic keybinding-pruning passes read, so the *absence* of a count has to mean "unused", not "someone forgot the push".
+
+Adding a key arm therefore means adding its record. Use the helpers rather than hand-pushing:
+
+- `App::dispatch_keyed(msg, action, key)` — the arm dispatches a `Message` and always takes effect.
+- `App::dispatch_handler_keyed(handler, action, key)` — the arm delegates to a `handle_key_*` sub-handler that may no-op; it records only when the handler returned commands.
+- A bare `key_event(action, key)` pushed onto the returned vec — for an arm that mutates inline (see the inline-mutation boundary above) and so has no `Message` to dispatch. Guard it behind the same condition the mutation is guarded by.
+
+Conventions for the two fields: `action` names the *effect* (`navigate_row`, `close_detail`), never the key, so a rebinding keeps the history and two bindings for one effect aggregate together; `detail` is the key as typed, from `key_label` (`"j"`, `"Down"`, `"Esc"`, `" "`). Confirmation dialogs record both outcomes as an `<action>_yes` / `<action>_no` pair — a prompt that is nearly always declined is one worth deleting, and only the pair shows that. Text entry is not instrumented per character: only the commit and cancel of a text mode are recorded.
+
+Because the record is one more `Command` in the returned vec, a test that asserts an exact command list must wrap the call in `without_usage(...)` (`src/tui/tests/helpers.rs`). Per-arm assertions live in `src/tui/tests/usage.rs`.
+
 ## Intentional `let _ =`
 
 `let _ = expr` silences the `#[must_use]` warning on a result or value. The one sanctioned pattern is:

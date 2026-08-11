@@ -16,6 +16,43 @@ fn key_event(action: &str, key: &str) -> Command {
     })
 }
 
+/// The `detail` of a keybinding usage event: the key as the user typed it.
+/// Two bindings for one action share an `action` and are told apart by this,
+/// so `j` and `Down` stay separable in the recorded data (see
+/// `KeypressRecordsFeatureUsage` in `docs/specs/observability.allium`).
+fn key_label(key: KeyEvent) -> String {
+    match key.code {
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Enter => "Enter".to_string(),
+        KeyCode::Esc => "Esc".to_string(),
+        KeyCode::Tab => "Tab".to_string(),
+        KeyCode::BackTab => "BackTab".to_string(),
+        KeyCode::Backspace => "Backspace".to_string(),
+        KeyCode::Delete => "Delete".to_string(),
+        KeyCode::Up => "Up".to_string(),
+        KeyCode::Down => "Down".to_string(),
+        KeyCode::Left => "Left".to_string(),
+        KeyCode::Right => "Right".to_string(),
+        KeyCode::Home => "Home".to_string(),
+        KeyCode::End => "End".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// The tree movement a key requests in either tree picker (reparent-epic,
+/// move-task-to-epic), or `None` for a key that is not a movement. Both
+/// pickers navigate identically; only the message they wrap it in differs.
+fn tree_nav_for(key: KeyEvent) -> Option<crate::tui::types::TreeNav> {
+    use crate::tui::types::TreeNav;
+    match key.code {
+        KeyCode::Char('j') | KeyCode::Down => Some(TreeNav::Down),
+        KeyCode::Char('k') | KeyCode::Up => Some(TreeNav::Up),
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Char(' ') => Some(TreeNav::Right),
+        KeyCode::Char('h') | KeyCode::Left => Some(TreeNav::Left),
+        _ => None,
+    }
+}
+
 /// Map a key event to the caret-navigation / forward-delete message shared by
 /// every single-line text field (title, todo, epic, base branch, repo-path
 /// query, preset name, quick-dispatch query). Returns `None` for keys that are
@@ -43,6 +80,40 @@ fn text_edit_message(key: KeyEvent) -> Option<crate::tui::messages::InputMessage
 }
 
 impl App {
+    /// Dispatch `msg` through [`Self::update`], then record the keybinding usage
+    /// event. Collapses the update-then-`key_event`-push pattern shared by the
+    /// message-dispatch arms of every key handler into a single call, so those
+    /// arms can't silently forget the telemetry push. Arms that delegate to a
+    /// `handle_key_*` sub-handler use [`Self::dispatch_handler_keyed`] instead.
+    pub(in crate::tui) fn dispatch_keyed(
+        &mut self,
+        msg: Message,
+        action: &str,
+        key: &str,
+    ) -> Vec<Command> {
+        let mut cmds = self.update(msg);
+        cmds.push(key_event(action, key));
+        cmds
+    }
+
+    /// Run a `handle_key_*` sub-handler, then record the keybinding usage event
+    /// only if the handler produced commands. Collapses the run-then-conditional-
+    /// `key_event`-push pattern shared by the sub-handler arms (where a no-op
+    /// handler must not emit telemetry), mirroring [`Self::dispatch_keyed`] for
+    /// that cluster.
+    pub(in crate::tui) fn dispatch_handler_keyed(
+        &mut self,
+        handler: impl FnOnce(&mut Self) -> Vec<Command>,
+        action: &str,
+        key: &str,
+    ) -> Vec<Command> {
+        let mut cmds = handler(self);
+        if !cmds.is_empty() {
+            cmds.push(key_event(action, key));
+        }
+        cmds
+    }
+
     /// Translate a terminal key event into zero or more commands, depending on current mode.
     ///
     /// Always sets `self.dirty = true` after handling a key. An earlier revision tried to
@@ -57,9 +128,13 @@ impl App {
         // without a 'c' keypress. Remove once root-caused.
         tracing::debug!(code = ?key.code, modifiers = ?key.modifiers, mode = ?self.input.mode, "handle_key");
         let cmds = if self.status.error_popup.is_some() {
-            self.update(Message::System(
-                crate::tui::messages::SystemMessage::DismissError,
-            ))
+            // Any key dismisses the popup, so the key that did it is the
+            // interesting part of the record, not the action.
+            self.dispatch_keyed(
+                Message::System(crate::tui::messages::SystemMessage::DismissError),
+                "dismiss_error",
+                &key_label(key),
+            )
         } else {
             match self.input.mode.clone() {
                 InputMode::Normal => self.handle_key_normal(key),
@@ -115,11 +190,14 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_key_task_detail(&mut self, key: KeyEvent) -> Vec<Command> {
+        let label = key_label(key);
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc | KeyCode::Enter => {
-                return self.update(Message::Task(
-                    crate::tui::messages::TaskMessage::CloseDetail,
-                ));
+                return self.dispatch_keyed(
+                    Message::Task(crate::tui::messages::TaskMessage::CloseDetail),
+                    "close_detail",
+                    &label,
+                );
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if let ViewMode::TaskDetail {
@@ -128,16 +206,19 @@ impl App {
                 {
                     *scroll = scroll.saturating_add(1).min(*max_scroll);
                 }
+                return vec![key_event("scroll_detail", &label)];
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let ViewMode::TaskDetail { scroll, .. } = &mut self.board.view_mode {
                     *scroll = scroll.saturating_sub(1);
                 }
+                return vec![key_event("scroll_detail", &label)];
             }
             KeyCode::Char('z') => {
                 if let ViewMode::TaskDetail { zoomed, .. } = &mut self.board.view_mode {
                     *zoomed = !*zoomed;
                 }
+                return vec![key_event("zoom_detail", &label)];
             }
             _ => {}
         }
@@ -146,35 +227,42 @@ impl App {
 
     /// Handle keys when the Archive column is focused.
     pub(in crate::tui) fn handle_key_archive(&mut self, key: KeyEvent) -> Vec<Command> {
+        let label = key_label(key);
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 let count = self.archived_tasks().len();
-                if count > 0 {
-                    let archive_col = TaskStatus::COLUMN_COUNT + 1;
-                    let next = (self.selection().row(archive_col) + 1).min(count - 1);
-                    self.selection_mut().set_row(archive_col, next);
-                    *self.archive.list_state.selected_mut() = Some(next);
+                // An empty archive has no row to move to — nothing happened.
+                if count == 0 {
+                    return vec![];
                 }
-                vec![]
+                let archive_col = TaskStatus::COLUMN_COUNT + 1;
+                let next = (self.selection().row(archive_col) + 1).min(count - 1);
+                self.selection_mut().set_row(archive_col, next);
+                *self.archive.list_state.selected_mut() = Some(next);
+                vec![key_event("archive_navigate_row", &label)]
             }
             KeyCode::Char('k') | KeyCode::Up => {
+                if self.archived_tasks().is_empty() {
+                    return vec![];
+                }
                 let archive_col = TaskStatus::COLUMN_COUNT + 1;
                 let prev = self.selection().row(archive_col).saturating_sub(1);
                 self.selection_mut().set_row(archive_col, prev);
                 *self.archive.list_state.selected_mut() = Some(prev);
-                vec![]
+                vec![key_event("archive_navigate_row", &label)]
             }
             KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => {
-                self.update(Message::NavigateColumn(-1))
+                self.dispatch_keyed(Message::NavigateColumn(-1), "leave_archive", &label)
             }
             KeyCode::Char('x') => {
                 let archived = self.archived_tasks();
-                if let Some(task) = archived.get(self.selected_archive_row()) {
-                    let title = super::truncate_title(&task.title, 30);
-                    self.input.mode = InputMode::ConfirmDelete;
-                    self.set_status(format!("Delete {title}? [y/n]"));
-                }
-                vec![]
+                let Some(task) = archived.get(self.selected_archive_row()) else {
+                    return vec![];
+                };
+                let title = super::truncate_title(&task.title, 30);
+                self.input.mode = InputMode::ConfirmDelete;
+                self.set_status(format!("Delete {title}? [y/n]"));
+                vec![key_event("delete_archived", &label)]
             }
             KeyCode::Char('e') => {
                 let archived = self.archived_tasks();
@@ -182,20 +270,31 @@ impl App {
                     .get(self.selected_archive_row())
                     .map(|t| (*t).clone())
                 {
-                    vec![Command::Editor(
-                        crate::tui::commands::EditorCommand::PopOut(
+                    vec![
+                        Command::Editor(crate::tui::commands::EditorCommand::PopOut(
                             crate::tui::types::EditKind::TaskEdit(task),
-                        ),
-                    )]
+                        )),
+                        key_event("edit_archived", &label),
+                    ]
                 } else {
                     vec![]
                 }
             }
-            KeyCode::Char('q') => {
-                self.update(Message::System(crate::tui::messages::SystemMessage::Quit))
-            }
-            KeyCode::Char('[') => self.update(Message::NavigateRowFirst),
-            KeyCode::Char(']') => self.update(Message::NavigateRowLast),
+            KeyCode::Char('q') => self.dispatch_keyed(
+                Message::System(crate::tui::messages::SystemMessage::Quit),
+                "quit",
+                &label,
+            ),
+            KeyCode::Char('[') => self.dispatch_keyed(
+                Message::NavigateRowFirst,
+                "archive_navigate_row_first",
+                &label,
+            ),
+            KeyCode::Char(']') => self.dispatch_keyed(
+                Message::NavigateRowLast,
+                "archive_navigate_row_last",
+                &label,
+            ),
             _ => vec![],
         }
     }
@@ -292,11 +391,16 @@ impl App {
                                 .find_task(id)
                                 .is_some_and(|t| self.dispatch_may_be_in_flight(t, now))
                         {
-                            self.update(Message::System(
-                                crate::tui::messages::SystemMessage::StatusInfo(
+                            // Space did something — it answered — even though
+                            // the answer is "not yet". Counting it keeps the
+                            // key's total honest about how often it is pressed.
+                            self.dispatch_keyed(
+                                Message::System(crate::tui::messages::SystemMessage::StatusInfo(
                                     "Dispatch in progress\u{2026}".to_string(),
-                                ),
-                            ))
+                                )),
+                                "activate_unavailable",
+                                " ",
+                            )
                         } else if has_worktree {
                             let mut cmds = self.update(Message::Task(
                                 crate::tui::messages::TaskMessage::Resume(id),
@@ -304,24 +408,32 @@ impl App {
                             cmds.push(key_event("resume_task", " "));
                             cmds
                         } else {
-                            self.update(Message::System(
-                                crate::tui::messages::SystemMessage::StatusInfo(
+                            self.dispatch_keyed(
+                                Message::System(crate::tui::messages::SystemMessage::StatusInfo(
                                     "No worktree to resume, move to Backlog and re-dispatch"
                                         .to_string(),
-                                ),
-                            ))
+                                )),
+                                "activate_unavailable",
+                                " ",
+                            )
                         }
                     }
-                    TaskStatus::Archived => self.update(Message::System(
-                        crate::tui::messages::SystemMessage::StatusInfo(
+                    TaskStatus::Archived => self.dispatch_keyed(
+                        Message::System(crate::tui::messages::SystemMessage::StatusInfo(
                             "Task is archived".to_string(),
-                        ),
-                    )),
+                        )),
+                        "activate_unavailable",
+                        " ",
+                    ),
                 }
             }
             Some(ColumnItem::Epic(epic)) => {
                 let id = epic.id;
-                self.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(id)))
+                self.dispatch_keyed(
+                    Message::Epic(crate::tui::messages::EpicMessage::Enter(id)),
+                    "enter_epic",
+                    " ",
+                )
             }
             Some(
                 ColumnItem::EpicHeader(_)
@@ -330,7 +442,11 @@ impl App {
             ) => vec![],
             None => {
                 if let Some(id) = self.selected_epic_id() {
-                    self.update(Message::Epic(crate::tui::messages::EpicMessage::Enter(id)))
+                    self.dispatch_keyed(
+                        Message::Epic(crate::tui::messages::EpicMessage::Enter(id)),
+                        "enter_epic",
+                        " ",
+                    )
                 } else {
                     vec![]
                 }
@@ -372,14 +488,20 @@ impl App {
         if is_picker_mode {
             match key.code {
                 KeyCode::Down => {
-                    return self.update(Message::RepoFilter(
-                        crate::tui::messages::RepoFilterMessage::MoveCursor(1),
-                    ))
+                    return self.dispatch_keyed(
+                        Message::RepoFilter(crate::tui::messages::RepoFilterMessage::MoveCursor(1)),
+                        "picker_move_cursor",
+                        "Down",
+                    )
                 }
                 KeyCode::Up => {
-                    return self.update(Message::RepoFilter(
-                        crate::tui::messages::RepoFilterMessage::MoveCursor(-1),
-                    ))
+                    return self.dispatch_keyed(
+                        Message::RepoFilter(crate::tui::messages::RepoFilterMessage::MoveCursor(
+                            -1,
+                        )),
+                        "picker_move_cursor",
+                        "Up",
+                    )
                 }
                 _ => {}
             }
@@ -389,68 +511,17 @@ impl App {
             return self.update(Message::Input(msg));
         }
         match key.code {
-            KeyCode::Esc => self.update(Message::Input(
-                crate::tui::messages::InputMessage::CancelInput,
-            )),
+            KeyCode::Esc => self.dispatch_keyed(
+                Message::Input(crate::tui::messages::InputMessage::CancelInput),
+                "cancel_input",
+                "Esc",
+            ),
+            // Typing is data entry, not a keybinding use: only the commit and
+            // the cancel of a text mode are recorded.
             KeyCode::Enter => {
-                // In picker modes, Enter selects the item at the cursor position in
-                // the effective list (filtered candidates + optional new entry at
-                // the end) — see docs/specs/dispatch.allium: RepoPathPicker,
-                // BaseBranchPicker.
-                if let Some(candidates) = self.picker_candidates() {
-                    let selected = super::resolve_picker_selection(
-                        candidates,
-                        &self.input.buffer,
-                        self.input.repo_cursor,
-                    );
-                    if let Some(value) = selected {
-                        let msg = match self.input.mode {
-                            InputMode::InputBaseBranch => Message::Input(
-                                crate::tui::messages::InputMessage::SubmitBaseBranch(value),
-                            ),
-                            InputMode::MainSessionDir => Message::MainSession(
-                                crate::tui::messages::MainSessionMessage::SubmitDir(value),
-                            ),
-                            _ => Message::Input(
-                                crate::tui::messages::InputMessage::SubmitRepoPath(value),
-                            ),
-                        };
-                        return self.update(msg);
-                    }
-                    // effective is empty — fall through to submit the empty buffer and
-                    // let the mode-specific submit handler apply its fallback/error.
-                }
-                let value = self.input.buffer.trim().to_string();
-                match self.input.mode.clone() {
-                    InputMode::InputTitle => self.update(Message::Input(
-                        crate::tui::messages::InputMessage::SubmitTitle(value),
-                    )),
-                    InputMode::InputDescription => self.update(Message::Input(
-                        crate::tui::messages::InputMessage::SubmitDescription(value),
-                    )),
-                    InputMode::InputRepoPath => self.update(Message::Input(
-                        crate::tui::messages::InputMessage::SubmitRepoPath(value),
-                    )),
-                    InputMode::InputEpicTitle => self.update(Message::Epic(
-                        crate::tui::messages::EpicMessage::SubmitTitle(value),
-                    )),
-                    InputMode::InputEpicDescription => self.update(Message::Epic(
-                        crate::tui::messages::EpicMessage::SubmitDescription(value),
-                    )),
-                    InputMode::InputBaseBranch => self.update(Message::Input(
-                        crate::tui::messages::InputMessage::SubmitBaseBranch(value),
-                    )),
-                    InputMode::MainSessionDir => self.update(Message::MainSession(
-                        crate::tui::messages::MainSessionMessage::SubmitDir(value),
-                    )),
-                    InputMode::TodoTitle => self.update(Message::Todo(
-                        crate::tui::messages::TodoMessage::SubmitTitle(value),
-                    )),
-                    InputMode::TodoQuickAdd => self.update(Message::Todo(
-                        crate::tui::messages::TodoMessage::SubmitQuickAdd(value),
-                    )),
-                    _ => vec![],
-                }
+                let mut cmds = self.submit_text_input();
+                cmds.push(key_event("submit_input", "Enter"));
+                cmds
             }
             KeyCode::Backspace => self.update(Message::Input(
                 crate::tui::messages::InputMessage::InputBackspace,
@@ -462,24 +533,88 @@ impl App {
         }
     }
 
+    /// `Enter` in a text-entry mode: submit the picker selection when the mode
+    /// has one, otherwise the trimmed buffer, routed by mode.
+    fn submit_text_input(&mut self) -> Vec<Command> {
+        // In picker modes, Enter selects the item at the cursor position in
+        // the effective list (filtered candidates + optional new entry at
+        // the end) — see docs/specs/dispatch.allium: RepoPathPicker,
+        // BaseBranchPicker.
+        if let Some(candidates) = self.picker_candidates() {
+            let selected = super::resolve_picker_selection(
+                candidates,
+                &self.input.buffer,
+                self.input.repo_cursor,
+            );
+            if let Some(value) = selected {
+                let msg = match self.input.mode {
+                    InputMode::InputBaseBranch => {
+                        Message::Input(crate::tui::messages::InputMessage::SubmitBaseBranch(value))
+                    }
+                    InputMode::MainSessionDir => Message::MainSession(
+                        crate::tui::messages::MainSessionMessage::SubmitDir(value),
+                    ),
+                    _ => Message::Input(crate::tui::messages::InputMessage::SubmitRepoPath(value)),
+                };
+                return self.update(msg);
+            }
+            // effective is empty — fall through to submit the empty buffer and
+            // let the mode-specific submit handler apply its fallback/error.
+        }
+        let value = self.input.buffer.trim().to_string();
+        match self.input.mode.clone() {
+            InputMode::InputTitle => self.update(Message::Input(
+                crate::tui::messages::InputMessage::SubmitTitle(value),
+            )),
+            InputMode::InputDescription => self.update(Message::Input(
+                crate::tui::messages::InputMessage::SubmitDescription(value),
+            )),
+            InputMode::InputRepoPath => self.update(Message::Input(
+                crate::tui::messages::InputMessage::SubmitRepoPath(value),
+            )),
+            InputMode::InputEpicTitle => self.update(Message::Epic(
+                crate::tui::messages::EpicMessage::SubmitTitle(value),
+            )),
+            InputMode::InputEpicDescription => self.update(Message::Epic(
+                crate::tui::messages::EpicMessage::SubmitDescription(value),
+            )),
+            InputMode::InputBaseBranch => self.update(Message::Input(
+                crate::tui::messages::InputMessage::SubmitBaseBranch(value),
+            )),
+            InputMode::MainSessionDir => self.update(Message::MainSession(
+                crate::tui::messages::MainSessionMessage::SubmitDir(value),
+            )),
+            InputMode::TodoTitle => self.update(Message::Todo(
+                crate::tui::messages::TodoMessage::SubmitTitle(value),
+            )),
+            InputMode::TodoQuickAdd => self.update(Message::Todo(
+                crate::tui::messages::TodoMessage::SubmitQuickAdd(value),
+            )),
+            _ => vec![],
+        }
+    }
+
     /// Shared key handling for single-character option pickers (tag,
     /// wrap-up mode, …): a printable char may select an option, `Enter`
     /// confirms the default, `Esc` cancels, anything else is a no-op.
     /// `select` maps the typed char to a message, or `None` to ignore it.
+    /// Usage is recorded as `<action>_select` / `_default` / `_cancel`; a char
+    /// the picker does not recognise records nothing.
     fn handle_char_picker(
         &mut self,
         key: KeyEvent,
+        action: &str,
         select: impl FnOnce(char) -> Option<Message>,
         on_enter: Message,
         on_cancel: Message,
     ) -> Vec<Command> {
         match key.code {
             KeyCode::Char(c) => match select(c) {
-                Some(msg) => self.update(msg),
+                Some(msg) => self.dispatch_keyed(msg, &format!("{action}_select"), &c.to_string()),
                 None => vec![],
             },
-            KeyCode::Enter => self.update(on_enter),
-            KeyCode::Esc => self.update(on_cancel),
+            KeyCode::Enter => self.dispatch_keyed(on_enter, &format!("{action}_default"), "Enter"),
+            KeyCode::Esc => self.dispatch_keyed(on_cancel, &format!("{action}_cancel"), "Esc"),
             _ => vec![],
         }
     }
@@ -488,6 +623,7 @@ impl App {
         use crate::tui::messages::InputMessage;
         self.handle_char_picker(
             key,
+            "tag_picker",
             |c| {
                 let tag = match c {
                     'b' => TaskTag::Bug,
@@ -510,6 +646,7 @@ impl App {
         use crate::tui::messages::InputMessage;
         self.handle_char_picker(
             key,
+            "wrap_up_mode_picker",
             |c| {
                 let mode = match c {
                     'r' => WrapUpMode::Rebase,
@@ -530,20 +667,30 @@ impl App {
     /// entry. No printable character is a navigation or select shortcut.
     pub(in crate::tui) fn handle_key_quick_dispatch(&mut self, key: KeyEvent) -> Vec<Command> {
         match key.code {
-            KeyCode::Esc => self.update(Message::Input(
-                crate::tui::messages::InputMessage::CancelInput,
-            )),
-            KeyCode::Down => self.update(Message::RepoFilter(
-                crate::tui::messages::RepoFilterMessage::MoveCursor(1),
-            )),
-            KeyCode::Up => self.update(Message::RepoFilter(
-                crate::tui::messages::RepoFilterMessage::MoveCursor(-1),
-            )),
+            KeyCode::Esc => self.dispatch_keyed(
+                Message::Input(crate::tui::messages::InputMessage::CancelInput),
+                "quick_dispatch_cancel",
+                "Esc",
+            ),
+            KeyCode::Down => self.dispatch_keyed(
+                Message::RepoFilter(crate::tui::messages::RepoFilterMessage::MoveCursor(1)),
+                "quick_dispatch_move_cursor",
+                "Down",
+            ),
+            KeyCode::Up => self.dispatch_keyed(
+                Message::RepoFilter(crate::tui::messages::RepoFilterMessage::MoveCursor(-1)),
+                "quick_dispatch_move_cursor",
+                "Up",
+            ),
             KeyCode::Enter => {
                 let idx = self.input.repo_cursor;
-                self.update(Message::Input(
-                    crate::tui::messages::InputMessage::SelectQuickDispatchRepo(idx),
-                ))
+                self.dispatch_keyed(
+                    Message::Input(crate::tui::messages::InputMessage::SelectQuickDispatchRepo(
+                        idx,
+                    )),
+                    "quick_dispatch_select",
+                    "Enter",
+                )
             }
             // Backspace/Char delegate to the shared edit handlers, which edit at
             // the caret and reset repo_cursor for QuickDispatch (a repo-picker
@@ -565,9 +712,11 @@ impl App {
 
     pub(in crate::tui) fn handle_key_help(&mut self, key: KeyEvent) -> Vec<Command> {
         match key.code {
-            KeyCode::Char('?') | KeyCode::Esc => self.update(Message::System(
-                crate::tui::messages::SystemMessage::ToggleHelp,
-            )),
+            KeyCode::Char('?') | KeyCode::Esc => self.dispatch_keyed(
+                Message::System(crate::tui::messages::SystemMessage::ToggleHelp),
+                "close_help",
+                &key_label(key),
+            ),
             _ => vec![],
         }
     }
@@ -616,83 +765,97 @@ impl App {
     }
 
     fn handle_key_reparent_epic(&mut self, key: KeyEvent) -> Vec<Command> {
-        use crate::tui::types::TreeNav;
+        use crate::tui::messages::EpicMessage::ReparentNavigate;
+        let label = key_label(key);
+        if let Some(nav) = tree_nav_for(key) {
+            return self.dispatch_keyed(
+                Message::Epic(ReparentNavigate(nav)),
+                "reparent_picker_navigate",
+                &label,
+            );
+        }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentNavigate(TreeNav::Down),
-            )),
-            KeyCode::Char('k') | KeyCode::Up => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentNavigate(TreeNav::Up),
-            )),
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Char(' ') => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentNavigate(TreeNav::Right),
-            )),
-            KeyCode::Char('h') | KeyCode::Left => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentNavigate(TreeNav::Left),
-            )),
-            KeyCode::Enter => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentConfirm,
-            )),
-            KeyCode::Esc | KeyCode::Char('q') => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentCancel,
-            )),
+            KeyCode::Enter => self.dispatch_keyed(
+                Message::Epic(crate::tui::messages::EpicMessage::ReparentConfirm),
+                "reparent_picker_confirm",
+                &label,
+            ),
+            KeyCode::Esc | KeyCode::Char('q') => self.dispatch_keyed(
+                Message::Epic(crate::tui::messages::EpicMessage::ReparentCancel),
+                "reparent_picker_cancel",
+                &label,
+            ),
             _ => vec![],
         }
     }
 
     fn handle_key_confirm_reparent_epic(&mut self, key: KeyEvent) -> Vec<Command> {
+        let label = key_label(key);
         match key.code {
-            KeyCode::Char('y') => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentExecute,
-            )),
-            KeyCode::Char('n') => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentCancel,
-            )),
+            KeyCode::Char('y') => self.dispatch_keyed(
+                Message::Epic(crate::tui::messages::EpicMessage::ReparentExecute),
+                "confirm_reparent_epic_yes",
+                &label,
+            ),
+            KeyCode::Char('n') => self.dispatch_keyed(
+                Message::Epic(crate::tui::messages::EpicMessage::ReparentCancel),
+                "confirm_reparent_epic_no",
+                &label,
+            ),
             // Esc/q cancel entirely (not just back to picker)
-            KeyCode::Esc | KeyCode::Char('q') => self.update(Message::Epic(
-                crate::tui::messages::EpicMessage::ReparentCancelAll,
-            )),
+            KeyCode::Esc | KeyCode::Char('q') => self.dispatch_keyed(
+                Message::Epic(crate::tui::messages::EpicMessage::ReparentCancelAll),
+                "confirm_reparent_epic_cancel_all",
+                &label,
+            ),
             _ => vec![],
         }
     }
 
     fn handle_key_move_task_to_epic(&mut self, key: KeyEvent) -> Vec<Command> {
-        use crate::tui::types::TreeNav;
+        use crate::tui::messages::TaskMessage::MoveToEpicNavigate;
+        let label = key_label(key);
+        if let Some(nav) = tree_nav_for(key) {
+            return self.dispatch_keyed(
+                Message::Task(MoveToEpicNavigate(nav)),
+                "move_to_epic_picker_navigate",
+                &label,
+            );
+        }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicNavigate(TreeNav::Down),
-            )),
-            KeyCode::Char('k') | KeyCode::Up => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicNavigate(TreeNav::Up),
-            )),
-            KeyCode::Char('l') | KeyCode::Right | KeyCode::Char(' ') => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicNavigate(TreeNav::Right),
-            )),
-            KeyCode::Char('h') | KeyCode::Left => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicNavigate(TreeNav::Left),
-            )),
-            KeyCode::Enter => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicConfirm,
-            )),
-            KeyCode::Esc | KeyCode::Char('q') => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicCancel,
-            )),
+            KeyCode::Enter => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::MoveToEpicConfirm),
+                "move_to_epic_picker_confirm",
+                &label,
+            ),
+            KeyCode::Esc | KeyCode::Char('q') => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::MoveToEpicCancel),
+                "move_to_epic_picker_cancel",
+                &label,
+            ),
             _ => vec![],
         }
     }
 
     fn handle_key_confirm_move_task_to_epic(&mut self, key: KeyEvent) -> Vec<Command> {
+        let label = key_label(key);
         match key.code {
-            KeyCode::Char('y') => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicExecute,
-            )),
-            KeyCode::Char('n') => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicCancel,
-            )),
+            KeyCode::Char('y') => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::MoveToEpicExecute),
+                "confirm_move_task_to_epic_yes",
+                &label,
+            ),
+            KeyCode::Char('n') => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::MoveToEpicCancel),
+                "confirm_move_task_to_epic_no",
+                &label,
+            ),
             // Esc/q cancel entirely (not just back to picker)
-            KeyCode::Esc | KeyCode::Char('q') => self.update(Message::Task(
-                crate::tui::messages::TaskMessage::MoveToEpicCancelAll,
-            )),
+            KeyCode::Esc | KeyCode::Char('q') => self.dispatch_keyed(
+                Message::Task(crate::tui::messages::TaskMessage::MoveToEpicCancelAll),
+                "confirm_move_task_to_epic_cancel_all",
+                &label,
+            ),
             _ => vec![],
         }
     }
@@ -723,20 +886,31 @@ impl App {
                         },
                     }),
                     Command::Todo(TodoCommand::Load),
+                    key_event("link_todo_confirm", "Enter"),
                 ]
             }
             KeyCode::Esc => {
                 self.input.mode = InputMode::Normal;
                 self.clear_status();
-                vec![Command::Todo(crate::tui::commands::TodoCommand::Load)]
+                vec![
+                    Command::Todo(crate::tui::commands::TodoCommand::Load),
+                    key_event("link_todo_cancel", "Esc"),
+                ]
             }
-            KeyCode::Char('h') | KeyCode::Left => self.update(Message::NavigateColumn(-1)),
-            KeyCode::Char('l') | KeyCode::Right => self.update(Message::NavigateColumn(1)),
-            KeyCode::Char('j') | KeyCode::Down => self.update(Message::NavigateRow(1)),
-            KeyCode::Char('k') | KeyCode::Up => self.update(Message::NavigateRow(-1)),
-            KeyCode::Char('g') => self.update(Message::NavigateRowFirst),
-            KeyCode::Char('G') => self.update(Message::NavigateRowLast),
-            _ => vec![],
+            _ => {
+                // The picker borrows the board's own movement keys, so every
+                // one of them records under a single navigate action.
+                let msg = match key.code {
+                    KeyCode::Char('h') | KeyCode::Left => Message::NavigateColumn(-1),
+                    KeyCode::Char('l') | KeyCode::Right => Message::NavigateColumn(1),
+                    KeyCode::Char('j') | KeyCode::Down => Message::NavigateRow(1),
+                    KeyCode::Char('k') | KeyCode::Up => Message::NavigateRow(-1),
+                    KeyCode::Char('g') => Message::NavigateRowFirst,
+                    KeyCode::Char('G') => Message::NavigateRowLast,
+                    _ => return vec![],
+                };
+                self.dispatch_keyed(msg, "link_todo_navigate", &key_label(key))
+            }
         }
     }
 }

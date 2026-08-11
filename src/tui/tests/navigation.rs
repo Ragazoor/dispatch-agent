@@ -439,7 +439,7 @@ fn typing_appends_to_input_buffer() {
 fn any_key_clears_error_popup() {
     let mut app = App::new(vec![]);
     app.status.error_popup = Some("boom".to_string());
-    let cmds = app.handle_key(make_key(KeyCode::Char('a')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('a'))));
     assert!(app.status.error_popup.is_none());
     assert!(cmds.is_empty());
 }

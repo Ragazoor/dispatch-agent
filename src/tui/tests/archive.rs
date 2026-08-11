@@ -842,7 +842,7 @@ fn archive_epic_recursively_archives_sub_epics_and_their_tasks() {
 #[test]
 fn confirm_archive_epic_other_key_cancels() {
     let mut app = make_app_confirm_archive_epic();
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(app.status.message.is_none());
     assert_eq!(app.board.epics.len(), 1); // not removed
@@ -854,7 +854,7 @@ fn confirm_archive_epic_no_epic_selected_is_noop() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     app.selection_mut().set_column(1); // Backlog = nav col 1
     app.input.mode = InputMode::ConfirmArchiveEpic;
-    let cmds = app.handle_key(make_key(KeyCode::Char('y')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('y'))));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds.is_empty());
 }
@@ -895,7 +895,7 @@ fn archive_panel_esc_closes() {
 fn archive_panel_e_edits_task() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Archived)]);
     app.selection_mut().set_column(5);
-    let cmds = app.handle_key(make_key(KeyCode::Char('e')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('e'))));
     assert_eq!(cmds.len(), 1);
     assert!(
         matches!(&cmds[0], Command::Editor(crate::tui::commands::EditorCommand::PopOut(EditKind::TaskEdit(t))) if t.id == TaskId(1))
@@ -954,7 +954,7 @@ fn confirm_archive_esc_cancels() {
     app.selection_mut().set_column(0);
     app.input.mode = InputMode::ConfirmArchive(Some(TaskId(1)));
     app.status.message = Some("Archive task? [y/n]".to_string());
-    let cmds = app.handle_key(make_key(KeyCode::Esc));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Esc)));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(app.status.message.is_none());
     assert!(cmds.is_empty());
@@ -1297,7 +1297,7 @@ fn handle_key_confirm_archive_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmArchive(None);
     // 'n' cancels
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
@@ -1322,7 +1322,7 @@ fn archive_column_renders_task_cards_when_focused() {
 fn handle_key_confirm_archive_epic_routes_correctly() {
     let mut app = make_app();
     app.input.mode = InputMode::ConfirmArchiveEpic;
-    let cmds = app.handle_key(make_key(KeyCode::Char('n')));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('n'))));
     assert!(cmds.is_empty());
     assert_eq!(app.input.mode, InputMode::Normal);
 }
