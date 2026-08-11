@@ -47,20 +47,6 @@ fn snapshot_help_overlay() {
 }
 
 #[test]
-fn snapshot_managed_feed_config_popup() {
-    let mut app = make_app();
-    app.set_managed_feed_settings(crate::tui::ManagedFeedSettings {
-        reviews_command: Some("fetch-reviews.sh".to_string()),
-        reviews_interval_secs: Some(300),
-        cve_command: None,
-        cve_interval_secs: None,
-    });
-    app.handle_key(make_key(KeyCode::Char('C')));
-    let rendered = render_to_string(&mut app, 120, 40);
-    insta::assert_snapshot!(rendered);
-}
-
-#[test]
 fn snapshot_input_title_form() {
     use super::super::types::{InputMode, TaskDraft};
     let mut app = make_app();

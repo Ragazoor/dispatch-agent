@@ -679,8 +679,8 @@ surface TextInputField {
     -- epic title, base branch, todo title, todo quick-add, repo-path
     -- query, quick-dispatch query, and filter-preset name. Task/epic
     -- DESCRIPTION is NOT this surface (it opens an external $EDITOR).
-    -- SearchTasks and ManagedFeedConfig use separate buffers and are
-    -- intentionally not on this surface yet.
+    -- SearchTasks uses a separate buffer and is intentionally not on this
+    -- surface yet.
 
     -- buffer is the text; caret is a CHARACTER index into buffer (the
     -- text insertion point). Both start empty/zero.

@@ -197,3 +197,35 @@ async fn set_provisions_managed_epics() {
     assert_eq!(role_count(FeedRole::Bots), 1);
     assert_eq!(role_count(FeedRole::Cve), 1);
 }
+
+/// The save must notify the runtime. This is load-bearing rather than cosmetic:
+/// the runtime's `McpEvent::Refresh` arm is what invalidates the `FeedRunner`'s
+/// `any_feed_cmds` cache (see the invalidation invariant in
+/// `docs/specs/feeds.allium`), so without this notification a feed enabled here
+/// on a previously feed-less instance is provisioned but never polled — stranded
+/// until an unrelated `EpicChanged` or a restart. Since the TUI `C`-key save path
+/// was removed (docs/plans/3809-keybinding-pruning-implementation.md §6) this is
+/// the only path that can enable a feed, so it is the only thing holding that
+/// invariant up. Guards the runtime-side half at
+/// `src/runtime/tests.rs::mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed`.
+#[tokio::test]
+async fn set_notifies_the_runtime_so_the_feed_cache_is_invalidated() {
+    let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();
+    let (state, _db) = super::test_state_with_overrides(
+        Arc::new(crate::process::MockProcessRunner::new(vec![]))
+            as Arc<dyn crate::process::ProcessRunner>,
+        Some(notify_tx),
+        None,
+    )
+    .await;
+
+    set(&state, json!({ "reviews_command": "/r.sh" })).await;
+
+    let event = notify_rx
+        .try_recv()
+        .expect("save must emit an McpEvent so the runtime invalidates the feed cache");
+    assert!(
+        matches!(event, crate::mcp::McpEvent::Refresh),
+        "expected Refresh (the arm that invalidates the feed cache), got {event:?}"
+    );
+}

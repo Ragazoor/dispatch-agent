@@ -384,14 +384,25 @@ rule FeedTick {
         -- MUST be invalidated on every surface that can enable the first feed
         -- on a previously feed-less instance, or that feed is stranded
         -- (provisioned but never polled) until an unrelated event or a restart:
+        -- MCP is the only way to enable a feed: there is no TUI config surface.
+        -- The invariant is enforced on the EVENT, not per calling handler: EVERY
+        -- McpEvent::Refresh and EVERY McpEvent::EpicChanged invalidates the
+        -- cache, whichever handler emitted it. Both arms route through
+        -- TuiRuntime::invalidate_feed_cache, which fires the watch sender
+        -- FeedRunner.tick checks at the top of each tick to reset any_feed_cmds
+        -- to None (re-query).
+        --
+        -- The obligation on a handler is therefore to EMIT one of those two
+        -- events — a handler that emits neither (or only TaskChanged) inherits
+        -- nothing. Today's feed-enabling emitters:
         --   1. MCP set_managed_feed_config -> McpEvent::Refresh
         --   2. MCP epic mutations           -> McpEvent::EpicChanged
-        --   3. TUI [C] managed-feed save    -> exec_provision_and_refresh
-        -- All three route through TuiRuntime::invalidate_feed_cache, which fires
-        -- the watch sender FeedRunner.tick checks at the top of each tick to
-        -- reset any_feed_cmds to None (re-query). Regression coverage:
-        -- src/runtime/tests.rs::exec_provision_and_refresh_invalidates_feed_runner_cache
-        -- and src/feed/mod.rs::tick_re_queries_after_epic_changed_invalidation.
+        -- Regression coverage, one test per link in that chain:
+        -- src/mcp/handlers/tests/managed_feeds.rs::set_notifies_the_runtime_so_the_feed_cache_is_invalidated
+        -- (the handler emits Refresh),
+        -- src/runtime/tests.rs::mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed
+        -- (Refresh invalidates), and
+        -- src/feed/mod.rs::tick_re_queries_after_epic_changed_invalidation.
 }
 
 -- == Upsert semantics ==

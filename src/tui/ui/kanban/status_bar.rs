@@ -261,11 +261,6 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::ConfirmMoveTaskToEpic { .. } => {
             hint_text(app, "Move task to epic? [y/n]", Color::Magenta)
         }
-        InputMode::ManagedFeedConfig => hint_text(
-            app,
-            "Managed feed config: Tab/arrows to move, Enter to save, Esc to cancel",
-            Color::Cyan,
-        ),
         InputMode::TodoTitle | InputMode::TodoQuickAdd => {
             let label = if matches!(app.input.mode, InputMode::TodoTitle) {
                 "New todo"

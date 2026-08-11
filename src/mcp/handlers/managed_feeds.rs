@@ -117,7 +117,10 @@ pub(super) async fn handle_set_managed_feed_config(
         );
     }
 
-    // Re-materialise the managed epic tree, mirroring the TUI [C] save path.
+    // Re-materialise the managed epic tree so a newly-enabled feed provisions
+    // its epics without a restart. The notify() below then reaches the runtime,
+    // which invalidates the FeedRunner's any_feed_cmds cache so those epics are
+    // actually polled (see the invalidation invariant in docs/specs/feeds.allium).
     let settings = match crate::service::read_managed_feed_settings(&*state.db).await {
         Ok(s) => s,
         Err(e) => {

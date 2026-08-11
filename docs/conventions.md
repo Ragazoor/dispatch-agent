@@ -53,8 +53,8 @@ name) shares one caret model:
 - Rendering uses `ui::caret_line`, which draws the caret as a reversed block cell
   and horizontally scrolls long values so the caret stays visible.
 
-`SearchTasks` (`search.query`) and `ManagedFeedConfig` (per-field strings) use
-separate buffers and are intentionally not on this shared caret yet.
+`SearchTasks` (`search.query`) uses a separate buffer and is intentionally not on
+this shared caret yet.
 
 Two deliberate limitations: the caret is a Unicode scalar (`char`) index, so a
 move/delete can split a **grapheme cluster** (combining accents, ZWJ emoji) —

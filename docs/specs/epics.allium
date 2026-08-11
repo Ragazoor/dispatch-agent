@@ -18,11 +18,11 @@ use "./core.allium" as core
 -- its interval is null, the epic falls back to core/config.default_feed_interval,
 -- exactly as for hand-made feed epics.
 --
--- NOTE — these four settings are editable via an in-app TUI config popup,
--- opened with the `C` key in normal mode, AND over MCP via
--- set_managed_feed_config (read back with get_managed_feed_config). On save,
--- both surfaces persist the settings and re-fire ProvisionManagedEpics, so a
--- newly-enabled feed provisions its epic tree without a restart.
+-- NOTE — these four settings are editable ONLY over MCP, via
+-- set_managed_feed_config (read back with get_managed_feed_config). There is no
+-- in-app TUI editor. On save, that surface persists the settings and re-fires
+-- ProvisionManagedEpics, so a newly-enabled feed provisions its epic tree
+-- without a restart.
 config {
     reviews_feed_command: String? = null         -- script emitting the involved-PR feed (see feeds.allium); null = reviews subtree not provisioned
     reviews_feed_interval_secs: Integer? = null   -- poll cadence for the reviews_parent root; null falls back to default_feed_interval
@@ -508,11 +508,11 @@ rule SetManagedFeedConfigViaMcp {
         if cve_interval_secs != omitted: config.cve_feed_interval_secs = cve_interval_secs
 
     -- After persisting, re-materialise the managed epic tree from the new
-    -- config, exactly as the TUI popup save does.
+    -- config.
     ensures: ProvisionManagedEpics()
 
     @guidance
-        -- Mirrors the TUI `C`-key save path: persist the four settings, then
+        -- This is the only configuration path: persist the four settings, then
         -- fire ProvisionManagedEpics and refresh the board. A call with no
         -- fields is a harmless no-op that still re-provisions and reports the
         -- current config. feed commands are not newline-validated (they are
@@ -918,9 +918,8 @@ rule ProvisionManagedEpics {
     -- Idempotently materialises the managed feed epic tree from the
     -- config surface above. Fires on TUI startup, reading the current
     -- reviews/CVE feed configuration, AND whenever the config is saved via
-    -- the in-app config popup (the `C`-key surface above). Running it
-    -- repeatedly converges on the same tree without
-    -- creating duplicates: every managed epic is matched by the PAIR
+    -- SetManagedFeedConfigViaMcp. Running it repeatedly converges on the same
+    -- tree without creating duplicates: every managed epic is matched by the PAIR
     -- (feed_role, expected parent) — NEVER by title, so a user who renames
     -- any managed epic keeps that rename across re-runs. The parent half of
     -- that key means recognition is position-sensitive; see the reparenting

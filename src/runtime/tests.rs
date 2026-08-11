@@ -2226,68 +2226,15 @@ async fn exec_persist_epic_writes_back_leaving_done_sort_order_clear_immediately
     );
 }
 
+/// Regression for learning #162, ported from the retired TUI `[C]` save path
+/// (docs/plans/3809-keybinding-pruning-implementation.md §6): a freshly-enabled
+/// feed on a previously feed-less instance must become pollable after
+/// `set_managed_feed_config` notifies the runtime, not stay stranded behind the
+/// FeedRunner's `any_feed_cmds == Some(false)` short-circuit until an unrelated
+/// EpicChanged or a restart. MCP is now the only configuration path, so the
+/// `McpEvent::Refresh` arm is the only thing that can invalidate the cache.
 #[tokio::test]
-async fn exec_persist_managed_feed_config_writes_all_settings() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_persist_managed_feed_config(
-        &mut app,
-        Some("reviews.sh".to_string()),
-        Some(300),
-        None,
-        None,
-    )
-    .await;
-
-    assert_eq!(
-        rt.database
-            .get_reviews_feed_command()
-            .await
-            .unwrap()
-            .as_deref(),
-        Some("reviews.sh")
-    );
-    assert_eq!(
-        rt.database.get_reviews_feed_interval_secs().await.unwrap(),
-        Some(300)
-    );
-    assert_eq!(rt.database.get_cve_feed_command().await.unwrap(), None);
-    assert_eq!(
-        rt.database.get_cve_feed_interval_secs().await.unwrap(),
-        None
-    );
-}
-
-#[tokio::test]
-async fn exec_provision_and_refresh_provisions_and_syncs_to_app() {
-    let (rt, mut app) = test_runtime().await;
-    // Enable the reviews feed out of band, then re-provision live.
-    rt.database
-        .set_reviews_feed_command(Some("reviews.sh"))
-        .await
-        .unwrap();
-    assert!(app.epics().is_empty());
-
-    rt.exec_provision_and_refresh(&mut app).await;
-
-    // reviews_parent + my_reviews + team_reviews + bots = 4 epics, synced to app.
-    assert_eq!(
-        app.epics().len(),
-        4,
-        "reviews subtree provisioned and refreshed"
-    );
-    assert!(app
-        .epics()
-        .iter()
-        .any(|e| e.feed_role == crate::models::FeedRole::ReviewsParent));
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_provision_and_refresh_invalidates_feed_runner_cache() {
-    // Regression for the TUI [C] save gap: a freshly-enabled feed on a
-    // previously feed-less instance must become pollable after the save, not
-    // stay stranded behind the FeedRunner's `any_feed_cmds == Some(false)`
-    // short-circuit until an unrelated EpicChanged/Refresh or a restart.
+async fn mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed() {
     let (mut rt, mut app) = test_runtime().await;
     let mut feed_runner = rt.feed_runner.take().expect("runtime has a feed runner");
 
@@ -2300,21 +2247,25 @@ async fn exec_provision_and_refresh_invalidates_feed_runner_cache() {
         "feed-less instance should cache Some(false) and short-circuit"
     );
 
-    // Enable the reviews feed and provision via the TUI [C] save path.
+    // Enable the reviews feed and provision it, exactly as
+    // set_managed_feed_config does, then deliver the notification it sends.
     rt.database
         .set_reviews_feed_command(Some("reviews.sh"))
         .await
         .unwrap();
-    rt.exec_provision_and_refresh(&mut app).await;
-    assert!(app.error_popup().is_none());
+    let settings = crate::service::read_managed_feed_settings(&*rt.database)
+        .await
+        .unwrap();
+    rt.epic_svc.provision_managed_feeds(settings).await.unwrap();
+    apply_loop_event(&mut app, LoopEvent::Mcp(mcp::McpEvent::Refresh), &rt);
 
-    // The save must have invalidated the cache so the next tick re-queries and
-    // discovers the freshly-provisioned reviews_parent feed command.
+    // The refresh must have invalidated the cache so the next tick re-queries
+    // and discovers the freshly-provisioned reviews_parent feed command.
     feed_runner.tick().await;
     assert_eq!(
         feed_runner.any_feed_cmds_cache(),
         Some(true),
-        "save must invalidate the cache so the freshly-enabled feed becomes pollable"
+        "refresh must invalidate the cache so the freshly-enabled feed becomes pollable"
     );
 }
 
@@ -5108,30 +5059,6 @@ mod command_dispatch {
                 .contains(&"/doomed".to_string()),
             "the path should no longer be known"
         );
-    }
-
-    #[tokio::test]
-    async fn dispatch_managed_feed_persist_config_writes_the_settings() {
-        use crate::tui::commands::ManagedFeedCommand;
-        let (rt, mut app) = test_runtime().await;
-
-        dispatch_one(
-            &rt,
-            &mut app,
-            Command::ManagedFeed(ManagedFeedCommand::PersistConfig {
-                reviews_command: Some("gh api reviews".into()),
-                reviews_interval_secs: Some(900),
-                cve_command: None,
-                cve_interval_secs: None,
-            }),
-        )
-        .await;
-
-        let settings = crate::service::read_managed_feed_settings(&*rt.database)
-            .await
-            .unwrap();
-        assert_eq!(settings.reviews_command.as_deref(), Some("gh api reviews"));
-        assert_eq!(settings.reviews_interval_secs, Some(900));
     }
 
     #[tokio::test]

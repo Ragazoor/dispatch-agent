@@ -215,7 +215,6 @@ pub(in crate::tui) struct MoveTaskPickerState {
 pub(in crate::tui) struct InteractionState {
     pub(in crate::tui) reparent_picker: Option<ReparentPickerState>,
     pub(in crate::tui) move_task_picker: Option<MoveTaskPickerState>,
-    pub(in crate::tui) managed_feed_config: Option<ManagedFeedConfigState>,
     /// The single one-shot "remember this until the next message" action in
     /// flight. See [`PendingAction`].
     pub(in crate::tui) pending: PendingAction,
@@ -272,9 +271,6 @@ pub struct App {
     /// Ticks elapsed since the last `RefreshFromDb` was emitted. Reset to 0
     /// on each refresh; the fallback fires when this reaches 5 (= 10 s).
     pub(in crate::tui) ticks_since_last_refresh: u64,
-    /// Persisted managed-feed settings, snapshotted so the config popup opens
-    /// without a DB round-trip. Loaded at startup, refreshed after a save.
-    pub(in crate::tui) managed_feed_settings: ManagedFeedSettings,
     /// Transient overlay/picker state (pickers, in-progress popup edits, the
     /// one-shot pending action). See [`InteractionState`].
     pub(in crate::tui) interaction: InteractionState,
@@ -569,7 +565,6 @@ impl App {
             dirty: true,
             dirty_since_refresh: true,
             ticks_since_last_refresh: 0,
-            managed_feed_settings: ManagedFeedSettings::default(),
             interaction: InteractionState::default(),
             broken_repo_paths: HashSet::new(),
             repo_sync: crate::repo_sync::RepoSyncCache::default(),
@@ -784,19 +779,6 @@ impl App {
 
     pub fn main_session_dir(&self) -> Option<&str> {
         self.main_session_dir.as_deref()
-    }
-
-    /// Bootstrap-only carve-out: populated by the runtime loader from the four
-    /// managed-feed settings at startup, and re-set in-memory after a save so
-    /// the config popup re-opens with fresh values. See the config popup
-    /// handlers in `update/managed_feeds.rs`.
-    pub fn set_managed_feed_settings(&mut self, settings: ManagedFeedSettings) {
-        self.managed_feed_settings = settings;
-    }
-
-    /// Read-only access to the in-progress config edit buffer (test/render use).
-    pub fn managed_feed_config(&self) -> Option<&ManagedFeedConfigState> {
-        self.interaction.managed_feed_config.as_ref()
     }
 
     /// Bootstrap-only carve-out: populated by the runtime loader from

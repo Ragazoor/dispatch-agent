@@ -155,9 +155,6 @@ pub enum Message {
     Feed(crate::tui::messages::FeedMessage),
     /// Main session setup messages — see [`crate::tui::messages::MainSessionMessage`].
     MainSession(crate::tui::messages::MainSessionMessage),
-    /// Managed-feed config popup messages — see
-    /// [`crate::tui::messages::ManagedFeedConfigMessage`].
-    ManagedFeedConfig(crate::tui::messages::ManagedFeedConfigMessage),
     /// Budget-indicator messages — see [`crate::tui::messages::BudgetMessage`].
     Budget(crate::tui::messages::BudgetMessage),
 }
@@ -217,9 +214,6 @@ pub enum Command {
     /// Append-only telemetry: record a feature-usage event. The runtime spawns
     /// a fire-and-forget DB write; failures are intentionally swallowed.
     RecordUsageEvent(crate::models::UsageEvent),
-    /// Managed-feed config side-effect commands — see
-    /// [`crate::tui::commands::ManagedFeedCommand`].
-    ManagedFeed(crate::tui::commands::ManagedFeedCommand),
     /// Budget-indicator side-effect commands — see
     /// [`crate::tui::commands::BudgetCommand`].
     Budget(crate::tui::commands::BudgetCommand),
@@ -288,9 +282,6 @@ pub enum InputMode {
     InputBaseBranch,
     InputWrapUpMode,
     MainSessionDir,
-    /// Managed-feed config popup (the `C` key). Edit buffer lives in
-    /// [`crate::tui::ManagedFeedConfigState`] on `App`.
-    ManagedFeedConfig,
     /// In-view title input for adding or editing a personal TODO item.
     TodoTitle,
     /// Board quick-add input for personal TODOs.
@@ -478,58 +469,6 @@ impl InputState {
     pub fn clear_buffer(&mut self) {
         self.buffer.clear();
         self.caret = 0;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Managed-feed config (the `C` popup)
-// ---------------------------------------------------------------------------
-
-/// The four persisted managed-feed settings, snapshotted in memory so the
-/// config popup opens synchronously (no DB round-trip). Loaded at startup and
-/// refreshed after a successful save. See `docs/specs/epics.allium`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ManagedFeedSettings {
-    pub reviews_command: Option<String>,
-    pub reviews_interval_secs: Option<i64>,
-    pub cve_command: Option<String>,
-    pub cve_interval_secs: Option<i64>,
-}
-
-/// In-progress edit buffer for the managed-feed config popup. Present only
-/// while the popup is open (`InputMode::ManagedFeedConfig`). Intervals are held
-/// as their typed string; empty means "unset".
-#[derive(Debug, Clone)]
-pub struct ManagedFeedConfigState {
-    pub reviews_command: String,
-    pub reviews_interval: String,
-    pub cve_command: String,
-    pub cve_interval: String,
-    pub field: crate::tui::messages::ManagedFeedField,
-}
-
-impl ManagedFeedConfigState {
-    /// Build the edit buffer from the current persisted settings.
-    pub fn from_settings(settings: &ManagedFeedSettings) -> Self {
-        let interval_to_string = |v: Option<i64>| v.map(|n| n.to_string()).unwrap_or_default();
-        Self {
-            reviews_command: settings.reviews_command.clone().unwrap_or_default(),
-            reviews_interval: interval_to_string(settings.reviews_interval_secs),
-            cve_command: settings.cve_command.clone().unwrap_or_default(),
-            cve_interval: interval_to_string(settings.cve_interval_secs),
-            field: crate::tui::messages::ManagedFeedField::ReviewsCommand,
-        }
-    }
-
-    /// Mutable handle to the string backing the focused field.
-    pub fn focused_mut(&mut self) -> &mut String {
-        use crate::tui::messages::ManagedFeedField::*;
-        match self.field {
-            ReviewsCommand => &mut self.reviews_command,
-            ReviewsInterval => &mut self.reviews_interval,
-            CveCommand => &mut self.cve_command,
-            CveInterval => &mut self.cve_interval,
-        }
     }
 }
 

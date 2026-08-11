@@ -138,8 +138,6 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
         Line::from(vec![
             Span::styled("  [J/K]", key),
             Span::styled(" reorder item up/down  ", desc),
-            Span::styled("[C]", key),
-            Span::styled(" feed config  ", desc),
             Span::styled("[P]", key),
             Span::styled(" todo (a add \u{b7} space done \u{b7} J/K order \u{b7} e edit \u{b7} c clear-done \u{b7} d del \u{b7} t add)", desc),
         ]),

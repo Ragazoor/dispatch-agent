@@ -314,10 +314,10 @@ struct TuiRuntime {
     editor_session: Arc<std::sync::Mutex<Option<editor::EditorSession>>>,
     feed_runner: Option<crate::feed::FeedRunner>,
     /// Fires the `FeedRunner`'s feed-command cache invalidation. Cloned from
-    /// `feed_runner.epic_invalidate_tx()` at construction so every mutation
-    /// surface (MCP `Refresh`/`EpicChanged`, TUI [C] provision) can reset the
-    /// cache through `invalidate_feed_cache()` — keeping the runner from
-    /// stranding a freshly-enabled feed behind `any_feed_cmds == Some(false)`.
+    /// `feed_runner.epic_invalidate_tx()` at construction so both mutation-
+    /// carrying MCP events (`Refresh` and `EpicChanged`) can reset the cache
+    /// through `invalidate_feed_cache()` — keeping the runner from stranding a
+    /// freshly-enabled feed behind `any_feed_cmds == Some(false)`.
     feed_invalidate_tx: Option<tokio::sync::watch::Sender<()>>,
     /// Shared embedding service for RAG-based learning injection and editor updates.
     emb_svc: Arc<EmbeddingService>,
@@ -339,7 +339,6 @@ mod commands;
 mod editor;
 mod epics;
 mod learnings;
-mod managed_feeds;
 mod pr;
 mod repo_sync;
 mod settings;
@@ -478,7 +477,6 @@ impl TuiRuntime {
         load_notifications_pref(&*database, &mut app).await;
         load_repo_filter(&*database, &mut app).await;
         load_main_session(&*database, &mut app).await;
-        load_managed_feed_settings(&*database, &mut app).await;
         for msg in [
             load_filter_presets(&*database, &mut app).await,
             apply_tmux_focus_warning(&*runner),
@@ -790,19 +788,6 @@ async fn load_main_session(db: &dyn db::SettingsStore, app: &mut App) {
             app.set_main_session_dir(Some(dir));
         }
     }
-}
-
-/// Snapshot the four managed-feed settings into `App` so the config popup
-/// (`C`) opens without a DB round-trip. Best-effort: read failures leave the
-/// default (all unset).
-async fn load_managed_feed_settings(db: &dyn db::SettingsStore, app: &mut App) {
-    let settings = crate::tui::ManagedFeedSettings {
-        reviews_command: db.get_reviews_feed_command().await.unwrap_or(None),
-        reviews_interval_secs: db.get_reviews_feed_interval_secs().await.unwrap_or(None),
-        cve_command: db.get_cve_feed_command().await.unwrap_or(None),
-        cve_interval_secs: db.get_cve_feed_interval_secs().await.unwrap_or(None),
-    };
-    app.set_managed_feed_settings(settings);
 }
 
 async fn load_notifications_pref(db: &dyn db::SettingsStore, app: &mut App) {

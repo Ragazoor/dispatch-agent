@@ -532,6 +532,26 @@ async fn render_help_overlay_shows_tmux_global_bindings() {
     );
 }
 
+/// The `[C] feed config` help line went with the popup
+/// (docs/plans/3809-keybinding-pruning-implementation.md §6) — the help overlay
+/// must not teach a key that no longer has a handler.
+#[tokio::test]
+async fn render_help_overlay_no_longer_teaches_feed_config_key() {
+    let mut app = App::new(vec![]);
+    app.update(Message::System(
+        crate::tui::messages::SystemMessage::ToggleHelp,
+    ));
+    let buf = render_to_buffer(&mut app, 100, 40);
+    assert!(
+        !buffer_contains(&buf, "[C]"),
+        "retired feed-config key must not appear in the help overlay"
+    );
+    assert!(
+        !buffer_contains(&buf, "feed config"),
+        "retired feed-config help text must not appear in the help overlay"
+    );
+}
+
 #[tokio::test]
 async fn render_1x1_terminal_does_not_panic() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Running)]);

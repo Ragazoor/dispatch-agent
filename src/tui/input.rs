@@ -1,5 +1,4 @@
 mod confirm;
-mod managed_feeds;
 mod normal;
 mod repo_filter;
 
@@ -97,7 +96,6 @@ impl App {
                 InputMode::ConfirmMoveTaskToEpic { .. } => {
                     self.handle_key_confirm_move_task_to_epic(key)
                 }
-                InputMode::ManagedFeedConfig => self.handle_key_managed_feed_config(key),
                 InputMode::ConfirmDeleteTodo => self.handle_key_confirm_delete_todo(key),
                 InputMode::LinkTodoToTask(_) => self.handle_key_link_todo_to_task(key),
                 InputMode::ConfirmTrustRepo { task_id, mode } => {

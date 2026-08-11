@@ -17,17 +17,17 @@ to look.
 | `src/runtime/mod.rs` | Async event loop (`tokio::select!`), bridges TUI ↔ MCP ↔ shell commands; `TICK_INTERVAL`, `execute_commands` |
 | `src/runtime/commands.rs` | `Command` side-effect dispatcher (called by `execute_commands`) |
 | `src/runtime/tasks.rs` | Per-command runtime handlers for tasks (refresh, dispatch, finish, etc.) |
-| `src/runtime/{editor,epics,learnings,managed_feeds,pr,settings,split,todos}.rs` | Domain-specific runtime helpers. (`src/runtime/agents.rs` is a vestigial empty `impl TuiRuntime {}` — nothing lives there) |
+| `src/runtime/{editor,epics,learnings,pr,settings,split,todos}.rs` | Domain-specific runtime helpers. (`src/runtime/agents.rs` is a vestigial empty `impl TuiRuntime {}` — nothing lives there) |
 | `src/tui/mod.rs` | `App` struct, lifecycle, `update()` entry point, timing constants (`STATUS_MESSAGE_TTL`, `PR_POLL_INTERVAL`, `MAIN_SESSION_POLL_TICKS`, `GG_CHORD_TIMEOUT`). Column-listing helpers: `column_items_for_status_with_stats` (production render path — requires pre-computed `EpicStatsMap`, used by kanban columns); `column_items_for_visual_column` (snapshot/archive views — filters by `VisualColumn` granularity, no stats needed). `column_items_for_status` is test-only. |
 | `src/tui/dispatcher.rs` | `dispatch(app, msg)` — thin top-level router: one arm per outer `Message` domain, delegating to that domain's inner-enum `route(self, app)` method |
-| `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `system.rs`, `split.rs`, `todos.rs`, `managed_feeds.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
+| `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `system.rs`, `split.rs`, `todos.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
 | `src/tui/commands/` | Per-domain inner `*Command` enums (`task.rs`, `epic.rs`, `editor.rs`, `feed.rs`, `split.rs`, `todos.rs`, …) — the command twin of `src/tui/messages/`. Variants of the outer `Command` enum are progressively migrated here. Unlike `messages/`, these are pure data: `Command` → effect stays centralised in `src/runtime/commands.rs` |
-| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `lifecycle.rs`, `main_session.rs`, `managed_feeds.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `todos.rs`) |
+| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `lifecycle.rs`, `main_session.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `todos.rs`) |
 | `src/tui/input.rs` | Key event entry point, `text_edit_message()` caret routing, inline-mutation convention for UI-only state, unconditional `dirty = true` |
-| `src/tui/input/` | Per-mode key handlers: `normal.rs`, `confirm.rs`, `managed_feeds.rs`, `repo_filter.rs` |
+| `src/tui/input/` | Per-mode key handlers: `normal.rs`, `confirm.rs`, `repo_filter.rs` |
 | `src/tui/text_caret.rs` | Pure single-line caret mechanics (`insert`, `delete_before`, `move_left`, `word_left`, `byte_offset`, …) shared by every text `InputMode` — see the caret convention in `docs/conventions.md` |
 | `src/tui/ui/mod.rs` | Rendering entry point — re-exports `render()`, thin dispatcher |
-| `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`, `managed_feeds.rs`) |
+| `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`) |
 | `src/tui/ui/shared.rs` | Cross-board helpers: `refresh_status`, `truncate`, `fair_truncate_segments`, `push_hint_spans`, `caret_line` |
 | `src/tui/ui/palette.rs` | Tokyo Night color palette constants |
 | `src/tui/ui/{input_form,todos}.rs` | Overlay renderers (input forms, TODO overlay) |

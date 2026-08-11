@@ -24,7 +24,7 @@ expression: rendered
                         ║  [T] detach tmux panel  (any task with a tmux window, supports batch)║
                         ║  [s] toggle split  [S] swap task into pane                           ║
                         ║  [p] open PR  [:] main session (jump/pick dir)  [o] sync repo        ║
-                        ║  [J/K] reorder item up/down  [C] feed config  [P] todo (a add · space║
+                        ║  [J/K] reorder item up/down  [P] todo (a add · space done · J/K order║
                         ║                                                                      ║
                         ║  * [d] is context-dependent:                                         ║
                         ║    Backlog (no plan) → brainstorm                                    ║

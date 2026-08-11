@@ -2290,6 +2290,20 @@ fn handle_key_normal_board_learnings_key_is_unbound() {
     assert!(matches!(app.board.view_mode, ViewMode::Board(_)));
 }
 
+/// `C` used to open the managed-feed config popup, removed in
+/// docs/plans/3809-keybinding-pruning-implementation.md §6. It is now unbound:
+/// no match arm, so it must fall through exactly like any unknown key. The four
+/// managed-feed settings are configured via MCP only
+/// (`set_managed_feed_config` / `get_managed_feed_config`).
+#[test]
+fn handle_key_normal_board_feed_config_key_is_unbound() {
+    let mut app = make_app();
+    let cmds = app.handle_key(make_key(KeyCode::Char('C')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(matches!(app.board.view_mode, ViewMode::Board(_)));
+}
+
 /// InputTitle mode routes to the text input handler.
 #[test]
 fn handle_key_input_title_routes_to_text_input() {

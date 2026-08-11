@@ -172,9 +172,11 @@ own — only the parent is polled, and the parent's single emission fans out to
 them.
 
 > **Configuring the scripts.** The four settings are read **at TUI startup** to
-> provision the managed tree. There is **no in-app editor yet** — until one
-> lands, the settings are set out of band in the dispatch settings store, and a
-> restart is needed for a change to take effect.
+> provision the managed tree, and are configured **only over MCP** — there is no
+> in-app editor. Use the `set_managed_feed_config` tool to write them (each field
+> is optional: omit to leave unchanged, pass `null` to clear) and
+> `get_managed_feed_config` to read them back. A save re-provisions the managed
+> tree immediately, so no restart is needed.
 
 ### Migration: remove old hand-wired review/dependabot epics
 

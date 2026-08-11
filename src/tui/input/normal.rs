@@ -426,12 +426,6 @@ impl App {
                 )
             }
 
-            KeyCode::Char('C') => self.dispatch_keyed(
-                Message::ManagedFeedConfig(crate::tui::messages::ManagedFeedConfigMessage::Open),
-                "open_managed_feed_config",
-                "C",
-            ),
-
             KeyCode::Char('?') => self.dispatch_keyed(
                 Message::System(crate::tui::messages::SystemMessage::ToggleHelp),
                 "toggle_help",
