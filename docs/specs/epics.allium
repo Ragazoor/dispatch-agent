@@ -547,8 +547,11 @@ rule ReparentEpicFromTui {
         -- excludes the target epic and its descendants (cycle prevention at
         -- the UI layer), epics in Done or Archived status, and epics that are
         -- hidden by the active board filter (repo include/exclude and the
-        -- only-active filter — the same predicates the board uses to decide
-        -- epic visibility). When status filtering removes a parent but keeps
+        -- only-active filter). The board search query is deliberately NOT
+        -- applied here — this picker has its own input buffer, so inheriting
+        -- the board query would hide otherwise-valid targets. See
+        -- board_search_filter in core.allium. When status filtering removes a
+        -- parent but keeps
         -- an eligible child, the child is re-rooted to the top level so it
         -- stays selectable. The first item is always "— no parent —", which
         -- sets parent_epic_id to null.

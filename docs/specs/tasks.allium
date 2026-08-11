@@ -420,8 +420,10 @@ rule MoveTaskToEpic {
         -- A collapsible tree overlay lists only epics that are relevant
         -- targets: it excludes epics in Done or Archived status and epics
         -- hidden by the active board filter (repo include/exclude and the
-        -- only-active filter — the same predicates the board uses to decide
-        -- epic visibility). Unlike epic reparenting there is no cycle
+        -- only-active filter). The board search query is deliberately NOT
+        -- applied here — this picker has its own input buffer. See
+        -- board_search_filter in core.allium. Unlike epic reparenting there is
+        -- no cycle
         -- concern, so no descendant exclusion applies; every visible,
         -- active epic is a valid target. When status filtering removes a
         -- parent but keeps an eligible child, the child is re-rooted to the

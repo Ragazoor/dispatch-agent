@@ -788,26 +788,45 @@ value FlattenedView {
 --   row (cursor position 0, Space to toggle).
 --   The filter is session-scoped and does not persist across app restarts.
 
--- == Task Search Filter ==
+-- == Board Search Filter ==
 
--- task_search_filter:
---   When view.search_query is non-empty, only tasks matching the query are
---   included in tasks_for_current_view. A task matches when EITHER predicate
---   holds (logical OR):
---     title match: a case-insensitive forward subsequence of task.title (every
+-- board_search_filter:
+--   When view.search_query is non-empty, the query narrows BOTH task cards and
+--   epic cards. An empty query matches everything. This filter is applied in
+--   addition to the repo filter and the only-active filter (logical AND).
+--
+--   own_match(entity) — the shared per-entity predicate. It holds when EITHER
+--   sub-predicate holds (logical OR):
+--     title match: a case-insensitive forward subsequence of entity.title (every
 --       query char appears in the title, in order) — the same predicate used by
 --       the repo-path picker (fuzzy_matches).
 --     id-prefix match: the query, after stripping one optional leading '#', is
 --       non-empty and consists entirely of ASCII digits, and the decimal
---       spelling of task.id starts with those digits. So "38" matches #38,
+--       spelling of entity.id starts with those digits. So "38" matches #38,
 --       #380 and #3837 (progressive narrowing as the user types) but not
 --       #1385; "#3837" matches #3837; "3a" and a bare "#" have no digit
 --       payload and so fall back to title matching alone.
---   The id-prefix predicate applies to tasks only. Epic cards are never
---   narrowed by the search query (see epic visibility under the repo and
---   only-active filters).
---   An empty query matches every task. This filter is applied in addition to
---   the repo filter and the only-active filter (logical AND).
+--
+--   Tasks: a task is included in tasks_for_current_view when own_match(task)
+--   holds. This applies in the board view and inside an epic view alike: an
+--   epic that was surfaced by its own title still shows only those subtasks
+--   that match the query, which may be none. Clearing the query is how the
+--   user sees an epic's full contents.
+--
+--   Epics: an epic card is visible when own_match(epic) holds, OR when any
+--   descendant sub-epic satisfies own_match, OR when any non-archived task in
+--   the epic's subtree satisfies own_match. Archived tasks never keep an epic
+--   visible. The descendant clause exists because a hierarchical board does not
+--   render epic-owned tasks at all — the epic card is the only path to them, so
+--   hiding it would make the match unreachable.
+--
+--   Epic ids and task ids are separate sequences, so one digit payload can match
+--   both an epic card and a task card. Both are shown.
+--
+--   Epic-target pickers (reparent, move-task-to-epic) are NOT narrowed by the
+--   search query — they carry their own input buffers. See the guidance on
+--   ReparentEpic in epics.allium and MoveTaskToEpic in tasks.allium.
+--
 --   Lifecycle: the [/] key opens a live search bar and the board narrows as
 --   the user types. [Enter] keeps the query active and closes the bar (the
 --   filter persists, with a [/query] indicator shown on the board). [Esc]
