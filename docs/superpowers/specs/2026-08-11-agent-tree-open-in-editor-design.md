@@ -138,6 +138,12 @@ failure, not a panic.
 - `src/dispatch/agents.rs`: `toggle_agent_tree_pane` and
   `resync_agent_tree_pane` switch from `inactive_pane_id` to the tree-pane
   lookup.
+- `src/dispatch/split_panes.rs`: `join_task_window_into_pane` drains the
+  companion pane before pinning an agent window into the board. It finds it with
+  `inactive_pane_id`, so with an editor pane open the lookup is ambiguous,
+  returns `None`, and *both* panes are orphaned in a window the toggle can no
+  longer make sense of. It switches to draining every dispatch-created companion
+  pane — tree and editor — which is a superset of what it does today.
 - `src/main.rs`: `cmd_agent_tree` installs the app-log subscriber, which it does
   not do today — so every `tracing::warn!` the renderer already contains
   currently goes nowhere. It writes to a file, so it is safe under the alternate
@@ -211,6 +217,8 @@ not tmux's behaviour):
   would have caught the pre-existing bug.
 - `prefix+e` with an editor pane present kills the tree pane rather than
   spawning a second one.
+- Pinning an agent window that has an editor pane open leaves no orphaned pane
+  behind.
 
 **Snapshot**
 
