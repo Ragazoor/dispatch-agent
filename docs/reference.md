@@ -333,7 +333,10 @@ scope=epic    → scope_ref: task.epic_id  (error if task has no epic)
 scope=task    → scope_ref: task.id
 ```
 
-All proposed learnings await human approval before appearing in any agent's context.
+Recorded learnings are approved on creation and become eligible for injection immediately — there is no
+human approval step. Curation happens after the fact: agents rate entries via `rate_learning`, entries
+can be removed with `delete_learning`, and the background sweep archives approved-but-unhelpful entries
+left untouched past the staleness threshold.
 
 ### Examples
 
