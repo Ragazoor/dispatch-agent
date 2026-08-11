@@ -249,6 +249,26 @@ impl TmuxServer {
     pub fn window_option(&self, window: &str, option: &str) -> String {
         self.tmux_stdout(&["show-options", "-wqv", "-t", window, option])
     }
+
+    /// A pane-scoped user option (e.g. `@dispatch_editor_pane`). Empty when
+    /// unset. The oracle for a pane dispatch marked as one it created.
+    pub fn pane_option(&self, pane_id: &str, option: &str) -> String {
+        self.tmux_stdout(&["show-options", "-pqv", "-t", pane_id, option])
+    }
+
+    /// Write an additional stub binary into this server's stub dir and return its
+    /// absolute path. Same shape as the `claude` / `dispatch` stubs: it records
+    /// one line to [`Self::stub_log`] and then holds its pane open with
+    /// `exec cat`.
+    ///
+    /// Exists because the editor pane's command is not a dispatch binary — it
+    /// comes from `$EDITOR` — so it cannot be one of the two stubs written at
+    /// server start. Holding the pane open is the load-bearing part: a stub that
+    /// exited would close its pane and make every pane-count assertion racy.
+    pub fn extra_stub(&self, name: &str) -> String {
+        write_stub(self.stubs.path(), name, &self.stub_log());
+        self.stubs.path().join(name).to_string_lossy().into_owned()
+    }
 }
 
 impl Drop for TmuxServer {
