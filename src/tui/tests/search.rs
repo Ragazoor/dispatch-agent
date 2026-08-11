@@ -507,6 +507,74 @@ fn search_on_epics_composes_with_only_active_filter() {
 }
 
 #[test]
+fn visible_epic_cards_agree_with_the_single_epic_predicate() {
+    // The view pass and the per-epic predicate are two paths to the same
+    // verdict: one builds an index once, the other builds a one-shot index.
+    // A multi-level board with a hidden sub-epic, a matching grandchild task
+    // and an unrelated subtree exercises every branch of both.
+    let mut matching_grandchild = epic_child(10, 3, "Fix login bug");
+    matching_grandchild.repo_path = "/repo/a".to_string();
+    let mut hidden_task = epic_child(11, 4, "Some infra work");
+    hidden_task.repo_path = "/repo/b".to_string();
+    let mut unrelated = epic_child(12, 5, "Update invoices");
+    unrelated.repo_path = "/repo/a".to_string();
+    let mut app = App::new(vec![matching_grandchild, hidden_task, unrelated]);
+
+    let mut deep = make_epic_with_title(3, "Deep");
+    deep.parent_epic_id = Some(EpicId(2));
+    let mut mid = make_epic_with_title(2, "Mid");
+    mid.parent_epic_id = Some(EpicId(1));
+    // Epic 4 matches by title but its only subtask is excluded by the repo
+    // filter, so it must not keep its parent (epic 6) visible.
+    let mut hidden_sub = make_epic_with_title(4, "Login redesign");
+    hidden_sub.parent_epic_id = Some(EpicId(6));
+    app.board.epics = vec![
+        make_epic_with_title(1, "Root"),
+        mid,
+        deep,
+        hidden_sub,
+        make_epic_with_title(5, "Billing rework"),
+        make_epic_with_title(6, "Docs cleanup"),
+    ];
+    app.filter.repos.insert("/repo/a".to_string());
+    app.filter.mode = RepoFilterMode::Include;
+    app.search.query = "login".to_string();
+
+    // Epic 1 is kept by its matching great-grandchild task; epics 5 and 6 are
+    // not kept (5's subtask does not match, 6's matching sub-epic is hidden).
+    assert_eq!(visible_epic_ids(&app), vec![1]);
+
+    // Same verdict, epic by epic, from the single-epic predicate. Root epics
+    // only — the view pass shows root epics in Board mode.
+    let via_predicate: Vec<i64> = [1, 5, 6]
+        .into_iter()
+        .filter(|&id| {
+            let eid = EpicId(id);
+            app.epic_matches(eid) && app.epic_repo_matches(eid) && app.epic_search_matches(eid)
+        })
+        .collect();
+    assert_eq!(via_predicate, vec![1]);
+}
+
+#[test]
+fn visible_epic_cards_do_not_read_the_layout_cache_for_search() {
+    // The view-pass counterpart of
+    // epic_search_matches_does_not_read_the_layout_cache: the index the pass
+    // builds is intra-call, so a cache populated before the keystroke must not
+    // answer for search.
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+    let _ = app.cached_epic_stats(); // populates layout.epic_filter_cache
+    app.search.query = "zzz".to_string();
+    assert!(visible_epic_ids(&app).is_empty());
+    app.search.query = "login".to_string();
+    assert_eq!(visible_epic_ids(&app), vec![1]);
+}
+
+#[test]
 fn search_narrows_sub_epic_cards_inside_an_epic_view() {
     use crate::tui::messages::EpicMessage;
     use crate::tui::types::Message;
