@@ -783,6 +783,90 @@ pub fn inactive_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Opti
     Ok(first.map(str::to_string))
 }
 
+/// Split one `list-panes` row of the form `<pane_id> <rest…>` into its two
+/// halves. `rest` is empty when the field it carries is unset — tmux prints the
+/// separator either way — and may itself contain spaces, so only the first field
+/// is consumed.
+fn split_pane_row(line: &str) -> Option<(&str, &str)> {
+    match line.split_once(' ') {
+        Some((id, rest)) => Some((id, rest)),
+        // Defensive: a row with no separator is not a shape tmux produces for
+        // these formats, but reading it as "id, no value" is strictly better
+        // than dropping the pane from the listing.
+        None if !line.is_empty() => Some((line, "")),
+        None => None,
+    }
+}
+
+/// Pane ids in `target`'s window whose pane-scoped user option `option` is set
+/// to a non-empty value.
+///
+/// This is how dispatch finds a pane it created: the marker is written at
+/// creation ([`set_pane_option`]) and survives [`respawn_pane_running`], so the
+/// pane is identified by *what it is* rather than by whether it happens to be
+/// the focused one — see [`inactive_pane_id`] for the heuristic this replaces
+/// and why it was only ever true for an untouched two-pane window.
+///
+/// `target` may be a window name or a pane id. A pane id resolves to *its own*
+/// window's panes, which is what lets a process inside a pane look up its
+/// siblings knowing only `$TMUX_PANE`.
+pub fn pane_ids_with_option(
+    target: &str,
+    option: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<Vec<String>> {
+    let resolved = window_target(target, runner)?;
+    let format = format!("#{{pane_id}} #{{{option}}}");
+    let out = run_checked_stdout(
+        runner,
+        &["list-panes", "-t", &resolved, "-F", &format],
+        "list-panes",
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(split_pane_row)
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(id, _)| id.to_string())
+        .collect())
+}
+
+/// Pane ids in `target`'s window whose `#{pane_start_command}` satisfies
+/// `matches`. The predicate receives the whole command line, which may contain
+/// spaces and is empty for a pane running a plain shell.
+///
+/// Used where no marker can be written after the fact: the agent-tree companion
+/// pane is identified this way so that panes already running when the lookup
+/// shipped are covered without a migration — tmux has always reported the
+/// command a pane was started with. Same `target` rules as
+/// [`pane_ids_with_option`].
+pub fn pane_ids_with_start_command<F>(
+    target: &str,
+    matches: F,
+    runner: &dyn ProcessRunner,
+) -> Result<Vec<String>>
+where
+    F: Fn(&str) -> bool,
+{
+    let resolved = window_target(target, runner)?;
+    let out = run_checked_stdout(
+        runner,
+        &[
+            "list-panes",
+            "-t",
+            &resolved,
+            "-F",
+            "#{pane_id} #{pane_start_command}",
+        ],
+        "list-panes",
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(split_pane_row)
+        .filter(|(_, cmd)| matches(cmd))
+        .map(|(id, _)| id.to_string())
+        .collect())
+}
+
 /// List the ids of all tmux panes across all sessions.
 ///
 /// The pane-level sibling of [`list_all_window_names`], with the same `-a`
@@ -1652,6 +1736,92 @@ mod tests {
             err.to_string().contains("split-window failed"),
             "got: {err}"
         );
+    }
+
+    // --- pane_ids_with_option / pane_ids_with_start_command ---
+
+    #[test]
+    fn pane_ids_with_option_returns_only_marked_panes() {
+        // `list-panes` rows are "<pane_id> <value>"; an unset option renders as
+        // the empty string, with the separator still there.
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"%1 \n%2 1\n%3 \n",
+        )]);
+        let found = pane_ids_with_option("%1", "@dispatch_editor_pane", &mock).unwrap();
+        assert_eq!(found, vec!["%2".to_string()]);
+        assert_eq!(
+            mock.recorded_calls()[0].1,
+            vec![
+                "list-panes",
+                "-t",
+                "%1",
+                "-F",
+                "#{pane_id} #{@dispatch_editor_pane}",
+            ]
+        );
+    }
+
+    #[test]
+    fn pane_ids_with_option_is_empty_when_nothing_is_marked() {
+        let mock =
+            MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n")]);
+        assert!(pane_ids_with_option("%1", "@dispatch_editor_pane", &mock)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn pane_ids_with_option_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")]);
+        assert!(pane_ids_with_option("%1", "@x", &mock).is_err());
+    }
+
+    #[test]
+    fn pane_ids_with_start_command_matches_on_the_command() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"%1 dispatch agent-tree 42\n%2 \n%3 vim /w/a.rs\n",
+        )]);
+        let found =
+            pane_ids_with_start_command("%2", |cmd| cmd.starts_with("dispatch "), &mock).unwrap();
+        assert_eq!(found, vec!["%1".to_string()]);
+        assert_eq!(
+            mock.recorded_calls()[0].1,
+            vec![
+                "list-panes",
+                "-t",
+                "%2",
+                "-F",
+                "#{pane_id} #{pane_start_command}",
+            ]
+        );
+    }
+
+    /// A start command can contain spaces, so only the *first* field is the pane
+    /// id — the rest reaches the predicate whole.
+    #[test]
+    fn pane_ids_with_start_command_passes_the_whole_command_to_the_predicate() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"%4 vim /w/some file.rs\n",
+        )]);
+        let found =
+            pane_ids_with_start_command("%4", |cmd| cmd == "vim /w/some file.rs", &mock).unwrap();
+        assert_eq!(found, vec!["%4".to_string()]);
+    }
+
+    /// A pane running a plain shell reports an empty start command. It must reach
+    /// the predicate as an empty string rather than being dropped from the
+    /// listing, so a predicate can deliberately match it.
+    #[test]
+    fn pane_ids_with_start_command_yields_panes_with_no_start_command() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%9 \n")]);
+        let found = pane_ids_with_start_command("%9", str::is_empty, &mock).unwrap();
+        assert_eq!(found, vec!["%9".to_string()]);
+    }
+
+    #[test]
+    fn pane_ids_with_start_command_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")]);
+        assert!(pane_ids_with_start_command("%1", |_| true, &mock).is_err());
     }
 
     // --- split_window_full_below_running ---
