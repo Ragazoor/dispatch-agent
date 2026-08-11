@@ -116,6 +116,23 @@ entity AgentTreePane {
     -- Stamped on every refresh; drives the redraw timer (see RefreshAgentTree).
     last_rendered_at: Timestamp
 
+    -- The editor pane opened from this tree, if any. At most one per agent
+    -- window (see OneEditorPanePerAgentWindow): opening a second file replaces
+    -- what this pane is running rather than adding another pane. It lives in
+    -- the same window as this pane but is NOT an AgentTreePane — nothing
+    -- renders a tree in it, and the toggle does not act on it.
+    editor_pane: core/TmuxPane?
+
+    -- Which file the editor pane is showing, relative to root. Set on every
+    -- open, so it is what distinguishes "replaced the file" from "did nothing"
+    -- when the pane is reused (see ReplaceAgentTreeEditorFile).
+    editor_file: String? when editor_pane != null
+
+    -- Why the last attempt to open a file failed, shown in this pane's own
+    -- border until the next keypress. The only thing the pane ever reports to
+    -- the user (see AgentTreeEditorOpenFailureIsVisible).
+    error_notice: String?
+
     transitions status {
         shown -> hidden
         hidden -> shown
@@ -148,6 +165,19 @@ config {
     -- pane. "e" for explorer: unbound in tmux's default key table, so the
     -- binding shadows nothing. See the ToggleKeyChoice open question.
     agent_tree_toggle_key: String = "e"
+
+    -- Height of the editor pane as a percentage of the agent window. It spans
+    -- the full window WIDTH, so the tree and the agent's own pane share the
+    -- remaining 40% above it — unlike agent_tree_pane_percent, which divides
+    -- the window horizontally. Deliberately the larger share: reading the file
+    -- is the point of opening it.
+    agent_tree_editor_pane_percent: Integer = 60
+
+    -- Editor of last resort, when the environment names none. Not a user-facing
+    -- setting: the editor is chosen by the environment (see
+    -- OpenAgentTreeFileInEditor's guidance), and this constant only gives the
+    -- fallback a name.
+    agent_tree_editor_fallback: String = "vi"
 }
 
 ------------------------------------------------------------
@@ -430,38 +460,60 @@ rule HideAgentTreePane {
         -- #{window_name} format-string expansion inside the bound run-shell
         -- command (see BindAgentTreeToggle), before dispatch even starts —
         -- this process is simply handed the window name as an argv string.
-        -- `pane.status = shown` is read from tmux's own per-pane
-        -- #{pane_active} flag on the window, not from any stored status
-        -- field: exactly one inactive pane means shown, none means hidden.
+        -- `pane.status = shown` means the window HAS a companion pane, which is
+        -- read by identifying that pane directly (below), not from any stored
+        -- status field.
         --
-        -- The "companion pane, never the agent's own pane" guarantee above
-        -- comes from OneCompanionPanePerAgentWindow plus every split helper
-        -- in this module (`split_window_horizontal`,
-        -- `split_window_horizontal_running`, `join_pane`) passing `-d`, which
-        -- keeps focus on the agent's own pane at split time — so the
-        -- companion pane is always the *inactive* one. The kill target is
-        -- discovered via that flag (`tmux::inactive_pane_id`), never a
-        -- hardcoded pane index: tmux's `pane-base-index` option can shift
-        -- which index the agent's own pane gets, so an index-based target
-        -- (e.g. always killing index 1) would be wrong under a customised
-        -- `pane-base-index` and risks killing the live agent session instead
-        -- of the companion.
+        -- == How the companion pane is identified ==
+        -- By the command it was started with: tmux's #{pane_start_command},
+        -- matched as argv0's basename equal to the dispatch binary AND argv1
+        -- equal to the agent-tree subcommand. No such pane in the window means
+        -- hidden. Two details are load-bearing:
+        --   * The match is on argv0 and argv1 as separate tokens, never a
+        --     substring. An editor pane opened on a file whose own path
+        --     contains "agent-tree" — docs/specs/agent-tree.allium, say — would
+        --     satisfy a substring test, and the toggle would kill the user's
+        --     editor.
+        --   * argv0 is compared by basename, because the binary is named
+        --     through ProcessRunner::agent_binaries and may be an absolute
+        --     path (which is how the real-tmux harness points it at a stub).
+        -- The marker is retroactive at no cost: tmux reports the start command
+        -- of panes already running, so windows open when this shipped need no
+        -- migration and no fallback heuristic.
+        --
+        -- == What this replaced, and why ==
+        -- The kill target used to be "the window's single INACTIVE pane"
+        -- (`tmux::inactive_pane_id`), justified by every split helper passing
+        -- `-d`, which leaves focus on the agent's own pane at split time. That
+        -- is a property of the split, not of the window, and it failed in two
+        -- ways once the user was involved:
+        --   * With focus in the companion pane — which the user must take to
+        --     press any key in it — the single inactive pane is the AGENT'S, so
+        --     the toggle killed the live claude session.
+        --   * With an editor pane open (OpenAgentTreeFileInEditor) two panes
+        --     are inactive, which read as "hidden", so the toggle split a
+        --     SECOND companion pane.
+        -- Identifying the pane by what it is rather than by where focus happens
+        -- to be is what makes "the companion pane, never the agent's own pane"
+        -- true rather than merely usually true. An index-based target remains
+        -- wrong for the separate reason it always was: `pane-base-index` shifts
+        -- indices and a `-b` split renumbers them.
         --
         -- == RESOLVED: ToggleVsSplitPaneInteraction ==
         -- The former open question here asked whether the board's
         -- split-pane join/swap operations (split-pane.allium: `join_pane`,
         -- `exec_swap_split_pane`) needed to become companion-pane-aware,
         -- since both predate every agent window carrying a companion pane.
-        -- Resolved in favour of fixing the mutation side rather than this
-        -- rule's own active/inactive resolution: `join_pane` now drains any
-        -- companion pane left behind when it moves the agent's own pane out
-        -- (see split-pane.allium's PinTaskInSplitPane guidance), and
-        -- `exec_swap_split_pane` resyncs a renamed window's companion pane
-        -- to the task the new name implies (see SwapSplitPane's guidance).
-        -- HideAgentTreePane/ShowAgentTreePane's own state-reading is
-        -- unchanged — it was already correct; the gap was that the other
-        -- feature's mutations could leave tmux state it couldn't
-        -- distinguish from "hidden".
+        -- Both sides needed fixing, and the first answer recorded here got the
+        -- division wrong. On the mutation side: `join_pane` drains the
+        -- companion panes left behind when it moves the agent's own pane out
+        -- (see split-pane.allium's PinTaskInSplitPane guidance) — every pane
+        -- dispatch put in that window, the editor pane included, since with one
+        -- open the old single-inactive-pane lookup was ambiguous and orphaned
+        -- both. `exec_swap_split_pane` resyncs a renamed window's companion
+        -- pane to the task the new name implies (see SwapSplitPane's guidance).
+        -- But this rule's own state-reading was NOT "already correct" as
+        -- previously claimed: see "What this replaced" above.
         --
         -- A window name that doesn't parse as `task-<id>` (the inverse of
         -- build_tmux_window_name — the board's own TUI window, the
@@ -492,8 +544,9 @@ rule ShowAgentTreePane {
         --
         -- == IMPLEMENTED ==
         -- `pane.status = hidden` above is read the same live way
-        -- HideAgentTreePane's guidance describes: a window with exactly 1
-        -- pane. The re-split reuses SplitAgentTreePaneOnAgentLaunch's own
+        -- HideAgentTreePane's guidance describes: no pane in the window was
+        -- started with the agent-tree command. The re-split reuses
+        -- SplitAgentTreePaneOnAgentLaunch's own
         -- implementation directly — toggle_agent_tree_pane
         -- (src/dispatch/agents.rs) calls the same spawn_agent_tree_pane
         -- helper that agent-launch time uses, so the show side of the toggle
@@ -502,8 +555,9 @@ rule ShowAgentTreePane {
         -- window name (`task-<id>`), never from a stored pane record.
         --
         -- Resolves ToggleTargetResolution in favour of retrofitting: because
-        -- "hidden" and "never had a pane" are the same live tmux state (1
-        -- pane), a task-<id> window that predates this feature — or one whose
+        -- "hidden" and "never had a pane" are the same live tmux state (no pane
+        -- carrying the marker), a task-<id> window that predates this feature —
+        -- or one whose
         -- automatic split at launch failed — gets a companion pane the first
         -- time a user manually toggles it. This does not violate
         -- SplitAgentTreePaneOnAgentLaunch's "no retrofit" guidance, which is
@@ -694,6 +748,142 @@ rule ExitAgentTreeRenderer {
         -- remaining life of that agent window.
 }
 
+rule OpenAgentTreeFileInEditor {
+    -- Space or Enter on a file node, in a window that has no editor pane yet:
+    -- open one below the tree showing that file.
+    when: OpenSelectedAgentTreeFile(user, pane, node)
+
+    requires: node.kind = file
+    requires: pane.editor_pane = null
+    -- The agent may have deleted the file since touching it. The event log is
+    -- append-only and records no deletions, so a node can outlive its file.
+    requires: file_exists(pane.root + "/" + node.path)
+
+    ensures: pane.editor_pane = core/TmuxPane.created()
+    ensures: pane.editor_file = node.path
+    ensures: pane.error_notice = null
+
+    @guidance
+        -- == Geometry ==
+        -- The pane spans the full window WIDTH and takes
+        -- config.agent_tree_editor_pane_percent of its height, below both the
+        -- tree and the agent's own pane. Spanning the window rather than
+        -- subdividing the pane it was split from is what makes the geometry
+        -- independent of which pane the split targeted — the tree pane is the
+        -- natural target and it is the narrow one.
+        --
+        -- == Focus does not move ==
+        -- The interaction this is designed for is browsing: move the cursor,
+        -- open a file, move on, open the next. So the keystroke that opens a
+        -- file leaves tmux focus in the tree pane, and reaching the editor to
+        -- type in it is a deliberate second act (the tmux prefix plus a
+        -- direction). This is the one place this module's pane behaviour differs
+        -- in KIND from the board's split pane rather than in degree.
+        --
+        -- == Which editor ==
+        -- Whatever the environment names: VISUAL, else EDITOR, else
+        -- config.agent_tree_editor_fallback. A value naming no editor at all —
+        -- absent, empty, or only whitespace — is treated as unset, because
+        -- `export EDITOR=` is how a shell spells "none". The value is split into
+        -- argv and executed directly with no shell, so a value carrying flags
+        -- works and nothing in it is expanded, globbed or word-split by the
+        -- shell. The file is passed as an absolute path and the pane starts in
+        -- pane.root, so a relative path would resolve anyway; absolute is what
+        -- makes that not matter.
+        --
+        -- A GUI editor that forks on launch returns immediately, so its pane
+        -- closes while its window stays open. That is the correct outcome and
+        -- needs no special handling.
+        --
+        -- == Not a violation of ReadOnlyObservation ==
+        -- The renderer still writes nothing. It launches a process that CAN
+        -- write, at the user's explicit keypress — see the amended guarantee on
+        -- AgentTreeCompanionPane.
+}
+
+rule ReplaceAgentTreeEditorFile {
+    -- Space or Enter on a file node when an editor pane is already open: show
+    -- the new file THERE rather than opening a second pane.
+    when: OpenSelectedAgentTreeFile(user, pane, node)
+
+    requires: node.kind = file
+    requires: pane.editor_pane != null
+    requires: file_exists(pane.root + "/" + node.path)
+
+    -- The pane itself survives, so there is no new TmuxPane to create and
+    -- nothing about the window's layout changes — only which file it shows.
+    ensures: pane.editor_file = node.path
+    ensures: pane.error_notice = null
+
+    @guidance
+        -- One editor pane per window, replaced in place. The alternative —
+        -- a pane per opened file — subdivides the window on every press and
+        -- leaves the user to clean up, which is the opposite of the browsing
+        -- interaction OpenAgentTreeFileInEditor is shaped around.
+        --
+        -- ACCEPTED COST: replacing kills whatever the pane was running, an
+        -- editor with unsaved changes included. This was chosen deliberately
+        -- over the two alternatives (stack a new pane; refuse and merely focus
+        -- the existing one) in exchange for a layout that does not degrade as
+        -- the user browses. It is a real hazard, not an oversight: a user
+        -- editing in that pane must move the buffer elsewhere before opening
+        -- another file from the tree.
+        --
+        -- Focus does not move here either, for the same reason as the open
+        -- rule — so a user who IS typing in the editor pane cannot trigger this
+        -- without first leaving it.
+}
+
+rule AgentTreeEditorOpenFailureIsVisible {
+    -- Opening a file can fail for reasons the user can neither see nor predict
+    -- from the tree: the file is gone, or tmux refused. Say so in the pane.
+    when: AgentTreeEditorOpenFailed(pane, reason)
+
+    ensures: pane.error_notice = reason
+    ensures: pane.status = shown
+
+    @guidance
+        -- Deliberately the OPPOSITE of FileEventWriteFailureIsSilent, and the
+        -- difference is who is waiting. A dropped file-event is a background
+        -- write nobody asked for, so it costs one badge and a log line. This is
+        -- the direct response to a keypress: a silent no-op is indistinguishable
+        -- from a broken key, and the user would press it again.
+        --
+        -- The notice names the reason and nothing else — there is one line of
+        -- border to say it in. It is also logged, because the pane's copy is
+        -- gone by the next keypress (see ClearAgentTreeErrorNotice).
+        --
+        -- The renderer keeps running: an editor that cannot be opened must not
+        -- take the tree with it. pane.status = shown above is that guarantee,
+        -- not a state change.
+        --
+        -- Covers three failures with one rule because they are one event to the
+        -- user: the file no longer exists (the log records touches, never
+        -- deletions, so a node outlives its file), the renderer cannot identify
+        -- the pane it is running in (it was started outside tmux), and the tmux
+        -- split or replace itself failed.
+}
+
+rule ClearAgentTreeErrorNotice {
+    -- Any key the renderer handles acknowledges a notice. There is no separate
+    -- dismiss key and no timer.
+    when: AgentTreeKeyPressed(pane)
+
+    requires: pane.error_notice != null
+
+    ensures: pane.error_notice = null
+
+    @guidance
+        -- The next keypress is the earliest moment the user has demonstrably
+        -- seen the notice, which makes it the right thing to clear on: a timer
+        -- could expire before they looked, and a dedicated dismiss key would be
+        -- one more binding to document for a one-line message.
+        --
+        -- AgentTreeKeyPressed covers every key on the AgentTreeCompanionPane
+        -- surface, the exit key included — clearing state on the way out is
+        -- harmless, and the alternative is enumerating exceptions.
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
@@ -744,6 +934,25 @@ invariant OneCompanionPanePerAgentWindow {
             a != b implies a.window != b.window
 }
 
+-- At most one editor pane per agent window, and never shared between windows.
+-- A second would divide the window again on every open and leave the older one
+-- unowned: nothing renders it, the toggle does not act on it, and only the pane
+-- that opened it knows it is there.
+invariant OneEditorPanePerAgentWindow {
+    for a in AgentTreePanes:
+        for b in AgentTreePanes:
+            a != b implies (a.editor_pane = null or a.editor_pane != b.editor_pane)
+}
+
+-- The editor pane and the file it shows exist together or not at all: a pane
+-- showing nothing is unreachable (every rule that opens one names a file), and
+-- a remembered file with no pane would make ReplaceAgentTreeEditorFile fire
+-- against a pane that is gone.
+invariant EditorFileAccompaniesEditorPane {
+    for p in AgentTreePanes:
+        (p.editor_pane = null) = (p.editor_file = null)
+}
+
 -- A pane is always rooted at its task's worktree — never at the parent repo,
 -- and never at another task's worktree. This is what the real-tmux harness
 -- observes directly: a pane whose resolved cwd is the parent repo is the #231
@@ -791,6 +1000,8 @@ surface AgentTreeCompanionPane {
         pane.status
         pane.root
         pane.task
+        pane.editor_file
+        pane.error_notice
 
     provides:
         -- The global tmux binding (prefix + config.agent_tree_toggle_key).
@@ -813,20 +1024,31 @@ surface AgentTreeCompanionPane {
         -- closed (or is a file), the cursor moves to its parent instead.
         CollapseSelectedAgentTreeNode(user, pane)      -- h, Left
 
-        -- Expand and toggle act on directories only. On a file node both are
-        -- no-ops: a file has nothing to open, so the pane's expansion state is
-        -- left untouched and a following collapse steps out to the parent on
-        -- the first press rather than the second.
+        -- Expand acts on directories only. On a file node it is a no-op: a
+        -- directory is the only thing with something to open, so the pane's
+        -- expansion state is left untouched and a following collapse steps out
+        -- to the parent on the first press rather than the second.
         ExpandSelectedAgentTreeNode(user, pane)        -- l, Right
-        ToggleSelectedAgentTreeNode(user, pane)        -- Space, Enter
+
+        -- Space and Enter dispatch on the selected node's kind, so the two
+        -- actions below never contend for them: a directory toggles, a file
+        -- opens. Toggle is therefore directory-only in the same way expand is.
+        ToggleSelectedAgentTreeNode(user, pane)        -- Space, Enter (directory)
+        OpenSelectedAgentTreeFile(user, pane, node)    -- Space, Enter (file)
 
     @guarantee ReadOnlyObservation
         -- The pane only reads the task's event log. It never writes to the
-        -- worktree, never mutates the task, and never issues an MCP call —
-        -- including under the keyboard actions above, which move a cursor and
-        -- open or close directories in the pane's own view and nothing more.
+        -- worktree, never mutates the task, and never issues an MCP call.
         -- Killing it, or never opening it, cannot change what the agent does or
         -- what the board shows.
+        --
+        -- OpenSelectedAgentTreeFile does not breach this, and the distinction is
+        -- worth stating precisely: the renderer launches an editor process in a
+        -- pane beside itself, at the user's explicit keypress. The renderer
+        -- writes nothing; the editor it hands the file to is the user's, and
+        -- what they do with it is theirs. What this guarantee still forbids —
+        -- the pane modifying the worktree, the task or the board of its own
+        -- accord — is unchanged.
 
     @guarantee NoBoardCoupling
         -- The pane is a separate process in a separate window from the board
