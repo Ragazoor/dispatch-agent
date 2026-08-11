@@ -439,7 +439,7 @@ pub(in crate::tui) fn epic_active_matches_for_ids(
 /// matches every epic.
 ///
 /// Epic ids and task ids are separate sequences, so one digit payload can match
-/// both an epic card and a task card; both are shown. See `board_search_filter`
+/// both an epic card and a task card; both are shown. See board_search_filter
 /// in `docs/specs/core.allium`.
 pub(in crate::tui) fn epic_search_matches_for_ids(
     tasks: &[Task],
