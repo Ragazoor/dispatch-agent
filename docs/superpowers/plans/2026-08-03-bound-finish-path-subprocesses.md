@@ -4,7 +4,7 @@
 
 **Goal:** Bound every git subprocess on the wrap-up rebase path and the repo-sync path with `run_with_timeout(SUBPROCESS_TIMEOUT)`, so a stalled network call or a held index lock can no longer hang `wrap_up` forever.
 
-**Architecture:** Purely a swap of `ProcessRunner::run` for `ProcessRunner::run_with_timeout` at thirteen call sites across four files, plus one injectable-timeout field on the existing `FinishContext` struct so the tests are instant. No new error variants, no new constants, no new response shapes. Spec guidance moves first, then tests, then code.
+**Architecture:** Purely a swap of `ProcessRunner::run` for `ProcessRunner::run_with_timeout` at twelve call sites across three files, plus one injectable-timeout field on the existing `FinishContext` struct so the tests are instant. No new error variants, no new constants, no new response shapes. Spec guidance moves first, then tests, then code.
 
 **Tech Stack:** Rust 2021, `MockProcessRunner` (`src/process.rs`) for all tests, Allium specs in `docs/specs/`.
 

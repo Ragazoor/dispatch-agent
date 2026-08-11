@@ -1607,8 +1607,10 @@ mod tests {
         let timeouts = mock.recorded_timeouts();
         assert_eq!(
             timeouts.len(),
-            mock.recorded_calls().len(),
-            "every recorded call must have a timeout slot"
+            7,
+            "expected 7 subprocesses on this path (3 preconditions + fetch + rev-list + merge + recount), got {}: {:?}",
+            timeouts.len(),
+            mock.recorded_calls()
         );
         assert!(
             timeouts.iter().all(|t| *t == Some(SUBPROCESS_TIMEOUT)),
@@ -1636,7 +1638,13 @@ mod tests {
         );
 
         let timeouts = mock.recorded_timeouts();
-        assert_eq!(timeouts.len(), mock.recorded_calls().len());
+        assert_eq!(
+            timeouts.len(),
+            8,
+            "expected 8 subprocesses on this path (3 preconditions + fetch + rev-list + merge + status read + abort), got {}: {:?}",
+            timeouts.len(),
+            mock.recorded_calls()
+        );
         assert!(
             timeouts.iter().all(|t| *t == Some(SUBPROCESS_TIMEOUT)),
             "the conflict read and the abort must be bounded too, got: {timeouts:?}"
