@@ -157,22 +157,14 @@ pub fn finish_task(
         // clears this state, so it must be gathered first.
         let conflicted_files = if is_conflict {
             runner
-                .run_with_timeout(
-                    "git",
-                    &["-C", worktree, "status", "--porcelain"],
-                    timeout,
-                )
+                .run_with_timeout("git", &["-C", worktree, "status", "--porcelain"], timeout)
                 .map(|o| parse_unmerged_files(&o))
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
 
-        let _ = runner.run_with_timeout(
-            "git",
-            &["-C", worktree, "rebase", "--abort"],
-            timeout,
-        );
+        let _ = runner.run_with_timeout("git", &["-C", worktree, "rebase", "--abort"], timeout);
 
         if is_conflict {
             return Err(FinishError::RebaseConflict {
@@ -435,7 +427,7 @@ mod tests {
             (None, MockProcessRunner::ok_with_stdout(b"")),       // status --porcelain (clean)
             (None, MockProcessRunner::fail("")),                  // remote get-url (no remote)
             (None, MockProcessRunner::ok()),                      // git rebase
-            (Some(TEST_TIMEOUT), MockProcessRunner::ok()), // git merge --ff-only — blocked
+            (Some(TEST_TIMEOUT), MockProcessRunner::ok()),        // git merge --ff-only — blocked
         ]);
 
         let err = finish_task(&fctx("main"), &mock).unwrap_err();
@@ -504,7 +496,7 @@ mod tests {
                 stderr: vec![],
             }), // git rebase — conflicts
             MockProcessRunner::ok_with_stdout(b"UU lib.rs\n"), // status --porcelain (mid-rebase)
-            MockProcessRunner::ok(),                           // git rebase --abort
+            MockProcessRunner::ok(),                      // git rebase --abort
         ]);
 
         let err = finish_task(&fctx("main"), &mock).unwrap_err();

@@ -1622,11 +1622,11 @@ mod tests {
     #[test]
     fn sync_repo_bounds_the_conflict_abort_path() {
         let mock = MockProcessRunner::new(responses(vec![
-            MockProcessRunner::ok(),                          // fetch
-            MockProcessRunner::ok_with_stdout(b"0\t2\n"),     // rev-list: behind 2
-            MockProcessRunner::fail("CONFLICT"),              // merge fails
+            MockProcessRunner::ok(),                           // fetch
+            MockProcessRunner::ok_with_stdout(b"0\t2\n"),      // rev-list: behind 2
+            MockProcessRunner::fail("CONFLICT"),               // merge fails
             MockProcessRunner::ok_with_stdout(b"UU lib.rs\n"), // status --porcelain
-            MockProcessRunner::ok(),                          // merge --abort
+            MockProcessRunner::ok(),                           // merge --abort
         ]));
 
         let err = sync_repo(REPO, BASE, &mock).expect_err("a conflicted merge fails");
