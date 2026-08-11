@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::tui::commands::BudgetCommand;
+use crate::tui::commands::{BudgetCommand, LearningCommand};
 
 /// Full `Command` match dispatch — one entry per variant, in `Command` enum order.
 ///
@@ -67,8 +67,8 @@ pub(super) async fn dispatch(
             dispatch_split(rt, app, cmd);
             vec![]
         }
-        Learning(cmd) => {
-            dispatch_learning(rt, app, cmd).await;
+        Learning(LearningCommand::ArchiveStale) => {
+            rt.exec_archive_stale_learnings().await;
             vec![]
         }
         RecordUsageEvent(event) => {
@@ -162,17 +162,6 @@ async fn dispatch_main_session(
         Open => rt.exec_open_main_session(app).await,
         Create => rt.exec_create_main_session(app).await,
         CheckLiveness => drop(rt.exec_check_main_session_liveness()),
-    }
-}
-
-async fn dispatch_learning(
-    rt: &super::TuiRuntime,
-    _app: &mut super::App,
-    cmd: crate::tui::commands::LearningCommand,
-) {
-    use crate::tui::commands::LearningCommand::*;
-    match cmd {
-        ArchiveStale => rt.exec_archive_stale_learnings().await,
     }
 }
 

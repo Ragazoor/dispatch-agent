@@ -100,9 +100,8 @@ The Knowledge Base lets dispatched agents record knowledge entries that are auto
 ### End-to-end lifecycle
 
 1. **Agent records** — calls `record_learning(task_id, kind, summary, scope, ...)` during a task or at wrap-up. The entry is immediately active and will appear in future dispatch prompts for agents working in the matching scope.
-2. **Human manages** — opens the Knowledge Base overlay (`I` key from the main board) and can reject, archive, or edit entries. Only approved entries stay in the active pool.
-3. **Future dispatches** — when an agent is launched, `dispatch_with_prompt()` queries approved entries for the task's context and prepends them to the prompt (see `docs/specs/learnings.allium`).
-4. **Agent rates** — calls `rate_learning(learning_id, task_id, verdict)` when it acts on a retrieved entry. `helped` increments `upvote_count` (raising the entry's priority in future results); `wrong` decrements `upvote_count` (a downvote; may go negative) and leaves the status unchanged. Only entries surfaced to the task (injected or returned by `query_learnings`) can be rated. There is no human-approval step: entries land approved and a background job archives approved entries with a non-positive score that have gone stale (see `docs/specs/learnings.allium`: `ArchiveStaleLearning`).
+2. **Future dispatches** — when an agent is launched, `dispatch_with_prompt()` queries approved entries for the task's context and prepends them to the prompt (see `docs/specs/learnings.allium`).
+3. **Agent rates** — calls `rate_learning(learning_id, task_id, verdict)` when it acts on a retrieved entry. `helped` increments `upvote_count` (raising the entry's priority in future results); `wrong` decrements `upvote_count` (a downvote; may go negative) and leaves the status unchanged. Only entries surfaced to the task (injected or returned by `query_learnings`) can be rated. There is no human-approval step and no human-facing curation surface: entries land approved, and curation happens through MCP (`rate_learning`, `delete_learning`) plus a background job that archives approved entries with a non-positive score that have gone stale (see `docs/specs/learnings.allium`: `ArchiveStaleLearning`).
 
 ### Scope model
 
@@ -117,43 +116,22 @@ Each learning has a `scope` that determines which tasks receive it:
 
 `scope_ref` is auto-derived from the task context when omitted. `task`-scoped entries are excluded from auto-injection (they capture task-specific outcomes and must be fetched on demand).
 
-### Prompt priority order
+### Ordering
 
-Within an injected prompt, learnings are ordered (highest first):
-
-1. `procedural` — prepended as verbatim prompt-prefix instructions before the normal learnings block
-2. `epic` — most specific to the current work
-3. `repo` — repository-wide conventions
-4. `user` — global preferences
-
-Within each level, entries are sorted by `upvote_count DESC`.
+Candidate entries are fetched from SQLite ordered by kind (`procedural` first), then scope specificity (`epic` → `repo` → `user`), then `upvote_count DESC`. That ordering only selects the candidate set: the injected block itself is RAG-ranked by relevance to the task, so `kind` confers no precedence in the final prompt. Procedural entries are **not** prepended as a verbatim prefix — every retrieved entry, procedural included, goes into the single ranked block.
 
 ### Status lifecycle
 
 ```
 approved → archived (terminal)
-         ↘ rejected (terminal)
 ```
 
-Approved entries affect dispatch. Rejected and archived entries do not.
-
-### Key bindings in the Knowledge Base overlay
-
-| Key | Action |
-|-----|--------|
-| `I` | Open overlay |
-| `j` / `k` | Navigate (list or tree cursor) |
-| `Tab` | Toggle list / tree view |
-| `h` / `l` | Collapse / expand group (tree view) |
-| `x` | Reject selected |
-| `A` | Archive selected |
-| `e` | Edit (opens `$EDITOR`) |
-| `Esc` / `q` | Close |
+Approved entries affect dispatch; archived entries do not. `rejected` remains a valid `LearningStatus` because existing rows still carry it, but nothing writes it any more — the reject path was removed with the TUI overlay.
 
 ### Implementation references
 
 - `src/mcp/handlers/learnings.rs` — MCP tool handlers
-- `src/service/learnings.rs` — `LearningService` (approval, rejection, archive, edit)
+- `src/service/learnings.rs` — `LearningService` (create, query, retrieval/verdicts, stale sweep, delete)
 - `src/db/` — `LearningStore` trait, `LearningPatch`, `LearningFilter`
 - `src/dispatch/agents.rs` — prompt augmentation in `dispatch_with_prompt()`
 - `docs/specs/learnings.allium` — full domain specification

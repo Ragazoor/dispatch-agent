@@ -607,13 +607,8 @@ rule ArchiveStaleLearning {
 
 -- This specification declares no surfaces.
 --
--- The knowledge base has no human-facing boundary. It was previously browsed and
--- curated through a TUI overlay (opened with `I`, with list/tree views and
--- reject/archive/edit actions); that overlay is gone, along with the reject and
--- edit behaviours it was the only entry point for. Nothing in the TUI reads or
--- writes learnings.
---
--- Everything that remains crosses the MCP boundary instead:
+-- The knowledge base has no human-facing boundary: nothing in the TUI reads or
+-- writes learnings. Every path crosses the MCP boundary or runs unattended:
 --   record_learning / query_learnings / rate_learning / delete_learning
 --     — specified as rules above; the tool surface itself is described in
 --       mcp-task-tools.allium.

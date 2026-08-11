@@ -491,12 +491,16 @@ impl<T: TaskCrud + EpicCrud> TaskAndEpicStore for T {}
 
 patch_struct! {
     /// Builder for selective learning field updates.
+    ///
+    /// Deliberately narrow: `embedding` is the only field with a production
+    /// writer (the startup backfill in `runtime::bootstrap`), and `status` is
+    /// written by tests seeding archived/rejected rows. There is no field-editing
+    /// path for a learning's content — `detail`/`kind`/`tags` setters were
+    /// removed with the TUI overlay, which keeps a stale embedding
+    /// unrepresentable (see `docs/specs/learnings.allium`: EmbeddingConsistency).
     pub struct LearningPatch<'a> {
         plain    status:    LearningStatus,
         plain    summary:   &'a str,
-        nullable detail:    &'a str,
-        plain    kind:      LearningKind,
-        plain    tags:      &'a [String],
         plain    embedding: &'a [u8],
     }
 }

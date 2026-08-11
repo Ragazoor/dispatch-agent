@@ -154,6 +154,19 @@ async fn action_hints_no_task() {
     assert!(!keys.contains(&"[e]"), "no-task has no edit");
 }
 
+/// The `[I] learnings` footer hint went with the overlay
+/// (docs/plans/3809-keybinding-pruning-implementation.md §3) — the footer must
+/// not advertise a key that no longer has a handler.
+#[tokio::test]
+async fn action_hints_no_longer_advertises_learnings_key() {
+    let hints = ui::action_hints(None, false, Color::Rgb(122, 162, 247));
+    let keys = hint_keys(&hints);
+    assert!(
+        !keys.contains(&"[I]"),
+        "retired learnings key must not appear"
+    );
+}
+
 #[tokio::test]
 async fn action_hints_backlog_shows_enter_detail() {
     let task = make_task(1, TaskStatus::Backlog);

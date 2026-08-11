@@ -164,9 +164,6 @@ impl super::super::LearningStore for Database {
         }
         let status = patch.status;
         let summary = patch.summary.map(|s| s.to_owned());
-        let detail = patch.detail.map(|d| d.map(str::to_owned));
-        let kind = patch.kind;
-        let tags = patch.tags.map(|t| t.to_vec());
         let embedding = patch.embedding.map(|b| b.to_vec());
 
         self.db_call(move |conn| {
@@ -180,18 +177,6 @@ impl super::super::LearningStore for Database {
             if let Some(summary) = summary {
                 sets.push(format!("summary = ?{}", bind.len() + 1));
                 bind.push(Box::new(summary));
-            }
-            if let Some(detail) = detail {
-                sets.push(format!("detail = ?{}", bind.len() + 1));
-                bind.push(Box::new(detail));
-            }
-            if let Some(kind) = kind {
-                sets.push(format!("kind = ?{}", bind.len() + 1));
-                bind.push(Box::new(kind.as_str().to_owned()));
-            }
-            if let Some(tags) = tags {
-                sets.push(format!("tags = ?{}", bind.len() + 1));
-                bind.push(Box::new(write_json_string_vec(&tags)?));
             }
             if let Some(embedding) = embedding {
                 sets.push(format!("embedding = ?{}", bind.len() + 1));

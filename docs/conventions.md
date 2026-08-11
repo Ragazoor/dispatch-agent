@@ -224,7 +224,7 @@ crate::task_service_api!(service_api_stub_bridge, MockTaskService);
 
 Unmocked calls panic rather than silently returning a default, and a new seam method no longer breaks unrelated mocks with `E0046`. Stub traits are generated for `TaskServiceApi` and `LearningServiceApi` (the seams with mocks); add a `#[cfg(test)] <spec>!(service_api_stub_trait);` line in `api.rs` when another seam needs one.
 
-**`LearningServiceApi` injection is complete.** `src/service/api.rs` exports `LearningServiceApi` and a `MockLearningService` (test-only, an empty `LearningServiceApiStub` impl, so every method panics). Both `TuiRuntime` and `McpState` hold `learning_svc: Arc<dyn LearningServiceApi>`, constructed once at startup. Tests that do not exercise learning operations use `MockLearningService`; tests that need real learning behaviour (e.g. `runtime/learnings.rs`, `runtime/editor.rs` learning-editor tests) inject `Arc::new(LearningService::new(db, emb_svc))` directly.
+**`LearningServiceApi` injection is complete.** `src/service/api.rs` exports `LearningServiceApi` and a `MockLearningService` (test-only, an empty `LearningServiceApiStub` impl, so every method panics). Both `TuiRuntime` and `McpState` hold `learning_svc: Arc<dyn LearningServiceApi>`, constructed once at startup. Tests that do not exercise learning operations use `MockLearningService`; tests that need real learning behaviour (e.g. the `src/mcp/handlers/tests/learnings.rs` handler tests, and the stale-sweep test in `src/runtime/learnings.rs`) inject `Arc::new(LearningService::new(db, emb_svc))` directly.
 
 ## Service layer is the mutation boundary
 

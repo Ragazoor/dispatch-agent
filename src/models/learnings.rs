@@ -134,11 +134,6 @@ impl LearningStatus {
             other => Err(format!("unknown learning status: {other}")),
         }
     }
-
-    /// Returns true if this status is terminal (no further transitions allowed).
-    pub fn is_terminal(self) -> bool {
-        matches!(self, LearningStatus::Rejected | LearningStatus::Archived)
-    }
 }
 
 impl std::fmt::Display for LearningStatus {

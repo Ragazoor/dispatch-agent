@@ -314,11 +314,7 @@ When an agent is dispatched, Dispatch queries approved learnings that match the 
 
 ### Ranking
 
-Within the injected set, learnings are ordered:
-
-1. **Kind first**: `procedural` learnings appear before all others (injected verbatim as prompt-prefix instructions)
-2. **Scope proximity**: epic → repo → user (closest context first)
-3. **Confirmation count**: more-confirmed learnings rank higher within the same band
+The SQL candidate query orders by kind (`procedural` first), then scope proximity (epic → repo → user), then confirmation count. That selects *which* entries are candidates; the injected block is then **RAG-ranked by relevance to the task**, so `kind` gives no precedence in the final prompt and procedural entries are not injected as a verbatim prompt prefix.
 
 The auto-inject cap is **10 learnings**. Agents can retrieve up to **50** via an explicit `query_learnings` call.
 

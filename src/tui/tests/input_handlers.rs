@@ -2277,6 +2277,19 @@ fn handle_key_normal_board_unknown_key_is_noop() {
     assert_eq!(app.input.mode, InputMode::Normal);
 }
 
+/// `I` used to open the knowledge-base overlay, removed in
+/// docs/plans/3809-keybinding-pruning-implementation.md §3. It is now unbound:
+/// no match arm, so it must fall through exactly like any unknown key. Learnings
+/// are curated via MCP only.
+#[test]
+fn handle_key_normal_board_learnings_key_is_unbound() {
+    let mut app = make_app();
+    let cmds = app.handle_key(make_key(KeyCode::Char('I')));
+    assert!(cmds.is_empty());
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(matches!(app.board.view_mode, ViewMode::Board(_)));
+}
+
 /// InputTitle mode routes to the text input handler.
 #[test]
 fn handle_key_input_title_routes_to_text_input() {
