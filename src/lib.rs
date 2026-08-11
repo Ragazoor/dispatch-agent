@@ -4,6 +4,7 @@
 pub const DEFAULT_PORT: u16 = 3142;
 
 pub mod agent_tree;
+pub mod agent_tree_editor;
 pub mod cli;
 pub mod db;
 pub mod dispatch;
