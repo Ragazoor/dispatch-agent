@@ -250,7 +250,7 @@ pub fn sync_repo(
     let mut ahead = counts.ahead;
     if counts.behind > 0 {
         let output = runner
-            .run(
+            .run_with_timeout(
                 "git",
                 &[
                     "-C",
@@ -259,6 +259,7 @@ pub fn sync_repo(
                     "--no-edit",
                     &format!("origin/{base_branch}"),
                 ],
+                SUBPROCESS_TIMEOUT,
             )
             .map_err(|e| SyncError::Other(format!("Failed to run git merge: {e}")))?;
         if !output.status.success() {
@@ -266,10 +267,18 @@ pub fn sync_repo(
             // aborting — the abort clears them
             // (`ConflictFilesCapturedBeforeAbort`).
             let conflicted = runner
-                .run("git", &["-C", &repo, "status", "--porcelain"])
+                .run_with_timeout(
+                    "git",
+                    &["-C", &repo, "status", "--porcelain"],
+                    SUBPROCESS_TIMEOUT,
+                )
                 .map(|o| crate::git::parse_unmerged_files(&o))
                 .unwrap_or_default();
-            let _ = runner.run("git", &["-C", &repo, "merge", "--abort"]);
+            let _ = runner.run_with_timeout(
+                "git",
+                &["-C", &repo, "merge", "--abort"],
+                SUBPROCESS_TIMEOUT,
+            );
             if !conflicted.is_empty() {
                 return Err(SyncError::MergeConflict { files: conflicted });
             }
@@ -1578,5 +1587,59 @@ mod tests {
                 "every call must target the repo root: {args:?}"
             );
         }
+    }
+
+    // repo-sync.allium's engine guidance claims every subprocess it issues is
+    // bounded by a timeout. This is the test that makes the claim true rather than
+    // aspirational, and it covers the preflight reads reached through `crate::git`
+    // as well as the engine's own calls.
+    #[test]
+    fn sync_repo_bounds_every_subprocess_it_runs() {
+        let mock = MockProcessRunner::new(responses(vec![
+            MockProcessRunner::ok(),                      // fetch
+            MockProcessRunner::ok_with_stdout(b"0\t2\n"), // rev-list: behind 2
+            MockProcessRunner::ok(),                      // merge
+            MockProcessRunner::ok_with_stdout(b"0\t0\n"), // recount
+        ]));
+
+        sync_repo(REPO, BASE, &mock).expect("a behind repo fast-forwards");
+
+        let timeouts = mock.recorded_timeouts();
+        assert_eq!(
+            timeouts.len(),
+            mock.recorded_calls().len(),
+            "every recorded call must have a timeout slot"
+        );
+        assert!(
+            timeouts.iter().all(|t| *t == Some(SUBPROCESS_TIMEOUT)),
+            "every subprocess on the sync path must be bounded, got: {timeouts:?}"
+        );
+    }
+
+    // The happy path never reaches the conflict branch, so the porcelain read and
+    // the merge abort need their own gate — the same split as finish_task's
+    // conflict path.
+    #[test]
+    fn sync_repo_bounds_the_conflict_abort_path() {
+        let mock = MockProcessRunner::new(responses(vec![
+            MockProcessRunner::ok(),                          // fetch
+            MockProcessRunner::ok_with_stdout(b"0\t2\n"),     // rev-list: behind 2
+            MockProcessRunner::fail("CONFLICT"),              // merge fails
+            MockProcessRunner::ok_with_stdout(b"UU lib.rs\n"), // status --porcelain
+            MockProcessRunner::ok(),                          // merge --abort
+        ]));
+
+        let err = sync_repo(REPO, BASE, &mock).expect_err("a conflicted merge fails");
+        assert!(
+            matches!(err, SyncError::MergeConflict { .. }),
+            "expected a merge conflict, got: {err}"
+        );
+
+        let timeouts = mock.recorded_timeouts();
+        assert_eq!(timeouts.len(), mock.recorded_calls().len());
+        assert!(
+            timeouts.iter().all(|t| *t == Some(SUBPROCESS_TIMEOUT)),
+            "the conflict read and the abort must be bounded too, got: {timeouts:?}"
+        );
     }
 }
