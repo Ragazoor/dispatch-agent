@@ -194,6 +194,7 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
                 worktree: &worktree,
                 branch: &branch,
                 base_branch: &base_branch,
+                timeout: crate::process::SUBPROCESS_TIMEOUT,
             },
             &*runner,
         )

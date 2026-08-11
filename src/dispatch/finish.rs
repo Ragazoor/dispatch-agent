@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use crate::git::parse_unmerged_files;
 use crate::models::expand_tilde;
 use crate::process::ProcessRunner;
@@ -62,6 +64,12 @@ pub struct FinishContext<'a> {
     pub branch: &'a str,
     /// The branch the repo root must be on; rebase/fast-forward target.
     pub base_branch: &'a str,
+    /// Bound for every git subprocess `finish_task` issues. Use
+    /// [`crate::process::SUBPROCESS_TIMEOUT`] in production; pass a short
+    /// duration in tests, mirroring `provision_worktree` in
+    /// [`crate::dispatch::worktree`]. Without this seam a test proving the
+    /// bound exists would have to wait out the real 60s bound to go red.
+    pub timeout: Duration,
 }
 
 /// Rebase the task branch onto `base_branch` and fast-forward it. The git half
@@ -81,6 +89,7 @@ pub fn finish_task(
         worktree,
         branch,
         base_branch,
+        timeout,
     } = *ctx;
     let repo_path = &expand_tilde(repo_path);
     let worktree = &expand_tilde(worktree);
@@ -113,7 +122,7 @@ pub fn finish_task(
 
     if has_remote {
         let output = runner
-            .run(
+            .run_with_timeout(
                 "git",
                 &[
                     "-C",
@@ -123,6 +132,7 @@ pub fn finish_task(
                     "origin",
                     base_branch,
                 ],
+                timeout,
             )
             .map_err(|e| FinishError::Other(format!("Failed to pull: {e}")))?;
         if !output.status.success() {
@@ -135,7 +145,7 @@ pub fn finish_task(
 
     // 4. Rebase branch onto base branch (from worktree, where branch is checked out)
     let output = runner
-        .run("git", &["-C", worktree, "rebase", base_branch])
+        .run_with_timeout("git", &["-C", worktree, "rebase", base_branch], timeout)
         .map_err(|e| FinishError::Other(format!("Failed to run git rebase: {e}")))?;
     if !output.status.success() {
         let stderr = stderr_str(&output);
@@ -147,14 +157,22 @@ pub fn finish_task(
         // clears this state, so it must be gathered first.
         let conflicted_files = if is_conflict {
             runner
-                .run("git", &["-C", worktree, "status", "--porcelain"])
+                .run_with_timeout(
+                    "git",
+                    &["-C", worktree, "status", "--porcelain"],
+                    timeout,
+                )
                 .map(|o| parse_unmerged_files(&o))
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
 
-        let _ = runner.run("git", &["-C", worktree, "rebase", "--abort"]);
+        let _ = runner.run_with_timeout(
+            "git",
+            &["-C", worktree, "rebase", "--abort"],
+            timeout,
+        );
 
         if is_conflict {
             return Err(FinishError::RebaseConflict {
@@ -167,7 +185,11 @@ pub fn finish_task(
 
     // 5. Fast-forward base branch to the rebased branch
     let output = runner
-        .run("git", &["-C", repo_path, "merge", "--ff-only", branch])
+        .run_with_timeout(
+            "git",
+            &["-C", repo_path, "merge", "--ff-only", branch],
+            timeout,
+        )
         .map_err(|e| FinishError::Other(format!("Failed to fast-forward {base_branch}: {e}")))?;
     if !output.status.success() {
         return Err(FinishError::Other(format!(
@@ -192,6 +214,12 @@ mod tests {
         std::process::ExitStatus::from_raw(1)
     }
 
+    /// A bound short enough that no test ever waits on it.
+    /// `MockProcessRunner::run_with_timeout` bails *without* sleeping once a
+    /// scripted delay reaches the timeout, so a bounded call is instant; and on
+    /// the unbounded path — which does sleep — 50ms is unnoticeable.
+    const TEST_TIMEOUT: Duration = Duration::from_millis(50);
+
     /// Build a `FinishContext` with the standard test repo/worktree/branch,
     /// varying only the base branch the individual tests care about.
     fn fctx(base_branch: &str) -> FinishContext<'_> {
@@ -200,6 +228,7 @@ mod tests {
             worktree: "/repo/.worktrees/42-fix-bug",
             branch: "42-fix-bug",
             base_branch,
+            timeout: TEST_TIMEOUT,
         }
     }
 
@@ -351,6 +380,144 @@ mod tests {
             calls.len(),
             2,
             "should stop after rev-parse + status --porcelain, got: {calls:?}"
+        );
+    }
+
+    // --- subprocess bounding ---
+
+    // The pull is the only network call on the finish path. Unbounded, an origin
+    // that accepts the connection and then stalls hangs wrap_up forever: no exit
+    // token is ever minted, so the agent cannot close its session at all.
+    #[test]
+    fn finish_task_bounds_the_pull() {
+        let mock = MockProcessRunner::new_with_delays(vec![
+            (None, MockProcessRunner::ok_with_stdout(b"main\n")), // rev-parse HEAD
+            (None, MockProcessRunner::ok_with_stdout(b"")),       // status --porcelain (clean)
+            (
+                None,
+                MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"),
+            ), // remote get-url
+            (Some(TEST_TIMEOUT), MockProcessRunner::ok()), // git pull — stalls past the bound
+        ]);
+
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
+
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Failed to pull") && m.contains("timed out")),
+            "a stalled pull must surface as a timed-out pull, got: {err}"
+        );
+    }
+
+    // `git rebase` takes the worktree index lock, which another git process in the
+    // same checkout can hold indefinitely.
+    #[test]
+    fn finish_task_bounds_the_rebase() {
+        let mock = MockProcessRunner::new_with_delays(vec![
+            (None, MockProcessRunner::ok_with_stdout(b"main\n")), // rev-parse HEAD
+            (None, MockProcessRunner::ok_with_stdout(b"")),       // status --porcelain (clean)
+            (None, MockProcessRunner::fail("")),                  // remote get-url (no remote)
+            (Some(TEST_TIMEOUT), MockProcessRunner::ok()), // git rebase — blocked on the lock
+        ]);
+
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
+
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Failed to run git rebase") && m.contains("timed out")),
+            "a rebase blocked on the index lock must surface as a timeout, got: {err}"
+        );
+    }
+
+    // Same for the fast-forward, which takes the repo root's index lock.
+    #[test]
+    fn finish_task_bounds_the_fast_forward() {
+        let mock = MockProcessRunner::new_with_delays(vec![
+            (None, MockProcessRunner::ok_with_stdout(b"main\n")), // rev-parse HEAD
+            (None, MockProcessRunner::ok_with_stdout(b"")),       // status --porcelain (clean)
+            (None, MockProcessRunner::fail("")),                  // remote get-url (no remote)
+            (None, MockProcessRunner::ok()),                      // git rebase
+            (Some(TEST_TIMEOUT), MockProcessRunner::ok()), // git merge --ff-only — blocked
+        ]);
+
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
+
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Failed to fast-forward") && m.contains("timed out")),
+            "a blocked fast-forward must surface as a timeout, got: {err}"
+        );
+    }
+
+    // The test that pins the convention rather than three instances of it: every
+    // subprocess reachable on a successful finish carries the bound, including the
+    // three preflight reads reached through `crate::git`. A future unbounded call
+    // added anywhere on this path fails here.
+    //
+    // The preflight reads (rev-parse, status --porcelain, remote get-url) go
+    // through `crate::git` helpers bounded in Task 2 with the production
+    // `SUBPROCESS_TIMEOUT` constant, not the injected `TEST_TIMEOUT` — only the
+    // pull/rebase/merge calls `finish_task` issues directly carry the context's
+    // `timeout` field. So the recorded timeouts are a mix of two different
+    // `Some(_)` durations, not all equal to one value. What matters here is that
+    // none of them is `None` — i.e. nothing on the path is unbounded.
+    #[test]
+    fn finish_task_bounds_every_subprocess_it_runs() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
+            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
+            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url
+            MockProcessRunner::ok(),                      // git pull origin main
+            MockProcessRunner::ok(),                      // git rebase main
+            MockProcessRunner::ok(),                      // git merge --ff-only
+        ]);
+
+        finish_task(&fctx("main"), &mock).expect("rebase + fast-forward succeeds");
+
+        let timeouts = mock.recorded_timeouts();
+        assert_eq!(
+            timeouts.len(),
+            mock.recorded_calls().len(),
+            "every recorded call must have a timeout slot"
+        );
+        assert!(
+            timeouts.iter().all(|t| t.is_some()),
+            "every subprocess on the finish path must be bounded, got: {timeouts:?}"
+        );
+    }
+
+    // The happy path above never reaches the conflict branch, so the abort and the
+    // porcelain read that precedes it need their own gate. Both are best-effort,
+    // so a timeout there degrades exactly as any other failure does — but neither
+    // may hang, which is what an unbounded call on a lock-taking abort would do.
+    //
+    // As above, the preflight reads carry the production `SUBPROCESS_TIMEOUT`
+    // (via the bounded `crate::git` helpers) while the conflict-path status read
+    // and the abort carry the injected `TEST_TIMEOUT` — a mix of `Some(_)`
+    // values is expected; only `None` would indicate an unbounded call.
+    #[test]
+    fn finish_task_bounds_the_conflict_abort_path() {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
+            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
+            MockProcessRunner::fail(""),                  // remote get-url (no remote)
+            Ok(Output {
+                status: exit_fail(),
+                stdout: b"CONFLICT (content): Merge conflict in lib.rs\n".to_vec(),
+                stderr: vec![],
+            }), // git rebase — conflicts
+            MockProcessRunner::ok_with_stdout(b"UU lib.rs\n"), // status --porcelain (mid-rebase)
+            MockProcessRunner::ok(),                           // git rebase --abort
+        ]);
+
+        let err = finish_task(&fctx("main"), &mock).unwrap_err();
+        assert!(
+            matches!(err, FinishError::RebaseConflict { .. }),
+            "expected a rebase conflict, got: {err}"
+        );
+
+        let timeouts = mock.recorded_timeouts();
+        assert_eq!(timeouts.len(), mock.recorded_calls().len());
+        assert!(
+            timeouts.iter().all(|t| t.is_some()),
+            "the conflict read and the abort must be bounded too, got: {timeouts:?}"
         );
     }
 }

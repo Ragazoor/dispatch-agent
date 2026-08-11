@@ -2016,6 +2016,7 @@ fn fctx(base_branch: &str) -> FinishContext<'_> {
         worktree: "/repo/.worktrees/42-fix-bug",
         branch: "42-fix-bug",
         base_branch,
+        timeout: std::time::Duration::from_millis(50),
     }
 }
 
