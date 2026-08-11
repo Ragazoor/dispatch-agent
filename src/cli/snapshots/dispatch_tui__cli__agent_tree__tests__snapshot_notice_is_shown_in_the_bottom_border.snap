@@ -1,0 +1,16 @@
+---
+source: src/cli/agent_tree.rs
+expression: rendered
+---
+┌ dispatch ──────────────────────────────────────┐
+│  a.rs [Read]                                   │
+│▼ src                                           │
+│    lib.rs [Modified]                           │
+│  z.rs [Read]                                   │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+│                                                │
+└ src/gone.rs: no longer exists ─────────────────┘

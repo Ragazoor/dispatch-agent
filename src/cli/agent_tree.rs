@@ -31,9 +31,11 @@ use ratatui::{Frame, Terminal};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::agent_tree::{build_tree, FileOperation, TreeNode, TreeNodeKind};
+use crate::agent_tree_editor::{current_pane_from_env, editor_from_env, open_in_editor};
 use crate::db::{Database, TaskRead};
 use crate::file_events::file_events_path;
 use crate::models::TaskId;
+use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::tui::ui::palette::{BLUE, FG, YELLOW};
 
 /// Redraw cadence — see `docs/specs/agent-tree.allium`'s
@@ -115,6 +117,11 @@ pub fn build_tree_items(root: &TreeNode) -> Vec<TreeItem<'static, String>> {
 pub struct RenderState {
     pub tree_state: TreeState<String>,
     auto_expanded: HashSet<Vec<String>>,
+    /// A one-line failure notice, rendered in the pane's bottom border and
+    /// cleared by the next key press. Opening a file is the only action in this
+    /// pane that can fail visibly to the user — see
+    /// `AgentTreeEditorOpenFailureIsVisible` in docs/specs/agent-tree.allium.
+    pub notice: Option<String>,
 }
 
 impl RenderState {
@@ -122,6 +129,7 @@ impl RenderState {
         Self {
             tree_state: TreeState::default(),
             auto_expanded: HashSet::new(),
+            notice: None,
         }
     }
 
@@ -166,9 +174,18 @@ pub fn render(
     title: &str,
 ) {
     let items = build_tree_items(root);
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "));
+    // The bottom border is the pane's only place to say anything: the tree fills
+    // the rest, and stealing a row for a status line would move every node the
+    // moment a notice appeared.
+    if let Some(notice) = &state.notice {
+        block = block.title_bottom(Line::from(Span::styled(
+            format!(" {notice} "),
+            Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
+        )));
+    }
 
     match Tree::new(&items) {
         Ok(tree) => {
@@ -225,12 +242,16 @@ fn rebuild(root: &Path, events_path: &Path, state: &mut RenderState) -> TreeNode
 }
 
 /// What the event loop should do after `handle_key` has processed a key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyAction {
     /// Stay in the loop and redraw.
     Continue,
     /// Leave the loop, which exits the process and so closes the tmux pane.
     Exit,
+    /// Show this path — **relative to the pane root** — in the window's editor
+    /// pane. `handle_key` stays pure: resolving the absolute path, the editor and
+    /// the tmux calls all belong to the loop.
+    OpenInEditor(PathBuf),
 }
 
 /// Whether the widget's current selection is a directory, and so has something
@@ -249,19 +270,39 @@ fn selected_is_directory(root: &TreeNode, selected: &[String]) -> bool {
         .is_some_and(|node| node.kind == TreeNodeKind::Directory)
 }
 
+/// The selected node's path relative to the pane root, when the selection is a
+/// **file**. `None` for a directory, for an empty selection, and for a stale
+/// selection left over from before a rebuild — the same fail-closed shape as
+/// [`selected_is_directory`].
+fn selected_file_path(root: &TreeNode, selected: &[String]) -> Option<PathBuf> {
+    if selected.is_empty() {
+        return None;
+    }
+    let node = root.node_at(selected)?;
+    if node.kind != TreeNodeKind::File {
+        return None;
+    }
+    Some(selected.iter().collect())
+}
+
 /// Apply one key press to the view state — see `docs/specs/agent-tree.allium`'s
 /// `AgentTreeCompanionPane` surface for the bindings. Cursor and expansion keys
 /// each have a vim motion and an arrow key bound to the same action.
 ///
-/// Expand and toggle are directory-only, which is why `root` is a parameter:
-/// `tui_tree_widget`'s `open()` has no leaf guard, so without the tree to
-/// consult, Space or `l` on a *file* would record a phantom open that the next
-/// `h` silently consumes instead of stepping out to the parent (#3834).
-/// Collapse needs no guard — on a file it always falls through to stepping out.
+/// Space and Enter dispatch on the selected node's kind — a directory toggles, a
+/// file opens — and expand is directory-only, which is why `root` is a
+/// parameter: `tui_tree_widget`'s `open()` has no leaf guard, so without the tree
+/// to consult, `l` on a *file* would record a phantom open that the next `h`
+/// silently consumes instead of stepping out to the parent (#3834). Collapse
+/// needs no guard — on a file it always falls through to stepping out.
 ///
 /// Pure with respect to everything but `state`, so the loop's key handling is
-/// testable without a terminal or an event source.
+/// testable without a terminal, an event source, or a tmux server.
 pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> KeyAction {
+    // Any key acknowledges a failure notice — docs/specs/agent-tree.allium's
+    // ClearAgentTreeErrorNotice. Cleared before dispatching, so a key that sets
+    // a fresh one wins.
+    state.notice = None;
     // `TreeState`'s navigation methods return whether anything changed; the
     // loop redraws unconditionally, so the answer is discarded.
     match key.code {
@@ -278,24 +319,44 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
         KeyCode::Char('h') | KeyCode::Left => {
             state.tree_state.key_left();
         }
-        // The expansion keys carry a directory guard, so on a file they fall
-        // through to the catch-all arm and do nothing at all.
+        // Expand carries a directory guard, so on a file it falls through to the
+        // catch-all arm and does nothing at all.
         KeyCode::Char('l') | KeyCode::Right
             if selected_is_directory(root, state.tree_state.selected()) =>
         {
             state.tree_state.key_right();
         }
-        KeyCode::Char(' ') | KeyCode::Enter
-            if selected_is_directory(root, state.tree_state.selected()) =>
-        {
-            state.tree_state.toggle_selected();
+        // Space/Enter dispatch on the selected node's kind. The file case is
+        // checked first, so the directory guard below only ever sees non-files
+        // and an unselectable or stale selection reaches neither.
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            if let Some(path) = selected_file_path(root, state.tree_state.selected()) {
+                return KeyAction::OpenInEditor(path);
+            }
+            if selected_is_directory(root, state.tree_state.selected()) {
+                state.tree_state.toggle_selected();
+            }
         }
         _ => {}
     }
     KeyAction::Continue
 }
 
-fn run_loop<B: Backend>(terminal: &mut Terminal<B>, root: &Path, events_path: &Path) -> Result<()> {
+/// Resolve this pane and the user's editor, then show `relative` in the window's
+/// editor pane. Split out of the loop so its arm stays one branch and the message
+/// the notice shows is built in one place.
+fn open_selected(root: &Path, relative: &Path, runner: &dyn ProcessRunner) -> Result<()> {
+    let my_pane = current_pane_from_env()?;
+    let editor = editor_from_env();
+    open_in_editor(root, relative, &my_pane, &editor, runner)
+}
+
+fn run_loop<B: Backend>(
+    terminal: &mut Terminal<B>,
+    root: &Path,
+    events_path: &Path,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
     let title = worktree_title(root);
     let mut state = RenderState::new();
     let mut tree = rebuild(root, events_path, &mut state);
@@ -311,8 +372,24 @@ fn run_loop<B: Backend>(terminal: &mut Terminal<B>, root: &Path, events_path: &P
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if handle_key(&mut state, &tree, key) == KeyAction::Exit {
-                return Ok(());
+            match handle_key(&mut state, &tree, key) {
+                KeyAction::Exit => return Ok(()),
+                KeyAction::Continue => {}
+                KeyAction::OpenInEditor(relative) => {
+                    // Every failure here is the user's to see: they pressed a key
+                    // and expect a file. The renderer keeps running regardless —
+                    // an editor that will not open must not take the tree with
+                    // it (docs/specs/agent-tree.allium:
+                    // AgentTreeEditorOpenFailureIsVisible).
+                    if let Err(e) = open_selected(root, &relative, runner) {
+                        tracing::warn!(
+                            path = %relative.display(),
+                            error = %e,
+                            "failed to open the selected file in an editor"
+                        );
+                        state.notice = Some(format!("{e}"));
+                    }
+                }
             }
             continue;
         }
@@ -351,7 +428,7 @@ pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, &root, &events_path);
+    let result = run_loop(&mut terminal, &root, &events_path, &RealProcessRunner);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -695,17 +772,22 @@ mod tests {
         }
     }
 
-    /// Expand and toggle are directory-only — `tui_tree_widget`'s `open()` has
-    /// no leaf guard, so an unguarded press on a file inserts that file's path
-    /// into `opened()` (#3834). Nothing renders differently, which is exactly
-    /// why this has to be asserted on the open set.
+    /// No key expands a file — `tui_tree_widget`'s `open()` has no leaf guard, so
+    /// an unguarded press on a file inserts that file's path into `opened()`
+    /// (#3834). Nothing renders differently, which is exactly why this has to be
+    /// asserted on the open set.
+    ///
+    /// Space/Enter now *open* a file rather than doing nothing, but that is an
+    /// action for the loop to perform; the pane's own expansion state must still
+    /// come out untouched, which is what this covers for all four keys. The
+    /// returned action differs per key and is asserted by the tests above.
     ///
     /// Asserted over the *whole* set, not just the file's own path, so no
     /// sibling directory's expansion is disturbed either. One press per rig:
     /// `l` followed by Space on the same file would cancel out (open, then
     /// toggle closed) and pass even unguarded.
     #[test]
-    fn expanding_a_file_leaves_the_open_set_untouched() {
+    fn no_key_expands_a_file_in_the_open_set() {
         for code in [
             KeyCode::Char(' '),
             KeyCode::Enter,
@@ -717,7 +799,8 @@ mod tests {
             assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
             let before = rig.state.tree_state.opened().clone();
 
-            assert_eq!(rig.press(code), KeyAction::Continue, "{code:?}");
+            rig.press(code);
+
             assert_eq!(rig.state.tree_state.opened(), &before, "{code:?}");
         }
     }
@@ -738,6 +821,101 @@ mod tests {
         rig.press(KeyCode::Char(' '));
         rig.press(KeyCode::Char('h'));
         assert_eq!(rig.selected(), vec!["src".to_string()]);
+    }
+
+    /// Space and Enter on a *file* ask the loop to open it. The action carries
+    /// the path relative to the pane root — `handle_key` stays pure, so joining
+    /// it to the worktree is the loop's job.
+    #[test]
+    fn space_and_enter_on_a_file_ask_to_open_it_in_an_editor() {
+        for code in [KeyCode::Char(' '), KeyCode::Enter] {
+            let mut rig = KeyRig::new(&three_node_log());
+            rig.press(KeyCode::Char('j'));
+            assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
+
+            assert_eq!(
+                rig.press(code),
+                KeyAction::OpenInEditor(PathBuf::from("a.rs")),
+                "{code:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn opening_a_nested_file_carries_its_whole_relative_path() {
+        let mut rig = KeyRig::new(&three_node_log());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(
+            rig.selected(),
+            vec!["src".to_string(), "lib.rs".to_string()]
+        );
+
+        assert_eq!(
+            rig.press(KeyCode::Enter),
+            KeyAction::OpenInEditor(PathBuf::from("src/lib.rs"))
+        );
+    }
+
+    /// The directory behaviour is unchanged: Space/Enter still toggles, and must
+    /// not ask to open anything.
+    #[test]
+    fn space_on_a_directory_still_toggles_and_does_not_open() {
+        let mut rig = KeyRig::new(&three_node_log());
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(rig.selected(), vec!["src".to_string()]);
+
+        assert_eq!(rig.press(KeyCode::Char(' ')), KeyAction::Continue);
+        assert!(!rig.is_open(&["src"]));
+    }
+
+    #[test]
+    fn space_with_nothing_selected_does_nothing() {
+        let mut rig = KeyRig::new(&three_node_log());
+        assert!(rig.selected().is_empty());
+        assert_eq!(rig.press(KeyCode::Char(' ')), KeyAction::Continue);
+    }
+
+    /// `l`/`Right` are expansion keys only — they must NOT have picked up the
+    /// open behaviour along with Space/Enter (#3834's guard stays a guard).
+    #[test]
+    fn l_and_right_on_a_file_still_do_nothing() {
+        for code in [KeyCode::Char('l'), KeyCode::Right] {
+            let mut rig = KeyRig::new(&three_node_log());
+            rig.press(KeyCode::Char('j'));
+            assert_eq!(rig.press(code), KeyAction::Continue, "{code:?}");
+        }
+    }
+
+    #[test]
+    fn any_key_clears_a_pending_notice() {
+        let mut rig = KeyRig::new(&three_node_log());
+        rig.state.notice = Some("src/gone.rs: no longer exists".to_string());
+
+        rig.press(KeyCode::Char('j'));
+
+        assert!(rig.state.notice.is_none());
+    }
+
+    #[test]
+    fn snapshot_notice_is_shown_in_the_bottom_border() {
+        let tree = build_tree(&root(), &three_node_log());
+        let mut state = RenderState::new();
+        state.sync_expansion(&tree);
+        state.notice = Some("src/gone.rs: no longer exists".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
+        terminal
+            .draw(|frame| render(frame, frame.area(), &tree, &mut state, "dispatch"))
+            .expect("draw");
+        let rendered = buffer_to_string(terminal.backend().buffer());
+
+        assert!(
+            rendered.contains("no longer exists"),
+            "the notice must be visible; rendered:\n{rendered}"
+        );
+        insta::assert_snapshot!(rendered);
     }
 
     #[test]

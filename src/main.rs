@@ -426,6 +426,13 @@ async fn cmd_hook_file_event(
 }
 
 async fn cmd_agent_tree(db: &std::path::Path, task_id: i64) -> Result<()> {
+    // The renderer owns the alternate screen, so its warnings cannot go to
+    // stderr — they go to `app.log` next to the database, like the board's.
+    // Without this every `tracing::warn!` in the renderer went nowhere, which
+    // included the only report of a file it could not open.
+    // Best-effort: a renderer that cannot open the log still renders.
+    let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
+    let _ = init_app_log_subscriber(data_dir);
     dispatch_tui::cli::agent_tree::run(db, task_id).await
 }
 
