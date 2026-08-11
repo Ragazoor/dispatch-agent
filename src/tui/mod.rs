@@ -444,28 +444,54 @@ pub(in crate::tui) fn own_search_match(
         || id_digits.is_some_and(|digits| id_prefix_matches(id, digits))
 }
 
-/// Whether some non-archived task in the epic subtree named by `epic_ids`
-/// carries the epic's search match: the task has an own match (title or
-/// id-prefix) AND the board would actually show that task under the repo and
-/// only-active filters (`filter.matches` on its repo_path, and
-/// `filter.task_matches`) — the same two predicates `tasks_for_current_view`
-/// applies. A task the board would hide cannot keep an ancestor epic's card
-/// alive: drilling into that card would be a dead end. See
-/// board_search_filter in `docs/specs/core.allium`.
-pub(in crate::tui) fn epic_search_matches_for_ids(
+/// The epic ids that *directly own* at least one non-archived task carrying the
+/// board-search match: the task has an own match (title or id-prefix) AND the
+/// board would actually show it under the repo and only-active filters
+/// (`filter.matches` on its repo_path, and `filter.task_matches`) — the same two
+/// predicates `tasks_for_current_view` applies. A task the board would hide
+/// cannot keep an ancestor epic's card alive: drilling into that card would be a
+/// dead end. See board_search_filter in `docs/specs/core.allium`.
+///
+/// One O(tasks) pass for the whole board, so a view pass over N epic cards costs
+/// one scan rather than N. An epic's own verdict is then a set-membership test
+/// per descendant — see [`EpicSearchIndex`].
+pub(in crate::tui) fn epic_ids_owning_matching_task(
     tasks: &[Task],
     filter: &FilterState,
-    epic_ids: &HashSet<EpicId>,
     query_lower: &str,
     id_digits: Option<&str>,
-) -> bool {
-    tasks.iter().any(|t| {
-        matches!(t.epic_id, Some(eid) if epic_ids.contains(&eid))
-            && t.status != TaskStatus::Archived
-            && own_search_match(&t.title, t.id.0, query_lower, id_digits)
-            && filter.matches(&t.repo_path)
-            && filter.task_matches(t)
-    })
+) -> HashSet<EpicId> {
+    tasks
+        .iter()
+        .filter(|t| {
+            t.status != TaskStatus::Archived
+                && own_search_match(&t.title, t.id.0, query_lower, id_digits)
+                && filter.matches(&t.repo_path)
+                && filter.task_matches(t)
+        })
+        .filter_map(|t| t.epic_id)
+        .collect()
+}
+
+/// Per-view-pass state for the epic board-search predicate, built once by
+/// [`App::epic_search_index`] and reused across every epic in the pass.
+///
+/// Collapses what used to be per-epic work: the query is parsed once (not once
+/// per epic), the O(tasks) owner scan runs once (not once per epic), and the
+/// epic children map and id lookup are built once so the own-match check is
+/// O(1) and the sub-epic scan is O(descendants) rather than O(epics).
+///
+/// **Intra-call only.** This is a local value with the lifetime of one view
+/// pass; it is never stored on `App` or in `App.layout`. `App.layout` is guarded
+/// by `compute_layout_fingerprint()`, which folds ids, status, parent and sort
+/// order but neither titles nor the query, so a cross-render cached search
+/// verdict would go stale on a title edit or a keystroke in the search bar.
+pub(in crate::tui) struct EpicSearchIndex<'a> {
+    query_lower: String,
+    id_digits: Option<&'a str>,
+    by_id: HashMap<EpicId, &'a Epic>,
+    children: HashMap<EpicId, Vec<EpicId>>,
+    task_owners: HashSet<EpicId>,
 }
 
 /// Returns true when the buffer should be offered as a selectable "new path"
@@ -905,7 +931,29 @@ impl App {
         epic_active_matches_for_ids(&self.board.tasks, &epic_ids)
     }
 
-    /// Whether the epic should be shown under the active board-search query.
+    /// Build the per-pass search index for the current board and query. Doing
+    /// this is only worthwhile behind a `search_active()` check — it always
+    /// pays the O(tasks + epics) build cost.
+    pub(in crate::tui) fn epic_search_index(&self) -> EpicSearchIndex<'_> {
+        let query_lower = self.search.query.to_lowercase();
+        // Parsed once per pass, not per epic: this is the render hot path.
+        let id_digits = id_digits_query(&self.search.query);
+        EpicSearchIndex {
+            task_owners: epic_ids_owning_matching_task(
+                &self.board.tasks,
+                &self.filter,
+                &query_lower,
+                id_digits,
+            ),
+            by_id: self.board.epics.iter().map(|e| (e.id, e)).collect(),
+            children: crate::models::build_children_map(&self.board.epics),
+            query_lower,
+            id_digits,
+        }
+    }
+
+    /// Whether the epic should be shown under the active board-search query,
+    /// answered from a prebuilt [`EpicSearchIndex`].
     ///
     /// `E`'s own title/id match needs no extra gating: callers (see
     /// [`Self::visible_epics_for_effective_view`]) already require
@@ -916,49 +964,56 @@ impl App {
     /// since the card would then be a dead end. See board_search_filter in
     /// `docs/specs/core.allium`.
     ///
-    /// Deliberately uncached, unlike [`Self::epic_matches`] and
-    /// [`Self::epic_repo_matches`]: `layout.epic_filter_cache` is guarded by
-    /// `compute_layout_fingerprint()`, which folds ids, status, parent and sort
-    /// order but neither titles nor the query — a cached verdict would go stale
-    /// on a title edit or a keystroke in the search bar. The empty-query fast
-    /// path keeps the non-searching render free.
-    pub(in crate::tui) fn epic_search_matches(&self, epic_id: EpicId) -> bool {
-        if !self.search_active() {
-            return true;
-        }
-        let query_lower = self.search.query.to_lowercase();
-        let id_digits = id_digits_query(&self.search.query);
-
-        let own_match = self
-            .board
-            .epics
-            .iter()
-            .find(|e| e.id == epic_id)
-            .is_some_and(|e| own_search_match(&e.title, e.id.0, &query_lower, id_digits));
+    /// Deliberately uncached across renders, unlike [`Self::epic_matches`] and
+    /// [`Self::epic_repo_matches`]: see the note on [`EpicSearchIndex`].
+    pub(in crate::tui) fn epic_search_matches_indexed(
+        &self,
+        index: &EpicSearchIndex<'_>,
+        epic_id: EpicId,
+    ) -> bool {
+        let own_match = index.by_id.get(&epic_id).is_some_and(|e| {
+            own_search_match(&e.title, e.id.0, &index.query_lower, index.id_digits)
+        });
         if own_match {
             return true;
         }
 
-        let epic_ids = crate::models::descendant_epic_ids(epic_id, &self.board.epics);
+        let epic_ids = crate::models::descendant_epic_ids_with_map(epic_id, &index.children);
 
-        let sub_epic_matches = self.board.epics.iter().any(|e| {
-            e.id != epic_id
-                && epic_ids.contains(&e.id)
-                && own_search_match(&e.title, e.id.0, &query_lower, id_digits)
-                && self.epic_matches(e.id)
-                && self.epic_repo_matches(e.id)
+        let sub_epic_matches = epic_ids.iter().any(|&id| {
+            id != epic_id
+                && index.by_id.get(&id).is_some_and(|e| {
+                    own_search_match(&e.title, e.id.0, &index.query_lower, index.id_digits)
+                })
+                && self.epic_matches(id)
+                && self.epic_repo_matches(id)
         });
         if sub_epic_matches {
             return true;
         }
 
-        epic_search_matches_for_ids(
-            &self.board.tasks,
-            &self.filter,
-            &epic_ids,
-            &query_lower,
-            id_digits,
-        )
+        epic_ids.iter().any(|id| index.task_owners.contains(id))
+    }
+
+    /// Whether the epic should be shown under the active board-search query.
+    ///
+    /// Single-epic convenience: builds a one-shot [`EpicSearchIndex`] and
+    /// delegates to [`Self::epic_search_matches_indexed`]. The empty-query fast
+    /// path keeps a non-searching caller free.
+    ///
+    /// Test-only. Every production caller filters many epics in one pass and so
+    /// builds the index once — see [`Self::visible_epics_for_effective_view`];
+    /// building a fresh index per epic is exactly the O(epics x tasks) shape
+    /// that pass exists to avoid. It survives for the per-epic assertions in
+    /// `src/tui/tests/search.rs`, which
+    /// `visible_epic_cards_agree_with_the_single_epic_predicate` ties back to
+    /// the view pass so the two paths cannot drift.
+    #[cfg(test)]
+    pub(in crate::tui) fn epic_search_matches(&self, epic_id: EpicId) -> bool {
+        if !self.search_active() {
+            return true;
+        }
+        self.epic_search_matches_indexed(&self.epic_search_index(), epic_id)
     }
 
     /// Epics visible in the current board/epic view, filtered by the active
@@ -967,19 +1022,26 @@ impl App {
     /// mode. Shared by `column_items_for_status_with_view_tasks`,
     /// `column_item_count`, and `column_items_for_visual_column` so an
     /// epic-visibility rule change is made in one place instead of three.
+    ///
+    /// The search index is built once for the whole pass (`None` when no query
+    /// is live, so a non-searching render stays free), which is what keeps the
+    /// pass at one O(tasks) scan rather than one per epic.
     pub(in crate::tui) fn visible_epics_for_effective_view(&self) -> impl Iterator<Item = &Epic> {
         let parent = match self.effective_view_mode() {
             BoardViewMode::Board(_) => None,
             BoardViewMode::Epic { epic_id, .. } => Some(epic_id),
         };
+        let index = self.search_active().then(|| self.epic_search_index());
         self.board
             .epics
             .iter()
             .filter(move |e| e.parent_epic_id == parent)
-            .filter(|e| {
+            .filter(move |e| {
                 self.epic_matches(e.id)
                     && self.epic_repo_matches(e.id)
-                    && self.epic_search_matches(e.id)
+                    && index
+                        .as_ref()
+                        .is_none_or(|idx| self.epic_search_matches_indexed(idx, e.id))
             })
     }
 

@@ -420,6 +420,34 @@ fn epic_search_matches_does_not_read_the_layout_cache() {
     assert!(!app.epic_search_matches(EpicId(1)));
 }
 
+#[test]
+fn epic_ids_owning_matching_task_collects_only_board_visible_matches() {
+    use crate::tui::epic_ids_owning_matching_task;
+
+    let matching = epic_child(10, 1, "Fix login bug");
+    let mut wrong_repo = epic_child(11, 2, "Fix login bug");
+    wrong_repo.repo_path = "/repo/b".to_string();
+    let mut archived = epic_child(12, 3, "Fix login bug");
+    archived.status = TaskStatus::Archived;
+    let no_match = epic_child(13, 4, "Update invoices");
+    let standalone = test_task(14, "Fix login bug"); // epic_id is None
+
+    let mut filter = FilterState::default();
+    filter.repos.insert("/repo".to_string());
+    filter.mode = RepoFilterMode::Include;
+
+    let owners = epic_ids_owning_matching_task(
+        &[matching, wrong_repo, archived, no_match, standalone],
+        &filter,
+        "login",
+        None,
+    );
+
+    // Only epic 1: epic 2's match is outside the repo filter, epic 3's is
+    // archived, epic 4 has no query match, and the standalone task owns no epic.
+    assert_eq!(owners, [EpicId(1)].into_iter().collect());
+}
+
 // ---------------------------------------------------------------------------
 // visible epic cards under a live query
 // ---------------------------------------------------------------------------
