@@ -371,9 +371,7 @@ mod tests {
             MockProcessRunner::fail("bad option"),
         ]);
 
-        assert!(
-            open_in_editor(fx.root(), Path::new("src/lib.rs"), "%1", &editor(), &mock).is_ok()
-        );
+        assert!(open_in_editor(fx.root(), Path::new("src/lib.rs"), "%1", &editor(), &mock).is_ok());
     }
 
     /// A failed lookup must not be read as "no editor pane" — that would split a

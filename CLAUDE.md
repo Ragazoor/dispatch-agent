@@ -41,6 +41,7 @@ cargo test tui::tests::snapshots          # ratatui buffer rendering tests
 cargo test --test tmux_lifecycle          # real tmux: window/pane topology and cwd
 cargo test --test tmux_split_hook         # real tmux: which pane keystrokes reach
 cargo test --test tmux_window_targets     # real tmux: window-name resolution
+cargo test --test tmux_editor_pane        # real tmux: agent-tree editor pane, toggle target
 ```
 
 **The full suite needs `tmux` on `PATH`.** The three `--test tmux_*` targets above drive a real tmux server (private `-L` socket, `-f /dev/null`, drop-guard teardown — see `tests/tmux_harness/mod.rs`). Without tmux they print `skipping: tmux not available on PATH` and pass, so a green local run is not proof they ran. Under `CI` the same check hard-fails instead of skipping, and `.github/workflows/ci.yml` installs tmux in both the `test` and `coverage` jobs so the skip path never masks a regression there.
@@ -78,7 +79,7 @@ rm src/dispatch/snapshots/*.snap.new                 # always clean up
 | Domain-type invariants | inline in the owning module |
 | Agent prompt rendering (all variants) | `src/dispatch/prompts_snapshots.rs` |
 | Agent-facing skill copy (`plugin/skills/*/SKILL.md`) | `mod tests` in `src/setup/plugins.rs` (via `skill_body`) |
-| tmux semantics — which pane, which cwd, how many panes, which window a name resolves to | `tests/tmux_lifecycle.rs` (topology/cwd) / `tests/tmux_split_hook.rs` (keystroke routing) / `tests/tmux_window_targets.rs` (exact window-name resolution under prefix collisions), shared rig in `tests/tmux_harness/mod.rs` |
+| tmux semantics — which pane, which cwd, how many panes, which window a name resolves to | `tests/tmux_lifecycle.rs` (topology/cwd) / `tests/tmux_split_hook.rs` (keystroke routing) / `tests/tmux_window_targets.rs` (exact window-name resolution under prefix collisions) / `tests/tmux_editor_pane.rs` (agent-tree editor pane, and which pane the toggle kills), shared rig in `tests/tmux_harness/mod.rs` |
 | tmux argv shape — that we sent the right command string | `MockProcessRunner` tests inline in `src/tmux.rs` |
 | Anything that drives a dispatch/resume/provision through a mock | wherever the behaviour lives, but script the runner with `DispatchScript` (`src/dispatch/mock_sequence.rs`) — never a hand-written `vec![ok(), ok(), …]` |
 | A `pub(in crate::tui::ui)`-or-narrower helper (unreachable from `src/tui/tests/`) | inline in the owning module, e.g. `staleness_color`/`feed_role_label` in `src/tui/ui/shared.rs`, `budget_spans` in `src/tui/ui/budget.rs` |

@@ -1744,9 +1744,8 @@ mod tests {
     fn pane_ids_with_option_returns_only_marked_panes() {
         // `list-panes` rows are "<pane_id> <value>"; an unset option renders as
         // the empty string, with the separator still there.
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
-            b"%1 \n%2 1\n%3 \n",
-        )]);
+        let mock =
+            MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n%2 1\n%3 \n")]);
         let found = pane_ids_with_option("%1", "@dispatch_editor_pane", &mock).unwrap();
         assert_eq!(found, vec!["%2".to_string()]);
         assert_eq!(
@@ -1763,8 +1762,7 @@ mod tests {
 
     #[test]
     fn pane_ids_with_option_is_empty_when_nothing_is_marked() {
-        let mock =
-            MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n")]);
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n")]);
         assert!(pane_ids_with_option("%1", "@dispatch_editor_pane", &mock)
             .unwrap()
             .is_empty());
@@ -1905,8 +1903,7 @@ mod tests {
     #[test]
     fn split_window_full_below_running_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no space")]);
-        let err =
-            split_window_full_below_running("%3", 60, "/w", &["vi", "a"], &mock).unwrap_err();
+        let err = split_window_full_below_running("%3", 60, "/w", &["vi", "a"], &mock).unwrap_err();
         assert!(
             err.to_string().contains("split-window failed"),
             "got: {err}"

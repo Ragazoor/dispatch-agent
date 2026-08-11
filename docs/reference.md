@@ -67,19 +67,27 @@ Typing inserts at the caret. In repo-picker fields (`←`/`→` move the text ca
 
 Pressed inside the pane itself (no tmux prefix) while it has tmux focus. The pane is
 its own process — these keys never reach the board TUI, and all of them act on the
-pane's own view only.
+pane's own view only, except `Space`/`Enter` on a file, which opens an editor.
 
 | Key | Action |
 |-----|--------|
 | `j` / `↓` | Move the cursor down |
 | `k` / `↑` | Move the cursor up |
 | `h` / `←` | Collapse the selected directory, or move to its parent |
-| `l` / `→` | Expand the selected directory |
-| `Space` / `Enter` | Toggle the selected directory open/closed |
+| `l` / `→` | Expand the selected directory (a no-op on a file) |
+| `Space` / `Enter` | On a directory: toggle it open/closed. On a file: open it in `$VISUAL`, else `$EDITOR`, else `vi`, in a full-width pane below taking 60% of the window height. Focus stays in the tree, so you can keep browsing; the next file you open **replaces** that pane, killing whatever was running in it |
 | `q` / `Ctrl+C` | Close the pane |
 
 The cursor position and manual expansions live in that process, so they do not survive
 closing and reopening the pane. Use `Prefix+e` to toggle it (see above).
+
+The editor pane starts in the task's worktree and is handed the file's absolute path.
+`$VISUAL`/`$EDITOR` are split on whitespace and run directly, with no shell — so
+`EDITOR="nvim -p"` works, and nothing in the value is shell-expanded. A GUI editor that
+forks (`gvim`) returns immediately, so its pane closes while its own window stays open.
+When opening fails — the agent deleted the file after touching it, or tmux refused the
+split — the reason appears in the pane's bottom border until the next keypress, and is
+logged to `app.log`.
 
 ## How Dispatch Works
 

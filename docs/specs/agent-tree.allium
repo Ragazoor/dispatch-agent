@@ -447,6 +447,18 @@ rule HideAgentTreePane {
         -- and restarts on the next show; that is cheap, because all its state
         -- comes from re-reading the append-only event log.
         --
+        -- == The editor pane is NOT hidden with it ==
+        -- Only the tree pane is killed. An editor pane opened from it stays
+        -- exactly where it was, still showing its file: the user asked for that
+        -- file, and did not ask for it to close when they collapsed the tree.
+        -- Nothing is orphaned by this, because the pane is found by a mark on
+        -- the pane itself rather than by anything the renderer holds — so a
+        -- later show, in a new renderer process, still reuses that same pane on
+        -- the next open (see ReplaceAgentTreeEditorFile). The pane's own life
+        -- ends with the editor running in it, or with the window
+        -- (DiscardAgentTreePaneOnWindowGone), or when the window is pinned into
+        -- the board (see the ToggleVsSplitPaneInteraction note below).
+        --
         -- The killed pane is the companion pane, never the agent's own pane:
         -- the target is resolved from the AgentTreePane record for the focused
         -- window, not from "whichever pane is not focused".
@@ -857,11 +869,18 @@ rule AgentTreeEditorOpenFailureIsVisible {
         -- take the tree with it. pane.status = shown above is that guarantee,
         -- not a state change.
         --
-        -- Covers three failures with one rule because they are one event to the
+        -- Covers four failures with one rule because they are one event to the
         -- user: the file no longer exists (the log records touches, never
-        -- deletions, so a node outlives its file), the renderer cannot identify
-        -- the pane it is running in (it was started outside tmux), and the tmux
-        -- split or replace itself failed.
+        -- deletions, so a node outlives its file), the selected path does not lie
+        -- inside pane.root, the renderer cannot identify the pane it is running
+        -- in (it was started outside tmux), and the tmux split or replace itself
+        -- failed.
+        --
+        -- The out-of-root case is unreachable through the surface as specified —
+        -- every node's path is built from segments below the root — and is
+        -- rejected anyway rather than trusted to stay that way, since the pane's
+        -- rooting at the worktree (TaskPaneRootIsTaskWorktree) is the whole
+        -- reason a path is relative in the first place.
 }
 
 rule ClearAgentTreeErrorNotice {
@@ -938,6 +957,13 @@ invariant OneCompanionPanePerAgentWindow {
 -- A second would divide the window again on every open and leave the older one
 -- unowned: nothing renders it, the toggle does not act on it, and only the pane
 -- that opened it knows it is there.
+--
+-- Held by construction rather than enforced: an open reuses the pane it finds,
+-- and finds it by a mark written immediately after the split. One gap follows
+-- from that and is accepted — if the mark cannot be written, the pane is already
+-- open showing the file, so the open reports success and the NEXT open, finding
+-- no mark, splits a second pane. Failing the open instead would report a
+-- failure that did not happen, over a bookkeeping write.
 invariant OneEditorPanePerAgentWindow {
     for a in AgentTreePanes:
         for b in AgentTreePanes:

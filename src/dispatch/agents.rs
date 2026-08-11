@@ -508,7 +508,7 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             // list-panes: the companion is %9, started with the stub binary
             MockProcessRunner::ok_with_stdout(b"%1 \n%9 /stub/bin/dispatch-stub agent-tree 5\n"),
-            MockProcessRunner::ok(), // kill-pane
+            MockProcessRunner::ok(),                     // kill-pane
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window
         ])
         .with_agent_binaries(AgentBinaries::stub());
@@ -527,7 +527,7 @@ mod tests {
         let mock = MockProcessRunner::new(vec![
             // list-panes: the companion is %9
             MockProcessRunner::ok_with_stdout(b"%1 \n%9 dispatch agent-tree 5\n"),
-            MockProcessRunner::ok(), // kill-pane %9
+            MockProcessRunner::ok(),                     // kill-pane %9
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window relaunch
         ]);
         resync_agent_tree_pane("task-5", &mock);

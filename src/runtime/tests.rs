@@ -2692,7 +2692,7 @@ async fn exec_swap_split_pane_renames_old_task_window() {
             // *incoming* task's tree (3), which is exactly why it is stale — the
             // lookup matches on the binary and subcommand, not the id.
             MockProcessRunner::ok_with_stdout(b"%10 \n%11 dispatch agent-tree 3\n"),
-            MockProcessRunner::ok(),                     // resync: kill-pane %11
+            MockProcessRunner::ok(), // resync: kill-pane %11
             MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
         ])
         .with_windows(&["task-3", "task-2"]),
