@@ -289,3 +289,128 @@ fn epic_search_matches_does_not_read_the_layout_cache() {
     app.search.query = "zzz".to_string();
     assert!(!app.epic_search_matches(EpicId(1)));
 }
+
+// ---------------------------------------------------------------------------
+// visible epic cards under a live query
+// ---------------------------------------------------------------------------
+
+/// Ids of the epic cards the current view would render, ascending.
+fn visible_epic_ids(app: &App) -> Vec<i64> {
+    let mut ids: Vec<i64> = app
+        .visible_epics_for_effective_view()
+        .map(|e| e.id.0)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
+#[test]
+fn search_hides_non_matching_epic_cards_on_the_board() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+    app.search.query = "login".to_string();
+    assert_eq!(visible_epic_ids(&app), vec![1]);
+}
+
+#[test]
+fn empty_search_keeps_every_epic_card() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+    assert_eq!(visible_epic_ids(&app), vec![1, 2]);
+}
+
+#[test]
+fn search_keeps_epic_whose_subtask_matches() {
+    let mut app = App::new(vec![epic_child(10, 2, "Fix login bug")]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Docs cleanup"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+    app.search.query = "login".to_string();
+    // Epic 2 has no own match but owns the matching task; epic 1 has neither.
+    assert_eq!(visible_epic_ids(&app), vec![2]);
+}
+
+#[test]
+fn search_on_epics_composes_with_repo_filter() {
+    let mut app = App::new(vec![]);
+    let mut child = epic_child(10, 1, "Fix login bug");
+    child.repo_path = "/repo/b".to_string();
+    app.board.tasks = vec![child];
+    app.board.epics = vec![make_epic_with_title(1, "Login redesign")];
+    app.filter.repos.insert("/repo/a".to_string());
+    app.filter.mode = RepoFilterMode::Include;
+    app.search.query = "login".to_string();
+    // Title matches, but the repo filter excludes the epic's only subtask.
+    assert_eq!(visible_epic_ids(&app), Vec::<i64>::new());
+}
+
+#[test]
+fn search_on_epics_composes_with_only_active_filter() {
+    let mut idle = epic_child(10, 1, "Fix login bug");
+    idle.tmux_window = None;
+    let mut app = App::new(vec![idle]);
+    app.board.epics = vec![make_epic_with_title(1, "Login redesign")];
+    app.filter.only_active = true;
+    app.search.query = "login".to_string();
+    // Title matches, but no subtask has a live tmux window.
+    assert_eq!(visible_epic_ids(&app), Vec::<i64>::new());
+}
+
+#[test]
+fn search_narrows_sub_epic_cards_inside_an_epic_view() {
+    use crate::tui::messages::EpicMessage;
+    use crate::tui::types::Message;
+
+    let mut app = App::new(vec![]);
+    let mut a = make_epic_with_title(2, "Login redesign");
+    a.parent_epic_id = Some(EpicId(1));
+    let mut b = make_epic_with_title(3, "Billing rework");
+    b.parent_epic_id = Some(EpicId(1));
+    app.board.epics = vec![make_epic_with_title(1, "Root"), a, b];
+    app.update(Message::Epic(EpicMessage::Enter(EpicId(1))));
+    app.search.query = "login".to_string();
+    assert_eq!(visible_epic_ids(&app), vec![2]);
+}
+
+#[test]
+fn search_does_not_narrow_the_move_task_epic_picker() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+    app.search.query = "login".to_string();
+    let mut ids: Vec<i64> = app
+        .move_task_target_epics()
+        .iter()
+        .map(|e| e.id.0)
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2], "the picker has its own buffer");
+}
+
+#[test]
+fn search_does_not_narrow_the_reparent_epic_picker() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+        make_epic_with_title(3, "Docs cleanup"),
+    ];
+    app.search.query = "login".to_string();
+    // Reparent targets for epic 3: everything except itself, unfiltered by search.
+    let mut ids: Vec<i64> = app
+        .reparent_target_epics(EpicId(3))
+        .iter()
+        .map(|e| e.id.0)
+        .collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![1, 2], "the picker has its own buffer");
+}

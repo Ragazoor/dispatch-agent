@@ -441,11 +441,6 @@ pub(in crate::tui) fn epic_active_matches_for_ids(
 /// Epic ids and task ids are separate sequences, so one digit payload can match
 /// both an epic card and a task card; both are shown. See `board_search_filter`
 /// in `docs/specs/core.allium`.
-///
-/// Unused outside its unit tests until board visibility is wired to it in a
-/// follow-up task; `#[allow(dead_code)]` is temporary and should be removed
-/// once that caller lands.
-#[allow(dead_code)]
 pub(in crate::tui) fn epic_search_matches_for_ids(
     tasks: &[Task],
     epics: &[Epic],
@@ -915,11 +910,6 @@ impl App {
     /// order but neither titles nor the query — a cached verdict would go stale
     /// on a title edit or a keystroke in the search bar. The empty-query fast
     /// path keeps the non-searching render free.
-    ///
-    /// Unused outside its unit tests until board visibility is wired to it in a
-    /// follow-up task; `#[allow(dead_code)]` is temporary and should be removed
-    /// once that caller lands.
-    #[allow(dead_code)]
     pub(in crate::tui) fn epic_search_matches(&self, epic_id: EpicId) -> bool {
         if !self.search_active() {
             return true;
@@ -937,11 +927,11 @@ impl App {
     }
 
     /// Epics visible in the current board/epic view, filtered by the active
-    /// repo / only-active filters: root epics (no parent) in `Board` mode,
-    /// direct children of the current epic in `Epic` mode. Shared by
-    /// `column_items_for_status_with_view_tasks`, `column_item_count`, and
-    /// `column_items_for_visual_column` so an epic-visibility rule change is
-    /// made in one place instead of three.
+    /// repo / only-active filters and the board-search query: root epics (no
+    /// parent) in `Board` mode, direct children of the current epic in `Epic`
+    /// mode. Shared by `column_items_for_status_with_view_tasks`,
+    /// `column_item_count`, and `column_items_for_visual_column` so an
+    /// epic-visibility rule change is made in one place instead of three.
     pub(in crate::tui) fn visible_epics_for_effective_view(&self) -> impl Iterator<Item = &Epic> {
         let parent = match self.effective_view_mode() {
             BoardViewMode::Board(_) => None,
@@ -951,7 +941,11 @@ impl App {
             .epics
             .iter()
             .filter(move |e| e.parent_epic_id == parent)
-            .filter(|e| self.epic_matches(e.id) && self.epic_repo_matches(e.id))
+            .filter(|e| {
+                self.epic_matches(e.id)
+                    && self.epic_repo_matches(e.id)
+                    && self.epic_search_matches(e.id)
+            })
     }
 
     /// Epics eligible as reparent targets for `target`.
