@@ -83,7 +83,7 @@ impl Fixture {
             self.dir.path(),
             &PathBuf::from(relative),
             &self.tree_pane,
-            &[self.editor_bin.clone()],
+            std::slice::from_ref(&self.editor_bin),
             &self.server.runner(),
         )
         .expect("open in editor");
