@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::TaskStatus;
+use crate::models::{EpicId, TaskStatus};
 
 fn test_task(id: i64, title: &str) -> Task {
     test_task_repo(id, title, "/repo")
@@ -155,4 +155,137 @@ fn search_composes_with_repo_filter() {
         .map(|t| t.id.0)
         .collect();
     assert_eq!(ids, vec![1]); // repo filter AND title match
+}
+
+// ---------------------------------------------------------------------------
+// epic_search_matches — see board_search_filter in docs/specs/core.allium
+// ---------------------------------------------------------------------------
+
+/// A subtask of `epic` with an explicit title.
+fn epic_child(id: i64, epic: i64, title: &str) -> Task {
+    let mut t = test_task(id, title);
+    t.epic_id = Some(EpicId(epic));
+    t
+}
+
+#[test]
+fn epic_search_matches_empty_query_matches_every_epic() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    assert!(app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_own_title_fuzzy() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Login redesign"),
+        make_epic_with_title(2, "Billing rework"),
+    ];
+    app.search.query = "lgn".to_string();
+    assert!(app.epic_search_matches(EpicId(1)));
+    assert!(!app.epic_search_matches(EpicId(2)));
+}
+
+#[test]
+fn epic_search_matches_own_id_prefix() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![
+        make_epic_with_title(38, "alpha"),
+        make_epic_with_title(380, "beta"),
+        make_epic_with_title(1385, "gamma"),
+    ];
+    app.search.query = "38".to_string();
+    assert!(app.epic_search_matches(EpicId(38)));
+    assert!(app.epic_search_matches(EpicId(380)));
+    // Prefix, not substring: 1385 contains "38" but does not start with it.
+    assert!(!app.epic_search_matches(EpicId(1385)));
+}
+
+#[test]
+fn epic_search_matches_own_id_with_hash_prefix() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic_with_title(38, "alpha")];
+    app.search.query = "#38".to_string();
+    assert!(app.epic_search_matches(EpicId(38)));
+}
+
+#[test]
+fn epic_search_matches_descendant_task_title() {
+    let mut app = App::new(vec![epic_child(10, 1, "Fix login bug")]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    app.search.query = "login".to_string();
+    // The epic's own title has no match; its subtask carries it.
+    assert!(app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_descendant_task_id() {
+    let mut app = App::new(vec![epic_child(3837, 1, "alpha")]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    app.search.query = "3837".to_string();
+    assert!(app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_descendant_sub_epic_title() {
+    let mut app = App::new(vec![]);
+    let mut child = make_epic_with_title(2, "Login redesign");
+    child.parent_epic_id = Some(EpicId(1));
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework"), child];
+    app.search.query = "login".to_string();
+    // Root epic kept because a sub-epic in its subtree matches.
+    assert!(app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_grandchild_task_title() {
+    let mut app = App::new(vec![epic_child(10, 2, "Fix login bug")]);
+    let mut child = make_epic_with_title(2, "Sub");
+    child.parent_epic_id = Some(EpicId(1));
+    app.board.epics = vec![make_epic_with_title(1, "Root"), child];
+    app.search.query = "login".to_string();
+    assert!(app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_no_match_anywhere_is_false() {
+    let mut app = App::new(vec![epic_child(10, 1, "Update invoices")]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    app.search.query = "login".to_string();
+    assert!(!app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_ignores_archived_descendant_task() {
+    let mut archived = epic_child(10, 1, "Fix login bug");
+    archived.status = TaskStatus::Archived;
+    let mut app = App::new(vec![archived]);
+    app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
+    app.search.query = "login".to_string();
+    assert!(!app.epic_search_matches(EpicId(1)));
+}
+
+#[test]
+fn epic_search_matches_ignores_task_in_a_different_epic() {
+    let mut app = App::new(vec![epic_child(10, 2, "Fix login bug")]);
+    app.board.epics = vec![
+        make_epic_with_title(1, "Billing rework"),
+        make_epic_with_title(2, "Auth"),
+    ];
+    app.search.query = "login".to_string();
+    // Epic 2 is not a descendant of epic 1 (no parent link).
+    assert!(!app.epic_search_matches(EpicId(1)));
+    assert!(app.epic_search_matches(EpicId(2)));
+}
+
+#[test]
+fn epic_search_matches_does_not_read_the_layout_cache() {
+    // A stale cache must never answer for search: the layout fingerprint
+    // covers neither titles nor the query.
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic_with_title(1, "Login redesign")];
+    let _ = app.cached_epic_stats(); // populates layout.epic_filter_cache
+    app.search.query = "zzz".to_string();
+    assert!(!app.epic_search_matches(EpicId(1)));
 }
