@@ -1,15 +1,16 @@
 //! Small git plumbing helpers shared across the crate.
 
-use crate::process::ProcessRunner;
+use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 
 /// Detect the default branch for a repo by inspecting `origin/HEAD`.
 ///
 /// Falls back to `"main"` when the remote ref is missing or the command
 /// fails (no remote, fresh clone without `git remote set-head`, etc.).
 pub fn detect_default_branch(repo_path: &str, runner: &dyn ProcessRunner) -> String {
-    if let Ok(output) = runner.run(
+    if let Ok(output) = runner.run_with_timeout(
         "git",
         &["-C", repo_path, "symbolic-ref", "refs/remotes/origin/HEAD"],
+        SUBPROCESS_TIMEOUT,
     ) {
         if output.status.success() {
             let refname = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -50,7 +51,11 @@ pub(crate) fn has_origin_remote(
     runner: &dyn ProcessRunner,
 ) -> std::result::Result<bool, String> {
     runner
-        .run("git", &["-C", repo_path, "remote", "get-url", "origin"])
+        .run_with_timeout(
+            "git",
+            &["-C", repo_path, "remote", "get-url", "origin"],
+            SUBPROCESS_TIMEOUT,
+        )
         .map(|o| o.status.success())
         .map_err(|e| format!("Failed to check for an origin remote: {e}"))
 }
@@ -68,9 +73,10 @@ pub(crate) fn current_branch(
     runner: &dyn ProcessRunner,
 ) -> std::result::Result<String, String> {
     runner
-        .run(
+        .run_with_timeout(
             "git",
             &["-C", repo_path, "rev-parse", "--abbrev-ref", "HEAD"],
+            SUBPROCESS_TIMEOUT,
         )
         .map(|output| crate::process::stdout_str(&output))
         .map_err(|e| format!("Failed to check current branch: {e}"))
@@ -87,7 +93,11 @@ pub(crate) fn dirty_files(
     runner: &dyn ProcessRunner,
 ) -> std::result::Result<Vec<String>, String> {
     runner
-        .run("git", &["-C", repo_path, "status", "--porcelain"])
+        .run_with_timeout(
+            "git",
+            &["-C", repo_path, "status", "--porcelain"],
+            SUBPROCESS_TIMEOUT,
+        )
         .map(|output| parse_porcelain_files(&output))
         .map_err(|e| format!("Failed to check working tree status: {e}"))
 }
@@ -282,5 +292,43 @@ mod tests {
                 "refs/remotes/origin/HEAD".to_string(),
             ]
         );
+    }
+
+    // --- subprocess bounding ---
+    //
+    // These four helpers are issued on both the wrap-up rebase path
+    // (finish_task) and the repo-sync path (sync_repo / measure_repo), and every
+    // one of them can block on a repository lock — routinely, since a human often
+    // has the same checkout open while an agent wraps up. A bare `run` wedges both
+    // callers with no way out, so each must carry the bound.
+
+    #[test]
+    fn detect_default_branch_bounds_its_subprocess() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"refs/remotes/origin/main\n",
+        )]);
+        let _ = detect_default_branch("/repo", &runner);
+        assert_eq!(runner.recorded_timeouts(), vec![Some(SUBPROCESS_TIMEOUT)]);
+    }
+
+    #[test]
+    fn has_origin_remote_bounds_its_subprocess() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        let _ = has_origin_remote("/repo", &runner);
+        assert_eq!(runner.recorded_timeouts(), vec![Some(SUBPROCESS_TIMEOUT)]);
+    }
+
+    #[test]
+    fn current_branch_bounds_its_subprocess() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"main\n")]);
+        let _ = current_branch("/repo", &runner);
+        assert_eq!(runner.recorded_timeouts(), vec![Some(SUBPROCESS_TIMEOUT)]);
+    }
+
+    #[test]
+    fn dirty_files_bounds_its_subprocess() {
+        let runner = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"")]);
+        let _ = dirty_files("/repo", &runner);
+        assert_eq!(runner.recorded_timeouts(), vec![Some(SUBPROCESS_TIMEOUT)]);
     }
 }
