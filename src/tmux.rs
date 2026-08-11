@@ -548,6 +548,99 @@ pub fn split_window_horizontal_running(
     run_checked_stdout(runner, &args, "split-window")
 }
 
+/// Create a pane spanning the **full window width** below `target`, taking
+/// `size_pct`% of the window's height, running `command` as separate argv
+/// elements (no shell) with `cwd` as its start directory. Keeps focus where it
+/// is. Returns the new pane's ID.
+///
+/// The third split helper in this module, and each difference is load-bearing.
+/// [`split_window_horizontal`] (40%, right, no command) serves the board's
+/// split-pane feature; [`split_window_horizontal_running`] (left, `size_pct`,
+/// command) opens the agent-tree companion pane. This one opens the editor pane
+/// *from* that companion pane, where:
+///
+/// * `-f` makes the new pane span the window rather than subdividing the pane it
+///   was split from — the companion pane is the natural target and it is the
+///   narrow one, so without `-f` the editor would inherit its 30% column.
+/// * `-c` is passed explicitly rather than relying on [`ensure_split_hook`]'s
+///   `@dispatch_dir` `cd`: that hook *types* `cd <dir>` into the new pane, which
+///   works for a shell and would land in the editor's own input here.
+/// * Focus stays put (`-d`) so the user can keep browsing the tree — see
+///   `OpenAgentTreeFileInEditor` in docs/specs/agent-tree.allium.
+pub fn split_window_full_below_running(
+    target: &str,
+    size_pct: u8,
+    cwd: &str,
+    command: &[&str],
+    runner: &dyn ProcessRunner,
+) -> Result<String> {
+    if command.is_empty() {
+        bail!("split_window_full_below_running: command must not be empty");
+    }
+    let target_pane = window_target(target, runner)?;
+    let size_arg = format!("{size_pct}%");
+    let mut args: Vec<&str> = vec![
+        "split-window",
+        "-v",
+        "-f",
+        "-d",
+        "-l",
+        &size_arg,
+        "-t",
+        &target_pane,
+        "-c",
+        cwd,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "--",
+    ];
+    args.extend(command.iter().copied());
+    run_checked_stdout(runner, &args, "split-window")
+}
+
+/// Replace what is running in `pane_id` with `command` (argv, no shell), started
+/// in `cwd`. `-k` kills the pane's current process first.
+///
+/// The pane object itself survives, which is what makes this the way the editor
+/// pane shows a second file: it keeps its geometry and its pane options, so
+/// nothing has to be re-marked, and focus is untouched. Sibling of
+/// [`respawn_pane`], which respawns a plain shell in place.
+pub fn respawn_pane_running(
+    pane_id: &str,
+    cwd: &str,
+    command: &[&str],
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    if command.is_empty() {
+        bail!("respawn_pane_running: command must not be empty");
+    }
+    let mut args: Vec<&str> = vec!["respawn-pane", "-k", "-c", cwd, "-t", pane_id, "--"];
+    args.extend(command.iter().copied());
+    run_checked(runner, &args, "respawn-pane")?;
+    Ok(())
+}
+
+/// Set a pane-scoped tmux user option (`@name`). The pane-level sibling of
+/// [`set_window_dispatch_dir`]'s `set-option -w`.
+///
+/// Takes a pane **id** only, never a window name: a pane option is how dispatch
+/// marks a pane it created, and a marker written to the wrong pane is worse than
+/// no marker at all.
+pub fn set_pane_option(
+    pane_id: &str,
+    option: &str,
+    value: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    run_checked(
+        runner,
+        &["set-option", "-p", "-t", pane_id, option, value],
+        "set-option",
+    )?;
+    Ok(())
+}
+
 /// Move a tmux window into the current window as a right pane (40% width).
 /// Returns the new pane's ID.
 pub fn join_pane(
@@ -1559,6 +1652,168 @@ mod tests {
             err.to_string().contains("split-window failed"),
             "got: {err}"
         );
+    }
+
+    // --- split_window_full_below_running ---
+
+    #[test]
+    fn split_window_full_below_running_issues_correct_args() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")]);
+        let pane_id = split_window_full_below_running(
+            "%3",
+            60,
+            "/work/wt",
+            &["vim", "/work/wt/src/lib.rs"],
+            &mock,
+        )
+        .unwrap();
+        assert_eq!(pane_id, "%7");
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tmux");
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "split-window",
+                "-v",
+                "-f",
+                "-d",
+                "-l",
+                "60%",
+                "-t",
+                "%3",
+                "-c",
+                "/work/wt",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "vim",
+                "/work/wt/src/lib.rs",
+            ]
+        );
+    }
+
+    /// `-f` (span the window) is what makes the geometry independent of which
+    /// pane is targeted, and `-d` is what keeps focus in the tree pane. Both are
+    /// single-character flags, easy to drop in a refactor and invisible in the
+    /// result, so they are asserted by name as well as by the argv above.
+    #[test]
+    fn split_window_full_below_running_spans_the_window_and_keeps_focus() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")]);
+        split_window_full_below_running("%3", 60, "/work/wt", &["vi", "a"], &mock).unwrap();
+        let args = &mock.recorded_calls()[0].1;
+        assert!(args.contains(&"-f".to_string()), "args: {args:?}");
+        assert!(args.contains(&"-d".to_string()), "args: {args:?}");
+    }
+
+    #[test]
+    fn split_window_full_below_running_keeps_argv_elements_separate() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")]);
+        split_window_full_below_running(
+            "%3",
+            60,
+            "/work/wt",
+            &["nvim", "-p", "/work/wt/dir with spaces/a.rs"],
+            &mock,
+        )
+        .unwrap();
+        let args = &mock.recorded_calls()[0].1;
+        assert_eq!(args.last().unwrap(), "/work/wt/dir with spaces/a.rs");
+        assert_eq!(args[args.len() - 4], "--");
+        assert_eq!(args[args.len() - 3], "nvim");
+        assert_eq!(args[args.len() - 2], "-p");
+    }
+
+    #[test]
+    fn split_window_full_below_running_rejects_empty_command() {
+        let mock = MockProcessRunner::new(vec![]);
+        let err = split_window_full_below_running("%3", 60, "/w", &[], &mock).unwrap_err();
+        assert!(err.to_string().contains("command must not be empty"));
+    }
+
+    #[test]
+    fn split_window_full_below_running_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no space")]);
+        let err =
+            split_window_full_below_running("%3", 60, "/w", &["vi", "a"], &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("split-window failed"),
+            "got: {err}"
+        );
+    }
+
+    /// A window *name* target must be resolved rather than handed to tmux, which
+    /// prefix-matches names (see [`window_target`]).
+    #[test]
+    fn split_window_full_below_running_resolves_a_window_name() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%7\n")])
+            .with_windows(&["task-42"]);
+        split_window_full_below_running("task-42", 60, "/w", &["vi", "a"], &mock).unwrap();
+        let args = &mock.recorded_calls()[0].1;
+        let target = args.iter().position(|a| a == "-t").unwrap() + 1;
+        assert_eq!(args[target], mock.pane_id_of("task-42"));
+    }
+
+    // --- respawn_pane_running ---
+
+    #[test]
+    fn respawn_pane_running_issues_correct_args() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        respawn_pane_running("%7", "/work/wt", &["vim", "-p", "/work/wt/a.rs"], &mock).unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1,
+            vec![
+                "respawn-pane",
+                "-k",
+                "-c",
+                "/work/wt",
+                "-t",
+                "%7",
+                "--",
+                "vim",
+                "-p",
+                "/work/wt/a.rs",
+            ]
+        );
+    }
+
+    #[test]
+    fn respawn_pane_running_rejects_empty_command() {
+        let mock = MockProcessRunner::new(vec![]);
+        let err = respawn_pane_running("%7", "/w", &[], &mock).unwrap_err();
+        assert!(err.to_string().contains("command must not be empty"));
+    }
+
+    #[test]
+    fn respawn_pane_running_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("boom")]);
+        let err = respawn_pane_running("%7", "/w", &["vi", "a"], &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("respawn-pane failed"),
+            "got: {err}"
+        );
+    }
+
+    // --- set_pane_option ---
+
+    #[test]
+    fn set_pane_option_issues_correct_args() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        set_pane_option("%7", "@dispatch_editor_pane", "1", &mock).unwrap();
+        assert_eq!(
+            mock.recorded_calls()[0].1,
+            vec!["set-option", "-p", "-t", "%7", "@dispatch_editor_pane", "1"]
+        );
+    }
+
+    #[test]
+    fn set_pane_option_fails_on_nonzero_exit() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("bad option")]);
+        let err = set_pane_option("%7", "@x", "1", &mock).unwrap_err();
+        assert!(err.to_string().contains("set-option failed"), "got: {err}");
     }
 
     // --- join_pane failure paths ---
