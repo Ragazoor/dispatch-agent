@@ -494,6 +494,21 @@ pub(in crate::tui) struct EpicSearchIndex<'a> {
     task_owners: HashSet<EpicId>,
 }
 
+impl EpicSearchIndex<'_> {
+    /// Whether `epic`'s own title or id satisfies the query. The epic and
+    /// sub-epic branches of [`App::epic_search_matches_indexed`] ask the same
+    /// question, so the parsed-query plumbing is expressed once.
+    fn own_match(&self, epic: &Epic) -> bool {
+        own_search_match(&epic.title, epic.id.0, &self.query_lower, self.id_digits)
+    }
+
+    /// Whether `epic_id` itself is in the index, and matches. `None` — an id with
+    /// no epic behind it — is not a match.
+    fn own_match_by_id(&self, epic_id: EpicId) -> bool {
+        self.by_id.get(&epic_id).is_some_and(|e| self.own_match(e))
+    }
+}
+
 /// Returns true when the buffer should be offered as a selectable "new path"
 /// entry: the buffer is non-empty and is not already an exact member of
 /// `filtered` (the user is typing a path that doesn't exist in the saved list).
@@ -945,7 +960,7 @@ impl App {
                 &query_lower,
                 id_digits,
             ),
-            by_id: self.board.epics.iter().map(|e| (e.id, e)).collect(),
+            by_id: crate::models::epic_id_lookup(&self.board.epics),
             children: crate::models::build_children_map(&self.board.epics),
             query_lower,
             id_digits,
@@ -971,10 +986,7 @@ impl App {
         index: &EpicSearchIndex<'_>,
         epic_id: EpicId,
     ) -> bool {
-        let own_match = index.by_id.get(&epic_id).is_some_and(|e| {
-            own_search_match(&e.title, e.id.0, &index.query_lower, index.id_digits)
-        });
-        if own_match {
+        if index.own_match_by_id(epic_id) {
             return true;
         }
 
@@ -982,9 +994,7 @@ impl App {
 
         let sub_epic_matches = epic_ids.iter().any(|&id| {
             id != epic_id
-                && index.by_id.get(&id).is_some_and(|e| {
-                    own_search_match(&e.title, e.id.0, &index.query_lower, index.id_digits)
-                })
+                && index.own_match_by_id(id)
                 && self.epic_matches(id)
                 && self.epic_repo_matches(id)
         });
@@ -1397,8 +1407,7 @@ impl App {
             .collect();
 
         if self.is_flattened_for_status(status) {
-            let epic_lookup: HashMap<EpicId, &Epic> =
-                self.board.epics.iter().map(|e| (e.id, e)).collect();
+            let epic_lookup = crate::models::epic_id_lookup(&self.board.epics);
 
             // SubstatusLabel items only make sense in Running/Review columns.
             let show_substatus_labels = matches!(status, TaskStatus::Running | TaskStatus::Review);

@@ -233,6 +233,14 @@ pub fn epic_substatus(epic: &Epic, subtasks: &[&Task]) -> EpicSubstatus {
     }
 }
 
+/// Build an id→epic lookup over `epics`.
+///
+/// Calling this once and indexing it in a loop reduces a repeated linear
+/// `iter().find(|e| e.id == id)` from O(epics²) to O(epics).
+pub fn epic_id_lookup(epics: &[Epic]) -> std::collections::HashMap<EpicId, &Epic> {
+    epics.iter().map(|e| (e.id, e)).collect()
+}
+
 /// Build a parent→children adjacency map over `epics`.
 ///
 /// Calling this once and passing the result to [`descendant_epic_ids_with_map`]
@@ -287,7 +295,7 @@ pub fn descendant_epic_ids(root: EpicId, epics: &[Epic]) -> HashSet<EpicId> {
 /// malformed cycles (which the service layer prevents, but the renderer must
 /// not hang on). A root epic returns `vec![epic.title]`.
 pub fn ancestor_titles<'a>(epic: &'a Epic, epics: &'a [Epic]) -> Vec<&'a str> {
-    let by_id: std::collections::HashMap<EpicId, &Epic> = epics.iter().map(|e| (e.id, e)).collect();
+    let by_id = epic_id_lookup(epics);
     let mut seen: HashSet<EpicId> = HashSet::new();
     let mut chain: Vec<&str> = Vec::new();
     let mut cursor = epic;
