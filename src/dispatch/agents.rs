@@ -20,6 +20,70 @@ use super::worktree::{provision_worktree, BaseRef, StartPoint};
 /// docs/specs/agent-tree.allium.
 const AGENT_TREE_PANE_PERCENT: u8 = 30;
 
+/// The `dispatch` subcommand the companion pane runs. Shared between the spawn
+/// side and the lookup side, so the two cannot drift.
+const AGENT_TREE_SUBCOMMAND: &str = "agent-tree";
+
+/// Whether `start_command` is a `dispatch agent-tree <id>` invocation — the
+/// companion pane [`spawn_agent_tree_pane`] creates.
+///
+/// Matched as argv0's basename plus argv1, never as a substring: an editor pane
+/// opened on `docs/specs/agent-tree.allium` contains the string "agent-tree", and
+/// killing the user's editor instead of the tree would be exactly the class of
+/// bug this lookup exists to fix. argv0 may be an absolute path because the
+/// binary is named through `ProcessRunner::agent_binaries` — which is how the
+/// real-tmux harness points it at a stub — hence comparing basenames.
+fn is_agent_tree_command(start_command: &str, dispatch_bin: &str) -> bool {
+    let basename = |s: &str| {
+        std::path::Path::new(s)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| s.to_string())
+    };
+    let mut argv = start_command.split_whitespace();
+    let Some(argv0) = argv.next() else {
+        return false;
+    };
+    basename(argv0) == basename(dispatch_bin) && argv.next() == Some(AGENT_TREE_SUBCOMMAND)
+}
+
+/// The companion agent-tree pane in `window`, if it has one.
+///
+/// Replaces a `tmux::inactive_pane_id` call, which asked "which pane is not
+/// focused?" and answered "the companion" only for a two-pane window whose focus
+/// had not moved. Neither holds: the user can focus the companion pane — and must,
+/// to press any key in it — and an editor pane opened from the tree makes a third.
+/// Identifying the pane by the command it was started with is true whatever has
+/// focus and however many panes there are, and it needs no migration, since tmux
+/// reports the start command of panes already running.
+pub fn agent_tree_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Option<String>> {
+    let dispatch_bin = runner.agent_binaries().dispatch;
+    let panes = tmux::pane_ids_with_start_command(
+        window,
+        |cmd| is_agent_tree_command(cmd, &dispatch_bin),
+        runner,
+    )?;
+    Ok(panes.into_iter().next())
+}
+
+/// Every pane in `window` that dispatch put there beside the agent's own: the
+/// companion tree pane, and the editor pane opened from it.
+///
+/// Used by the split-pane pin path, which moves only the agent's own pane out and
+/// must not leave the rest behind in a window nothing owns.
+pub fn companion_pane_ids(window: &str, runner: &dyn ProcessRunner) -> Result<Vec<String>> {
+    let mut panes = Vec::new();
+    if let Some(tree) = agent_tree_pane_id(window, runner)? {
+        panes.push(tree);
+    }
+    panes.extend(tmux::pane_ids_with_option(
+        window,
+        crate::agent_tree_editor::EDITOR_PANE_OPTION,
+        runner,
+    )?);
+    Ok(panes)
+}
+
 /// Split the agent's tmux window and launch `dispatch agent-tree <task_id>`
 /// in the new pane, right after the agent's own command has been sent (see
 /// docs/specs/agent-tree.allium's `SplitAgentTreePaneOnAgentLaunch`).
@@ -34,7 +98,7 @@ fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn Proces
     if let Err(e) = tmux::split_window_horizontal_running(
         tmux_window,
         AGENT_TREE_PANE_PERCENT,
-        &[&dispatch_bin, "agent-tree", &id_arg],
+        &[&dispatch_bin, AGENT_TREE_SUBCOMMAND, &id_arg],
         runner,
     ) {
         tracing::warn!(
@@ -59,7 +123,7 @@ pub fn toggle_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) -> Resul
     let Some(task_id) = parse_tmux_window_task_id(window) else {
         return Ok(());
     };
-    match tmux::inactive_pane_id(window, runner)? {
+    match agent_tree_pane_id(window, runner)? {
         Some(pane_id) => tmux::kill_pane(&pane_id, runner),
         None => {
             spawn_agent_tree_pane(window, task_id, runner);
@@ -84,7 +148,7 @@ pub fn resync_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) {
     let Some(task_id) = parse_tmux_window_task_id(window) else {
         return;
     };
-    match tmux::inactive_pane_id(window, runner) {
+    match agent_tree_pane_id(window, runner) {
         Ok(Some(pane_id)) => {
             if let Err(e) = tmux::kill_pane(&pane_id, runner) {
                 tracing::warn!(
@@ -426,7 +490,8 @@ mod tests {
     #[test]
     fn resync_agent_tree_pane_noop_when_no_companion_pane() {
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"1 %1\n"), // list-panes: no companion
+            // list-panes: one pane, running a plain shell — no companion
+            MockProcessRunner::ok_with_stdout(b"%1 \n"),
         ]);
         resync_agent_tree_pane("task-5", &mock);
         let calls = mock.recorded_calls();
@@ -435,13 +500,16 @@ mod tests {
 
     /// The companion pane's binary comes from the runner, not a literal — the
     /// seam that lets the real-tmux harness point it at a stub without shadowing
-    /// `dispatch` on `PATH`.
+    /// `dispatch` on `PATH`. The listing below carries that same stub path, so
+    /// this also covers the lookup matching argv0 by basename rather than
+    /// requiring the bare name.
     #[test]
     fn spawn_agent_tree_pane_launches_the_runners_dispatch_binary() {
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %9\n"), // list-panes
-            MockProcessRunner::ok(),                            // kill-pane
-            MockProcessRunner::ok_with_stdout(b"%20\n"),        // split-window
+            // list-panes: the companion is %9, started with the stub binary
+            MockProcessRunner::ok_with_stdout(b"%1 \n%9 /stub/bin/dispatch-stub agent-tree 5\n"),
+            MockProcessRunner::ok(), // kill-pane
+            MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window
         ])
         .with_agent_binaries(AgentBinaries::stub());
 
@@ -457,9 +525,10 @@ mod tests {
     #[test]
     fn resync_agent_tree_pane_kills_and_respawns_companion() {
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %9\n"), // list-panes: companion is %9
-            MockProcessRunner::ok(),                            // kill-pane %9
-            MockProcessRunner::ok_with_stdout(b"%20\n"),        // split-window relaunch
+            // list-panes: the companion is %9
+            MockProcessRunner::ok_with_stdout(b"%1 \n%9 dispatch agent-tree 5\n"),
+            MockProcessRunner::ok(), // kill-pane %9
+            MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window relaunch
         ]);
         resync_agent_tree_pane("task-5", &mock);
         let calls = mock.recorded_calls();
@@ -485,7 +554,7 @@ mod tests {
     #[test]
     fn resync_agent_tree_pane_still_respawns_when_kill_fails() {
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %9\n"),
+            MockProcessRunner::ok_with_stdout(b"%1 \n%9 dispatch agent-tree 5\n"),
             MockProcessRunner::fail("kill-pane error"),
             MockProcessRunner::ok_with_stdout(b"%20\n"),
         ]);

@@ -2344,8 +2344,10 @@ async fn exec_enter_split_mode_with_task_joins_pane() {
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            MockProcessRunner::ok_with_stdout(b"1 %1\n"), // inactive_pane_id check: no companion
-            MockProcessRunner::ok(),                    // join_pane: join-pane command
+            // companion_pane_ids: no agent-tree pane, then no editor pane
+            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok(), // join_pane: join-pane command
         ])
         .with_windows(&["task-1"]),
     );
@@ -2355,9 +2357,9 @@ async fn exec_enter_split_mode_with_task_joins_pane() {
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    assert!(calls[2].1.contains(&"join-pane".to_string()));
+    assert!(calls[3].1.contains(&"join-pane".to_string()));
     assert!(
-        calls[2].1.contains(&mock.pane_id_of("task-1")),
+        calls[3].1.contains(&mock.pane_id_of("task-1")),
         "the source must be the resolved pane, not the window name"
     );
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -2377,20 +2379,25 @@ async fn exec_enter_split_mode_with_task_joins_pane() {
 }
 
 #[tokio::test]
-async fn exec_enter_split_mode_with_task_kills_leftover_companion_pane_after_join() {
-    // The window has a companion pane (inactive, %2) alongside the agent's
-    // own active pane (%1). Once the active pane is joined out, the
-    // companion must be killed too — otherwise it becomes the window's sole
-    // pane, indistinguishable from "hidden" to the agent-tree toggle
-    // (docs/specs/agent-tree.allium: ToggleVsSplitPaneInteraction).
+async fn exec_enter_split_mode_with_task_kills_leftover_companion_panes_after_join() {
+    // The window holds the agent's own pane (%1), the agent-tree companion
+    // (%2) and an editor pane opened from it (%5). Once the agent's pane is
+    // joined out, both companions must be killed: a lone tree pane is
+    // indistinguishable from "hidden" to the agent-tree toggle, and an editor
+    // pane has no owner left at all (docs/specs/agent-tree.allium:
+    // ToggleVsSplitPaneInteraction).
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %2\n"), // inactive_pane_id: companion is %2
-            MockProcessRunner::ok(),                    // join_pane: join-pane
-            MockProcessRunner::ok(),                    // kill-pane %2
+            // companion_pane_ids: the tree pane by start command...
+            MockProcessRunner::ok_with_stdout(b"%1 \n%2 dispatch agent-tree 1\n%5 vim /w/a.rs\n"),
+            // ...then the editor pane by its marker.
+            MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n%5 1\n"),
+            MockProcessRunner::ok(), // join_pane: join-pane
+            MockProcessRunner::ok(), // kill-pane %2
+            MockProcessRunner::ok(), // kill-pane %5
         ])
         .with_windows(&["task-1"]),
     );
@@ -2400,8 +2407,9 @@ async fn exec_enter_split_mode_with_task_kills_leftover_companion_pane_after_joi
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 4);
-    assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%2"]);
+    assert_eq!(calls.len(), 6, "calls: {calls:?}");
+    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%2"]);
+    assert_eq!(calls[5].1, vec!["kill-pane", "-t", "%5"]);
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -2427,7 +2435,7 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_check_fails(
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            MockProcessRunner::fail("list-panes error"), // inactive_pane_id check
+            MockProcessRunner::fail("list-panes error"), // companion_pane_ids check
             MockProcessRunner::ok(),                    // join_pane: join-pane
         ])
         .with_windows(&["task-1"]),
@@ -2463,8 +2471,10 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_kill_fails()
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            MockProcessRunner::ok_with_stdout(b"1 %1\n0 %2\n"), // inactive_pane_id
-            MockProcessRunner::ok(),                    // join_pane: join-pane
+            // companion_pane_ids: tree pane %2, no editor pane
+            MockProcessRunner::ok_with_stdout(b"%1 \n%2 dispatch agent-tree 1\n"),
+            MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n"),
+            MockProcessRunner::ok(), // join_pane: join-pane
             MockProcessRunner::fail("kill-pane error"),
         ])
         .with_windows(&["task-1"]),
@@ -2676,11 +2686,14 @@ async fn exec_swap_split_pane_renames_old_task_window() {
     // so they are not recorded calls.
     let mock = Arc::new(
         MockProcessRunner::new(vec![
-            MockProcessRunner::ok(),                              // swap-pane
+            MockProcessRunner::ok(), // swap-pane
             MockProcessRunner::ok(), // rename-window (old task had a window)
-            MockProcessRunner::ok_with_stdout(b"1 %10\n0 %11\n"), // resync: list-panes finds companion
-            MockProcessRunner::ok(),                              // resync: kill-pane %11
-            MockProcessRunner::ok_with_stdout(b"%12\n"),          // resync: split-window relaunch
+            // resync: list-panes finds the companion. It is still running the
+            // *incoming* task's tree (3), which is exactly why it is stale — the
+            // lookup matches on the binary and subcommand, not the id.
+            MockProcessRunner::ok_with_stdout(b"%10 \n%11 dispatch agent-tree 3\n"),
+            MockProcessRunner::ok(),                     // resync: kill-pane %11
+            MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
         ])
         .with_windows(&["task-3", "task-2"]),
     );
@@ -2783,8 +2796,10 @@ async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            MockProcessRunner::ok_with_stdout(b"1 %1\n"), // inactive_pane_id check: no companion
-            MockProcessRunner::ok(),                    // join_pane: join-pane command
+            // companion_pane_ids: no agent-tree pane, then no editor pane
+            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok(), // join_pane: join-pane command
         ])
         .with_windows(&["task-1"]),
     );
@@ -2795,7 +2810,7 @@ async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
         .unwrap();
 
     let calls = mock.recorded_calls();
-    assert!(calls[2].1.contains(&"join-pane".to_string()));
+    assert!(calls[3].1.contains(&"join-pane".to_string()));
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()

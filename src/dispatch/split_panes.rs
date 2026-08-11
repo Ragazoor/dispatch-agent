@@ -21,8 +21,11 @@ use anyhow::{Context, Result};
 use crate::process::ProcessRunner;
 use crate::tmux;
 
+use super::agents::companion_pane_ids;
+
 /// Move `window`'s agent pane into `target_pane`'s window as a right-hand pane,
-/// discarding the agent-tree companion pane left behind.
+/// discarding every companion pane left behind — the agent-tree pane and any
+/// editor pane opened from it.
 ///
 /// Returns the joined pane's id (tmux preserves pane ids across a move).
 pub fn join_task_window_into_pane(
@@ -30,33 +33,38 @@ pub fn join_task_window_into_pane(
     target_pane: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<String> {
-    // Capture any companion pane *before* the join. `join_pane` moves only the
-    // agent's own (active) pane out of the window, so a companion left behind
-    // becomes the window's sole remaining pane — at which point it is
+    // Capture the companion panes *before* the join. `join_pane` moves only the
+    // agent's own (active) pane out of the window, so anything left behind is
+    // orphaned in a window nothing owns: a lone companion pane is
     // indistinguishable from "hidden" to the agent-tree toggle (see
-    // docs/specs/agent-tree.allium: ToggleVsSplitPaneInteraction). Checking
-    // after the join would be too late to tell the two apart.
+    // docs/specs/agent-tree.allium: ToggleVsSplitPaneInteraction), and an editor
+    // pane has no owner at all once the tree that opened it is gone. Checking
+    // after the join would be too late to tell any of them apart.
     //
-    // Best-effort: a failed check degrades to "no companion" rather than
+    // Plural, and not "the window's inactive pane": with an editor pane open
+    // that lookup was ambiguous and drained neither.
+    //
+    // Best-effort: a failed check degrades to "no companions" rather than
     // failing the pin, which is the user's actual intent.
-    let companion_pane_id = match tmux::inactive_pane_id(window, runner) {
-        Ok(id) => id,
+    let companion_panes = match companion_pane_ids(window, runner) {
+        Ok(ids) => ids,
         Err(e) => {
             tracing::warn!(
                 %window,
                 error = %e,
-                "failed to check for companion pane before join-pane"
+                "failed to check for companion panes before join-pane"
             );
-            None
+            Vec::new()
         }
     };
 
     let pane_id = tmux::join_pane(window, target_pane, runner)?;
 
-    if let Some(companion_id) = companion_pane_id {
+    for companion_id in companion_panes {
         if let Err(e) = tmux::kill_pane(&companion_id, runner) {
             tracing::warn!(
                 %window,
+                %companion_id,
                 error = %e,
                 "failed to kill leftover companion pane after join-pane"
             );

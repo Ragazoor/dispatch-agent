@@ -17,10 +17,10 @@ mod trust;
 mod worktree;
 
 pub use agents::{
-    create_main_session, dispatch_agent, fetch_verify_command, is_wrappable,
-    main_session_window_alive, prepare_inputs, prepare_inputs_with_epic_ctx, quick_dispatch_agent,
-    research_agent, resume_agent, resync_agent_tree_pane, toggle_agent_tree_pane, DispatchInputs,
-    MAIN_SESSION_WINDOW,
+    agent_tree_pane_id, companion_pane_ids, create_main_session, dispatch_agent,
+    fetch_verify_command, is_wrappable, main_session_window_alive, prepare_inputs,
+    prepare_inputs_with_epic_ctx, quick_dispatch_agent, research_agent, resume_agent,
+    resync_agent_tree_pane, toggle_agent_tree_pane, DispatchInputs, MAIN_SESSION_WINDOW,
 };
 pub use finish::{finish_task, FinishContext, FinishError};
 pub use prompts::{build_and_record_injections, EpicContext, LearningInjections};
