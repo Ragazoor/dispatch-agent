@@ -845,12 +845,14 @@ pub struct ColumnLayout<'a> {
 
 impl<'a> ColumnLayout<'a> {
     pub fn build(app: &'a super::App, stats: &EpicStatsMap) -> Self {
-        // Call tasks_for_current_view() once and share across all column builds
-        // instead of recomputing it per-status inside column_items_for_status_with_stats.
+        // Call tasks_for_current_view() and epic_search_pass() once each and share
+        // them across all column builds instead of recomputing them per-status
+        // inside column_items_for_status_with_stats.
         let view_tasks = app.tasks_for_current_view();
+        let pass = app.epic_search_pass();
         let columns = std::array::from_fn(|i| {
             let status = TaskStatus::ALL[i];
-            app.column_items_for_status_with_view_tasks(status, Some(stats), &view_tasks)
+            app.column_items_for_status_with_view_tasks(status, Some(stats), &view_tasks, &pass)
         });
         ColumnLayout { columns }
     }

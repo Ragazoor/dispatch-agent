@@ -357,6 +357,7 @@ fn column_anchor_cache_invalidated_on_task_mutation() {
 
 // ---------------------------------------------------------------------------
 // column_items_for_status_with_view_tasks — hoisted tasks_for_current_view
+// and epic_search_pass
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -368,11 +369,13 @@ fn column_items_with_precomputed_tasks_matches_standard_path() {
     ]);
     let stats = app.cached_epic_stats();
     let view_tasks = app.tasks_for_current_view();
+    let pass = app.epic_search_pass();
 
     let via_precomputed = app.column_items_for_status_with_view_tasks(
         TaskStatus::Backlog,
         Some(&*stats),
         &view_tasks,
+        &pass,
     );
     let via_standard = app.column_items_for_status_with_stats(TaskStatus::Backlog, Some(&*stats));
 

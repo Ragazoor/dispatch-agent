@@ -452,16 +452,6 @@ fn epic_ids_owning_matching_task_collects_only_board_visible_matches() {
 // visible epic cards under a live query
 // ---------------------------------------------------------------------------
 
-/// Ids of the epic cards the current view would render, ascending.
-fn visible_epic_ids(app: &App) -> Vec<i64> {
-    let mut ids: Vec<i64> = app
-        .visible_epics_for_effective_view()
-        .map(|e| e.id.0)
-        .collect();
-    ids.sort_unstable();
-    ids
-}
-
 #[test]
 fn search_hides_non_matching_epic_cards_on_the_board() {
     let mut app = App::new(vec![]);
@@ -633,6 +623,90 @@ fn search_does_not_narrow_the_move_task_epic_picker() {
         .collect();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2], "the picker has its own buffer");
+}
+
+// ---------------------------------------------------------------------------
+// One index per pass, not one per column
+// ---------------------------------------------------------------------------
+
+/// How many `EpicSearchIndex`es `f` builds. Reset-then-read, so each test owns
+/// the counter (it is thread-local and tests get their own thread).
+fn count_index_builds(f: impl FnOnce()) -> usize {
+    crate::tui::EPIC_SEARCH_INDEX_BUILDS.with(|c| c.set(0));
+    f();
+    crate::tui::EPIC_SEARCH_INDEX_BUILDS.with(|c| c.get())
+}
+
+/// A board with epic cards in more than one status column, so every column of a
+/// build pass has epic work to do, plus a live query.
+fn multi_column_searchable_board() -> App {
+    let mut app = App::new(vec![
+        epic_child(10, 1, "Fix login bug"),
+        epic_child(11, 2, "Update invoices"),
+    ]);
+    let mut running = make_epic_with_title(1, "Login redesign");
+    running.status = TaskStatus::Running;
+    let mut review = make_epic_with_title(2, "Billing rework");
+    review.status = TaskStatus::Review;
+    app.board.epics = vec![running, review];
+    app.search.query = "login".to_string();
+    app
+}
+
+#[test]
+fn column_layout_build_builds_the_search_index_once() {
+    let app = multi_column_searchable_board();
+    let stats = app.compute_epic_stats();
+    let builds = count_index_builds(|| {
+        let _ = crate::tui::types::ColumnLayout::build(&app, &stats);
+    });
+    assert_eq!(
+        builds, 1,
+        "one index per frame, not one per status column: see docs on EpicSearchIndex"
+    );
+}
+
+#[test]
+fn column_layout_build_builds_no_search_index_without_a_query() {
+    let mut app = multi_column_searchable_board();
+    app.search.query = String::new();
+    let stats = app.compute_epic_stats();
+    let builds = count_index_builds(|| {
+        let _ = crate::tui::types::ColumnLayout::build(&app, &stats);
+    });
+    assert_eq!(builds, 0, "a non-searching render pays nothing");
+}
+
+#[test]
+fn flattened_columns_build_no_search_index() {
+    // Flattened columns show tasks only and never ask an epic-visibility
+    // question, so the pass must stay unbuilt even with a query live. Backlog
+    // is exempt from flattening, so it is the one column that still asks.
+    let mut app = multi_column_searchable_board();
+    app.board.flattened = true;
+    let stats = app.compute_epic_stats();
+    let builds = count_index_builds(|| {
+        for status in [TaskStatus::Running, TaskStatus::Review, TaskStatus::Done] {
+            let _ = app.column_items_for_status_with_stats(status, Some(&stats));
+        }
+    });
+    assert_eq!(builds, 0, "a flattened column consults no epic index");
+}
+
+#[test]
+fn cached_epic_stats_builds_the_search_index_once() {
+    let mut app = multi_column_searchable_board();
+    let builds = count_index_builds(|| {
+        let _ = app.cached_epic_stats();
+    });
+    assert_eq!(builds, 1, "the anchor-cache loop shares one index");
+}
+
+#[test]
+fn clamp_selection_builds_the_search_index_once() {
+    let mut app = multi_column_searchable_board();
+    let builds = count_index_builds(|| app.clamp_selection());
+    assert_eq!(builds, 1, "one index for all four column counts");
 }
 
 #[test]

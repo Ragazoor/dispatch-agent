@@ -156,6 +156,19 @@ pub(in crate::tui) fn make_epic_with_title(id: i64, title: &str) -> Epic {
     }
 }
 
+/// Ids of the epic cards the current view would render, ascending — the
+/// view-pass path (`visible_epics_for_effective_view`), not the per-epic
+/// predicate. Shared so a signature change to that pass touches one call site.
+pub(in crate::tui) fn visible_epic_ids(app: &super::App) -> Vec<i64> {
+    let pass = app.epic_search_pass();
+    let mut ids: Vec<i64> = app
+        .visible_epics_for_effective_view(&pass)
+        .map(|e| e.id.0)
+        .collect();
+    ids.sort_unstable();
+    ids
+}
+
 pub(in crate::tui) fn make_todo(id: i64, title: &str) -> crate::models::Todo {
     crate::models::Todo {
         id: crate::models::TodoId(id),

@@ -9,6 +9,7 @@ pub mod update;
 
 pub use types::*;
 
+use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -470,7 +471,8 @@ pub(in crate::tui) fn epic_ids_owning_matching_task(
 }
 
 /// Per-view-pass state for the epic board-search predicate, built once by
-/// [`App::epic_search_index`] and reused across every epic in the pass.
+/// [`App::epic_search_index`] and reused across every epic in the pass — and,
+/// wrapped in an [`EpicSearchPass`], across every column of a frame.
 ///
 /// Collapses what used to be per-epic work: the query is parsed once (not once
 /// per epic), the O(tasks) owner scan runs once (not once per epic), and the
@@ -490,6 +492,15 @@ pub(in crate::tui) struct EpicSearchIndex<'a> {
     task_owners: HashSet<EpicId>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Counts [`App::epic_search_index`] builds so tests can pin the
+    /// once-per-pass shape (a view pass must build one index, not one per
+    /// column). Thread-local, so parallel tests don't interfere.
+    pub(in crate::tui) static EPIC_SEARCH_INDEX_BUILDS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 impl EpicSearchIndex<'_> {
     /// Whether `epic`'s own title or id satisfies the query. The epic and
     /// sub-epic branches of [`App::epic_search_matches_indexed`] ask the same
@@ -502,6 +513,33 @@ impl EpicSearchIndex<'_> {
     /// no epic behind it — is not a match.
     fn own_match_by_id(&self, epic_id: EpicId) -> bool {
         self.by_id.get(&epic_id).is_some_and(|e| self.own_match(e))
+    }
+}
+
+/// The [`EpicSearchIndex`] for one pass over the board, threaded by parameter
+/// through the column builders exactly as `view_tasks` is — so a frame that
+/// builds four columns builds one index rather than four (see
+/// [`ColumnLayout::build`](crate::tui::types::ColumnLayout::build)).
+///
+/// Built on first use rather than up front, so a pass that never reaches an
+/// epic-visibility decision — a non-searching render, or a flattened column,
+/// neither of which consults the index — pays nothing. The cell also makes the
+/// once-per-pass property structural rather than a discipline the callers have
+/// to keep.
+///
+/// **Intra-pass only**, for the reasons on [`EpicSearchIndex`]: it is a local
+/// value, never stored on `App` or in `App.layout`.
+#[derive(Default)]
+pub(in crate::tui) struct EpicSearchPass<'a>(OnceCell<Option<EpicSearchIndex<'a>>>);
+
+impl<'a> EpicSearchPass<'a> {
+    /// Whether the epic survives this pass's search filter, building the index
+    /// on the first call. With no query live, every epic is admitted.
+    fn admits(&self, app: &'a App, epic_id: EpicId) -> bool {
+        self.0
+            .get_or_init(|| app.search_active().then(|| app.epic_search_index()))
+            .as_ref()
+            .is_none_or(|idx| app.epic_search_matches_indexed(idx, epic_id))
     }
 }
 
@@ -932,6 +970,8 @@ impl App {
     /// this is only worthwhile behind a `search_active()` check — it always
     /// pays the O(tasks + epics) build cost.
     pub(in crate::tui) fn epic_search_index(&self) -> EpicSearchIndex<'_> {
+        #[cfg(test)]
+        EPIC_SEARCH_INDEX_BUILDS.with(|c| c.set(c.get() + 1));
         let query_lower = self.search.query.to_lowercase();
         // Parsed once per pass, not per epic: this is the render hot path.
         let id_digits = id_digits_query(&self.search.query);
@@ -1008,32 +1048,42 @@ impl App {
         self.epic_search_matches_indexed(&self.epic_search_index(), epic_id)
     }
 
+    /// An empty [`EpicSearchPass`] for one pass over the board. Build this once
+    /// per frame / per action, next to `tasks_for_current_view()`, and thread it
+    /// into every column build in that pass.
+    pub(in crate::tui) fn epic_search_pass(&self) -> EpicSearchPass<'_> {
+        EpicSearchPass::default()
+    }
+
     /// Epics visible in the current board/epic view, filtered by the active
     /// repo / only-active filters and the board-search query: root epics (no
     /// parent) in `Board` mode, direct children of the current epic in `Epic`
     /// mode. Shared by `column_items_for_status_with_view_tasks`,
-    /// `column_item_count`, and `column_items_for_visual_column` so an
+    /// `column_item_count_with`, and `column_items_for_visual_column` so an
     /// epic-visibility rule change is made in one place instead of three.
     ///
-    /// The search index is built once for the whole pass (`None` when no query
-    /// is live, so a non-searching render stays free), which is what keeps the
-    /// pass at one O(tasks) scan rather than one per epic.
-    pub(in crate::tui) fn visible_epics_for_effective_view(&self) -> impl Iterator<Item = &Epic> {
+    /// `pass` carries the search index for the whole pass (see
+    /// [`Self::epic_search_pass`]), shared across every column in it — which is
+    /// what keeps a frame at one O(tasks) scan rather than one per epic *and*
+    /// one per column.
+    ///
+    /// `'p` is the borrow of the pass, kept separate from `'a` (the board borrow
+    /// the yielded epics carry) so a caller can drop the pass while the items it
+    /// produced live on.
+    pub(in crate::tui) fn visible_epics_for_effective_view<'a, 'p>(
+        &'a self,
+        pass: &'p EpicSearchPass<'a>,
+    ) -> impl Iterator<Item = &'a Epic> + 'p {
         let parent = match self.effective_view_mode() {
             BoardViewMode::Board(_) => None,
             BoardViewMode::Epic { epic_id, .. } => Some(epic_id),
         };
-        let index = self.search_active().then(|| self.epic_search_index());
         self.board
             .epics
             .iter()
             .filter(move |e| e.parent_epic_id == parent)
             .filter(move |e| {
-                self.epic_matches(e.id)
-                    && self.epic_repo_matches(e.id)
-                    && index
-                        .as_ref()
-                        .is_none_or(|idx| self.epic_search_matches_indexed(idx, e.id))
+                self.epic_matches(e.id) && self.epic_repo_matches(e.id) && pass.admits(self, e.id)
             })
     }
 
@@ -1252,13 +1302,19 @@ impl App {
             self.layout.children_map_cache = Some(children_map);
 
             // Build column_anchor_cache: sorted selectable items per status.
-            // Hoist tasks_for_current_view() out of the loop so it's computed once,
-            // not once per status.
+            // Hoist tasks_for_current_view() and the search pass out of the loop
+            // so each is computed once, not once per status.
             let view_tasks = self.tasks_for_current_view();
+            let pass = self.epic_search_pass();
             let mut anchor_cache: HashMap<TaskStatus, Vec<ColumnAnchor>> = HashMap::new();
             for &status in TaskStatus::ALL.iter() {
                 let anchors: Vec<ColumnAnchor> = self
-                    .column_items_for_status_with_view_tasks(status, Some(&*stats), &view_tasks)
+                    .column_items_for_status_with_view_tasks(
+                        status,
+                        Some(&*stats),
+                        &view_tasks,
+                        &pass,
+                    )
                     .into_iter()
                     .filter(|i| i.is_selectable())
                     .map(|item| match item {
@@ -1370,17 +1426,20 @@ impl App {
         stats: Option<&EpicStatsMap>,
     ) -> Vec<ColumnItem<'a>> {
         let view_tasks = self.tasks_for_current_view();
-        self.column_items_for_status_with_view_tasks(status, stats, &view_tasks)
+        let pass = self.epic_search_pass();
+        self.column_items_for_status_with_view_tasks(status, stats, &view_tasks, &pass)
     }
 
-    /// Like `column_items_for_status_with_stats` but accepts pre-computed view tasks,
-    /// allowing `tasks_for_current_view()` to be called once and reused across all
-    /// columns (e.g. in `ColumnLayout::build`).
+    /// Like `column_items_for_status_with_stats` but accepts a pre-computed view-task
+    /// list and search pass, allowing `tasks_for_current_view()` and
+    /// `epic_search_pass()` to be called once and reused across all columns (e.g. in
+    /// `ColumnLayout::build`).
     pub(in crate::tui) fn column_items_for_status_with_view_tasks<'a>(
         &'a self,
         status: TaskStatus,
         stats: Option<&EpicStatsMap>,
         view_tasks: &[&'a Task],
+        pass: &EpicSearchPass<'a>,
     ) -> Vec<ColumnItem<'a>> {
         let tasks: Vec<&'a Task> = view_tasks
             .iter()
@@ -1453,7 +1512,7 @@ impl App {
         // --- Non-flat path (unchanged) ---
         let mut items: Vec<ColumnItem<'_>> = tasks.into_iter().map(ColumnItem::Task).collect();
 
-        for epic in self.visible_epics_for_effective_view() {
+        for epic in self.visible_epics_for_effective_view(pass) {
             if epic.status == status {
                 items.push(ColumnItem::Epic(epic));
             }
@@ -1495,17 +1554,45 @@ impl App {
     /// navigation bounds, clamp guards — rather than calling
     /// `column_items_for_status(s).len()`, which includes non-selectable decorators
     /// (`EpicHeader`, `SubstatusLabel`, `OrphanSeparator`) in flat mode and is O(n log n).
-    /// Used by `clamp_selection()` and `handle_navigate_row()`.
+    ///
+    /// Derives the view tasks and the search pass itself, so it suits a caller
+    /// with a single status in hand (`handle_navigate_row`). A caller that needs
+    /// several statuses in one action should use [`Self::column_item_counts`],
+    /// which derives both once for all of them.
     pub(in crate::tui) fn column_item_count(&self, status: TaskStatus) -> usize {
-        let task_count = self.tasks_by_status(status).len();
+        let view_tasks = self.tasks_for_current_view();
+        self.column_item_count_with(status, &view_tasks, &self.epic_search_pass())
+    }
+
+    /// [`Self::column_item_count`] against pre-computed view tasks and search
+    /// pass, so counting every column in one action scans the board once and
+    /// builds one index rather than one of each per column.
+    fn column_item_count_with<'a>(
+        &'a self,
+        status: TaskStatus,
+        view_tasks: &[&'a Task],
+        pass: &EpicSearchPass<'a>,
+    ) -> usize {
+        let task_count = view_tasks.iter().filter(|t| t.status == status).count();
         if self.is_flattened_for_status(status) {
             return task_count;
         }
         let epic_count = self
-            .visible_epics_for_effective_view()
+            .visible_epics_for_effective_view(pass)
             .filter(|e| e.status == status)
             .count();
         task_count + epic_count
+    }
+
+    /// Selectable item counts for every board column, in `TaskStatus::ALL`
+    /// order, from one board scan and one search pass. Used by
+    /// [`Self::clamp_selection`], which needs all four counts in one action and
+    /// interleaves `selection_mut()` writes — so it takes the counts up front
+    /// rather than holding a board borrow across the writes.
+    pub(in crate::tui) fn column_item_counts(&self) -> [usize; TaskStatus::COLUMN_COUNT] {
+        let view_tasks = self.tasks_for_current_view();
+        let pass = self.epic_search_pass();
+        std::array::from_fn(|i| self.column_item_count_with(TaskStatus::ALL[i], &view_tasks, &pass))
     }
 
     /// Build a list of items (tasks + epics) for a visual column.
@@ -1518,6 +1605,9 @@ impl App {
     /// handles the split-pane layout; the status-based path handles the flat-board layout.
     pub fn column_items_for_visual_column(&self, vcol_idx: usize) -> Vec<ColumnItem<'_>> {
         let vcol = &VisualColumn::ALL[vcol_idx];
+        // One visual column per call, so the pass is built here rather than
+        // threaded in; there is no loop over columns to hoist it out of.
+        let pass = self.epic_search_pass();
         let tasks: Vec<&Task> = self
             .tasks_for_current_view()
             .into_iter()
@@ -1532,7 +1622,7 @@ impl App {
         let mut running_epic_priority: std::collections::HashMap<EpicId, u8> =
             std::collections::HashMap::new();
 
-        for epic in self.visible_epics_for_effective_view() {
+        for epic in self.visible_epics_for_effective_view(&pass) {
             let epic_parent = epic.status;
             if epic_parent != vcol.parent_status {
                 continue;
@@ -1630,9 +1720,19 @@ impl App {
 
     /// Clamp all selected_row values to be within bounds for each column.
     pub fn clamp_selection(&mut self) {
-        for (idx, &status) in TaskStatus::ALL.iter().enumerate() {
+        // Counts first, mutation second: the search pass borrows the board, so
+        // it cannot be held across `selection_mut()`. One pass for all columns.
+        self.clamp_selection_to(self.column_item_counts());
+    }
+
+    /// [`Self::clamp_selection`] against counts already taken from
+    /// [`Self::column_item_counts`], for a caller that needs them for its own
+    /// reasons too and would otherwise scan the board a second time. Counts
+    /// depend only on board data, so taking them before an unrelated selection
+    /// change is equivalent to taking them after.
+    pub(in crate::tui) fn clamp_selection_to(&mut self, counts: [usize; TaskStatus::COLUMN_COUNT]) {
+        for (idx, &count) in counts.iter().enumerate() {
             let nav_col = idx + 1;
-            let count = self.column_item_count(status);
             let sel = self.selection_mut();
             if count == 0 {
                 sel.set_row(nav_col, 0);
@@ -1725,19 +1825,10 @@ impl App {
         }
 
         if let Some((found_col, found_row)) = found {
-            for (idx, &status) in TaskStatus::ALL.iter().enumerate() {
-                let nav_col = idx + 1;
-                if nav_col == found_col {
-                    continue;
-                }
-                let count = self.column_item_count(status);
-                let sel = self.selection_mut();
-                if count == 0 {
-                    sel.set_row(nav_col, 0);
-                } else if sel.row(nav_col) >= count {
-                    sel.set_row(nav_col, count - 1);
-                }
-            }
+            // Clamp every column, `found_col` included — the anchor row is
+            // overwritten immediately below, so clamping it first is harmless
+            // and saves duplicating the clamp body here.
+            self.clamp_selection();
             let sel = self.selection_mut();
             sel.set_column(found_col);
             sel.set_row(found_col, found_row);

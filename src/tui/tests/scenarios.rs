@@ -331,17 +331,9 @@ fn search_narrows_board_to_matching_titles() {
 
 #[test]
 fn search_narrows_epic_cards_and_esc_restores_them() {
+    use super::helpers::visible_epic_ids;
     use super::{make_epic_with_title, App};
     use crossterm::event::KeyCode;
-
-    fn visible_epic_ids(app: &App) -> Vec<i64> {
-        let mut ids: Vec<i64> = app
-            .visible_epics_for_effective_view()
-            .map(|e| e.id.0)
-            .collect();
-        ids.sort_unstable();
-        ids
-    }
 
     let mut app = App::new(vec![]);
     app.board.epics = vec![

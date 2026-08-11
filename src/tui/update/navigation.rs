@@ -20,6 +20,9 @@ impl App {
         } else {
             (1isize, TaskStatus::COLUMN_COUNT as isize + 1) // [1, 5] on main board
         };
+        // One board scan for both the destination-column emptiness test below
+        // and the closing clamp, instead of one each.
+        let counts = self.column_item_counts();
         let old_col = self.selection().column();
         let new_col = (old_col as isize + delta).clamp(min_col, max_col) as usize;
         let column_changed = new_col != old_col;
@@ -35,14 +38,13 @@ impl App {
             // scroll the column back to the top so the first card is visible.
             // An empty destination column is left untouched, matching the `[`/`]`
             // empty-column no-op semantics.
-            let entering_nonempty = TaskStatus::from_column_index(new_col - 1)
-                .is_some_and(|status| self.column_item_count(status) > 0);
+            let entering_nonempty = counts.get(new_col - 1).is_some_and(|&count| count > 0);
             if entering_nonempty {
                 self.selection_mut().reset_to_top(new_col);
             }
         }
 
-        self.clamp_selection();
+        self.clamp_selection_to(counts);
         self.update_anchor_from_current();
         vec![]
     }
