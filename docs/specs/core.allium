@@ -120,23 +120,26 @@ enum NotificationKind {
 -- task scope carries task-specific outcomes, retrieved on demand.
 enum LearningScope { user | repo | epic | task }
 
--- LearningKind categorises what was learned.
--- procedural learnings, once approved, are injected as prompt-prefix instructions
--- ahead of the normal learnings section.
+-- LearningKind categorises what was learned. kind does not affect retrieval or
+-- rendering: every retrieved entry, procedural included, goes into the single
+-- RAG-ranked "Validated knowledge" block (see learnings.allium: Priority
+-- Ordering). kind describes how an entry was authored and what it means.
 enum LearningKind {
     pitfall              -- a failure mode; agents should avoid or handle carefully
     convention           -- preferred code pattern or style in this context
     preference           -- the user's explicit working preference
     tool_recommendation  -- recommended tool or library for a given problem
-    procedural           -- injected verbatim into matching dispatch prompts once approved
+    procedural           -- a how-to-work-here procedure; injected like any other kind
     landscape            -- codebase/system overview (service maps, module responsibilities)
 }
 
 -- LearningStatus controls whether an entry is active in retrieval.
--- New entries land as approved; there is no human approval gate. Humans can
--- reject or archive via the TUI, and a background job archives stale, unvalued
--- entries (see learnings.allium: ArchiveStaleLearning). Entries in rejected or
--- archived are excluded from prompt injection and query_learnings results.
+-- New entries land as approved; there is no human approval gate and no human
+-- curation surface. A background job archives stale, unvalued entries (see
+-- learnings.allium: ArchiveStaleLearning), which is the only status change any
+-- behaviour produces. rejected is legacy: nothing produces it any more, but
+-- existing rows still hold it. Entries in rejected or archived are excluded from
+-- prompt injection and query_learnings results.
 enum LearningStatus { approved | rejected | archived }
 
 -- VerdictKind captures an agent's evaluation of a retrieved learning, submitted
@@ -441,15 +444,15 @@ entity SavedRepoBranch {
 
 -- Learning captures knowledge a dispatched agent discovered. Entries land as
 -- approved immediately (no human approval gate) and are injected into future
--- dispatch prompts for the matching scope. The active pool is curated without a
--- human in the loop: agents up/downvote via rate_learning, and a background job
--- archives stale entries with a non-positive score (see learnings.allium:
--- ArchiveStaleLearning). Humans may still reject, archive or edit entries via the
--- TUI knowledge-base panel, but no human action is required to activate a learning.
+-- dispatch prompts for the matching scope. The active pool is curated entirely
+-- without a human in the loop, and there is no human-facing surface for it at
+-- all: agents up/downvote via rate_learning, delete entries outright via
+-- delete_learning, and a background job archives stale entries with a
+-- non-positive score (see learnings.allium: ArchiveStaleLearning).
 entity Learning {
     kind: LearningKind
     summary: String          -- one-sentence digest; injected into dispatch prompts
-    detail: String?          -- extended context; shown in TUI review panel
+    detail: String?          -- extended context; returned by query_learnings
     scope: LearningScope
     scope_ref: String?       -- qualifies the scope:
                              --   scope=repo    → repo_path of the target repository
@@ -467,13 +470,17 @@ entity Learning {
     updated_at: Timestamp
 
     transitions status {
-        approved -> rejected     -- human-driven: curator removes the entry (TUI)
-        approved -> archived     -- human-driven (TUI) OR system-driven: the
-                                 -- stale-cleanup job archives an approved entry
-                                 -- with upvote_count <= 0 untouched for the
-                                 -- configured threshold (ArchiveStaleLearning)
+        approved -> archived     -- system-driven, and the only transition any
+                                 -- behaviour produces: the stale-cleanup job
+                                 -- archives an approved entry with
+                                 -- upvote_count <= 0 untouched for the configured
+                                 -- threshold (ArchiveStaleLearning)
         terminal: rejected, archived
     }
+    -- rejected is terminal but has no inbound edge: it was only ever produced by
+    -- the human reject action on the (now removed) TUI knowledge-base overlay.
+    -- The value is retained because existing rows still hold it and must stay
+    -- parseable; like archived, those rows are excluded from retrieval.
 
     -- Derived
     is_active: status = approved
@@ -571,7 +578,7 @@ config {
     -- call. Prompt encouragement only: the nudge is appended to the response
     -- text and never gates the update itself. No other tool reads this flag —
     -- in particular the wrap_up response does not (its rate_learning nudge is
-    -- unconditional; see learnings.allium: WrapUpReflection).
+    -- unconditional; see learnings.allium: WrapUpRateLearningNudge).
     -- (see mcp-task-tools.allium: PrFinalisationReflectionNudge)
     learning_reflection_enabled: Boolean = true
 
@@ -683,10 +690,10 @@ config {
 --     only, not a deferred action.
 --   - A pending chord is discarded (dropped, not fired) if the next input
 --     transitions away from main-board Normal mode entirely (into the
---     TaskDetail, Learnings or Todos overlays, or the Archive edge
---     column) before it resolves. This is a defensive simplification to
---     stop a stale chord leaking across an unrelated view transition; it
---     is not expected to be user-visible.
+--     TaskDetail or Todos overlays, or the Archive edge column) before it
+--     resolves. This is a defensive simplification to stop a stale chord
+--     leaking across an unrelated view transition; it is not expected to
+--     be user-visible.
 --   - `G` (jump-to-bottom) has no such conflict and no chord: it is a
 --     direct, unconditional alias for `]`.
 --

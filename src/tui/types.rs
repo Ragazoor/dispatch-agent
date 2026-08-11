@@ -67,8 +67,6 @@ pub enum EditKind {
     /// Description-only editor used during task/epic creation.
     /// `is_epic` distinguishes the epic-create flow from the task-create flow.
     Description { is_epic: bool },
-    /// Edit a learning's summary, kind, tags, and detail.
-    Learning(crate::models::Learning),
 }
 
 /// Result of a pop-out editor session. `Saved` carries the final tempfile
@@ -79,17 +77,6 @@ pub enum EditKind {
 pub enum EditorOutcome {
     Saved(String),
     Cancelled,
-}
-
-// ---------------------------------------------------------------------------
-// LearningsView — list vs tree display mode for the Learnings overlay
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LearningsView {
-    #[default]
-    List,
-    Tree,
 }
 
 // ---------------------------------------------------------------------------
@@ -104,8 +91,8 @@ pub enum TreeNav {
     Right,
 }
 
-/// Apply a `TreeNav` direction to a `TreeState`. Used by both the Learnings
-/// tree and the reparent-epic picker.
+/// Apply a `TreeNav` direction to a `TreeState`. Used by the reparent-epic
+/// picker and the move-to-epic tree picker.
 pub(in crate::tui) fn apply_tree_nav<Id: Clone + PartialEq + Eq + std::hash::Hash>(
     state: &mut tui_tree_widget::TreeState<Id>,
     nav: TreeNav,
@@ -162,8 +149,6 @@ pub enum Message {
     /// Local-first repo sync messages — see
     /// [`crate::tui::messages::RepoSyncMessage`].
     RepoSync(crate::tui::messages::RepoSyncMessage),
-    /// Knowledge-base overlay messages — see [`crate::tui::messages::LearningMessage`].
-    Learning(crate::tui::messages::LearningMessage),
     /// Personal TODO overlay messages — see [`crate::tui::messages::TodoMessage`].
     Todo(crate::tui::messages::TodoMessage),
     /// Feed-epic refresh messages — see [`crate::tui::messages::FeedMessage`].
@@ -223,7 +208,7 @@ pub enum Command {
     Pr(crate::tui::commands::PrCommand),
     /// Main session side-effect commands — see [`crate::tui::commands::MainSessionCommand`].
     MainSession(crate::tui::commands::MainSessionCommand),
-    /// Knowledge-base overlay side-effect commands — see
+    /// Background learning-maintenance side-effect commands — see
     /// [`crate::tui::commands::LearningCommand`].
     Learning(crate::tui::commands::LearningCommand),
     /// Personal TODO overlay side-effect commands — see
@@ -778,14 +763,6 @@ pub enum ViewMode {
         max_scroll: u16,
         previous: Box<ViewMode>,
     },
-    Learnings {
-        selected: usize,
-        learnings: Vec<crate::models::Learning>,
-        view: LearningsView,
-        // RefCell allows render_stateful_widget to borrow_mut without &mut App
-        tree_state: std::cell::RefCell<tui_tree_widget::TreeState<String>>,
-        previous: Box<ViewMode>,
-    },
     Todos {
         todos: Vec<crate::models::Todo>,
         selected: usize,
@@ -819,20 +796,6 @@ impl Clone for ViewMode {
                 max_scroll: *max_scroll,
                 previous: previous.clone(),
             },
-            ViewMode::Learnings {
-                selected,
-                learnings,
-                view,
-                previous,
-                // TreeState does not implement Clone — create a fresh one on clone.
-                tree_state: _,
-            } => ViewMode::Learnings {
-                selected: *selected,
-                learnings: learnings.clone(),
-                view: *view,
-                tree_state: std::cell::RefCell::new(tui_tree_widget::TreeState::default()),
-                previous: previous.clone(),
-            },
             ViewMode::Todos {
                 todos,
                 selected,
@@ -852,7 +815,6 @@ impl ViewMode {
             ViewMode::Board(sel) => sel,
             ViewMode::Epic { selection, .. } => selection,
             ViewMode::TaskDetail { previous, .. } => previous.selection(),
-            ViewMode::Learnings { previous, .. } => previous.selection(),
             ViewMode::Todos { previous, .. } => previous.selection(),
         }
     }
@@ -862,7 +824,6 @@ impl ViewMode {
             ViewMode::Board(sel) => sel,
             ViewMode::Epic { selection, .. } => selection,
             ViewMode::TaskDetail { previous, .. } => previous.selection_mut(),
-            ViewMode::Learnings { previous, .. } => previous.selection_mut(),
             ViewMode::Todos { previous, .. } => previous.selection_mut(),
         }
     }
@@ -880,7 +841,7 @@ impl Default for ViewMode {
 
 /// `ViewMode` narrowed to the two variants that carry board-column layout:
 /// `Board` and `Epic`. Returned by `App::effective_view_mode()`, which peels
-/// away the `TaskDetail`/`Learnings`/`Todos` overlay variants. Column-builder
+/// away the `TaskDetail`/`Todos` overlay variants. Column-builder
 /// callers match exhaustively on this with no `unreachable!` fallback.
 pub(in crate::tui) enum BoardViewMode<'a> {
     Board(&'a BoardSelection),

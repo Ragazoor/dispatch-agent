@@ -15,7 +15,7 @@ use crate::tui::App;
 pub enum EditorMessage {
     /// Editor closed for a description-only edit during task/epic creation.
     DescriptionResult(String),
-    /// Editor closed for any other [`EditKind`] (full task/epic/learning edit).
+    /// Editor closed for any other [`EditKind`] (full task/epic edit).
     Result {
         kind: EditKind,
         outcome: EditorOutcome,

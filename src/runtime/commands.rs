@@ -167,14 +167,11 @@ async fn dispatch_main_session(
 
 async fn dispatch_learning(
     rt: &super::TuiRuntime,
-    app: &mut super::App,
+    _app: &mut super::App,
     cmd: crate::tui::commands::LearningCommand,
 ) {
     use crate::tui::commands::LearningCommand::*;
     match cmd {
-        Load => rt.exec_load_learnings(app).await,
-        Archive(id) => rt.exec_archive_learning(app, id).await,
-        Reject(id) => rt.exec_reject_learning(app, id).await,
         ArchiveStale => rt.exec_archive_stale_learnings().await,
     }
 }

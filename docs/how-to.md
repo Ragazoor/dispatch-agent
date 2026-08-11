@@ -70,7 +70,7 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
 3. **Add `Command` variants** if the view triggers side effects (DB writes, shell commands).
 4. **Handle input** in `src/tui/input.rs` — add key handlers under a new match arm for your `ViewMode`.
 5. **Handle messages** in `src/tui/mod.rs` `update()` — process your new messages, return commands.
-6. **Render** in the appropriate `src/tui/ui/` module — the board renderer is the `src/tui/ui/kanban/` directory (`mod.rs` holds `render()`, with `cards.rs`, `columns.rs`, `status_bar.rs`, and `popups/` beneath it); full-screen overlays live in `src/tui/ui/{input_form,learnings,todos}.rs`. Add a rendering branch for your view mode in `kanban::render()`.
+6. **Render** in the appropriate `src/tui/ui/` module — the board renderer is the `src/tui/ui/kanban/` directory (`mod.rs` holds `render()`, with `cards.rs`, `columns.rs`, `status_bar.rs`, and `popups/` beneath it); full-screen overlays live in `src/tui/ui/{input_form,todos}.rs`. Add a rendering branch for your view mode in `kanban::render()`.
 
 ## Adding a New Entity (with patch builder and sub-trait)
 

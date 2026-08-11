@@ -22,7 +22,6 @@ use super::input_form::{
     input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
     input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
 };
-use super::learnings::render_learnings;
 use super::palette::{ARCHIVE_STRIPE, BLUE, BORDER, CYAN, FG, GREEN, MUTED, PURPLE, YELLOW};
 use super::shared::{push_hint_spans, render_top_indicators};
 use super::todos::render_todos;
@@ -182,7 +181,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_help_overlay(frame, app, area);
     render_repo_filter_overlay(frame, app, area);
     render_task_detail_overlay(frame, app, area);
-    render_learnings(frame, app, area);
     render_todos(frame, app, area);
     render_reparent_epic_overlay(frame, app, area);
     render_move_task_overlay(frame, app, area);
@@ -536,7 +534,6 @@ pub(in crate::tui) fn action_hints(
     push_hint("F", "flat");
     push_hint("f", "filter");
     push_hint("/", "search");
-    push_hint("I", "learnings");
     push_hint("P", "todo");
     push_hint("t", "add");
     push_hint("?", "help");

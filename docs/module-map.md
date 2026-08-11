@@ -20,9 +20,9 @@ to look.
 | `src/runtime/{editor,epics,learnings,managed_feeds,pr,settings,split,todos}.rs` | Domain-specific runtime helpers. (`src/runtime/agents.rs` is a vestigial empty `impl TuiRuntime {}` — nothing lives there) |
 | `src/tui/mod.rs` | `App` struct, lifecycle, `update()` entry point, timing constants (`STATUS_MESSAGE_TTL`, `PR_POLL_INTERVAL`, `MAIN_SESSION_POLL_TICKS`, `GG_CHORD_TIMEOUT`). Column-listing helpers: `column_items_for_status_with_stats` (production render path — requires pre-computed `EpicStatsMap`, used by kanban columns); `column_items_for_visual_column` (snapshot/archive views — filters by `VisualColumn` granularity, no stats needed). `column_items_for_status` is test-only. |
 | `src/tui/dispatcher.rs` | `dispatch(app, msg)` — thin top-level router: one arm per outer `Message` domain, delegating to that domain's inner-enum `route(self, app)` method |
-| `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `system.rs`, `split.rs`, `todos.rs`, `learnings.rs`, `managed_feeds.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
+| `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `system.rs`, `split.rs`, `todos.rs`, `managed_feeds.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
 | `src/tui/commands/` | Per-domain inner `*Command` enums (`task.rs`, `epic.rs`, `editor.rs`, `feed.rs`, `split.rs`, `todos.rs`, …) — the command twin of `src/tui/messages/`. Variants of the outer `Command` enum are progressively migrated here. Unlike `messages/`, these are pure data: `Command` → effect stays centralised in `src/runtime/commands.rs` |
-| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `learnings.rs`, `lifecycle.rs`, `main_session.rs`, `managed_feeds.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `todos.rs`) |
+| `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `lifecycle.rs`, `main_session.rs`, `managed_feeds.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `todos.rs`) |
 | `src/tui/input.rs` | Key event entry point, `text_edit_message()` caret routing, inline-mutation convention for UI-only state, unconditional `dirty = true` |
 | `src/tui/input/` | Per-mode key handlers: `normal.rs`, `confirm.rs`, `managed_feeds.rs`, `repo_filter.rs` |
 | `src/tui/text_caret.rs` | Pure single-line caret mechanics (`insert`, `delete_before`, `move_left`, `word_left`, `byte_offset`, …) shared by every text `InputMode` — see the caret convention in `docs/conventions.md` |
@@ -30,7 +30,7 @@ to look.
 | `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`, `managed_feeds.rs`) |
 | `src/tui/ui/shared.rs` | Cross-board helpers: `refresh_status`, `truncate`, `fair_truncate_segments`, `push_hint_spans`, `caret_line` |
 | `src/tui/ui/palette.rs` | Tokyo Night color palette constants |
-| `src/tui/ui/{input_form,learnings,todos}.rs` | Overlay renderers (input forms, knowledge base panel, TODO overlay) |
+| `src/tui/ui/{input_form,todos}.rs` | Overlay renderers (input forms, TODO overlay) |
 | `src/tui/types.rs` | `Message`, `Command`, `ViewMode`, `InputMode`, `LayoutCache`, `AgentTracking` enums and structs |
 | `src/tui/tests/` | TUI unit and scenario tests, snapshots, helpers |
 | `src/models/mod.rs` | Module declarations + flat re-exports of all domain types (no logic, no tests) |
@@ -46,7 +46,7 @@ to look.
 | `src/service/tasks/{crud,params,validators}.rs` | Task CRUD methods, `*Params` request types, validation helpers |
 | `src/service/tasks/watchers.rs` | Task-watcher subscriptions: `subscribe`/`unsubscribe` plus the completion notice fired when a watched task reaches `Done`/`Archived` or is deleted (see `docs/specs/task-watchers.allium`) |
 | `src/service/epics.rs` | `EpicService`, `UpdateEpicParams`, `CreateEpicParams` — epic business logic, including reparenting with cycle detection |
-| `src/service/learnings.rs` | `LearningService`, `CreateLearningParams`, `UpdateLearningParams` — learning business logic |
+| `src/service/learnings.rs` | `LearningService`, `CreateLearningParams` — learning business logic (curated exclusively via MCP; no TUI-facing update/reject/archive path) |
 | `src/service/api.rs` | Service trait objects (`TaskServiceApi`, `EpicServiceApi`, `TodoServiceApi`, `LearningServiceApi`) + `MockLearningService` for injection in tests. Each seam's signature list lives once, in a spec macro (`task_service_api!`, …) replayed into emitter macros that generate the trait, the delegating impl, and the test-only `*ServiceApiStub` mock scaffolding |
 | `src/service/todos.rs` | `TodoService` — personal TODO overlay business logic |
 | `src/service/grouping.rs` | Repo-grouping: routes tasks of a `group_by_repo` epic into per-repo `RepoGroup` sub-epics |

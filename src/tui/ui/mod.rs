@@ -1,7 +1,6 @@
 pub(in crate::tui::ui) mod budget;
 mod input_form;
 mod kanban;
-pub mod learnings;
 pub(crate) mod palette;
 mod shared;
 pub mod todos;

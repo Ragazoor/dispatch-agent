@@ -4,15 +4,19 @@
 -- Scope: The Learnings system — agents record knowledge entries that land
 --        immediately as approved and are injected into future dispatch prompts
 --        for the matching scope. Curation is fully automatic: there is no human
---        approval gate. Agents up/downvote via rate_learning, and a background
---        job archives stale, unvalued entries. Humans may reject/archive/edit
---        via the TUI, but no human action is required to keep an entry active.
+--        approval gate and no human-facing curation surface at all. Agents
+--        up/downvote via rate_learning, and a background job archives stale,
+--        unvalued entries.
 -- Includes: Scope model and priority ordering, lifecycle summary, MCP
 --           tool contracts, dispatch prompt augmentation, stale cleanup,
---           TUI curation surface, rule implementations, invariants.
+--           rule implementations, invariants.
 -- Excludes: Core entity/enum definitions (see core.allium — Learning,
 --           LearningScope, LearningKind, LearningStatus, Retrieval,
 --           VerdictKind, RetrievalSource).
+--           Any interactive browsing or curation surface: the knowledge base has
+--           no TUI presence. It is written and read exclusively through the MCP
+--           tools below (record_learning, query_learnings, rate_learning,
+--           delete_learning) and the dispatch-time injection path.
 
 use "./core.allium" as core
 
@@ -71,24 +75,27 @@ use "./core.allium" as core
 ------------------------------------------------------------
 
 -- Learnings are created by agents via record_learning and land immediately as
--- approved — no human gate, and no human approval is ever required to keep an
--- entry active. Humans may optionally curate in the LearningsOverlay.
+-- approved — no human gate, and no human action of any kind is available or
+-- required. There is no interactive curation surface: an entry's whole life is
+-- driven by agent MCP calls, ranking, time and deletion.
 --
--- Optional human curation transitions (TUI):
---
---   approved      --[RejectLearning]→         rejected      (terminal)
---   approved      --[ArchiveLearning]→        archived      (terminal)
---
--- System-driven transitions (no human in the loop):
+-- The only status transition any behaviour in this system produces:
 --
 --   approved      --[ArchiveStaleLearning]→   archived      (terminal)
 --
--- There is no needs_review state and no approve action: a `wrong` verdict no
--- longer parks an entry for human re-approval. Instead, curation is driven by
--- scores and time (see below).
+-- There is no needs_review state and no approve action: a `wrong` verdict does
+-- not park an entry for review. Curation is driven by scores and time (see
+-- below), and an entry can be removed outright with delete_learning.
 --
--- Editing (EditLearning) updates summary/detail/kind/tags without changing status.
--- Editing is available for approved entries.
+-- The `rejected` status is legacy: no rule produces it, and no surface offers a
+-- reject action. Existing rows may still hold it (they are excluded from
+-- retrieval like archived entries), and the value is retained on the
+-- core/LearningStatus enum so those rows remain parseable.
+--
+-- There is no edit action. summary/detail/kind/tags are set once at
+-- record_learning time and never updated; an inaccurate entry is corrected by
+-- deleting it (delete_learning) and recording a replacement, or left to be
+-- downvoted and swept.
 --
 -- Scoring (no status change on either verdict):
 --   rate_learning(helped) → upvote_count + 1, last_upvoted_at = now
@@ -199,7 +206,7 @@ use "./core.allium" as core
 --      core/Retrieval row with source = prompt_injection — see Retrievals &
 --      Verdicts below.
 --
--- Wrap-up nudge (WrapUpReflection): for action = pr, and only that action, the
+-- Wrap-up nudge (WrapUpRateLearningNudge): for action = pr, and only that action, the
 -- MCP wrap_up response appends a nudge asking the agent to call rate_learning
 -- (helped | wrong) on any learning that was surfaced to it this session but not
 -- yet rated. This nudge is unconditional — no config parameter gates it — and it
@@ -279,9 +286,10 @@ invariant ApprovedLearningsHaveScopeRef {
 
 -- Invariant: EmbeddingConsistency
 --
--- When a learning's `summary`, `detail`, `kind`, or `tags` are updated, the
--- `embedding` column MUST be regenerated as part of the same write operation.
--- The DB row must never contain a stale embedding after a successful save.
+-- When a learning's `summary`, `detail`, `kind`, or `tags` are written, the
+-- `embedding` column MUST be produced from those same values as part of the same
+-- write operation. The DB row must never contain a stale embedding after a
+-- successful save.
 --
 -- This is a process-level invariant about write atomicity, not a property over
 -- a single point-in-time entity state, so it is recorded here in prose rather
@@ -289,14 +297,24 @@ invariant ApprovedLearningsHaveScopeRef {
 -- at the service layer (LearningService) by computing the embedding from the
 -- post-write field values and writing both fields in the same transaction.
 --
--- Affected rules: EditLearning (summary | detail | kind | tags update),
--- RecordLearningViaMcp (creation), and any future rule that mutates one of the
--- embedding inputs.
+-- Affected rules: RecordLearningViaMcp (creation) — currently the only rule that
+-- writes an embedding input, since there is no edit path — and any future rule
+-- that mutates one of the embedding inputs.
+--
+-- Embedding backfill: a learning with no stored embedding is invisible to every
+-- retrieval path (both dispatch injection and query_learnings consider only
+-- entries that have one). A startup repair pass therefore re-derives the missing
+-- embedding from the entry's existing summary/detail/kind/tags and writes it,
+-- leaving every other field untouched. It changes no embedding input, so it does
+-- not weaken EmbeddingConsistency; it exists so entries predating the embedding
+-- column (or written while the embedding model was unavailable) become
+-- retrievable. Failures are logged and never block startup.
 
 -- No two approved learnings may have the same (kind, summary, scope, scope_ref)
 -- tuple. This is a soft constraint enforced by convention: the service layer does
--- not deduplicate, but the TUI review surface surfaces similar entries during
--- approval to encourage curation.
+-- not deduplicate. The only nudge against duplicates is the record_learning MCP
+-- response, which lists similar existing entries so the recording agent can
+-- delete or avoid a redundant one (see RecordLearningViaMcp).
 
 ------------------------------------------------------------
 -- Rules
@@ -304,7 +322,8 @@ invariant ApprovedLearningsHaveScopeRef {
 
 -- == Learning ==
 -- Rules governing the unified learning store: dispatch-prompt augmentation,
--- wrap-up reflection nudge, MCP capture/retrieval tools, and human review actions.
+-- wrap-up reflection nudge, MCP capture/retrieval tools, and the background
+-- stale sweep. There are no human review actions.
 
 rule AugmentDispatchPromptWithLearnings {
     when: AgentLaunched(task, mode)
@@ -370,8 +389,10 @@ rule WrapUpRateLearningNudge {
 -- ExitSessionViaMcp in mcp-task-tools.allium. (The former two-phase
 -- exit_session(task, has_learnings?) reflect-then-close design is gone.)
 -- This file's concern is only the learning-related side effects around the
--- wrap-up sequence: WrapUpRateLearningNudge and PrFinalisationReflection above,
--- plus the injections described in Dispatch Prompt Augmentation.
+-- wrap-up sequence: WrapUpRateLearningNudge above, the separate config-gated
+-- record_learning nudge on update_task (mcp-task-tools.allium:
+-- PrFinalisationReflectionNudge), plus the injections described in Dispatch
+-- Prompt Augmentation.
 
 rule RecordLearningViaMcp {
     when: McpRecordLearning(task, kind, summary, scope, detail?, scope_ref?, tags?)
@@ -397,8 +418,9 @@ rule RecordLearningViaMcp {
     @guidance
         -- Agents call this during task execution or at wrap-up to surface
         -- non-obvious learnings. Entries land as approved and are eligible
-        -- for retrieval immediately; humans curate the active pool by
-        -- rejecting or archiving entries in the TUI.
+        -- for retrieval immediately. Nobody reviews them: the active pool is
+        -- curated by rate_learning scores, the ArchiveStaleLearning sweep and
+        -- explicit delete_learning calls.
         -- default_scope_ref resolves when scope_ref is omitted:
         --   scope=repo    → task.repo_path
         --   scope=epic    → str(task.epic_id), error if task has no epic
@@ -563,8 +585,9 @@ rule ArchiveStaleLearning {
         --
         -- Eligibility is deliberately narrow: only approved entries with
         -- upvote_count <= 0 are swept. An entry that earned even one net upvote is
-        -- never auto-archived, however old; a human must reject/archive it. rejected
-        -- and archived entries are terminal and untouched.
+        -- never auto-archived, however old; the only way to remove it is
+        -- delete_learning, or enough `wrong` verdicts to drag its score back to
+        -- non-positive. rejected and archived entries are terminal and untouched.
         --
         -- Re-fire prevention: the status guard (approved) plus setting
         -- updated_at = now on archive make the temporal condition false and the
@@ -578,116 +601,23 @@ rule ArchiveStaleLearning {
         -- periodic maintenance sweeps.
 }
 
--- == Learning Review ==
--- Optional human-facing TUI actions for curating the knowledge base. No human
--- action is required: entries land as approved (see RecordLearningViaMcp) and are
--- auto-archived when stale (see ArchiveStaleLearning). Humans may still reject,
--- archive, or edit entries to curate the pool sooner.
-
-rule RejectLearning {
-    when: RejectLearning(learning)
-
-    requires: learning.status = approved
-
-    ensures: learning.status = rejected
-    ensures: learning.updated_at = now
-}
-
-rule ArchiveLearning {
-    when: ArchiveLearning(learning)
-
-    requires: learning.status = approved
-
-    ensures: learning.status = archived
-    ensures: learning.updated_at = now
-}
-
-rule EditLearning {
-    when: EditLearning(learning, summary?, detail?, kind?, tags?)
-
-    requires: learning.status = approved
-    requires: summary != null implies summary != ""
-
-    ensures:
-        if summary != null: learning.summary = summary
-    ensures:
-        if detail != null: learning.detail = detail
-    ensures:
-        if kind != null: learning.kind = kind
-    ensures:
-        if tags != null: learning.tags = tags
-    ensures: learning.updated_at = now
-
-    @guidance
-        -- EditLearning follows the same editor pattern as EditTask: the TUI
-        -- opens $EDITOR with a structured file containing the learning fields.
-        -- Editing does not change status.
-        -- Implemented in the TUI knowledge-base panel.
-}
-
 ------------------------------------------------------------
 -- Surfaces
 ------------------------------------------------------------
 
-surface KnowledgeBaseReview {
-    let learnings = core/Learnings where status = approved
-    let selected = 0
-    let view = list
-
-    exposes:
-        learnings
-        selected
-        view
-
-    provides:
-        ToggleView
-
-        Navigate(delta)
-            when learnings.count > 0
-
-        CollapseGroup
-            when view = tree
-
-        ExpandGroup
-            when view = tree
-
-        Reject(learning)
-            when learning.status = approved
-
-        Archive(learning)
-            when learning.status = approved
-
-        Edit(learning)
-            when learning.status = approved
-
-        Close
-
-    @guarantee NavigationAlwaysRedraws
-        -- Every Navigate, ToggleView, CollapseGroup and ExpandGroup updates the
-        -- rendered selection immediately. Because the tree view tracks its cursor
-        -- and expand/collapse state separately from the flat-list `selected`
-        -- index, the central change-detector cannot observe tree movement; tree
-        -- navigation handlers must therefore force a redraw explicitly. A handler
-        -- that mutates only tree state without flagging the frame dirty causes the
-        -- view to appear frozen — the defect this guarantee forbids.
-
-    @guidance
-        -- TUI knowledge-base panel (opened with `I`). Entries are approved on
-        -- creation; the human's role is optional (reject, archive, or edit) —
-        -- there is no "approve" action because there is no proposed or
-        -- needs_review state.
-        -- Two views, toggled with `Tab` (ToggleView):
-        --   list — flat list of approved entries, sorted by upvote_count.
-        --   tree — entries grouped by scope (Global/user, per-Epic, per-Repo,
-        --          Tasks); `h`/`l` collapse/expand a group (CollapseGroup /
-        --          ExpandGroup), `j`/`k` move the tree cursor.
-        -- Key bindings: `j`/`k` navigate, `Tab` toggle view, `x` reject,
-        -- `A` archive, `e` edit, `q`/`Esc` close.
-        -- Navigate(delta): moves the cursor in the current view (clamped in list
-        --   mode; walks visible nodes in tree mode).
-        -- Reject(learning): transitions learning.status to rejected.
-        -- Archive(learning): transitions learning.status to archived.
-        -- Edit(learning): opens editor for the learning record.
-        -- See @guarantee NavigationAlwaysRedraws for the redraw obligation that
-        -- tree navigation must honour (validated by knowledge base learning #225).
-}
+-- This specification declares no surfaces.
+--
+-- The knowledge base has no human-facing boundary. It was previously browsed and
+-- curated through a TUI overlay (opened with `I`, with list/tree views and
+-- reject/archive/edit actions); that overlay is gone, along with the reject and
+-- edit behaviours it was the only entry point for. Nothing in the TUI reads or
+-- writes learnings.
+--
+-- Everything that remains crosses the MCP boundary instead:
+--   record_learning / query_learnings / rate_learning / delete_learning
+--     — specified as rules above; the tool surface itself is described in
+--       mcp-task-tools.allium.
+--   dispatch-time injection (AugmentDispatchPromptWithLearnings)
+--     — a prompt-construction step, not an interactive boundary.
+--   ArchiveStaleLearning
+--     — an unattended background sweep on the runtime tick loop.

@@ -41,4 +41,4 @@ expression: terminal.backend().to_string()
 "                                                                                                                        "
 "                                                                                                                        "
 "                                                                                                                        "
-"[a] select all  [n]ew  [E]pic  [D] quick  [s]plit  [F]lat  [f]ilter  [/] search  [I] learnings  [P] todo  [t] add  [?] h"
+"[a] select all  [n]ew  [E]pic  [D] quick  [s]plit  [F]lat  [f]ilter  [/] search  [P] todo  [t] add  [?] help   (3)      "

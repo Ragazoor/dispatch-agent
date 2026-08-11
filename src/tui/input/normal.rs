@@ -4,111 +4,12 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::models::LearningId;
-
-use super::super::messages::LearningMessage;
 use super::super::types::*;
 use super::super::{App, PendingAction, GG_CHORD_TIMEOUT};
 
 use super::key_event;
 
-/// Extract the learning id of the currently-selected node in the tree view.
-///
-/// Leaf node identifiers are encoded as `"learning:<id>"`. Returns `None` when
-/// nothing is selected or the selected item is a scope-group header.
-fn selected_learning_id_from_tree(
-    tree_state: &std::cell::RefCell<tui_tree_widget::TreeState<String>>,
-) -> Option<LearningId> {
-    let state = tree_state.borrow();
-    let selected = state.selected();
-    selected
-        .last()?
-        .strip_prefix("learning:")?
-        .parse::<i64>()
-        .ok()
-        .map(LearningId)
-}
-
 impl App {
-    pub(in crate::tui) fn handle_key_learnings(&mut self, key: KeyEvent) -> Vec<Command> {
-        // Extract view and selected-id data before any mutable borrows.
-        let (current_view, selected_id) = if let ViewMode::Learnings {
-            selected,
-            ref learnings,
-            view,
-            ref tree_state,
-            ..
-        } = self.board.view_mode
-        {
-            let id = match view {
-                LearningsView::List => learnings.get(selected).map(|l| l.id),
-                LearningsView::Tree => selected_learning_id_from_tree(tree_state),
-            };
-            (view, id)
-        } else {
-            return vec![];
-        };
-
-        match key.code {
-            KeyCode::Tab => {
-                let mut cmds = self.update(Message::Learning(LearningMessage::ToggleView));
-                cmds.push(key_event("toggle_learnings_view", "Tab"));
-                cmds
-            }
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.update(Message::Learning(LearningMessage::Close))
-            }
-            KeyCode::Char('e') => {
-                if let Some(id) = selected_id {
-                    let mut cmds = self.update(Message::Learning(LearningMessage::Edit(id)));
-                    cmds.push(key_event("edit_learning", "e"));
-                    cmds
-                } else {
-                    vec![]
-                }
-            }
-            KeyCode::Char('x') => {
-                if let Some(id) = selected_id {
-                    let mut cmds = self.update(Message::Learning(LearningMessage::Reject(id)));
-                    cmds.push(key_event("reject_learning", "x"));
-                    cmds
-                } else {
-                    vec![]
-                }
-            }
-            KeyCode::Char('A') => {
-                if let Some(id) = selected_id {
-                    let mut cmds = self.update(Message::Learning(LearningMessage::Archive(id)));
-                    cmds.push(key_event("archive_learning", "A"));
-                    cmds
-                } else {
-                    vec![]
-                }
-            }
-            // List-view navigation
-            KeyCode::Char('j') | KeyCode::Down if matches!(current_view, LearningsView::List) => {
-                self.update(Message::Learning(LearningMessage::Navigate(1)))
-            }
-            KeyCode::Char('k') | KeyCode::Up if matches!(current_view, LearningsView::List) => {
-                self.update(Message::Learning(LearningMessage::Navigate(-1)))
-            }
-            // Tree-view navigation (j/k/Up/Down fall through here when in Tree view)
-            KeyCode::Char('j') | KeyCode::Down => self.update(Message::Learning(
-                LearningMessage::NavigateTree(TreeNav::Down),
-            )),
-            KeyCode::Char('k') | KeyCode::Up => self.update(Message::Learning(
-                LearningMessage::NavigateTree(TreeNav::Up),
-            )),
-            KeyCode::Char('l') | KeyCode::Right => self.update(Message::Learning(
-                LearningMessage::NavigateTree(TreeNav::Right),
-            )),
-            KeyCode::Char('h') | KeyCode::Left => self.update(Message::Learning(
-                LearningMessage::NavigateTree(TreeNav::Left),
-            )),
-            _ => vec![],
-        }
-    }
-
     /// Return the id of the currently-selected todo item, or `None` if the list
     /// is empty or the view mode is not `Todos`.
     fn selected_todo_id(&self) -> Option<crate::models::TodoId> {
@@ -237,12 +138,6 @@ impl App {
         if matches!(self.board.view_mode, ViewMode::TaskDetail { .. }) {
             self.clear_pending_g_chord();
             return self.handle_key_task_detail(key);
-        }
-
-        // Learnings overlay captures all input when visible
-        if matches!(self.board.view_mode, ViewMode::Learnings { .. }) {
-            self.clear_pending_g_chord();
-            return self.handle_key_learnings(key);
         }
 
         // Todos overlay captures all input when visible
@@ -504,12 +399,6 @@ impl App {
                 Message::Task(crate::tui::messages::TaskMessage::ToggleFlattened),
                 "toggle_flattened",
                 "F",
-            ),
-
-            KeyCode::Char('I') => self.dispatch_keyed(
-                Message::Learning(LearningMessage::Open),
-                "open_learnings",
-                "I",
             ),
 
             KeyCode::Char('P') => self.dispatch_keyed(

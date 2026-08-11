@@ -15,9 +15,7 @@ pub use api::{LearningServiceApiStub, MockLearningService, TaskServiceApiStub};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use epics::{CreateEpicParams, EpicService, UpdateEpicParams, UpdateEpicResult};
 pub use grouping::{flatten_epic, regroup_epic, reroute_on_repo_change, route_target};
-pub use learnings::{
-    CreateLearningParams, LearningService, QueryLearningsParams, UpdateLearningParams,
-};
+pub use learnings::{CreateLearningParams, LearningService, QueryLearningsParams};
 pub use managed_feeds::{
     ensure_managed_epics, provision_managed_feeds_from_settings, read_managed_feed_settings,
     write_managed_feed_settings, ManagedFeedSettings, ManagedFeedSettingsPatch,

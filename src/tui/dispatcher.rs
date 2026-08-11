@@ -48,7 +48,6 @@ pub(in crate::tui) fn dispatch(app: &mut App, msg: Message) -> Vec<Command> {
         Message::RepoSync(rsm) => rsm.route(app),
 
         Message::Feed(fm) => fm.route(app),
-        Message::Learning(lm) => lm.route(app),
         Message::Todo(tm) => tm.route(app),
 
         // ── Main session ──

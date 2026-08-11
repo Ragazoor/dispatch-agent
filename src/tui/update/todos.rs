@@ -80,8 +80,8 @@ impl App {
     }
 
     pub(in crate::tui) fn handle_close_todos(&mut self) -> Vec<Command> {
-        // Mirror handle_close_learnings: take the view out (so nothing is borrowed)
-        // before reassigning. `&self.board.view_mode` + assign-inside is E0506.
+        // Take the view out (so nothing is borrowed) before reassigning.
+        // `&self.board.view_mode` + assign-inside is E0506.
         if let ViewMode::Todos { previous, .. } = std::mem::take(&mut self.board.view_mode) {
             self.board.view_mode = *previous;
         }

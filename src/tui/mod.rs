@@ -586,7 +586,7 @@ impl App {
         self.board.view_mode.selection_mut()
     }
 
-    /// When in an overlay (TaskDetail/Learnings/Todos), returns the board mode
+    /// When in an overlay (TaskDetail/Todos), returns the board mode
     /// beneath (Board or Epic) by peeling away `previous` links. Returns
     /// [`BoardViewMode`] rather than `&ViewMode` so callers get an exhaustive
     /// 2-variant match with no `unreachable!` fallback for the overlay variants.
@@ -603,9 +603,9 @@ impl App {
                         selection,
                     }
                 }
-                ViewMode::TaskDetail { previous, .. }
-                | ViewMode::Learnings { previous, .. }
-                | ViewMode::Todos { previous, .. } => current = previous,
+                ViewMode::TaskDetail { previous, .. } | ViewMode::Todos { previous, .. } => {
+                    current = previous
+                }
             }
         }
     }

@@ -476,21 +476,6 @@ macro_rules! learning_service_api {
                 filter: $crate::db::LearningFilter
             ) -> Result<Vec<$crate::models::Learning>, $crate::service::ServiceError>;
 
-            async fn reject_learning(
-                &self,
-                id: $crate::models::LearningId
-            ) -> Result<(), $crate::service::ServiceError>;
-
-            async fn archive_learning(
-                &self,
-                id: $crate::models::LearningId
-            ) -> Result<(), $crate::service::ServiceError>;
-
-            async fn update_learning(
-                &self,
-                params: $crate::service::UpdateLearningParams
-            ) -> Result<(), $crate::service::ServiceError>;
-
             async fn record_retrieval(
                 &self,
                 task_id: $crate::models::TaskId,
