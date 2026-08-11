@@ -651,18 +651,20 @@ mod tests {
             MockProcessRunner::ok(),                      // push
         ]));
         sync_repo(REPO, BASE, &mock).expect("an ahead repo pushes");
-        const MUST_BE_BOUNDED: [&str; 3] = ["fetch", "rev-list", "push"];
+        // Every call, not an allowlist of three. This once named fetch/rev-list/push
+        // because they were the only bounded ones; now that the preconditions are
+        // bounded too, singling any out would imply the rest are exempt. The
+        // push branch is this test's own — `sync_repo_bounds_every_subprocess_it_runs`
+        // drives the behind/merge branch and never reaches a push.
         for ((program, args), timeout) in mock
             .recorded_calls()
             .into_iter()
             .zip(mock.recorded_timeouts())
         {
-            if args.iter().any(|a| MUST_BE_BOUNDED.contains(&a.as_str())) {
-                assert!(
-                    timeout.is_some(),
-                    "{program} {args:?} must be bounded, but was run unbounded"
-                );
-            }
+            assert!(
+                timeout.is_some(),
+                "{program} {args:?} must be bounded, but was run unbounded"
+            );
         }
     }
 

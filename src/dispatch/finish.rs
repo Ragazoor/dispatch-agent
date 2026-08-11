@@ -481,11 +481,8 @@ mod tests {
     // porcelain read that precedes it need their own gate. Both are best-effort,
     // so a timeout there degrades exactly as any other failure does — but neither
     // may hang, which is what an unbounded call on a lock-taking abort would do.
-    //
-    // As above, the preflight reads carry the production `SUBPROCESS_TIMEOUT`
-    // (via the bounded `crate::git` helpers) while the conflict-path status read
-    // and the abort carry the injected `TEST_TIMEOUT` — a mix of `Some(_)`
-    // values is expected; only `None` would indicate an unbounded call.
+    // Timeouts are a mix of two durations for the reason given on
+    // `finish_task_bounds_every_subprocess_it_runs` above.
     #[test]
     fn finish_task_bounds_the_conflict_abort_path() {
         let mock = MockProcessRunner::new(vec![
