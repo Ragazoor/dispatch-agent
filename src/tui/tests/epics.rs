@@ -501,6 +501,83 @@ fn delete_epic_removes_from_state_and_tasks() {
 }
 
 #[test]
+fn delete_epic_cleans_up_worktrees_of_sub_epic_subtasks() {
+    // `EpicCrud::delete_epic` deletes the whole subtree (delete_epic_recursive
+    // walks parent_epic_id), so a sub-epic's subtask rows vanish too. The
+    // Cleanup commands must cover them, or their worktrees leak with no row
+    // left to point at them. See DeleteEpic in docs/specs/epics.allium.
+    let mut app = App::new(vec![]);
+    let mut child_epic = make_epic(20);
+    child_epic.parent_epic_id = Some(EpicId(10));
+    app.board.epics = vec![make_epic(10), child_epic];
+
+    let mut direct = make_task(1, TaskStatus::Running);
+    direct.epic_id = Some(EpicId(10));
+    direct.worktree = Some("/repo/.worktrees/1-direct".to_string());
+    let mut nested = make_task(2, TaskStatus::Running);
+    nested.epic_id = Some(EpicId(20));
+    nested.worktree = Some("/repo/.worktrees/2-nested".to_string());
+    app.board.tasks = vec![direct, nested];
+
+    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Delete(
+        EpicId(10),
+    )));
+
+    let cleaned: Vec<&str> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup { worktree, .. }) => {
+                Some(worktree.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        cleaned.contains(&"/repo/.worktrees/1-direct"),
+        "direct subtask worktree must be cleaned up, got: {cleaned:?}"
+    );
+    assert!(
+        cleaned.contains(&"/repo/.worktrees/2-nested"),
+        "sub-epic subtask worktree must be cleaned up, got: {cleaned:?}"
+    );
+}
+
+#[test]
+fn delete_epic_removes_the_whole_subtree_from_the_board() {
+    // The DB delete drops every descendant epic and its tasks, so the in-memory
+    // board must not keep rows pointing at deleted epics.
+    let mut app = App::new(vec![]);
+    let mut child_epic = make_epic(20);
+    child_epic.parent_epic_id = Some(EpicId(10));
+    let mut grandchild_epic = make_epic(30);
+    grandchild_epic.parent_epic_id = Some(EpicId(20));
+    app.board.epics = vec![make_epic(10), child_epic, grandchild_epic, make_epic(40)];
+
+    let mut nested = make_task(2, TaskStatus::Running);
+    nested.epic_id = Some(EpicId(30));
+    let mut unrelated = make_task(3, TaskStatus::Running);
+    unrelated.epic_id = Some(EpicId(40));
+    app.board.tasks = vec![nested, unrelated];
+
+    app.update(Message::Epic(crate::tui::messages::EpicMessage::Delete(
+        EpicId(10),
+    )));
+
+    let epic_ids: Vec<EpicId> = app.board.epics.iter().map(|e| e.id).collect();
+    assert_eq!(
+        epic_ids,
+        vec![EpicId(40)],
+        "the deleted epic's whole subtree must leave the board"
+    );
+    let task_ids: Vec<TaskId> = app.board.tasks.iter().map(|t| t.id).collect();
+    assert_eq!(
+        task_ids,
+        vec![TaskId(3)],
+        "subtasks of descendant epics must leave the board too"
+    );
+}
+
+#[test]
 fn move_epic_status_forward() {
     let mut app = App::new(vec![]);
     app.board.epics = vec![make_epic(10)]; // starts as Backlog

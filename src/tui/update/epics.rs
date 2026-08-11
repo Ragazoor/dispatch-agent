@@ -78,12 +78,20 @@ impl App {
 
     pub(in crate::tui) fn handle_delete_epic(&mut self, id: EpicId) -> Vec<Command> {
         let mut cmds = Vec::new();
-        // Clean up worktrees/tmux for subtasks before deleting
+        // The DB delete drops the whole subtree (`delete_epic_recursive` walks
+        // parent_epic_id depth-first), so cleanup must cover the same subtree —
+        // covering only direct children would delete a nested subtask's row
+        // while leaving its worktree and tmux window with nothing referencing
+        // them. Mirrors `handle_archive_epic`. See DeleteEpic in
+        // docs/specs/epics.allium.
+        let subtree = descendant_epic_ids(id, &self.board.epics);
+        let in_subtree =
+            |t: &crate::models::Task| t.epic_id.is_some_and(|eid| subtree.contains(&eid));
         let subtask_ids: Vec<TaskId> = self
             .board
             .tasks
             .iter()
-            .filter(|t| t.epic_id == Some(id))
+            .filter(|t| in_subtree(t))
             .map(|t| t.id)
             .collect();
         for task_id in subtask_ids {
@@ -95,8 +103,8 @@ impl App {
                 self.clear_agent_tracking(task_id);
             }
         }
-        self.board.epics.retain(|e| e.id != id);
-        self.board.tasks.retain(|t| t.epic_id != Some(id));
+        self.board.epics.retain(|e| !subtree.contains(&e.id));
+        self.board.tasks.retain(|t| !in_subtree(t));
         // If we were viewing this epic, exit
         if matches!(&self.board.view_mode, ViewMode::Epic { epic_id, .. } if *epic_id == id) {
             self.handle_exit_epic();

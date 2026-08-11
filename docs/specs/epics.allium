@@ -263,6 +263,10 @@ rule DeleteEpic {
     -- Deletes epic and all linked subtasks and sub-epics (recursively)
     ensures:
         for task in epic.subtasks:
+            if task.worktree != null:
+                not exists task.worktree
+    ensures:
+        for task in epic.subtasks:
             not exists task
     ensures:
         for sub_epic in epic.sub_epics:
@@ -273,10 +277,13 @@ rule DeleteEpic {
         -- Deletion is performed in a single database transaction that
         -- walks parent_epic_id pointers depth-first, deleting each
         -- epic's tasks then the epic row itself. Worktrees and tmux
-        -- windows are cleaned up best-effort for the directly-owned
-        -- subtasks before the DB call; cleanup for nested sub-epic
-        -- descendants is not performed by the TUI (those rows are
-        -- dropped purely at the database level).
+        -- windows are cleaned up best-effort for every subtask in that
+        -- same subtree — not just the directly-owned ones — before the DB
+        -- call, mirroring ArchiveEpic's recursion. The two must agree: the
+        -- DB delete drops the whole subtree, so a cleanup that covered
+        -- only direct children would delete a nested subtask's row while
+        -- leaving its worktree, branch and tmux window on disk with
+        -- nothing left referencing them (task #3897).
         -- If the currently active view is on the deleted epic, the TUI
         -- exits back to the parent view.
 }
