@@ -232,6 +232,20 @@ rule WrapUpRebase {
         --      output when present.
         --   5. `git merge --ff-only <branch>` in the repo root to
         --      fast-forward the base branch to the rebased branch.
+        --
+        -- Every subprocess in the finish path is bounded by a timeout — the
+        -- pull because it touches the network, and the rebase, the
+        -- conflict-path status read, the rebase abort and the fast-forward
+        -- because each can block on a repository lock. None of them may wedge
+        -- the caller: an unbounded call here hangs the agent's wrap_up tool
+        -- call indefinitely and mints no exit token, so the session cannot be
+        -- closed at all. A subprocess that times out is simply one that
+        -- failed, reported through the existing `other` error — no new failure
+        -- variant. The one asymmetric case is the rebase abort: if it times
+        -- out the worktree is left mid-conflict, exactly as when the abort
+        -- fails for any other reason, and the rule already reports the
+        -- underlying conflict rather than the abort's fate.
+        --
         -- The worktree is preserved after a successful rebase (cleaned
         -- up only on archive). finish_task performs no session teardown at
         -- all — it is the git half only — so the agent's session stays alive

@@ -173,7 +173,15 @@ contract RepoSyncEngine {
         -- may wedge a caller: the same counts back the TUI's drift poll and the
         -- dispatch path. A subprocess that times out is simply one that
         -- answered nothing, which the surrounding logic already handles as
-        -- unmeasurable.
+        -- unmeasurable. The same bound covers every other call the engine
+        -- issues: the three preflight reads reached through the shared git
+        -- helpers in src/git.rs (the origin-remote probe, the current branch
+        -- and the working-tree status), the default-branch detection
+        -- measure_repo performs, and the whole merge block — the merge itself,
+        -- the conflict-path status read and the merge abort. Each of these can
+        -- block on a repository lock for the same reason the rev-list can, and
+        -- the merge can additionally hang the way the rebase path's conflict
+        -- handling can.
         --
         -- fetch_base yields nothing on success and the failure message
         -- otherwise. A failed fetch is non-fatal to a *refresh*: the previously
