@@ -15,7 +15,7 @@ use crate::mcp::McpEvent;
 use crate::models::EpicId;
 use crate::process::ProcessRunner;
 
-pub(crate) use exec::{exec_feed_command, resolve_base_branches};
+pub(crate) use exec::{degraded_empty_emission, exec_feed_command, resolve_base_branches};
 pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
 // `pub`, unlike the `pub(crate)` re-exports above: the `verify-feed` CLI in
 // src/main.rs is a separate bin crate and is one of this function's three
@@ -92,9 +92,7 @@ impl FeedJob {
         else {
             return;
         };
-        let stdout = output.stdout;
-
-        let items = match parse::parse_feed_items(&stdout) {
+        let items = match parse::parse_feed_items(&output.stdout) {
             Ok(i) => i,
             Err(err) => {
                 tracing::warn!(
@@ -105,6 +103,21 @@ impl FeedJob {
                 return;
             }
         };
+
+        // A zero-item emission that also wrote to stderr is a degraded run, not an
+        // empty one: syncing it would delete every feed task in this epic's subtree.
+        // exec_feed_command already logged the stderr; the auto-poll path adds
+        // nothing else, per feeds.allium FeedCommandFailure ("the TUI is NOT
+        // notified"). last_run was bumped by `tick` before this job was spawned.
+        // See feeds.allium: DegradedEmptyEmission.
+        if let Some(reason) = degraded_empty_emission(items.len(), &output.stderr) {
+            tracing::warn!(
+                epic_id = self.epic.id.0,
+                epic_title = %self.epic.title,
+                "FeedRunner: skipping sync: {reason}"
+            );
+            return;
+        }
 
         let repo_paths = resolve_feed_item_repo_paths(&items, &self.known_paths);
         let base_branches = resolve_base_branches(&repo_paths, &*self.runner);
@@ -180,6 +193,15 @@ pub struct FeedRunner {
     /// Counterpart of `epic_changed_rx`.  Clone this before calling `start()` to
     /// retain a handle for external invalidation (e.g. on `EpicChanged` events).
     epic_changed_tx: tokio::sync::watch::Sender<()>,
+    /// Test-only join handles for the jobs spawned by `tick`. Production keeps
+    /// firing-and-forgetting: the field, and the push that fills it, exist only
+    /// under `cfg(test)`. Tests need it because some `FeedJob::run` outcomes
+    /// deliberately send no `McpEvent` — the degraded-empty-emission guard
+    /// (feeds.allium: DegradedEmptyEmission) returns before any sync — so
+    /// awaiting `rx` is not a usable completion signal there, and sleeping is
+    /// banned by `./scripts/check-no-test-sleep.sh`.
+    #[cfg(test)]
+    spawned: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl FeedRunner {
@@ -197,6 +219,18 @@ impl FeedRunner {
             any_feed_cmds: None,
             epic_changed_rx,
             epic_changed_tx,
+            #[cfg(test)]
+            spawned: Vec::new(),
+        }
+    }
+
+    /// Await every job spawned by the ticks run so far, draining the handle
+    /// list. Deterministic replacement for "wait for an `McpEvent`" in tests
+    /// covering paths that emit no event.
+    #[cfg(test)]
+    pub(crate) async fn join_spawned_jobs(&mut self) {
+        for handle in std::mem::take(&mut self.spawned) {
+            let _ = handle.await;
         }
     }
 
@@ -299,7 +333,9 @@ impl FeedRunner {
                 known_paths: Arc::clone(&known_paths),
             };
 
-            tokio::task::spawn(job.run());
+            let _handle = tokio::task::spawn(job.run());
+            #[cfg(test)]
+            self.spawned.push(_handle);
         }
     }
 }
@@ -310,7 +346,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::db::{Database, EpicCrud, EpicPatch, EpicRead, SettingsStore};
+    use crate::db::{Database, EpicCrud, EpicPatch, EpicRead, SettingsStore, TaskCrud};
     use crate::models::{TaskStatus, TaskTag};
 
     use super::exec::AlwaysFailRunner;
@@ -471,6 +507,57 @@ mod tests {
         );
         assert_eq!(tasks[0].title, "T");
         assert_eq!(tasks[0].external_id.as_deref(), Some("1"));
+    }
+
+    // Regression for #3989 (feeds.allium: DegradedEmptyEmission). A command that
+    // soft-fails to `[]` while reporting the reason on stderr must NOT reconcile —
+    // syncing it would delete every feed task already in the epic.
+    #[tokio::test]
+    async fn tick_degraded_empty_emission_does_not_delete_existing_tasks() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Degraded Epic", "", None).await.unwrap();
+
+        // Seed one feed task, as a previous healthy poll would have.
+        db.upsert_feed_tasks(
+            epic.id,
+            &[crate::models::FeedItem {
+                external_id: "pr-1".to_string(),
+                title: "Existing PR".to_string(),
+                description: String::new(),
+                url: String::new(),
+                url_type: None,
+                status: TaskStatus::Backlog,
+                tag: TaskTag::PrReview,
+                labels: Vec::new(),
+                sort_order: None,
+                signals: vec![],
+                wrap_up_mode: None,
+            }],
+            &["".to_string()],
+            &["main".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(db.list_tasks_for_epic(epic.id).await.unwrap().len(), 1);
+
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new().feed_command(Some("echo 'Invalid search query' >&2; echo '[]'")),
+        )
+        .await
+        .unwrap();
+
+        let (mut runner, _rx) = make_runner(db.clone());
+        runner.tick().await;
+        runner.join_spawned_jobs().await;
+
+        let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "a degraded empty emission must not delete existing feed tasks"
+        );
+        assert_eq!(tasks[0].external_id.as_deref(), Some("pr-1"));
     }
 
     #[tokio::test]

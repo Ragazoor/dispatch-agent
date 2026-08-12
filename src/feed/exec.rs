@@ -124,12 +124,6 @@ pub(crate) async fn exec_feed_command(
 /// line from `exec_feed_command` is enough.
 ///
 /// See feeds.allium: DegradedEmptyEmission.
-///
-/// Not yet called from production code: the two call sites (the poll-loop
-/// sync path and the manual-refresh status-bar path) land in follow-up
-/// tasks of this same plan. `#[allow(dead_code)]` is temporary and must be
-/// removed once those call sites exist.
-#[allow(dead_code)]
 pub(crate) fn degraded_empty_emission(item_count: usize, stderr: &str) -> Option<String> {
     if item_count == 0 && !stderr.is_empty() {
         Some(format!(
