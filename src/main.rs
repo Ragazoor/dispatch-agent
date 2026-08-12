@@ -474,6 +474,21 @@ fn cmd_verify_feed(command: String) -> Result<()> {
         );
         std::process::exit(1);
     }
+    // Deliberately duplicated rather than routed through
+    // `feed::exec_feed_command`: that helper logs via `tracing` to app.log
+    // and requires an epic_id/epic_title that verify-feed, a bare CLI
+    // command, doesn't have. verify-feed's whole point is to print evidence
+    // to the terminal, so a command that exits 0 but wrote to stderr must
+    // surface that here too (feeds.allium: FeedCommandStderrOnSuccess) —
+    // otherwise a user chasing the app.log hint down to a manual repro gets
+    // a confident but wrong diagnosis with the evidence thrown away.
+    let stderr_on_success = String::from_utf8_lossy(&output.stderr);
+    if !stderr_on_success.trim().is_empty() {
+        eprintln!(
+            "verify-feed: command wrote to stderr (exit 0):\n{}",
+            stderr_on_success.trim()
+        );
+    }
     let stdout = String::from_utf8_lossy(&output.stdout);
     match serde_json::from_str::<Vec<models::FeedItem>>(stdout.trim()) {
         Ok(items) => {

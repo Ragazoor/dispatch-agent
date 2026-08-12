@@ -958,6 +958,30 @@ async fn verify_feed_invalid_json_fails() {
 }
 
 #[tokio::test]
+async fn verify_feed_surfaces_stderr_written_on_zero_exit() {
+    // feeds.allium: FeedCommandStderrOnSuccess. A command that writes to
+    // stderr internally but still exits 0 must have that stderr visible in
+    // verify-feed's own output, not silently discarded — this is the third
+    // exec of a feed command and the one debugging path a user has left
+    // once app.log points them at a failure.
+    let db = NamedTempFile::new().unwrap();
+    let out = binary()
+        .args([
+            "--db",
+            db.path().to_str().unwrap(),
+            "verify-feed",
+            "echo 'boom' >&2; printf '[]'",
+        ])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("boom"),
+        "Expected the command's stderr to be surfaced, got stderr: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn verify_feed_command_failure_exits_nonzero() {
     let db = NamedTempFile::new().unwrap();
     let out = binary()
