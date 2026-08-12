@@ -111,6 +111,35 @@ pub(crate) async fn exec_feed_command(
     })
 }
 
+/// Classify a zero-exit emission that produced no items while writing to
+/// stderr. That combination is the signature of a script which failed
+/// internally and soft-failed to an empty array — syncing it would delete
+/// every feed task in the epic's subtree.
+///
+/// Returns `Some(reason)` to suppress the sync, `None` to proceed.
+///
+/// A genuinely-empty clean run (`stderr` empty) returns `None` and reconciles
+/// normally, so merged and closed PRs are still removed. A non-empty emission
+/// returns `None` regardless of stderr — there, stderr is chatter and the warn
+/// line from `exec_feed_command` is enough.
+///
+/// See feeds.allium: DegradedEmptyEmission.
+///
+/// Not yet called from production code: the two call sites (the poll-loop
+/// sync path and the manual-refresh status-bar path) land in follow-up
+/// tasks of this same plan. `#[allow(dead_code)]` is temporary and must be
+/// removed once those call sites exist.
+#[allow(dead_code)]
+pub(crate) fn degraded_empty_emission(item_count: usize, stderr: &str) -> Option<String> {
+    if item_count == 0 && !stderr.is_empty() {
+        Some(format!(
+            "command emitted no items but wrote to stderr: {stderr}"
+        ))
+    } else {
+        None
+    }
+}
+
 /// Decode stderr bytes lossily, trim surrounding whitespace, and cap the
 /// length at [`MAX_FEED_STDERR_CHARS`]. Truncates on a character boundary, so
 /// multi-byte output cannot panic here.
@@ -325,5 +354,30 @@ mod tests {
             out.stderr.chars().all(|c| c == 'x'),
             "exact-cap stderr must be untruncated content"
         );
+    }
+
+    // --- degraded_empty_emission (feeds.allium: DegradedEmptyEmission) ---
+
+    #[test]
+    fn degraded_when_zero_items_and_stderr_present() {
+        let reason = degraded_empty_emission(0, "Invalid search query")
+            .expect("zero items plus stderr must be treated as a failure");
+        assert!(
+            reason.contains("Invalid search query"),
+            "reason must carry the stderr so the status bar can show it, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn not_degraded_when_zero_items_and_no_stderr() {
+        // A genuinely-empty clean run must still reconcile — this is the
+        // false-positive boundary the guard must never cross.
+        assert!(degraded_empty_emission(0, "").is_none());
+    }
+
+    #[test]
+    fn not_degraded_when_items_present_despite_stderr() {
+        // Chatter alongside a real emission stays diagnostic-only.
+        assert!(degraded_empty_emission(3, "some warning").is_none());
     }
 }
