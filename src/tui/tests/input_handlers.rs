@@ -2742,7 +2742,7 @@ fn space_key_on_epic_enters_epic_view() {
 }
 
 #[test]
-fn capital_s_on_task_in_active_split_swaps_pane() {
+fn space_on_task_in_active_split_swaps_pane() {
     let mut task = make_task(3, TaskStatus::Running);
     task.tmux_window = Some("task-3".to_string());
     let mut app = App::new(vec![task]);
@@ -2750,32 +2750,29 @@ fn capital_s_on_task_in_active_split_swaps_pane() {
     app.board.split.right_pane_id = Some("%10".to_string());
     app.selection_mut().set_column(2);
 
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('S'))));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
     assert!(
         cmds.iter().any(|c| matches!(
             c,
             Command::Split(crate::tui::commands::SplitCommand::Swap { .. })
         )),
-        "S on task with split active should swap pane, got {cmds:?}"
+        "Space on task with split active should swap pane, got {cmds:?}"
     );
 }
 
 #[test]
-fn capital_s_on_task_without_split_shows_hint() {
+fn capital_s_is_inert() {
+    // [S] retired in favour of Space-in-split-mode: no arm, no hint.
     let mut task = make_task(1, TaskStatus::Backlog);
     task.tmux_window = Some("task-1".to_string());
     let mut app = App::new(vec![task]);
-    // split is inactive by default
     app.selection_mut().set_column(1);
 
-    let _cmds = app.handle_key(make_key(KeyCode::Char('S')));
+    let cmds = app.handle_key(make_key(KeyCode::Char('S')));
+    assert!(cmds.is_empty(), "S must emit no commands, got {cmds:?}");
     assert!(
-        app.status
-            .message
-            .as_deref()
-            .unwrap_or("")
-            .contains("Split view not active"),
-        "S without split should show a hint, got {:?}",
+        app.status.message.is_none(),
+        "S must show no hint, got {:?}",
         app.status.message
     );
 }

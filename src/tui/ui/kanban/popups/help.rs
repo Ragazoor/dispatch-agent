@@ -133,9 +133,7 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
         ]),
         Line::from(vec![
             Span::styled("  [s]", key),
-            Span::styled(" toggle split   ", desc),
-            Span::styled("[S]", key),
-            Span::styled(" swap into pane   ", desc),
+            Span::styled(" toggle split (then [Space] swaps into pane)   ", desc),
             Span::styled("[T]", key),
             Span::styled(" detach", desc),
         ]),
@@ -161,7 +159,7 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
             note,
         )),
         Line::from(Span::styled(
-            "    else dispatches or resumes; on an epic row, enters it",
+            "    or swaps into the split pane; else dispatch/resume; epic: enter",
             note,
         )),
         Line::from(""),

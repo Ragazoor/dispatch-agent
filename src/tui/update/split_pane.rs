@@ -21,8 +21,17 @@ impl App {
         }
     }
 
+    /// Swap `task_id`'s tmux window into the split pane.
+    ///
+    /// The caller establishes the preconditions (see SwapSplitPane in
+    /// docs/specs/split-pane.allium): the only producer of
+    /// `SplitMessage::Swap` is `handle_key_activate`, which raises it solely
+    /// for a task that has a live tmux window while split mode is active. A
+    /// windowless task is routed by status there instead — it never reaches
+    /// this handler — so there is no user-facing "no session" case to report.
     pub(in crate::tui) fn handle_swap_split_pane(&mut self, task_id: TaskId) -> Vec<Command> {
-        // Already pinned — nothing to do
+        // Already pinned — nothing to do. Reachable when the pane id is
+        // missing, which makes the focus-the-pane branch upstream fall through.
         if self.board.split.pinned_task_id == Some(task_id) {
             return vec![];
         }
@@ -33,13 +42,7 @@ impl App {
         };
         let new_window = match &task.tmux_window {
             Some(w) => w.clone(),
-            None => {
-                return self.update(Message::System(
-                    crate::tui::messages::SystemMessage::StatusInfo(
-                        "No agent session for this task".to_string(),
-                    ),
-                ))
-            }
+            None => return vec![],
         };
         let old_pane_id = self.board.split.right_pane_id.clone();
         let old_window = self

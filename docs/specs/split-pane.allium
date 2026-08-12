@@ -85,8 +85,8 @@ rule BatchDetachTmux {
 -- [s] is the only way in or out of split mode; every other rule in this file
 -- presupposes that split mode already exists. Entry auto-pins the selected
 -- task when it has a live agent window, so a single [s] on a running or
--- reviewable task both opens the pane and pins that agent — no separate [S]
--- step is needed. Exit returns a pinned agent to a standalone tmux window:
+-- reviewable task both opens the pane and pins that agent — no separate
+-- swap step is needed. Exit returns a pinned agent to a standalone tmux window:
 -- the agent's session survives, only the split-pane UI goes away.
 
 rule ToggleSplitMode {
@@ -223,17 +223,26 @@ rule SplitPaneFocusBorder {
 -- Pressing Space on a task is the single "work on this task" action: it
 -- jumps tmux focus to that task's agent window when one exists, and
 -- otherwise starts or resumes the agent. This unifies the former Space
--- jump key with the now-removed [d] dispatch/resume key.
+-- jump key with the now-removed [d] dispatch/resume key, and — while split
+-- mode is active — the swap action of the now-removed [S] key.
 --
 -- Priority order (first match wins):
 --   1. Task pinned in the split pane   -> focus that pane.
---   2. task.tmux_window != null        -> jump to the window.
---   3. No window, routed by status     -> dispatch / resume / retry / hint.
+--   2. Split active, task.tmux_window != null
+--                                      -> swap the window into the pane
+--                                         (SwapSplitPane), no focus transfer.
+--   3. task.tmux_window != null        -> jump to the window.
+--   4. No window, routed by status     -> dispatch / resume / retry / hint.
 --
--- The window check (2) precedes the status check (3), so a Stale or Crashed
--- task that still has a window is jumped to (a stale agent is usually just
--- idle) rather than opening the retry dialog. The retry dialog is reached
--- only for a windowless Stale/Crashed task (3).
+-- Split mode never suppresses the windowless branches: a Backlog card is
+-- still dispatched by Space with the pane open, because there is no window
+-- to swap in. Only the jump (3) is overridden, and only while split is
+-- active.
+--
+-- The window checks (2, 3) precede the status check (4), so a Stale or
+-- Crashed task that still has a window is jumped to or swapped in (a stale
+-- agent is usually just idle) rather than opening the retry dialog. The
+-- retry dialog is reached only for a windowless Stale/Crashed task (4).
 
 rule JumpToAgentWindow {
     when: UserAction(" ", task)
@@ -243,11 +252,15 @@ rule JumpToAgentWindow {
             -- Priority 1: the task is pinned; its window was joined into the
             -- dispatch window via join-pane, so focus the pane directly.
             tmux_focus = split_pane.pane
+        else if split_pane.active = true and task.tmux_window != null:
+            -- Priority 2: split mode replaces the jump with an in-place swap.
+            -- Specified by SwapSplitPane below; tmux focus stays on the TUI.
+            SplitPaneSwapRequested(task: task)
         else if task.tmux_window != null:
-            -- Priority 2: jump to the standalone agent window.
+            -- Priority 3: jump to the standalone agent window.
             tmux_focus = task.tmux_window
         else if task.status = backlog:
-            -- Priority 3, Backlog: start the agent. Repo-trust confirmation
+            -- Priority 4, Backlog: start the agent. Repo-trust confirmation
             -- (ConfirmTrustRepo) is preserved as a pre-dispatch gate.
             DispatchTask(task)
         else if task.status in {running, review, done}:
@@ -272,14 +285,20 @@ rule JumpToAgentWindow {
         --      window no longer exists, so this calls tmux select-pane on
         --      split_pane.right_pane_id rather than select-window.
         --
-        --   2. Has a tmux window: the normal jump (no split, or split active
-        --      but a different task is pinned) calls tmux select-window on
-        --      task.tmux_window. This branch also covers Stale/Crashed tasks
-        --      that still have a window — the window check wins over the
-        --      problematic-status check, because a stale agent is usually just
-        --      idle and jumping to it is what the user wants.
+        --   2. Split active and the task has a tmux window (and is not the
+        --      pinned one): the window is swapped into the split pane in
+        --      place, per SwapSplitPane. tmux focus is NOT transferred — the
+        --      board keeps focus and the pane simply changes what it shows.
+        --      This is the surface the retired [S] key used to provide.
         --
-        --   3. No window, routed by status:
+        --   3. Has a tmux window, split inactive: the normal jump calls tmux
+        --      select-window on task.tmux_window. Branches 2 and 3 both cover
+        --      Stale/Crashed tasks that still have a window — the window check
+        --      wins over the problematic-status check, because a stale agent
+        --      is usually just idle and looking at it is what the user wants.
+        --
+        --   4. No window, routed by status (reached with split active or
+        --      inactive alike — there is nothing to swap in):
         --      * Backlog        -> DispatchTask (dispatch.allium). The
         --        repo-trust confirmation (ConfirmTrustRepo) is preserved: an
         --        untrusted repo first shows the trust prompt, which on accept
@@ -303,9 +322,6 @@ rule JumpToAgentWindow {
         -- Space on an epic row (board view) is unchanged: it enters the epic
         -- view. Inside the epic, Space on each subtask follows the task rules
         -- above.
-        --
-        -- Contrast with [S], which peeks at the window in-place without
-        -- transferring focus.
 }
 
 -- == Jump Back to TUI Window (Prefix+Space) ==
@@ -345,14 +361,16 @@ rule JumpBackToTuiWindow {
         -- without leaving the board.
 }
 
--- == Pin Task in Split Pane ([S] key) ==
+-- == Pin Task in Split Pane (Space, split mode) ==
 --
--- Pressing [S] on a task in split mode pins that task's tmux window into the
+-- Pressing Space on a task in split mode pins that task's tmux window into the
 -- right pane without transferring tmux focus. The user stays on the TUI board.
--- Outside split mode [S] shows a hint ("Split view not active — press s to open").
+-- There is no dedicated swap key: outside split mode the same Space press
+-- jumps to the window instead (JumpToAgentWindow, priority 3), so the action
+-- has no "split view not active" state of its own to report.
 
 rule PinTaskInSplitPane {
-    when: UserAction("S", task)
+    when: SplitPaneSwapRequested(task)
     requires: split_pane.active = true
     requires: task.tmux_window != null
 
@@ -366,10 +384,11 @@ rule PinTaskInSplitPane {
         -- via tmux swap-pane. The old content is returned to a standalone window.
         --
         -- No tmux select-pane is called — the TUI pane retains focus throughout.
-        -- [g] (lowercase) is the complementary "take over the window" action.
         --
-        -- Outside split mode [S] shows a status hint ("Split view not active —
-        -- press s to open") and emits no split commands.
+        -- A task with no tmux window never reaches this rule: JumpToAgentWindow
+        -- only raises SplitPaneSwapRequested for a task that has one, and routes
+        -- the rest by status (dispatch / resume / retry) exactly as it does
+        -- outside split mode.
         --
         -- == IMPLEMENTED: companion-pane draining ==
         -- The empty-pane case (no task currently pinned) reaches this via
@@ -400,7 +419,7 @@ rule PinTaskInSplitPane {
 }
 
 rule SwapSplitPane {
-    when: UserAction("S", task)
+    when: SplitPaneSwapRequested(task)
     requires: split_pane.active = true
     requires: task.tmux_window != null
     requires: split_pane.pinned_task != task  -- no-op when already pinned
@@ -420,7 +439,8 @@ rule SwapSplitPane {
     ensures: split_pane.pane = task.tmux_window
 
     @guidance
-        -- This rule specifies the swap case for [S]; the pin-empty case
+        -- This rule specifies the swap case for Space in split mode; the
+        -- pin-empty case
         -- is covered by PinTaskInSplitPane. When the pane already holds
         -- a different task's window, the old window is swapped out via
         -- tmux swap-pane and returned to the standalone window list.

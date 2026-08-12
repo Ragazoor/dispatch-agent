@@ -348,7 +348,7 @@ fn normal_status_line(app: &App) -> (Line<'static>, Style) {
             &mut spans,
             vec![
                 Span::styled(
-                    "[S]",
+                    "[s]",
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),

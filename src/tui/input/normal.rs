@@ -473,10 +473,6 @@ impl App {
                 "s",
             ),
 
-            KeyCode::Char('S') => {
-                self.dispatch_handler_keyed(Self::handle_key_swap_split, "swap_split_pane", "S")
-            }
-
             KeyCode::Char('T') => {
                 self.dispatch_handler_keyed(Self::handle_key_detach, "detach_tmux", "T")
             }
@@ -511,26 +507,6 @@ impl App {
             KeyCode::Esc => self.handle_key_esc_normal(),
 
             _ => vec![],
-        }
-    }
-
-    /// `'S'` — swap the selected task's tmux window into the split pane.
-    /// In split mode this pins/swaps the task in-place (no focus transfer).
-    /// Outside split mode it shows a hint instead of silently doing nothing.
-    fn handle_key_swap_split(&mut self) -> Vec<Command> {
-        if let Some(task) = self.selected_task() {
-            if self.board.split.active {
-                let id = task.id;
-                self.update(Message::Split(crate::tui::messages::SplitMessage::Swap(id)))
-            } else {
-                self.update(Message::System(
-                    crate::tui::messages::SystemMessage::StatusInfo(
-                        "Split view not active — press s to open".to_string(),
-                    ),
-                ))
-            }
-        } else {
-            vec![]
         }
     }
 

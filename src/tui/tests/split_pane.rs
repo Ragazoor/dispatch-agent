@@ -72,23 +72,43 @@ fn toggle_split_exit_restores_pinned_task_window() {
 }
 
 #[test]
-fn s_in_split_mode_on_already_pinned_task_does_nothing() {
+fn capital_s_is_inert_outside_split_mode() {
+    // [S] was retired; Space now owns the swap. The key must have no arm at
+    // all — no commands, no status hint, no mode change.
+    let mut task = make_task(4, TaskStatus::Running);
+    task.tmux_window = Some("task-4".to_string());
+    let mut app = App::new(vec![task]);
+    app.selection_mut().set_column(2);
+    let mode_before = app.input.mode.clone();
+    let cmds = app.handle_key(make_key(KeyCode::Char('S')));
+    assert!(cmds.is_empty(), "S must be inert, got {cmds:?}");
+    assert!(
+        app.status.message.is_none(),
+        "S must not show a hint, got {:?}",
+        app.status.message
+    );
+    assert_eq!(app.input.mode, mode_before);
+}
+
+#[test]
+fn capital_s_is_inert_in_split_mode() {
     let mut task = make_task(4, TaskStatus::Running);
     task.tmux_window = Some("task-4".to_string());
     let mut app = App::new(vec![task]);
     app.board.split.active = true;
     app.board.split.right_pane_id = Some("%42".to_string());
-    app.board.split.pinned_task_id = Some(TaskId(4)); // same task already pinned
     app.selection_mut().set_column(2);
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('S'))));
+    let mode_before = app.input.mode.clone();
+    let cmds = app.handle_key(make_key(KeyCode::Char('S')));
     assert!(
         cmds.is_empty(),
-        "S on already-pinned task must not emit commands"
+        "S must be inert in split mode too, got {cmds:?}"
     );
+    assert_eq!(app.input.mode, mode_before);
 }
 
 #[test]
-fn s_in_split_mode_emits_swap_command() {
+fn space_in_split_mode_emits_swap_command() {
     let mut task = make_task(4, TaskStatus::Running);
     task.tmux_window = Some("task-4".to_string());
     let mut app = App::new(vec![task]);
@@ -96,7 +116,7 @@ fn s_in_split_mode_emits_swap_command() {
     app.board.split.right_pane_id = Some("%42".to_string());
     // No pinned task — different from already-pinned case
     app.selection_mut().set_column(2);
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('S'))));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
     assert_eq!(cmds.len(), 1);
     assert!(matches!(
         &cmds[0],
@@ -109,45 +129,9 @@ fn s_in_split_mode_emits_swap_command() {
 }
 
 #[test]
-fn s_outside_split_mode_shows_status_hint() {
-    let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("task-4".to_string());
-    let mut app = App::new(vec![task]);
-    // split NOT active
-    app.selection_mut().set_column(2);
-    let _cmds = app.handle_key(make_key(KeyCode::Char('S')));
-    assert!(
-        app.status
-            .message
-            .as_deref()
-            .unwrap_or("")
-            .contains("Split view not active"),
-        "S outside split mode must show a hint, got {:?}",
-        app.status.message
-    );
-}
-
-#[test]
-fn s_in_split_mode_on_task_without_window_shows_status() {
-    let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = None;
-    let mut app = App::new(vec![task]);
-    app.board.split.active = true;
-    app.board.split.right_pane_id = Some("%42".to_string());
-    app.selection_mut().set_column(2);
-    let _cmds = app.handle_key(make_key(KeyCode::Char('S')));
-    assert!(
-        app.status
-            .message
-            .as_deref()
-            .unwrap_or("")
-            .contains("No agent session"),
-        "S on windowless task must show a status message"
-    );
-}
-
-#[test]
-fn space_in_split_mode_emits_jump_command() {
+fn space_in_split_mode_never_jumps_to_a_window() {
+    // The whole point of the rebinding: with the pane open, Space brings the
+    // agent to the board rather than taking the user away to its window.
     let mut task = make_task(4, TaskStatus::Running);
     task.tmux_window = Some("task-4".to_string());
     let mut app = App::new(vec![task]);
@@ -155,10 +139,33 @@ fn space_in_split_mode_emits_jump_command() {
     app.board.split.right_pane_id = Some("%42".to_string());
     app.selection_mut().set_column(2);
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
-    assert!(cmds.iter().any(|c| matches!(
-        c,
-        Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "task-4"
-    )));
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { .. })
+        )),
+        "Space must not jump while split is active, got {cmds:?}"
+    );
+}
+
+#[test]
+fn space_in_split_mode_on_backlog_task_still_dispatches() {
+    // Split mode overrides only the jump branch. A task with no window has
+    // nothing to swap in, so the status routing is untouched.
+    let task = make_task(4, TaskStatus::Backlog);
+    let mut app = App::new(vec![task]);
+    app.board.split.active = true;
+    app.board.split.right_pane_id = Some("%42".to_string());
+    app.selection_mut().set_column(1);
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::CheckTrustAndDispatch { id, .. })
+                if *id == TaskId(4)
+        )),
+        "Space on a Backlog card must still dispatch in split mode, got {cmds:?}"
+    );
 }
 
 #[test]
@@ -191,12 +198,21 @@ fn space_on_pinned_split_task_emits_focus_split_pane() {
         "expected Split(FocusPane {{pane_id: \"%42\"}}), got {:?}",
         cmds
     );
+    // Priority 1 must win over the split-mode swap branch below it.
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Split(crate::tui::commands::SplitCommand::Swap { .. })
+        )),
+        "the pinned task must not be swapped in again, got {cmds:?}"
+    );
 }
 
 #[test]
-fn space_on_non_pinned_task_in_split_mode_still_jumps_to_window() {
+fn space_on_non_pinned_task_in_split_mode_swaps_it_in() {
     // When split is active but the selected task is NOT the pinned one,
-    // [space] should still emit JumpToTmux for the selected task's window.
+    // [space] swaps that task's window into the pane, replacing the one
+    // currently shown — it does not jump to the standalone window.
     let mut task1 = make_task(3, TaskStatus::Running);
     task1.tmux_window = Some("task-3".to_string());
     let mut task2 = make_task(4, TaskStatus::Running);
@@ -210,9 +226,18 @@ fn space_on_non_pinned_task_in_split_mode_still_jumps_to_window() {
     app.selection_mut().set_row(2, 1);
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
     assert!(
-        cmds.iter().any(|c| matches!(c, Command::Task(crate::tui::commands::TaskCommand::JumpToTmux { window }) if window == "task-4")),
-        "expected JumpToTmux for non-pinned task, got {:?}",
-        cmds
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Split(crate::tui::commands::SplitCommand::Swap {
+                task_id,
+                new_window,
+                old_window,
+                ..
+            }) if *task_id == TaskId(4)
+                && new_window == "task-4"
+                && old_window.as_deref() == Some("task-3")
+        )),
+        "expected Swap for non-pinned task, got {cmds:?}"
     );
 }
 

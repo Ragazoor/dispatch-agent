@@ -22,12 +22,12 @@ expression: rendered
                         ║  [v] select   [a] select all   [/] search titles/ids                 ║
                         ║  [f] filter repos   [A] active only   [F] flat view                  ║
                         ║  [p] open PR   [:] main session   [o] sync repo                      ║
-                        ║  [s] toggle split   [S] swap into pane   [T] detach                  ║
+                        ║  [s] toggle split (then [Space] swaps into pane)   [T] detach        ║
                         ║  [r] refresh feed   [U] auto-dispatch   [R] by repo                  ║
                         ║  [P] todos   [t] add todo from card   [N] notifications              ║
                         ║                                                                      ║
                         ║  * [Space] jumps to the agent's window if one is live,               ║
-                        ║    else dispatches or resumes; on an epic row, enters it             ║
+                        ║    or swaps into the split pane; else dispatch/resume; epic: enter   ║
                         ║                                                                      ║
                         ║  General                                                             ║
                         ║  [?] this help   [q] quit (or exit epic)                             ║

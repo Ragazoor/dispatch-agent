@@ -558,21 +558,20 @@ async fn render_help_overlay_matches_current_keymap() {
     let buf = help_buffer(40);
 
     // Retired keys must not be taught. `d` was folded into `Space` on
-    // 2026-07-25; `W` and `I` went with §1 and §3. (`C` is owned by
+    // 2026-07-25; `W` and `I` went with §1 and §3; `S` was folded into
+    // `Space` (split mode) by §5. (`C` is owned by
     // `render_help_overlay_no_longer_teaches_feed_config_key` above.)
-    for retired in ["[d]", "[W]", "[I]"] {
+    for retired in ["[d]", "[W]", "[I]", "[S]"] {
         assert!(
             !buffer_contains(&buf, retired),
             "retired key {retired} must not appear in the help overlay"
         );
     }
 
-    // Live keys the overlay must teach. `T` and `S` are here because their
-    // handlers still exist — §4/§5 have not landed. When they do, those
-    // packages delete the help line and the entry here together.
-    for live in [
-        "[F]", "[t]", "[U]", "[R]", "[r]", "[v]", "[Space]", "[T]", "[S]",
-    ] {
+    // Live keys the overlay must teach. `T` is here because its handler still
+    // exists — §4 has not landed. When it does, that package deletes the help
+    // line and the entry here together.
+    for live in ["[F]", "[t]", "[U]", "[R]", "[r]", "[v]", "[Space]", "[T]"] {
         assert!(
             buffer_contains(&buf, live),
             "help overlay should teach the live key {live}"

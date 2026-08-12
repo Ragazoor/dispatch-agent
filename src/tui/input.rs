@@ -301,13 +301,17 @@ impl App {
 
     /// `Space` — the unified "activate task" action (see
     /// docs/specs/split-pane.allium: JumpToAgentWindow). Priority order for a
-    /// task: (1) pinned in the split pane → focus the pane; (2) a live tmux
-    /// window exists → jump to it (this wins over the Stale/Crashed status
-    /// check — a stale agent is usually just idle); (3) no window → route by
-    /// status: Backlog dispatches, Running/Review/Done resumes (or opens the
-    /// retry dialog for a windowless Stale/Crashed task), Archived shows a hint.
+    /// task: (1) pinned in the split pane → focus the pane; (2) split mode
+    /// active and a live tmux window exists → swap that window into the pane
+    /// in place, without transferring focus; (3) a live tmux window exists →
+    /// jump to it (2 and 3 both win over the Stale/Crashed status check — a
+    /// stale agent is usually just idle); (4) no window → route by status:
+    /// Backlog dispatches, Running/Review/Done resumes (or opens the retry
+    /// dialog for a windowless Stale/Crashed task), Archived shows a hint.
+    /// Split mode overrides only the jump, so a windowless card still
+    /// dispatches or resumes with the pane open.
     /// On an epic row it enters the epic view. Replaces the former split
-    /// `d` (dispatch) / `Space` (jump) keys.
+    /// `d` (dispatch) / `Space` (jump) keys, and the retired `S` (swap) key.
     pub(in crate::tui) fn handle_key_activate(&mut self) -> Vec<Command> {
         match self.selected_column_item() {
             Some(ColumnItem::Task(task)) => {
@@ -327,7 +331,21 @@ impl App {
                     }
                 }
 
-                // Priority 2: a standalone window exists — jump to it.
+                // Priority 2: split mode is open and this task has a window —
+                // swap it into the pane in place rather than taking the user
+                // away to it. Replaces the retired [S] key; see
+                // SwapSplitPane in docs/specs/split-pane.allium.
+                if self.board.split.active && task.tmux_window.is_some() {
+                    return self.dispatch_handler_keyed(
+                        |app| {
+                            app.update(Message::Split(crate::tui::messages::SplitMessage::Swap(id)))
+                        },
+                        "swap_split_pane",
+                        " ",
+                    );
+                }
+
+                // Priority 3: a standalone window exists — jump to it.
                 if let Some(window) = &task.tmux_window {
                     return vec![
                         Command::Task(crate::tui::commands::TaskCommand::JumpToTmux {
@@ -337,7 +355,7 @@ impl App {
                     ];
                 }
 
-                // Priority 3: no window — route by status.
+                // Priority 4: no window — route by status.
                 let status = task.status;
                 let has_worktree = task.worktree.is_some();
                 // Stale/Crashed, or Running with nothing provisioned behind it.

@@ -24,11 +24,10 @@
 | `e` | Edit task in editor (opens in a separate tmux window) |
 | `D` | Quick dispatch — pick repo and dispatch immediately |
 | `Shift+L` / `Shift+H` | Move task forward / backward |
-| `Space` | Activate the task: jump to the agent's tmux window if one exists, otherwise dispatch (Backlog) or resume (Running/Review/Done with a worktree). On a Running task with no worktree at all (the `⚠ no worktree` card) it opens the kill-and-retry dialog instead. Replaces the former `d` key |
+| `Space` | Activate the task: jump to the agent's tmux window if one exists, otherwise dispatch (Backlog) or resume (Running/Review/Done with a worktree). On a Running task with no worktree at all (the `⚠ no worktree` card) it opens the kill-and-retry dialog instead. **While split view is active** the jump is replaced by an in-place swap: the selected agent's window is moved into the split pane and the board keeps focus (on the already-pinned task it focuses the pane instead). Windowless cards still dispatch/resume as normal. Replaces the former `d` and `S` keys |
 | `Prefix+Space` | (tmux global) Jump back from an agent's window to the dispatch TUI — press your tmux prefix, then Space |
 | `Prefix+e` | (tmux global) Show/hide the agent-tree companion pane in whichever agent window you press it in — press your tmux prefix, then `e`. A no-op in windows that aren't agent windows. Like `Prefix+Space`, it is bound while the board TUI runs and unbound when it exits, so the pane can't be toggled with the board closed |
-| `s` | Toggle split view — side-by-side TUI + agent pane |
-| `S` | Swap the selected task into the split pane (in-place) |
+| `s` | Toggle split view — side-by-side TUI + agent pane. With the pane open, `Space` swaps the selected task into it |
 | `T` | Detach the tmux panel of every selected task that has a live tmux window (supports batch), after a confirmation |
 | `m` | Move the selected task to another epic (or detach it) via the tree picker; on an epic card, reparent that epic |
 | `x` | Move task to Done (with confirmation); on a task already in Done, archives it instead. On an epic, always archives. In a multi-selection: tasks only, all Done → archive; otherwise the not-yet-Done tasks move to Done |
