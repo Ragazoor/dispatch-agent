@@ -2165,7 +2165,6 @@ fn feed_refreshed_sets_status_and_returns_refresh_from_db() {
         crate::tui::messages::FeedMessage::Refreshed {
             epic_title: "My Feed Epic".to_string(),
             count: 5,
-            wrote_stderr: false,
         },
     ));
 
@@ -2195,7 +2194,6 @@ fn feed_refreshed_zero_items_still_succeeds() {
         crate::tui::messages::FeedMessage::Refreshed {
             epic_title: "Empty Feed".to_string(),
             count: 0,
-            wrote_stderr: false,
         },
     ));
 
@@ -2206,49 +2204,6 @@ fn feed_refreshed_zero_items_still_succeeds() {
         )),
         "zero-item refresh should still return RefreshFromDb"
     );
-}
-
-#[test]
-fn feed_refreshed_zero_items_with_stderr_hints_at_the_log() {
-    let mut app = App::new(vec![]);
-
-    let cmds = app.update(Message::Feed(
-        crate::tui::messages::FeedMessage::Refreshed {
-            epic_title: "PR Reviews".to_string(),
-            count: 0,
-            wrote_stderr: true,
-        },
-    ));
-
-    let status = app.status_message().unwrap_or("");
-    assert!(
-        status.contains("command wrote to stderr"),
-        "a 0-item sync whose command wrote to stderr must point at the log, got: {status}"
-    );
-    assert!(
-        status.contains("app.log"),
-        "the hint must name app.log so the user knows where to look, got: {status}"
-    );
-    assert!(
-        cmds.iter().any(|c| matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::RefreshFromDb)
-        )),
-        "the sync still succeeded, so it must still refresh"
-    );
-}
-
-#[test]
-fn feed_refreshed_zero_items_without_stderr_has_no_hint() {
-    let mut app = App::new(vec![]);
-
-    app.update(Message::Feed(
-        crate::tui::messages::FeedMessage::Refreshed {
-            epic_title: "Empty Feed".to_string(),
-            count: 0,
-            wrote_stderr: false,
-        },
-    ));
 
     let status = app.status_message().unwrap_or("");
     assert!(
@@ -2257,24 +2212,27 @@ fn feed_refreshed_zero_items_without_stderr_has_no_hint() {
     );
 }
 
-// Gated on count == 0 deliberately: a script that writes harmless progress
-// chatter to stderr must not nag on every successful refresh.
+// feeds.allium: DegradedEmptyEmission — a zero-item emission that wrote to
+// stderr now fails before reaching `Refreshed` at all (see
+// exec_trigger_epic_feed_fails_on_degraded_empty_emission in
+// src/runtime/tests.rs), so the status-bar hint this variant used to carry
+// (`wrote_stderr`) is retired along with it. `Refreshed` no longer has a
+// stderr-flavoured branch to test.
 #[test]
-fn feed_refreshed_with_items_and_stderr_has_no_hint() {
+fn feed_refreshed_with_items_has_no_stderr_wording() {
     let mut app = App::new(vec![]);
 
     app.update(Message::Feed(
         crate::tui::messages::FeedMessage::Refreshed {
             epic_title: "Chatty Feed".to_string(),
             count: 7,
-            wrote_stderr: true,
         },
     ));
 
     let status = app.status_message().unwrap_or("");
     assert!(
         !status.contains("stderr"),
-        "items synced, so stderr is not worth interrupting for, got: {status}"
+        "a successful refresh must never mention stderr, got: {status}"
     );
 }
 

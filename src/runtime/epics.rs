@@ -269,8 +269,6 @@ impl TuiRuntime {
                     Ok(o) => o,
                     Err(e) => return fail(e),
                 };
-            let wrote_stderr = !output.stderr.is_empty();
-
             // The SAME parse the auto-poll FeedRunner and the verify-feed CLI
             // use, so the three paths cannot drift on what a feed command is
             // allowed to emit (feeds.allium: FeedItemParse). Only the
@@ -279,6 +277,14 @@ impl TuiRuntime {
                 Ok(i) => i,
                 Err(e) => return fail(format!("{e:#}")),
             };
+
+            // feeds.allium: DegradedEmptyEmission — a zero-item emission that wrote to
+            // stderr is a failed run, not an empty one. Skip the sync entirely so the
+            // epic's existing tasks are left alone, and surface the stderr.
+            if let Some(reason) = crate::feed::degraded_empty_emission(items.len(), &output.stderr)
+            {
+                return fail(reason);
+            }
 
             let count = items.len(); // items emitted by the feed command, not tasks inserted
             let known_paths = db.list_repo_paths().await.unwrap_or_default();
@@ -312,11 +318,7 @@ impl TuiRuntime {
                     )
                     .await;
                     let _ = tx.send(Message::Feed(
-                        crate::tui::messages::FeedMessage::Refreshed {
-                            epic_title,
-                            count,
-                            wrote_stderr,
-                        },
+                        crate::tui::messages::FeedMessage::Refreshed { epic_title, count },
                     ));
                 }
                 Err(e) => fail(e.to_string()),

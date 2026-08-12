@@ -12,14 +12,11 @@ use crate::tui::App;
 pub enum FeedMessage {
     /// User-triggered refresh of a feed epic.
     TriggerEpic(EpicId),
-    /// Feed refresh succeeded. `wrote_stderr` is true when the feed command
-    /// wrote to stderr while still exiting 0 — see feeds.allium
-    /// FeedCommandStderrOnSuccess.
-    Refreshed {
-        epic_title: String,
-        count: usize,
-        wrote_stderr: bool,
-    },
+    /// Feed refresh succeeded with at least one item, or a genuinely empty,
+    /// clean (no-stderr) zero-item run — see feeds.allium
+    /// DegradedEmptyEmission for the zero-item-with-stderr case, which fails
+    /// instead of reaching this variant.
+    Refreshed { epic_title: String, count: usize },
     /// Feed refresh failed.
     Failed { epic_title: String, error: String },
 }
@@ -29,11 +26,9 @@ impl FeedMessage {
     pub(in crate::tui) fn route(self, app: &mut App) -> Vec<Command> {
         match self {
             FeedMessage::TriggerEpic(id) => app.handle_trigger_epic_feed(id),
-            FeedMessage::Refreshed {
-                epic_title,
-                count,
-                wrote_stderr,
-            } => app.handle_feed_refreshed(epic_title, count, wrote_stderr),
+            FeedMessage::Refreshed { epic_title, count } => {
+                app.handle_feed_refreshed(epic_title, count)
+            }
             FeedMessage::Failed { epic_title, error } => app.handle_feed_failed(epic_title, error),
         }
     }

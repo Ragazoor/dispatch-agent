@@ -3221,19 +3221,21 @@ async fn exec_trigger_epic_feed_zero_items() {
     );
 }
 
-// The exact shape of the PR Reviews failure: every internal query failed, the
-// script reported why on stderr, and still exited 0 with an empty array.
+// feeds.allium: DegradedEmptyEmission. A zero-item emission that wrote to
+// stderr is a failure, not a refresh — the sync is skipped entirely so the
+// epic's existing tasks survive. Inverted from the #3900 behaviour, which
+// reported it as a successful zero-task refresh AFTER the delete had run.
 #[tokio::test]
-async fn exec_trigger_epic_feed_reports_stderr_written_on_zero_exit() {
+async fn exec_trigger_epic_feed_fails_on_degraded_empty_emission() {
     let db = test_db().await;
-    let epic = db.create_epic("PR Reviews", "", None).await.unwrap();
+    let epic = db.create_epic("Degraded Feed", "", None).await.unwrap();
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
     rt.exec_trigger_epic_feed(
         epic.id,
-        "PR Reviews".to_string(),
+        "Degraded Feed".to_string(),
         "echo 'Invalid search query' >&2; echo '[]'".to_string(),
         false,
     );
@@ -3242,49 +3244,15 @@ async fn exec_trigger_epic_feed_reports_stderr_written_on_zero_exit() {
         .await
         .expect("timed out")
         .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Refreshed {
-                count: 0,
-                wrote_stderr: true,
-                ..
-            })
-        ),
-        "a zero-exit command that wrote to stderr must report it, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_trigger_epic_feed_quiet_command_reports_no_stderr() {
-    let db = test_db().await;
-    let epic = db.create_epic("Quiet Feed", "", None).await.unwrap();
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Quiet Feed".to_string(),
-        "echo '[]'".to_string(),
-        false,
-    );
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Refreshed {
-                count: 0,
-                wrote_stderr: false,
-                ..
-            })
-        ),
-        "a quiet command must not report stderr, got: {msg:?}"
-    );
+    match msg {
+        Message::Feed(crate::tui::messages::FeedMessage::Failed { error, .. }) => {
+            assert!(
+                error.contains("Invalid search query"),
+                "failure must carry the stderr, got: {error}"
+            );
+        }
+        other => panic!("expected FeedMessage::Failed, got: {other:?}"),
+    }
 }
 
 #[tokio::test]
