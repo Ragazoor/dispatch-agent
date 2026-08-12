@@ -1860,6 +1860,11 @@ async fn upsert_feed_tasks_removes_stale_items() {
 /// carrying a worktree or tmux window are returned — a plain card has nothing to
 /// clean up. Crucially, the DELETE predicate is unchanged: every stale feed task
 /// is still removed from the DB, reported or not.
+///
+/// Two of the deleted rows carry state on purpose: reporting must be *complete*,
+/// not merely non-empty. Under-reporting is invisible in the DB (the row is gone
+/// either way) and surfaces only as a silently leaked worktree, so a single
+/// state-carrying row would let a truncated `RETURNING` drain pass.
 #[tokio::test]
 async fn delete_stale_subtree_feed_tasks_returns_removed_rows_with_state() {
     let db = in_memory_db().await;
@@ -1873,49 +1878,70 @@ async fn delete_stale_subtree_feed_tasks_returns_removed_rows_with_state() {
         sub.id,
         &[
             make_feed_item("stale-1", "Stale"),
-            make_feed_item("plain-2", "Plain"),
-            make_feed_item("keep-3", "Kept"),
+            make_feed_item("stale-2", "Also stale"),
+            make_feed_item("plain-3", "Plain"),
+            make_feed_item("keep-4", "Kept"),
         ],
-        &vec!["/repo/a".to_string(); 3],
-        &main_branches(3),
+        &vec!["/repo/a".to_string(); 4],
+        &main_branches(4),
     )
     .await
     .unwrap();
 
-    // Give only `stale-1` an in-flight worktree and tmux window.
     let tasks = db.list_tasks_for_epic(sub.id).await.unwrap();
-    let stale = tasks
-        .iter()
-        .find(|t| t.external_id.as_deref() == Some("stale-1"))
-        .unwrap();
+    let by_ext = |ext: &str| {
+        tasks
+            .iter()
+            .find(|t| t.external_id.as_deref() == Some(ext))
+            .unwrap()
+            .id
+    };
+
+    // `stale-1` carries both kinds of state; `stale-2` only a worktree, so the
+    // two reported rows are not interchangeable. `plain-3` carries neither.
+    let stale_1 = by_ext("stale-1");
+    let stale_2 = by_ext("stale-2");
     db.patch_task(
-        stale.id,
+        stale_1,
         &TaskPatch::new()
             .worktree(Some("/repo/a/.worktrees/stale-1"))
             .tmux_window(Some("dispatch:stale-1")),
     )
     .await
     .unwrap();
+    db.patch_task(
+        stale_2,
+        &TaskPatch::new().worktree(Some("/repo/a/.worktrees/stale-2")),
+    )
+    .await
+    .unwrap();
 
     let removed = db
-        .delete_stale_subtree_feed_tasks(parent.id, &["keep-3".to_string()])
+        .delete_stale_subtree_feed_tasks(parent.id, &["keep-4".to_string()])
         .await
         .unwrap();
 
-    // Both stale-1 and plain-2 are really gone from the DB...
+    // stale-1, stale-2 and plain-3 are all really gone from the DB...
     let left = db.list_tasks_for_epic(sub.id).await.unwrap();
     assert_eq!(left.len(), 1, "only the kept item survives, got {left:?}");
-    assert_eq!(left[0].external_id.as_deref(), Some("keep-3"));
+    assert_eq!(left[0].external_id.as_deref(), Some("keep-4"));
 
-    // ...but only stale-1 needs teardown.
-    assert_eq!(removed.len(), 1, "only rows with state are returned");
-    assert_eq!(removed[0].id, stale.id);
-    assert_eq!(removed[0].repo_path, "/repo/a");
+    // ...but only the two rows with state need teardown, and *both* of them do:
+    // dropping either would leak a worktree with nothing left to name it.
     assert_eq!(
-        removed[0].worktree.as_deref(),
-        Some("/repo/a/.worktrees/stale-1")
+        removed.len(),
+        2,
+        "every removed row with state must be reported, got {removed:?}"
     );
-    assert_eq!(removed[0].tmux_window.as_deref(), Some("dispatch:stale-1"));
+    let reported = |id| removed.iter().find(|r| r.id == id).unwrap();
+    let one = reported(stale_1);
+    assert_eq!(one.repo_path, "/repo/a");
+    assert_eq!(one.worktree.as_deref(), Some("/repo/a/.worktrees/stale-1"));
+    assert_eq!(one.tmux_window.as_deref(), Some("dispatch:stale-1"));
+    let two = reported(stale_2);
+    assert_eq!(two.repo_path, "/repo/a");
+    assert_eq!(two.worktree.as_deref(), Some("/repo/a/.worktrees/stale-2"));
+    assert_eq!(two.tmux_window, None);
 }
 
 /// The same contract for the flat/grouped path's stale-delete, which runs inside

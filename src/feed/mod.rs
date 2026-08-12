@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
-use crate::db::TaskStore;
+use crate::db::{RemovedFeedTask, TaskStore};
 use crate::dispatch::resolve_feed_item_repo_paths;
 use crate::mcp::McpEvent;
 use crate::models::EpicId;
@@ -63,6 +63,109 @@ pub(crate) async fn recalculate_epic_status_after_feed(
             epic_id = epic_id.0,
             "{context}: recalculate_epic_status failed: {err:#}"
         );
+    }
+}
+
+/// Tear down the worktree and tmux window of every feed task a sync removed.
+///
+/// A feed-driven removal is a deletion like any other and owes the same
+/// teardown `ArchiveTask` and `DeleteTask` perform — `TaskTeardown` at the head
+/// of the archive section of `docs/specs/tasks.allium`: kill the tmux window,
+/// remove the git worktree unless another active task shares it, and delete the
+/// branch best-effort. `crate::dispatch::cleanup_task` performs all three.
+///
+/// Removals are grouped by `repo_path` and run sequentially within a repo.
+/// `cleanup_task` shells `git -C <repo> worktree remove --force` and
+/// `git branch -D` against the *shared* checkout, and a reviews epic's tasks
+/// overwhelmingly share one repo — running those concurrently would contend on
+/// that repo's index lock and fail spuriously. Different repos have no shared
+/// lock, so they still proceed in parallel.
+///
+/// The whole of `TaskTeardown` is best-effort: failures are logged at warn and
+/// never surfaced, because feed reconciliation is background work, and one
+/// task's failure must not abort the rest of its repo's queue.
+// Not yet called from the ingest pipeline: the four `RemovedFeedTask` producers
+// in `src/feed/ingest.rs` are threaded into this helper by the next task of the
+// empty-feed-emission-guard plan (task #3989, task 7 of the plan), which removes
+// this allow. Every branch below is covered by the `cleanup_*` tests in this
+// file's test module in the meantime.
+#[allow(dead_code)]
+pub(crate) async fn cleanup_removed_feed_tasks(
+    db: &dyn TaskStore,
+    runner: Arc<dyn ProcessRunner>,
+    removed: Vec<RemovedFeedTask>,
+) {
+    if removed.is_empty() {
+        return;
+    }
+
+    // The shared-worktree question needs the DB, so resolve it here rather than
+    // inside the blocking fan-out. The row itself is already deleted, so
+    // `exclude_id` is only defence in depth.
+    let mut by_repo: HashMap<String, Vec<(RemovedFeedTask, bool)>> = HashMap::new();
+    for task in removed {
+        let shared = match &task.worktree {
+            Some(worktree) => match db.has_other_tasks_with_worktree(worktree, task.id).await {
+                Ok(shared) => shared,
+                Err(err) => {
+                    // Fail closed: an unanswerable question must not delete a
+                    // worktree a live agent may still be working in.
+                    tracing::warn!(
+                        task_id = task.id.0,
+                        "feed cleanup: shared-worktree check failed, keeping worktree: {err:#}"
+                    );
+                    true
+                }
+            },
+            None => false,
+        };
+        by_repo
+            .entry(task.repo_path.clone())
+            .or_default()
+            .push((task, shared));
+    }
+
+    let mut handles = Vec::new();
+    for (_repo, tasks) in by_repo {
+        let runner = runner.clone();
+        handles.push(tokio::task::spawn_blocking(move || {
+            for (task, shared) in tasks {
+                match (&task.worktree, shared) {
+                    // Nothing but a window to reclaim: either the task never had
+                    // a worktree, or the one it had belongs to a live sibling and
+                    // must be left on disk.
+                    (None, _) | (Some(_), true) => {
+                        let Some(window) = &task.tmux_window else {
+                            continue;
+                        };
+                        if let Err(err) = crate::tmux::kill_window_if_present(window, &*runner) {
+                            tracing::warn!(
+                                task_id = task.id.0,
+                                "feed cleanup: kill_window_if_present failed: {err:#}"
+                            );
+                        }
+                    }
+                    (Some(worktree), false) => {
+                        if let Err(err) = crate::dispatch::cleanup_task(
+                            &task.repo_path,
+                            worktree,
+                            task.tmux_window.as_deref(),
+                            &*runner,
+                        ) {
+                            tracing::warn!(
+                                task_id = task.id.0,
+                                "feed cleanup: cleanup_task failed: {err:#}"
+                            );
+                        }
+                    }
+                }
+            }
+        }));
+    }
+    for handle in handles {
+        // A panicked teardown thread is logged by the runtime; there is nothing
+        // for a background reconciliation pass to do about it.
+        let _ = handle.await;
     }
 }
 
@@ -1518,6 +1621,358 @@ mod tests {
         assert_eq!(
             tasks[0].repo_path, "",
             "non-github url should store empty sentinel"
+        );
+    }
+
+    // --- cleanup_removed_feed_tasks ---
+
+    use std::collections::HashSet;
+    use std::sync::{Condvar, Mutex};
+
+    use crate::db::{CreateTaskRequest, RemovedFeedTask, TaskPatch, TaskRead};
+    use crate::models::TaskId;
+    use crate::process::MockProcessRunner;
+
+    fn removed_task(
+        id: i64,
+        repo: &str,
+        worktree: Option<&str>,
+        window: Option<&str>,
+    ) -> RemovedFeedTask {
+        RemovedFeedTask {
+            id: TaskId(id),
+            repo_path: repo.to_string(),
+            worktree: worktree.map(str::to_string),
+            tmux_window: window.map(str::to_string),
+        }
+    }
+
+    /// Flatten a recorded call to `"<program> <arg> <arg> …"` so a test can ask
+    /// substring questions of it without destructuring the tuple every time.
+    fn flatten(calls: &[(String, Vec<String>)]) -> Vec<String> {
+        calls
+            .iter()
+            .map(|(program, args)| format!("{program} {}", args.join(" ")))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_worktree_and_kills_window() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let runner = Arc::new(MockProcessRunner::new(vec![
+            // has_window: list-windows names the window, so the kill proceeds
+            MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
+            MockProcessRunner::ok(), // tmux kill-window
+            MockProcessRunner::ok(), // git worktree remove
+            MockProcessRunner::ok(), // git branch -D (best effort)
+        ]));
+
+        cleanup_removed_feed_tasks(
+            &*db,
+            runner.clone(),
+            vec![removed_task(
+                1,
+                "/repo/a",
+                Some("/repo/a/.worktrees/pr-1"),
+                Some("dispatch:pr-1"),
+            )],
+        )
+        .await;
+
+        let calls = flatten(&runner.recorded_calls());
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("worktree remove") && c.contains("/repo/a/.worktrees/pr-1")),
+            "must remove the worktree, got: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.contains("kill-window")),
+            "must kill the tmux window, got: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.contains("branch -D")),
+            "must best-effort delete the branch, got: {calls:?}"
+        );
+    }
+
+    // A worktree shared with a live task must survive — only the window goes.
+    #[tokio::test]
+    async fn cleanup_skips_worktree_removal_when_shared() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let other = db
+            .create_task(CreateTaskRequest {
+                title: "Live sharer",
+                description: "",
+                repo_path: "/repo/a",
+                plan: None,
+                status: TaskStatus::Running,
+                base_branch: "main",
+                epic_id: None,
+                sort_order: None,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+            })
+            .await
+            .unwrap();
+        db.patch_task(
+            other,
+            &TaskPatch::new().worktree(Some("/repo/a/.worktrees/shared")),
+        )
+        .await
+        .unwrap();
+        assert!(
+            db.has_other_tasks_with_worktree("/repo/a/.worktrees/shared", TaskId(999))
+                .await
+                .unwrap(),
+            "precondition: the worktree really is shared"
+        );
+
+        let runner = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
+            MockProcessRunner::ok(), // tmux kill-window
+        ]));
+        cleanup_removed_feed_tasks(
+            &*db,
+            runner.clone(),
+            vec![removed_task(
+                999,
+                "/repo/a",
+                Some("/repo/a/.worktrees/shared"),
+                Some("dispatch:pr-1"),
+            )],
+        )
+        .await;
+
+        let calls = flatten(&runner.recorded_calls());
+        assert!(
+            !calls.iter().any(|c| c.contains("worktree remove")),
+            "a shared worktree must not be removed, got: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.contains("branch -D")),
+            "nor may its branch be deleted, got: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.contains("kill-window")),
+            "the window still goes, got: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_kills_window_only_when_there_is_no_worktree() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let runner = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
+            MockProcessRunner::ok(), // tmux kill-window
+        ]));
+
+        cleanup_removed_feed_tasks(
+            &*db,
+            runner.clone(),
+            vec![removed_task(7, "/repo/a", None, Some("dispatch:pr-1"))],
+        )
+        .await;
+
+        let calls = flatten(&runner.recorded_calls());
+        assert!(
+            calls.iter().any(|c| c.contains("kill-window")),
+            "the window must be killed, got: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.starts_with("git ")),
+            "with no worktree there is nothing for git to do, got: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_of_a_stateless_row_runs_no_commands() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        // `unused()` panics on the first shell-out, so any command at all fails.
+        let runner = MockProcessRunner::unused();
+
+        cleanup_removed_feed_tasks(&*db, runner, vec![removed_task(8, "/repo/a", None, None)])
+            .await;
+    }
+
+    /// One task's failure must not abort the rest of its repo's queue.
+    #[tokio::test]
+    async fn cleanup_continues_after_a_failure() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let runner = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("fatal: could not lock index"), // pr-1 remove
+            MockProcessRunner::ok(),                                // pr-2 remove
+            MockProcessRunner::ok(),                                // pr-2 branch -D
+        ]));
+
+        cleanup_removed_feed_tasks(
+            &*db,
+            runner.clone(),
+            vec![
+                removed_task(1, "/repo/a", Some("/repo/a/.worktrees/pr-1"), None),
+                removed_task(2, "/repo/a", Some("/repo/a/.worktrees/pr-2"), None),
+            ],
+        )
+        .await;
+
+        let calls = flatten(&runner.recorded_calls());
+        assert!(
+            calls.iter().any(|c| c.contains("/repo/a/.worktrees/pr-2")),
+            "pr-2 must still be torn down after pr-1 failed, got: {calls:?}"
+        );
+    }
+
+    /// How long [`OverlapRunner`] holds the first call of each repo open, giving
+    /// a concurrently-issued sibling call the chance to be seen. Generous: the
+    /// correct implementation cannot end the wait early, so this is the test's
+    /// floor, while a wrong implementation ends it in microseconds.
+    const GATE_WINDOW: Duration = Duration::from_millis(500);
+
+    /// A `ProcessRunner` decorator that observes call *overlap* rather than call
+    /// order — order alone cannot distinguish "serialised" from "concurrent but
+    /// happened to finish in order".
+    ///
+    /// For every `git -C <repo>` call it records whether another call for the
+    /// same repo — or for a different repo — was in flight at that moment. To
+    /// make an overlap observable at all it holds the FIRST call of each repo
+    /// open for [`GATE_WINDOW`], releasing early the moment a same-repo overlap
+    /// is seen. This is a bounded wait on a *signal*, not a wall-clock sleep:
+    /// what the test asserts on is whether the signal arrived.
+    ///
+    /// The two flags it collects are the two halves of the design requirement,
+    /// and neither can be produced by scheduling luck:
+    ///
+    /// * a per-repo-sequential implementation can NEVER show a same-repo
+    ///   overlap — the held call occupies the one thread that would issue the
+    ///   sibling call, so no amount of scheduling produces one;
+    /// * with both repos held open concurrently for the same window, an
+    ///   all-serialised implementation can NEVER show a cross-repo overlap —
+    ///   the second repo cannot reach the runner while the first is held.
+    struct OverlapRunner {
+        inner: MockProcessRunner,
+        state: Mutex<OverlapState>,
+        wake: Condvar,
+    }
+
+    #[derive(Default)]
+    struct OverlapState {
+        in_flight: HashMap<String, usize>,
+        gated: HashSet<String>,
+        same_repo_overlap: bool,
+        cross_repo_overlap: bool,
+    }
+
+    impl OverlapRunner {
+        fn new(responses: Vec<anyhow::Result<std::process::Output>>) -> Self {
+            Self {
+                inner: MockProcessRunner::new(responses),
+                state: Mutex::new(OverlapState::default()),
+                wake: Condvar::new(),
+            }
+        }
+
+        /// The repo a `git -C <repo> …` call targets. `None` for anything else.
+        fn repo_of(program: &str, args: &[&str]) -> Option<String> {
+            if program != "git" {
+                return None;
+            }
+            let i = args.iter().position(|a| *a == "-C")?;
+            args.get(i + 1).map(|r| (*r).to_string())
+        }
+    }
+
+    impl ProcessRunner for OverlapRunner {
+        fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<std::process::Output> {
+            let Some(repo) = Self::repo_of(program, args) else {
+                return self.inner.run(program, args);
+            };
+
+            {
+                let mut state = self.state.lock().unwrap();
+                let others: usize = state
+                    .in_flight
+                    .iter()
+                    .filter(|(other, _)| *other != &repo)
+                    .map(|(_, n)| *n)
+                    .sum();
+                if state.in_flight.get(&repo).copied().unwrap_or(0) > 0 {
+                    state.same_repo_overlap = true;
+                }
+                if others > 0 {
+                    state.cross_repo_overlap = true;
+                }
+                *state.in_flight.entry(repo.clone()).or_default() += 1;
+                let gate = state.gated.insert(repo.clone());
+                self.wake.notify_all();
+                if gate {
+                    let _unused = self
+                        .wake
+                        .wait_timeout_while(state, GATE_WINDOW, |state| !state.same_repo_overlap)
+                        .unwrap();
+                }
+            }
+
+            let out = self.inner.run(program, args);
+            *self
+                .state
+                .lock()
+                .unwrap()
+                .in_flight
+                .entry(repo)
+                .or_default() -= 1;
+            out
+        }
+    }
+
+    // Two removals in the same repo must not run git concurrently — git locks
+    // the repo's worktree metadata and index. Removals in *different* repos
+    // still may.
+    #[tokio::test]
+    async fn cleanup_serialises_same_repo_removals() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        // Every response is an identical success: with two repos in flight the
+        // pop order is not deterministic, so nothing may depend on it.
+        let runner = Arc::new(OverlapRunner::new(
+            (0..6).map(|_| MockProcessRunner::ok()).collect(),
+        ));
+
+        cleanup_removed_feed_tasks(
+            &*db,
+            runner.clone(),
+            vec![
+                removed_task(1, "/repo/a", Some("/repo/a/.worktrees/pr-1"), None),
+                removed_task(2, "/repo/a", Some("/repo/a/.worktrees/pr-2"), None),
+                removed_task(3, "/repo/b", Some("/repo/b/.worktrees/pr-3"), None),
+            ],
+        )
+        .await;
+
+        let calls = flatten(&runner.inner.recorded_calls());
+        for wanted in ["pr-1", "pr-2", "pr-3"] {
+            assert!(
+                calls.iter().any(|c| c.contains(wanted)),
+                "{wanted} must have been torn down, got: {calls:?}"
+            );
+        }
+
+        let state = runner.state.lock().unwrap();
+        assert!(
+            !state.same_repo_overlap,
+            "two removals in one repo must never have git calls in flight together"
+        );
+        assert!(
+            state.cross_repo_overlap,
+            "removals in different repos must proceed in parallel"
+        );
+
+        // Belt and braces on ordering: within /repo/a, pr-1 is fully handled
+        // before pr-2 starts.
+        let pr1 = calls.iter().rposition(|c| c.contains("pr-1")).unwrap();
+        let pr2 = calls.iter().position(|c| c.contains("pr-2")).unwrap();
+        assert!(
+            pr1 < pr2,
+            "pr-1's git calls must all precede pr-2's, got: {calls:?}"
         );
     }
 }
