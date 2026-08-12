@@ -1029,6 +1029,41 @@ rule FeedCommandFailure {
         -- as an epic-level health badge, but that is out of scope here.
 }
 
+rule FeedCommandStderrOnSuccess {
+    when: FeedCommandCompleted(epic, stderr)
+
+    -- A feed command that exits 0 while writing to stderr is NOT a
+    -- failure: its stdout parsed, and the emission is synced normally.
+    -- But it is the signature of a script that swallowed an internal
+    -- error and emitted a degraded (often empty) array anyway, which
+    -- FeedCommandFailure never sees. The stderr text is therefore logged
+    -- at warn level so the evidence survives the run.
+    --
+    -- This is diagnostic only. The sync proceeds exactly as it would for
+    -- a command that wrote nothing to stderr — in particular an empty
+    -- emission still reconciles, and still removes tasks absent from it.
+    --
+    -- The logged text is trimmed and truncated to 2000 characters: a
+    -- verbose script must not be able to write unbounded output into
+    -- app.log on every poll.
+
+    requires: exit_status = 0 and stderr != ""
+
+    ensures:
+        log_warn(epic.id, epic.title, truncate(stderr, 2000))
+        -- and then the emission syncs as normal (FeedSync)
+
+    @guidance
+        -- Implementation: src/feed/exec.rs::exec_feed_command logs the
+        -- warning and returns the trimmed, truncated text on its
+        -- FeedOutput so callers can surface it too. It is the SINGLE exec
+        -- for both feed paths — src/feed/mod.rs::FeedJob (auto-poll) and
+        -- src/runtime/epics.rs::exec_trigger_epic_feed (manual "r") both
+        -- call it, so neither can regress to a private spawn that drops
+        -- stderr. Only the manual path surfaces it in the TUI, via
+        -- ManualFeedTrigger's zero-item hint.
+}
+
 -- FeedSync (conceptual): single dispatch point for feed upsert. Routing
 -- precedence by core/Epic.feed_role:
 --   1. feed_role = reviews_parent -> RoleRoutedFeedSync (subtree reconcile).
@@ -1082,6 +1117,11 @@ rule ManualFeedTrigger {
     -- silent):
     --   - On start:   "Fetching feed for '<title>'…"
     --   - On success: "Feed for '<title>': N task(s) synced"
+    --     When N = 0 AND the command wrote to stderr while exiting 0,
+    --     this gains the suffix " — command wrote to stderr (see
+    --     app.log)" (see FeedCommandStderrOnSuccess). The suffix is
+    --     gated on N = 0 so a script that writes harmless progress
+    --     chatter to stderr does not nag on every refresh.
     --   - On failure: "Feed for '<title>' failed: <error>"
 
     requires: epic.feed_command != null
@@ -1091,6 +1131,8 @@ rule ManualFeedTrigger {
         -- Spawns epic.feed_command; on success:
         --   FeedSync(epic, items)
         --   status_bar = "Feed for '{epic.title}': {count} task(s) synced"
+        --   plus " — command wrote to stderr (see app.log)" when
+        --   count = 0 AND the command wrote to stderr
         -- on failure:
         --   status_bar = "Feed for '{epic.title}' failed: {error}"
 
