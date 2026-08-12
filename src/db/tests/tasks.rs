@@ -1855,6 +1855,165 @@ async fn upsert_feed_tasks_removes_stale_items() {
     assert_eq!(tasks[0].external_id.as_deref(), Some("ext-1"));
 }
 
+/// The subtree delete must hand back the rows it removed so the caller can tear
+/// down their worktrees (`feeds.allium`: `RoleRoutedFeedSync`). Only rows
+/// carrying a worktree or tmux window are returned — a plain card has nothing to
+/// clean up. Crucially, the DELETE predicate is unchanged: every stale feed task
+/// is still removed from the DB, reported or not.
+#[tokio::test]
+async fn delete_stale_subtree_feed_tasks_returns_removed_rows_with_state() {
+    let db = in_memory_db().await;
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    let sub = db
+        .create_epic("My Reviews", "", Some(parent.id))
+        .await
+        .unwrap();
+
+    db.upsert_feed_tasks(
+        sub.id,
+        &[
+            make_feed_item("stale-1", "Stale"),
+            make_feed_item("plain-2", "Plain"),
+            make_feed_item("keep-3", "Kept"),
+        ],
+        &vec!["/repo/a".to_string(); 3],
+        &main_branches(3),
+    )
+    .await
+    .unwrap();
+
+    // Give only `stale-1` an in-flight worktree and tmux window.
+    let tasks = db.list_tasks_for_epic(sub.id).await.unwrap();
+    let stale = tasks
+        .iter()
+        .find(|t| t.external_id.as_deref() == Some("stale-1"))
+        .unwrap();
+    db.patch_task(
+        stale.id,
+        &TaskPatch::new()
+            .worktree(Some("/repo/a/.worktrees/stale-1"))
+            .tmux_window(Some("dispatch:stale-1")),
+    )
+    .await
+    .unwrap();
+
+    let removed = db
+        .delete_stale_subtree_feed_tasks(parent.id, &["keep-3".to_string()])
+        .await
+        .unwrap();
+
+    // Both stale-1 and plain-2 are really gone from the DB...
+    let left = db.list_tasks_for_epic(sub.id).await.unwrap();
+    assert_eq!(left.len(), 1, "only the kept item survives, got {left:?}");
+    assert_eq!(left[0].external_id.as_deref(), Some("keep-3"));
+
+    // ...but only stale-1 needs teardown.
+    assert_eq!(removed.len(), 1, "only rows with state are returned");
+    assert_eq!(removed[0].id, stale.id);
+    assert_eq!(removed[0].repo_path, "/repo/a");
+    assert_eq!(
+        removed[0].worktree.as_deref(),
+        Some("/repo/a/.worktrees/stale-1")
+    );
+    assert_eq!(removed[0].tmux_window.as_deref(), Some("dispatch:stale-1"));
+}
+
+/// The same contract for the flat/grouped path's stale-delete, which runs inside
+/// `upsert_feed_tasks` (`feeds.allium`: `UpsertFeedTasks`).
+#[tokio::test]
+async fn upsert_feed_tasks_returns_removed_rows_with_state() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("CVE Feed", "", None).await.unwrap();
+
+    db.upsert_feed_tasks(
+        epic.id,
+        &[
+            make_feed_item("gone-1", "Gone"),
+            make_feed_item("bare-2", "Bare"),
+        ],
+        &vec!["/repo/b".to_string(); 2],
+        &main_branches(2),
+    )
+    .await
+    .unwrap();
+
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    let gone = tasks
+        .iter()
+        .find(|t| t.external_id.as_deref() == Some("gone-1"))
+        .unwrap();
+    db.patch_task(
+        gone.id,
+        &TaskPatch::new().worktree(Some("/repo/b/.worktrees/gone-1")),
+    )
+    .await
+    .unwrap();
+
+    // An empty emission clears the epic and reports what it removed.
+    let removed = db.upsert_feed_tasks(epic.id, &[], &[], &[]).await.unwrap();
+
+    // The delete really ran — draining RETURNING is what executes it.
+    assert!(
+        db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+        "every stale feed task is deleted, reported or not"
+    );
+
+    assert_eq!(removed.len(), 1, "only the row with a worktree is reported");
+    assert_eq!(removed[0].id, gone.id);
+    assert_eq!(removed[0].repo_path, "/repo/b");
+    assert_eq!(
+        removed[0].worktree.as_deref(),
+        Some("/repo/b/.worktrees/gone-1")
+    );
+    assert_eq!(removed[0].tmux_window, None, "no tmux window was set");
+}
+
+/// A manual task (`external_id IS NULL`) is never deleted and never reported,
+/// even when it carries a worktree.
+#[tokio::test]
+async fn delete_stale_subtree_feed_tasks_never_reports_manual_tasks() {
+    let db = in_memory_db().await;
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    let sub = db
+        .create_epic("My Reviews", "", Some(parent.id))
+        .await
+        .unwrap();
+
+    let manual = db
+        .create_task(CreateTaskRequest {
+            title: "Manual",
+            description: "",
+            repo_path: "/repo/a",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: Some(sub.id),
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+    db.patch_task(
+        manual,
+        &TaskPatch::new().worktree(Some("/repo/a/.worktrees/manual")),
+    )
+    .await
+    .unwrap();
+
+    let removed = db
+        .delete_stale_subtree_feed_tasks(parent.id, &[])
+        .await
+        .unwrap();
+
+    assert!(
+        removed.is_empty(),
+        "manual tasks are neither deleted nor reported, got {removed:?}"
+    );
+    assert_eq!(db.list_tasks_for_epic(sub.id).await.unwrap().len(), 1);
+}
+
 /// `delete_stale_subtree_feed_tasks` deletes feed tasks (external_id set) across
 /// the WHOLE subtree of a parent epic, except those in the keep-set. It must:
 /// - keep a feed task whose external_id is in the keep-set (even in another child);

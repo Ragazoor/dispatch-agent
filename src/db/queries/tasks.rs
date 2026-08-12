@@ -8,7 +8,7 @@ use crate::models::{
     WrapUpMode,
 };
 
-use super::super::{CreateTaskRequest, Database, TaskPatch};
+use super::super::{CreateTaskRequest, Database, RemovedFeedTask, TaskPatch};
 use super::{collect_decodable, row_to_task, write_json_string_vec, TASK_COLUMNS};
 
 /// Owned mirror of [`CreateTaskRequest`] for moving into a `db_call` closure.
@@ -60,6 +60,30 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             auto_run_plan,
         }
     }
+}
+
+/// Column list the two feed stale-deletes name in their `RETURNING` clause, in
+/// the order [`removed_feed_task_from_row`] reads them.
+const REMOVED_FEED_TASK_RETURNING: &str = "RETURNING id, repo_path, worktree, tmux_window";
+
+/// Decode one `RETURNING id, repo_path, worktree, tmux_window` row.
+fn removed_feed_task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RemovedFeedTask> {
+    Ok(RemovedFeedTask {
+        id: TaskId(row.get(0)?),
+        repo_path: row.get(1)?,
+        worktree: row.get(2)?,
+        tmux_window: row.get(3)?,
+    })
+}
+
+/// Keep only the rows that actually own something to tear down. The `DELETE`
+/// predicates are deliberately untouched — every stale feed task is still
+/// removed; this only narrows what the caller has to clean up afterwards.
+/// Narrowing the SQL instead would strand merged/closed PRs in the epic forever.
+fn needs_teardown(rows: Vec<RemovedFeedTask>) -> Vec<RemovedFeedTask> {
+    rows.into_iter()
+        .filter(|r| r.worktree.is_some() || r.tmux_window.is_some())
+        .collect()
 }
 
 /// Owned mirror of [`TaskPatch`] for moving into a `db_call` closure
@@ -425,7 +449,7 @@ impl super::super::TaskCrud for Database {
         items: &[FeedItem],
         repo_paths: &[String],
         base_branches: &[String],
-    ) -> Result<()> {
+    ) -> Result<Vec<RemovedFeedTask>> {
         // repo_paths and base_branches are parallel-to-items by contract. Verify
         // it up front: a mismatch would let the zip below silently truncate and
         // drop feed items, so reject it explicitly instead.
@@ -531,17 +555,31 @@ impl super::super::TaskCrud for Database {
                 .with_context(|| format!("Failed to upsert feed task '{}'", item.external_id))?;
             }
 
-            tx.execute(
-                "DELETE FROM tasks
+            // The predicate is unchanged; only RETURNING is new. Note that a
+            // RETURNING statement in rusqlite executes as its rows are stepped,
+            // so the iterator MUST be fully drained or the delete never runs.
+            // The Statement borrows `tx`, hence the inner scope: it has to drop
+            // before `tx.commit()`.
+            let removed;
+            {
+                let mut stmt = tx
+                    .prepare(&format!(
+                        "DELETE FROM tasks
                  WHERE epic_id = ?1
                    AND external_id IS NOT NULL
-                   AND external_id NOT IN (SELECT value FROM json_each(?2))",
-                params![epic_id.0, keep_ids],
-            )
-            .context("Failed to delete stale feed tasks")?;
+                   AND external_id NOT IN (SELECT value FROM json_each(?2))
+                 {REMOVED_FEED_TASK_RETURNING}"
+                    ))
+                    .context("Failed to prepare stale feed task delete")?;
+                removed = stmt
+                    .query_map(params![epic_id.0, keep_ids], removed_feed_task_from_row)
+                    .context("Failed to delete stale feed tasks")?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .context("Failed to delete stale feed tasks")?;
+            }
 
             tx.commit()?;
-            Ok(())
+            Ok(needs_teardown(removed))
         })
         .await
     }
@@ -550,19 +588,28 @@ impl super::super::TaskCrud for Database {
         &self,
         parent_id: EpicId,
         keep_external_ids: &[String],
-    ) -> Result<()> {
+    ) -> Result<Vec<RemovedFeedTask>> {
         let keep = serde_json::to_string(keep_external_ids)
             .context("failed to serialize external_ids for subtree feed task cleanup")?;
         self.db_call(move |conn| {
-            conn.execute(
-                "DELETE FROM tasks
+            // The predicate is unchanged; only RETURNING is new. The iterator
+            // MUST be fully drained — rusqlite executes a RETURNING statement
+            // as its rows are stepped, so a partial drain silently skips rows.
+            let mut stmt = conn
+                .prepare(&format!(
+                    "DELETE FROM tasks
                  WHERE epic_id IN (SELECT id FROM epics WHERE parent_epic_id = ?1)
                    AND external_id IS NOT NULL
-                   AND external_id NOT IN (SELECT value FROM json_each(?2))",
-                params![parent_id.0, keep],
-            )
-            .context("Failed to delete stale subtree feed tasks")?;
-            Ok(())
+                   AND external_id NOT IN (SELECT value FROM json_each(?2))
+                 {REMOVED_FEED_TASK_RETURNING}"
+                ))
+                .context("Failed to prepare stale subtree feed task delete")?;
+            let removed = stmt
+                .query_map(params![parent_id.0, keep], removed_feed_task_from_row)
+                .context("Failed to delete stale subtree feed tasks")?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .context("Failed to delete stale subtree feed tasks")?;
+            Ok(needs_teardown(removed))
         })
         .await
     }

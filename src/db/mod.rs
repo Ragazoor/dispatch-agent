@@ -130,6 +130,25 @@ pub struct CreateTaskRequest<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// RemovedFeedTask — a row a feed stale-delete removed
+// ---------------------------------------------------------------------------
+
+/// A task row that a feed stale-delete removed and which still owns on-disk or
+/// in-tmux state, so the caller has something to tear down. Returned by
+/// [`TaskCrud::upsert_feed_tasks`] and
+/// [`TaskCrud::delete_stale_subtree_feed_tasks`].
+///
+/// Rows with neither a worktree nor a tmux window are deleted just the same but
+/// are not reported — there is nothing to clean up for a plain card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedFeedTask {
+    pub id: TaskId,
+    pub repo_path: String,
+    pub worktree: Option<String>,
+    pub tmux_window: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // EpicPatch — builder for selective epic field updates
 // ---------------------------------------------------------------------------
 
@@ -326,13 +345,18 @@ pub trait TaskCrud: TaskRead {
     /// inserted task should use for its worktree. The caller is expected to resolve the
     /// repo's default branch (typically via [`crate::git::detect_default_branch`]),
     /// falling back to `"main"` when no path is known.
+    ///
+    /// Returns the rows its stale-delete pass removed that still own a worktree
+    /// or tmux window — see [`RemovedFeedTask`]. The delete itself is unchanged:
+    /// every stale feed task in the epic is removed whether or not it is
+    /// reported.
     async fn upsert_feed_tasks(
         &self,
         epic_id: EpicId,
         items: &[FeedItem],
         repo_paths: &[String],
         base_branches: &[String],
-    ) -> Result<()>;
+    ) -> Result<Vec<RemovedFeedTask>>;
     /// Delete stale feed tasks across the WHOLE subtree of `parent_id` (all its
     /// direct child epics), keeping only those whose `external_id` is in
     /// `keep_external_ids`. Unlike [`TaskCrud::upsert_feed_tasks`]'s per-epic
@@ -340,11 +364,15 @@ pub trait TaskCrud: TaskRead {
     /// that was just *moved* between role sub-epics (absent from its losing
     /// epic's group) is not deleted. Manual tasks (`external_id IS NULL`) are
     /// always preserved. Used by the role-routed reviews reconciler.
+    ///
+    /// Returns the removed rows that still own a worktree or tmux window — see
+    /// [`RemovedFeedTask`]. The delete predicate is unchanged: every stale feed
+    /// task in the subtree is removed whether or not it is reported.
     async fn delete_stale_subtree_feed_tasks(
         &self,
         parent_id: EpicId,
         keep_external_ids: &[String],
-    ) -> Result<()>;
+    ) -> Result<Vec<RemovedFeedTask>>;
     /// Atomically update `sub_status` for multiple tasks in a single transaction.
     /// Used by the tick to batch all per-task reclassifications into one DB round-trip.
     async fn batch_patch_sub_status(&self, updates: &[(TaskId, SubStatus)]) -> Result<()>;
