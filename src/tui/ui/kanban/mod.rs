@@ -549,10 +549,12 @@ pub(in crate::tui) fn epic_action_hints(epic: &Epic, key_color: Color) -> Vec<Sp
         push_hint_spans(&mut spans, key, label, key_color, label_style);
     };
 
-    push_hint("Space", "board");
+    // `Space` on an epic card enters the epic (`EpicMessage::Enter`). `U` is deliberately
+    // absent: it needs `current_epic_id()`, so it only works from inside the epic view,
+    // where the header badge advertises it instead.
+    push_hint("Space", "enter");
     push_hint("Enter", "detail");
     push_hint("e", "edit");
-    push_hint("U", "auto dispatch");
     if epic.feed_command.is_some() {
         push_hint("r", "refresh");
     }

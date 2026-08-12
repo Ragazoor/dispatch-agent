@@ -41,4 +41,4 @@ expression: rendered
 
 
 
-[Space] board  [Enter] detail  [e]dit  [U] auto dispatch  [r]efresh  [L] status →  [H] status ←  [x] archive  [a] select
+[Space] enter  [Enter] detail  [e]dit  [r]efresh  [L] status →  [H] status ←  [x] archive  [a] select all  [n]ew  [E]pic

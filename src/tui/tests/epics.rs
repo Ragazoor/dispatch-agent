@@ -84,6 +84,60 @@ fn action_hints_no_ctrl_g_outside_epic() {
     );
 }
 
+/// `Space` on an epic card enters the epic (`EpicMessage::Enter` in
+/// `handle_key_activate`) — it does not go back to the board.
+#[test]
+fn epic_action_hints_labels_space_as_enter() {
+    let epic = make_epic(1);
+    let hints = ui::epic_action_hints(&epic, Color::Rgb(122, 162, 247));
+    let text: String = hints.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        text.contains("[Space] enter"),
+        "Space should be labelled 'enter', got {text:?}"
+    );
+    assert!(
+        !text.contains("board"),
+        "Space must not be labelled 'board', got {text:?}"
+    );
+}
+
+/// `U` requires `current_epic_id()`, i.e. `ViewMode::Epic` — on a board epic card
+/// it is a dead key, so the footer must not advertise it.
+#[test]
+fn epic_action_hints_omits_auto_dispatch() {
+    let epic = make_epic(1);
+    let hints = ui::epic_action_hints(&epic, Color::Rgb(122, 162, 247));
+    let keys = hint_keys(&hints);
+    assert!(
+        !keys.contains(&"[U]"),
+        "epic card must not advertise the inert [U] key, got {keys:?}"
+    );
+    let text: String = hints.iter().map(|s| s.content.as_ref()).collect();
+    assert!(
+        !text.contains("auto dispatch"),
+        "epic card must not advertise auto dispatch, got {text:?}"
+    );
+}
+
+/// The rendered footer, not just the helper: a selected epic card on the board
+/// shows `[Space] enter` and no `[U]` hint.
+#[test]
+fn board_footer_for_selected_epic_card() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic(1)];
+    app.selection_mut().set_column(1); // Backlog column, epic card selected
+
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        buffer_contains(&buf, "[Space] enter"),
+        "footer should label Space as 'enter' for a selected epic card"
+    );
+    assert!(
+        !buffer_contains(&buf, "[U] auto dispatch"),
+        "footer should not advertise [U] for a selected epic card"
+    );
+}
+
 #[test]
 fn epic_action_hints_shows_filter_help() {
     let epic = make_epic(1);
