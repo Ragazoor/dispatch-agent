@@ -2344,8 +2344,7 @@ async fn exec_enter_split_mode_with_task_joins_pane() {
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            // companion_pane_ids: no agent-tree pane, then no editor pane
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            // companion_pane_ids: no pane carries a dispatch role
             MockProcessRunner::ok_with_stdout(b"%1 \n"),
             MockProcessRunner::ok(), // join_pane: join-pane command
         ])
@@ -2357,9 +2356,9 @@ async fn exec_enter_split_mode_with_task_joins_pane() {
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    assert!(calls[3].1.contains(&"join-pane".to_string()));
+    assert!(calls[2].1.contains(&"join-pane".to_string()));
     assert!(
-        calls[3].1.contains(&mock.pane_id_of("task-1")),
+        calls[2].1.contains(&mock.pane_id_of("task-1")),
         "the source must be the resolved pane, not the window name"
     );
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -2391,10 +2390,8 @@ async fn exec_enter_split_mode_with_task_kills_leftover_companion_panes_after_jo
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            // companion_pane_ids: the tree pane by start command...
-            MockProcessRunner::ok_with_stdout(b"%1 \n%2 dispatch agent-tree 1\n%5 vim /w/a.rs\n"),
-            // ...then the editor pane by its marker.
-            MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n%5 1\n"),
+            // companion_pane_ids: both dispatch-created panes, by their roles.
+            MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%5 editor\n"),
             MockProcessRunner::ok(), // join_pane: join-pane
             MockProcessRunner::ok(), // kill-pane %2
             MockProcessRunner::ok(), // kill-pane %5
@@ -2407,9 +2404,9 @@ async fn exec_enter_split_mode_with_task_kills_leftover_companion_panes_after_jo
         .await
         .unwrap();
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 6, "calls: {calls:?}");
-    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%2"]);
-    assert_eq!(calls[5].1, vec!["kill-pane", "-t", "%5"]);
+    assert_eq!(calls.len(), 5, "calls: {calls:?}");
+    assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%2"]);
+    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%5"]);
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -2472,8 +2469,7 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_kill_fails()
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
             // companion_pane_ids: tree pane %2, no editor pane
-            MockProcessRunner::ok_with_stdout(b"%1 \n%2 dispatch agent-tree 1\n"),
-            MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n"),
+            MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n"),
             MockProcessRunner::ok(), // join_pane: join-pane
             MockProcessRunner::fail("kill-pane error"),
         ])
@@ -2691,9 +2687,10 @@ async fn exec_swap_split_pane_renames_old_task_window() {
             // resync: list-panes finds the companion. It is still running the
             // *incoming* task's tree (3), which is exactly why it is stale — the
             // lookup matches on the binary and subcommand, not the id.
-            MockProcessRunner::ok_with_stdout(b"%10 \n%11 dispatch agent-tree 3\n"),
+            MockProcessRunner::ok_with_stdout(b"%10 \n%11 agent_tree\n"),
             MockProcessRunner::ok(), // resync: kill-pane %11
             MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
+            MockProcessRunner::ok(), // resync: set-option, the new pane's role
         ])
         .with_windows(&["task-3", "task-2"]),
     );
@@ -2715,8 +2712,11 @@ async fn exec_swap_split_pane_renames_old_task_window() {
     assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%11"]);
     assert!(calls[4].1.contains(&"split-window".to_string()));
     assert!(calls[4].1.contains(&"2".to_string()));
+    // …and the respawned pane is marked, or the resynced window would read as
+    // companion-less to the next toggle.
+    assert!(calls[5].1.contains(&"set-option".to_string()));
     // No further call — focus must NOT be transferred
-    assert_eq!(calls.len(), 5, "select-pane must not be called after swap");
+    assert_eq!(calls.len(), 6, "select-pane must not be called after swap");
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()
@@ -2796,8 +2796,7 @@ async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
     let mock = Arc::new(
         MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            // companion_pane_ids: no agent-tree pane, then no editor pane
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            // companion_pane_ids: no pane carries a dispatch role
             MockProcessRunner::ok_with_stdout(b"%1 \n"),
             MockProcessRunner::ok(), // join_pane: join-pane command
         ])
@@ -2810,7 +2809,7 @@ async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
         .unwrap();
 
     let calls = mock.recorded_calls();
-    assert!(calls[3].1.contains(&"join-pane".to_string()));
+    assert!(calls[2].1.contains(&"join-pane".to_string()));
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()

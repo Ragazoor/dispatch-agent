@@ -621,16 +621,30 @@ pub fn respawn_pane_running(
     Ok(())
 }
 
-/// Pane option marking the editor pane the agent-tree companion pane opens.
+/// Pane option marking a pane **dispatch itself created** in an agent window,
+/// valued with what that pane is for: [`PANE_ROLE_AGENT_TREE`] or
+/// [`PANE_ROLE_EDITOR`].
 ///
-/// Lives here rather than with the code that opens that pane because two
-/// unrelated modules must agree on it forever: `agent_tree_editor` writes and
-/// reads it to reuse the pane, and `dispatch::companion_pane_ids` reads it to
-/// drain the pane when an agent window is pinned into the board. The *policy*
-/// (when to split, when to replace) stays with the former; the vocabulary is
-/// shared infrastructure. See docs/specs/agent-tree.allium's
-/// `OneEditorPanePerAgentWindow`.
-pub const EDITOR_PANE_OPTION: &str = "@dispatch_editor_pane";
+/// Lives here rather than with either creator because unrelated modules must
+/// agree on it forever: `dispatch::agents` writes the tree role and reads it back
+/// to toggle and resync that pane, `agent_tree_editor` writes and reads the
+/// editor role to reuse its pane, and `dispatch::companion_pane_ids` reads the
+/// option's mere *presence* to drain every dispatch-created pane when an agent
+/// window is pinned into the board. The *policy* (when to split, when to replace)
+/// stays with each creator; the vocabulary is shared infrastructure.
+///
+/// One option with a role value, rather than one option per pane kind, is what
+/// makes that third question answerable in a single lookup — and answerable for
+/// a future role without teaching the drain about it. See
+/// docs/specs/agent-tree.allium's `HideAgentTreePane` ("How the companion pane
+/// is identified") and `OneEditorPanePerAgentWindow`.
+pub const PANE_ROLE_OPTION: &str = "@dispatch_pane_role";
+
+/// [`PANE_ROLE_OPTION`] value for the `dispatch agent-tree` companion pane.
+pub const PANE_ROLE_AGENT_TREE: &str = "agent_tree";
+
+/// [`PANE_ROLE_OPTION`] value for the editor pane opened from that companion pane.
+pub const PANE_ROLE_EDITOR: &str = "editor";
 
 /// Set a pane-scoped tmux user option (`@name`). The pane-level sibling of
 /// [`set_window_dispatch_dir`]'s `set-option -w`.
@@ -741,7 +755,7 @@ pub fn pane_id_for_window(window: &str, runner: &dyn ProcessRunner) -> Result<St
 /// renumbered by a `-b` split, so it can miss or hit the wrong pane; the window
 /// name prefix-matches (see [`window_target`]), so it can address the wrong
 /// window entirely. Use [`pane_id_for_window`], [`pane_ids_with_option`] or
-/// [`pane_ids_with_start_command`] to resolve one.
+/// [`pane_ids_with_option_value`] to resolve one.
 pub fn swap_pane(source: &str, target: &str, runner: &dyn ProcessRunner) -> Result<()> {
     run_checked(
         runner,
@@ -762,8 +776,9 @@ pub fn select_pane(pane_id: &str, runner: &dyn ProcessRunner) -> Result<()> {
 // with its last caller (#3856). The premise held only for a two-pane window whose
 // focus had not moved, so with focus in the companion pane it named the *agent's*
 // pane and the toggle killed a live claude session. Identify a pane by what it is
-// — [`pane_ids_with_option`] or [`pane_ids_with_start_command`] — not by whether
-// it happens to be focused. See docs/specs/agent-tree.allium's HideAgentTreePane.
+// rather than by whether it happens to be focused: [`pane_ids_with_option`] for
+// "any pane dispatch created", [`pane_ids_with_option_value`] for one role. See
+// docs/specs/agent-tree.allium's HideAgentTreePane.
 
 /// Split one `list-panes` row of the form `<pane_id> <rest…>` into its two
 /// halves. `rest` is empty when the field it carries is unset — tmux prints the
@@ -810,13 +825,14 @@ fn pane_ids_matching(
 }
 
 /// Pane ids in `target`'s window whose pane-scoped user option `option` is set to
-/// a non-empty value.
+/// a non-empty value — *any* value.
 ///
-/// This is how dispatch finds a pane it created: the marker is written at
-/// creation ([`set_pane_option`]) and survives [`respawn_pane_running`], so the
-/// pane is identified by *what it is* rather than by whether it happens to be the
-/// focused one — which is the heuristic this replaced, true only for an untouched
-/// two-pane window.
+/// This is how dispatch asks "which panes in this window did I create?", over
+/// [`PANE_ROLE_OPTION`]: the marker is written at creation ([`set_pane_option`])
+/// and survives [`respawn_pane_running`], so a pane is identified by what it is
+/// rather than by whether it happens to be the focused one — which is the
+/// heuristic this replaced, true only for an untouched two-pane window. Use
+/// [`pane_ids_with_option_value`] to ask for one specific role.
 pub fn pane_ids_with_option(
     target: &str,
     option: &str,
@@ -824,25 +840,36 @@ pub fn pane_ids_with_option(
 ) -> Result<Vec<String>> {
     pane_ids_matching(
         target,
-        &format!("#{{{option}}}"),
+        &option_format(option),
         |value| !value.is_empty(),
         runner,
     )
 }
 
-/// Pane ids in `target`'s window whose `#{pane_start_command}` satisfies
-/// `matches`. Empty for a pane running a plain shell.
+/// Pane ids in `target`'s window whose pane-scoped user option `option` equals
+/// `value` exactly.
 ///
-/// Used where no marker can be written after the fact: the agent-tree companion
-/// pane is identified this way so that panes already running when the lookup
-/// shipped are covered without a migration — tmux has always reported the command
-/// a pane was started with.
-pub fn pane_ids_with_start_command(
+/// The role-specific half of [`pane_ids_with_option`]: exact equality, never a
+/// prefix or substring, because the roles of two panes in one window must not be
+/// able to stand in for each other.
+pub fn pane_ids_with_option_value(
     target: &str,
-    matches: impl Fn(&str) -> bool,
+    option: &str,
+    value: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<Vec<String>> {
-    pane_ids_matching(target, "#{pane_start_command}", matches, runner)
+    pane_ids_matching(
+        target,
+        &option_format(option),
+        |found| found == value,
+        runner,
+    )
+}
+
+/// The tmux format expression that expands to user option `option`'s value.
+/// Stated once so the two lookups above cannot spell it differently.
+fn option_format(option: &str) -> String {
+    format!("#{{{option}}}")
 }
 
 /// List the ids of all tmux panes across all sessions.
@@ -1716,15 +1743,16 @@ mod tests {
         );
     }
 
-    // --- pane_ids_with_option / pane_ids_with_start_command ---
+    // --- pane_ids_with_option / pane_ids_with_option_value ---
 
     #[test]
     fn pane_ids_with_option_returns_only_marked_panes() {
         // `list-panes` rows are "<pane_id> <value>"; an unset option renders as
         // the empty string, with the separator still there.
-        let mock =
-            MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n%2 1\n%3 \n")]);
-        let found = pane_ids_with_option("%1", "@dispatch_editor_pane", &mock).unwrap();
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"%1 \n%2 agent_tree\n%3 \n",
+        )]);
+        let found = pane_ids_with_option("%1", PANE_ROLE_OPTION, &mock).unwrap();
         assert_eq!(found, vec!["%2".to_string()]);
         assert_eq!(
             mock.recorded_calls()[0].1,
@@ -1733,15 +1761,26 @@ mod tests {
                 "-t",
                 "%1",
                 "-F",
-                "#{pane_id} #{@dispatch_editor_pane}",
+                "#{pane_id} #{@dispatch_pane_role}",
             ]
         );
+    }
+
+    /// Any role at all: this is how the pin drain asks for "every pane dispatch
+    /// put in this window", without being taught the roles.
+    #[test]
+    fn pane_ids_with_option_returns_every_role() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"%1 \n%2 agent_tree\n%3 editor\n",
+        )]);
+        let found = pane_ids_with_option("%1", PANE_ROLE_OPTION, &mock).unwrap();
+        assert_eq!(found, vec!["%2".to_string(), "%3".to_string()]);
     }
 
     #[test]
     fn pane_ids_with_option_is_empty_when_nothing_is_marked() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n")]);
-        assert!(pane_ids_with_option("%1", "@dispatch_editor_pane", &mock)
+        assert!(pane_ids_with_option("%1", PANE_ROLE_OPTION, &mock)
             .unwrap()
             .is_empty());
     }
@@ -1752,14 +1791,16 @@ mod tests {
         assert!(pane_ids_with_option("%1", "@x", &mock).is_err());
     }
 
+    /// Value-matched, not presence-matched: the two roles must never stand in for
+    /// each other, or a file open would respawn the tree pane with an editor.
     #[test]
-    fn pane_ids_with_start_command_matches_on_the_command() {
+    fn pane_ids_with_option_value_returns_only_that_role() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
-            b"%1 dispatch agent-tree 42\n%2 \n%3 vim /w/a.rs\n",
+            b"%1 \n%2 agent_tree\n%3 editor\n",
         )]);
         let found =
-            pane_ids_with_start_command("%2", |cmd| cmd.starts_with("dispatch "), &mock).unwrap();
-        assert_eq!(found, vec!["%1".to_string()]);
+            pane_ids_with_option_value("%2", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock).unwrap();
+        assert_eq!(found, vec!["%3".to_string()]);
         assert_eq!(
             mock.recorded_calls()[0].1,
             vec![
@@ -1767,37 +1808,42 @@ mod tests {
                 "-t",
                 "%2",
                 "-F",
-                "#{pane_id} #{pane_start_command}",
+                "#{pane_id} #{@dispatch_pane_role}",
             ]
         );
     }
 
-    /// A start command can contain spaces, so only the *first* field is the pane
-    /// id — the rest reaches the predicate whole.
+    /// The whole value, not a prefix of it: a future role named `editor_split`
+    /// must not answer a lookup for `editor`.
     #[test]
-    fn pane_ids_with_start_command_passes_the_whole_command_to_the_predicate() {
+    fn pane_ids_with_option_value_matches_the_whole_value() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
-            b"%4 vim /w/some file.rs\n",
+            b"%1 editor_split\n%2 editor\n",
         )]);
         let found =
-            pane_ids_with_start_command("%4", |cmd| cmd == "vim /w/some file.rs", &mock).unwrap();
-        assert_eq!(found, vec!["%4".to_string()]);
-    }
-
-    /// A pane running a plain shell reports an empty start command. It must reach
-    /// the predicate as an empty string rather than being dropped from the
-    /// listing, so a predicate can deliberately match it.
-    #[test]
-    fn pane_ids_with_start_command_yields_panes_with_no_start_command() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%9 \n")]);
-        let found = pane_ids_with_start_command("%9", str::is_empty, &mock).unwrap();
-        assert_eq!(found, vec!["%9".to_string()]);
+            pane_ids_with_option_value("%1", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock).unwrap();
+        assert_eq!(found, vec!["%2".to_string()]);
     }
 
     #[test]
-    fn pane_ids_with_start_command_fails_on_nonzero_exit() {
+    fn pane_ids_with_option_value_is_empty_when_no_pane_has_that_role() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+            b"%1 \n%2 agent_tree\n",
+        )]);
+        assert!(
+            pane_ids_with_option_value("%1", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn pane_ids_with_option_value_fails_on_nonzero_exit() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no window")]);
-        assert!(pane_ids_with_start_command("%1", |_| true, &mock).is_err());
+        assert!(
+            pane_ids_with_option_value("%1", PANE_ROLE_OPTION, PANE_ROLE_AGENT_TREE, &mock)
+                .is_err()
+        );
     }
 
     // --- split_window_full_below_running ---
@@ -1947,10 +1993,17 @@ mod tests {
     #[test]
     fn set_pane_option_issues_correct_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
-        set_pane_option("%7", "@dispatch_editor_pane", "1", &mock).unwrap();
+        set_pane_option("%7", PANE_ROLE_OPTION, PANE_ROLE_EDITOR, &mock).unwrap();
         assert_eq!(
             mock.recorded_calls()[0].1,
-            vec!["set-option", "-p", "-t", "%7", "@dispatch_editor_pane", "1"]
+            vec![
+                "set-option",
+                "-p",
+                "-t",
+                "%7",
+                "@dispatch_pane_role",
+                "editor"
+            ]
         );
     }
 
@@ -2227,7 +2280,7 @@ mod tests {
     fn pane_ids_with_option_resolves_a_window_name_to_its_own_panes() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%3 \n%7 1\n")])
             .with_windows(&COLLIDING);
-        let found = pane_ids_with_option("task-42", "@dispatch_editor_pane", &mock).unwrap();
+        let found = pane_ids_with_option("task-42", PANE_ROLE_OPTION, &mock).unwrap();
         assert_eq!(found, vec!["%7".to_string()]);
         assert_eq!(
             mock.recorded_calls()[0].1,
@@ -2236,7 +2289,7 @@ mod tests {
                 "-t",
                 &mock.pane_id_of("task-42"),
                 "-F",
-                "#{pane_id} #{@dispatch_editor_pane}",
+                "#{pane_id} #{@dispatch_pane_role}",
             ]
         );
     }

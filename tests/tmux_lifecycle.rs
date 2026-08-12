@@ -461,10 +461,34 @@ fn dispatch_opens_the_companion_agent_tree_pane() {
     fx.dispatch(TASK_ID);
 
     fx.await_companion(TASK_ID);
+    let window = fx.window(TASK_ID);
     assert_eq!(
-        fx.server.pane_count(&fx.window(TASK_ID)),
+        fx.server.pane_count(&window),
         2,
         "agent window should hold the agent pane plus its companion"
+    );
+    // The marker every later lookup depends on, read back off a real server:
+    // the companion pane carries the agent-tree role and the agent's own pane
+    // carries none (docs/specs/agent-tree.allium: HideAgentTreePane). Located by
+    // start command rather than by the marker itself, so this cannot pass by
+    // agreeing with production about the wrong pane.
+    let companion = fx
+        .server
+        .pane_ids(&window)
+        .into_iter()
+        .find(|id| fx.server.pane_start_command(id).contains("agent-tree"))
+        .expect("companion pane");
+    let agent = fx.server.active_pane_id(&window).expect("agent pane");
+    assert_eq!(
+        fx.server
+            .pane_option(&companion, dispatch_tui::tmux::PANE_ROLE_OPTION),
+        dispatch_tui::tmux::PANE_ROLE_AGENT_TREE,
+    );
+    assert_eq!(
+        fx.server
+            .pane_option(&agent, dispatch_tui::tmux::PANE_ROLE_OPTION),
+        "",
+        "the agent's own pane is not dispatch-created and must carry no role"
     );
 }
 

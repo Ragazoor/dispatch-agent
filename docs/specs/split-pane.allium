@@ -374,21 +374,26 @@ rule PinTaskInSplitPane {
         -- == IMPLEMENTED: companion-pane draining ==
         -- The empty-pane case (no task currently pinned) reaches this via
         -- `exec_enter_split_mode_with_task` (src/runtime/split.rs), which
-        -- calls `tmux::join_pane` (src/tmux.rs) to move only the agent's own
-        -- (active) pane out of its window. If that window also carries an
-        -- agent-tree companion pane (docs/specs/agent-tree.allium), the
-        -- companion is now the window's sole remaining pane —
-        -- indistinguishable, from live tmux state alone, from the companion
-        -- being toggled hidden. `exec_enter_split_mode_with_task` captures
-        -- the companion pane's ID (via `tmux::inactive_pane_id`) *before*
-        -- calling `join_pane` and kills it once the join succeeds, so the
+        -- calls `dispatch::join_task_window_into_pane`
+        -- (src/dispatch/split_panes.rs), which moves only the agent's own
+        -- (active) pane out of its window. Whatever dispatch itself put in
+        -- that window (docs/specs/agent-tree.allium: the agent-tree companion
+        -- pane, and any editor pane opened from it) is left behind in a window
+        -- nothing owns — and a lone companion pane is indistinguishable, from
+        -- live tmux state alone, from the companion being toggled hidden.
+        -- `join_task_window_into_pane` therefore captures EVERY such pane
+        -- *before* the join and kills each once the join succeeds, so the
         -- source window is fully drained either way, restoring the "the
         -- window no longer exists" assumption
-        -- `SplitPaneRespawnOnWindowCleared`'s guidance relies on. Both the
-        -- check and the kill are best-effort: a failure is logged, never
-        -- propagated, since the companion pane is decorative. `join_pane`
-        -- itself stays a plain tmux wrapper with no companion-pane
-        -- awareness — that orchestration lives at the call site, alongside
+        -- `SplitPaneRespawnOnWindowCleared`'s guidance relies on. The panes are
+        -- found by the role marker dispatch wrote on each at creation (see
+        -- agent-tree.allium's HideAgentTreePane), asked as one question — "which
+        -- panes carry a role at all" — rather than one lookup per kind, so a
+        -- future dispatch-created pane is drained without this path being
+        -- taught about it. Both the check and the kill are best-effort: a
+        -- failure is logged, never propagated, since these panes are
+        -- decorative. `tmux::join_pane` itself stays a plain tmux wrapper with
+        -- no companion-pane awareness — that orchestration lives above it, alongside
         -- the equivalent resync in SwapSplitPane's guidance below. Resolves
         -- agent-tree.allium's ToggleVsSplitPaneInteraction open question for
         -- the join half of the gap.
@@ -428,8 +433,8 @@ rule SwapSplitPane {
         -- task's pane and the new task's pane 0 — panes keep their window
         -- membership; only the running process each one displays changes.
         -- It then renames the window (formerly the new task's) to the old
-        -- task's window name. Neither step touches pane 1: a renamed
-        -- window's agent-tree companion pane (docs/specs/agent-tree.allium),
+        -- task's window name. Neither step touches the window's other panes: a
+        -- renamed window's agent-tree companion pane (docs/specs/agent-tree.allium),
         -- if any, keeps running `dispatch agent-tree <new_task_id>` under a
         -- window now named (and considered to belong to) the old task —
         -- silently rendering the wrong agent's tree.
@@ -439,7 +444,9 @@ rule SwapSplitPane {
         -- window's own new name (the same `task-<id>` inverse
         -- `toggle_agent_tree_pane` already uses) and, if the window carries
         -- a companion pane, kills it and relaunches
-        -- `dispatch agent-tree <task_id>` for that correct task. A no-op for
+        -- `dispatch agent-tree <task_id>` for that correct task — and marks the
+        -- relaunched pane with its role, since it is a new pane and an unmarked
+        -- one would read as "no companion" to the next toggle. A no-op for
         -- a non-task window name or a window with no companion pane at all.
         -- Best-effort throughout: failures are logged, never propagated.
         --

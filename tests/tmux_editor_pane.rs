@@ -15,8 +15,7 @@ use std::path::PathBuf;
 
 use dispatch_tui::agent_tree_editor::open_in_editor;
 use dispatch_tui::dispatch;
-use dispatch_tui::process::ProcessRunner;
-use dispatch_tui::tmux::{self, EDITOR_PANE_OPTION};
+use dispatch_tui::tmux::{PANE_ROLE_AGENT_TREE, PANE_ROLE_EDITOR, PANE_ROLE_OPTION};
 
 use tmux_harness::{await_stub_line, stub_lines, tmux_available_or_skip, StubLine, TmuxServer};
 
@@ -27,8 +26,7 @@ const WINDOW: &str = "task-42";
 const EDITOR_STUB: &str = "fake-editor";
 
 /// An agent window shaped like a live one: the agent's own pane (active) plus a
-/// companion tree pane started with the stub `dispatch agent-tree 42`, and a
-/// worktree on disk holding files to open.
+/// companion tree pane, and a worktree on disk holding files to open.
 struct Fixture {
     /// Declared before `dir`: fields drop in declaration order, so the server is
     /// killed (ending the stub processes holding the log open) before the
@@ -54,17 +52,16 @@ fn setup_or_skip() -> Option<Fixture> {
     server.tmux_ok(&["new-session", "-d", "-s", "t", "-n", WINDOW, "-c", &root]);
     let agent_pane = server.active_pane_id(WINDOW).expect("agent pane");
 
-    // The companion pane exactly as production spawns it: the stub dispatch
-    // binary, `agent-tree`, the task id — so the start-command lookup under test
-    // sees a production-shaped command line.
-    let dispatch_bin = server.runner().agent_binaries().dispatch;
-    let tree_pane = tmux::split_window_horizontal_running(
-        WINDOW,
-        30,
-        &[&dispatch_bin, "agent-tree", "42"],
-        &server.runner(),
-    )
-    .expect("split companion pane");
+    // The companion pane through *production's own* spawn path, rather than a
+    // hand-rolled split: the role marker every lookup here depends on is written
+    // by that path, so a fixture that split and marked the pane itself would
+    // assert against its own setup instead of against production.
+    dispatch::toggle_agent_tree_pane(WINDOW, &server.runner()).expect("split companion pane");
+    let tree_pane = server
+        .pane_ids(WINDOW)
+        .into_iter()
+        .find(|id| *id != agent_pane)
+        .expect("companion pane should exist after the toggle");
 
     let editor_bin = server.extra_stub(EDITOR_STUB);
 
@@ -93,7 +90,7 @@ impl Fixture {
         self.server
             .pane_ids(WINDOW)
             .into_iter()
-            .find(|id| self.server.pane_option(id, EDITOR_PANE_OPTION) == "1")
+            .find(|id| self.server.pane_option(id, PANE_ROLE_OPTION) == PANE_ROLE_EDITOR)
     }
 
     /// Wait for the editor stub to report having been handed `relative`. The pane
@@ -119,6 +116,24 @@ impl Fixture {
     }
 }
 
+/// The marker a real tmux server actually holds after production split the pane.
+/// A mock can only show that `set-option` was *sent*; that the option is readable
+/// back off the pane, by a later process, is what every lookup here depends on.
+#[test]
+fn the_companion_pane_carries_the_agent_tree_role() {
+    let Some(fx) = setup_or_skip() else { return };
+
+    assert_eq!(
+        fx.server.pane_option(&fx.tree_pane, PANE_ROLE_OPTION),
+        PANE_ROLE_AGENT_TREE,
+    );
+    assert_eq!(
+        fx.server.pane_option(&fx.agent_pane, PANE_ROLE_OPTION),
+        "",
+        "the agent's own pane is not dispatch-created and must carry no role"
+    );
+}
+
 #[test]
 fn opening_a_file_adds_one_marked_pane() {
     let Some(fx) = setup_or_skip() else { return };
@@ -133,7 +148,7 @@ fn opening_a_file_adds_one_marked_pane() {
     );
     assert!(
         fx.editor_pane().is_some(),
-        "the new pane must carry {EDITOR_PANE_OPTION}"
+        "the new pane must carry {PANE_ROLE_OPTION} = {PANE_ROLE_EDITOR}"
     );
 }
 

@@ -20,49 +20,29 @@ use super::worktree::{provision_worktree, BaseRef, StartPoint};
 /// docs/specs/agent-tree.allium.
 const AGENT_TREE_PANE_PERCENT: u8 = 30;
 
-/// The `dispatch` subcommand the companion pane runs. Shared between the spawn
-/// side and the lookup side, so the two cannot drift.
+/// The `dispatch` subcommand the companion pane runs. Spawn-side only: the pane
+/// is recognised afterwards by the role marker written on it
+/// ([`tmux::PANE_ROLE_OPTION`]), not by what it is running.
 const AGENT_TREE_SUBCOMMAND: &str = "agent-tree";
-
-/// Whether `start_command` is a `dispatch agent-tree <id>` invocation — the
-/// companion pane [`spawn_agent_tree_pane`] creates.
-///
-/// Matched as argv0's basename plus argv1, never as a substring: an editor pane
-/// opened on `docs/specs/agent-tree.allium` contains the string "agent-tree", and
-/// killing the user's editor instead of the tree would be exactly the class of
-/// bug this lookup exists to fix. argv0 may be an absolute path because the
-/// binary is named through `ProcessRunner::agent_binaries` — which is how the
-/// real-tmux harness points it at a stub — hence comparing basenames.
-fn is_agent_tree_command(start_command: &str, dispatch_bin: &str) -> bool {
-    // Borrowed, not allocated: this runs once per pane per toggle, and the
-    // lossy conversion the owned form implied was never semantically needed.
-    let basename = |s: &str| {
-        std::path::Path::new(s)
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new(s))
-            .to_owned()
-    };
-    let mut argv = start_command.split_whitespace();
-    let Some(argv0) = argv.next() else {
-        return false;
-    };
-    basename(argv0) == basename(dispatch_bin) && argv.next() == Some(AGENT_TREE_SUBCOMMAND)
-}
 
 /// The companion agent-tree pane in `window`, if it has one.
 ///
-/// Replaces a `tmux::inactive_pane_id` call, which asked "which pane is not
-/// focused?" and answered "the companion" only for a two-pane window whose focus
-/// had not moved. Neither holds: the user can focus the companion pane — and must,
-/// to press any key in it — and an editor pane opened from the tree makes a third.
-/// Identifying the pane by the command it was started with is true whatever has
-/// focus and however many panes there are, and it needs no migration, since tmux
-/// reports the start command of panes already running.
+/// Identified by the role marker [`spawn_agent_tree_pane`] writes on the pane,
+/// matched on its exact value: true whatever has focus, however many panes the
+/// window has, and whatever any of them happen to be running. Both heuristics
+/// this replaced failed on one of those — `tmux::inactive_pane_id` asked "which
+/// pane is not focused?" (the user must focus the companion pane to press a key
+/// in it, and an editor pane makes a third), and matching `#{pane_start_command}`
+/// re-derived identity from a command line, which had to be defended against a
+/// pane merely *showing* a file named after this feature. See
+/// docs/specs/agent-tree.allium's `HideAgentTreePane`, including the accepted
+/// cost: a marker cannot be written to a pane that already exists, so a window
+/// open when this changed has an unmarked companion pane for the rest of its life.
 pub fn agent_tree_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Option<String>> {
-    let dispatch_bin = runner.agent_binaries().dispatch;
-    let panes = tmux::pane_ids_with_start_command(
+    let panes = tmux::pane_ids_with_option_value(
         window,
-        |cmd| is_agent_tree_command(cmd, &dispatch_bin),
+        tmux::PANE_ROLE_OPTION,
+        tmux::PANE_ROLE_AGENT_TREE,
         runner,
     )?;
     Ok(panes.into_iter().next())
@@ -73,21 +53,14 @@ pub fn agent_tree_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Op
 ///
 /// Used by the split-pane pin path, which moves only the agent's own pane out and
 /// must not leave the rest behind in a window nothing owns.
+///
+/// One tmux call, because that is the question being asked: not "the tree pane,
+/// and the editor pane, and…" — which cost a lookup per role and a window
+/// pre-resolution to keep them from each re-resolving the name — but "every pane
+/// carrying a role at all". A future dispatch-created pane is covered the moment
+/// it is marked, without this function being taught about it.
 pub fn companion_pane_ids(window: &str, runner: &dyn ProcessRunner) -> Result<Vec<String>> {
-    // Resolve the window *once*: each lookup would otherwise re-resolve the name,
-    // and a name (unlike a `%N` id) costs a real all-sessions `list-panes` scan
-    // — two extra tmux processes per pin for an answer that cannot change here.
-    let pane = tmux::pane_id_for_window(window, runner)?;
-    let mut panes = Vec::new();
-    if let Some(tree) = agent_tree_pane_id(&pane, runner)? {
-        panes.push(tree);
-    }
-    panes.extend(tmux::pane_ids_with_option(
-        &pane,
-        tmux::EDITOR_PANE_OPTION,
-        runner,
-    )?);
-    Ok(panes)
+    tmux::pane_ids_with_option(window, tmux::PANE_ROLE_OPTION, runner)
 }
 
 /// Split the agent's tmux window and launch `dispatch agent-tree <task_id>`
@@ -101,17 +74,40 @@ fn spawn_agent_tree_pane(tmux_window: &str, task_id: TaskId, runner: &dyn Proces
     let id_arg = task_id.0.to_string();
     // Passed as argv (`split-window --`), so the binary needs no shell quoting.
     let dispatch_bin = runner.agent_binaries().dispatch;
-    if let Err(e) = tmux::split_window_horizontal_running(
+    let pane = match tmux::split_window_horizontal_running(
         tmux_window,
         AGENT_TREE_PANE_PERCENT,
         &[&dispatch_bin, AGENT_TREE_SUBCOMMAND, &id_arg],
         runner,
     ) {
+        Ok(pane) => pane,
+        Err(e) => {
+            tracing::warn!(
+                task_id = task_id.0,
+                %tmux_window,
+                error = %e,
+                "failed to open agent-tree companion pane"
+            );
+            return;
+        }
+    };
+    // Mark it for the lookups that come later ([`agent_tree_pane_id`],
+    // [`companion_pane_ids`]). Best-effort like the split itself: the pane is open
+    // and rendering either way, and only the *next* toggle suffers — it would read
+    // the window as having no companion and split a second one. Same accepted gap
+    // as the editor pane's own marker (docs/specs/agent-tree.allium:
+    // `OneEditorPanePerAgentWindow`).
+    if let Err(e) = tmux::set_pane_option(
+        &pane,
+        tmux::PANE_ROLE_OPTION,
+        tmux::PANE_ROLE_AGENT_TREE,
+        runner,
+    ) {
         tracing::warn!(
             task_id = task_id.0,
-            %tmux_window,
+            %pane,
             error = %e,
-            "failed to open agent-tree companion pane"
+            "failed to mark the agent-tree companion pane with its role"
         );
     }
 }
@@ -506,16 +502,16 @@ mod tests {
 
     /// The companion pane's binary comes from the runner, not a literal — the
     /// seam that lets the real-tmux harness point it at a stub without shadowing
-    /// `dispatch` on `PATH`. The listing below carries that same stub path, so
-    /// this also covers the lookup matching argv0 by basename rather than
-    /// requiring the bare name.
+    /// `dispatch` on `PATH`. Nothing about *finding* the pane depends on that
+    /// path any more: the role marker is written on the pane whatever it exec'd.
     #[test]
     fn spawn_agent_tree_pane_launches_the_runners_dispatch_binary() {
         let mock = MockProcessRunner::new(vec![
-            // list-panes: the companion is %9, started with the stub binary
-            MockProcessRunner::ok_with_stdout(b"%1 \n%9 /stub/bin/dispatch-stub agent-tree 5\n"),
+            // list-panes: the companion is %9
+            MockProcessRunner::ok_with_stdout(b"%1 \n%9 agent_tree\n"),
             MockProcessRunner::ok(),                     // kill-pane
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window
+            MockProcessRunner::ok(),                     // set-option: the role marker
         ])
         .with_agent_binaries(AgentBinaries::stub());
 
@@ -532,13 +528,14 @@ mod tests {
     fn resync_agent_tree_pane_kills_and_respawns_companion() {
         let mock = MockProcessRunner::new(vec![
             // list-panes: the companion is %9
-            MockProcessRunner::ok_with_stdout(b"%1 \n%9 dispatch agent-tree 5\n"),
+            MockProcessRunner::ok_with_stdout(b"%1 \n%9 agent_tree\n"),
             MockProcessRunner::ok(),                     // kill-pane %9
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window relaunch
+            MockProcessRunner::ok(),                     // set-option: the role marker
         ]);
         resync_agent_tree_pane("task-5", &mock);
         let calls = mock.recorded_calls();
-        assert_eq!(calls.len(), 3);
+        assert_eq!(calls.len(), 4);
         assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%9"]);
         assert!(calls[2].1.contains(&"split-window".to_string()));
         // The window being split is targeted by its resolved pane ID, not its
@@ -547,6 +544,19 @@ mod tests {
         assert!(calls[2].1.contains(&mock.pane_id_of("task-5")));
         assert!(calls[2].1.contains(&"5".to_string()));
         assert!(calls[2].1.contains(&"agent-tree".to_string()));
+        // The respawn is a *new* pane, so it needs its own marker — otherwise a
+        // resynced window would look companion-less to the next toggle.
+        assert_eq!(
+            calls[3].1,
+            vec![
+                "set-option",
+                "-p",
+                "-t",
+                "%20",
+                tmux::PANE_ROLE_OPTION,
+                tmux::PANE_ROLE_AGENT_TREE
+            ]
+        );
     }
 
     #[test]
@@ -560,13 +570,14 @@ mod tests {
     #[test]
     fn resync_agent_tree_pane_still_respawns_when_kill_fails() {
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1 \n%9 dispatch agent-tree 5\n"),
+            MockProcessRunner::ok_with_stdout(b"%1 \n%9 agent_tree\n"),
             MockProcessRunner::fail("kill-pane error"),
             MockProcessRunner::ok_with_stdout(b"%20\n"),
+            MockProcessRunner::ok(), // set-option: the role marker
         ]);
         resync_agent_tree_pane("task-5", &mock);
         let calls = mock.recorded_calls();
-        assert_eq!(calls.len(), 3, "a respawn is still attempted");
+        assert_eq!(calls.len(), 4, "a respawn is still attempted");
         assert!(calls[2].1.contains(&"split-window".to_string()));
     }
 

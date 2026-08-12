@@ -14,7 +14,7 @@ use std::path::{Component, Path};
 use anyhow::{bail, Context, Result};
 
 use crate::process::ProcessRunner;
-use crate::tmux::{self, EDITOR_PANE_OPTION};
+use crate::tmux::{self, PANE_ROLE_EDITOR, PANE_ROLE_OPTION};
 
 /// Height of the editor pane as a percentage of the agent window — matches
 /// `agent_tree_editor_pane_percent` in docs/specs/agent-tree.allium.
@@ -82,8 +82,12 @@ pub fn open_in_editor(
 
     // A failed lookup must not degrade to "no editor pane": that would split a
     // fresh pane on every press until the window ran out of room.
-    let existing = tmux::pane_ids_with_option(my_pane, EDITOR_PANE_OPTION, runner)
-        .context("failed to look for an existing editor pane")?;
+    // Value-matched, not presence-matched: the tree pane this was called from
+    // carries the same option under a different role, and respawning *it* with an
+    // editor would take the tree away.
+    let existing =
+        tmux::pane_ids_with_option_value(my_pane, PANE_ROLE_OPTION, PANE_ROLE_EDITOR, runner)
+            .context("failed to look for an existing editor pane")?;
 
     if let Some(pane) = existing.first() {
         return tmux::respawn_pane_running(pane, &root, &command, runner);
@@ -99,7 +103,7 @@ pub fn open_in_editor(
     // The pane is open and showing the file; the marker only matters to the
     // *next* open, so a failure here is logged rather than reported as a failed
     // open. Worst case the next press splits a second pane.
-    if let Err(e) = tmux::set_pane_option(&pane, EDITOR_PANE_OPTION, "1", runner) {
+    if let Err(e) = tmux::set_pane_option(&pane, PANE_ROLE_OPTION, PANE_ROLE_EDITOR, runner) {
         tracing::warn!(%pane, error = %e, "failed to mark the editor pane");
     }
     Ok(())
@@ -145,8 +149,8 @@ mod tests {
     fn first_open_splits_a_pane_and_marks_it() {
         let fx = Fixture::new();
         let mock = MockProcessRunner::new(vec![
-            // pane_ids_with_option: no editor pane yet
-            MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n"),
+            // pane_ids_with_option_value: no editor pane yet
+            MockProcessRunner::ok_with_stdout(b"%1 agent_tree\n%2 \n"),
             // split-window
             MockProcessRunner::ok_with_stdout(b"%7\n"),
             // set-option
@@ -165,7 +169,14 @@ mod tests {
         );
         assert_eq!(
             calls[2].1,
-            vec!["set-option", "-p", "-t", "%7", EDITOR_PANE_OPTION, "1"]
+            vec![
+                "set-option",
+                "-p",
+                "-t",
+                "%7",
+                PANE_ROLE_OPTION,
+                PANE_ROLE_EDITOR
+            ]
         );
     }
 
@@ -173,7 +184,7 @@ mod tests {
     fn the_editor_pane_starts_in_the_worktree() {
         let fx = Fixture::new();
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok_with_stdout(b"%1 agent_tree\n"),
             MockProcessRunner::ok_with_stdout(b"%7\n"),
             MockProcessRunner::ok(),
         ]);
@@ -189,8 +200,8 @@ mod tests {
     fn a_second_open_respawns_the_existing_pane_instead_of_splitting() {
         let fx = Fixture::new();
         let mock = MockProcessRunner::new(vec![
-            // pane_ids_with_option: %7 is already the editor pane
-            MockProcessRunner::ok_with_stdout(b"%1 \n%7 1\n"),
+            // pane_ids_with_option_value: %7 is already the editor pane
+            MockProcessRunner::ok_with_stdout(b"%1 agent_tree\n%7 editor\n"),
             // respawn-pane
             MockProcessRunner::ok(),
         ]);
@@ -210,13 +221,37 @@ mod tests {
         );
     }
 
+    /// The tree pane the renderer is running in carries the *same* pane option
+    /// under a different role, so a presence-matched lookup would find it and
+    /// respawn the tree with an editor in it — taking the tree away and leaving
+    /// the window with no way back to it.
+    #[test]
+    fn the_tree_panes_own_role_is_not_mistaken_for_an_editor_pane() {
+        let fx = Fixture::new();
+        let mock = MockProcessRunner::new(vec![
+            // Only the calling pane is marked, and it is the tree.
+            MockProcessRunner::ok_with_stdout(b"%1 agent_tree\n"),
+            MockProcessRunner::ok_with_stdout(b"%7\n"), // split-window
+            MockProcessRunner::ok(),                    // set-option
+        ]);
+
+        open_in_editor(fx.root(), Path::new("src/lib.rs"), "%1", &editor(), &mock).unwrap();
+
+        let calls = mock.recorded_calls();
+        assert_eq!(calls[1].1[0], "split-window", "calls: {calls:?}");
+        assert!(
+            !calls.iter().any(|(_, args)| args[0] == "respawn-pane"),
+            "must not respawn the tree pane; calls: {calls:?}"
+        );
+    }
+
     /// Multi-word editors reach tmux as separate argv elements — a single
     /// "vim -p /path" string would be looked up as a binary of that name.
     #[test]
     fn a_multi_word_editor_stays_separate_argv_elements() {
         let fx = Fixture::new();
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok_with_stdout(b"%1 agent_tree\n"),
             MockProcessRunner::ok_with_stdout(b"%7\n"),
             MockProcessRunner::ok(),
         ]);
@@ -276,7 +311,7 @@ mod tests {
     fn a_failing_split_is_an_error() {
         let fx = Fixture::new();
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok_with_stdout(b"%1 agent_tree\n"),
             MockProcessRunner::fail("no space for a new pane"),
         ]);
 
@@ -292,7 +327,7 @@ mod tests {
     fn a_failing_marker_write_does_not_fail_the_open() {
         let fx = Fixture::new();
         let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
+            MockProcessRunner::ok_with_stdout(b"%1 agent_tree\n"),
             MockProcessRunner::ok_with_stdout(b"%7\n"),
             MockProcessRunner::fail("bad option"),
         ]);

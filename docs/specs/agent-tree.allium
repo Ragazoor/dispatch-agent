@@ -475,24 +475,52 @@ rule HideAgentTreePane {
         -- status field.
         --
         -- == How the companion pane is identified ==
-        -- By the command it was started with: tmux's #{pane_start_command},
-        -- matched as argv0's basename equal to the dispatch binary AND argv1
-        -- equal to the agent-tree subcommand. No such pane in the window means
-        -- hidden. Two details are load-bearing:
-        --   * The match is on argv0 and argv1 as separate tokens, never a
-        --     substring. An editor pane opened on a file whose own path
-        --     contains "agent-tree" — docs/specs/agent-tree.allium, say — would
-        --     satisfy a substring test, and the toggle would kill the user's
-        --     editor.
-        --   * argv0 is compared by basename, because the binary is named
-        --     through ProcessRunner::agent_binaries and may be an absolute
-        --     path (which is how the real-tmux harness points it at a stub).
-        -- The marker is retroactive at no cost: tmux reports the start command
-        -- of panes already running, so windows open when this shipped need no
-        -- migration and no fallback heuristic.
+        -- By a role marker dispatch writes on the pane at the moment it creates
+        -- it: a pane-scoped tmux user option whose value says what the pane is
+        -- for. The companion tree pane carries the agent-tree role; the editor
+        -- pane OpenAgentTreeFileInEditor opens carries the editor role. The
+        -- lookup matches the role's EXACT value, so the two never stand in for
+        -- each other — a toggle cannot kill the editor, and an open cannot
+        -- respawn the tree. No pane in the window carrying the agent-tree role
+        -- means hidden.
         --
-        -- == What this replaced, and why ==
-        -- The kill target used to be "the window's single INACTIVE pane"
+        -- One marker, both panes, and that is the point: "a pane dispatch put in
+        -- this window" is now exactly "a pane carrying this option", whatever
+        -- its role — which is what the pin drain reads (see
+        -- ToggleVsSplitPaneInteraction below and split-pane.allium's
+        -- PinTaskInSplitPane), in one lookup, and without being taught about any
+        -- future kind of dispatch-created pane.
+        --
+        -- == What this replaced, part 1: the start command ==
+        -- Identity was first derived from the command the pane was started with
+        -- (tmux's #{pane_start_command}), matched as argv0's basename plus argv1.
+        -- It was correct, and it was chosen because it needed no migration — but
+        -- it re-derived identity from a string tmux was never asked to keep
+        -- stable. It whitespace-split a command line, so a dispatch binary at a
+        -- path containing a space mis-parsed; it compared argv0 by basename
+        -- because that path may be absolute; and it had to actively defend
+        -- against substring matching, because an editor pane showing this very
+        -- file has "agent-tree" in its command line. A marker written by the code
+        -- that created the pane needs none of those defences: it cannot be
+        -- confused by the contents of a file an editor happens to be showing.
+        --
+        -- ACCEPTED COST: the marker is NOT retroactive. The start command was
+        -- reported for panes already running; an option can only be written to a
+        -- pane being created. So agent windows already open when this changed
+        -- carry unmarked panes, and for the remaining life of each such window
+        -- the toggle reads its tree as hidden and splits a SECOND tree pane, and
+        -- pinning or resyncing no longer finds those panes. This was accepted
+        -- deliberately (#3902): the regression is one-off and self-clearing as
+        -- agent windows turn over, and each affected window has its own escape
+        -- hatch — the second toggle press kills the marked pane the first one
+        -- created, and every pane in a fresh window is marked. The two
+        -- alternatives were rejected for the same reason: both keep the string
+        -- matcher alive, either as a fallback nothing forces anyone to delete, or
+        -- inside new startup code that backfills markers — which moves the
+        -- fragility rather than removing it.
+        --
+        -- == What this replaced, part 2: focus ==
+        -- Before either form of marker, the kill target used to be "the window's single INACTIVE pane"
         -- (`tmux::inactive_pane_id`), justified by every split helper passing
         -- `-d`, which leaves focus on the agent's own pane at split time. That
         -- is a property of the split, not of the window, and it failed in two
@@ -554,8 +582,8 @@ rule ShowAgentTreePane {
         --
         -- == IMPLEMENTED ==
         -- `pane.status = hidden` above is read the same live way
-        -- HideAgentTreePane's guidance describes: no pane in the window was
-        -- started with the agent-tree command. The re-split reuses
+        -- HideAgentTreePane's guidance describes: no pane in the window carries
+        -- the agent-tree role marker. The re-split reuses
         -- SplitAgentTreePaneOnAgentLaunch's own
         -- implementation directly — toggle_agent_tree_pane
         -- (src/dispatch/agents.rs) calls the same spawn_agent_tree_pane
@@ -567,9 +595,12 @@ rule ShowAgentTreePane {
         -- Resolves ToggleTargetResolution in favour of retrofitting: because
         -- "hidden" and "never had a pane" are the same live tmux state (no pane
         -- carrying the marker), a task-<id> window that predates this feature —
-        -- or one whose
-        -- automatic split at launch failed — gets a companion pane the first
-        -- time a user manually toggles it. This does not violate
+        -- or one whose automatic split at launch failed, or one whose pane
+        -- predates the role marker itself (see HideAgentTreePane's ACCEPTED
+        -- COST) — gets a marked companion pane the first time a user manually
+        -- toggles it. That is also what bounds that accepted regression: the
+        -- unmarked pane survives one extra press, and every pane the toggle
+        -- itself creates is marked. This does not violate
         -- SplitAgentTreePaneOnAgentLaunch's "no retrofit" guidance, which is
         -- about automatic creation on launch; a deliberate user keypress is a
         -- different trigger.
@@ -958,7 +989,10 @@ invariant OneCompanionPanePerAgentWindow {
 -- that opened it knows it is there.
 --
 -- Held by construction rather than enforced: an open reuses the pane it finds,
--- and finds it by a mark written immediately after the split. One gap follows
+-- and finds it by a mark written immediately after the split — the editor value
+-- of the same role marker the toggle reads (see HideAgentTreePane's "How the
+-- companion pane is identified"), so one open cannot find the other pane. One
+-- gap follows
 -- from that and is accepted — if the mark cannot be written, the pane is already
 -- open showing the file, so the open reports success and the NEXT open, finding
 -- no mark, splits a second pane. Failing the open instead would report a

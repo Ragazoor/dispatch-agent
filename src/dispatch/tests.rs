@@ -11,6 +11,7 @@ use super::*;
 
 use crate::models::{EpicId, Task, TaskId, TaskStatus};
 use crate::process::{exit_fail, AgentBinaries, MockProcessRunner, SUBPROCESS_TIMEOUT};
+use crate::tmux;
 use chrono::Utc;
 use std::process::Output;
 use std::time::Duration;
@@ -445,10 +446,10 @@ fn parse_tmux_window_task_id_rejects_non_task_windows() {
 #[test]
 fn toggle_kills_the_tree_pane_even_when_the_tree_pane_is_active() {
     let mock = MockProcessRunner::new(vec![
-        // pane_ids_with_start_command: %2 is the tree pane, and it is the active
-        // one — which the listing does not even report, because identity no
-        // longer depends on it.
-        MockProcessRunner::ok_with_stdout(b"%1 \n%2 dispatch agent-tree 42\n"),
+        // pane_ids_with_option_value: %2 carries the agent-tree role, and it is
+        // the active pane — which the listing does not even report, because
+        // identity no longer depends on it.
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n"),
         MockProcessRunner::ok(), // kill-pane
     ])
     .with_windows(&["task-42"]);
@@ -461,13 +462,12 @@ fn toggle_kills_the_tree_pane_even_when_the_tree_pane_is_active() {
 
 /// An editor pane makes two panes inactive, which the old heuristic read as
 /// "hidden" — so the toggle split a *second* companion pane instead of killing
-/// the one already there.
+/// the one already there. Both panes are dispatch's now, so what keeps them
+/// apart is the marker's *value*: presence-matching here would kill the editor.
 #[test]
-fn toggle_with_an_editor_pane_open_still_kills_the_tree_pane() {
+fn toggle_with_an_editor_pane_open_kills_only_the_tree_pane() {
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(
-            b"%1 \n%2 dispatch agent-tree 42\n%3 vim /w/src/lib.rs\n",
-        ),
+        MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%3 editor\n"),
         MockProcessRunner::ok(), // kill-pane
     ])
     .with_windows(&["task-42"]);
@@ -483,15 +483,16 @@ fn toggle_with_an_editor_pane_open_still_kills_the_tree_pane() {
     assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%2"]);
 }
 
-/// An editor pane showing this feature's own spec file contains the string
-/// "agent-tree", so the match cannot be a substring test — it would kill the
-/// user's editor.
+/// A pane dispatch did not create carries no role, whatever it is running — so
+/// the toggle re-splits rather than killing it. The lookup this replaced had to
+/// defend against the *contents* of such a pane's command line: an editor opened
+/// on docs/specs/agent-tree.allium matched a substring test.
 #[test]
-fn toggle_is_not_fooled_by_an_editor_pane_showing_an_agent_tree_file() {
+fn toggle_ignores_an_unmarked_pane_and_splits_a_tree_pane() {
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1 \n%3 vim /w/docs/specs/agent-tree.allium\n"),
-        // No tree pane found, so the toggle re-splits one.
-        MockProcessRunner::ok_with_stdout(b"%4\n"),
+        MockProcessRunner::ok_with_stdout(b"%1 \n%3 \n"),
+        MockProcessRunner::ok_with_stdout(b"%4\n"), // split-window
+        MockProcessRunner::ok(),                    // set-option
     ])
     .with_windows(&["task-42"]);
 
@@ -505,47 +506,62 @@ fn toggle_is_not_fooled_by_an_editor_pane_showing_an_agent_tree_file() {
     );
 }
 
-/// The dispatch binary is named through `ProcessRunner::agent_binaries` and may
-/// be an absolute path (which is how the real-tmux harness points it at a stub),
-/// so argv0 is matched by basename.
-#[test]
-fn the_tree_pane_is_matched_by_an_absolute_dispatch_path() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%2 /opt/bin/dispatch agent-tree 42\n"),
-        MockProcessRunner::ok(), // kill-pane
-    ])
-    .with_windows(&["task-42"]);
-
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
-
-    assert_eq!(mock.recorded_calls()[1].1, vec!["kill-pane", "-t", "%2"]);
-}
-
-/// A pane running some other `dispatch` subcommand is not the companion pane.
-#[test]
-fn the_tree_pane_lookup_ignores_other_dispatch_subcommands() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1 \n%2 dispatch tui\n"),
-        MockProcessRunner::ok_with_stdout(b"%4\n"), // split-window
-    ])
-    .with_windows(&["task-42"]);
-
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
-
-    assert_eq!(mock.recorded_calls()[1].1[0], "split-window");
-}
-
 #[test]
 fn toggle_splits_a_tree_pane_when_the_window_has_none() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"%1 \n"),
         MockProcessRunner::ok_with_stdout(b"%2\n"), // split-window
+        MockProcessRunner::ok(),                    // set-option
     ])
     .with_windows(&["task-42"]);
 
     toggle_agent_tree_pane("task-42", &mock).unwrap();
 
     assert_eq!(mock.recorded_calls()[1].1[0], "split-window");
+}
+
+/// The spawn side writes the marker the lookup side reads — the whole mechanism
+/// is these two halves agreeing, so the `set-option` is asserted verbatim.
+#[test]
+fn the_spawned_tree_pane_is_marked_with_its_role() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"%1 \n"),
+        MockProcessRunner::ok_with_stdout(b"%2\n"), // split-window returns the new pane
+        MockProcessRunner::ok(),                    // set-option
+    ])
+    .with_windows(&["task-42"]);
+
+    toggle_agent_tree_pane("task-42", &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    assert_eq!(
+        calls[2].1,
+        vec![
+            "set-option",
+            "-p",
+            "-t",
+            "%2",
+            tmux::PANE_ROLE_OPTION,
+            tmux::PANE_ROLE_AGENT_TREE
+        ],
+        "calls: {calls:?}"
+    );
+}
+
+/// The marker matters to the *next* toggle, not this one: the pane is already
+/// open and rendering, so a failed write is logged rather than reported as a
+/// failed toggle. Same accepted gap as the editor pane's own marker
+/// (docs/specs/agent-tree.allium: OneEditorPanePerAgentWindow).
+#[test]
+fn a_failing_role_marker_write_does_not_fail_the_toggle() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"%1 \n"),
+        MockProcessRunner::ok_with_stdout(b"%2\n"),
+        MockProcessRunner::fail("bad option"),
+    ])
+    .with_windows(&["task-42"]);
+
+    assert!(toggle_agent_tree_pane("task-42", &mock).is_ok());
 }
 
 #[test]
@@ -560,12 +576,9 @@ fn toggle_is_a_no_op_for_a_window_that_is_not_a_task_window() {
 /// single-inactive-pane lookup was ambiguous and orphaned both.
 #[test]
 fn companion_pane_ids_returns_both_the_tree_and_the_editor_pane() {
-    let mock = MockProcessRunner::new(vec![
-        // pane_ids_with_start_command (tree)
-        MockProcessRunner::ok_with_stdout(b"%1 \n%2 dispatch agent-tree 42\n%3 vim /w/a.rs\n"),
-        // pane_ids_with_option (editor)
-        MockProcessRunner::ok_with_stdout(b"%1 \n%2 \n%3 1\n"),
-    ])
+    let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+        b"%1 \n%2 agent_tree\n%3 editor\n",
+    )])
     .with_windows(&["task-42"]);
 
     let found = companion_pane_ids("task-42", &mock).unwrap();
@@ -573,13 +586,28 @@ fn companion_pane_ids_returns_both_the_tree_and_the_editor_pane() {
     assert_eq!(found, vec!["%2".to_string(), "%3".to_string()]);
 }
 
+/// One lookup, not one per role: "a pane dispatch created" is a single question
+/// about the marker's presence, and asking it per role is what the three-call
+/// version did — a cost paid on every pin, and a place for a future role to be
+/// forgotten.
+#[test]
+fn companion_pane_ids_asks_tmux_once() {
+    let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
+        b"%1 \n%2 agent_tree\n%3 editor\n",
+    )])
+    .with_windows(&["task-42"]);
+
+    companion_pane_ids("task-42", &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    assert_eq!(calls.len(), 1, "calls: {calls:?}");
+    assert_eq!(calls[0].1[0], "list-panes");
+}
+
 #[test]
 fn companion_pane_ids_is_empty_for_a_window_with_only_an_agent_pane() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1 \n"),
-        MockProcessRunner::ok_with_stdout(b"%1 \n"),
-    ])
-    .with_windows(&["task-42"]);
+    let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n")])
+        .with_windows(&["task-42"]);
 
     assert!(companion_pane_ids("task-42", &mock).unwrap().is_empty());
 }
@@ -946,23 +974,25 @@ fn dispatch_agent_splits_agent_tree_companion_pane_after_send_keys() {
     dispatch_agent(&task, &mock, None, &LearningInjections::default(), None).unwrap();
 
     let calls = mock.recorded_calls();
-    let last = calls.last().unwrap();
-    assert_eq!(last.0, "tmux");
-    assert_eq!(last.1[0], "split-window");
+    // The split, not the last call: the role marker written on the pane it
+    // returns follows it (Step::CompanionRoleMark).
+    let split = &calls[script.index_of(Step::CompanionSplit)];
+    assert_eq!(split.0, "tmux");
+    assert_eq!(split.1[0], "split-window");
     assert!(
-        last.1.iter().any(|a| a == "30%"),
+        split.1.iter().any(|a| a == "30%"),
         "companion pane should use the 30% size, got: {:?}",
-        last.1
+        split.1
     );
     assert_eq!(
-        last.1[last.1.len() - 3..],
+        split.1[split.1.len() - 3..],
         vec![
             "dispatch".to_string(),
             "agent-tree".to_string(),
             "42".to_string(),
         ],
         "companion pane should run `dispatch agent-tree <task_id>`, got: {:?}",
-        last.1
+        split.1
     );
 }
 
@@ -1888,7 +1918,7 @@ fn resume_skips_git_issues_tmux_continue() {
     resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
 
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 6);
+    script.assert_matches(&calls);
     assert_eq!(calls[0].0, "tmux");
     assert_eq!(calls[0].1[0], "new-window");
     assert_eq!(calls[1].1[0], "set-option");
@@ -1910,7 +1940,7 @@ fn resume_agent_splits_agent_tree_companion_pane_after_send_keys() {
     resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
 
     let calls = mock.recorded_calls();
-    let last = calls.last().unwrap();
+    let last = &calls[script.index_of(Step::CompanionSplit)];
     assert_eq!(last.0, "tmux");
     assert_eq!(last.1[0], "split-window");
     assert_eq!(
@@ -3231,8 +3261,8 @@ fn toggle_agent_tree_pane_hides_when_companion_pane_present() {
     // index, proving the kill target comes from the discovered pane id, not
     // an assumed index.
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%3 \n%77 dispatch agent-tree 42\n"), // list-panes
-        MockProcessRunner::ok(),                                                 // kill-pane
+        MockProcessRunner::ok_with_stdout(b"%3 \n%77 agent_tree\n"), // list-panes
+        MockProcessRunner::ok(),                                     // kill-pane
     ]);
     toggle_agent_tree_pane("task-42", &mock).unwrap();
     let calls = mock.recorded_calls();
@@ -3243,12 +3273,13 @@ fn toggle_agent_tree_pane_hides_when_companion_pane_present() {
 #[test]
 fn toggle_agent_tree_pane_shows_when_no_companion_pane() {
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%3 \n"), // list-panes: single pane, plain shell
+        MockProcessRunner::ok_with_stdout(b"%3 \n"), // list-panes: single pane, unmarked
         MockProcessRunner::ok_with_stdout(COMPANION_PANE_ID), // split-window
+        MockProcessRunner::ok(),                     // set-option: the role marker
     ]);
     toggle_agent_tree_pane("task-42", &mock).unwrap();
     let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 2);
+    assert_eq!(calls.len(), 3);
     assert_eq!(calls[1].0, "tmux");
     assert_eq!(calls[1].1[0], "split-window");
     assert!(

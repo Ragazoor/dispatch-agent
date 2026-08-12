@@ -45,6 +45,7 @@ use anyhow::Result;
 
 use super::worktree::FETCH_MAX_ATTEMPTS;
 use crate::process::MockProcessRunner;
+use crate::tmux;
 
 /// tmux's reply to the companion pane's `split-window -P`: the new pane's id.
 /// Arbitrary but non-positional on purpose — a pane id that does not look like
@@ -117,6 +118,9 @@ pub(crate) enum Step {
     SendKeysEnter,
     /// `tmux split-window` for the `dispatch agent-tree` companion pane.
     CompanionSplit,
+    /// `tmux set-option -p … @dispatch_pane_role agent_tree` on the pane that
+    /// split just returned — how dispatch will recognise that pane again.
+    CompanionRoleMark,
 }
 
 impl Step {
@@ -134,7 +138,14 @@ impl Step {
             Step::AheadBehind => program == "git" && has("rev-list"),
             Step::WorktreeAdd => program == "git" && has("worktree"),
             Step::NewWindow => program == "tmux" && command_is("new-window"),
-            Step::SetDispatchDir => program == "tmux" && command_is("set-option"),
+            // The two `set-option` calls differ in scope and in which option they
+            // name: the window's dispatch dir, and the new pane's role.
+            Step::SetDispatchDir => {
+                program == "tmux" && command_is("set-option") && has("@dispatch_dir")
+            }
+            Step::CompanionRoleMark => {
+                program == "tmux" && command_is("set-option") && has(tmux::PANE_ROLE_OPTION)
+            }
             Step::SetSplitHook => program == "tmux" && command_is("set-hook"),
             // The two send-keys calls differ only by `-l`, which is exactly what
             // separates the payload from the Enter that submits it.
@@ -197,7 +208,8 @@ enum FetchOutcome {
 /// Where the sequence ends.
 #[derive(Clone, Copy)]
 enum Ending {
-    /// Runs through [`Step::CompanionSplit`].
+    /// Runs through [`Step::CompanionRoleMark`], i.e. the whole companion-pane
+    /// tail.
     Complete,
     /// This step succeeds and nothing beyond it is queued — for a dispatch that
     /// stops for a reason other than a subprocess failure (e.g. the
@@ -445,6 +457,7 @@ impl DispatchScript {
             Step::SendKeysLiteral,
             Step::SendKeysEnter,
             Step::CompanionSplit,
+            Step::CompanionRoleMark,
         ]);
 
         let last = match self.ending {
@@ -616,6 +629,7 @@ fn failure_stderr(step: Step) -> &'static str {
         Step::SetSplitHook => "unknown hook",
         Step::SendKeysLiteral | Step::SendKeysEnter => "can't find pane",
         Step::CompanionSplit => "no target pane",
+        Step::CompanionRoleMark => "unknown option",
     }
 }
 
@@ -961,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "missing CompanionSplit")]
+    #[should_panic(expected = "missing CompanionRoleMark")]
     fn assert_matches_rejects_a_missing_call() {
         let mut calls = recorded_resume_calls();
         calls.pop();
