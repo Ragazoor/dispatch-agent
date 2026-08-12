@@ -1,7 +1,20 @@
 use crate::models::FeedItem;
 
 /// Deserialise a JSON byte slice as a `Vec<FeedItem>`.
-pub(super) fn parse_feed_items(bytes: &[u8]) -> anyhow::Result<Vec<FeedItem>> {
+///
+/// The SINGLE feed-stdout decode, called by all three feed entry points:
+/// [`crate::feed::FeedJob::run`] (auto-poll), `exec_trigger_epic_feed`
+/// (manual "r"), and `cmd_verify_feed` (the `verify-feed` CLI). Three separate
+/// `serde_json` call sites were three places a change to the feed wire format
+/// could land in one path and not the others — the shape that produced the
+/// `reviews_parent` parent-flat bug in the sync layer. See `feeds.allium`'s
+/// `FeedItemParse` block.
+///
+/// It holds no validation of its own: strict `tag`/`url_type` rejection and
+/// lenient `signals` dropping are properties of [`FeedItem`]'s `Deserialize`
+/// impl, so they apply to every caller identically and cannot diverge per path.
+/// Presentation of the error stays with each caller.
+pub fn parse_feed_items(bytes: &[u8]) -> anyhow::Result<Vec<FeedItem>> {
     serde_json::from_slice(bytes).map_err(Into::into)
 }
 
@@ -75,6 +88,28 @@ mod tests {
         assert!(
             parse_feed_items(json).is_err(),
             "unknown url_type must fail deserialization, consistent with tag"
+        );
+    }
+
+    #[test]
+    fn unrecognised_signal_dropped_not_fatal() {
+        // The single-item invariant lives with the type, in
+        // src/models/tasks.rs::feed_item_signals_default_empty_and_unknown_skipped;
+        // this asserts it survives the array path every feed caller uses.
+        let json = br#"[{
+            "external_id": "1",
+            "title": "T",
+            "description": "",
+            "status": "backlog",
+            "tag": "pr-review",
+            "signals": ["reviewed", "bogus"]
+        }]"#;
+        let items = parse_feed_items(json).unwrap();
+        assert_eq!(items.len(), 1, "an unknown signal must not fail the item");
+        assert_eq!(
+            items[0].signals,
+            vec![crate::models::Signal::Reviewed],
+            "the unrecognised signal is dropped, the recognised one kept"
         );
     }
 

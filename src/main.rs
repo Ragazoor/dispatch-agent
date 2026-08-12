@@ -461,7 +461,42 @@ async fn cmd_list(db: &std::path::Path, status: Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Initialise a `tracing_subscriber` writing to **stderr**, for `verify-feed`.
+///
+/// Every other feed path logs to `app.log` via `init_app_log_subscriber`;
+/// `verify-feed` is a bare CLI command with no data dir in play, so without this
+/// its `tracing::warn!` calls go to the global no-op dispatcher and vanish. The
+/// only warning that currently reaches it is the dropped-signal warning from
+/// `FeedItem`'s lenient `signals` decode — and that is precisely the kind of
+/// evidence `verify-feed` exists to print (`feeds.allium`: `VerifyFeed`).
+///
+/// Writes to stderr, not stdout: stdout carries the parsed-item table, which a
+/// user may pipe.
+///
+/// The filter is a fixed `warn`, deliberately NOT `EnvFilter::from_default_env()`
+/// like `init_app_log_subscriber`: `feeds.allium`'s `VerifyFeed` rule states
+/// flatly that a dropped signal IS reported, and honouring `RUST_LOG` would make
+/// that guarantee env-conditional. A target-scoped value such as
+/// `RUST_LOG=dispatch_tui=error` overrides an added global directive and silently
+/// suppresses the report — and `RUST_LOG=dispatch_tui=debug` is the form CLAUDE.md
+/// teaches for debugging, so it is realistically exported in this repo's shells.
+/// verify-feed has no use for RUST_LOG-raised verbosity anyway: its whole output
+/// is the evidence it was asked to print.
+fn init_stderr_warn_subscriber() {
+    // Ignore an init failure the way the agent-tree paths do: a subscriber that
+    // is somehow already installed must not abort the verify.
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_env_filter(EnvFilter::new("warn"))
+        .try_init();
+}
+
 fn cmd_verify_feed(command: String) -> Result<()> {
+    // Must precede the parse below: the dropped-signal warning is emitted from
+    // inside FeedItem's Deserialize impl, so a subscriber installed afterwards
+    // would miss it.
+    init_stderr_warn_subscriber();
     let output = std::process::Command::new("sh")
         .args(["-c", &command])
         .output()
@@ -489,8 +524,14 @@ fn cmd_verify_feed(command: String) -> Result<()> {
             stderr_on_success.trim()
         );
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    match serde_json::from_str::<Vec<models::FeedItem>>(stdout.trim()) {
+    // The SAME parse the two runtime feed paths use (auto-poll's FeedJob::run
+    // and the manual "r" exec_trigger_epic_feed), so verify-feed accepts and
+    // rejects exactly what they do — the whole point of a pre-flight check
+    // (feeds.allium: FeedItemParse). Only the reporting below is CLI-specific.
+    // Parsing the raw bytes rather than a lossy String also means invalid-UTF-8
+    // stdout now fails here exactly as it does on the runtime paths, instead of
+    // having U+FFFD substituted in first.
+    match dispatch_tui::feed::parse_feed_items(&output.stdout) {
         Ok(items) => {
             if items.is_empty() {
                 eprintln!(
@@ -516,8 +557,14 @@ fn cmd_verify_feed(command: String) -> Result<()> {
             println!("✓ {} valid item{s}", items.len());
         }
         Err(e) => {
-            let preview: String = stdout.trim().chars().take(500).collect();
-            eprintln!("verify-feed: failed to parse output as FeedItem array: {e}");
+            // Built here, not on the success path: the lossy conversion exists
+            // only for this preview.
+            let preview: String = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .chars()
+                .take(500)
+                .collect();
+            eprintln!("verify-feed: failed to parse output as FeedItem array: {e:#}");
             eprintln!("Output (first 500 chars):\n{preview}");
             std::process::exit(1);
         }

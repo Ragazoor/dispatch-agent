@@ -889,6 +889,78 @@ async fn verify_feed_valid_items_succeeds() {
 }
 
 #[tokio::test]
+async fn verify_feed_reports_dropped_unrecognised_signal() {
+    // feeds.allium (FeedItem.signals): an unrecognised signal is DROPPED, not
+    // fatal — so the item still counts as valid and the exit status stays 0.
+    // But the drop must be REPORTED. verify-feed is the only feed entry point
+    // with no app.log sink, so without a stderr tracing subscriber the
+    // deserialize_lenient_signals warning goes to a no-op dispatcher and a user
+    // debugging a typo'd signal sees "✓ 1 valid item" with no hint anything was
+    // discarded — the tool whose whole job is printing evidence losing the
+    // evidence.
+    let db = NamedTempFile::new().unwrap();
+    let out = binary()
+        // Hermetic: the report must not depend on the developer's shell. Before
+        // the filter was pinned to a fixed `warn`, RUST_LOG=dispatch_tui=error
+        // suppressed the warning and this test failed.
+        .env_remove("RUST_LOG")
+        .args([
+            "--db",
+            db.path().to_str().unwrap(),
+            "verify-feed",
+            r#"echo '[{"external_id":"x1","title":"T","description":"","status":"backlog","tag":"pr-review","signals":["reviewed","bogus"]}]'"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "A dropped signal is non-fatal per feeds.allium; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("x1") && stdout.contains("1 valid item"),
+        "Expected the item to still count as valid, got stdout: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("dropping unrecognised feed signal"),
+        "Expected the dropped-signal warning on stderr, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("bogus"),
+        "Expected the offending signal value on stderr, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn verify_feed_recognised_signals_produce_no_warning() {
+    // Guards against a subscriber configured so noisily that a clean feed nags
+    // on every run — the warning must fire for a dropped signal only.
+    let db = NamedTempFile::new().unwrap();
+    let out = binary()
+        .env_remove("RUST_LOG")
+        .args([
+            "--db",
+            db.path().to_str().unwrap(),
+            "verify-feed",
+            r#"echo '[{"external_id":"x1","title":"T","description":"","status":"backlog","tag":"pr-review","signals":["reviewed"]}]'"#,
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("dropping unrecognised"),
+        "A fully-recognised signal list must not warn, got stderr: {stderr}"
+    );
+}
+
+#[tokio::test]
 async fn verify_feed_missing_tag_fails() {
     let db = NamedTempFile::new().unwrap();
     let out = binary()

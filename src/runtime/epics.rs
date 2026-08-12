@@ -271,9 +271,13 @@ impl TuiRuntime {
                 };
             let wrote_stderr = !output.stderr.is_empty();
 
-            let items: Vec<models::FeedItem> = match serde_json::from_slice(&output.stdout) {
+            // The SAME parse the auto-poll FeedRunner and the verify-feed CLI
+            // use, so the three paths cannot drift on what a feed command is
+            // allowed to emit (feeds.allium: FeedItemParse). Only the
+            // presentation of the failure is ours — the status bar surface.
+            let items: Vec<models::FeedItem> = match crate::feed::parse_feed_items(&output.stdout) {
                 Ok(i) => i,
-                Err(e) => return fail(e.to_string()),
+                Err(e) => return fail(format!("{e:#}")),
             };
 
             let count = items.len(); // items emitted by the feed command, not tasks inserted

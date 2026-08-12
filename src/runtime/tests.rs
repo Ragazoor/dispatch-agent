@@ -3344,6 +3344,45 @@ async fn exec_trigger_epic_feed_malformed_json() {
 }
 
 #[tokio::test]
+async fn exec_trigger_epic_feed_missing_tag_fails_and_upserts_nothing() {
+    // The manual "r" path must reject a tag-less item exactly as the auto-poll
+    // path and verify-feed do. This held by accident while all three called
+    // serde_json separately; once the manual path routes through the shared
+    // parse_feed_items it holds by construction. See feeds.allium's
+    // FeedItemParse block.
+    let db = test_db().await;
+    let epic = db.create_epic("Untagged Feed", "", None).await.unwrap();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+    rt.exec_trigger_epic_feed(
+        epic.id,
+        "Untagged Feed".to_string(),
+        r#"echo '[{"external_id":"x1","title":"T","description":"","status":"backlog"}]'"#
+            .to_string(),
+        false,
+    );
+
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel closed");
+    assert!(
+        matches!(
+            msg,
+            Message::Feed(crate::tui::messages::FeedMessage::Failed { .. })
+        ),
+        "a missing tag should produce FeedFailed, got: {msg:?}"
+    );
+    let tasks = db.list_all().await.unwrap();
+    assert!(
+        tasks.is_empty(),
+        "a rejected emission must upsert no task, got: {tasks:?}"
+    );
+}
+
+#[tokio::test]
 async fn exec_trigger_epic_feed_grouped_puts_tasks_in_sub_epics() {
     let db = test_db().await;
     let epic = db.create_epic("Reviews", "", None).await.unwrap();

@@ -17,6 +17,10 @@ use crate::process::ProcessRunner;
 
 pub(crate) use exec::{exec_feed_command, resolve_base_branches};
 pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
+// `pub`, unlike the `pub(crate)` re-exports above: the `verify-feed` CLI in
+// src/main.rs is a separate bin crate and is one of this function's three
+// callers. See feeds.allium's FeedItemParse block.
+pub use parse::parse_feed_items;
 pub use routing::route;
 
 /// Log `result`'s error via `tracing::warn!` and discard it. Shared by the
