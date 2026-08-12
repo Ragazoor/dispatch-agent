@@ -372,11 +372,11 @@ rule FeedTick {
         -- epic's command is spawned as a background tokio::task so that
         -- key events and MCP notifications remain responsive during fetch.
         -- FeedRunner runs in its own loop at FEED_POLL_INTERVAL (2s,
-        -- src/feed/mod.rs:159), independent from the TUI's TickInterval /
-        -- TICK_INTERVAL. Both are 2s today, but the constants are kept
-        -- separate so the two concerns can evolve independently.
-        -- Implementation: src/feed/mod.rs::FeedRunner (struct at
-        -- src/feed/mod.rs:161, tick at src/feed/mod.rs:223).
+        -- src/feed/mod.rs::FEED_POLL_INTERVAL), independent from the TUI's
+        -- TickInterval / TICK_INTERVAL. Both are 2s today, but the constants
+        -- are kept separate so the two concerns can evolve independently.
+        -- Implementation: src/feed/mod.rs::FeedRunner (struct and
+        -- src/feed/mod.rs::FeedRunner::tick).
         --
         -- Performance cache + invalidation invariant. The runner caches "does
         -- any epic have a feed_command?" (any_feed_cmds); when it is
@@ -921,7 +921,7 @@ rule RoleRoutedFeedSync {
         -- src/feed/ingest/mod.rs::run_feed_sync_by_role when epic.feed_role =
         -- ReviewsParent (a MyReviews/TeamReviews/Bots epic with a feed_command is
         -- a provisioning bug, rejected by the provisioning guard in
-        -- src/feed/mod.rs (mod.rs:114-129), which debug_asserts and skips it;
+        -- src/feed/mod.rs::FeedJob::run (the debug_assert! block), which debug_asserts and skips it;
         -- that guard does NOT itself do the role->path selection).
         -- Third-level (repo-group) routing lives in
         -- src/feed/ingest/routing.rs::route_and_group_entries: per item, after
@@ -1022,9 +1022,11 @@ rule FeedCommandFailure {
         epic.last_run = now()
 
     @guidance
-        -- Implementation: src/feed/mod.rs::FeedRunner.tick (tick at
-        -- src/feed/mod.rs:223) — see the three match arms wrapping spawn,
-        -- status, and serde_json::from_slice.
+        -- Implementation: src/feed/mod.rs::FeedRunner::tick spawns a
+        -- FeedJob per eligible epic; src/feed/mod.rs::FeedJob::run drives
+        -- exec -> parse -> sync. The three failure arms now live at: spawn
+        -- and non-zero exit in src/feed/exec.rs::exec_feed_command, and the
+        -- JSON parse in src/feed/parse.rs::parse_feed_items.
         -- A future improvement is surfacing repeated failures in the TUI
         -- as an epic-level health badge, but that is out of scope here.
 }
@@ -1099,9 +1101,9 @@ rule FeedCommandStderrOnSuccess {
 -- (src/feed/ingest/mod.rs:140) is the shared role->path dispatcher; it
 -- delegates to src/feed/ingest/mod.rs::run_feed_sync (flat/grouped) or
 -- src/feed/ingest/role_routed.rs::run_role_routed_feed_sync (reviews_parent).
--- FeedRunner.tick (src/feed/mod.rs:130) and exec_trigger_epic_feed
--- (src/runtime/epics.rs:265) each call run_feed_sync_by_role; neither performs
--- its own feed_role switch.
+-- FeedRunner.tick (via src/feed/mod.rs::FeedJob::run) and
+-- src/runtime/epics.rs::exec_trigger_epic_feed each call
+-- run_feed_sync_by_role; neither performs its own feed_role switch.
 
 -- == Manual trigger ==
 
