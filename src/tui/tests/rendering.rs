@@ -549,36 +549,159 @@ async fn render_help_overlay_no_longer_teaches_feed_config_key() {
     );
 }
 
-/// The help overlay must teach the keymap that actually exists
-/// (docs/plans/3809-keybinding-pruning-implementation.md §7). Targeted
-/// `contains` checks rather than a snapshot, so that deleting one of these
-/// lines reads as a regression instead of a snapshot edit.
+/// Extract the text lines *inside* the help popup's double border.
+///
+/// The board still renders behind the overlay, and its footer hint bars are
+/// full of `[k]`-shaped tokens — parsing the whole buffer would silently mix
+/// them into the keymap comparison. The popup is located by its `╔`/`╝`
+/// corners rather than by recomputing `render_help_overlay`'s clamp
+/// arithmetic, so a change to the popup geometry does not break the parse.
+fn help_popup_lines(buf: &ratatui::buffer::Buffer) -> Vec<String> {
+    let area = buf.area();
+    let mut top_left = None;
+    let mut bottom_right = None;
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            match buf[(x, y)].symbol() {
+                "\u{2554}" => top_left = Some((x, y)),
+                "\u{255d}" => bottom_right = Some((x, y)),
+                _ => {}
+            }
+        }
+    }
+    let (x0, y0) = top_left.expect("help popup's top-left double-border corner not found");
+    let (x1, y1) = bottom_right.expect("help popup's bottom-right double-border corner not found");
+    (y0 + 1..y1)
+        .map(|y| (x0 + 1..x1).map(|x| buf[(x, y)].symbol()).collect())
+        .collect()
+}
+
+/// The set of keys the help overlay *teaches*, parsed out of its rendered text.
+///
+/// Every `[..]` token is a key legend. Slashes separate alternatives
+/// (`[H/L]`, `[h/←]`), the named keys are folded onto what the input handler
+/// actually matches (`Space` → `' '`, `gg` → `g`), and anything that isn't a
+/// single ASCII key — arrow glyphs, `Prefix+…` tmux bindings, prose — is
+/// dropped.
+fn help_overlay_keys(lines: &[String]) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    for line in lines {
+        let chars: Vec<char> = line.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] != '[' {
+                i += 1;
+                continue;
+            }
+            // Content runs to the first `]`, then greedily over any `]` that
+            // immediately follows, so `[G/]]` yields `G/]` (two keys) rather
+            // than `G/` (one key and a lost `]`).
+            let Some(mut end) = (i + 1..chars.len()).find(|&j| chars[j] == ']') else {
+                break;
+            };
+            while end + 1 < chars.len() && chars[end + 1] == ']' {
+                end += 1;
+            }
+            let content: String = chars[i + 1..end].iter().collect();
+            // `[/]` is the search key, not an empty alternation.
+            let tokens: Vec<&str> = if content == "/" {
+                vec!["/"]
+            } else {
+                content.split('/').filter(|t| !t.is_empty()).collect()
+            };
+            for token in tokens {
+                let key = match token {
+                    "Space" => Some(" "),
+                    "gg" => Some("g"),
+                    "Esc" | "Enter" => Some(token),
+                    _ if token.chars().count() == 1
+                        && token.chars().all(|c| c.is_ascii_graphic()) =>
+                    {
+                        Some(token)
+                    }
+                    // Arrow glyphs, `Prefix+…`, and any prose that happens to
+                    // sit inside brackets.
+                    _ => None,
+                };
+                keys.extend(key.map(str::to_string));
+            }
+            i = end + 1;
+        }
+    }
+    keys
+}
+
+/// The set of keys `handle_key_board_normal` actually *handles*, parsed out of
+/// its source text — the repo's source-checking idiom (`check-doc-paths.sh`,
+/// `check-doc-symbols.sh`) applied to the keymap.
+fn board_normal_source_keys() -> std::collections::BTreeSet<String> {
+    const SRC: &str = include_str!("../input/normal.rs");
+    let start = SRC
+        .find("fn handle_key_board_normal")
+        .expect("handle_key_board_normal not found — did the fn get renamed?");
+    let tail = &SRC[start..];
+    // The arms end where the next method in the `impl` block begins.
+    let end = tail[1..]
+        .find("\n    fn ")
+        .map(|i| i + 1)
+        .unwrap_or(tail.len());
+    let body = &tail[..end];
+
+    let mut keys = std::collections::BTreeSet::new();
+    const NEEDLE: &str = "KeyCode::Char('";
+    let mut rest = body;
+    while let Some(i) = rest.find(NEEDLE) {
+        let after = &rest[i + NEEDLE.len()..];
+        if let Some(j) = after.find("')") {
+            let ch = &after[..j];
+            if ch.chars().count() == 1 {
+                keys.insert(ch.to_string());
+            }
+        }
+        rest = &rest[i + NEEDLE.len()..];
+    }
+    if body.contains("KeyCode::Esc") {
+        keys.insert("Esc".to_string());
+    }
+    if body.contains("KeyCode::Enter") {
+        keys.insert("Enter".to_string());
+    }
+    keys
+}
+
+/// The help overlay must teach exactly the keymap that exists
+/// (docs/plans/3809-keybinding-pruning-implementation.md §7, hardened by
+/// task #3986).
+///
+/// This is **bidirectional** on purpose. The predecessor pinned a fixed list
+/// of key strings, which caught the known `[d]`/`F` drift but could not catch
+/// the next one: adding a key without a help line passed, and deleting a key
+/// failed with a message telling the author to *restore* the help line. Here,
+/// a mismatch in either direction names the offending keys and says which side
+/// to edit.
 #[tokio::test]
 async fn render_help_overlay_matches_current_keymap() {
     let buf = help_buffer(40);
+    let taught = help_overlay_keys(&help_popup_lines(&buf));
+    let handled = board_normal_source_keys();
 
-    // Retired keys must not be taught. `d` was folded into `Space` on
-    // 2026-07-25; `W` and `I` went with §1 and §3; `S` was folded into
-    // `Space` (split mode) by §5. (`C` is owned by
-    // `render_help_overlay_no_longer_teaches_feed_config_key` above.)
-    for retired in ["[d]", "[W]", "[I]", "[S]"] {
-        assert!(
-            !buffer_contains(&buf, retired),
-            "retired key {retired} must not appear in the help overlay"
-        );
-    }
+    let undocumented: Vec<&String> = handled.difference(&taught).collect();
+    let phantom: Vec<&String> = taught.difference(&handled).collect();
 
-    // Live keys the overlay must teach. `T` is here because its handler still
-    // exists — §4 has not landed. When it does, that package deletes the help
-    // line and the entry here together.
-    for live in ["[F]", "[t]", "[U]", "[R]", "[r]", "[v]", "[Space]", "[T]"] {
-        assert!(
-            buffer_contains(&buf, live),
-            "help overlay should teach the live key {live}"
-        );
-    }
+    assert!(
+        undocumented.is_empty(),
+        "handle_key_board_normal handles {undocumented:?} but the help overlay does not \
+         teach them — add them to src/tui/ui/kanban/popups/help.rs (merge into an existing \
+         line; the body is clipped at the 25-row floor)"
+    );
+    assert!(
+        phantom.is_empty(),
+        "the help overlay teaches {phantom:?} but handle_key_board_normal has no arm for \
+         them — delete those legends from src/tui/ui/kanban/popups/help.rs"
+    );
 
-    // The context-dependence note now hangs off `Space`, not `d`.
+    // Not a key legend, so the set comparison above can't see it: the
+    // context-dependence note hangs off `Space`, not the retired `d`.
     assert!(
         buffer_contains(&buf, "jumps to the agent's window"),
         "the context-dependence note should be attached to [Space]"
