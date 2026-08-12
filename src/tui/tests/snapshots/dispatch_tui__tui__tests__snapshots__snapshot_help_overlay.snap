@@ -7,36 +7,36 @@ expression: rendered
 ──────────────────────────────│───────────────────────────│──────────────────────────────│──────────────────────────────
 ──────────────────────────────│  ── active                │                              │──────────────────────────────
   ▌ #1 Task 1           ╔ Help ════════════════════════════════════════════════════════════════╗ Task 4
-   ◦ <1h                ║                                                                      ║1h
-────────────────────────║  Navigation                                                          ║────────────────────────
-  ▎ #2 Task 2           ║  [h/←] prev column     [j/↓] next task                               ║
-   ◦ <1h                ║  [l/→] next column     [k/↑] prev task                               ║
-────────────────────────║  [Enter] task detail      [e] edit / enter epic                      ║
-                        ║  [q] exit epic   [Esc] clear sel   [gg/[ / G/]] jump top/bottom      ║
+   ◦ <1h                ║  Navigation                                                          ║1h
+────────────────────────║  [h/←] prev column     [j/↓] next task                               ║────────────────────────
+  ▎ #2 Task 2           ║  [l/→] next column     [k/↑] prev task                               ║
+   ◦ <1h                ║  [gg/[] top   [G/]] bottom   [Enter] task detail                     ║
+────────────────────────║  [q] quit / exit epic   [Esc] clear selection                        ║
                         ║                                                                      ║
                         ║  Actions                                                             ║
-                        ║  [n] new task   [E] new epic   [N] notifications                     ║
-                        ║  [m] reparent epic / move task to epic (tree picker)                 ║
-                        ║  [d] dispatch*  [H/L] move task/epic backward/forward                ║
-                        ║  [x] done/arch  [D] quick dsp  [Space] session/board (gg: top)       ║
-                        ║  [l/→] Archive   [a] select all   [/] search titles/ids              ║
-                        ║  [v] select  [f] filter repos  [A] filter active                     ║
-                        ║  [T] detach tmux panel  (any task with a tmux window, supports batch)║
-                        ║  [s] toggle split  [S] swap task into pane                           ║
-                        ║  [p] open PR  [:] main session (jump/pick dir)  [o] sync repo        ║
-                        ║  [J/K] reorder item up/down  [P] todo (a add · space done · J/K order║
+                        ║  [n] new task   [c] copy   [e] edit / enter epic                     ║
+                        ║  [E] new epic   [m] move task to epic / reparent                     ║
+                        ║  [Space] dispatch / resume / jump to agent*                          ║
+                        ║  [H/L] move back/forward   [J/K] reorder item                        ║
+                        ║  [x] done / archive   [D] quick dispatch                             ║
+                        ║  [v] select   [a] select all   [/] search titles/ids                 ║
+                        ║  [f] filter repos   [A] active only   [F] flat view                  ║
+                        ║  [p] open PR   [:] main session   [o] sync repo                      ║
+                        ║  [s] toggle split   [S] swap into pane   [T] detach                  ║
+                        ║  [r] refresh feed   [U] auto-dispatch   [R] by repo                  ║
+                        ║  [P] todos   [t] add todo from card   [N] notifications              ║
                         ║                                                                      ║
-                        ║  * [d] is context-dependent:                                         ║
-                        ║    Backlog (no plan) → brainstorm                                    ║
-                        ║    Backlog (has plan) → dispatch                                     ║
-                        ║    Running → resume (if window gone)                                 ║
-                        ║    Epic → dispatch next backlog subtask                              ║
+                        ║  * [Space] jumps to the agent's window if one is live,               ║
+                        ║    else dispatches or resumes; on an epic row, enters it             ║
                         ║                                                                      ║
                         ║  General                                                             ║
-────────────────────────║  [?] this help  [N] notify on/off  [q] quit (or exit epic)           ║────────────────────────
+                        ║  [?] this help   [q] quit (or exit epic)                             ║
                         ║  Prefix+Space back to board  Prefix+e toggle tree  (tmux)            ║
-                        ║                                                                      ║
                         ║  [?] or [Esc] to close                                               ║
+────────────────────────║                                                                      ║────────────────────────
+                        ║                                                                      ║
+                        ║                                                                      ║
+                        ║                                                                      ║
                         ╚══════════════════════════════════════════════════════════════════════╝
 
 

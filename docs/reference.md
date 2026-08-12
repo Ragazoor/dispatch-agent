@@ -11,7 +11,7 @@
 | `[` / `gg` | Jump to top of column |
 | `]` / `Shift+G` | Jump to bottom of column |
 | `Enter` | Toggle detail panel |
-| `Tab` | Cycle through feed epics |
+| `Esc` | Clear the current selection |
 | `?` | Toggle help overlay |
 | `q` | Quit (or exit epic view) |
 
@@ -29,6 +29,8 @@
 | `Prefix+e` | (tmux global) Show/hide the agent-tree companion pane in whichever agent window you press it in — press your tmux prefix, then `e`. A no-op in windows that aren't agent windows. Like `Prefix+Space`, it is bound while the board TUI runs and unbound when it exits, so the pane can't be toggled with the board closed |
 | `s` | Toggle split view — side-by-side TUI + agent pane |
 | `S` | Swap the selected task into the split pane (in-place) |
+| `T` | Detach the tmux panel of every selected task that has a live tmux window (supports batch), after a confirmation |
+| `m` | Move the selected task to another epic (or detach it) via the tree picker; on an epic card, reparent that epic |
 | `x` | Move task to Done (with confirmation); on a task already in Done, archives it instead. On an epic, always archives. In a multi-selection: tasks only, all Done → archive; otherwise the not-yet-Done tasks move to Done |
 | `v` | Toggle select |
 | `a` | Select all in column |
@@ -36,7 +38,12 @@
 | `/` | Search the board — live bar; a card matches when the query fuzzy-matches its title **or** is a digit prefix of its id (`38` → `#38`, `#380`, `#3837`; a leading `#` is optional). Epic cards match on their own title/id, or when a descendant the board would still show matches. `Enter` keeps the query (shown as a `[/query]` badge), `Esc` in the bar restores the previous query, `Esc` on the board clears it |
 | `f` | Filter by repo path |
 | `A` | Toggle filter: show only tasks with an active tmux session |
+| `F` | Toggle the flat view — show every task as a plain card instead of grouping subtasks under their epic |
 | `N` | Toggle notification panel |
+| `p` | Open the selected task's URL — its pull request, once one is set — in a browser. Reports `No URL set` when the task has none |
+| `P` | Open the personal TODO overlay |
+| `t` | Add a TODO linked to the selected card, using the card's title |
+| `r` | Refresh a feed epic — the selected epic card if it has a feed command, otherwise the feed epic you are inside. Does nothing elsewhere |
 | `:` | Open the main session — jump to it if its tmux window is alive, otherwise pick a directory (reconfigure) and open it there. The status bar shows a passive badge: `● main` when the session is running, `○ main` when a directory is configured but no session is running |
 | `o` | Sync the selected task's repository with origin on its default branch: merge whatever it is behind by, push whatever it is ahead by, after a confirmation. Offered only while the status bar's drift segment is lit (`main ↑3↓1`); a clean or unmeasurable repository shows no segment and the key does nothing. See `docs/specs/repo-sync.allium` |
 
@@ -49,6 +56,8 @@
 | `D` | Quick dispatch subtask for this epic |
 | `Shift+L` / `Shift+H` | Move epic status forward / backward |
 | `J` / `K` | Reorder subtasks (determines dispatch order) |
+| `U` | Toggle auto-dispatch for the epic you are inside — chain the next backlog subtask when one finishes |
+| `R` | Toggle group-by-repo for the epic you are inside |
 | `q` | Exit epic view |
 
 ### Text fields (naming a task, editing a todo, typing a query)

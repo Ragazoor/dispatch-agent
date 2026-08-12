@@ -498,13 +498,18 @@ async fn render_columns_fill_terminal_width() {
     );
 }
 
-#[tokio::test]
-async fn render_help_overlay_shows_keybindings_help() {
+/// Open the help overlay and render it into a `height`-row terminal.
+fn help_buffer(height: u16) -> ratatui::buffer::Buffer {
     let mut app = App::new(vec![]);
     app.update(Message::System(
         crate::tui::messages::SystemMessage::ToggleHelp,
     ));
-    let buf = render_to_buffer(&mut app, 100, 30);
+    render_to_buffer(&mut app, 100, height)
+}
+
+#[tokio::test]
+async fn render_help_overlay_shows_keybindings_help() {
+    let buf = help_buffer(30);
     assert!(
         buffer_contains(&buf, "Navigation"),
         "help overlay should show Navigation section"
@@ -517,11 +522,7 @@ async fn render_help_overlay_shows_keybindings_help() {
 
 #[tokio::test]
 async fn render_help_overlay_shows_tmux_global_bindings() {
-    let mut app = App::new(vec![]);
-    app.update(Message::System(
-        crate::tui::messages::SystemMessage::ToggleHelp,
-    ));
-    let buf = render_to_buffer(&mut app, 100, 40);
+    let buf = help_buffer(40);
     assert!(
         buffer_contains(&buf, "Prefix+Space"),
         "help overlay should mention the tmux-global Prefix+Space jump-back binding"
@@ -537,11 +538,7 @@ async fn render_help_overlay_shows_tmux_global_bindings() {
 /// must not teach a key that no longer has a handler.
 #[tokio::test]
 async fn render_help_overlay_no_longer_teaches_feed_config_key() {
-    let mut app = App::new(vec![]);
-    app.update(Message::System(
-        crate::tui::messages::SystemMessage::ToggleHelp,
-    ));
-    let buf = render_to_buffer(&mut app, 100, 40);
+    let buf = help_buffer(40);
     assert!(
         !buffer_contains(&buf, "[C]"),
         "retired feed-config key must not appear in the help overlay"
@@ -550,6 +547,59 @@ async fn render_help_overlay_no_longer_teaches_feed_config_key() {
         !buffer_contains(&buf, "feed config"),
         "retired feed-config help text must not appear in the help overlay"
     );
+}
+
+/// The help overlay must teach the keymap that actually exists
+/// (docs/plans/3809-keybinding-pruning-implementation.md §7). Targeted
+/// `contains` checks rather than a snapshot, so that deleting one of these
+/// lines reads as a regression instead of a snapshot edit.
+#[tokio::test]
+async fn render_help_overlay_matches_current_keymap() {
+    let buf = help_buffer(40);
+
+    // Retired keys must not be taught. `d` was folded into `Space` on
+    // 2026-07-25; `W` and `I` went with §1 and §3. (`C` is owned by
+    // `render_help_overlay_no_longer_teaches_feed_config_key` above.)
+    for retired in ["[d]", "[W]", "[I]"] {
+        assert!(
+            !buffer_contains(&buf, retired),
+            "retired key {retired} must not appear in the help overlay"
+        );
+    }
+
+    // Live keys the overlay must teach. `T` and `S` are here because their
+    // handlers still exist — §4/§5 have not landed. When they do, those
+    // packages delete the help line and the entry here together.
+    for live in [
+        "[F]", "[t]", "[U]", "[R]", "[r]", "[v]", "[Space]", "[T]", "[S]",
+    ] {
+        assert!(
+            buffer_contains(&buf, live),
+            "help overlay should teach the live key {live}"
+        );
+    }
+
+    // The context-dependence note now hangs off `Space`, not `d`.
+    assert!(
+        buffer_contains(&buf, "jumps to the agent's window"),
+        "the context-dependence note should be attached to [Space]"
+    );
+}
+
+/// The popup height is clamped to 25–36 rows, so on a short terminal the body
+/// is clipped rather than scrolled — there is no scroll indicator to tell the
+/// user something is missing. Pin the worst case: at the 25-row floor only 23
+/// body lines are visible, and every section header must still be one of them.
+#[tokio::test]
+async fn render_help_overlay_fits_the_clamped_floor() {
+    let buf = help_buffer(25);
+    for section in ["Navigation", "Actions", "General"] {
+        assert!(
+            buffer_contains(&buf, section),
+            "the {section} section must survive the 25-row floor — the help body \
+             has grown past the clipped height"
+        );
+    }
 }
 
 #[tokio::test]
