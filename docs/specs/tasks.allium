@@ -463,6 +463,35 @@ rule MoveTaskToEpic {
 
 -- == Archive ==
 
+-- TaskTeardown (conceptual): the single named account of what it means to
+-- release a task's live resources. It is NOT a new behaviour — it is the
+-- behaviour ArchiveTask and DeleteTask already specify, stated once here so
+-- that the rules below, and the feed removal clauses in feeds.allium, can
+-- reference it by name instead of restating it.
+--
+-- TaskTeardown(task) means, in order:
+--
+--   1. Kill the task's tmux window if it has one.
+--   2. Remove the task's git worktree if it has one — UNLESS another ACTIVE
+--      task shares that same worktree, in which case the worktree is DETACHED
+--      from this task only and LEFT ON DISK for the sharing task.
+--   3. Best-effort branch deletion. A failure here is not fatal to the
+--      operation that requested the teardown.
+--
+-- The whole of TaskTeardown is best-effort: a task whose worktree or window
+-- has already been removed out of band tears down cleanly.
+--
+-- Referenced by: ArchiveTask and DeleteTask below (whose own ensures clauses
+-- remain the normative statement of their postconditions), and by the feed
+-- removal clauses in feeds.allium (RoleRoutedFeedSync, GroupedFeedUpsert,
+-- FlatFeedReconcile, UpsertFeedTasks), where removing a stale feed task must
+-- perform this same teardown rather than dropping the row and orphaning the
+-- worktree of an in-flight agent.
+--
+-- Implementation: src/dispatch/worktree.rs::cleanup_task, guarded by the
+-- shared-worktree check src/db/mod.rs::has_other_tasks_with_worktree; the
+-- reference sequencing is src/runtime/tasks.rs::exec_cleanup.
+
 rule ArchiveTask {
     when: ArchiveTask(task)
 
@@ -485,11 +514,14 @@ rule ArchiveTask {
     ensures: task.updated_at = now
 
     @guidance
-        -- Removes the git worktree and tmux window if present.
-        -- Best-effort branch deletion.
-        -- If another active task shares the same worktree, the
-        -- worktree is detached from this task but not removed
-        -- from disk.
+        -- The resource release above is TaskTeardown (see the conceptual
+        -- block at the head of this section): kill the tmux window if
+        -- present; remove the git worktree if present, unless another
+        -- active task shares it, in which case detach from this task and
+        -- leave the worktree on disk; best-effort branch deletion. The
+        -- ensures clauses above remain the normative statement of what
+        -- ArchiveTask guarantees — naming the concept changed nothing
+        -- about this rule's behaviour.
         -- The task.status = done check reads the pre-archive status
         -- (evaluated before the status = archived assignment below), so
         -- only a task that was actually Done has its sort_order cleared.
@@ -551,7 +583,13 @@ rule DeleteTask {
 
     @guidance
         -- Permanent removal. Only accessible from the archive view.
-        -- Worktree and branch are cleaned up best-effort.
+        -- The resource release above is TaskTeardown (see the conceptual
+        -- block at the head of this section) — the same teardown
+        -- ArchiveTask performs: tmux window killed, worktree removed
+        -- unless another active task shares it (then detached only), and
+        -- best-effort branch deletion. The ensures clauses above remain
+        -- the normative statement of what DeleteTask guarantees; naming
+        -- the concept changed nothing about this rule's behaviour.
         -- The archived-status precondition is enforced by the TUI input
         -- layer (archive view only shows archived tasks), not by the
         -- handler itself.
