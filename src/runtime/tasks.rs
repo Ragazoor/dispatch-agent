@@ -60,19 +60,9 @@ fn run_quick_dispatch(
 ) {
     let id = task.id;
     run_blocking_dispatch(id, "Quick dispatch", true, msg_tx, move || {
-        let dispatch::DispatchInputs {
-            epic_ctx,
-            injected,
-            verify_command,
-        } = inputs;
+        let dispatch::DispatchInputs { epic_ctx, injected } = inputs;
         let injections = dispatch::LearningInjections::from(injected.as_slice());
-        dispatch::quick_dispatch_agent(
-            &task,
-            &*runner,
-            epic_ctx.as_ref(),
-            &injections,
-            verify_command.as_deref(),
-        )
+        dispatch::quick_dispatch_agent(&task, &*runner, epic_ctx.as_ref(), &injections)
     });
 }
 
@@ -372,30 +362,20 @@ impl TuiRuntime {
         // Spawn a background task so the TUI command loop is never blocked
         // waiting for the embedding thread (which may be busy with index_repo).
         tokio::spawn(async move {
-            let dispatch::DispatchInputs {
-                epic_ctx,
-                injected,
-                verify_command,
-            } = dispatch::prepare_inputs(&*db, &task, &emb_svc).await;
+            let dispatch::DispatchInputs { epic_ctx, injected } =
+                dispatch::prepare_inputs(&*db, &task, &emb_svc).await;
             let label = mode.label();
             let id = task.id;
             tracing::info!(task_id = id.0, label, "dispatching");
             run_blocking_dispatch(id, label, false, msg_tx, move || {
                 let injections = dispatch::LearningInjections::from(injected.as_slice());
                 match mode {
-                    models::DispatchMode::Dispatch => dispatch::dispatch_agent(
-                        &task,
-                        &*runner,
-                        epic_ctx.as_ref(),
-                        &injections,
-                        verify_command.as_deref(),
-                    ),
-                    models::DispatchMode::Research => dispatch::research_agent(
-                        &task,
-                        &*runner,
-                        epic_ctx.as_ref(),
-                        verify_command.as_deref(),
-                    ),
+                    models::DispatchMode::Dispatch => {
+                        dispatch::dispatch_agent(&task, &*runner, epic_ctx.as_ref(), &injections)
+                    }
+                    models::DispatchMode::Research => {
+                        dispatch::research_agent(&task, &*runner, epic_ctx.as_ref())
+                    }
                 }
             });
         });

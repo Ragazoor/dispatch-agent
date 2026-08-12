@@ -242,24 +242,6 @@ pub(super) fn trailing_block() -> String {
     )
 }
 
-/// Render the verification section injected before the mode-specific addendum.
-/// Returns an empty string when `cmd` is `None` so prompts are byte-identical
-/// when no verify command is configured.
-fn render_verification(cmd: Option<&str>) -> String {
-    match cmd {
-        None => String::new(),
-        Some(c) => format!(
-            "\n## Verification\n\
-             \n\
-             Before declaring work complete, run this in your worktree and confirm it passes:\n\
-             \n\
-             ````\n{c}\n````\n\
-             \n\
-             If it fails, fix the underlying issue rather than skipping it.\n"
-        ),
-    }
-}
-
 /// Render the tiered-knowledge block placed between the task block and the
 /// addendum in a dispatch prompt. Returns an empty string when `picked` is
 /// empty so existing prompts are byte-identical when no learnings are injected.
@@ -305,16 +287,16 @@ impl IntroSpacing {
 }
 
 /// Shared skeleton for every `build_*_prompt` variant:
-/// `{intro}{spacing}{block}\n\n{knowledge}{verify}{addendum}\n\n{trailing}`.
+/// `{intro}{spacing}{block}\n\n{knowledge}{addendum}\n\n{trailing}`.
 ///
 /// Callers build `block` themselves (via `task_block`) since its inputs
 /// aren't otherwise needed here — keeps this under clippy's argument-count
 /// limit.
 ///
 /// Each builder computes its own `intro`/`block`/`addendum`/`trailing` and
-/// passes them here, so the knowledge/verify plumbing stays in one place —
-/// a variant can no longer silently drop the knowledge block (the
-/// research-prompt drift this fixed) by forgetting to wire it in.
+/// passes them here, so the knowledge plumbing stays in one place — a variant
+/// can no longer silently drop the knowledge block (the research-prompt drift
+/// this fixed) by forgetting to wire it in.
 fn render_task_prompt(
     intro: &str,
     spacing: IntroSpacing,
@@ -324,9 +306,8 @@ fn render_task_prompt(
     trailing: &str,
 ) -> String {
     let knowledge = render_validated_knowledge_block(&ctx.learnings.ranked);
-    let verify = render_verification(ctx.verify_command.as_deref());
     let sep = spacing.as_separator();
-    format!("{intro}{sep}{block}\n\n{knowledge}{verify}{addendum}\n\n{trailing}")
+    format!("{intro}{sep}{block}\n\n{knowledge}{addendum}\n\n{trailing}")
 }
 
 pub(super) fn build_prompt(
@@ -490,24 +471,7 @@ impl<'a> From<&'a [Learning]> for LearningInjections<'a> {
 pub struct PromptContext<'a> {
     pub learnings: LearningInjections<'a>,
     pub tag: Option<TaskTag>,
-    pub verify_command: Option<String>,
     pub auto_run_plan: bool,
-}
-
-impl<'a> PromptContext<'a> {
-    pub fn with_learnings(learnings: LearningInjections<'a>) -> Self {
-        Self {
-            learnings,
-            tag: None,
-            verify_command: None,
-            auto_run_plan: false,
-        }
-    }
-
-    pub fn with_verify(mut self, cmd: Option<&str>) -> Self {
-        self.verify_command = cmd.map(str::to_owned);
-        self
-    }
 }
 
 pub use crate::service::embeddings::RAG_SIMILARITY_THRESHOLD as DISPATCH_RAG_THRESHOLD;
@@ -930,7 +894,6 @@ mod tests {
         let ctx = PromptContext {
             learnings: LearningInjections { ranked: vec![&l] },
             tag: None,
-            verify_command: None,
             auto_run_plan: false,
         };
         let text = build_research_prompt(
@@ -1048,7 +1011,6 @@ mod tests {
         let ctx = PromptContext {
             learnings: injections,
             tag: None,
-            verify_command: None,
             auto_run_plan: false,
         };
         let text = build_prompt(TaskId(1), "title", "desc", None, None, &ctx);
@@ -1274,86 +1236,40 @@ mod tests {
         );
     }
 
+    /// No prompt variant may render a "## Verification" section — see the
+    /// unified prompt skeleton in `docs/specs/dispatch.allium`.
+    ///
+    /// The builders take no verify input, so this can only regress through
+    /// hardcoded prompt copy. That is exactly the case the snapshots don't
+    /// catch: `INSTA_UPDATE=always` silently accepts a reintroduced section,
+    /// whereas a named test cannot be blanket-accepted.
     #[test]
-    fn build_prompt_includes_verification_section_when_configured() {
-        let ctx = PromptContext {
-            verify_command: Some("cargo test".to_string()),
-            ..PromptContext::default()
-        };
-        let text = build_prompt(TaskId(1), "t", "d", None, None, &ctx);
-
-        let header_idx = text
-            .find("## Verification")
-            .expect("section header present");
-        assert_eq!(
-            text.matches("## Verification").count(),
-            1,
-            "section must appear exactly once"
-        );
-        let section = &text[header_idx..];
-        assert!(
-            section.contains("````\ncargo test\n````"),
-            "command must appear inside a 4-backtick fence:\n{section}"
-        );
-        assert!(
-            section.contains("Before declaring work complete"),
-            "instruction must precede the fence"
-        );
-    }
-
-    #[test]
-    fn build_prompt_omits_verification_section_when_none() {
+    fn no_prompt_variant_renders_a_verification_section() {
         let ctx = PromptContext::default();
-        let text = build_prompt(TaskId(1), "t", "d", None, None, &ctx);
-        assert!(!text.contains("## Verification"));
-        assert!(!text.contains("Before declaring work complete"));
-    }
-
-    #[test]
-    fn build_prompt_verify_section_appears_after_task_block() {
-        let ctx = PromptContext {
-            verify_command: Some("cargo test".to_string()),
-            ..PromptContext::default()
-        };
-        let text = build_prompt(TaskId(1), "t", "d", None, None, &ctx);
-        let task_idx = text.find("Your task is:").unwrap();
-        let verify_idx = text.find("## Verification").unwrap();
-        assert!(
-            task_idx < verify_idx,
-            "verification must come after task block"
-        );
-    }
-
-    #[test]
-    fn build_quick_dispatch_prompt_includes_verification_section_when_configured() {
-        let ctx = PromptContext {
-            verify_command: Some("cargo test".to_string()),
-            ..PromptContext::default()
-        };
-        let text = build_quick_dispatch_prompt(TaskId(1), "t", "d", None, &ctx);
-        assert!(
-            text.contains("## Verification"),
-            "quick dispatch prompt must include verification section when verify_command is set"
-        );
-        assert!(
-            text.contains("Before declaring work complete"),
-            "verification instruction must be present"
-        );
-        assert!(
-            text.contains("````\ncargo test\n````"),
-            "command must appear inside a 4-backtick fence"
-        );
-    }
-
-    #[test]
-    fn build_quick_dispatch_prompt_omits_verification_section_when_none() {
-        let ctx = PromptContext::default();
-        let text = build_quick_dispatch_prompt(TaskId(1), "t", "d", None, &ctx);
-        assert!(
-            !text.contains("## Verification"),
-            "quick dispatch prompt must not include verification section when verify_command is None"
-        );
-        assert!(!text.contains("Before declaring work complete"));
+        let variants = [
+            (
+                "dispatch",
+                build_prompt(TaskId(1), "t", "d", None, None, &ctx),
+            ),
+            (
+                "quick dispatch",
+                build_quick_dispatch_prompt(TaskId(1), "t", "d", None, &ctx),
+            ),
+            (
+                "research",
+                build_research_prompt(TaskId(1), "t", "d", None, &ctx),
+            ),
+        ];
+        for (variant, text) in variants {
+            assert!(
+                !text.contains("## Verification"),
+                "{variant} prompt must not render a verification section"
+            );
+            assert!(
+                !text.contains("Before declaring work complete"),
+                "{variant} prompt must not carry the verification instruction"
+            );
+        }
     }
 }
 

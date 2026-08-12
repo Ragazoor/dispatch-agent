@@ -228,7 +228,6 @@ impl Fixture {
             &self.server.runner(),
             None,
             &Default::default(),
-            None,
         )
         .expect("dispatch_agent")
     }

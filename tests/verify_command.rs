@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used)]
 //! Integration: verify_command stored under a path string equal to
-//! task.repo_path is found by the dispatch lookup when called with
+//! task.repo_path is found by the wrap-up lookup when called with
 //! the repo_path from a real task row.
 
 use dispatch_tui::db::{CreateTaskRequest, Database, SettingsStore, TaskCrud, TaskRead};

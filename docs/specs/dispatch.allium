@@ -422,18 +422,18 @@ rule DispatchTask {
         --                                    /learnings skill to record or
         --                                    upvote entries)
         --   {wrap_up_instruction}          (shared verbatim, universal)
-        --   {verification_section}         (optional; see below)
-        --                                  Intentionally last: the agent reads
-        --                                  this immediately before finishing,
-        --                                  making it the final reminder before
-        --                                  wrap-up.
         --
-        -- When task.repo_path has a SavedRepoPath row with verify_command = Some(c),
-        -- the dispatch prompt includes a "## Verification" section instructing the
-        -- agent to run `c` in its worktree before declaring work complete. The
-        -- command is rendered inside a quadruple-backtick fenced block so
-        -- backticks in the command cannot escape. When verify_command is null,
-        -- the section is absent.
+        -- The prompt deliberately carries no verify command. Even when
+        -- task.repo_path has a SavedRepoPath row with verify_command = Some(c),
+        -- no "## Verification" section is emitted and c appears nowhere in the
+        -- prompt: the command reaches the agent solely through the wrap_up
+        -- response (see WrapUpRebase and WrapUpPr in pr-workflow.allium, which
+        -- own the "Verify before exiting" line). Carrying it in both places was
+        -- duplicated context, so the prompt-side copy was removed. The
+        -- consequence is accepted rather than overlooked: wrap_up runs after the
+        -- wrap-up skill's commit step, and on the rebase path after the base
+        -- branch has been fast-forwarded, so an agent may not learn the command
+        -- until late in the session.
         --
         -- DispatchTask emits one of two variants of build_prompt:
         --   * has_plan = false: preamble "Your task is:" and the addendum

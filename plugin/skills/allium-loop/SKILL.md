@@ -43,9 +43,9 @@ rebase/tend/implement/verify/weed work itself.
 
 3. **Resolve the verify command** for this repo — the command that runs its test suite (and any
    other required checks) — in priority order:
-   1. **Task/session context** — a verify command already surfaced this session (e.g. a
-      "Verification" section in the current task's prompt, or one set via a project's
-      task-management tooling).
+   1. **Task/session context** — a verify command already surfaced this session (e.g. one
+      the user named, or one recorded for this repo via a project's task-management
+      tooling).
    2. **Project docs** — a documented test/build command in this repo's `CLAUDE.md`, `AGENTS.md`,
       `README`, or equivalent (e.g. `cargo test`, `npm test`, `pytest`, `go test ./...`,
       `mvn test`).

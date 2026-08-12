@@ -690,14 +690,7 @@ mod tests {
         let script = DispatchScript::dispatch();
         let mock = script.runner();
 
-        dispatch_agent(
-            &make_task(&repo_path),
-            &mock,
-            None,
-            &Default::default(),
-            None,
-        )
-        .unwrap();
+        dispatch_agent(&make_task(&repo_path), &mock, None, &Default::default()).unwrap();
 
         script.assert_matches(&mock.recorded_calls());
     }
@@ -840,7 +833,6 @@ mod tests {
             &mock,
             None,
             &Default::default(),
-            None,
         )
         .unwrap();
 

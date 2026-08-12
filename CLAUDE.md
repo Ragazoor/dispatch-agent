@@ -130,7 +130,7 @@ POSIX-only. Embeddings/RAG (`src/service/embeddings.rs`) run **locally** — `fa
 
 ## Verify Command
 
-A per-repo, single-line shell command (e.g. `cargo test`) that dispatched agents must run before declaring work complete. Stored on the `repo_paths` row for the task's `repo_path`; set via the `set_verify_command` MCP tool or `cargo run -- repo set-verify <path> <command>`. When set, `build_prompt` appends a `## Verification` section (`render_verification` in `src/dispatch/prompts.rs`); when null, nothing is emitted. Newlines and carriage returns are rejected — chain steps with `&&` or `;`.
+A per-repo, single-line shell command (e.g. `cargo test`) that dispatched agents must run before declaring work complete. Stored on the `repo_paths` row for the task's `repo_path`; set via the `set_verify_command` MCP tool or `cargo run -- repo set-verify <path> <command>`. Newlines and carriage returns are rejected — chain steps with `&&` or `;`. It never appears in the dispatch prompt: an agent is shown it only by the `wrap_up` response's "Verify before exiting" line (`src/mcp/handlers/tasks/wrap_up.rs::wrap_up_verify_line`), which lands late — after the `/wrap-up` skill's commit step. See `docs/specs/dispatch.allium` for why.
 
 ## Working With the User
 

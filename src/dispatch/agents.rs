@@ -278,15 +278,15 @@ pub fn dispatch_agent(
     runner: &dyn ProcessRunner,
     epic: Option<&EpicContext>,
     injections: &LearningInjections<'_>,
-    verify_command: Option<&str>,
 ) -> Result<DispatchResult> {
     dispatch_with_prompt(
         task,
         || {
-            let mut ctx =
-                PromptContext::with_learnings(injections.clone()).with_verify(verify_command);
-            ctx.tag = task.tag;
-            ctx.auto_run_plan = task.auto_run_plan;
+            let ctx = PromptContext {
+                learnings: injections.clone(),
+                tag: task.tag,
+                auto_run_plan: task.auto_run_plan,
+            };
             build_prompt(
                 task.id,
                 &task.title,
@@ -306,13 +306,17 @@ pub fn research_agent(
     task: &Task,
     runner: &dyn ProcessRunner,
     epic: Option<&EpicContext>,
-    verify_command: Option<&str>,
 ) -> Result<DispatchResult> {
     dispatch_with_prompt(
         task,
         || {
-            let ctx = PromptContext::default().with_verify(verify_command);
-            build_research_prompt(task.id, &task.title, &task.description, epic, &ctx)
+            build_research_prompt(
+                task.id,
+                &task.title,
+                &task.description,
+                epic,
+                &PromptContext::default(),
+            )
         },
         runner,
         Some(&task.base_branch),
@@ -325,12 +329,14 @@ pub fn quick_dispatch_agent(
     runner: &dyn ProcessRunner,
     epic: Option<&EpicContext>,
     injections: &LearningInjections<'_>,
-    verify_command: Option<&str>,
 ) -> Result<DispatchResult> {
     dispatch_with_prompt(
         task,
         || {
-            let ctx = PromptContext::with_learnings(injections.clone()).with_verify(verify_command);
+            let ctx = PromptContext {
+                learnings: injections.clone(),
+                ..PromptContext::default()
+            };
             build_quick_dispatch_prompt(task.id, &task.title, &task.description, epic, &ctx)
         },
         runner,
@@ -339,18 +345,19 @@ pub fn quick_dispatch_agent(
     )
 }
 
-/// The three per-task reads every dispatch entry point performs before it can
-/// build a prompt: the epic banner, the learnings to inject (recording each
-/// retrieval as it goes), and the repo's verify command.
+/// The two per-task reads every dispatch entry point performs before it can
+/// build a prompt: the epic banner, and the learnings to inject (recording each
+/// retrieval as it goes).
 ///
 /// Grouped because all four launch sites — `dispatch_task` and the epic chain in
 /// `src/mcp/handlers/tasks/dispatch.rs`, and `exec_quick_dispatch` /
 /// `exec_dispatch_agent` in `src/runtime/tasks.rs` — ran the identical
-/// three-step prologue inline, so a change to it meant editing four places.
+/// prologue inline, so a change to it meant editing four places.
+///
+/// Deliberately carries no verify command — see `fetch_verify_command` below.
 pub struct DispatchInputs {
     pub epic_ctx: Option<EpicContext>,
     pub injected: Vec<crate::models::Learning>,
-    pub verify_command: Option<String>,
 }
 
 /// Run the dispatch prologue for `task`, reading its epic context from the DB.
@@ -376,18 +383,16 @@ pub async fn prepare_inputs_with_epic_ctx(
     epic_ctx: Option<EpicContext>,
 ) -> DispatchInputs {
     let injected = build_and_record_injections(db, task, emb_svc).await;
-    let verify_command = fetch_verify_command(db, &task.repo_path).await;
-    DispatchInputs {
-        epic_ctx,
-        injected,
-        verify_command,
-    }
+    DispatchInputs { epic_ctx, injected }
 }
 
 /// Fetch the verify command for a repository path from the settings store.
 ///
-/// Logs a warning and returns `None` if the DB lookup fails so callers can
-/// proceed without a verify command rather than aborting dispatch.
+/// Called by the `wrap_up` handler, which echoes the command back as its
+/// "Verify before exiting" line — the only place an agent is shown it. No
+/// prompt builder reads it, so this has no caller on a dispatch path despite
+/// living here. Logs a warning and returns `None` if the DB lookup fails so a
+/// wrap-up proceeds without the line rather than failing.
 pub async fn fetch_verify_command(
     db: &dyn crate::db::TaskReadStore,
     repo_path: &str,

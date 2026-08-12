@@ -3720,7 +3720,7 @@ async fn build_learning_injections_partitions_and_records_retrievals() {
 // tests cover the wiring, these pin the prologue itself.
 
 #[tokio::test]
-async fn prepare_inputs_reads_epic_context_injections_and_verify_command() {
+async fn prepare_inputs_reads_epic_context_and_injections() {
     use crate::db::CreateLearningRow;
     use crate::models::{LearningKind, LearningScope, RetrievalSource};
     use crate::service::embeddings::{serialize_embedding, EmbeddingService};
@@ -3745,9 +3745,6 @@ async fn prepare_inputs_reads_epic_context_injections_and_verify_command() {
         .await
         .unwrap();
     let task = db.get_task(task_id).await.unwrap().unwrap();
-    db.set_verify_command("/repo/a", Some("cargo test"))
-        .await
-        .unwrap();
     let learning_id = db
         .create_learning(CreateLearningRow {
             kind: LearningKind::Convention,
@@ -3771,7 +3768,6 @@ async fn prepare_inputs_reads_epic_context_injections_and_verify_command() {
         inputs.injected.iter().map(|l| l.id).collect::<Vec<_>>(),
         vec![learning_id]
     );
-    assert_eq!(inputs.verify_command.as_deref(), Some("cargo test"));
 
     // The prologue's side effect: each injection is recorded as a retrieval.
     let rows = db.list_retrievals_for_task(task.id).await.unwrap();
@@ -3814,7 +3810,6 @@ async fn prepare_inputs_with_epic_ctx_uses_the_supplied_context() {
     assert_eq!(epic_ctx.epic_id, models::EpicId(7));
     assert_eq!(epic_ctx.epic_title, "Already in hand");
     assert!(inputs.injected.is_empty());
-    assert!(inputs.verify_command.is_none());
 }
 
 // ---------------------------------------------------------------------------

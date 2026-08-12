@@ -73,23 +73,6 @@ fn snapshot_dispatch_prompt_dependabot() {
 }
 
 #[test]
-fn snapshot_dispatch_prompt_with_verify() {
-    let ctx = PromptContext {
-        verify_command: Some("cargo test".to_string()),
-        ..PromptContext::default()
-    };
-    let prompt = build_prompt(
-        TaskId(42),
-        "Fix the authentication bug",
-        "Users cannot log in after the password hash migration",
-        None,
-        None,
-        &ctx,
-    );
-    insta::assert_snapshot!(prompt);
-}
-
-#[test]
 fn snapshot_dispatch_prompt_with_epic() {
     let epic = fixture_epic();
     let prompt = build_prompt(

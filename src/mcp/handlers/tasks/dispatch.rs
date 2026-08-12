@@ -15,23 +15,13 @@ fn do_dispatch(
     runner: &dyn crate::process::ProcessRunner,
     inputs: dispatch::DispatchInputs,
 ) -> anyhow::Result<crate::models::DispatchResult> {
-    let dispatch::DispatchInputs {
-        epic_ctx,
-        injected,
-        verify_command,
-    } = inputs;
+    let dispatch::DispatchInputs { epic_ctx, injected } = inputs;
     let injections = dispatch::LearningInjections::from(injected.as_slice());
     match DispatchMode::for_task(task) {
-        DispatchMode::Dispatch => dispatch::dispatch_agent(
-            task,
-            runner,
-            epic_ctx.as_ref(),
-            &injections,
-            verify_command.as_deref(),
-        ),
-        DispatchMode::Research => {
-            dispatch::research_agent(task, runner, epic_ctx.as_ref(), verify_command.as_deref())
+        DispatchMode::Dispatch => {
+            dispatch::dispatch_agent(task, runner, epic_ctx.as_ref(), &injections)
         }
+        DispatchMode::Research => dispatch::research_agent(task, runner, epic_ctx.as_ref()),
     }
 }
 
