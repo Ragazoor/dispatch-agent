@@ -260,18 +260,16 @@ impl TuiRuntime {
                 }));
             };
 
-            let output = match tokio::process::Command::new("sh")
-                .args(["-c", &feed_command])
-                .output()
-                .await
-            {
-                Ok(o) => o,
-                Err(e) => return fail(e.to_string()),
-            };
-
-            if !output.status.success() {
-                return fail(String::from_utf8_lossy(&output.stderr).into_owned());
-            }
+            // The SAME exec the auto-poll FeedRunner uses, so neither path can
+            // drop a feed command's stderr again (feeds.allium:
+            // FeedCommandStderrOnSuccess). It logs spawn/non-zero failures and
+            // stderr-on-success itself; we add the status-bar surface.
+            let output: crate::feed::FeedOutput =
+                match crate::feed::exec_feed_command(&feed_command, epic_id.0, &epic_title).await {
+                    Ok(o) => o,
+                    Err(e) => return fail(e),
+                };
+            let wrote_stderr = !output.stderr.is_empty();
 
             let items: Vec<models::FeedItem> = match serde_json::from_slice(&output.stdout) {
                 Ok(i) => i,
@@ -310,7 +308,11 @@ impl TuiRuntime {
                     )
                     .await;
                     let _ = tx.send(Message::Feed(
-                        crate::tui::messages::FeedMessage::Refreshed { epic_title, count },
+                        crate::tui::messages::FeedMessage::Refreshed {
+                            epic_title,
+                            count,
+                            wrote_stderr,
+                        },
                     ));
                 }
                 Err(e) => fail(e.to_string()),

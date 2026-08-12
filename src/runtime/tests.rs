@@ -3221,6 +3221,72 @@ async fn exec_trigger_epic_feed_zero_items() {
     );
 }
 
+// The exact shape of the PR Reviews failure: every internal query failed, the
+// script reported why on stderr, and still exited 0 with an empty array.
+#[tokio::test]
+async fn exec_trigger_epic_feed_reports_stderr_written_on_zero_exit() {
+    let db = test_db().await;
+    let epic = db.create_epic("PR Reviews", "", None).await.unwrap();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+    rt.exec_trigger_epic_feed(
+        epic.id,
+        "PR Reviews".to_string(),
+        "echo 'Invalid search query' >&2; echo '[]'".to_string(),
+        false,
+    );
+
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel closed");
+    assert!(
+        matches!(
+            msg,
+            Message::Feed(crate::tui::messages::FeedMessage::Refreshed {
+                count: 0,
+                wrote_stderr: true,
+                ..
+            })
+        ),
+        "a zero-exit command that wrote to stderr must report it, got: {msg:?}"
+    );
+}
+
+#[tokio::test]
+async fn exec_trigger_epic_feed_quiet_command_reports_no_stderr() {
+    let db = test_db().await;
+    let epic = db.create_epic("Quiet Feed", "", None).await.unwrap();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+    rt.exec_trigger_epic_feed(
+        epic.id,
+        "Quiet Feed".to_string(),
+        "echo '[]'".to_string(),
+        false,
+    );
+
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel closed");
+    assert!(
+        matches!(
+            msg,
+            Message::Feed(crate::tui::messages::FeedMessage::Refreshed {
+                count: 0,
+                wrote_stderr: false,
+                ..
+            })
+        ),
+        "a quiet command must not report stderr, got: {msg:?}"
+    );
+}
+
 #[tokio::test]
 async fn exec_trigger_epic_feed_command_fails() {
     let db = test_db().await;

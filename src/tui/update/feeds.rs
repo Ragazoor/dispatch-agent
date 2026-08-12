@@ -35,8 +35,20 @@ impl App {
         &mut self,
         epic_title: String,
         count: usize,
+        wrote_stderr: bool,
     ) -> Vec<Command> {
-        self.set_status(format!("Feed for '{epic_title}': {count} task(s) synced"));
+        // Only when nothing synced: a feed command that reported an error on
+        // stderr and still exited 0 usually emitted a degraded array, and a
+        // zero-item result is where that matters. Above zero, stderr is
+        // chatter and the log line alone is enough.
+        let hint = if count == 0 && wrote_stderr {
+            " — command wrote to stderr (see app.log)"
+        } else {
+            ""
+        };
+        self.set_status(format!(
+            "Feed for '{epic_title}': {count} task(s) synced{hint}"
+        ));
         vec![Command::Task(
             crate::tui::commands::TaskCommand::RefreshFromDb,
         )]
