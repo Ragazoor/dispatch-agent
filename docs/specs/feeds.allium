@@ -251,6 +251,40 @@ value FeedItem {
 -- so the org-scoped pass only fires for qualifiers that are unambiguously
 -- about the user themselves.
 --
+-- A FIFTH pass covers BOT-AUTHORED PRs the user has no review involvement
+-- with at all. The four review qualifiers above are all about the user, so a
+-- Renovate or Dependabot PR reached the bots sub-epic only when the user
+-- happened to be a requested reviewer on it — which for dependency-update PRs
+-- is the exception, not the rule. This pass queries by AUTHOR instead:
+--
+--   - author:<bot>  (per bot author in bots.conf, per repo in repos.conf)
+--     -> signal author_bot
+--
+-- It emits author_bot as its query signal rather than introducing a new
+-- Signal variant: route({author_bot}) already yields bots (RouteSignals rule
+-- 2), so the existing routing contract carries this pass unchanged. A bot PR
+-- the user HAS reviewed or commented on still merges signals into one item
+-- and still routes to my_reviews — engagement wins over the bot rule
+-- (RouteSignals rule 1), and that precedence is deliberately not disturbed
+-- here.
+--
+-- Bot logins live in a THIRD config file, `bots.conf` (BOT_AUTHORS array),
+-- read only by this pass. They are a separate scope from repos.conf/org.conf
+-- for the same reason those two are separate from each other, and because a
+-- bot's login is deployment-specific (a self-hosted Renovate app is named
+-- after its installing org, e.g. `app/kognic-renovate`, not `app/renovate`).
+-- Absent or empty BOT_AUTHORS skips the pass entirely.
+--
+-- Scope is REPO-ONLY: this pass is never run org-scoped. Org-wide bot
+-- authorship would sweep in every dependency-update PR in the org, orders of
+-- magnitude more than the review passes emit.
+--
+-- The pass is capped PER REPO, not per query: one `gh search prs` call per
+-- (repo x bot author) with `--limit 20 --sort created --order desc`, keeping
+-- the newest bumps. A single multi-repo call with one `--limit` would cap the
+-- TOTAL, letting one busy repo starve every other repo's bot PRs out of the
+-- emission.
+--
 -- Plus per-PR author signals, derived from the PR author login:
 --
 --   - author_bot when the login ends in `[bot]` (Renovate/Dependabot)
@@ -262,8 +296,10 @@ value FeedItem {
 -- unique)})`, NOT `unique_by`, which would keep one representative and discard
 -- the other queries' signals.
 --
--- Bot-authored PRs are INCLUDED (Renovate/Dependabot are no longer excluded);
--- they carry `tag "dependabot"`. Human-review PRs carry `tag "pr-review"`.
+-- Bot-authored PRs are INCLUDED (Renovate/Dependabot are no longer excluded),
+-- both when a review query matches them and, via the bot-author pass above,
+-- when nothing else does; they carry `tag "dependabot"`. Human-review PRs
+-- carry `tag "pr-review"`.
 -- Draft PRs are INCLUDED (not filtered by routing), and carry an extra
 -- "draft" entry in `labels` so the TUI card surfaces draft status as a
 -- badge (see cards.rs render_card_indicator, which renders every `labels`
@@ -275,7 +311,8 @@ value FeedItem {
 -- the RouteSignals contract above). This folds the old fetch-dependabot.sh
 -- PR-fetching into the reviews emission — fetch-dependabot.sh is retained here
 -- for reference, but its bot PRs are now surfaced through fetch-reviews.sh's
--- author_bot signal.
+-- author_bot signal, and the bot-author pass above makes that fold complete:
+-- reaching the bots sub-epic no longer depends on review involvement.
 
 -- == verify-feed CLI ==
 

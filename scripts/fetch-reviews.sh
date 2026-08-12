@@ -37,6 +37,20 @@
 #   review-requested:@me is deliberately excluded from the org-scoped pass:
 #   it also matches PRs requested from a team you belong to (not just you
 #   personally), which org-wide would sweep in team-request noise.
+#
+#   A fifth pass covers bot-authored PRs you have NO review involvement with,
+#   which the four review queries above can never reach:
+#     - author:<bot>              (per bot in bots.conf, per repo in
+#                                  repos.conf) -> signal "author-bot"
+#   Bot logins go in bots.conf (the BOT_AUTHORS array) because they are
+#   deployment-specific: a self-hosted Renovate app is named after the org
+#   that installed it (e.g. app/kognic-renovate, not app/renovate). Absent or
+#   empty BOT_AUTHORS skips the pass. It emits "author-bot" rather than a new
+#   signal because dispatch's router already maps {author-bot} to Bots, and a
+#   bot PR you HAVE reviewed still merges to one item and stays in My Reviews
+#   (engagement wins over the bot rule). Repo-scoped only — org-wide bot
+#   authorship would sweep in every dependency PR in the org.
+#
 #   Plus per-PR author signals: "author-bot" when the author login ends in
 #   "[bot]" (Renovate/Dependabot), "author-me" when the author is the gh user.
 #
@@ -66,6 +80,17 @@ REPOS=()
 # those queries when org.conf is absent or lists no orgs.
 ORGS=()
 
+# Bot author logins for the bot-author pass ONLY: edit bots.conf in the same
+# directory (the BOT_AUTHORS array), using gh search's app form, e.g.
+# "app/kognic-renovate". Falls back to skipping that pass when bots.conf is
+# absent or lists no authors.
+BOT_AUTHORS=()
+
+# Per-repo cap on the bot-author pass. Applied to each (repo x author) query
+# individually — see search_bot_prs for why it is not one capped multi-repo
+# query.
+BOT_LIMIT=20
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [[ -f "$SCRIPT_DIR/repos.conf" ]]; then
   # shellcheck source=repos.conf
@@ -74,6 +99,10 @@ fi
 if [[ -f "$SCRIPT_DIR/org.conf" ]]; then
   # shellcheck source=org.conf
   source "$SCRIPT_DIR/org.conf"
+fi
+if [[ -f "$SCRIPT_DIR/bots.conf" ]]; then
+  # shellcheck source=bots.conf
+  source "$SCRIPT_DIR/bots.conf"
 fi
 # ---------------------------------------------------------------------------
 
@@ -125,7 +154,16 @@ search_prs() {
     return 0
   fi
 
-  printf '%s' "$raw" | jq --arg signal "$signal" --arg me "$ME" '[
+  printf '%s' "$raw" | to_feed_items "$signal"
+}
+
+# Map a `gh search prs --json …` array on stdin to a FeedItem array on stdout,
+# tagging every PR with $1 plus any per-PR author signals. Shared by the
+# review passes and the bot-author pass so both emit an identical item shape.
+to_feed_items() {
+  local signal="$1"
+
+  jq --arg signal "$signal" --arg me "$ME" '[
     .[] |
     (.author.login // "") as $login |
     ($login | test("\\[bot\\]$")) as $is_bot |
@@ -150,6 +188,44 @@ search_prs() {
   ]'
 }
 
+# Bot-author pass: emit every open PR authored by one of BOT_AUTHORS in one of
+# REPOS, whether or not you are involved in reviewing it. Signal is
+# "author-bot", which dispatch's router maps to the Bots sub-epic.
+#
+# ONE query per (repo x author), deliberately: --limit caps a single gh search
+# call, so one multi-repo call would cap the pass as a WHOLE and let a repo
+# with a large bot backlog starve every other repo out of the emission. The
+# cost is len(REPOS) * len(BOT_AUTHORS) calls per poll. Newest-first so the cap
+# keeps the freshest bumps.
+search_bot_prs() {
+  local repo author raw
+
+  if [[ ${#BOT_AUTHORS[@]} -eq 0 || ${#REPOS[@]} -eq 0 ]]; then
+    echo "[]"
+    return 0
+  fi
+
+  for repo in "${REPOS[@]}"; do
+    for author in "${BOT_AUTHORS[@]}"; do
+      # `author:<login>` goes after `--` for the same reason the review
+      # qualifiers do. Quoted here: it is always a single term.
+      if ! raw=$(gh search prs \
+        --state=open \
+        --repo "$repo" \
+        --json number,title,body,url,repository,isDraft,author \
+        --limit "$BOT_LIMIT" \
+        --sort created \
+        --order desc \
+        -- "author:$author"); then
+        echo "fetch-reviews: gh search prs (author:$author in $repo) failed" >&2
+        continue
+      fi
+
+      printf '%s' "$raw" | to_feed_items "author-bot"
+    done
+  done
+}
+
 # Run every search, then dedup by URL MERGING the signal arrays (a PR matched
 # by several queries keeps all its signals). NOT unique_by, which would drop
 # all but one object and lose the other queries' signals.
@@ -168,6 +244,8 @@ search_prs() {
   search_prs "user-review-requested:@me" "org-review" owner_flags
   search_prs "reviewed-by:@me" "org-review" owner_flags
   search_prs "commenter:@me -author:@me" "org-review" owner_flags
+  # Bot-authored PRs regardless of review involvement, repo-scoped only.
+  search_bot_prs
 } | jq -s 'add
   | group_by(.url)
   | map(.[0] + {signals: (map(.signals[]) | unique)})'
