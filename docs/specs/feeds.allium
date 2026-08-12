@@ -1030,7 +1030,12 @@ rule FeedCommandFailure {
 }
 
 rule FeedCommandStderrOnSuccess {
-    when: FeedCommandCompleted(epic, stderr)
+    when: FeedCommandCompleted(epic, items)
+
+    -- The warning is emitted by the exec layer BEFORE the stdout parse,
+    -- so it also precedes a FeedCommandFailed outcome when the stdout is
+    -- malformed. The stderr text is not carried on the event: it reaches
+    -- callers on FeedOutput (see @guidance).
 
     -- A feed command that exits 0 while writing to stderr is NOT a
     -- failure: its stdout parsed, and the emission is synced normally.
