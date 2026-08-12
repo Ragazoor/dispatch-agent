@@ -254,35 +254,25 @@ pub enum KeyAction {
     OpenInEditor(PathBuf),
 }
 
-/// Whether the widget's current selection is a directory, and so has something
-/// to open. A selection path is exactly a node's chain of name segments below
-/// the root (see `build_tree_items` and `sync_expansion_at`), so resolving it is
+/// What kind of node the widget's current selection names, if any. A selection
+/// path is exactly a node's chain of name segments below the root (see
+/// `build_tree_items` and `sync_expansion_at`), so resolving it is
 /// `TreeNode::node_at`.
 ///
-/// Fails closed: `false` for an empty selection — which `node_at` would resolve
-/// to the root, itself a directory — and `false` for a path that resolves to
-/// nothing, i.e. a stale selection left over from before a rebuild.
-fn selected_is_directory(root: &TreeNode, selected: &[String]) -> bool {
+/// Fails closed, and this is the one place that rule is stated: `None` for an
+/// empty selection — which `node_at` would otherwise resolve to the root, itself
+/// a directory — and `None` for a path that resolves to nothing, i.e. a stale
+/// selection left over from before a rebuild.
+fn selected_kind(root: &TreeNode, selected: &[String]) -> Option<TreeNodeKind> {
     if selected.is_empty() {
-        return false;
+        return None;
     }
-    root.node_at(selected)
-        .is_some_and(|node| node.kind == TreeNodeKind::Directory)
+    root.node_at(selected).map(|node| node.kind)
 }
 
-/// The selected node's path relative to the pane root, when the selection is a
-/// **file**. `None` for a directory, for an empty selection, and for a stale
-/// selection left over from before a rebuild — the same fail-closed shape as
-/// [`selected_is_directory`].
-fn selected_file_path(root: &TreeNode, selected: &[String]) -> Option<PathBuf> {
-    if selected.is_empty() {
-        return None;
-    }
-    let node = root.node_at(selected)?;
-    if node.kind != TreeNodeKind::File {
-        return None;
-    }
-    Some(selected.iter().collect())
+/// Whether the selection is a directory, and so has something to open.
+fn selected_is_directory(root: &TreeNode, selected: &[String]) -> bool {
+    selected_kind(root, selected) == Some(TreeNodeKind::Directory)
 }
 
 /// Apply one key press to the view state — see `docs/specs/agent-tree.allium`'s
@@ -326,15 +316,20 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
         {
             state.tree_state.key_right();
         }
-        // Space/Enter dispatch on the selected node's kind. The file case is
-        // checked first, so the directory guard below only ever sees non-files
-        // and an unselectable or stale selection reaches neither.
+        // Space/Enter dispatch on the selected node's kind — one resolution, both
+        // arms — so an unselectable or stale selection reaches neither.
         KeyCode::Char(' ') | KeyCode::Enter => {
-            if let Some(path) = selected_file_path(root, state.tree_state.selected()) {
-                return KeyAction::OpenInEditor(path);
-            }
-            if selected_is_directory(root, state.tree_state.selected()) {
-                state.tree_state.toggle_selected();
+            let selected = state.tree_state.selected();
+            match selected_kind(root, selected) {
+                Some(TreeNodeKind::File) => {
+                    return KeyAction::OpenInEditor(selected.iter().collect())
+                }
+                // `toggle_selected` reports whether anything changed; the loop
+                // redraws unconditionally, so the answer is discarded.
+                Some(TreeNodeKind::Directory) => {
+                    state.tree_state.toggle_selected();
+                }
+                None => {}
             }
         }
         _ => {}
@@ -387,7 +382,7 @@ fn run_loop<B: Backend>(
                             error = %e,
                             "failed to open the selected file in an editor"
                         );
-                        state.notice = Some(format!("{e}"));
+                        state.notice = Some(e.to_string());
                     }
                 }
             }

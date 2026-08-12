@@ -621,6 +621,17 @@ pub fn respawn_pane_running(
     Ok(())
 }
 
+/// Pane option marking the editor pane the agent-tree companion pane opens.
+///
+/// Lives here rather than with the code that opens that pane because two
+/// unrelated modules must agree on it forever: `agent_tree_editor` writes and
+/// reads it to reuse the pane, and `dispatch::companion_pane_ids` reads it to
+/// drain the pane when an agent window is pinned into the board. The *policy*
+/// (when to split, when to replace) stays with the former; the vocabulary is
+/// shared infrastructure. See docs/specs/agent-tree.allium's
+/// `OneEditorPanePerAgentWindow`.
+pub const EDITOR_PANE_OPTION: &str = "@dispatch_editor_pane";
+
 /// Set a pane-scoped tmux user option (`@name`). The pane-level sibling of
 /// [`set_window_dispatch_dir`]'s `set-option -w`.
 ///
@@ -729,8 +740,8 @@ pub fn pane_id_for_window(window: &str, runner: &dyn ProcessRunner) -> Result<St
 /// both halves. The index shifts with the user's `pane-base-index` and is
 /// renumbered by a `-b` split, so it can miss or hit the wrong pane; the window
 /// name prefix-matches (see [`window_target`]), so it can address the wrong
-/// window entirely. Use [`pane_id_for_window`] or [`inactive_pane_id`] to
-/// resolve one.
+/// window entirely. Use [`pane_id_for_window`], [`pane_ids_with_option`] or
+/// [`pane_ids_with_start_command`] to resolve one.
 pub fn swap_pane(source: &str, target: &str, runner: &dyn ProcessRunner) -> Result<()> {
     run_checked(
         runner,
@@ -746,77 +757,45 @@ pub fn select_pane(pane_id: &str, runner: &dyn ProcessRunner) -> Result<()> {
     Ok(())
 }
 
-/// Return the pane ID of the window's inactive pane, if there is exactly one.
-///
-/// Every split helper in this module (`split_window_horizontal`,
-/// `split_window_horizontal_running`, `join_pane`) passes `-d`, which keeps
-/// focus on the source/target pane — so a freshly-split companion pane is
-/// always the *inactive* one, regardless of what index tmux assigns it.
-/// Deliberately does not target a pane by index: tmux's `pane-base-index`
-/// option can shift which index the "first" pane gets, so an index-based
-/// target could hit the wrong pane under a customised setting. For the same
-/// reason `window` is resolved through [`window_target`] rather than handed to
-/// `list-panes -t` directly: otherwise the panes listed could be those of a
-/// prefix-matched sibling window.
-///
-/// Returns `None` for a single-pane window (nothing is inactive) and,
-/// defensively, for a window with more than one inactive pane — ambiguous,
-/// and this function must not guess.
-pub fn inactive_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Option<String>> {
-    let target = window_target(window, runner)?;
-    let out = run_checked_stdout(
-        runner,
-        &[
-            "list-panes",
-            "-t",
-            &target,
-            "-F",
-            "#{pane_active} #{pane_id}",
-        ],
-        "list-panes",
-    )?;
-    let mut inactive = out.lines().filter_map(|line| line.strip_prefix("0 "));
-    let first = inactive.next();
-    if inactive.next().is_some() {
-        return Ok(None);
-    }
-    Ok(first.map(str::to_string))
-}
+// An `inactive_pane_id` used to live here: "the window's single inactive pane",
+// which every caller used to mean "the agent-tree companion pane". It was removed
+// with its last caller (#3856). The premise held only for a two-pane window whose
+// focus had not moved, so with focus in the companion pane it named the *agent's*
+// pane and the toggle killed a live claude session. Identify a pane by what it is
+// — [`pane_ids_with_option`] or [`pane_ids_with_start_command`] — not by whether
+// it happens to be focused. See docs/specs/agent-tree.allium's HideAgentTreePane.
 
 /// Split one `list-panes` row of the form `<pane_id> <rest…>` into its two
 /// halves. `rest` is empty when the field it carries is unset — tmux prints the
 /// separator either way — and may itself contain spaces, so only the first field
 /// is consumed.
 fn split_pane_row(line: &str) -> Option<(&str, &str)> {
-    match line.split_once(' ') {
-        Some((id, rest)) => Some((id, rest)),
-        // Defensive: a row with no separator is not a shape tmux produces for
-        // these formats, but reading it as "id, no value" is strictly better
-        // than dropping the pane from the listing.
-        None if !line.is_empty() => Some((line, "")),
-        None => None,
-    }
+    // A row with no separator at all is not a shape tmux produces for these
+    // formats, but reading it as "id, no value" is strictly better than dropping
+    // the pane from the listing — and it is the shape the *last* row takes, since
+    // `run_checked_stdout` trims the trailing whitespace an unset field leaves.
+    (!line.is_empty()).then(|| line.split_once(' ').unwrap_or((line, "")))
 }
 
-/// Pane ids in `target`'s window whose pane-scoped user option `option` is set
-/// to a non-empty value.
-///
-/// This is how dispatch finds a pane it created: the marker is written at
-/// creation ([`set_pane_option`]) and survives [`respawn_pane_running`], so the
-/// pane is identified by *what it is* rather than by whether it happens to be
-/// the focused one — see [`inactive_pane_id`] for the heuristic this replaces
-/// and why it was only ever true for an untouched two-pane window.
+/// Pane ids in `target`'s window whose `field` (a tmux format expression)
+/// satisfies `matches`. The predicate receives the field's whole value, which may
+/// contain spaces and is empty when the field is unset.
 ///
 /// `target` may be a window name or a pane id. A pane id resolves to *its own*
 /// window's panes, which is what lets a process inside a pane look up its
 /// siblings knowing only `$TMUX_PANE`.
-pub fn pane_ids_with_option(
+///
+/// Private: the two wrappers below are the vocabulary callers should reach for,
+/// so that "which field identifies a pane" stays a decision made here rather than
+/// at every call site.
+fn pane_ids_matching(
     target: &str,
-    option: &str,
+    field: &str,
+    matches: impl Fn(&str) -> bool,
     runner: &dyn ProcessRunner,
 ) -> Result<Vec<String>> {
     let resolved = window_target(target, runner)?;
-    let format = format!("#{{pane_id}} #{{{option}}}");
+    let format = format!("#{{pane_id}} {field}");
     let out = run_checked_stdout(
         runner,
         &["list-panes", "-t", &resolved, "-F", &format],
@@ -825,46 +804,45 @@ pub fn pane_ids_with_option(
     Ok(out
         .lines()
         .filter_map(split_pane_row)
-        .filter(|(_, value)| !value.is_empty())
+        .filter(|(_, value)| matches(value))
         .map(|(id, _)| id.to_string())
         .collect())
 }
 
+/// Pane ids in `target`'s window whose pane-scoped user option `option` is set to
+/// a non-empty value.
+///
+/// This is how dispatch finds a pane it created: the marker is written at
+/// creation ([`set_pane_option`]) and survives [`respawn_pane_running`], so the
+/// pane is identified by *what it is* rather than by whether it happens to be the
+/// focused one — which is the heuristic this replaced, true only for an untouched
+/// two-pane window.
+pub fn pane_ids_with_option(
+    target: &str,
+    option: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<Vec<String>> {
+    pane_ids_matching(
+        target,
+        &format!("#{{{option}}}"),
+        |value| !value.is_empty(),
+        runner,
+    )
+}
+
 /// Pane ids in `target`'s window whose `#{pane_start_command}` satisfies
-/// `matches`. The predicate receives the whole command line, which may contain
-/// spaces and is empty for a pane running a plain shell.
+/// `matches`. Empty for a pane running a plain shell.
 ///
 /// Used where no marker can be written after the fact: the agent-tree companion
 /// pane is identified this way so that panes already running when the lookup
-/// shipped are covered without a migration — tmux has always reported the
-/// command a pane was started with. Same `target` rules as
-/// [`pane_ids_with_option`].
-pub fn pane_ids_with_start_command<F>(
+/// shipped are covered without a migration — tmux has always reported the command
+/// a pane was started with.
+pub fn pane_ids_with_start_command(
     target: &str,
-    matches: F,
+    matches: impl Fn(&str) -> bool,
     runner: &dyn ProcessRunner,
-) -> Result<Vec<String>>
-where
-    F: Fn(&str) -> bool,
-{
-    let resolved = window_target(target, runner)?;
-    let out = run_checked_stdout(
-        runner,
-        &[
-            "list-panes",
-            "-t",
-            &resolved,
-            "-F",
-            "#{pane_id} #{pane_start_command}",
-        ],
-        "list-panes",
-    )?;
-    Ok(out
-        .lines()
-        .filter_map(split_pane_row)
-        .filter(|(_, cmd)| matches(cmd))
-        .map(|(id, _)| id.to_string())
-        .collect())
+) -> Result<Vec<String>> {
+    pane_ids_matching(target, "#{pane_start_command}", matches, runner)
 }
 
 /// List the ids of all tmux panes across all sessions.
@@ -2237,62 +2215,38 @@ mod tests {
         assert!(err.to_string().contains("select-pane failed"), "got: {err}");
     }
 
-    // --- inactive_pane_id ---
+    // --- pane lookups by window NAME ---
+    //
+    // The `%N`-target cases live with the other pane-lookup tests above; these two
+    // cover what only a *name* target exercises, and are what the deleted
+    // `inactive_pane_id` tests used to guarantee.
 
+    /// The window is named to `list-panes` by its resolved pane, so the panes
+    /// returned cannot be a prefix-matched sibling's.
     #[test]
-    fn inactive_pane_id_finds_the_inactive_pane() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n0 %7\n")])
+    fn pane_ids_with_option_resolves_a_window_name_to_its_own_panes() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%3 \n%7 1\n")])
             .with_windows(&COLLIDING);
-        let pane_id = inactive_pane_id("task-42", &mock).unwrap();
-        assert_eq!(pane_id, Some("%7".to_string()));
-        let calls = mock.recorded_calls();
-        assert_eq!(calls.len(), 1);
-        // The window is named by its resolved pane, so the panes returned cannot
-        // be a prefix-matched sibling's.
+        let found = pane_ids_with_option("task-42", "@dispatch_editor_pane", &mock).unwrap();
+        assert_eq!(found, vec!["%7".to_string()]);
         assert_eq!(
-            calls[0].1,
+            mock.recorded_calls()[0].1,
             vec![
                 "list-panes",
                 "-t",
                 &mock.pane_id_of("task-42"),
                 "-F",
-                "#{pane_active} #{pane_id}",
+                "#{pane_id} #{@dispatch_editor_pane}",
             ]
         );
     }
 
+    /// An absent window must error rather than reporting "no marked pane" after
+    /// inspecting a prefix-matched sibling's panes.
     #[test]
-    fn inactive_pane_id_returns_none_for_single_pane_window() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"1 %3\n")])
-            .with_windows(&["task-42"]);
-        assert_eq!(inactive_pane_id("task-42", &mock).unwrap(), None);
-    }
-
-    #[test]
-    fn inactive_pane_id_returns_none_when_ambiguous() {
-        // Should never occur given OneCompanionPanePerAgentWindow, but the
-        // function must not guess which of several inactive panes to target.
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(
-            b"0 %3\n0 %7\n1 %9\n",
-        )])
-        .with_windows(&["task-42"]);
-        assert_eq!(inactive_pane_id("task-42", &mock).unwrap(), None);
-    }
-
-    #[test]
-    fn inactive_pane_id_fails_on_nonzero_exit() {
-        let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")])
-            .with_windows(&["task-42"]);
-        let err = inactive_pane_id("task-42", &mock).unwrap_err();
-        assert!(err.to_string().contains("list-panes failed"), "got: {err}");
-    }
-
-    #[test]
-    fn inactive_pane_id_fails_when_window_is_absent() {
-        // Previously returned Ok(None) after inspecting the sibling's panes —
-        // silently reporting "no companion pane" for a window that isn't there.
+    fn pane_ids_with_option_fails_when_window_is_absent() {
         let mock = MockProcessRunner::new(vec![]).with_windows(&["dispatch", "task-42"]);
-        let err = inactive_pane_id("task-4", &mock).unwrap_err();
+        let err = pane_ids_with_option("task-4", "@x", &mock).unwrap_err();
         assert!(
             err.to_string().contains("no tmux window named 'task-4'"),
             "got: {err}"

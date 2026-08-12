@@ -11,16 +11,11 @@ use std::path::{Component, Path};
 use anyhow::{bail, Context, Result};
 
 use crate::process::ProcessRunner;
-use crate::tmux;
+use crate::tmux::{self, EDITOR_PANE_OPTION};
 
 /// Editor of last resort when neither `$VISUAL` nor `$EDITOR` names one —
 /// `config.agent_tree_editor_fallback` in docs/specs/agent-tree.allium.
 pub const EDITOR_FALLBACK: &str = "vi";
-
-/// tmux pane option marking the pane this module opened, so the next open finds
-/// it instead of splitting another. See `OneEditorPanePerAgentWindow` in
-/// docs/specs/agent-tree.allium.
-pub const EDITOR_PANE_OPTION: &str = "@dispatch_editor_pane";
 
 /// Height of the editor pane as a percentage of the agent window — matches
 /// `agent_tree_editor_pane_percent` in docs/specs/agent-tree.allium.

@@ -13,10 +13,10 @@ mod tmux_harness;
 
 use std::path::PathBuf;
 
-use dispatch_tui::agent_tree_editor::{open_in_editor, EDITOR_PANE_OPTION};
+use dispatch_tui::agent_tree_editor::open_in_editor;
 use dispatch_tui::dispatch;
 use dispatch_tui::process::ProcessRunner;
-use dispatch_tui::tmux;
+use dispatch_tui::tmux::{self, EDITOR_PANE_OPTION};
 
 use tmux_harness::{await_stub_line, stub_lines, tmux_available_or_skip, StubLine, TmuxServer};
 

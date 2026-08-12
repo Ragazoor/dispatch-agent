@@ -408,8 +408,9 @@ Where to put a real-tmux test:
 | What topology and cwd does dispatch/resume/split actually build? | `tests/tmux_lifecycle.rs` — panes run the real shell with stub `claude`/`dispatch` binaries that record `argv`/`$PWD`/`$TMUX_PANE` |
 | Which pane does a keystroke land in? | `tests/tmux_split_hook.rs` — every pane runs `cat > log`, so delivery is observable |
 | Does a named target resolve to the window it names? | `tests/tmux_window_targets.rs` — colliding-prefix topology (`task-4` alongside `task-42`), so a prefix-matched target is observable as the wrong window being hit |
+| Which pane does the agent-tree companion pane's editor open into, and which pane does the toggle kill? | `tests/tmux_editor_pane.rs` — an agent window with three panes, so "the window's single inactive pane" is observably not an identity |
 
-All three share the rig in `tests/tmux_harness/mod.rs`: a private `-L` socket, `-f /dev/null` so the developer's `~/.tmux.conf` can't change the result, and drop-guard teardown. Start from `tmux_available_or_skip()` — it skips locally when tmux is missing but **hard-fails under `CI`**, so a missing tmux in the workflow can never quietly report green. Waiting on pane output goes through `poll_for` (the sole sanctioned `// allow-test-sleep`, see below), never a fixed sleep.
+All four share the rig in `tests/tmux_harness/mod.rs`: a private `-L` socket, `-f /dev/null` so the developer's `~/.tmux.conf` can't change the result, and drop-guard teardown. Start from `tmux_available_or_skip()` — it skips locally when tmux is missing but **hard-fails under `CI`**, so a missing tmux in the workflow can never quietly report green. Waiting on pane output goes through `poll_for` (the sole sanctioned `// allow-test-sleep`, see below), never a fixed sleep.
 
 ### Writing a mock tmux test: `MockProcessRunner`'s window-lookup policy
 

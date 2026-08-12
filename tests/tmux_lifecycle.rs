@@ -593,8 +593,15 @@ fn pin_joins_the_agent_pane_and_kills_the_leftover_companion() {
     let window = fx.window(TASK_ID);
     // Wait for the companion, so the pin genuinely has one to clean up.
     fx.await_companion(TASK_ID);
-    let companion = tmux::inactive_pane_id(&window, &fx.server.runner())
-        .expect("companion lookup")
+    // Located by the harness, not by production's own lookup: an oracle that
+    // called `dispatch::agent_tree_pane_id` would assert that pin killed
+    // whatever that function names, and would keep passing if it named the
+    // wrong pane — which is the failure mode #3856 was about.
+    let companion = fx
+        .server
+        .pane_ids(&window)
+        .into_iter()
+        .find(|id| fx.server.pane_start_command(id).contains("agent-tree"))
         .expect("companion pane should exist before pinning");
     let agent_pane = fx.server.active_pane_id(&window).expect("agent pane");
 

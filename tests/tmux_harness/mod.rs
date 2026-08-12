@@ -256,6 +256,19 @@ impl TmuxServer {
         self.tmux_stdout(&["show-options", "-pqv", "-t", pane_id, option])
     }
 
+    /// The command a pane was started with — empty for a pane running the default
+    /// shell. Lets a test locate the agent-tree companion pane *without* calling
+    /// production's own lookup, which would make the oracle circular.
+    pub fn pane_start_command(&self, pane_id: &str) -> String {
+        self.tmux_stdout(&[
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_start_command}",
+        ])
+    }
+
     /// Write an additional stub binary into this server's stub dir and return its
     /// absolute path. Same shape as the `claude` / `dispatch` stubs: it records
     /// one line to [`Self::stub_log`] and then holds its pane open with

@@ -326,12 +326,12 @@ fn pane_id_for_window_returns_the_exactly_named_windows_pane() {
 }
 
 #[test]
-fn inactive_pane_id_on_absent_prefix_window_errors() {
+fn pane_ids_with_option_on_absent_prefix_window_errors() {
     let Some(fx) = setup_or_skip(&[BOARD, "task-42"]) else {
         return;
     };
 
-    tmux::inactive_pane_id("task-4", &fx.runner())
+    tmux::pane_ids_with_option("task-4", "@dispatch_editor_pane", &fx.runner())
         .expect_err("must fail rather than inspect task-42's panes");
 }
 

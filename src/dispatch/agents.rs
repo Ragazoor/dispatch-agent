@@ -34,11 +34,13 @@ const AGENT_TREE_SUBCOMMAND: &str = "agent-tree";
 /// binary is named through `ProcessRunner::agent_binaries` — which is how the
 /// real-tmux harness points it at a stub — hence comparing basenames.
 fn is_agent_tree_command(start_command: &str, dispatch_bin: &str) -> bool {
+    // Borrowed, not allocated: this runs once per pane per toggle, and the
+    // lossy conversion the owned form implied was never semantically needed.
     let basename = |s: &str| {
         std::path::Path::new(s)
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| s.to_string())
+            .unwrap_or_else(|| std::ffi::OsStr::new(s))
+            .to_owned()
     };
     let mut argv = start_command.split_whitespace();
     let Some(argv0) = argv.next() else {
@@ -72,13 +74,17 @@ pub fn agent_tree_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Op
 /// Used by the split-pane pin path, which moves only the agent's own pane out and
 /// must not leave the rest behind in a window nothing owns.
 pub fn companion_pane_ids(window: &str, runner: &dyn ProcessRunner) -> Result<Vec<String>> {
+    // Resolve the window *once*: each lookup would otherwise re-resolve the name,
+    // and a name (unlike a `%N` id) costs a real all-sessions `list-panes` scan
+    // — two extra tmux processes per pin for an answer that cannot change here.
+    let pane = tmux::pane_id_for_window(window, runner)?;
     let mut panes = Vec::new();
-    if let Some(tree) = agent_tree_pane_id(window, runner)? {
+    if let Some(tree) = agent_tree_pane_id(&pane, runner)? {
         panes.push(tree);
     }
     panes.extend(tmux::pane_ids_with_option(
-        window,
-        crate::agent_tree_editor::EDITOR_PANE_OPTION,
+        &pane,
+        tmux::EDITOR_PANE_OPTION,
         runner,
     )?);
     Ok(panes)
