@@ -264,7 +264,7 @@ impl TuiRuntime {
             // drop a feed command's stderr again (feeds.allium:
             // FeedCommandStderrOnSuccess). It logs spawn/non-zero failures and
             // stderr-on-success itself; we add the status-bar surface.
-            let output: crate::feed::FeedOutput =
+            let output =
                 match crate::feed::exec_feed_command(&feed_command, epic_id.0, &epic_title).await {
                     Ok(o) => o,
                     Err(e) => return fail(e),

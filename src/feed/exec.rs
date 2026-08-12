@@ -81,11 +81,7 @@ pub(crate) async fn exec_feed_command(
         Ok(o) => o,
         Err(err) => {
             let msg = format!("{err:#}");
-            tracing::warn!(
-                epic_id,
-                epic_title,
-                "FeedRunner: failed to spawn command: {msg}"
-            );
+            tracing::warn!(epic_id, epic_title, "feed: failed to spawn command: {msg}");
             return Err(msg);
         }
     };
@@ -96,7 +92,7 @@ pub(crate) async fn exec_feed_command(
         tracing::warn!(
             epic_id,
             epic_title,
-            "FeedRunner: command exited non-zero: {stderr}"
+            "feed: command exited non-zero: {stderr}"
         );
         return Err(stderr);
     }
@@ -105,7 +101,7 @@ pub(crate) async fn exec_feed_command(
         tracing::warn!(
             epic_id,
             epic_title,
-            "FeedRunner: command wrote to stderr but exited 0: {stderr}"
+            "feed: command wrote to stderr but exited 0: {stderr}"
         );
     }
 
@@ -278,6 +274,56 @@ mod tests {
             out.stderr.chars().count(),
             MAX_FEED_STDERR_CHARS,
             "stderr must be truncated to the cap"
+        );
+    }
+
+    // truncate_stderr's doc comment promises a character-boundary-safe
+    // truncation. 3000 ASCII bytes alone can't distinguish that from a naive
+    // `&text[..2000]` byte slice, which would panic on multi-byte input. This
+    // drives well over the cap with a repeated non-ASCII character so a
+    // byte-slicing regression panics this test instead of shipping.
+    #[tokio::test]
+    async fn exec_feed_command_truncates_multi_byte_stderr_without_panicking() {
+        // 'é' is 2 bytes in UTF-8; "yes é" repeats "é\n" (3 bytes), so
+        // `head -c 9000` yields exactly 3000 'é' characters once newlines
+        // are stripped — well over the 2000-character cap. A naive
+        // `&text[..2000]` byte slice would land mid-character and panic.
+        let out = exec_feed_command(
+            "yes é 2>/dev/null | head -c 9000 | tr -d '\\n' >&2; printf '[]'",
+            8,
+            "test-epic",
+        )
+        .await
+        .expect("zero exit must still succeed");
+        assert_eq!(
+            out.stderr.chars().count(),
+            MAX_FEED_STDERR_CHARS,
+            "multi-byte stderr must be truncated to exactly the character cap without panicking"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_feed_command_reports_stderr_of_exactly_the_cap_complete() {
+        // Exactly MAX_FEED_STDERR_CHARS ASCII characters must come back
+        // whole, not truncated by one.
+        let out = exec_feed_command(
+            &format!(
+                "printf '%{n}s' '' | tr ' ' x >&2; printf '[]'",
+                n = MAX_FEED_STDERR_CHARS
+            ),
+            9,
+            "test-epic",
+        )
+        .await
+        .expect("zero exit must still succeed");
+        assert_eq!(
+            out.stderr.chars().count(),
+            MAX_FEED_STDERR_CHARS,
+            "exact-cap stderr must be reported in full"
+        );
+        assert!(
+            out.stderr.chars().all(|c| c == 'x'),
+            "exact-cap stderr must be untruncated content"
         );
     }
 }

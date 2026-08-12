@@ -15,7 +15,7 @@ use crate::mcp::McpEvent;
 use crate::models::EpicId;
 use crate::process::ProcessRunner;
 
-pub(crate) use exec::{exec_feed_command, resolve_base_branches, FeedOutput};
+pub(crate) use exec::{exec_feed_command, resolve_base_branches};
 pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
 pub use routing::route;
 
@@ -429,6 +429,42 @@ mod tests {
 
         let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
         assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].title, "T");
+        assert_eq!(tasks[0].external_id.as_deref(), Some("1"));
+    }
+
+    // Regression coverage for feeds.allium: FeedCommandStderrOnSuccess on the
+    // auto-poll path — a command that writes to stderr while still exiting 0
+    // with a valid item array must sync exactly as if it had written nothing.
+    // Only the manual "r" path (src/runtime/tests.rs:3211) had this proven
+    // before; this closes the gap for FeedJob::run.
+    #[tokio::test]
+    async fn tick_stderr_on_zero_exit_does_not_suppress_sync() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Noisy Epic", "", None).await.unwrap();
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new().feed_command(Some(
+                r#"echo 'Invalid search query' >&2; echo '[{"external_id":"1","title":"T","description":"D","status":"backlog","tag":"bug"}]'"#,
+            )),
+        )
+        .await
+        .unwrap();
+
+        let (mut runner, mut rx) = make_runner(db.clone());
+        runner.tick().await;
+
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for McpEvent::Refresh")
+            .expect("channel closed");
+
+        let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "stderr on a zero exit must not suppress the sync"
+        );
         assert_eq!(tasks[0].title, "T");
         assert_eq!(tasks[0].external_id.as_deref(), Some("1"));
     }
