@@ -40,14 +40,39 @@ impl ProcessRunner for AlwaysFailRunner {
     }
 }
 
-/// Execute the feed shell command and return raw stdout bytes on success.
+/// Maximum number of characters of a feed command's stderr that are logged and
+/// carried on [`FeedOutput`]. A verbose script must not be able to write
+/// unbounded output into `app.log` on every poll.
+pub(crate) const MAX_FEED_STDERR_CHARS: usize = 2000;
+
+/// A successful feed command's output.
+#[derive(Debug)]
+pub(crate) struct FeedOutput {
+    /// Raw stdout bytes, to be parsed as a FeedItem JSON array.
+    pub(crate) stdout: Vec<u8>,
+    /// Anything the command wrote to stderr while still exiting 0 — trimmed
+    /// and truncated to [`MAX_FEED_STDERR_CHARS`]. Empty when it wrote
+    /// nothing. A non-empty value is the signature of a script that swallowed
+    /// an internal error and emitted a degraded array anyway, so it is logged
+    /// here and surfaced by the manual-refresh path (feeds.allium:
+    /// FeedCommandStderrOnSuccess).
+    pub(crate) stderr: String,
+}
+
+/// Execute the feed shell command.
 ///
-/// Logs a warning and returns `None` on spawn failure or non-zero exit.
-pub(super) async fn exec_feed_command(
+/// On success returns stdout plus any stderr the command wrote while exiting 0,
+/// logging a warning for that stderr — it is a diagnostic, not a failure, and
+/// the caller syncs the emission as normal.
+///
+/// On spawn failure or non-zero exit, logs a warning (as before) and returns
+/// `Err` with the failure text, so a caller that must surface the error to the
+/// user — `exec_trigger_epic_feed`'s status bar — has it.
+pub(crate) async fn exec_feed_command(
     cmd: &str,
     epic_id: i64,
     epic_title: &str,
-) -> Option<Vec<u8>> {
+) -> Result<FeedOutput, String> {
     let output = match tokio::process::Command::new("sh")
         .args(["-c", cmd])
         .output()
@@ -55,26 +80,48 @@ pub(super) async fn exec_feed_command(
     {
         Ok(o) => o,
         Err(err) => {
+            let msg = format!("{err:#}");
             tracing::warn!(
                 epic_id,
                 epic_title,
-                "FeedRunner: failed to spawn command: {err:#}"
+                "FeedRunner: failed to spawn command: {msg}"
             );
-            return None;
+            return Err(msg);
         }
     };
 
+    let stderr = truncate_stderr(&output.stderr);
+
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         tracing::warn!(
             epic_id,
             epic_title,
             "FeedRunner: command exited non-zero: {stderr}"
         );
-        return None;
+        return Err(stderr);
     }
 
-    Some(output.stdout)
+    if !stderr.is_empty() {
+        tracing::warn!(
+            epic_id,
+            epic_title,
+            "FeedRunner: command wrote to stderr but exited 0: {stderr}"
+        );
+    }
+
+    Ok(FeedOutput {
+        stdout: output.stdout,
+        stderr,
+    })
+}
+
+/// Decode stderr bytes lossily, trim surrounding whitespace, and cap the
+/// length at [`MAX_FEED_STDERR_CHARS`]. Truncates on a character boundary, so
+/// multi-byte output cannot panic here.
+fn truncate_stderr(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let trimmed = text.trim();
+    trimmed.chars().take(MAX_FEED_STDERR_CHARS).collect()
 }
 
 #[cfg(test)]
@@ -165,32 +212,72 @@ mod tests {
 
     #[tokio::test]
     async fn exec_feed_command_returns_stdout_on_success() {
-        let result = exec_feed_command("printf 'hello'", 1, "test-epic").await;
-        assert_eq!(result, Some(b"hello".to_vec()));
+        let out = exec_feed_command("printf 'hello'", 1, "test-epic")
+            .await
+            .expect("zero-exit command must succeed");
+        assert_eq!(out.stdout, b"hello".to_vec());
+        assert_eq!(out.stderr, "", "no stderr written, so none reported");
     }
 
     #[tokio::test]
-    async fn exec_feed_command_returns_none_on_nonzero_exit() {
+    async fn exec_feed_command_returns_err_on_nonzero_exit() {
         let result = exec_feed_command("exit 1", 2, "test-epic").await;
-        assert!(result.is_none(), "non-zero exit must return None");
+        assert!(result.is_err(), "non-zero exit must be an error");
     }
 
     #[tokio::test]
-    async fn exec_feed_command_returns_none_when_command_writes_stderr_and_fails() {
-        let result = exec_feed_command("echo 'error msg' >&2; exit 1", 3, "test-epic").await;
+    async fn exec_feed_command_err_carries_stderr_of_failed_command() {
+        let err = exec_feed_command("echo 'error msg' >&2; exit 1", 3, "test-epic")
+            .await
+            .expect_err("non-zero exit must be an error");
         assert!(
-            result.is_none(),
-            "command that writes to stderr and exits non-zero must return None"
+            err.contains("error msg"),
+            "error must carry the command's stderr, got: {err}"
         );
     }
 
     #[tokio::test]
-    async fn exec_feed_command_returns_empty_vec_on_zero_exit_with_no_output() {
-        let result = exec_feed_command("true", 4, "test-epic").await;
+    async fn exec_feed_command_returns_empty_stdout_on_zero_exit_with_no_output() {
+        let out = exec_feed_command("true", 4, "test-epic")
+            .await
+            .expect("zero-exit command must succeed");
+        assert!(out.stdout.is_empty(), "no stdout written");
+        assert_eq!(out.stderr, "");
+    }
+
+    // The regression this whole change exists for: a command that fails
+    // internally, writes the reason to stderr, and STILL exits 0 with a valid
+    // (empty) JSON array. Previously the stderr was captured and discarded.
+    #[tokio::test]
+    async fn exec_feed_command_captures_stderr_written_on_zero_exit() {
+        let out = exec_feed_command(
+            "echo 'Invalid search query' >&2; printf '[]'",
+            5,
+            "test-epic",
+        )
+        .await
+        .expect("zero exit must still succeed");
+        assert_eq!(out.stdout, b"[]".to_vec(), "stdout must be untouched");
         assert_eq!(
-            result,
-            Some(vec![]),
-            "zero-exit command with no stdout must return Some(empty)"
+            out.stderr, "Invalid search query",
+            "stderr written on a zero exit must be reported, trimmed"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_feed_command_truncates_long_stderr() {
+        // 3000 'x' characters on stderr, valid empty array on stdout.
+        let out = exec_feed_command(
+            "printf '%3000s' '' | tr ' ' x >&2; printf '[]'",
+            6,
+            "test-epic",
+        )
+        .await
+        .expect("zero exit must still succeed");
+        assert_eq!(
+            out.stderr.chars().count(),
+            MAX_FEED_STDERR_CHARS,
+            "stderr must be truncated to the cap"
         );
     }
 }

@@ -15,7 +15,7 @@ use crate::mcp::McpEvent;
 use crate::models::EpicId;
 use crate::process::ProcessRunner;
 
-pub(crate) use exec::resolve_base_branches;
+pub(crate) use exec::{exec_feed_command, resolve_base_branches, FeedOutput};
 pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
 pub use routing::route;
 
@@ -81,11 +81,14 @@ impl FeedJob {
     /// from it. Any failure along the way is logged and the job simply
     /// returns — `tick` fires-and-forgets these onto the tokio runtime.
     async fn run(self) {
-        let Some(stdout) =
-            exec::exec_feed_command(&self.cmd, self.epic.id.0, &self.epic.title).await
+        // exec_feed_command has already logged the failure (and any
+        // stderr-on-success); the auto-poll path adds nothing, per
+        // feeds.allium FeedCommandFailure ("the TUI is NOT notified").
+        let Ok(output) = exec::exec_feed_command(&self.cmd, self.epic.id.0, &self.epic.title).await
         else {
             return;
         };
+        let stdout = output.stdout;
 
         let items = match parse::parse_feed_items(&stdout) {
             Ok(i) => i,
