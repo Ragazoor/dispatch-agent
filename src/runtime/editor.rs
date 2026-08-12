@@ -151,13 +151,6 @@ fn initial_content_for(kind: &EditKind) -> (String, String) {
     }
 }
 
-/// Resolve the `$EDITOR` command to launch, falling back to `vim` when the
-/// variable is unset or invalid. Takes the lookup result rather than reading
-/// the environment itself so it's directly unit-testable.
-fn resolve_editor_command(env_result: Result<String, std::env::VarError>) -> String {
-    env_result.unwrap_or_else(|_| "vim".to_string())
-}
-
 /// Surface a pop-out editor failure as a status error and let the caller
 /// `return`. Funnels the several early-return error paths in
 /// `exec_pop_out_editor` through one place instead of repeating the
@@ -227,17 +220,18 @@ impl TuiRuntime {
         };
 
         let window_name = new_window_name();
-        let editor_cmd = resolve_editor_command(std::env::var("EDITOR"));
+        // Same resolution as the agent-tree editor pane — one `$EDITOR` means
+        // one thing (docs/specs/core.allium: `editor_fallback`). Never empty,
+        // so `new_window_running`'s empty-command guard is unreachable here.
+        let editor = crate::editor::editor_from_env();
         let cwd = std::env::temp_dir();
         let cwd_str = cwd.to_string_lossy().into_owned();
         let temp_str = temp_path.to_string_lossy().into_owned();
 
-        if let Err(e) = tmux::new_window_running(
-            &window_name,
-            &cwd_str,
-            &[&editor_cmd, &temp_str],
-            &*self.runner,
-        ) {
+        let mut command: Vec<&str> = editor.iter().map(String::as_str).collect();
+        command.push(&temp_str);
+
+        if let Err(e) = tmux::new_window_running(&window_name, &cwd_str, &command, &*self.runner) {
             let _ = std::fs::remove_file(&temp_path);
             emit_pop_out_error(app, format!("Failed to open editor window: {e}"));
             return;
@@ -662,22 +656,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_editor_command_uses_env_value_when_present() {
-        assert_eq!(
-            resolve_editor_command(Ok("nano".to_string())),
-            "nano".to_string()
-        );
-    }
-
-    #[test]
-    fn resolve_editor_command_falls_back_to_vim_when_absent() {
-        assert_eq!(
-            resolve_editor_command(Err(std::env::VarError::NotPresent)),
-            "vim".to_string()
-        );
-    }
-
-    #[test]
     fn emit_pop_out_error_surfaces_error_popup() {
         let mut app = App::new(vec![]);
         emit_pop_out_error(&mut app, "boom".to_string());
@@ -777,6 +755,53 @@ mod tests {
         assert!(
             msg.contains("Editor already open"),
             "expected 'Editor already open' in status, got {msg:?}"
+        );
+    }
+
+    /// The pop-out editor and the agent-tree editor pane resolve one setting,
+    /// so they must resolve it the same way: `crate::editor::editor_from_env`.
+    /// Asserted as argv *elements* — a multi-word `$EDITOR` ("vim -p") passed
+    /// as a single string would be looked up as a binary of that name and fail
+    /// to launch, which is the bug this pins.
+    ///
+    /// Written against whatever the ambient environment resolves to rather than
+    /// a fixed editor name: `std::env::set_var` is `unsafe` and races the other
+    /// harness threads, so the environment is read here, never written.
+    #[tokio::test]
+    async fn exec_pop_out_editor_launches_the_resolved_editor_argv() {
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok(), // new-window
+                MockProcessRunner::ok(), // select-window (focus the editor)
+                MockProcessRunner::ok(), // watcher: list-windows -> none, so it exits
+                MockProcessRunner::ok(), // select-window (focus back to the TUI)
+            ])
+            // Window-name lookups are answered out of band, so the session's
+            // best-effort kill-window on drop cannot exhaust the queue above.
+            .with_windows(&[]),
+        );
+        let (rt, mut app) = runtime_with_runner(mock.clone()).await;
+
+        rt.exec_pop_out_editor(&mut app, EditKind::Description { is_epic: false });
+
+        // calls[0] is issued synchronously, before the watcher thread starts.
+        let calls = mock.recorded_calls();
+        assert_eq!(calls[0].0, "tmux");
+        let args = &calls[0].1;
+        assert_eq!(args[0], "new-window");
+        let sep = args
+            .iter()
+            .position(|a| a == "--")
+            .unwrap_or_else(|| panic!("no exec separator in {args:?}"));
+        let expected = crate::editor::editor_from_env();
+        assert_eq!(
+            args[sep + 1..args.len() - 1],
+            expected[..],
+            "the editor must reach tmux as the resolved argv; got {args:?}"
+        );
+        assert!(
+            args[args.len() - 1].ends_with(".md"),
+            "the tempfile must be the final argv element; got {args:?}"
         );
     }
 

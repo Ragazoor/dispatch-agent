@@ -31,8 +31,9 @@ use ratatui::{Frame, Terminal};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
 use crate::agent_tree::{build_tree, FileOperation, TreeNode, TreeNodeKind};
-use crate::agent_tree_editor::{current_pane_from_env, editor_from_env, open_in_editor};
+use crate::agent_tree_editor::{current_pane_from_env, open_in_editor};
 use crate::db::{Database, TaskRead};
+use crate::editor::editor_from_env;
 use crate::file_events::file_events_path;
 use crate::models::TaskId;
 use crate::process::{ProcessRunner, RealProcessRunner};

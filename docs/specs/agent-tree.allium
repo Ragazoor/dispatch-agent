@@ -173,11 +173,9 @@ config {
     -- is the point of opening it.
     agent_tree_editor_pane_percent: Integer = 60
 
-    -- Editor of last resort, when the environment names none. Not a user-facing
-    -- setting: the editor is chosen by the environment (see
-    -- OpenAgentTreeFileInEditor's guidance), and this constant only gives the
-    -- fallback a name.
-    agent_tree_editor_fallback: String = "vi"
+    -- Which editor to launch is NOT declared here: it is core/config.editor_fallback
+    -- and the resolution rule stated with it, shared with the pop-out task and
+    -- epic editors (see OpenAgentTreeFileInEditor's guidance).
 }
 
 ------------------------------------------------------------
@@ -793,15 +791,16 @@ rule OpenAgentTreeFileInEditor {
         -- in KIND from the board's split pane rather than in degree.
         --
         -- == Which editor ==
-        -- Whatever the environment names: VISUAL, else EDITOR, else
-        -- config.agent_tree_editor_fallback. A value naming no editor at all —
-        -- absent, empty, or only whitespace — is treated as unset, because
-        -- `export EDITOR=` is how a shell spells "none". The value is split into
-        -- argv and executed directly with no shell, so a value carrying flags
-        -- works and nothing in it is expanded, globbed or word-split by the
-        -- shell. The file is passed as an absolute path and the pane starts in
-        -- pane.root, so a relative path would resolve anyway; absolute is what
-        -- makes that not matter.
+        -- Resolved by the shared rule stated with core/config.editor_fallback:
+        -- VISUAL, else EDITOR, else that fallback; a value that is absent,
+        -- empty or only whitespace counts as unset; the value is split into
+        -- argv and executed directly with no shell. This surface adds nothing
+        -- to that rule — it is the same resolution the pop-out task and epic
+        -- editors use, so one $EDITOR means one thing everywhere.
+        --
+        -- What IS specific here: the file is passed as an absolute path and the
+        -- pane starts in pane.root, so a relative path would resolve anyway;
+        -- absolute is what makes that not matter.
         --
         -- A GUI editor that forks on launch returns immediately, so its pane
         -- closes while its window stays open. That is the correct outcome and

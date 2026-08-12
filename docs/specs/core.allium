@@ -566,6 +566,25 @@ config {
     -- first and only falls back to this literal when detection fails.
     default_branch: String = "main"
 
+    -- Editor of last resort, when the environment names none. Not a
+    -- user-facing setting: the editor is chosen by the environment, and this
+    -- constant only gives the fallback a name.
+    --
+    -- == Which editor (one rule, every surface) ==
+    -- Whatever the environment names: VISUAL, else EDITOR, else this fallback.
+    -- A value naming no editor at all — absent, empty, or only whitespace — is
+    -- treated as unset, because `export EDITOR=` is how a shell spells "none".
+    -- The value is split on whitespace into argv and executed directly with no
+    -- shell, so a value carrying flags (`EDITOR="vim -p"`) works and nothing
+    -- in it is expanded, globbed or word-split by a shell.
+    --
+    -- This governs EVERY surface that launches the user's editor: the pop-out
+    -- task and epic editors (tasks.allium: EditTask, epics.allium: EditEpic)
+    -- and the agent-tree editor pane (agent-tree.allium:
+    -- OpenAgentTreeFileInEditor). One user setting must not mean two things in
+    -- one application.
+    editor_fallback: String = "vi"
+
     -- Staleness thresholds used by card age rendering and Staleness::from_age.
     fresh_threshold: Duration = 3.days
     aging_threshold: Duration = 7.days

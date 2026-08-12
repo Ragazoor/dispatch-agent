@@ -39,7 +39,9 @@ config {
 rule EditEpic {
     when: EditEpic(epic)
 
-    -- Opens $EDITOR with a structured file containing the epic's
+    -- Opens the user's editor — resolved by the shared rule stated with
+    -- core/config.editor_fallback, the same resolution EditTask uses — with a
+    -- structured file containing the epic's
     -- title, description, feed_command and feed_interval_secs. The file
     -- uses "--- SECTION ---" delimiters (TITLE, DESCRIPTION,
     -- FEED_COMMAND, FEED_INTERVAL_SECS).

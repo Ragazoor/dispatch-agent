@@ -1860,14 +1860,14 @@ mod tests {
             "%3",
             60,
             "/work/wt",
-            &["nvim", "-p", "/work/wt/dir with spaces/a.rs"],
+            &["vim", "-p", "/work/wt/dir with spaces/a.rs"],
             &mock,
         )
         .unwrap();
         let args = &mock.recorded_calls()[0].1;
         assert_eq!(args.last().unwrap(), "/work/wt/dir with spaces/a.rs");
         assert_eq!(args[args.len() - 4], "--");
-        assert_eq!(args[args.len() - 3], "nvim");
+        assert_eq!(args[args.len() - 3], "vim");
         assert_eq!(args[args.len() - 2], "-p");
     }
 

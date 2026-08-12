@@ -83,7 +83,10 @@ closing and reopening the pane. Use `Prefix+e` to toggle it (see above).
 
 The editor pane starts in the task's worktree and is handed the file's absolute path.
 `$VISUAL`/`$EDITOR` are split on whitespace and run directly, with no shell — so
-`EDITOR="nvim -p"` works, and nothing in the value is shell-expanded. A GUI editor that
+`EDITOR="vim -p"` works, and nothing in the value is shell-expanded. A value that is
+empty or all whitespace counts as unset. The **same** resolution applies to the board's
+pop-out task/epic editor (`e` on a card), so one `$EDITOR` means one thing everywhere.
+A GUI editor that
 forks (`gvim`) returns immediately, so its pane closes while its own window stays open.
 When opening fails — the agent deleted the file after touching it, or tmux refused the
 split — the reason appears in the pane's bottom border until the next keypress, and is

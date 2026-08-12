@@ -610,7 +610,11 @@ rule CopyTask {
 rule EditTask {
     when: EditTask(task)
 
-    -- Opens $EDITOR with a structured file containing the task's
+    -- Opens the user's editor — resolved by the shared rule stated with
+    -- core/config.editor_fallback (VISUAL, else EDITOR, else that fallback;
+    -- absent/empty/whitespace counts as unset; the value is split into argv and
+    -- run with no shell, so `EDITOR="vim -p"` works) — with a
+    -- structured file containing the task's
     -- title, description, repo_path, status, plan, tag, base_branch,
     -- wrap_up_mode, url, and url_type.
     -- The sections are delimited by `--- SECTION ---` markers
