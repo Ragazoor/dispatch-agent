@@ -1,4 +1,5 @@
 mod exec;
+mod guard;
 mod ingest;
 mod parse;
 mod routing;
