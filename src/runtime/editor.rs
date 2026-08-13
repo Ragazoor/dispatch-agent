@@ -705,6 +705,12 @@ mod tests {
         let db: Arc<dyn crate::db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -712,11 +718,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -834,6 +837,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -841,11 +850,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -897,6 +903,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -904,11 +916,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -954,6 +963,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -961,11 +976,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -1019,6 +1031,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -1026,11 +1044,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -1071,6 +1086,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -1078,11 +1099,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -1139,6 +1157,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -1146,11 +1170,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -1199,6 +1220,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -1206,11 +1233,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
@@ -1260,6 +1284,12 @@ mod tests {
 
         let (tx, _rx) = unbounded_channel();
         let (feed_tx, _) = unbounded_channel();
+        // Bound first so feed_sync_guard is THIS runner's registry:
+        // a fresh FeedSyncGuard here would compile and silently
+        // serialise nothing.
+        let feed_runner =
+            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
@@ -1267,11 +1297,8 @@ mod tests {
                 Database::open_in_memory().await.unwrap(),
             )
                 as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(crate::feed::FeedRunner::new(
-                db.clone(),
-                feed_tx,
-                runner.clone(),
-            )),
+            feed_runner: Some(feed_runner),
+            feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),

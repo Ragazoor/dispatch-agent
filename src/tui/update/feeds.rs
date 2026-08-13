@@ -7,20 +7,22 @@ use super::super::App;
 
 impl App {
     pub(in crate::tui) fn handle_trigger_epic_feed(&mut self, id: EpicId) -> Vec<Command> {
-        let result = self.find_epic(id).and_then(|e| {
-            e.feed_command
-                .as_deref()
-                .map(|cmd| (e.title.clone(), cmd.to_owned(), e.group_by_repo))
-        });
-        match result {
-            Some((title, feed_command, group_by_repo)) => {
+        // The cached board answers only "is this a feed epic at all?" — this
+        // rule's requires clause, for which stale data is fine. The values the
+        // cycle ACTS on (feed_command, feed_role, group_by_repo) are re-read
+        // from the epic inside FeedCycle::run, so a refresh can never run a
+        // command or a grouping mode the user has since changed.
+        let title = self
+            .find_epic(id)
+            .filter(|e| e.feed_command.is_some())
+            .map(|e| e.title.clone());
+        match title {
+            Some(title) => {
                 self.set_status(format!("Fetching feed for '{title}'…"));
                 vec![Command::Feed(
                     crate::tui::commands::FeedCommand::TriggerEpic {
                         epic_id: id,
                         epic_title: title,
-                        feed_command,
-                        group_by_repo,
                     },
                 )]
             }
@@ -48,6 +50,17 @@ impl App {
         error: String,
     ) -> Vec<Command> {
         self.set_status(format!("Feed for '{epic_title}' failed: {error}"));
+        vec![]
+    }
+
+    /// The refresh was dropped because a cycle for this epic was already
+    /// running (feeds.allium: SerialisedFeedCycle). No `RefreshFromDb`: nothing
+    /// was written, so there is nothing to reload.
+    pub(in crate::tui) fn handle_feed_already_refreshing(
+        &mut self,
+        epic_title: String,
+    ) -> Vec<Command> {
+        self.set_status(format!("Feed for '{epic_title}' is already refreshing…"));
         vec![]
     }
 }

@@ -19,6 +19,12 @@ pub enum FeedMessage {
     Refreshed { epic_title: String, count: usize },
     /// Feed refresh failed.
     Failed { epic_title: String, error: String },
+    /// The refresh ran nothing: a feed cycle for this epic was already in
+    /// flight, so the request was dropped (feeds.allium: SerialisedFeedCycle).
+    /// Deliberately distinct from [`FeedMessage::Failed`] — it is neither a
+    /// success nor a failure, and reporting it as a failure would blame the
+    /// user's feed command for a serialisation decision.
+    AlreadyRefreshing { epic_title: String },
 }
 
 impl FeedMessage {
@@ -30,6 +36,9 @@ impl FeedMessage {
                 app.handle_feed_refreshed(epic_title, count)
             }
             FeedMessage::Failed { epic_title, error } => app.handle_feed_failed(epic_title, error),
+            FeedMessage::AlreadyRefreshing { epic_title } => {
+                app.handle_feed_already_refreshing(epic_title)
+            }
         }
     }
 }

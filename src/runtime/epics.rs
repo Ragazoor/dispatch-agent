@@ -239,95 +239,54 @@ impl TuiRuntime {
         }
     }
 
-    pub(super) fn exec_trigger_epic_feed(
-        &self,
-        epic_id: models::EpicId,
-        epic_title: String,
-        feed_command: String,
-        group_by_repo: bool,
-    ) {
+    /// Run one feed cycle for `epic_id` and present its outcome in the status
+    /// bar. Every step of the cycle lives in [`crate::feed::FeedCycle`], shared
+    /// with the auto-poll path, so the two cannot drift; this function owns only
+    /// the presentation (feeds.allium: ManualFeedTrigger).
+    ///
+    /// Takes no `feed_command` or `group_by_repo`: those are read from the epic
+    /// inside the cycle, so a refresh cannot run a command the user has since
+    /// changed. `epic_title` is passed for the status lines only.
+    pub(super) fn exec_trigger_epic_feed(&self, epic_id: models::EpicId, epic_title: String) {
         // Feed subsystem path: upserts tasks and recalculates epic status, so it
         // uses the write-capable `feed_db` handle (mirrors `FeedRunner`).
-        let db = self.feed_db.clone();
+        let cycle = crate::feed::FeedCycle {
+            db: self.feed_db.clone(),
+            runner: self.runner.clone(),
+            guard: self.feed_sync_guard.clone(),
+            epic_id,
+            epic_title: epic_title.clone(),
+            // Resolved inside the cycle, after the claim, so a dropped refresh
+            // does no DB work.
+            known_paths: None,
+        };
         let tx = self.msg_tx.clone();
-        let runner = self.runner.clone();
 
         tokio::spawn(async move {
-            let fail = |error: String| {
-                let _ = tx.send(Message::Feed(crate::tui::messages::FeedMessage::Failed {
-                    epic_title: epic_title.clone(),
-                    error,
-                }));
-            };
+            use crate::tui::messages::FeedMessage;
 
-            // The SAME exec the auto-poll FeedRunner uses, so neither path can
-            // drop a feed command's stderr again (feeds.allium:
-            // FeedCommandStderrOnSuccess). It logs spawn/non-zero failures and
-            // stderr-on-success itself; we add the status-bar surface.
-            let output =
-                match crate::feed::exec_feed_command(&feed_command, epic_id.0, &epic_title).await {
-                    Ok(o) => o,
-                    Err(e) => return fail(e),
-                };
-            // The SAME parse the auto-poll FeedRunner and the verify-feed CLI
-            // use, so the three paths cannot drift on what a feed command is
-            // allowed to emit (feeds.allium: FeedItemParse). Only the
-            // presentation of the failure is ours — the status bar surface.
-            let items: Vec<models::FeedItem> = match crate::feed::parse_feed_items(&output.stdout) {
-                Ok(i) => i,
-                Err(e) => return fail(format!("{e:#}")),
-            };
-
-            // feeds.allium: DegradedEmptyEmission — a zero-item emission that wrote to
-            // stderr is a failed run, not an empty one. Skip the sync entirely so the
-            // epic's existing tasks are left alone, and surface the stderr.
-            if let Some(reason) = crate::feed::degraded_empty_emission(items.len(), &output.stderr)
-            {
-                return fail(reason);
-            }
-
-            let count = items.len(); // items emitted by the feed command, not tasks inserted
-            let known_paths = db.list_repo_paths().await.unwrap_or_default();
-            let repo_paths = dispatch::resolve_feed_item_repo_paths(&items, &known_paths);
-            let base_branches = crate::feed::resolve_base_branches(&repo_paths, &*runner);
-            let entries = crate::feed::FeedItemWithTarget::zip(items, repo_paths, base_branches);
-            // Dispatch by feed_role through the shared dispatcher — the SAME
-            // role→sync-path mapping the auto-poll FeedRunner uses — so a
-            // reviews_parent epic routes its emission through the subtree role
-            // router, never a flat upsert onto the parent (feeds.allium: FeedSync
-            // dispatch). group_by_repo is only consulted on the non-reviews_parent
-            // path.
-            let feed_role = match db.get_epic(epic_id).await {
-                Ok(Some(e)) => e.feed_role,
-                _ => crate::models::FeedRole::None,
-            };
-            let sync_result = crate::feed::run_feed_sync_by_role(
-                &*db,
-                epic_id,
-                feed_role,
-                group_by_repo,
-                entries,
-            )
-            .await;
-            match sync_result {
-                Ok(outcome) => {
-                    crate::feed::recalculate_epic_status_after_feed(
-                        &*db,
-                        epic_id,
-                        "exec_trigger_epic_feed",
-                    )
-                    .await;
-                    // A feed-driven removal owes the same teardown as any other
-                    // deletion; without this the worktree and tmux window are
-                    // orphaned. Awaited before Refreshed so the status-bar
-                    // message means "reconciled AND cleaned up".
-                    crate::feed::cleanup_removed_feed_tasks(runner.clone(), outcome.removed).await;
-                    let _ = tx.send(Message::Feed(
-                        crate::tui::messages::FeedMessage::Refreshed { epic_title, count },
-                    ));
+            // The cycle has already torn down every removed task's worktree by
+            // the time it returns, so "N task(s) synced" means reconciled AND
+            // cleaned up (feeds.allium: RoleRoutedFeedSync).
+            let message = match cycle.run().await {
+                crate::feed::FeedCycleOutcome::Synced { count, .. } => FeedMessage::Refreshed {
+                    epic_title,
+                    // Items the feed command emitted, not tasks inserted.
+                    count,
+                },
+                // Neither a success nor a failure: nothing ran, because a cycle
+                // for this epic was already in flight. A distinct variant, not a
+                // Failed with a special string, so the status bar cannot blame
+                // the user's feed command for a serialisation decision.
+                crate::feed::FeedCycleOutcome::Busy => {
+                    FeedMessage::AlreadyRefreshing { epic_title }
                 }
-                Err(e) => fail(e.to_string()),
-            }
+                // Already logged by the cycle; we add the status-bar surface.
+                crate::feed::FeedCycleOutcome::Failed(error) => {
+                    FeedMessage::Failed { epic_title, error }
+                }
+            };
+            let _ = tx.send(Message::Feed(message));
         });
     }
 }

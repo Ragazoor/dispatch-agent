@@ -319,6 +319,14 @@ struct TuiRuntime {
     /// through `invalidate_feed_cache()` — keeping the runner from stranding a
     /// freshly-enabled feed behind `any_feed_cmds == Some(false)`.
     feed_invalidate_tx: Option<tokio::sync::watch::Sender<()>>,
+    /// Per-epic feed-cycle claims, shared with `feed_runner` so a manual "r"
+    /// refresh and an auto-poll tick serialise against each other
+    /// (feeds.allium: SerialisedFeedCycle).
+    ///
+    /// This MUST be the same `Arc` the `FeedRunner` holds. A separate registry
+    /// type-checks and compiles, and silently serialises nothing — always take
+    /// it from `FeedRunner::sync_guard()`, never construct one here.
+    feed_sync_guard: std::sync::Arc<crate::feed::FeedSyncGuard>,
     /// Shared embedding service for RAG-based learning injection and editor updates.
     emb_svc: Arc<EmbeddingService>,
     /// Snapshot of `total_changes()` after the last tick-driven full refresh.
@@ -492,6 +500,7 @@ impl TuiRuntime {
         let feed_runner =
             crate::feed::FeedRunner::new(database.clone(), feed_notify_tx, runner.clone());
         let feed_invalidate_tx = Some(feed_runner.epic_invalidate_tx());
+        let feed_sync_guard = feed_runner.sync_guard();
         let runtime = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(
                 database.clone(),
@@ -505,6 +514,7 @@ impl TuiRuntime {
             )),
             feed_runner: Some(feed_runner),
             feed_invalidate_tx,
+            feed_sync_guard,
             feed_db: database.clone(),
             database,
             msg_tx,

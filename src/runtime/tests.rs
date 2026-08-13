@@ -121,6 +121,19 @@ pub(super) async fn test_db() -> Arc<Database> {
     Arc::new(Database::open_in_memory().await.unwrap())
 }
 
+/// Persist `cmd` as `epic_id`'s feed command.
+///
+/// The manual trigger reads the command (and feed_role, and group_by_repo) from
+/// the epic itself rather than from its caller, so a test that only hands a
+/// command string to `exec_trigger_epic_feed` exercises nothing — the cycle
+/// fails with "epic has no feed command". That mirrors production, where the
+/// "r" key is only live for an epic whose feed_command is set.
+pub(super) async fn set_feed_command(db: &Arc<Database>, epic_id: crate::models::EpicId, cmd: &str) {
+    db.patch_epic(epic_id, &crate::db::EpicPatch::new().feed_command(Some(cmd)))
+        .await
+        .expect("failed to set feed command");
+}
+
 pub(super) async fn make_runtime(
     db: Arc<Database>,
     tx: mpsc::UnboundedSender<Message>,
@@ -130,6 +143,10 @@ pub(super) async fn make_runtime(
     let store: Arc<dyn db::TaskStore> = db.clone();
     let feed_runner = crate::feed::FeedRunner::new(store.clone(), feed_tx, runner.clone());
     let feed_invalidate_tx = Some(feed_runner.epic_invalidate_tx());
+    // Taken from THIS runner, so a runtime built here serialises against its
+    // own feed poller exactly as production does. A fresh FeedSyncGuard would
+    // compile and silently serialise nothing.
+    let feed_sync_guard = feed_runner.sync_guard();
     TuiRuntime {
         task_svc: Arc::new(crate::service::TaskService::new(
             store.clone(),
@@ -139,6 +156,7 @@ pub(super) async fn make_runtime(
         todo_svc: Arc::new(crate::service::TodoService::new(db.clone())),
         feed_runner: Some(feed_runner),
         feed_invalidate_tx,
+        feed_sync_guard,
         learning_svc: Arc::new(crate::service::MockLearningService),
         feed_db: store.clone(),
         database: store,
@@ -3287,16 +3305,13 @@ async fn exec_trigger_epic_feed_success() {
         .await
         .unwrap();
 
+    let cmd = r#"echo '[{"external_id":"vuln:1","title":"CVE-1","description":"desc","status":"backlog","tag":"fix"}]'"#;
+    set_feed_command(&db, epic.id, cmd).await;
+
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    let cmd = r#"echo '[{"external_id":"vuln:1","title":"CVE-1","description":"desc","status":"backlog","tag":"fix"}]'"#;
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Security Vulnerabilities".to_string(),
-        cmd.to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Security Vulnerabilities".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -3315,16 +3330,12 @@ async fn exec_trigger_epic_feed_success() {
 async fn exec_trigger_epic_feed_zero_items() {
     let db = test_db().await;
     let epic = db.create_epic("Empty Feed", "", None).await.unwrap();
+    set_feed_command(&db, epic.id, "echo '[]'").await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Empty Feed".to_string(),
-        "echo '[]'".to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Empty Feed".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -3347,16 +3358,12 @@ async fn exec_trigger_epic_feed_zero_items() {
 async fn exec_trigger_epic_feed_fails_on_degraded_empty_emission() {
     let db = test_db().await;
     let epic = db.create_epic("Degraded Feed", "", None).await.unwrap();
+    set_feed_command(&db, epic.id, "echo 'Invalid search query' >&2; echo '[]'").await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Degraded Feed".to_string(),
-        "echo 'Invalid search query' >&2; echo '[]'".to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Degraded Feed".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -3407,16 +3414,12 @@ async fn exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing
     .await
     .unwrap();
     assert_eq!(db.list_tasks_for_epic(epic.id).await.unwrap().len(), 1);
+    set_feed_command(&db, epic.id, "echo 'Invalid search query' >&2; echo '[]'").await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Degraded Feed".to_string(),
-        "echo 'Invalid search query' >&2; echo '[]'".to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Degraded Feed".to_string());
 
     // Awaiting the message is the deterministic completion signal: the spawned
     // job sends it on its way out, so the DB is settled once it arrives.
@@ -3487,6 +3490,8 @@ async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
     .await
     .unwrap();
 
+    set_feed_command(&db, epic.id, "echo '[]'").await;
+
     let proc_runner = Arc::new(MockProcessRunner::new(vec![
         // has_window: list-windows names the window, so the kill proceeds
         MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
@@ -3499,12 +3504,7 @@ async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
 
     // The PR merged, so the refresh's emission no longer carries it. A clean
     // empty emission (no stderr) is a genuine reconcile, not a degraded run.
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Reviews".to_string(),
-        "echo '[]'".to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
 
     // Refreshed is sent AFTER the teardown is awaited, so its arrival is a
     // deterministic signal that the cleanup has run.
@@ -3546,12 +3546,7 @@ async fn exec_trigger_epic_feed_command_fails() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Failing Feed".to_string(),
-        "exit 1".to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Failing Feed".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -3574,12 +3569,7 @@ async fn exec_trigger_epic_feed_malformed_json() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Bad JSON Feed".to_string(),
-        "echo 'not-json'".to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Bad JSON Feed".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -3607,13 +3597,7 @@ async fn exec_trigger_epic_feed_missing_tag_fails_and_upserts_nothing() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    rt.exec_trigger_epic_feed(
-        epic.id,
-        "Untagged Feed".to_string(),
-        r#"echo '[{"external_id":"x1","title":"T","description":"","status":"backlog"}]'"#
-            .to_string(),
-        false,
-    );
+    rt.exec_trigger_epic_feed(epic.id, "Untagged Feed".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -3638,11 +3622,20 @@ async fn exec_trigger_epic_feed_grouped_puts_tasks_in_sub_epics() {
     let db = test_db().await;
     let epic = db.create_epic("Reviews", "", None).await.unwrap();
 
+    let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo-a/pull/1","status":"backlog","tag":"pr-review"}]'"#;
+    // group_by_repo lives on the epic now, not on the trigger call: the cycle
+    // reads it from the DB so a manual refresh cannot use a stale flag.
+    db.patch_epic(
+        epic.id,
+        &db::EpicPatch::new().feed_command(Some(cmd)).group_by_repo(true),
+    )
+    .await
+    .unwrap();
+
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo-a/pull/1","status":"backlog","tag":"pr-review"}]'"#;
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string(), cmd.to_string(), true);
+    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -3678,9 +3671,14 @@ async fn exec_trigger_epic_feed_grouped_puts_tasks_in_sub_epics() {
 async fn exec_trigger_epic_feed_reviews_parent_routes_into_subtree() {
     let db = test_db().await;
     let epic = db.create_epic("Reviews", "", None).await.unwrap();
+    // A single direct-request PR: route(signals) => my_reviews.
+    let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo/pull/1","status":"backlog","tag":"pr-review","signals":["direct-request"]}]'"#;
+    // group_by_repo stays false; dispatch must key on feed_role, not that flag.
     db.patch_epic(
         epic.id,
-        &db::EpicPatch::new().feed_role(crate::models::FeedRole::ReviewsParent),
+        &db::EpicPatch::new()
+            .feed_role(crate::models::FeedRole::ReviewsParent)
+            .feed_command(Some(cmd)),
     )
     .await
     .unwrap();
@@ -3688,10 +3686,7 @@ async fn exec_trigger_epic_feed_reviews_parent_routes_into_subtree() {
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
 
-    // A single direct-request PR: route(signals) => my_reviews.
-    let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo/pull/1","status":"backlog","tag":"pr-review","signals":["direct-request"]}]'"#;
-    // group_by_repo=false; dispatch must key on feed_role, not this flag.
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string(), cmd.to_string(), false);
+    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await

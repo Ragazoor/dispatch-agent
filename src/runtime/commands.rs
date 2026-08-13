@@ -385,9 +385,7 @@ fn dispatch_feed(rt: &super::TuiRuntime, cmd: crate::tui::commands::FeedCommand)
         TriggerEpic {
             epic_id,
             epic_title,
-            feed_command,
-            group_by_repo,
-        } => rt.exec_trigger_epic_feed(epic_id, epic_title, feed_command, group_by_repo),
+        } => rt.exec_trigger_epic_feed(epic_id, epic_title),
     }
 }
 

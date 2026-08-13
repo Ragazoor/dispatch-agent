@@ -1,3 +1,4 @@
+mod cycle;
 mod exec;
 mod guard;
 mod ingest;
@@ -11,12 +12,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::db::{RemovedFeedTask, TaskStore};
-use crate::dispatch::resolve_feed_item_repo_paths;
 use crate::mcp::McpEvent;
 use crate::models::EpicId;
 use crate::process::ProcessRunner;
 
+pub(crate) use cycle::{FeedCycle, FeedCycleOutcome};
 pub(crate) use exec::{degraded_empty_emission, exec_feed_command, resolve_base_branches};
+pub(crate) use guard::FeedSyncGuard;
 pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
 // `pub`, unlike the `pub(crate)` re-exports above: the `verify-feed` CLI in
 // src/main.rs is a separate bin crate and is one of this function's three
@@ -24,26 +26,10 @@ pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
 pub use parse::parse_feed_items;
 pub use routing::route;
 
-/// Log `result`'s error via `tracing::warn!` and discard it. Shared by the
-/// feed pipeline's fire-and-forget per-epic DB writes, where a failure is
-/// logged but must not abort the surrounding reconciliation pass. Pass
-/// `sub_epic_id` when the write is scoped to a sub-epic beneath `epic_id`.
-///
-/// `context` labels the call site in the log line (e.g.
-/// `"sync_grouped_feed: upsert_feed_tasks failed"`).
-pub(crate) fn warn_on_err<T>(
-    result: anyhow::Result<T>,
-    epic_id: EpicId,
-    sub_epic_id: Option<EpicId>,
-    context: &str,
-) {
-    if let Err(err) = result {
-        log_feed_err(&err, epic_id, sub_epic_id, context);
-    }
-}
-
-/// The one warn line both [`warn_on_err`] and [`removed_or_warn`] emit, so the
-/// two cannot drift in shape or in which fields they attach.
+/// The one warn line the feed pipeline's fire-and-forget per-epic writes emit.
+/// Kept as its own function so every such warning carries the same fields in
+/// the same shape; `sub_epic_id` is attached when the write is scoped to a
+/// sub-epic beneath `epic_id`.
 fn log_feed_err(err: &anyhow::Error, epic_id: EpicId, sub_epic_id: Option<EpicId>, context: &str) {
     match sub_epic_id {
         Some(sub_epic_id) => tracing::warn!(
@@ -55,11 +41,14 @@ fn log_feed_err(err: &anyhow::Error, epic_id: EpicId, sub_epic_id: Option<EpicId
     }
 }
 
-/// [`warn_on_err`] for the two feed writes that report what they deleted:
-/// log-and-discard on `Err` exactly as `warn_on_err` does, but keep the `Ok`
-/// payload so the removed rows reach [`cleanup_removed_feed_tasks`]. An `Err`
-/// yields an empty vec — nothing was reported, so there is nothing to tear
-/// down; the reconciliation pass continues either way.
+/// Log-and-discard on `Err` for the feed writes that report what they deleted,
+/// keeping the `Ok` payload so the removed rows reach
+/// [`cleanup_removed_feed_tasks`]. An `Err` yields an empty vec — nothing was
+/// reported, so there is nothing to tear down; the reconciliation pass
+/// continues either way.
+///
+/// `context` labels the call site in the log line (e.g.
+/// `"sync_grouped_feed: upsert_feed_tasks failed"`).
 pub(crate) fn removed_or_warn(
     result: anyhow::Result<Vec<RemovedFeedTask>>,
     epic_id: EpicId,
@@ -198,106 +187,39 @@ struct FeedJob {
     db: Arc<dyn TaskStore>,
     notify: mpsc::UnboundedSender<McpEvent>,
     runner: Arc<dyn ProcessRunner>,
-    cmd: String,
-    epic: crate::models::Epic,
+    guard: Arc<FeedSyncGuard>,
+    epic_id: EpicId,
+    epic_title: String,
     known_paths: Arc<Vec<String>>,
 }
 
 impl FeedJob {
-    /// Execute the command, parse its output, and reconcile the epic's tasks
-    /// from it. Any failure along the way is logged and the job simply
-    /// returns — `tick` fires-and-forgets these onto the tokio runtime.
+    /// Run one feed cycle and present its outcome the auto-poll way: notify on
+    /// success, stay quiet otherwise. Every step of the cycle itself lives in
+    /// [`FeedCycle::run`], shared with the manual "r" refresh.
     async fn run(self) {
-        // exec_feed_command has already logged the failure (and any
-        // stderr-on-success); the auto-poll path adds nothing, per
-        // feeds.allium FeedCommandFailure ("the TUI is NOT notified").
-        let Ok(output) = exec::exec_feed_command(&self.cmd, self.epic.id.0, &self.epic.title).await
-        else {
-            return;
-        };
-        let items = match parse::parse_feed_items(&output.stdout) {
-            Ok(i) => i,
-            Err(err) => {
-                tracing::warn!(
-                    epic_id = self.epic.id.0,
-                    epic_title = %self.epic.title,
-                    "FeedRunner: failed to parse JSON output: {err:#}"
-                );
-                return;
-            }
+        let cycle = FeedCycle {
+            db: self.db.clone(),
+            runner: self.runner.clone(),
+            guard: self.guard,
+            epic_id: self.epic_id,
+            epic_title: self.epic_title,
+            known_paths: Some(self.known_paths),
         };
 
-        // A zero-item emission that also wrote to stderr is a degraded run, not an
-        // empty one: syncing it would delete every feed task in this epic's subtree.
-        // exec_feed_command already logged the stderr; the auto-poll path adds
-        // nothing else, per feeds.allium FeedCommandFailure ("the TUI is NOT
-        // notified"). last_run was bumped by `tick` before this job was spawned.
-        // See feeds.allium: DegradedEmptyEmission.
-        if let Some(reason) = degraded_empty_emission(items.len(), &output.stderr) {
-            tracing::warn!(
-                epic_id = self.epic.id.0,
-                epic_title = %self.epic.title,
-                "FeedRunner: skipping sync: {reason}"
-            );
-            return;
-        }
-
-        let repo_paths = resolve_feed_item_repo_paths(&items, &self.known_paths);
-        let base_branches = resolve_base_branches(&repo_paths, &*self.runner);
-        let entries = ingest::FeedItemWithTarget::zip(items, repo_paths, base_branches);
-
-        // Role sub-epics (my/team/bots) carry no feed_command (enforced
-        // at provisioning in WP5), so they are never iterated here —
-        // only the parent is polled. Guard against a misconfigured role
-        // sub-epic that somehow has a feed_command: skip it rather than
-        // reconcile a child as if it were a feed. The role→sync-path
-        // decision itself is delegated to the shared dispatcher so this
-        // path and the manual "r" refresh cannot drift.
-        use crate::models::FeedRole;
-        if matches!(
-            self.epic.feed_role,
-            FeedRole::MyReviews | FeedRole::TeamReviews | FeedRole::Bots
-        ) {
-            debug_assert!(
-                false,
-                "role sub-epic {} (feed_role={:?}) must not carry a feed_command",
-                self.epic.id.0, self.epic.feed_role
-            );
-            tracing::warn!(
-                epic_id = self.epic.id.0,
-                feed_role = ?self.epic.feed_role,
-                "FeedRunner: role sub-epic carries a feed_command; skipping (role sub-epics are reconciled only via their reviews_parent)"
-            );
-            return;
-        }
-        let sync_result = ingest::run_feed_sync_by_role(
-            &*self.db,
-            self.epic.id,
-            self.epic.feed_role,
-            self.epic.group_by_repo,
-            entries,
-        )
-        .await;
-
-        // Matched (rather than the previous `if let Ok(&…)` + `warn_on_err`
-        // pair) so `outcome.removed` can be MOVED into the teardown without
-        // cloning. The two behaviours are unchanged: one `EpicChanged` per
-        // affected epic on success, the same `warn_on_err` log on failure.
-        match sync_result {
-            Ok(outcome) => {
-                recalculate_epic_status_after_feed(&*self.db, self.epic.id, "FeedRunner").await;
-                for id in &outcome.affected_epics {
+        match cycle.run().await {
+            // The cycle has already torn down every removed task's worktree by
+            // the time it returns, so these notifications mean "reconciled and
+            // cleaned up" (feeds.allium RoleRoutedFeedSync).
+            FeedCycleOutcome::Synced { affected_epics, .. } => {
+                for id in &affected_epics {
                     let _ = self.notify.send(McpEvent::EpicChanged(*id));
                 }
-                // Feed removals owe the same teardown as any other deletion.
-                cleanup_removed_feed_tasks(self.runner.clone(), outcome.removed).await;
             }
-            Err(err) => warn_on_err(
-                Err::<(), _>(err),
-                self.epic.id,
-                None,
-                "FeedRunner: upsert_feed_tasks failed",
-            ),
+            // Both already logged by the cycle. The auto-poll path adds no TUI
+            // surface, per feeds.allium FeedCommandFailure ("the TUI is NOT
+            // notified"); a dropped request is not a failure at all.
+            FeedCycleOutcome::Busy | FeedCycleOutcome::Failed(_) => {}
         }
     }
 }
@@ -324,6 +246,11 @@ pub struct FeedRunner {
     /// Counterpart of `epic_changed_rx`.  Clone this before calling `start()` to
     /// retain a handle for external invalidation (e.g. on `EpicChanged` events).
     epic_changed_tx: tokio::sync::watch::Sender<()>,
+    /// Per-epic single-flight claims, shared with the manual "r" refresh so the
+    /// two surfaces serialise against each other. Take a handle with
+    /// [`FeedRunner::sync_guard`] — the manual path holding a DIFFERENT
+    /// `FeedSyncGuard` type-checks and silently serialises nothing.
+    guard: Arc<FeedSyncGuard>,
     /// Test-only join handles for the jobs spawned by `tick`. Production keeps
     /// firing-and-forgetting: the field, and the push that fills it, exist only
     /// under `cfg(test)`. Tests need it because some `FeedJob::run` outcomes
@@ -350,9 +277,18 @@ impl FeedRunner {
             any_feed_cmds: None,
             epic_changed_rx,
             epic_changed_tx,
+            guard: Arc::new(FeedSyncGuard::default()),
             #[cfg(test)]
             spawned: Vec::new(),
         }
+    }
+
+    /// Handle to the per-epic feed-cycle claims, for the manual "r" refresh to
+    /// share. Both surfaces MUST hold this same `Arc`: the serialisation is
+    /// per-registry, so a second registry silently disables it. Wire it at
+    /// construction — see `TuiRuntime`'s `feed_sync_guard`.
+    pub(crate) fn sync_guard(&self) -> Arc<FeedSyncGuard> {
+        Arc::clone(&self.guard)
     }
 
     /// Await every job spawned by the ticks run so far, draining the handle
@@ -434,9 +370,12 @@ impl FeedRunner {
         });
 
         for epic in epics {
-            let Some(ref cmd) = epic.feed_command else {
+            // Scheduling only reads feed_command to decide whether this epic is
+            // pollable at all; the command the cycle actually runs is re-read
+            // from the epic inside FeedCycle::run, after the claim.
+            if epic.feed_command.is_none() {
                 continue;
-            };
+            }
 
             let interval = epic
                 .feed_interval_secs
@@ -459,8 +398,9 @@ impl FeedRunner {
                 db: self.db.clone(),
                 notify: self.notify.clone(),
                 runner: self.runner.clone(),
-                cmd: cmd.clone(),
-                epic,
+                guard: Arc::clone(&self.guard),
+                epic_id: epic.id,
+                epic_title: epic.title,
                 known_paths: Arc::clone(&known_paths),
             };
 
