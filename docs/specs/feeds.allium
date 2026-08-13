@@ -487,8 +487,8 @@ rule SerialisedFeedCycle {
     when: FeedCycleRequested(epic)
 
     -- A FEED CYCLE is the whole sequence a feed request performs for one epic:
-    -- exec the feed command, parse its stdout, apply the DegradedEmptyEmission
-    -- guard, dispatch FeedSync, and tear down the worktrees of any task the sync
+    -- exec the feed command, parse its stdout, apply the two degraded-emission
+    -- guards, dispatch FeedSync, and tear down the worktrees of any task the sync
     -- removed. Exactly TWO surfaces request one: FeedTick (per eligible epic,
     -- above) and ManualFeedRefresh (the "r" key). The verify-feed CLI execs a
     -- feed command but performs no sync and shares no process with the TUI, so
@@ -527,9 +527,11 @@ rule SerialisedFeedCycle {
     -- stale delete will then remove it and tear down its worktree. Same
     -- mechanism, same consequence, one leg simply is not a feed cycle. The
     -- invariant below is therefore worded "another cycle", not "another
-    -- writer". Whether the stale delete should refuse to remove a task carrying
-    -- live agent state is the open question recorded on DegradedEmptyEmission's
-    -- RESIDUAL RISK; it is not answered here.
+    -- writer". DegradedNonEmptyEmission does NOT help here: this race needs no
+    -- degraded emission, so its additive gate never fires for it. The
+    -- alternative that would have covered it — refusing to tear down a task
+    -- carrying live agent state — was considered and rejected there, on the
+    -- cost it charges to legitimate removals.
 
     ensures:
         if in_flight_cycle(epic):
@@ -690,6 +692,11 @@ rule UpsertFeedTasks {
     -- not appear in the current emission is deleted from the epic.
     -- Non-feed tasks (external_id = null) in the same epic are never
     -- touched by this rule.
+    --
+    -- That source-of-truth reading holds only for an emission dispatch
+    -- trusts. An ADDITIVE cycle (DegradedNonEmptyEmission) removes nothing:
+    -- the per-item upsert above runs unchanged, the deletion below does not
+    -- run at all.
 
     ensures:
         let known_paths = list_repo_paths() ?? {}
@@ -754,10 +761,16 @@ rule UpsertFeedTasks {
         -- teardown ArchiveTask and DeleteTask perform. A stale feed task
         -- can carry an in-flight agent's session, and dropping the row
         -- alone orphans that worktree on disk.
-        for task in Tasks where epic = epic and external_id != null:
-            if not items.any(i => i.external_id = task.external_id):
-                not exists task
-                TaskTeardown(task)
+        --
+        -- SKIPPED ENTIRELY when the cycle is additive
+        -- (DegradedNonEmptyEmission): absence from a tainted emission is not
+        -- evidence of anything, and this clause is where that evidence would
+        -- be acted on irreversibly.
+        if not additive:
+            for task in Tasks where epic = epic and external_id != null:
+                if not items.any(i => i.external_id = task.external_id):
+                    not exists task
+                    TaskTeardown(task)
 
     @guidance
         -- Status preservation is intentional: once a user starts working
@@ -832,6 +845,14 @@ rule GroupedFeedUpsert {
     -- note under RoleRoutedFeedSync). Grouping migration in
     -- particular deletes and recreates tasks wholesale, so a feed task carrying
     -- an in-flight agent must not have its worktree left orphaned on disk.
+    --
+    -- On an ADDITIVE cycle (DegradedNonEmptyEmission) the present groups are
+    -- still upserted, but BOTH clearing passes — absent sub-epics and the
+    -- parent's flat tasks — are skipped, so nothing is removed and no
+    -- TaskTeardown runs. Note that grouping migration is a clearing pass in
+    -- disguise (it deletes flat tasks and recreates them under sub-epics), so
+    -- an additive cycle also defers the migration to the next trusted
+    -- emission rather than half-performing it.
 
     ensures:
         let groups = group_by(items, item => repo_name(item.url))
@@ -844,11 +865,12 @@ rule GroupedFeedUpsert {
         -- Reconcile sub-epics absent from this emission. An active sub-epic
         -- whose title no current item maps to has its feed tasks cleared
         -- (manual tasks survive, per UpsertFeedTasks). When items is empty,
-        -- every active sub-epic is cleared.
-        for sub_epic in epic.active_sub_epics:
-            if not items.any(item => repo_name(item.url) = sub_epic.title):
-                UpsertFeedTasks(sub_epic, {})
-        FeedCommandCompleted(epic, {})
+        -- every active sub-epic is cleared. Skipped entirely when additive.
+        if not additive:
+            for sub_epic in epic.active_sub_epics:
+                if not items.any(item => repo_name(item.url) = sub_epic.title):
+                    UpsertFeedTasks(sub_epic, {})
+            FeedCommandCompleted(epic, {})
 
     @guidance
         -- repo_name(url) = last path segment of extract_github_repo(url),
@@ -918,6 +940,13 @@ rule FlatFeedReconcile {
     -- un-groups, with no manual cleanup step. Running it when the parent has no RepoGroup sub-epics is a
     -- harmless no-op (empty loop), so it fires on every flat sync, not only the
     -- first after the toggle.
+    --
+    -- On an ADDITIVE cycle (DegradedNonEmptyEmission) the re-home still runs —
+    -- it moves tasks and deletes only sub-epics it has just emptied, so it
+    -- destroys nothing and does not read the emission — while the removal half
+    -- is skipped by UpsertFeedTasks' own additive gate. A re-homed task absent
+    -- from a tainted emission therefore lands on the parent and STAYS there
+    -- until a trusted emission judges it.
 
     ensures:
         for sub in epic.sub_epics where sub.origin = repo_group and sub.status != archived:
@@ -1139,13 +1168,17 @@ rule RoleRoutedFeedSync {
         -- of a role sub-epic. Removal deletes the row, reports it, and then
         -- performs tasks.allium's TaskTeardown on the reported row — this is
         -- the path a merged PR's in-flight review agent travels, so its tmux
-        -- window and worktree must be released, not orphaned.
-        for task in Tasks where (task.epic.parent_epic_id = epic.id
-                                 or task.epic.parent_epic_id in {my.id, team.id, bots.id})
-                            and task.external_id != null:
-            if not items.any(i => i.external_id = task.external_id):
-                not exists task
-                TaskTeardown(task)
+        -- window and worktree must be released, not orphaned. Skipped
+        -- entirely when the cycle is additive (DegradedNonEmptyEmission): this
+        -- is the exact clause that would destroy a live review agent's
+        -- worktree on a partially degraded emission.
+        if not additive:
+            for task in Tasks where (task.epic.parent_epic_id = epic.id
+                                     or task.epic.parent_epic_id in {my.id, team.id, bots.id})
+                                and task.external_id != null:
+                if not items.any(i => i.external_id = task.external_id):
+                    not exists task
+                    TaskTeardown(task)
 
         -- Parent sweep: the reviews_parent epic must hold NO feed task directly
         -- (NoFlatFeedTasksOnReviewsParent). Present parent-stranded tasks were
@@ -1153,10 +1186,14 @@ rule RoleRoutedFeedSync {
         -- parent is a merged/closed stray or a legacy duplicate whose routed
         -- copy already lives in a role sub-epic — both are removed. Manual
         -- (external_id = null) tasks on the parent are preserved. Removal
-        -- deletes-then-tears-down the reported row, as above.
-        for task in Tasks where task.epic = epic and task.external_id != null:
-            not exists task
-            TaskTeardown(task)
+        -- deletes-then-tears-down the reported row, as above. Skipped when
+        -- additive: this sweep deletes on position alone, with no reference to
+        -- the emission at all, so on a tainted cycle it is the least
+        -- discriminating delete of the three and the first to go.
+        if not additive:
+            for task in Tasks where task.epic = epic and task.external_id != null:
+                not exists task
+                TaskTeardown(task)
 
         -- Recalculate bottom-up through all three levels: repo-group sub-epics
         -- first (they roll up into their role sub-epic), then each role
@@ -1228,11 +1265,13 @@ rule RoleRoutedFeedSync {
         -- remove / branch -D contend on the shared checkout's index lock) and
         -- in parallel across repos. Teardown is best-effort and warn-logged;
         -- it never fails the sync. It is also unconditional on task state —
-        -- no clause here consults status or sub_status, so a task removed
-        -- because a partially degraded emission omitted its PR is force-torn-
-        -- down even with a live agent in it. See the RESIDUAL RISK paragraph
-        -- on DegradedEmptyEmission, which the empty-emission guard does not
-        -- cover.
+        -- no clause here consults status or sub_status, so any task that
+        -- reaches it is force-torn-down even with a live agent in it. That is
+        -- deliberate and stays: the protection against tearing down a live
+        -- agent lives UPSTREAM, in whether the delete happens at all
+        -- (DegradedNonEmptyEmission), not in a state check here. See that
+        -- rule's "why not gate the teardown on task state instead" for the
+        -- alternative that was rejected, and do not reintroduce it here.
         --
         -- Sequencing note — the ensures clauses of this rule and of
         -- UpsertFeedTasks / GroupedFeedUpsert write `not exists task` BEFORE
@@ -1427,34 +1466,50 @@ rule FeedCommandStderrOnSuccess {
 
     -- A feed command that exits 0 while writing to stderr is NOT by
     -- itself a failure: its stdout parsed, and a NON-EMPTY emission is
-    -- synced normally. But it is the signature of a script that swallowed
+    -- still synced. But it is the signature of a script that swallowed
     -- an internal error and emitted a degraded (often empty) array
     -- anyway, which FeedCommandFailure never sees. The stderr text is
     -- therefore logged at warn level so the evidence survives the run.
     --
-    -- The stderr is diagnostic ONLY WHEN THE EMISSION IS NON-EMPTY. For a
-    -- non-empty emission the sync proceeds exactly as it would for a
-    -- command that wrote nothing to stderr, whatever the stderr says.
-    -- A ZERO-ITEM emission with non-empty stderr is NOT diagnostic: it is
-    -- DegradedEmptyEmission below, and no sync runs at all.
+    -- Stderr on a zero-exit run is NEVER merely diagnostic. It TAINTS the
+    -- emission, and the two rules below say what a tainted emission is
+    -- allowed to do:
+    --
+    --   - ZERO items + stderr  -> DegradedEmptyEmission. The command is
+    --     treated as failed and NO sync runs at all.
+    --   - items > 0 + stderr   -> DegradedNonEmptyEmission. The sync runs
+    --     ADDITIVELY: what the emission CONTAINS is written, what it
+    --     OMITS is not acted on. Nothing is removed, so nothing is torn
+    --     down.
+    --
+    -- The single principle behind both: a tainted emission is evidence of
+    -- what exists, never evidence of what does not. Absence from a tainted
+    -- emission means nothing, because the reason a script soft-fails is
+    -- precisely that it produces FEWER items than the truth.
     --
     -- This REVERSES a deliberate decision recorded here by #3900, which
     -- had seen this failure and chose to keep stderr diagnostic-only —
     -- the sentence it wrote said an empty emission still reconciles and
-    -- still removes tasks absent from it. #3989 reverses that sentence
-    -- because the observed cost was unbounded data loss: a soft-failing
-    -- script that exits 0 with an empty array wiped a whole
-    -- reviews_parent subtree, worktrees and all.
+    -- still removes tasks absent from it. #3989 reversed that sentence
+    -- for the empty case because the observed cost was unbounded data
+    -- loss: a soft-failing script that exits 0 with an empty array wiped
+    -- a whole reviews_parent subtree, worktrees and all. #4095 then
+    -- extended the same reasoning to the non-empty case, which #3989 had
+    -- left explicitly waved through as a recorded residual risk.
     --
     -- ACCEPTED COST of the reversal: a feed script that writes to stderr
-    -- on EVERY run and ALSO legitimately emits an empty array on a day
-    -- with genuinely zero items is treated as failed INDEFINITELY. That
-    -- feed never reconciles, so genuinely merged or closed PRs never
-    -- disappear from it, and there is no escape hatch short of fixing the
-    -- script. This is accepted because the script contract above already
-    -- requires errors on stderr to come with a non-zero exit — a script
-    -- that chatters on stderr while exiting 0 is already outside
-    -- contract — and because the alternative is unbounded data loss.
+    -- on EVERY run never removes anything. If it also legitimately emits
+    -- an empty array on a day with genuinely zero items it is treated as
+    -- failed INDEFINITELY; if it emits items it still syncs them, but
+    -- additively, so genuinely merged or closed PRs never disappear from
+    -- it. There is no escape hatch short of fixing the script. This is
+    -- accepted because the script contract above already requires errors
+    -- on stderr to come with a non-zero exit — a script that chatters on
+    -- stderr while exiting 0 is already outside contract — and because
+    -- the alternative is unbounded data loss. Note the asymmetry of the
+    -- two costs: a stale card the user can archive by hand, against a
+    -- force-removed worktree and a deleted branch that no one can get
+    -- back.
     --
     -- The logged text is trimmed and truncated to 2000 characters: a
     -- verbose script must not be able to write unbounded output into
@@ -1464,9 +1519,9 @@ rule FeedCommandStderrOnSuccess {
 
     ensures:
         log_warn(epic.id, epic.title, truncate(stderr, 2000))
-        -- and then, when items.count > 0, the emission syncs as normal
-        -- (FeedSync). When items.count = 0 the sync is suppressed by
-        -- DegradedEmptyEmission instead.
+        -- and then, when items.count > 0, the emission syncs ADDITIVELY
+        -- (DegradedNonEmptyEmission). When items.count = 0 the sync is
+        -- suppressed entirely by DegradedEmptyEmission instead.
 
     @guidance
         -- Implementation: src/feed/exec.rs::exec_feed_command logs the
@@ -1477,21 +1532,24 @@ rule FeedCommandStderrOnSuccess {
         -- to a private spawn that drops stderr. The manual path surfaces it in the TUI as a FAILURE
         -- status line when the emission is empty (DegradedEmptyEmission
         -- via ManualFeedTrigger's failure arm); a non-empty emission with
-        -- stderr surfaces nothing beyond the ordinary success line.
+        -- stderr surfaces the ordinary success line WITH the degraded
+        -- suffix (DegradedNonEmptyEmission).
         -- The zero-items-vs-non-empty split is not re-decided per caller:
-        -- it is the single predicate src/feed/exec.rs::degraded_empty_emission
-        -- (item_count, stderr) -> Option<reason>, applied ONCE after the parse
-        -- and before the sync in the shared
-        -- src/feed/cycle.rs::FeedCycle::run, so the two feed paths cannot even
-        -- in principle disagree about it. When it returns
-        -- None the emission syncs with the stderr logged and nothing else.
+        -- it is TWO sibling predicates in src/feed/exec.rs —
+        -- degraded_empty_emission and degraded_partial_emission, both
+        -- (item_count, stderr) -> Option<reason> and mutually exclusive by
+        -- their item_count arm — applied ONCE after the parse and before the
+        -- sync in the shared src/feed/cycle.rs::FeedCycle::run, so the two
+        -- feed paths cannot even in principle disagree about them. When BOTH
+        -- return None the emission syncs and reconciles as normal, with the
+        -- stderr logged and nothing else.
         -- Coverage: src/feed/exec.rs::exec_feed_command_captures_stderr_written_on_zero_exit,
         -- exec_feed_command_truncates_long_stderr,
         -- exec_feed_command_truncates_multi_byte_stderr_without_panicking and
         -- exec_feed_command_reports_stderr_of_exactly_the_cap_complete (the
         -- capture and the 2000-character cap);
         -- src/feed/mod.rs::tick_stderr_on_zero_exit_does_not_suppress_sync
-        -- (one item alongside stderr still syncs).
+        -- (one item alongside stderr still syncs — additively).
 }
 
 rule DegradedEmptyEmission {
@@ -1517,8 +1575,11 @@ rule DegradedEmptyEmission {
     --   - ZERO items with EMPTY stderr is a clean empty run. It still
     --     reconciles normally, and it still removes merged/closed PRs and
     --     every other task absent from the emission.
-    --   - A NON-EMPTY emission syncs normally regardless of stderr, even
-    --     when the stderr is loud. One item alongside stderr is a sync.
+    --   - A NON-EMPTY emission still SYNCS regardless of stderr — one item
+    --     alongside stderr is a sync, not a failure — but when the stderr
+    --     is non-empty that sync is ADDITIVE, per
+    --     DegradedNonEmptyEmission below. This rule owns only the
+    --     zero-item arm; it never suppresses a non-empty emission.
     --
     -- The guard is applied AFTER the stdout parse and BEFORE the sync.
     -- Placing it after the parse is deliberate: malformed stdout with
@@ -1533,26 +1594,12 @@ rule DegradedEmptyEmission {
     -- above: a script that always chatters on stderr and legitimately
     -- emits nothing never reconciles again.
     --
-    -- RESIDUAL RISK — PARTIAL degradation is NOT covered. The guard fires
-    -- only at items.count = 0. A partially degraded emission — e.g. some of
-    -- scripts/fetch-reviews.sh's four repo-scoped queries soft-failing to []
-    -- while the others succeed — is non-empty, so it is waved through by the
-    -- "a NON-EMPTY emission syncs normally regardless of stderr" boundary
-    -- above. That is the same failure mechanism as #3900 at partial scale and
-    -- is at least as likely as total failure. The omitted PRs are then absent
-    -- from the emission and their tasks are removed as stale. Neither the
-    -- stale-delete SQL nor src/feed/mod.rs::cleanup_removed_feed_tasks
-    -- consults status or sub_status, so a removed task carrying a LIVE review
-    -- agent gets the full TaskTeardown: `git worktree remove --force`,
-    -- `git branch -D`, `tmux kill-window`. Before feed-driven teardown
-    -- existed the same transient omission cost a deleted card and an orphaned
-    -- worktree, which was recoverable — the agent kept running and its branch
-    -- survived. It now destroys uncommitted work and the branch. This is
-    -- specified behaviour (the design deliberately rejected "refuse to delete
-    -- tasks that carry state"), but that decision predates force-teardown
-    -- being the consequence. Whether a feed-removed task with a live agent
-    -- should be DETACHED rather than force-removed is an open question this
-    -- spec does not answer.
+    -- PARTIAL degradation is covered by DegradedNonEmptyEmission below,
+    -- not by this rule. This rule fires only at items.count = 0; a
+    -- partially degraded emission — e.g. some of scripts/fetch-reviews.sh's
+    -- four repo-scoped queries soft-failing to [] while the others succeed
+    -- — is non-empty and so falls to that rule instead. #3989 recorded that
+    -- gap here as a residual risk and left it open; #4095 closed it.
 
     requires: exit_status = 0 and items.count = 0 and stderr != ""
 
@@ -1605,7 +1652,130 @@ rule DegradedEmptyEmission {
         -- src/runtime/tests.rs::exec_trigger_epic_feed_zero_items (a quiet
         -- empty run still reconciles) and
         -- src/feed/mod.rs::tick_stderr_on_zero_exit_does_not_suppress_sync
-        -- (one item alongside stderr still syncs).
+        -- (one item alongside stderr still syncs — additively, per
+        -- DegradedNonEmptyEmission, but it is not suppressed).
+}
+
+rule DegradedNonEmptyEmission {
+    when: FeedCommandCompleted(epic, items)
+
+    -- The partial-degradation guard, and the answer to the question #3989
+    -- left open on DegradedEmptyEmission.
+    --
+    -- A feed command that exits 0, parses to AT LEAST ONE item, and wrote to
+    -- stderr is a PARTIALLY degraded emission: some of what it was asked to
+    -- fetch came back, and some of it soft-failed. scripts/fetch-reviews.sh
+    -- runs eight-plus scoped queries and each failure branch prints to stderr
+    -- and substitutes []; a wrong gh account, an expired token or one
+    -- rate-limited org therefore produces exactly this signature. It is the
+    -- #3900 mechanism at partial scale, and it is MORE likely than total
+    -- failure, not less — total failure needs every query to fail at once.
+    --
+    -- Effect: the sync runs, but ADDITIVELY. An additive sync performs every
+    -- write that follows from what the emission CONTAINS — insert, field
+    -- refresh, and (on the role-routed path) cross-role MOVE — and performs
+    -- NO write that follows from what it OMITS. Concretely, every
+    -- feed-as-source-of-truth removal clause in UpsertFeedTasks,
+    -- GroupedFeedUpsert, FlatFeedReconcile and RoleRoutedFeedSync is SKIPPED
+    -- for this cycle: no stale delete, no clearing of absent sub-epics, no
+    -- parent sweep. Because nothing is removed, no TaskTeardown runs, and no
+    -- worktree, branch or tmux window can be destroyed by a run whose own
+    -- script reported an error.
+    --
+    -- WHY ADDITIVE RATHER THAN SUPPRESSED. DegradedEmptyEmission suppresses
+    -- the whole sync because a zero-item emission has nothing to contribute.
+    -- A partial emission does: the items it did return are real, and new PRs
+    -- must still reach the board. Suppressing it would also make a feed whose
+    -- script fails one sub-query on most polls permanently useless, whereas
+    -- additive keeps it useful and merely conservative.
+    --
+    -- WHY NOT GATE THE TEARDOWN ON TASK STATE INSTEAD. The rejected
+    -- alternative was to keep deleting, but refuse the TaskTeardown for a
+    -- removed task that still carries live agent state (a worktree plus a
+    -- non-terminal status), leaving the agent and its branch alive for the
+    -- human to reclaim. Rejected because it pays its cost on the LEGITIMATE
+    -- case: a PR merged while its review agent is still running is ordinary,
+    -- and it is the exact case feed-driven teardown was added for. Under a
+    -- state gate every such merge leaves a worktree, a branch and a tmux
+    -- window on disk with no card left to find them from, forever. The
+    -- failure this rule addresses is better fixed by not performing the
+    -- wrong delete than by softening its consequences.
+    --
+    -- RESIDUAL RISK, stated honestly: this rule keys on stderr, so a feed
+    -- script that degrades SILENTLY — soft-failing a sub-query without
+    -- printing anything — is not detected, and its omissions still delete and
+    -- tear down. The script contract (FeedCommandFailure) requires errors to
+    -- be reported, so a silent soft-fail is a script bug; dispatch cannot
+    -- distinguish it from a genuine removal. Unlike #3989's residual risk,
+    -- this one has no known instance and no cheaper detector.
+    --
+    -- The rule applies to EVERY feed epic uniformly — flat, grouped and
+    -- reviews_parent alike.
+
+    requires: exit_status = 0 and items.count > 0 and stderr != ""
+
+    ensures:
+        -- The sync dispatches exactly as FeedSync says (by role, by
+        -- group_by_repo), with removals disabled for this cycle.
+        FeedSync(epic, items, additive: true)
+        for task in Tasks where task.external_id != null and task.epic in epic.subtree:
+            -- Nothing absent from a tainted emission is removed, whatever
+            -- its status and whether or not it carries agent state.
+            exists task
+
+    @guidance
+        -- Implementation: src/feed/exec.rs::degraded_partial_emission, the
+        -- sibling of degraded_empty_emission and deliberately the same shape
+        -- ((item_count, stderr) -> Option<reason>), applied once after the
+        -- parse and before the sync in src/feed/cycle.rs::FeedCycle::run. The
+        -- two predicates are mutually exclusive by their item_count arm, so
+        -- the order they are applied in does not matter; the cycle applies
+        -- the empty one first because it can return early.
+        --
+        -- The mode is src/feed/ingest/mod.rs::SyncMode {Reconcile, Additive},
+        -- threaded from FeedCycle::run through run_feed_sync_by_role into
+        -- every sync path. It is an enum rather than a bool so a call site
+        -- cannot silently mean the opposite of what it reads.
+        -- Additive is honoured in three places, one per removal mechanism:
+        --   - src/db/queries/tasks.rs::upsert_feed_tasks_additive — the
+        --     insert/update half of upsert_feed_tasks WITHOUT its per-epic
+        --     stale delete, sharing one private helper with it so the two
+        --     cannot drift in what they write. It reports no removed rows
+        --     because it removes none.
+        --   - src/feed/ingest/stale.rs::delete_stale_subtree and
+        --     clear_parent_stranded_tasks are not called at all.
+        --   - src/feed/ingest/grouped.rs::clear_absent_sub_epics and
+        --     clear_parent_flat_tasks are not called at all.
+        -- FeedSyncOutcome.removed is therefore empty on every additive path,
+        -- so src/feed/mod.rs::cleanup_removed_feed_tasks is a no-op by
+        -- construction rather than by a second guard.
+        --
+        -- SURFACING. An additive cycle is not silent: a run that declines to
+        -- remove anything must say so, or the user reads an unchanged board as
+        -- a reconciled one. src/feed/cycle.rs::FeedCycleOutcome::Synced
+        -- carries a `degraded: Option<String>` (the predicate's reason, which
+        -- embeds the stderr) and the manual "r" refresh appends it to the
+        -- success line — "Feed for '<title>': N task(s) synced (additive, no
+        -- removals: <reason>)" — via FeedMessage::Refreshed. The auto-poll
+        -- path logs at warn and adds nothing to the TUI, matching how it
+        -- presents every other degraded outcome (FeedCommandFailure).
+        --
+        -- Coverage: inline unit tests on the predicate in src/feed/exec.rs —
+        -- degraded_partial_when_items_present_and_stderr_present (fires),
+        -- not_partially_degraded_when_zero_items and
+        -- not_partially_degraded_when_no_stderr (both boundaries);
+        -- src/db/tests/tasks.rs::upsert_feed_tasks_additive_upserts_without_deleting_absent_tasks;
+        -- src/feed/ingest/tests.rs for each sync path (role-routed keeps an
+        -- absent task and its parent-stranded strays, grouped keeps an absent
+        -- sub-epic's tasks, flat keeps an absent task) plus
+        -- additive_still_moves_a_task_between_role_sub_epics;
+        -- src/feed/mod.rs::tick_partially_degraded_emission_does_not_delete_or_tear_down
+        -- (auto-poll end to end, asserting the MockProcessRunner saw no
+        -- `git worktree remove`) and the manual counterpart
+        -- src/runtime/tests.rs::exec_trigger_epic_feed_partially_degraded_emission_does_not_delete.
+        -- The boundary — a clean non-empty emission still reconciles and still
+        -- tears down — is pinned by the pre-existing tests of UpsertFeedTasks
+        -- and RoleRoutedFeedSync, which must stay green unmodified.
 }
 
 -- FeedItemParse (conceptual): the JSON decode of a feed command's stdout into
@@ -1642,8 +1812,13 @@ rule DegradedEmptyEmission {
 -- Implementation: src/feed/parse.rs::parse_feed_items, re-exported from
 -- src/feed/mod.rs.
 
--- FeedSync (conceptual): single dispatch point for feed upsert. Routing
--- precedence by core/Epic.feed_role:
+-- FeedSync (conceptual): single dispatch point for feed upsert. Every dispatch
+-- carries the cycle's MODE alongside the emission: reconcile (the default —
+-- write what the emission contains, remove what it omits) or additive (write
+-- what it contains, remove nothing). The mode is decided once per cycle by
+-- DegradedNonEmptyEmission and is orthogonal to the routing below: all three
+-- paths honour it, and none of them re-decides it.
+-- Routing precedence by core/Epic.feed_role:
 --   1. feed_role = reviews_parent -> RoleRoutedFeedSync (subtree reconcile).
 --   2. otherwise epic.group_by_repo = true -> GroupedFeedUpsert.
 --   3. otherwise -> FlatFeedReconcile: first re-home any tasks stranded in the
@@ -1695,6 +1870,11 @@ rule ManualFeedTrigger {
     -- silent):
     --   - On start:   "Fetching feed for '<title>'…"
     --   - On success: "Feed for '<title>': N task(s) synced"
+    --   - On ADDITIVE success: the same line with a suffix naming why nothing
+    --     was removed — "Feed for '<title>': N task(s) synced (additive, no
+    --     removals: <reason>)". See DegradedNonEmptyEmission. A cycle that
+    --     declined to reconcile must not present as one that reconciled and
+    --     found nothing to do.
     --   - On failure: "Feed for '<title>' failed: <error>"
     --   - When DROPPED: "Feed for '<title>' is already refreshing…"
     --
@@ -1712,7 +1892,10 @@ rule ManualFeedTrigger {
     -- one (" — command wrote to stderr (see app.log)", gated on N = 0 AND
     -- the command having written to stderr while exiting 0); that exact
     -- combination is now DegradedEmptyEmission, which produces the
-    -- FAILURE line instead, so the hint is unreachable and gone.
+    -- FAILURE line instead, so the hint is unreachable and gone. The
+    -- additive suffix above is not that hint returning: it fires on the
+    -- OPPOSITE arm (N > 0 with stderr), and it reports a decision dispatch
+    -- took — removals were withheld — rather than merely pointing at the log.
 
     requires: epic.feed_command != null
 
@@ -1721,6 +1904,10 @@ rule ManualFeedTrigger {
         -- Spawns epic.feed_command; on success:
         --   FeedSync(epic, items)
         --   status_bar = "Feed for '{epic.title}': {count} task(s) synced"
+        -- on an ADDITIVE success (DegradedNonEmptyEmission — count > 0 AND
+        -- the command wrote to stderr while exiting 0):
+        --   status_bar = "Feed for '{epic.title}': {count} task(s) synced
+        --                 (additive, no removals: {reason})"
         -- on failure (including DegradedEmptyEmission — count = 0 AND the
         -- command wrote to stderr while exiting 0, whose {error} is the
         -- stderr text):

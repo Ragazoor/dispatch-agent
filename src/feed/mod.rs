@@ -17,9 +17,10 @@ use crate::models::EpicId;
 use crate::process::ProcessRunner;
 
 pub(crate) use cycle::{FeedCycle, FeedCycleOutcome};
+pub(crate) use exec::degraded_partial_emission;
 pub(crate) use exec::{degraded_empty_emission, exec_feed_command, resolve_base_branches};
 pub(crate) use guard::FeedSyncGuard;
-pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
+pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget, SyncMode};
 // `pub`, unlike the `pub(crate)` re-exports above: the `verify-feed` CLI in
 // src/main.rs is a separate bin crate and is one of this function's three
 // callers. See feeds.allium's FeedItemParse block.
@@ -667,6 +668,109 @@ mod tests {
         assert!(
             calls.iter().any(|c| c.contains("kill-window")),
             "and kill its tmux window, got: {calls:?}"
+        );
+    }
+
+    /// Regression for #4095 (feeds.allium: DegradedNonEmptyEmission). The
+    /// counterpart to `tick_removed_task_tears_down_its_worktree`: the same
+    /// emission-drops-a-task shape, but the command reports an error on stderr
+    /// while still emitting an item — a PARTIALLY degraded run. The row must
+    /// survive AND no teardown may be shelled out for it.
+    ///
+    /// The `MockProcessRunner` is scripted with no responses at all beyond the
+    /// base-branch probe, so any teardown attempt fails loudly rather than
+    /// passing silently: this test would be nearly worthless asserting only on
+    /// the DB, since the destroyed worktree is the part that cannot be undone.
+    #[tokio::test]
+    async fn tick_partially_degraded_emission_does_not_delete_or_tear_down() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+        // Two feed tasks from a previous healthy poll; `pr-1` carries a live
+        // agent's worktree and tmux window.
+        let seeded: Vec<crate::models::FeedItem> = ["pr-1", "pr-2"]
+            .iter()
+            .map(|ext| crate::models::FeedItem {
+                external_id: ext.to_string(),
+                title: "Seeded".to_string(),
+                description: String::new(),
+                url: String::new(),
+                url_type: None,
+                status: TaskStatus::Backlog,
+                tag: TaskTag::PrReview,
+                labels: Vec::new(),
+                sort_order: None,
+                signals: vec![],
+                wrap_up_mode: None,
+            })
+            .collect();
+        db.upsert_feed_tasks(
+            epic.id,
+            &seeded,
+            &vec!["/repo/a".to_string(); 2],
+            &vec!["main".to_string(); 2],
+        )
+        .await
+        .unwrap();
+
+        let live = db
+            .list_tasks_for_epic(epic.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|t| t.external_id.as_deref() == Some("pr-1"))
+            .unwrap();
+        db.patch_task(
+            live.id,
+            &TaskPatch::new()
+                .status(TaskStatus::Running)
+                .sub_status(crate::models::SubStatus::Active)
+                .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+                .tmux_window(Some("dispatch:pr-1")),
+        )
+        .await
+        .unwrap();
+
+        // One sub-query soft-failed: pr-1 is missing from an otherwise valid
+        // emission, and the reason is on stderr.
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new().feed_command(Some(
+                r#"echo 'fetch-reviews: gh search prs failed' >&2; echo '[{"external_id":"pr-2","title":"Other","description":"","status":"backlog","tag":"pr-review"}]'"#,
+            )),
+        )
+        .await
+        .unwrap();
+
+        let proc_runner = Arc::new(MockProcessRunner::new(vec![]));
+        let (mut runner, _rx) = make_runner_with_runner(db.clone(), proc_runner.clone());
+        runner.tick().await;
+        runner.join_spawned_jobs().await;
+
+        let ids: Vec<String> = db
+            .list_tasks_for_epic(epic.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| t.external_id)
+            .collect();
+        assert!(
+            ids.contains(&"pr-1".to_string()),
+            "a task omitted by a partially degraded emission must survive, got {ids:?}"
+        );
+        assert!(
+            ids.contains(&"pr-2".to_string()),
+            "the emitted item is still synced — additive, not suppressed"
+        );
+
+        let calls = proc_runner.flattened_calls();
+        assert!(
+            !calls.iter().any(|c| c.contains("worktree remove")),
+            "a degraded emission must not force-remove a live agent's worktree, got: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.contains("kill-window")),
+            "nor kill its tmux window, got: {calls:?}"
         );
     }
 

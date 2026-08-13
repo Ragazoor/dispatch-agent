@@ -15,6 +15,11 @@ use crate::models::{EpicId, FeedItem};
 ///
 /// Returns the stale rows the upsert deleted that still owned a worktree or
 /// tmux window, for the caller to tear down (empty on failure).
+/// On [`SyncMode::Additive`] the additive upsert variant is used, so an item
+/// that dropped out of this group's emission is left in place; the clearing
+/// callers (which pass empty slices) are not called at all in that mode.
+///
+/// [`SyncMode::Additive`]: super::SyncMode::Additive
 async fn upsert_sub_epic_and_recalc(
     db: &dyn TaskStore,
     parent_id: EpicId,
@@ -22,7 +27,30 @@ async fn upsert_sub_epic_and_recalc(
     items: &[FeedItem],
     repo_paths: &[String],
     base_branches: &[String],
+    mode: super::SyncMode,
 ) -> Vec<RemovedFeedTask> {
+    if !mode.removes_absent() {
+        match db
+            .upsert_feed_tasks_additive(sub_epic_id, items, repo_paths, base_branches)
+            .await
+        {
+            Ok(()) => {
+                crate::feed::recalculate_epic_status_after_feed(
+                    db,
+                    sub_epic_id,
+                    "sync_grouped_feed",
+                )
+                .await
+            }
+            Err(err) => tracing::warn!(
+                epic_id = parent_id.0,
+                sub_epic_id = sub_epic_id.0,
+                "sync_grouped_feed: upsert_feed_tasks_additive failed: {err:#}"
+            ),
+        }
+        return Vec::new();
+    }
+
     let result = db
         .upsert_feed_tasks(sub_epic_id, items, repo_paths, base_branches)
         .await;
@@ -60,6 +88,7 @@ async fn upsert_present_groups(
     parent_id: EpicId,
     groups: HashMap<String, Vec<FeedItemWithTarget>>,
     active_sub_epics: &[&crate::models::Epic],
+    mode: super::SyncMode,
 ) -> (Vec<EpicId>, Vec<RemovedFeedTask>) {
     let mut sub_epic_ids = Vec::new();
     let mut removed = Vec::new();
@@ -95,6 +124,7 @@ async fn upsert_present_groups(
                 &group_items,
                 &group_repo_paths,
                 &group_base_branches,
+                mode,
             )
             .await,
         );
@@ -123,7 +153,18 @@ async fn clear_absent_sub_epics(
     {
         // Surface the cleared sub-epic to the caller so the TUI refreshes it.
         sub_epic_ids.push(sub_epic.id);
-        removed.extend(upsert_sub_epic_and_recalc(db, parent_id, sub_epic.id, &[], &[], &[]).await);
+        removed.extend(
+            upsert_sub_epic_and_recalc(
+                db,
+                parent_id,
+                sub_epic.id,
+                &[],
+                &[],
+                &[],
+                super::SyncMode::Reconcile,
+            )
+            .await,
+        );
     }
     (sub_epic_ids, removed)
 }
@@ -163,6 +204,7 @@ pub(super) async fn sync_grouped_feed(
     db: &dyn TaskStore,
     parent_id: EpicId,
     entries: Vec<FeedItemWithTarget>,
+    mode: super::SyncMode,
 ) -> super::FeedSyncOutcome {
     let groups = group_by_repo(entries);
 
@@ -193,12 +235,23 @@ pub(super) async fn sync_grouped_feed(
     let group_names: std::collections::HashSet<String> = groups.keys().cloned().collect();
 
     let (sub_epic_ids, mut removed) =
-        upsert_present_groups(db, parent_id, groups, &active_sub_epics).await;
-    let (absent_ids, absent_removed) =
-        clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await;
-    removed.extend(absent_removed);
+        upsert_present_groups(db, parent_id, groups, &active_sub_epics, mode).await;
 
-    removed.extend(clear_parent_flat_tasks(db, parent_id).await);
+    // Phases 3 and 4 are the grouped path's two removal mechanisms, so both are
+    // skipped when the emission's omissions are not trusted (feeds.allium:
+    // DegradedNonEmptyEmission). That also defers grouping MIGRATION — which is
+    // phase 4 in disguise, deleting flat parent tasks so the sub-epic copies
+    // stand alone — to the next trusted emission, rather than half-performing
+    // it against a degraded one.
+    let absent_ids = if mode.removes_absent() {
+        let (absent_ids, absent_removed) =
+            clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await;
+        removed.extend(absent_removed);
+        removed.extend(clear_parent_flat_tasks(db, parent_id).await);
+        absent_ids
+    } else {
+        Vec::new()
+    };
 
     // Parent first, mirroring `run_role_routed_feed_sync`'s contract, so the
     // caller forwards this outcome rather than reassembling one.

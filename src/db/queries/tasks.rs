@@ -460,131 +460,25 @@ impl super::super::TaskCrud for Database {
         repo_paths: &[String],
         base_branches: &[String],
     ) -> Result<Vec<RemovedFeedTask>> {
-        // repo_paths and base_branches are parallel-to-items by contract. Verify
-        // it up front: a mismatch would let the zip below silently truncate and
-        // drop feed items, so reject it explicitly instead.
-        if items.len() != repo_paths.len() || items.len() != base_branches.len() {
-            anyhow::bail!(
-                "upsert_feed_tasks slice length mismatch: items={}, repo_paths={}, base_branches={}",
-                items.len(),
-                repo_paths.len(),
-                base_branches.len()
-            );
-        }
-        let items = items.to_vec();
-        let repo_paths = repo_paths.to_vec();
-        let base_branches = base_branches.to_vec();
-        // Pre-serialize labels (write_json_string_vec is sync but returns Result).
-        let labels_jsons: Vec<String> = items
-            .iter()
-            .map(|i| write_json_string_vec(&i.labels))
-            .collect::<Result<Vec<_>>>()?;
-        let keep_ids =
-            serde_json::to_string(&items.iter().map(|i| &i.external_id).collect::<Vec<_>>())
-                .context("failed to serialize external_ids for feed task cleanup")?;
-        self.db_call(move |conn| {
-            // Verify epic exists before upserting tasks
-            let epic_exists: bool = conn
-                .query_row(
-                    "SELECT 1 FROM epics WHERE id = ?1",
-                    params![epic_id.0],
-                    |_| Ok(true),
-                )
-                .optional()
-                .with_context(|| format!("Failed to check epic {} for upsert_feed_tasks", epic_id))?
-                .is_some();
-            if !epic_exists {
-                anyhow::bail!("Epic {} not found for upsert_feed_tasks", epic_id);
-            }
+        self.upsert_feed_tasks_inner(epic_id, items, repo_paths, base_branches, true)
+            .await
+    }
 
-            let tx = conn.unchecked_transaction()?;
-
-            for (((item, repo_path), base_branch), labels_json) in items
-                .iter()
-                .zip(repo_paths.iter())
-                .zip(base_branches.iter())
-                .zip(labels_jsons.iter())
-            {
-                let sub_status = SubStatus::default_for(item.status).as_str().to_string();
-                // item.url is copied into url so the card surfaces it
-                // immediately. url_type precedence: an explicit item.url_type
-                // wins; otherwise it is inferred from the URL string. On
-                // conflict, an existing non-null url (and its type) wins —
-                // both columns are backfilled together via paired CASE
-                // expressions, never split.
-                // See feeds.allium::UpsertFeedTasks.
-                let (url, url_type) = if item.url.is_empty() {
-                    (None, None)
-                } else {
-                    (
-                        Some(item.url.as_str()),
-                        Some(
-                            item.url_type
-                                .unwrap_or_else(|| crate::models::UrlType::infer(&item.url))
-                                .as_str(),
-                        ),
-                    )
-                };
-                tx.execute(
-                    // wrap_up_mode is INSERT-ONLY: deliberately absent from the
-                    // ON CONFLICT DO UPDATE SET below, so a user's manual
-                    // wrap-up choice survives feed refreshes (mirrors
-                    // status/sub_status/repo_path). See feeds.allium:UpsertFeedTasks.
-                    "INSERT INTO tasks
-                         (title, description, repo_path, status, sub_status, base_branch,
-                          epic_id, external_id, tag, labels, sort_order, url, url_type,
-                          wrap_up_mode)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-                     ON CONFLICT(epic_id, external_id) WHERE external_id IS NOT NULL
-                     DO UPDATE SET
-                         title       = excluded.title,
-                         description = excluded.description,
-                         tag         = excluded.tag,
-                         labels      = excluded.labels,
-                         sort_order  = CASE WHEN tasks.status != 'done' THEN excluded.sort_order ELSE tasks.sort_order END,
-                         url      = CASE WHEN tasks.url IS NOT NULL THEN tasks.url      ELSE excluded.url      END,
-                         url_type = CASE WHEN tasks.url IS NOT NULL THEN tasks.url_type ELSE excluded.url_type END,
-                         updated_at  = datetime('now')",
-                    params![
-                        item.title,
-                        item.description,
-                        repo_path,
-                        item.status.as_str(),
-                        sub_status,
-                        base_branch,
-                        epic_id.0,
-                        item.external_id,
-                        item.tag.as_str(),
-                        labels_json,
-                        item.sort_order,
-                        url,
-                        url_type,
-                        item.wrap_up_mode.map(|m| m.as_str()),
-                    ],
-                )
-                .with_context(|| format!("Failed to upsert feed task '{}'", item.external_id))?;
-            }
-
-            // The predicate is unchanged; only RETURNING is new. The drain (and
-            // the Statement's lifetime, which must end before `tx.commit()`)
-            // lives in `delete_returning_removed`.
-            let removed = delete_returning_removed(
-                &tx,
-                &format!(
-                    "DELETE FROM tasks
-                 WHERE epic_id = ?1
-                   AND external_id IS NOT NULL
-                   AND external_id NOT IN (SELECT value FROM json_each(?2))
-                 {REMOVED_FEED_TASK_RETURNING}"
-                ),
-                params![epic_id.0, keep_ids],
-                "stale feed tasks",
-            )?;
-
-            tx.commit()?;
-            Ok(removed)
-        })
-        .await
+    async fn upsert_feed_tasks_additive(
+        &self,
+        epic_id: EpicId,
+        items: &[FeedItem],
+        repo_paths: &[String],
+        base_branches: &[String],
+    ) -> Result<()> {
+        let removed = self
+            .upsert_feed_tasks_inner(epic_id, items, repo_paths, base_branches, false)
+            .await?;
+        debug_assert!(
+            removed.is_empty(),
+            "the additive upsert must not delete anything"
+        );
+        Ok(())
     }
 
     async fn delete_stale_subtree_feed_tasks(
@@ -612,7 +506,6 @@ impl super::super::TaskCrud for Database {
         })
         .await
     }
-
     async fn mark_pr_learnings_gate_shown(&self, id: TaskId) -> Result<bool> {
         self.db_call(move |conn| {
             let changed = conn
@@ -995,6 +888,159 @@ impl super::super::TaskCrud for Database {
             )
             .context("Failed to delete watches by watcher")?;
             Ok(())
+        })
+        .await
+    }
+}
+
+impl Database {
+    /// Shared body of [`TaskCrud::upsert_feed_tasks`] and
+    /// [`TaskCrud::upsert_feed_tasks_additive`]. `delete_absent` selects
+    /// between them: `true` runs the per-epic stale delete that makes the feed
+    /// the source of truth, `false` skips it entirely so a tainted emission's
+    /// omissions never reach a `DELETE` (feeds.allium:
+    /// `DegradedNonEmptyEmission`).
+    ///
+    /// One body rather than two, so the insert/update half — which is where
+    /// every field-precedence rule in `UpsertFeedTasks` lives — cannot drift
+    /// between the trusted and the additive path.
+    async fn upsert_feed_tasks_inner(
+        &self,
+        epic_id: EpicId,
+        items: &[FeedItem],
+        repo_paths: &[String],
+        base_branches: &[String],
+        delete_absent: bool,
+    ) -> Result<Vec<RemovedFeedTask>> {
+        // repo_paths and base_branches are parallel-to-items by contract. Verify
+        // it up front: a mismatch would let the zip below silently truncate and
+        // drop feed items, so reject it explicitly instead.
+        if items.len() != repo_paths.len() || items.len() != base_branches.len() {
+            anyhow::bail!(
+                "upsert_feed_tasks slice length mismatch: items={}, repo_paths={}, base_branches={}",
+                items.len(),
+                repo_paths.len(),
+                base_branches.len()
+            );
+        }
+        let items = items.to_vec();
+        let repo_paths = repo_paths.to_vec();
+        let base_branches = base_branches.to_vec();
+        // Pre-serialize labels (write_json_string_vec is sync but returns Result).
+        let labels_jsons: Vec<String> = items
+            .iter()
+            .map(|i| write_json_string_vec(&i.labels))
+            .collect::<Result<Vec<_>>>()?;
+        let keep_ids =
+            serde_json::to_string(&items.iter().map(|i| &i.external_id).collect::<Vec<_>>())
+                .context("failed to serialize external_ids for feed task cleanup")?;
+        self.db_call(move |conn| {
+            // Verify epic exists before upserting tasks
+            let epic_exists: bool = conn
+                .query_row(
+                    "SELECT 1 FROM epics WHERE id = ?1",
+                    params![epic_id.0],
+                    |_| Ok(true),
+                )
+                .optional()
+                .with_context(|| format!("Failed to check epic {} for upsert_feed_tasks", epic_id))?
+                .is_some();
+            if !epic_exists {
+                anyhow::bail!("Epic {} not found for upsert_feed_tasks", epic_id);
+            }
+
+            let tx = conn.unchecked_transaction()?;
+
+            for (((item, repo_path), base_branch), labels_json) in items
+                .iter()
+                .zip(repo_paths.iter())
+                .zip(base_branches.iter())
+                .zip(labels_jsons.iter())
+            {
+                let sub_status = SubStatus::default_for(item.status).as_str().to_string();
+                // item.url is copied into url so the card surfaces it
+                // immediately. url_type precedence: an explicit item.url_type
+                // wins; otherwise it is inferred from the URL string. On
+                // conflict, an existing non-null url (and its type) wins —
+                // both columns are backfilled together via paired CASE
+                // expressions, never split.
+                // See feeds.allium::UpsertFeedTasks.
+                let (url, url_type) = if item.url.is_empty() {
+                    (None, None)
+                } else {
+                    (
+                        Some(item.url.as_str()),
+                        Some(
+                            item.url_type
+                                .unwrap_or_else(|| crate::models::UrlType::infer(&item.url))
+                                .as_str(),
+                        ),
+                    )
+                };
+                tx.execute(
+                    // wrap_up_mode is INSERT-ONLY: deliberately absent from the
+                    // ON CONFLICT DO UPDATE SET below, so a user's manual
+                    // wrap-up choice survives feed refreshes (mirrors
+                    // status/sub_status/repo_path). See feeds.allium:UpsertFeedTasks.
+                    "INSERT INTO tasks
+                         (title, description, repo_path, status, sub_status, base_branch,
+                          epic_id, external_id, tag, labels, sort_order, url, url_type,
+                          wrap_up_mode)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+                     ON CONFLICT(epic_id, external_id) WHERE external_id IS NOT NULL
+                     DO UPDATE SET
+                         title       = excluded.title,
+                         description = excluded.description,
+                         tag         = excluded.tag,
+                         labels      = excluded.labels,
+                         sort_order  = CASE WHEN tasks.status != 'done' THEN excluded.sort_order ELSE tasks.sort_order END,
+                         url      = CASE WHEN tasks.url IS NOT NULL THEN tasks.url      ELSE excluded.url      END,
+                         url_type = CASE WHEN tasks.url IS NOT NULL THEN tasks.url_type ELSE excluded.url_type END,
+                         updated_at  = datetime('now')",
+                    params![
+                        item.title,
+                        item.description,
+                        repo_path,
+                        item.status.as_str(),
+                        sub_status,
+                        base_branch,
+                        epic_id.0,
+                        item.external_id,
+                        item.tag.as_str(),
+                        labels_json,
+                        item.sort_order,
+                        url,
+                        url_type,
+                        item.wrap_up_mode.map(|m| m.as_str()),
+                    ],
+                )
+                .with_context(|| format!("Failed to upsert feed task '{}'", item.external_id))?;
+            }
+
+            // The predicate is unchanged; only RETURNING is new. The drain (and
+            // the Statement's lifetime, which must end before `tx.commit()`)
+            // lives in `delete_returning_removed`. Skipped wholesale on the
+            // additive path — not narrowed, not run with a wider keep-set: an
+            // untrusted emission must not reach this statement at all.
+            let removed = if delete_absent {
+                delete_returning_removed(
+                    &tx,
+                    &format!(
+                        "DELETE FROM tasks
+                 WHERE epic_id = ?1
+                   AND external_id IS NOT NULL
+                   AND external_id NOT IN (SELECT value FROM json_each(?2))
+                 {REMOVED_FEED_TASK_RETURNING}"
+                    ),
+                    params![epic_id.0, keep_ids],
+                    "stale feed tasks",
+                )?
+            } else {
+                Vec::new()
+            };
+
+            tx.commit()?;
+            Ok(removed)
         })
         .await
     }

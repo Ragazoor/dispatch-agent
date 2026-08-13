@@ -33,12 +33,23 @@ impl App {
         }
     }
 
+    /// `degraded` carries the reason a partially degraded emission ran
+    /// additively (feeds.allium: `DegradedNonEmptyEmission`); when present it
+    /// becomes a suffix naming why nothing was removed, so the user does not
+    /// read a withheld reconcile as a completed one.
     pub(in crate::tui) fn handle_feed_refreshed(
         &mut self,
         epic_title: String,
         count: usize,
+        degraded: Option<String>,
     ) -> Vec<Command> {
-        self.set_status(format!("Feed for '{epic_title}': {count} task(s) synced"));
+        let suffix = match degraded {
+            Some(reason) => format!(" (additive, no removals: {reason})"),
+            None => String::new(),
+        };
+        self.set_status(format!(
+            "Feed for '{epic_title}': {count} task(s) synced{suffix}"
+        ));
         vec![Command::Task(
             crate::tui::commands::TaskCommand::RefreshFromDb,
         )]

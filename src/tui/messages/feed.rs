@@ -16,7 +16,16 @@ pub enum FeedMessage {
     /// clean (no-stderr) zero-item run — see feeds.allium
     /// DegradedEmptyEmission for the zero-item-with-stderr case, which fails
     /// instead of reaching this variant.
-    Refreshed { epic_title: String, count: usize },
+    Refreshed {
+        epic_title: String,
+        count: usize,
+        /// `Some(reason)` when the sync ran ADDITIVELY and removed nothing,
+        /// because the command wrote to stderr (feeds.allium:
+        /// `DegradedNonEmptyEmission`). Surfaced as a suffix on the status line
+        /// — a refresh that declined to reconcile must not present as one that
+        /// reconciled and found nothing to do.
+        degraded: Option<String>,
+    },
     /// Feed refresh failed.
     Failed { epic_title: String, error: String },
     /// The refresh ran nothing: a feed cycle for this epic was already in
@@ -32,9 +41,11 @@ impl FeedMessage {
     pub(in crate::tui) fn route(self, app: &mut App) -> Vec<Command> {
         match self {
             FeedMessage::TriggerEpic(id) => app.handle_trigger_epic_feed(id),
-            FeedMessage::Refreshed { epic_title, count } => {
-                app.handle_feed_refreshed(epic_title, count)
-            }
+            FeedMessage::Refreshed {
+                epic_title,
+                count,
+                degraded,
+            } => app.handle_feed_refreshed(epic_title, count, degraded),
             FeedMessage::Failed { epic_title, error } => app.handle_feed_failed(epic_title, error),
             FeedMessage::AlreadyRefreshing { epic_title } => {
                 app.handle_feed_already_refreshing(epic_title)

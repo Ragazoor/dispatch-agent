@@ -218,15 +218,23 @@ pub(super) async fn run_role_routed_feed_sync(
     db: &dyn TaskStore,
     parent_id: EpicId,
     entries: Vec<FeedItemWithTarget>,
+    mode: super::SyncMode,
 ) -> Result<FeedSyncOutcome> {
     let roles = ensure_role_sub_epics(db, parent_id).await?;
     let (existing, pre_existing_repo_group_ids) =
         build_existing_task_index(db, parent_id, &roles).await?;
     let routed = route_and_group_entries(db, parent_id, entries, &existing, &roles).await?;
 
-    let mut removed = upsert_role_groups(db, parent_id, routed.groups).await;
-    removed.extend(delete_stale_subtree(db, parent_id, &roles, &routed.all_external_ids).await);
-    removed.extend(clear_parent_stranded_tasks(db, parent_id).await);
+    // Phase 2 runs in both modes — inserts, field refreshes and the moves
+    // already applied above all follow from what the emission CONTAINS. Phases
+    // 3 and 4 are the two removal mechanisms and are skipped wholesale when the
+    // emission's omissions are not trusted (feeds.allium:
+    // DegradedNonEmptyEmission).
+    let mut removed = upsert_role_groups(db, parent_id, routed.groups, mode).await;
+    if mode.removes_absent() {
+        removed.extend(delete_stale_subtree(db, parent_id, &roles, &routed.all_external_ids).await);
+        removed.extend(clear_parent_stranded_tasks(db, parent_id).await);
+    }
 
     let repo_group_ids: std::collections::HashSet<EpicId> = routed
         .repo_group_cache

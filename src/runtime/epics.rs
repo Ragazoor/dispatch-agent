@@ -269,10 +269,17 @@ impl TuiRuntime {
             // the time it returns, so "N task(s) synced" means reconciled AND
             // cleaned up (feeds.allium: RoleRoutedFeedSync).
             let message = match cycle.run().await {
-                crate::feed::FeedCycleOutcome::Synced { count, .. } => FeedMessage::Refreshed {
+                crate::feed::FeedCycleOutcome::Synced {
+                    count, degraded, ..
+                } => FeedMessage::Refreshed {
                     epic_title,
                     // Items the feed command emitted, not tasks inserted.
                     count,
+                    // Some(reason) when the cycle ran additively and so removed
+                    // nothing (feeds.allium: DegradedNonEmptyEmission). Carried
+                    // to the status line rather than dropped: an unchanged board
+                    // must not read as a reconciled one.
+                    degraded,
                 },
                 // Neither a success nor a failure: nothing ran, because a cycle
                 // for this epic was already in flight. A distinct variant, not a

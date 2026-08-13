@@ -120,14 +120,39 @@ pub(crate) async fn exec_feed_command(
 ///
 /// A genuinely-empty clean run (`stderr` empty) returns `None` and reconciles
 /// normally, so merged and closed PRs are still removed. A non-empty emission
-/// returns `None` regardless of stderr — there, stderr is chatter and the warn
-/// line from `exec_feed_command` is enough.
+/// returns `None` here regardless of stderr — it is never suppressed, only
+/// downgraded to an additive sync by [`degraded_partial_emission`].
 ///
 /// See feeds.allium: DegradedEmptyEmission.
 pub(crate) fn degraded_empty_emission(item_count: usize, stderr: &str) -> Option<String> {
     if item_count == 0 && !stderr.is_empty() {
         Some(format!(
             "command emitted no items but wrote to stderr: {stderr}"
+        ))
+    } else {
+        None
+    }
+}
+
+/// Classify a zero-exit emission that produced items while ALSO writing to
+/// stderr. That combination is a PARTIALLY degraded emission: part of what the
+/// command was asked to fetch came back and part of it soft-failed, so the
+/// emission is evidence of what exists but not of what does not.
+///
+/// Returns `Some(reason)` to downgrade the sync to [`SyncMode::Additive`],
+/// `None` to reconcile as normal.
+///
+/// Deliberately the same shape as [`degraded_empty_emission`], and mutually
+/// exclusive with it by the `item_count` arm — the empty case suppresses the
+/// sync entirely, this one only withholds its removals.
+///
+/// See feeds.allium: DegradedNonEmptyEmission.
+///
+/// [`SyncMode::Additive`]: super::SyncMode::Additive
+pub(crate) fn degraded_partial_emission(item_count: usize, stderr: &str) -> Option<String> {
+    if item_count > 0 && !stderr.is_empty() {
+        Some(format!(
+            "command wrote to stderr, so its omissions are not trusted: {stderr}"
         ))
     } else {
         None
@@ -371,7 +396,50 @@ mod tests {
 
     #[test]
     fn not_degraded_when_items_present_despite_stderr() {
-        // Chatter alongside a real emission stays diagnostic-only.
+        // A non-empty emission is never SUPPRESSED. It is downgraded to an
+        // additive sync by degraded_partial_emission instead — this predicate
+        // owns the zero-item arm only.
         assert!(degraded_empty_emission(3, "some warning").is_none());
+    }
+
+    // --- degraded_partial_emission (feeds.allium: DegradedNonEmptyEmission) ---
+
+    #[test]
+    fn degraded_partial_when_items_present_and_stderr_present() {
+        let reason = degraded_partial_emission(3, "fetch-reviews: gh search prs failed")
+            .expect("items alongside stderr must downgrade the sync to additive");
+        assert!(
+            reason.contains("fetch-reviews: gh search prs failed"),
+            "reason must carry the stderr so the status bar can show it, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn not_partially_degraded_when_no_stderr() {
+        // A clean non-empty emission is fully trusted and still reconciles.
+        assert!(degraded_partial_emission(3, "").is_none());
+    }
+
+    #[test]
+    fn not_partially_degraded_when_zero_items() {
+        // The zero-item arm belongs to degraded_empty_emission, which
+        // suppresses the sync outright. The two predicates must never both
+        // fire for one emission.
+        assert!(degraded_partial_emission(0, "some warning").is_none());
+        assert!(degraded_partial_emission(0, "").is_none());
+    }
+
+    #[test]
+    fn the_two_degradation_predicates_are_mutually_exclusive() {
+        for count in [0usize, 1, 7] {
+            for stderr in ["", "boom"] {
+                let empty = degraded_empty_emission(count, stderr).is_some();
+                let partial = degraded_partial_emission(count, stderr).is_some();
+                assert!(
+                    !(empty && partial),
+                    "both guards fired for count={count} stderr={stderr:?}"
+                );
+            }
+        }
     }
 }

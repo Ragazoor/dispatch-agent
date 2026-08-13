@@ -2215,6 +2215,7 @@ fn feed_refreshed_sets_status_and_returns_refresh_from_db() {
         crate::tui::messages::FeedMessage::Refreshed {
             epic_title: "My Feed Epic".to_string(),
             count: 5,
+            degraded: None,
         },
     ));
 
@@ -2244,6 +2245,7 @@ fn feed_refreshed_zero_items_still_succeeds() {
         crate::tui::messages::FeedMessage::Refreshed {
             epic_title: "Empty Feed".to_string(),
             count: 0,
+            degraded: None,
         },
     ));
 
@@ -2276,6 +2278,7 @@ fn feed_refreshed_with_items_has_no_stderr_wording() {
         crate::tui::messages::FeedMessage::Refreshed {
             epic_title: "Chatty Feed".to_string(),
             count: 7,
+            degraded: None,
         },
     ));
 
@@ -2283,6 +2286,45 @@ fn feed_refreshed_with_items_has_no_stderr_wording() {
     assert!(
         !status.contains("stderr"),
         "a successful refresh must never mention stderr, got: {status}"
+    );
+}
+
+/// feeds.allium: DegradedNonEmptyEmission. An additive refresh IS a success —
+/// items synced, nothing failed — but the line must say that nothing was
+/// removed, or an unchanged board reads as a reconciled one.
+#[test]
+fn feed_refreshed_degraded_says_it_removed_nothing() {
+    let mut app = App::new(vec![]);
+
+    let cmds = app.update(Message::Feed(
+        crate::tui::messages::FeedMessage::Refreshed {
+            epic_title: "Reviews".to_string(),
+            count: 7,
+            degraded: Some(
+                "command wrote to stderr, so its omissions are not trusted: gh failed".to_string(),
+            ),
+        },
+    ));
+
+    let status = app.status_message().unwrap_or("");
+    assert!(
+        status.contains("7 task(s) synced"),
+        "an additive refresh still reports its count, got: {status}"
+    );
+    assert!(
+        status.contains("no removals"),
+        "and must say nothing was removed, got: {status}"
+    );
+    assert!(
+        status.contains("gh failed"),
+        "and must carry the script's own reason, got: {status}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::RefreshFromDb)
+        )),
+        "an additive refresh still wrote items, so the board must reload"
     );
 }
 

@@ -3,7 +3,9 @@ use super::*;
 
 // `db` is the concrete `Arc<Database>` in this fixture (see `test_db`), so the
 // store traits must be in scope for their methods to resolve on it.
-use crate::db::{CreateLearningRow, CreateTaskRequest, Database, EpicCrud, EpicRead, TaskCrud};
+use crate::db::{
+    CreateLearningRow, CreateTaskRequest, Database, EpicCrud, EpicRead, TaskCrud, TaskPatch,
+};
 use crate::dispatch::mock_sequence::DispatchScript;
 use crate::process::MockProcessRunner;
 
@@ -3798,6 +3800,107 @@ async fn exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing
         "a degraded empty emission must not run the sync, so existing feed tasks survive"
     );
     assert_eq!(tasks[0].external_id.as_deref(), Some("pr-1"));
+}
+
+/// Manual counterpart of
+/// `feed::tests::tick_partially_degraded_emission_does_not_delete_or_tear_down`
+/// (#4095, feeds.allium: DegradedNonEmptyEmission). A partially degraded
+/// emission is NOT a failure — the sync still runs and the emitted item still
+/// lands — but it removes nothing, and the status line says so rather than
+/// reading like an ordinary reconcile.
+#[tokio::test]
+async fn exec_trigger_epic_feed_partially_degraded_emission_does_not_delete() {
+    let db = test_db().await;
+    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+    let seeded: Vec<crate::models::FeedItem> = ["pr-1", "pr-2"]
+        .iter()
+        .map(|ext| crate::models::FeedItem {
+            external_id: ext.to_string(),
+            title: "Seeded".to_string(),
+            description: String::new(),
+            url: String::new(),
+            url_type: None,
+            status: crate::models::TaskStatus::Backlog,
+            tag: crate::models::TaskTag::PrReview,
+            labels: Vec::new(),
+            sort_order: None,
+            signals: vec![],
+            wrap_up_mode: None,
+        })
+        .collect();
+    db.upsert_feed_tasks(
+        epic.id,
+        &seeded,
+        &vec!["/repo/a".to_string(); 2],
+        &vec!["main".to_string(); 2],
+    )
+    .await
+    .unwrap();
+
+    let live = db
+        .list_tasks_for_epic(epic.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|t| t.external_id.as_deref() == Some("pr-1"))
+        .unwrap();
+    db.patch_task(
+        live.id,
+        &TaskPatch::new()
+            .status(crate::models::TaskStatus::Running)
+            .sub_status(crate::models::SubStatus::Active)
+            .worktree(Some("/repo/a/.worktrees/7-pr-1")),
+    )
+    .await
+    .unwrap();
+
+    set_feed_command(
+        &db,
+        epic.id,
+        r#"echo 'fetch-reviews: gh search prs failed' >&2; echo '[{"external_id":"pr-2","title":"Other","description":"","status":"backlog","tag":"pr-review"}]'"#,
+    )
+    .await;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let proc_runner = Arc::new(MockProcessRunner::new(vec![]));
+    let rt = make_runtime(db.clone(), tx, proc_runner.clone()).await;
+
+    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel closed");
+    match msg {
+        Message::Feed(crate::tui::messages::FeedMessage::Refreshed { degraded, .. }) => {
+            let reason = degraded.expect("a degraded refresh must carry its reason");
+            assert!(
+                reason.contains("gh search prs failed"),
+                "the reason must name what the script reported, got: {reason}"
+            );
+        }
+        other => panic!("expected a degraded FeedMessage::Refreshed, got: {other:?}"),
+    }
+
+    let ids: Vec<String> = db
+        .list_tasks_for_epic(epic.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|t| t.external_id)
+        .collect();
+    assert!(
+        ids.contains(&"pr-1".to_string()),
+        "the omitted task must survive a degraded manual refresh, got {ids:?}"
+    );
+    assert!(
+        !proc_runner
+            .flattened_calls()
+            .iter()
+            .any(|c| c.contains("worktree remove")),
+        "and its worktree must not be torn down"
+    );
 }
 
 /// End-to-end wiring guard for the MANUAL "r" refresh path — the mirror of

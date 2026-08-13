@@ -29,6 +29,33 @@ use crate::db::{RemovedFeedTask, TaskStore};
 use crate::models::{EpicId, FeedItem};
 use anyhow::Result;
 
+/// Whether a sync pass may act on what its emission OMITS.
+///
+/// Decided once per feed cycle, from the degraded-emission predicates in
+/// [`crate::feed::exec`], and threaded unchanged through every sync path — no
+/// path re-decides it. See feeds.allium: `DegradedNonEmptyEmission`.
+///
+/// An enum rather than a `bool` because both readings of a bare flag
+/// (`delete_absent` vs `additive`) are plausible at a call site, and picking the
+/// wrong one here force-removes live agents' worktrees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncMode {
+    /// The emission is trusted in full: absent feed tasks are stale and are
+    /// deleted (and then torn down). The ordinary mode.
+    Reconcile,
+    /// The emission is trusted only for what it contains. Inserts, field
+    /// refreshes and cross-role moves still happen; every removal is skipped,
+    /// so [`FeedSyncOutcome::removed`] comes back empty.
+    Additive,
+}
+
+impl SyncMode {
+    /// Whether this mode may remove feed tasks absent from the emission.
+    fn removes_absent(self) -> bool {
+        matches!(self, SyncMode::Reconcile)
+    }
+}
+
 /// What one sync pass did: which epics it wrote to, and which task rows it
 /// removed that still owned on-disk or in-tmux state.
 ///
@@ -116,9 +143,10 @@ pub(crate) async fn run_feed_sync(
     epic_id: EpicId,
     group_by_repo: bool,
     entries: Vec<FeedItemWithTarget>,
+    mode: SyncMode,
 ) -> Result<FeedSyncOutcome> {
     if group_by_repo {
-        Ok(grouped::sync_grouped_feed(db, epic_id, entries).await)
+        Ok(grouped::sync_grouped_feed(db, epic_id, entries, mode).await)
     } else {
         // FlatFeedReconcile: reconcile any leftover RepoGroup sub-epics back
         // onto the parent before the flat upsert. Reuses flatten_epic (shared
@@ -138,9 +166,19 @@ pub(crate) async fn run_feed_sync(
             crate::service::flatten_epic(db, epic_id).await?;
         }
         let (items, repo_paths, base_branches) = FeedItemWithTarget::unzip(entries);
-        let removed = db
-            .upsert_feed_tasks(epic_id, &items, &repo_paths, &base_branches)
-            .await?;
+        // The flat path's stale delete lives inside upsert_feed_tasks, so the
+        // mode is honoured by picking the variant rather than by skipping a
+        // step. The re-home above still runs either way: it moves tasks and
+        // deletes only sub-epics it has just emptied, so it destroys nothing
+        // and never reads the emission.
+        let removed = if mode.removes_absent() {
+            db.upsert_feed_tasks(epic_id, &items, &repo_paths, &base_branches)
+                .await?
+        } else {
+            db.upsert_feed_tasks_additive(epic_id, &items, &repo_paths, &base_branches)
+                .await?;
+            Vec::new()
+        };
         Ok(FeedSyncOutcome {
             affected_epics: vec![epic_id],
             removed,
@@ -167,10 +205,11 @@ pub(crate) async fn run_feed_sync_by_role(
     feed_role: crate::models::FeedRole,
     group_by_repo: bool,
     entries: Vec<FeedItemWithTarget>,
+    mode: SyncMode,
 ) -> Result<FeedSyncOutcome> {
     use crate::models::FeedRole;
     match feed_role {
-        FeedRole::ReviewsParent => run_role_routed_feed_sync(db, epic_id, entries).await,
+        FeedRole::ReviewsParent => run_role_routed_feed_sync(db, epic_id, entries, mode).await,
         role @ (FeedRole::MyReviews | FeedRole::TeamReviews | FeedRole::Bots) => {
             debug_assert!(
                 false,
@@ -181,6 +220,6 @@ pub(crate) async fn run_feed_sync_by_role(
                 "role sub-epic carries a feed command; it is reconciled only via its reviews parent"
             )
         }
-        _ => run_feed_sync(db, epic_id, group_by_repo, entries).await,
+        _ => run_feed_sync(db, epic_id, group_by_repo, entries, mode).await,
     }
 }

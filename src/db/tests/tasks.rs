@@ -1835,6 +1835,117 @@ async fn upsert_feed_tasks_returns_removed_rows_with_state() {
     assert_eq!(removed[0].tmux_window, None, "no tmux window was set");
 }
 
+/// The additive variant writes everything `upsert_feed_tasks` writes and deletes
+/// nothing (`feeds.allium`: `DegradedNonEmptyEmission`). This is the DB half of
+/// the partial-degradation guard: a tainted emission's omissions must not reach
+/// a `DELETE`, so there is no row to report and nothing for the teardown fan-out
+/// to destroy.
+#[tokio::test]
+async fn upsert_feed_tasks_additive_upserts_without_deleting_absent_tasks() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+    db.upsert_feed_tasks(
+        epic.id,
+        &[
+            make_feed_item("live-1", "Under review"),
+            make_feed_item("keep-2", "Still open"),
+        ],
+        &vec!["/repo/a".to_string(); 2],
+        &main_branches(2),
+    )
+    .await
+    .unwrap();
+
+    // `live-1` carries an agent's worktree — the row a stale delete would
+    // report and the fan-out would then force-remove.
+    let live = db
+        .list_tasks_for_epic(epic.id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|t| t.external_id.as_deref() == Some("live-1"))
+        .unwrap();
+    db.patch_task(
+        live.id,
+        &TaskPatch::new().worktree(Some("/repo/a/.worktrees/live-1")),
+    )
+    .await
+    .unwrap();
+
+    // A partially degraded emission: `live-1` dropped out, one item is new.
+    db.upsert_feed_tasks_additive(
+        epic.id,
+        &[
+            make_feed_item("keep-2", "Still open, retitled"),
+            make_feed_item("new-3", "Newly seen"),
+        ],
+        &vec!["/repo/a".to_string(); 2],
+        &main_branches(2),
+    )
+    .await
+    .unwrap();
+
+    let left = db.list_tasks_for_epic(epic.id).await.unwrap();
+    let ext = |t: &crate::models::Task| t.external_id.clone().unwrap_or_default();
+    let mut ids: Vec<String> = left.iter().map(ext).collect();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![
+            "keep-2".to_string(),
+            "live-1".to_string(),
+            "new-3".to_string()
+        ],
+        "the omitted task must survive and the new one must be inserted"
+    );
+
+    // The omitted task keeps its state, so the agent in it is untouched.
+    let survivor = left
+        .iter()
+        .find(|t| t.external_id.as_deref() == Some("live-1"))
+        .unwrap();
+    assert_eq!(
+        survivor.worktree.as_deref(),
+        Some("/repo/a/.worktrees/live-1")
+    );
+
+    // The present items are still refreshed — additive means "no removals",
+    // not "no writes".
+    let kept = left
+        .iter()
+        .find(|t| t.external_id.as_deref() == Some("keep-2"))
+        .unwrap();
+    assert_eq!(kept.title, "Still open, retitled");
+}
+
+/// An empty additive emission is a no-op, not a clear. The reconciling variant
+/// treats `[]` as "delete everything"; the additive one must treat it as "learn
+/// nothing", or the guard would leak the exact wipe it exists to prevent.
+#[tokio::test]
+async fn upsert_feed_tasks_additive_with_no_items_deletes_nothing() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+    db.upsert_feed_tasks(
+        epic.id,
+        &[make_feed_item("ext-1", "One")],
+        &["/repo/a".to_string()],
+        &main_branches(1),
+    )
+    .await
+    .unwrap();
+
+    db.upsert_feed_tasks_additive(epic.id, &[], &[], &[])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.list_tasks_for_epic(epic.id).await.unwrap().len(),
+        1,
+        "an empty additive emission must not clear the epic"
+    );
+}
+
 /// A manual task (`external_id IS NULL`) is never deleted and never reported,
 /// even when it carries a worktree.
 #[tokio::test]

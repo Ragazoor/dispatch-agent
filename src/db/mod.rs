@@ -352,6 +352,27 @@ pub trait TaskCrud: TaskRead {
         repo_paths: &[String],
         base_branches: &[String],
     ) -> Result<Vec<RemovedFeedTask>>;
+    /// The insert/update half of [`TaskCrud::upsert_feed_tasks`] WITHOUT its
+    /// stale-delete pass: items present in `items` are inserted or refreshed
+    /// exactly as they would be, and feed tasks absent from `items` are left
+    /// alone rather than deleted.
+    ///
+    /// For a partially degraded emission — a feed command that wrote to stderr
+    /// while still emitting items — whose omissions are not trustworthy
+    /// evidence that the tasks are gone (feeds.allium:
+    /// `DegradedNonEmptyEmission`). An empty `items` is therefore a no-op here,
+    /// not the "clear the epic" that [`TaskCrud::upsert_feed_tasks`] treats it
+    /// as.
+    ///
+    /// Returns no [`RemovedFeedTask`] rows because it removes nothing — there
+    /// is, by construction, nothing for the caller to tear down.
+    async fn upsert_feed_tasks_additive(
+        &self,
+        epic_id: EpicId,
+        items: &[FeedItem],
+        repo_paths: &[String],
+        base_branches: &[String],
+    ) -> Result<()>;
     /// Delete stale feed tasks across the WHOLE subtree of `parent_id` (all its
     /// direct child epics), keeping only those whose `external_id` is in
     /// `keep_external_ids`. Unlike [`TaskCrud::upsert_feed_tasks`]'s per-epic

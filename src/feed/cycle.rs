@@ -32,6 +32,11 @@ pub(crate) enum FeedCycleOutcome {
     Synced {
         count: usize,
         affected_epics: Vec<EpicId>,
+        /// `Some(reason)` when the sync ran ADDITIVELY because the command
+        /// wrote to stderr — it removed nothing, so a caller that presents this
+        /// outcome must say so rather than let it read as a full reconcile.
+        /// See feeds.allium: `DegradedNonEmptyEmission`.
+        degraded: Option<String>,
     },
     /// A cycle for this epic was already in flight, so this request did nothing
     /// at all — no exec, no sync, no teardown.
@@ -107,6 +112,24 @@ impl FeedCycle {
             return self.fail(reason);
         }
 
+        // A NON-empty emission that also wrote to stderr is partially degraded:
+        // trustworthy about what it contains, not about what it omits. It syncs,
+        // but additively — no stale delete, and so no teardown of a live review
+        // agent whose PR one soft-failed sub-query happened to drop.
+        // feeds.allium: DegradedNonEmptyEmission.
+        let degraded = super::degraded_partial_emission(items.len(), &output.stderr);
+        let mode = match &degraded {
+            Some(reason) => {
+                tracing::warn!(
+                    epic_id = self.epic_id.0,
+                    epic_title = %self.epic_title,
+                    "feed: syncing additively, no removals this cycle: {reason}"
+                );
+                super::SyncMode::Additive
+            }
+            None => super::SyncMode::Reconcile,
+        };
+
         let count = items.len();
         let known_paths = match &self.known_paths {
             Some(paths) => Arc::clone(paths),
@@ -122,6 +145,7 @@ impl FeedCycle {
             epic.feed_role,
             epic.group_by_repo,
             entries,
+            mode,
         )
         .await
         {
@@ -140,6 +164,7 @@ impl FeedCycle {
         FeedCycleOutcome::Synced {
             count,
             affected_epics: outcome.affected_epics,
+            degraded,
         }
     }
 
