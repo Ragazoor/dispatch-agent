@@ -128,10 +128,17 @@ pub(super) async fn test_db() -> Arc<Database> {
 /// command string to `exec_trigger_epic_feed` exercises nothing — the cycle
 /// fails with "epic has no feed command". That mirrors production, where the
 /// "r" key is only live for an epic whose feed_command is set.
-pub(super) async fn set_feed_command(db: &Arc<Database>, epic_id: crate::models::EpicId, cmd: &str) {
-    db.patch_epic(epic_id, &crate::db::EpicPatch::new().feed_command(Some(cmd)))
-        .await
-        .expect("failed to set feed command");
+pub(super) async fn set_feed_command(
+    db: &Arc<Database>,
+    epic_id: crate::models::EpicId,
+    cmd: &str,
+) {
+    db.patch_epic(
+        epic_id,
+        &crate::db::EpicPatch::new().feed_command(Some(cmd)),
+    )
+    .await
+    .expect("failed to set feed command");
 }
 
 pub(super) async fn make_runtime(
@@ -3297,6 +3304,187 @@ fn ensure_statusline_settings_file_errors_when_directory_unwritable() {
 // exec_trigger_epic_feed
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// SerialisedFeedCycle (feeds.allium) — one feed cycle per epic at a time.
+//
+// The race these close: nothing used to serialise a manual "r" refresh against
+// an in-flight auto-poll for the SAME epic, so the two could interleave between
+// the non-transactional steps of run_role_routed_feed_sync. Each of those steps
+// filters on a task's CURRENT epic_id, so one pass could see a task the other
+// had moved-but-not-yet-committed as absent from its keep-set, delete it, and --
+// since feed deletes now feed TaskTeardown -- force-remove a live review agent's
+// worktree.
+// ---------------------------------------------------------------------------
+
+/// The manual path's half of the drop contract: a refresh requested while a
+/// cycle for that epic is in flight reports AlreadyRefreshing and writes
+/// nothing. Deterministic because the test holds the claim itself.
+#[tokio::test]
+async fn exec_trigger_epic_feed_reports_already_refreshing_while_a_cycle_is_in_flight() {
+    let db = test_db().await;
+    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+    // Would delete the seeded task (absent from an empty emission) and tear its
+    // worktree down, if it ever ran.
+    set_feed_command(&db, epic.id, "echo '[]'").await;
+    seed_feed_task_with_worktree(&db, epic.id).await;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+    let _claim = rt
+        .feed_sync_guard
+        .try_claim(epic.id)
+        .expect("the epic starts unclaimed");
+
+    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel closed");
+    assert!(
+        matches!(
+            msg,
+            Message::Feed(crate::tui::messages::FeedMessage::AlreadyRefreshing { .. })
+        ),
+        "a dropped refresh must report AlreadyRefreshing, not a success or a \
+         failure, got: {msg:?}"
+    );
+    assert_eq!(
+        db.list_tasks_for_epic(epic.id).await.unwrap().len(),
+        1,
+        "a dropped refresh must run no sync, so the existing task survives"
+    );
+}
+
+/// The flagship: BOTH surfaces against ONE epic, with a real auto-poll cycle
+/// genuinely mid-exec rather than a claim the test planted.
+///
+/// This is the only test here that would catch the two surfaces being wired to
+/// DIFFERENT `FeedSyncGuard` registries — a mistake that type-checks, passes
+/// every other test in this file, and silently serialises nothing.
+///
+/// Determinism without sleeping: the feed command blocks on `cat <fifo>`, and
+/// opening a FIFO for WRITING blocks until a reader opens it. So the successful
+/// return of that open IS the proof that the cycle has reached its exec. No
+/// polling, no `sleep` (which `./scripts/check-no-test-sleep.sh` bans anyway).
+///
+/// The open is deadline-bounded on purpose. If a regression makes the cycle
+/// bail before exec — a broken claim, a failed epic read — no reader ever opens
+/// the FIFO and an unbounded open would wedge CI silently instead of failing.
+/// Note what the timeout does and does not buy: `spawn_blocking` work is not
+/// cancellable, so it frees the test, not the thread; the blocked thread leaks
+/// until the process exits. That is the right trade in a test binary, and it is
+/// strictly better than a hang.
+#[tokio::test]
+async fn manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight() {
+    let db = test_db().await;
+    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+    let fifo = std::env::temp_dir().join(format!("dispatch_feed_gate_{}", epic.id.0));
+    let _ = std::fs::remove_file(&fifo);
+    let mkfifo = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("failed to run mkfifo");
+    assert!(mkfifo.success(), "mkfifo failed for {}", fifo.display());
+
+    // Blocks in exec until the test opens the write end and closes it.
+    set_feed_command(&db, epic.id, &format!("cat {}; echo '[]'", fifo.display())).await;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mut rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+    // Start the auto-poll cycle. `tick` only spawns; it does not block.
+    rt.feed_runner
+        .as_mut()
+        .expect("make_runtime wires a FeedRunner")
+        .tick()
+        .await;
+
+    // Handshake: unblocks only once the spawned cycle's `cat` has the FIFO open,
+    // i.e. once it is genuinely inside exec_feed_command holding the claim.
+    let gate = fifo.clone();
+    let write_end = tokio::time::timeout(
+        TEST_TIMEOUT,
+        tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(gate)),
+    )
+    .await
+    .expect(
+        "timed out waiting for the feed cycle to reach its exec -- it bailed \
+         earlier (claim? epic read?), so no reader ever opened the FIFO",
+    )
+    .expect("the opener thread panicked")
+    .expect("failed to open the FIFO for writing");
+
+    // With a cycle provably in flight, the manual refresh must be dropped.
+    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out waiting for the manual refresh outcome")
+        .expect("channel closed");
+    assert!(
+        matches!(
+            msg,
+            Message::Feed(crate::tui::messages::FeedMessage::AlreadyRefreshing { .. })
+        ),
+        "a manual refresh during a live auto-poll cycle must be dropped; if this \
+         is Refreshed, the two paths are not sharing one FeedSyncGuard. got: {msg:?}"
+    );
+
+    // Release the feed command so the in-flight cycle can finish.
+    drop(write_end);
+    rt.feed_runner
+        .as_mut()
+        .expect("feed runner")
+        .join_spawned_jobs()
+        .await;
+
+    // And the epic is claimable again, so the drop was not a permanent wedge.
+    assert!(
+        rt.feed_sync_guard.try_claim(epic.id).is_some(),
+        "the finished cycle must have released its claim"
+    );
+
+    let _ = std::fs::remove_file(&fifo);
+}
+
+/// Seed one feed task carrying a worktree and tmux window, as a dispatched
+/// review agent would. Its survival is what distinguishes "the cycle was
+/// dropped" from "the cycle ran and destroyed a live session".
+async fn seed_feed_task_with_worktree(db: &Arc<Database>, epic_id: crate::models::EpicId) {
+    db.upsert_feed_tasks(
+        epic_id,
+        &[crate::models::FeedItem {
+            external_id: "pr-1".to_string(),
+            title: "In-flight PR".to_string(),
+            description: String::new(),
+            url: String::new(),
+            url_type: None,
+            status: crate::models::TaskStatus::Backlog,
+            tag: crate::models::TaskTag::PrReview,
+            labels: Vec::new(),
+            sort_order: None,
+            signals: vec![],
+            wrap_up_mode: None,
+        }],
+        &["/repo/a".to_string()],
+        &["main".to_string()],
+    )
+    .await
+    .unwrap();
+    let task = db.list_tasks_for_epic(epic_id).await.unwrap().remove(0);
+    db.patch_task(
+        task.id,
+        &db::TaskPatch::new()
+            .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+            .tmux_window(Some("dispatch:pr-1")),
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn exec_trigger_epic_feed_success() {
     let db = test_db().await;
@@ -3627,7 +3815,9 @@ async fn exec_trigger_epic_feed_grouped_puts_tasks_in_sub_epics() {
     // reads it from the DB so a manual refresh cannot use a stale flag.
     db.patch_epic(
         epic.id,
-        &db::EpicPatch::new().feed_command(Some(cmd)).group_by_repo(true),
+        &db::EpicPatch::new()
+            .feed_command(Some(cmd))
+            .group_by_repo(true),
     )
     .await
     .unwrap();

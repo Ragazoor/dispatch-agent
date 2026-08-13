@@ -1163,8 +1163,103 @@ mod tests {
         );
     }
 
+    /// feeds.allium SerialisedFeedCycle: a tick for an epic whose cycle is
+    /// already in flight is DROPPED — it must not exec, sync, or notify.
+    ///
+    /// The claim is taken here in the test, which is what makes this
+    /// deterministic: no second cycle has to be raced into existence.
+    #[tokio::test]
+    async fn tick_skips_an_epic_whose_cycle_is_already_in_flight() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Busy Epic", "", None).await.unwrap();
+        // The command would insert a task if it ever ran. It must not run.
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new().feed_command(Some(
+                r#"echo '[{"external_id":"1","title":"T","description":"","status":"backlog","tag":"bug"}]'"#,
+            )),
+        )
+        .await
+        .unwrap();
+
+        let (mut runner, mut rx) = make_runner(db.clone());
+
+        // Stand in for a cycle already running for this epic.
+        let _claim = runner
+            .sync_guard()
+            .try_claim(epic.id)
+            .expect("the epic starts unclaimed");
+
+        runner.tick().await;
+        runner.join_spawned_jobs().await;
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err(),
+            "a dropped tick must send no notification"
+        );
+        assert!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+            "a dropped tick must not run the feed command or write anything"
+        );
+    }
+
+    /// The other half of the claim's contract: once the in-flight cycle ends,
+    /// the epic polls normally again. Without this, a guard that never released
+    /// would pass the test above and silently kill the feed.
+    #[tokio::test]
+    async fn tick_resumes_after_the_in_flight_cycle_releases() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Busy Epic", "", None).await.unwrap();
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new()
+                .feed_command(Some(
+                    r#"echo '[{"external_id":"1","title":"T","description":"","status":"backlog","tag":"bug"}]'"#,
+                ))
+                // Zero interval so the second tick is eligible immediately.
+                .feed_interval_secs(Some(0)),
+        )
+        .await
+        .unwrap();
+
+        let (mut runner, mut rx) = make_runner(db.clone());
+
+        let claim = runner
+            .sync_guard()
+            .try_claim(epic.id)
+            .expect("the epic starts unclaimed");
+        runner.tick().await;
+        runner.join_spawned_jobs().await;
+        assert!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+            "precondition: the first tick was dropped"
+        );
+
+        drop(claim);
+
+        runner.tick().await;
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for the resumed poll")
+            .expect("channel closed");
+        assert_eq!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().len(),
+            1,
+            "releasing the claim must let the epic poll again"
+        );
+    }
+
     /// B3 concurrency: two back-to-back zero-interval ticks must not drop the
     /// task to a move/delete interleave.
+    ///
+    /// Still race-free under SerialisedFeedCycle, and worth stating why: the
+    /// claim is taken INSIDE the spawned job, not synchronously in `tick()`, so
+    /// `tick` never blocks and never observes contention itself. Whichever of
+    /// the two spawned jobs reaches `try_claim` first wins and the loser is
+    /// dropped. The outcome is order-dependent; this assertion is not, which is
+    /// why it must not be rewritten to expect one specific arm.
     #[tokio::test]
     async fn tick_two_ticks_lose_nothing() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());

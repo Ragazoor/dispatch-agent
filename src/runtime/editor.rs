@@ -708,8 +708,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -840,8 +839,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -906,8 +904,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -966,8 +963,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -1034,8 +1030,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -1089,8 +1084,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -1160,8 +1154,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -1223,8 +1216,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
@@ -1287,8 +1279,7 @@ mod tests {
         // Bound first so feed_sync_guard is THIS runner's registry:
         // a fresh FeedSyncGuard here would compile and silently
         // serialise nothing.
-        let feed_runner =
-            crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
+        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
         let rt = TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
