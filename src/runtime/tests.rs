@@ -3323,6 +3323,107 @@ async fn exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing
     assert_eq!(tasks[0].external_id.as_deref(), Some("pr-1"));
 }
 
+/// End-to-end wiring guard for the MANUAL "r" refresh path — the mirror of
+/// `feed::tests::tick_removed_task_tears_down_its_worktree` on the auto-poll
+/// side. A refresh whose emission drops a task must actually shell out
+/// `git worktree remove` for it.
+///
+/// Both call sites need their own guard: they are separate call sites, and the
+/// coverage either side of the seam never crosses it (ingest tests prove
+/// `outcome.removed` is populated; the `cleanup_*` tests call the helper
+/// directly with a hand-built `Vec`). Gutting either fan-out call to
+/// `let _ = outcome.removed;` left the whole suite green before these landed.
+#[tokio::test]
+async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
+    let db = test_db().await;
+    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+    // Seed one feed task with the on-disk state a dispatched agent would own.
+    db.upsert_feed_tasks(
+        epic.id,
+        &[crate::models::FeedItem {
+            external_id: "pr-1".to_string(),
+            title: "Merged PR".to_string(),
+            description: String::new(),
+            url: String::new(),
+            url_type: None,
+            status: crate::models::TaskStatus::Backlog,
+            tag: crate::models::TaskTag::PrReview,
+            labels: Vec::new(),
+            sort_order: None,
+            signals: vec![],
+            wrap_up_mode: None,
+        }],
+        &["/repo/a".to_string()],
+        &["main".to_string()],
+    )
+    .await
+    .unwrap();
+    let task = db.list_tasks_for_epic(epic.id).await.unwrap().remove(0);
+    db.patch_task(
+        task.id,
+        &db::TaskPatch::new()
+            .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+            .tmux_window(Some("dispatch:pr-1")),
+    )
+    .await
+    .unwrap();
+
+    let proc_runner = Arc::new(MockProcessRunner::new(vec![
+        // has_window: list-windows names the window, so the kill proceeds
+        MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
+        MockProcessRunner::ok(), // tmux kill-window
+        MockProcessRunner::ok(), // git worktree remove
+        MockProcessRunner::ok(), // git branch -D (best effort)
+    ]));
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db.clone(), tx, proc_runner.clone()).await;
+
+    // The PR merged, so the refresh's emission no longer carries it. A clean
+    // empty emission (no stderr) is a genuine reconcile, not a degraded run.
+    rt.exec_trigger_epic_feed(
+        epic.id,
+        "Reviews".to_string(),
+        "echo '[]'".to_string(),
+        false,
+    );
+
+    // Refreshed is sent AFTER the teardown is awaited, so its arrival is a
+    // deterministic signal that the cleanup has run.
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel closed");
+    assert!(
+        matches!(
+            msg,
+            Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 0, .. })
+        ),
+        "expected FeedRefreshed with count=0, got: {msg:?}"
+    );
+
+    assert!(
+        db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+        "the merged PR's row is gone"
+    );
+
+    let calls: Vec<String> = proc_runner
+        .recorded_calls()
+        .iter()
+        .map(|(program, args)| format!("{program} {}", args.join(" ")))
+        .collect();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.contains("worktree remove") && c.contains("/repo/a/.worktrees/7-pr-1")),
+        "the manual refresh path must tear the removed task's worktree down, got: {calls:?}"
+    );
+    assert!(
+        calls.iter().any(|c| c.contains("kill-window")),
+        "and kill its tmux window, got: {calls:?}"
+    );
+}
+
 #[tokio::test]
 async fn exec_trigger_epic_feed_command_fails() {
     let db = test_db().await;

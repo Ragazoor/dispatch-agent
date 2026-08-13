@@ -691,6 +691,89 @@ mod tests {
         assert_eq!(tasks[0].external_id.as_deref(), Some("pr-1"));
     }
 
+    /// End-to-end wiring guard for the AUTO-POLL path: a real `FeedRunner::tick`
+    /// whose emission drops a task must actually shell out `git worktree remove`
+    /// for it.
+    ///
+    /// This crosses the seam the rest of the suite leaves untested. The ingest
+    /// tests prove `FeedSyncOutcome::removed` is populated; the `cleanup_*` tests
+    /// call `cleanup_removed_feed_tasks` directly with a hand-built `Vec`.
+    /// Neither notices if `FeedJob::run` stops passing one to the other — before
+    /// this test, deleting the fan-out call left the whole suite green. Removing
+    /// the helper's `#[allow(dead_code)]` was the compiler's only check on that
+    /// wiring, and it is gone now that a caller exists.
+    #[tokio::test]
+    async fn tick_removed_task_tears_down_its_worktree() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+        // Seed one feed task, as a previous healthy poll would have, and give it
+        // the on-disk state a dispatched agent would own.
+        db.upsert_feed_tasks(
+            epic.id,
+            &[crate::models::FeedItem {
+                external_id: "pr-1".to_string(),
+                title: "Merged PR".to_string(),
+                description: String::new(),
+                url: String::new(),
+                url_type: None,
+                status: TaskStatus::Backlog,
+                tag: TaskTag::PrReview,
+                labels: Vec::new(),
+                sort_order: None,
+                signals: vec![],
+                wrap_up_mode: None,
+            }],
+            &["/repo/a".to_string()],
+            &["main".to_string()],
+        )
+        .await
+        .unwrap();
+        let task = db.list_tasks_for_epic(epic.id).await.unwrap().remove(0);
+        db.patch_task(
+            task.id,
+            &TaskPatch::new()
+                .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+                .tmux_window(Some("dispatch:pr-1")),
+        )
+        .await
+        .unwrap();
+
+        // The PR merged, so this poll's emission no longer carries it. A clean
+        // empty emission (no stderr) is a genuine reconcile, not a degraded run.
+        db.patch_epic(epic.id, &EpicPatch::new().feed_command(Some("echo '[]'")))
+            .await
+            .unwrap();
+
+        let proc_runner = Arc::new(MockProcessRunner::new(vec![
+            // has_window: list-windows names the window, so the kill proceeds
+            MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
+            MockProcessRunner::ok(), // tmux kill-window
+            MockProcessRunner::ok(), // git worktree remove
+            MockProcessRunner::ok(), // git branch -D (best effort)
+        ]));
+        let (mut runner, _rx) = make_runner_with_runner(db.clone(), proc_runner.clone());
+        runner.tick().await;
+        runner.join_spawned_jobs().await;
+
+        assert!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+            "the merged PR's row is gone"
+        );
+
+        let calls = flatten(&proc_runner.recorded_calls());
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("worktree remove") && c.contains("/repo/a/.worktrees/7-pr-1")),
+            "the auto-poll path must tear the removed task's worktree down, got: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.contains("kill-window")),
+            "and kill its tmux window, got: {calls:?}"
+        );
+    }
+
     #[tokio::test]
     async fn tick_persists_feed_tag() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
