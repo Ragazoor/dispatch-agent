@@ -156,3 +156,120 @@ impl FeedCycle {
         FeedCycleOutcome::Failed(reason)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use std::path::Path;
+
+    use super::super::exec::AlwaysFailRunner;
+    use super::*;
+    use crate::db::{Database, EpicCrud, EpicPatch, EpicRead};
+    use crate::models::FeedRole;
+
+    /// One PR, enough to be routed and therefore enough to be stranded.
+    const EMISSION: &str = r#"[{"external_id":"pr-1","title":"PR 1","description":"","status":"backlog","tag":"pr-review"}]"#;
+
+    /// A `reviews_parent` feed epic whose command records that it ran by
+    /// creating `sentinel`, then emits one item.
+    ///
+    /// The role matters: `reviews_parent` is the flavour the bucket-5 failure
+    /// arms used to endanger. A cycle that fell back to `FeedRole::None` on a
+    /// failed epic read would route this emission through the FLAT upsert and
+    /// strand the task directly on the parent, violating
+    /// `NoFlatFeedTasksOnReviewsParent`.
+    async fn reviews_parent_with_sentinel_command(db: &Database, sentinel: &Path) -> EpicId {
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+        let cmd = format!("touch {}; echo '{EMISSION}'", sentinel.display());
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new()
+                .feed_role(FeedRole::ReviewsParent)
+                .feed_command(Some(cmd.as_str())),
+        )
+        .await
+        .unwrap();
+        epic.id
+    }
+
+    fn cycle(db: Arc<Database>, epic_id: EpicId) -> FeedCycle {
+        FeedCycle {
+            db,
+            runner: Arc::new(AlwaysFailRunner),
+            guard: Arc::new(FeedSyncGuard::default()),
+            epic_id,
+            epic_title: "Reviews".to_string(),
+            known_paths: None,
+        }
+    }
+
+    fn failure(outcome: FeedCycleOutcome) -> String {
+        match outcome {
+            FeedCycleOutcome::Failed(err) => err,
+            FeedCycleOutcome::Synced { count, .. } => {
+                panic!("a failed epic read must not sync, but {count} item(s) were synced")
+            }
+            FeedCycleOutcome::Busy => panic!("nothing else claimed the epic"),
+        }
+    }
+
+    /// feeds.allium `FeedCommandFailure` bucket 5: the epic is gone by the time
+    /// the cycle claims it. Nothing may be spawned and nothing may be synced —
+    /// in particular the cycle must not proceed with a defaulted `FeedRole`.
+    #[tokio::test]
+    async fn a_cycle_whose_epic_is_gone_fails_without_running_the_command() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let sentinel = dir.path().join("command-ran");
+        let epic_id = reviews_parent_with_sentinel_command(&db, &sentinel).await;
+
+        db.delete_epic(epic_id).await.unwrap();
+
+        let err = failure(cycle(db, epic_id).run().await);
+
+        assert!(
+            err.contains("epic no longer exists"),
+            "a missing epic must fail as such, got: {err}"
+        );
+        assert!(
+            !sentinel.exists(),
+            "the failure precedes the exec, so the feed command must never run"
+        );
+    }
+
+    /// The other half of bucket 5: the epic row is there but cannot be READ.
+    ///
+    /// Fault-injected by renaming the `epics` table out from under the open
+    /// `Database` through a second connection to the same file — the arm is
+    /// unreachable otherwise. The `tasks` table is left intact so the
+    /// no-stranded-tasks assertion can still run.
+    #[tokio::test]
+    async fn a_cycle_whose_epic_read_errors_fails_without_syncing_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("tasks.db");
+        let db = Arc::new(Database::open(&db_path).await.unwrap());
+        let sentinel = dir.path().join("command-ran");
+        let epic_id = reviews_parent_with_sentinel_command(&db, &sentinel).await;
+
+        rusqlite::Connection::open(&db_path)
+            .unwrap()
+            .execute_batch("ALTER TABLE epics RENAME TO epics_unreadable")
+            .unwrap();
+
+        let err = failure(cycle(db.clone(), epic_id).run().await);
+
+        assert!(
+            err.contains("failed to read epic"),
+            "an unreadable epic must fail as such, got: {err}"
+        );
+        assert!(
+            !sentinel.exists(),
+            "the failure precedes the exec, so the feed command must never run"
+        );
+        assert!(
+            db.list_tasks_for_epic(epic_id).await.unwrap().is_empty(),
+            "no sync may run, so nothing may be stranded flat on the \
+             reviews_parent epic"
+        );
+    }
+}

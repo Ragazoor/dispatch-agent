@@ -1405,6 +1405,14 @@ rule FeedCommandFailure {
         -- here too — a change to parse semantics is made once (FeedItemParse).
         -- Bucket 4 is raised after the parse by the shared predicate in
         -- src/feed/exec.rs (see DegradedEmptyEmission).
+        -- Bucket 5's two epic-read arms are pinned by the tests in
+        -- src/feed/cycle.rs: the missing-epic arm by deleting the epic before
+        -- the cycle runs, and the read-error arm by fault injection (renaming
+        -- the epics table through a second connection to the same file). Both
+        -- assert that the feed command never runs and that nothing is synced --
+        -- the arms are otherwise unreachable, and an earlier version of the
+        -- manual path defaulted the unreadable feed_role to none and synced
+        -- FLAT onto a reviews_parent epic.
         -- A future improvement is surfacing repeated failures in the TUI
         -- as an epic-level health badge, but that is out of scope here.
 }
