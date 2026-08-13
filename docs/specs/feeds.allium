@@ -661,10 +661,19 @@ rule UpsertFeedTasks {
         -- FeedItemWithTarget::zip at the FeedCommandCompleted boundary
         -- (FeedRunner::tick, exec_trigger_epic_feed), so per-index alignment
         -- is structural end-to-end and needs no separate length check.
-        -- Resolution helpers: src/dispatch/mod.rs::extract_github_repo
-        -- (src/dispatch/mod.rs:174), src/dispatch/mod.rs::resolve_repo_path
-        -- (src/dispatch/mod.rs:212). Callers:
+        -- Resolution helpers: src/dispatch/mod.rs::extract_github_repo,
+        -- src/dispatch/mod.rs::resolve_repo_path. Callers:
         -- src/feed/ingest/mod.rs::run_feed_sync (via FeedRunner.tick and exec_trigger_epic_feed).
+        -- The TaskTeardown obligation on the stale-delete is met by reporting,
+        -- not by tearing down inline: upsert_feed_tasks' delete carries
+        -- RETURNING id, repo_path, worktree, tmux_window and yields the removed
+        -- rows that still owned a worktree or a tmux window as
+        -- src/db/mod.rs::RemovedFeedTask values (rows owning neither need no
+        -- teardown and are not reported; the delete itself is unconditional).
+        -- They ride out on src/feed/ingest/mod.rs::FeedSyncOutcome and the two
+        -- feed entry points pass them to
+        -- src/feed/mod.rs::cleanup_removed_feed_tasks — see the TaskTeardown
+        -- fan-out paragraph under RoleRoutedFeedSync for the whole path.
 }
 
 rule GroupedFeedUpsert {
@@ -728,7 +737,13 @@ rule GroupedFeedUpsert {
         -- null) tasks the user added there.
         -- Implementation: src/feed/ingest/grouped.rs::sync_grouped_feed — the present
         -- groups and the absent-sub-epic reconciliation share the same
-        -- upsert_feed_tasks path.
+        -- upsert_feed_tasks path, and therefore the same removed-row report:
+        -- sync_grouped_feed returns the affected sub-epic ids alongside the
+        -- concatenated src/db/mod.rs::RemovedFeedTask rows from every one of
+        -- those calls, which reach src/feed/mod.rs::cleanup_removed_feed_tasks
+        -- via src/feed/ingest/mod.rs::FeedSyncOutcome. Grouping migration
+        -- deletes and recreates wholesale, so this is the path where an
+        -- unreported removal would orphan the most worktrees.
 }
 
 -- == Flat reconcile (un-grouped feed epic) ==
@@ -790,10 +805,21 @@ rule FlatFeedReconcile {
         -- (shared with the manual FlattenEpic path); confirm no caller relies on
         -- flatten_epic being non-feed-epic-only before reusing it. Symmetric
         -- with GroupedFeedUpsert's ON-side "doubles as migration" behaviour.
+        -- The flat branch's upsert_feed_tasks call reports its removed rows in
+        -- the same SHAPE as every other path (see UpsertFeedTasks' guidance),
+        -- so a re-homed task deleted as stale is torn down rather than
+        -- orphaned. Its FAILURE handling differs, though: the flat branch
+        -- propagates with `?` and aborts the whole sync, where the grouped and
+        -- role-routed paths funnel every write through
+        -- src/feed/mod.rs::removed_or_warn and continue past a failed write
+        -- with an empty report. One epic, one statement — there is no rest of
+        -- the pass to salvage here, which is why the flat path can afford to
+        -- be stricter.
         -- Coverage: src/feed/ingest/tests.rs (re-home + delete empty RepoGroup
         -- sub-epic on flat sync; no-op when no sub-epics exist; manual sub-epics
         -- preserved; reviews_parent epic unaffected — routed to
-        -- RoleRoutedFeedSync instead).
+        -- RoleRoutedFeedSync instead);
+        -- src/feed/ingest/tests.rs::flat_sync_reports_removed_task_with_worktree.
 }
 
 -- == Role-routed reconcile (PR-review feed) ==
@@ -858,8 +884,9 @@ rule RoleRoutedFeedSync {
     -- that ROLE SUB-EPIC itself has group_by_repo enabled (can_auto_group on
     -- the sub-epic — src/models/epics.rs), the PR is routed ONE LEVEL DEEPER:
     -- into a per-repo REPO-GROUP sub-epic nested UNDER the role sub-epic,
-    -- found-or-created and keyed by repo name (repo_name_from_url of item.url,
-    -- src/dispatch/mod.rs:150). Tasks then live at this third level, not
+    -- found-or-created and keyed by repo name
+    -- (src/dispatch/mod.rs::repo_name_from_url of item.url).
+    -- Tasks then live at this third level, not
     -- directly on the role sub-epic. When the role sub-epic does NOT have
     -- grouping enabled the target is the role sub-epic directly — today's
     -- documented two-level behaviour is the group_by_repo = false case.
@@ -1025,8 +1052,8 @@ rule RoleRoutedFeedSync {
         -- roles.target_for(route(signals)) gives the role sub-epic
         -- (role_target), if roles.can_auto_group(role_target) is true the
         -- actual target is a repo-group sub-epic found-or-created via
-        -- db.create_repo_group_sub_epic (src/db/mod.rs:247), keyed by
-        -- src/dispatch/mod.rs:150::repo_name_from_url and memoised in an
+        -- db.create_repo_group_sub_epic (src/db/mod.rs), keyed by
+        -- src/dispatch/mod.rs::repo_name_from_url and memoised in an
         -- in-memory (role_sub_epic_id, repo_name) -> repo_group_epic_id cache
         -- for the duration of one sync; a create failure falls back to
         -- role_target. can_auto_group is src/models/epics.rs:37 (group_by_repo
@@ -1034,13 +1061,65 @@ rule RoleRoutedFeedSync {
         -- The subtree delete is
         -- src/db/queries/tasks.rs::delete_stale_subtree_feed_tasks, ONE level
         -- deep (DELETE ... WHERE epic_id IN (SELECT id FROM epics WHERE
-        -- parent_epic_id = ?1) ...). src/feed/ingest/stale.rs:16::delete_stale_subtree
+        -- parent_epic_id = ?1) ... RETURNING id, repo_path, worktree,
+        -- tmux_window). src/feed/ingest/stale.rs::delete_stale_subtree
         -- therefore calls it once with the parent as root (reaches role
         -- sub-epics) AND once per role sub-epic as root (reaches repo-group
         -- grandchildren) — always, regardless of that role's grouping flag. The
         -- parent itself is cleared separately by the parent sweep
         -- (src/feed/ingest/stale.rs::clear_parent_stranded_tasks, an empty
-        -- upsert_feed_tasks). The existing-task lookup that decides
+        -- upsert_feed_tasks — whose per-epic stale-delete carries the same
+        -- RETURNING clause).
+        --
+        -- TaskTeardown fan-out. Both deletes report what they removed, so the
+        -- row does not vanish silently and orphan an in-flight agent's
+        -- worktree. The shared row type is src/db/mod.rs::RemovedFeedTask
+        -- {id, repo_path, worktree, tmux_window}; only rows that still own a
+        -- worktree or a tmux window are reported (the RETURNING statement
+        -- deletes every stale row either way — reporting only narrows what the
+        -- caller has to clean up). src/feed/mod.rs::removed_or_warn is the
+        -- log-and-discard wrapper that keeps the Ok payload, so a failed write
+        -- contributes an empty vec rather than aborting the pass.
+        -- src/feed/ingest/role_routed.rs::run_role_routed_feed_sync
+        -- concatenates the reports from src/feed/ingest/upsert.rs::upsert_role_groups,
+        -- delete_stale_subtree and clear_parent_stranded_tasks — IN THAT ORDER,
+        -- which is load-bearing: each statement filters on the task's CURRENT
+        -- epic_id, so the move must land before the deletes or a MOVED task is
+        -- reported as removed and has its live worktree destroyed. The
+        -- concatenation rides out on the `removed` half of
+        -- src/feed/ingest/mod.rs::FeedSyncOutcome, and both feed paths
+        -- (src/feed/mod.rs::FeedJob::run, src/runtime/epics.rs::exec_trigger_epic_feed)
+        -- hand it to src/feed/mod.rs::cleanup_removed_feed_tasks, which groups
+        -- by repo_path and tears down sequentially within a repo (git worktree
+        -- remove / branch -D contend on the shared checkout's index lock) and
+        -- in parallel across repos. Teardown is best-effort and warn-logged;
+        -- it never fails the sync.
+        --
+        -- Sequencing note — the ensures clauses of this rule and of
+        -- UpsertFeedTasks / GroupedFeedUpsert / FlatFeedReconcile all write
+        -- TaskTeardown(task) BEFORE `not exists task`. The implementation is
+        -- the reverse: the DELETE ... RETURNING commits first and the teardown
+        -- runs afterwards in the caller, off FeedSyncOutcome.removed. The
+        -- postcondition is the same once the pass finishes, which is what
+        -- those clauses assert, but the reversal carries a cost worth stating:
+        -- if the process dies between the commit and the teardown, the
+        -- worktree is orphaned on disk with no row left to retry from. That is
+        -- accepted — the alternative is holding a write transaction open
+        -- across `git worktree remove` — and it is bounded, since the orphan
+        -- is an inert directory under .worktrees/, not a resource leak.
+        --
+        -- Teardown-vs-notification ordering differs between the two feed paths
+        -- and no clause governs it. src/feed/mod.rs::FeedJob::run sends its
+        -- McpEvent::EpicChanged per affected epic and THEN awaits the cleanup,
+        -- so the board shows the rows gone while teardown is still running.
+        -- src/runtime/epics.rs::exec_trigger_epic_feed awaits the cleanup
+        -- FIRST and only then sends Refreshed, deliberately, so that
+        -- ManualFeedTrigger's "N task(s) synced" line means reconciled AND
+        -- cleaned up — at the cost of blocking that status line on every
+        -- `git worktree remove`. Whether the manual path's stronger guarantee
+        -- should become normative, or both paths should notify first, is an
+        -- open question this spec does not answer. The existing-task lookup
+        -- that decides
         -- move-vs-insert is
         -- src/feed/ingest/role_routed.rs:131::build_existing_task_index: it
         -- scans the parent FIRST (lowest priority), then each role sub-epic's
@@ -1062,7 +1141,26 @@ rule RoleRoutedFeedSync {
         -- two back-to-back zero-interval ticks lose nothing; a feed task
         -- stranded on the parent is moved down to its routed role sub-epic with
         -- state preserved; a parent-stranded task absent from the emission is
-        -- deleted as stale; a manual task on the parent is never touched).
+        -- deleted as stale; a manual task on the parent is never touched);
+        -- src/feed/ingest/tests.rs::moved_task_is_never_reported_as_removed
+        -- (the ordering invariant above — a task moved between role sub-epics
+        -- is never handed to teardown),
+        -- src/feed/ingest/tests.rs::absent_task_with_worktree_is_reported_as_removed
+        -- and src/feed/ingest/tests.rs::flat_sync_reports_removed_task_with_worktree
+        -- (the report reaches the outcome on both sync paths);
+        -- src/db/tests/tasks.rs::delete_stale_subtree_feed_tasks_returns_removed_rows_with_state
+        -- and src/db/tests/tasks.rs::upsert_feed_tasks_returns_removed_rows_with_state
+        -- (the RETURNING contract on both stale-delete statements);
+        -- src/feed/mod.rs::tick_removed_task_tears_down_its_worktree
+        -- and src/runtime/tests.rs::exec_trigger_epic_feed_removed_task_tears_down_its_worktree
+        -- (the teardown is actually wired up, once per feed path); and the
+        -- src/feed/mod.rs cleanup_* tests for the helper itself
+        -- (cleanup_removes_worktree_and_kills_window,
+        -- cleanup_removes_the_worktree_even_if_another_row_names_it,
+        -- cleanup_kills_window_only_when_there_is_no_worktree,
+        -- cleanup_of_a_stateless_row_runs_no_commands,
+        -- cleanup_continues_after_a_failure,
+        -- cleanup_serialises_same_repo_removals).
         --
         -- Known limitation — GitHub search lag. GitHub's search API is
         -- eventually consistent: a just-reviewed PR can still match
@@ -1127,7 +1225,13 @@ rule FeedCommandFailure {
         -- FeedJob per eligible epic; src/feed/mod.rs::FeedJob::run drives
         -- exec -> parse -> sync. The three failure arms now live at: spawn
         -- and non-zero exit in src/feed/exec.rs::exec_feed_command, and the
-        -- JSON parse in src/feed/parse.rs::parse_feed_items. Bucket 4 is
+        -- JSON parse in src/feed/parse.rs::parse_feed_items — but note that
+        -- parse, UNLIKE exec, is not actually shared: only the auto-poll path
+        -- calls parse_feed_items, while src/runtime/epics.rs::exec_trigger_epic_feed
+        -- calls serde_json::from_slice directly. Behaviourally equivalent
+        -- today, so the anti-drift argument FeedCommandStderrOnSuccess makes
+        -- for the single shared exec does NOT hold here — a change to parse
+        -- semantics has to be made twice. Bucket 4 is
         -- raised after the parse by the shared predicate in
         -- src/feed/exec.rs (see DegradedEmptyEmission).
         -- A future improvement is surfacing repeated failures in the TUI
@@ -1196,6 +1300,19 @@ rule FeedCommandStderrOnSuccess {
         -- status line when the emission is empty (DegradedEmptyEmission
         -- via ManualFeedTrigger's failure arm); a non-empty emission with
         -- stderr surfaces nothing beyond the ordinary success line.
+        -- The zero-items-vs-non-empty split is not re-decided per caller:
+        -- it is the single predicate src/feed/exec.rs::degraded_empty_emission
+        -- (item_count, stderr) -> Option<reason>, applied by both callers
+        -- after the parse and before the sync — src/feed/mod.rs::FeedJob::run
+        -- and src/runtime/epics.rs::exec_trigger_epic_feed. When it returns
+        -- None the emission syncs with the stderr logged and nothing else.
+        -- Coverage: src/feed/exec.rs::exec_feed_command_captures_stderr_written_on_zero_exit,
+        -- exec_feed_command_truncates_long_stderr,
+        -- exec_feed_command_truncates_multi_byte_stderr_without_panicking and
+        -- exec_feed_command_reports_stderr_of_exactly_the_cap_complete (the
+        -- capture and the 2000-character cap);
+        -- src/feed/mod.rs::tick_stderr_on_zero_exit_does_not_suppress_sync
+        -- (one item alongside stderr still syncs).
 }
 
 rule DegradedEmptyEmission {
@@ -1248,7 +1365,8 @@ rule DegradedEmptyEmission {
         -- moved or removed.
 
     @guidance
-        -- Implementation: ONE shared predicate next to FeedOutput in
+        -- Implementation: ONE shared predicate,
+        -- src/feed/exec.rs::degraded_empty_emission, next to FeedOutput in
         -- src/feed/exec.rs, so the two feed paths cannot drift — the same
         -- rationale that put the role dispatch in the single shared
         -- src/feed/ingest/mod.rs::run_feed_sync_by_role. Both callers
@@ -1258,23 +1376,32 @@ rule DegradedEmptyEmission {
         --     tick before the job is spawned, so this lands exactly on
         --     FeedCommandFailure's existing contract.
         --   - src/runtime/epics.rs::exec_trigger_epic_feed fails with the
-        --     stderr as the reason, so the status bar shows
-        --     "Feed for '<title>' failed: <stderr>" (ManualFeedTrigger).
+        --     predicate's reason, which CARRIES the stderr rather than being
+        --     it: degraded_empty_emission returns "command emitted no items
+        --     but wrote to stderr: <stderr>", so the status bar shows
+        --     "Feed for '<title>' failed: command emitted no items but wrote
+        --     to stderr: <stderr>" (ManualFeedTrigger). The ensures clause's
+        --     truncate(stderr, 2000) names the stderr the reason embeds — the
+        --     cap is applied once, by exec_feed_command, before the predicate
+        --     ever sees the text.
         -- Consequence: the zero-item "command wrote to stderr" hint that
         -- #3900 added to ManualFeedTrigger is now UNREACHABLE — a
         -- zero-item run that wrote to stderr can no longer produce a
         -- success outcome at all — so that hint is deleted, superseded by
         -- this harder failure.
-        -- Coverage: inline unit tests on the predicate in
-        -- src/feed/exec.rs (fires on zero items with stderr; does not
-        -- fire on zero items without stderr; does not fire on a non-empty
-        -- emission regardless of stderr); src/runtime/tests.rs (manual
-        -- trigger reports a failure); src/feed/mod.rs (auto-poll leaves
-        -- pre-existing subtree tasks untouched — the direct regression
-        -- test for the reported wipe). The false-positive boundary is
-        -- pinned by the existing tests that must stay green unmodified:
-        -- src/runtime/tests.rs::exec_trigger_epic_feed_zero_items and
-        -- exec_trigger_epic_feed_quiet_command_reports_no_stderr (quiet
+        -- Coverage: inline unit tests on the predicate in src/feed/exec.rs —
+        -- degraded_when_zero_items_and_stderr_present (fires),
+        -- not_degraded_when_zero_items_and_no_stderr and
+        -- not_degraded_when_items_present_despite_stderr (both boundaries);
+        -- src/runtime/tests.rs::exec_trigger_epic_feed_fails_on_degraded_empty_emission
+        -- (the manual trigger reports a failure) and
+        -- exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing_tasks
+        -- (the manual path ran no sync at all, not merely a quiet one);
+        -- src/feed/mod.rs::tick_degraded_empty_emission_does_not_delete_existing_tasks
+        -- (auto-poll leaves pre-existing subtree tasks untouched — the direct
+        -- regression test for the reported wipe). The false-positive boundary
+        -- is pinned by the existing tests that must stay green unmodified:
+        -- src/runtime/tests.rs::exec_trigger_epic_feed_zero_items (a quiet
         -- empty run still reconciles) and
         -- src/feed/mod.rs::tick_stderr_on_zero_exit_does_not_suppress_sync
         -- (one item alongside stderr still syncs).
@@ -1340,9 +1467,8 @@ rule DegradedEmptyEmission {
 -- different path; doing so would strand feed tasks in the wrong epic (the
 -- reviews_parent parent-flat bug).
 --
--- Implementation: src/feed/ingest/mod.rs::run_feed_sync_by_role
--- (src/feed/ingest/mod.rs:140) is the shared role->path dispatcher; it
--- delegates to src/feed/ingest/mod.rs::run_feed_sync (flat/grouped) or
+-- Implementation: src/feed/ingest/mod.rs::run_feed_sync_by_role is the shared
+-- role->path dispatcher; it delegates to src/feed/ingest/mod.rs::run_feed_sync (flat/grouped) or
 -- src/feed/ingest/role_routed.rs::run_role_routed_feed_sync (reviews_parent).
 -- FeedRunner.tick (via src/feed/mod.rs::FeedJob::run) and
 -- src/runtime/epics.rs::exec_trigger_epic_feed each call
@@ -1399,7 +1525,13 @@ rule ManualFeedTrigger {
         -- "r" refresh on a reviews_parent epic MUST route into the My/Team/Bots
         -- subtree, never flat-upsert into the parent. Coverage:
         -- src/runtime/tests.rs (manual trigger on a reviews_parent epic routes
-        -- like auto-poll and strands no feed task on the parent).
+        -- like auto-poll and strands no feed task on the parent);
+        -- src/runtime/tests.rs::exec_trigger_epic_feed_fails_on_degraded_empty_emission
+        -- and exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing_tasks
+        -- (the failure line, and that no sync ran behind it);
+        -- src/runtime/tests.rs::exec_trigger_epic_feed_removed_task_tears_down_its_worktree
+        -- (the manual path also hands its FeedSyncOutcome.removed to
+        -- src/feed/mod.rs::cleanup_removed_feed_tasks).
         -- FeedCommandFailure (auto-poll failures) remains silent — only
         -- manual trigger failures surface in the status bar.
 }

@@ -327,7 +327,17 @@ If you see `let _ =` and are unsure whether it's intentional, check the surround
 
 ## `#[allow(dead_code)]`
 
-Avoid `#[allow(dead_code)]` — dead code should be removed, not suppressed. If a type or function is unused today but is part of an in-progress feature, document it with a comment pointing at the relevant issue/task rather than silencing the warning.
+Avoid `#[allow(dead_code)]` — dead code should be removed, not suppressed. The default answer to an unused item is to delete it.
+
+**The one exception is a genuinely not-yet-called item in a multi-step change**, e.g. a helper landed by step N whose first caller arrives in step N+1. Here the comment-instead-of-allow advice is not available: the pre-push hook runs `cargo clippy --all-targets -- -D warnings`, so an unused item is a hard error and a comment does not make it compile. Use a **temporary allow** carrying its own justification:
+
+```rust
+// Called by <the step that wires it up>; the allow goes when that lands.
+#[allow(dead_code)]
+pub(crate) fn cleanup_removed_feed_tasks(/* … */) { /* … */ }
+```
+
+Two rules make it temporary rather than permanent: the comment must name the specific caller that will remove the need for it, and the step that adds that caller must delete the attribute in the same commit. An allow whose comment says only "unused for now" is the thing this section is warning against. Note that a plain local `cargo build` or `cargo clippy` will not fail on the unused item — only the hook's `-D warnings` does — so the attribute is easy to forget and easy to leave behind.
 
 ## Prod-vs-test LOC split
 

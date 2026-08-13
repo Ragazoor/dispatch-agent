@@ -500,7 +500,39 @@ rule MoveTaskToEpic {
 -- derives it as <repo>/.worktrees/<task-id>-<slug>, so two distinct tasks can
 -- never name the same path, and its reuse branch reuses a directory only for
 -- that same id-scoped path, i.e. for the same task. Implementation of the feed
--- path: src/feed/mod.rs::cleanup_removed_feed_tasks.
+-- path: src/feed/mod.rs::cleanup_removed_feed_tasks. It is fed by the feed
+-- stale-deletes, which report what they removed rather than tearing down
+-- inline: the DELETE statements in src/db/queries/tasks.rs carry a RETURNING
+-- clause and yield src/db/mod.rs::RemovedFeedTask rows (only those still owning
+-- a worktree or a tmux window — the delete is unconditional either way), which
+-- reach both feed entry points on src/feed/ingest/mod.rs::FeedSyncOutcome.
+-- cleanup_removed_feed_tasks groups them by repo_path and runs a repo's
+-- removals sequentially — cleanup_task shells git against the shared checkout,
+-- so concurrent removals in one repo would contend on its index lock — while
+-- distinct repos proceed in parallel. Failures are warn-logged, never
+-- surfaced: feed reconciliation is background work.
+--
+-- How the feed path reads step 3. cleanup_removed_feed_tasks branches on the
+-- removed row's worktree. With a worktree it calls
+-- src/dispatch/worktree.rs::cleanup_task, which performs all three steps.
+-- WITHOUT a worktree it only reclaims the tmux window
+-- (src/tmux.rs::kill_window_if_present), and a row owning neither worktree nor
+-- window runs no commands at all. So step 3 is in practice contingent on step
+-- 2 having something to remove: branch deletion is reached only through the
+-- worktree arm, because cleanup_task is the only thing that runs `git branch
+-- -D`. This is deliberate — a feed task that never had a worktree never had a
+-- branch either, so there is nothing to delete — and it is pinned by
+-- src/feed/mod.rs::cleanup_kills_window_only_when_there_is_no_worktree and
+-- cleanup_of_a_stateless_row_runs_no_commands.
+-- Coverage of the feed path: the src/feed/mod.rs cleanup_* tests
+-- (cleanup_removes_worktree_and_kills_window,
+-- cleanup_removes_the_worktree_even_if_another_row_names_it,
+-- cleanup_kills_window_only_when_there_is_no_worktree,
+-- cleanup_of_a_stateless_row_runs_no_commands, cleanup_continues_after_a_failure,
+-- cleanup_serialises_same_repo_removals), plus
+-- src/feed/mod.rs::tick_removed_task_tears_down_its_worktree and
+-- src/runtime/tests.rs::exec_trigger_epic_feed_removed_task_tears_down_its_worktree
+-- for the wiring on each feed path.
 --
 -- ArchiveTask and DeleteTask are UNCHANGED by this: they still evaluate the
 -- exception through src/runtime/tasks.rs::exec_cleanup. Whether the sharing
