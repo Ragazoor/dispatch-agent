@@ -517,23 +517,10 @@ fn delete_task_with_window_but_no_worktree_tears_down_the_window() {
         )),
         "the delete is the teardown's follow-up, never a sibling, got: {cmds:?}"
     );
-
-    // And the follow-up arrives: exec_cleanup reports success for a window-only
-    // teardown whatever the kill did (src/runtime/tests.rs::
-    // exec_cleanup_window_only_kill_failure_still_applies_the_follow_up).
-    let cmds = app.update(Message::Task(
-        crate::tui::messages::TaskMessage::CleanupSucceeded {
-            id: TaskId(1),
-            follow_up,
-        },
-    ));
-    assert!(
-        cmds.iter().any(|c| matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::Delete(TaskId(1)))
-        )),
-        "the row must still be deleted, got: {cmds:?}"
-    );
+    // That the follow-up then lands is cleanup_succeeded_with_delete_follow_up_deletes_the_row
+    // above; that a window-only teardown always reports success — so it always
+    // lands here — is src/runtime/tests.rs::
+    // exec_cleanup_window_only_kill_failure_still_applies_the_follow_up.
 }
 
 /// Only a task owning *neither* resource skips the teardown entirely.

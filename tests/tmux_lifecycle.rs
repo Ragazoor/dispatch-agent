@@ -794,43 +794,12 @@ fn killing_the_agent_window_leaves_the_worktree_intact() {
     );
 }
 
-/// The #4096 shape, against a real server: a task owning a window and no
-/// worktree still gets the window killed
-/// (`TeardownIsOwedWheneverThereIsSomethingToRelease` in docs/specs/tasks.allium).
-///
-/// A `MockProcessRunner` argv assertion covers the primitive's *command string*
-/// (`src/dispatch/tests.rs::teardown_task_kills_window_when_there_is_no_worktree`);
-/// this is the layer that proves the window is actually gone, and that the
-/// worktree arm being skipped does not take the kill with it.
-#[test]
-fn tearing_down_a_task_with_no_worktree_still_kills_its_window() {
-    let Some(fx) = setup_or_skip() else { return };
-    let result = fx.dispatch(TASK_ID);
-    let window = fx.window(TASK_ID);
-    fx.await_companion(TASK_ID);
-    assert!(fx.server.has_window(&window), "precondition: window exists");
-    let worktree = PathBuf::from(&result.worktree_path);
-
-    dispatch::teardown_task(
-        fx.repo.to_str().unwrap(),
-        None, // the row has no worktree pointer, whatever is on disk
-        Some(&window),
-        &fx.server.runner(),
-    )
-    .expect("teardown");
-
-    assert!(
-        !fx.server.has_window(&window),
-        "the window must be gone; windows: {:?}",
-        fx.server.window_names()
-    );
-    assert!(
-        worktree.is_dir(),
-        "with no worktree pointer there is nothing to remove — the directory on \
-         disk is not this teardown's business"
-    );
-    fx.assert_board_untouched();
-}
+// The #4096 window-only teardown gets no real-server test of its own: what tmux
+// does there is `kill_window_if_present`, already proven against this server by
+// the two tests above. The only new fact is that `dispatch::teardown_task` does
+// not skip step 1 when its worktree argument is `None` — control flow, so it sits
+// on the mock side of the split in docs/conventions.md
+// (`src/dispatch/tests.rs::teardown_task_kills_window_when_there_is_no_worktree`).
 
 // ---------------------------------------------------------------------------
 // Step 5 — main session

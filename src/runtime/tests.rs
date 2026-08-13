@@ -1291,6 +1291,22 @@ async fn cleanup_fixture(
     mpsc::UnboundedReceiver<Message>,
     Arc<MockProcessRunner>,
 ) {
+    cleanup_fixture_owning(script, Some(worktree), None).await
+}
+
+/// `cleanup_fixture` with both resources spelled out — for the window-only row
+/// shape (`TeardownIsOwedWheneverThereIsSomethingToRelease`), which owns a tmux
+/// window and no worktree.
+async fn cleanup_fixture_owning(
+    script: Vec<anyhow::Result<std::process::Output>>,
+    worktree: Option<&str>,
+    window: Option<&str>,
+) -> (
+    TuiRuntime,
+    models::TaskId,
+    mpsc::UnboundedReceiver<Message>,
+    Arc<MockProcessRunner>,
+) {
     let db = test_db().await;
     let (tx, rx) = mpsc::unbounded_channel();
     let runner = Arc::new(MockProcessRunner::new(script));
@@ -1306,9 +1322,12 @@ async fn cleanup_fixture(
     )
     .await
     .unwrap();
-    db.patch_task(task.id, &db::TaskPatch::new().worktree(Some(worktree)))
-        .await
-        .unwrap();
+    db.patch_task(
+        task.id,
+        &db::TaskPatch::new().worktree(worktree).tmux_window(window),
+    )
+    .await
+    .unwrap();
 
     (rt, task.id, rx, runner)
 }
@@ -1429,50 +1448,18 @@ async fn exec_cleanup_failure_does_not_delete_the_row() {
     );
 }
 
-/// Seed one archived task that owns `window` and no worktree — the row shape
-/// whose window archive/delete used to leak (#4096).
-async fn window_only_cleanup_fixture(
-    script: Vec<anyhow::Result<std::process::Output>>,
-    window: &str,
-) -> (
-    TuiRuntime,
-    models::TaskId,
-    mpsc::UnboundedReceiver<Message>,
-    Arc<MockProcessRunner>,
-) {
-    let db = test_db().await;
-    let (tx, rx) = mpsc::unbounded_channel();
-    let runner = Arc::new(MockProcessRunner::new(script));
-    let rt = make_runtime(db.clone(), tx, runner.clone()).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Window but no worktree",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Archived,
-    )
-    .await
-    .unwrap();
-    db.patch_task(task.id, &db::TaskPatch::new().tmux_window(Some(window)))
-        .await
-        .unwrap();
-
-    (rt, task.id, rx, runner)
-}
-
 /// `TeardownIsOwedWheneverThereIsSomethingToRelease` in docs/specs/tasks.allium:
 /// a task with a window and no worktree still owes step 1. Before #4096
 /// `take_cleanup` dropped the whole command for this shape, so nothing ever ran.
 #[tokio::test]
 async fn exec_cleanup_kills_the_window_of_a_task_with_no_worktree() {
-    let (rt, id, mut rx, runner) = window_only_cleanup_fixture(
+    let (rt, id, mut rx, runner) = cleanup_fixture_owning(
         vec![
             MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
             MockProcessRunner::ok(),                        // tmux kill-window
         ],
-        "task-1",
+        None,
+        Some("task-1"),
     )
     .await;
 
@@ -1515,12 +1502,13 @@ async fn exec_cleanup_kills_the_window_of_a_task_with_no_worktree() {
 /// would strand the row instead of the resource.
 #[tokio::test]
 async fn exec_cleanup_window_only_kill_failure_still_applies_the_follow_up() {
-    let (rt, id, mut rx, _runner) = window_only_cleanup_fixture(
+    let (rt, id, mut rx, _runner) = cleanup_fixture_owning(
         vec![
             MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
             MockProcessRunner::fail("can't find window"),   // kill-window fails
         ],
-        "task-1",
+        None,
+        Some("task-1"),
     )
     .await;
 

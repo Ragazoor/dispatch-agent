@@ -297,11 +297,10 @@ impl App {
     /// the row delete is the cleanup's follow-up, not a sibling command, so a
     /// failed `git worktree remove` leaves the row in place — still archived,
     /// still pointing at what is on disk, and retryable by deleting again
-    /// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium). A task owning a
-    /// window but no worktree also goes through the cleanup (for the kill), and
-    /// still gets deleted whatever that reports: the gate keys on the worktree, so
-    /// with nothing to release there is nothing to withhold the delete for. Only a
-    /// task owning neither resource is deleted immediately, with no teardown.
+    /// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium). A window-only task
+    /// goes through the cleanup too and is still deleted whatever the kill
+    /// reported — the gate keys on the worktree, and there is none. Only a task
+    /// owning neither resource is deleted immediately, with no teardown.
     ///
     /// The card leaves the board either way; a failed cleanup pulls it back with
     /// a `RefreshFromDb` (see `handle_cleanup_failed`).

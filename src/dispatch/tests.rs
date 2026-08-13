@@ -2955,23 +2955,11 @@ fn teardown_task_with_neither_worktree_nor_window_runs_no_commands() {
     );
 }
 
-/// The primitive reports a window-only kill failure to its caller; deciding what
-/// that means for the follow-up is the wrapper's job (`WorktreeReleaseIsGated`).
-#[test]
-fn teardown_task_window_only_kill_failure_is_an_error() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window → true
-        MockProcessRunner::fail("can't find window"),    // kill-window fails
-    ]);
-
-    let err = teardown_task("/repo", None, Some("task-42"), &mock).unwrap_err();
-
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("failed to kill tmux window"),
-        "expected kill-window failure in error chain, got: {msg}"
-    );
-}
+// A window-only kill failure needs no test of its own: the kill runs before the
+// worktree arm, so `teardown_task_kill_window_failure_propagates` below already
+// drives the identical path to the same `?`. What the *wrapper* does with that
+// error is the interesting half, and lives in src/runtime/tests.rs::
+// exec_cleanup_window_only_kill_failure_still_applies_the_follow_up.
 
 #[test]
 fn teardown_task_no_tmux_window_arg_skips_tmux() {

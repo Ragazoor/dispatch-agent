@@ -1311,7 +1311,6 @@ rule RoleRoutedFeedSync {
         -- (the teardown is actually wired up, once per feed path); and the
         -- src/feed/mod.rs cleanup_* tests for the helper itself
         -- (cleanup_removes_worktree_and_kills_window,
-        -- cleanup_removes_the_worktree_even_if_another_row_names_it,
         -- cleanup_kills_window_only_when_there_is_no_worktree,
         -- cleanup_of_a_stateless_row_runs_no_commands,
         -- cleanup_continues_after_a_failure,

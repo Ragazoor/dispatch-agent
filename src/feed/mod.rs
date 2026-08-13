@@ -136,10 +136,7 @@ pub(crate) async fn cleanup_removed_feed_tasks(
         let runner = runner.clone();
         handles.push(tokio::task::spawn_blocking(move || {
             for task in tasks {
-                // No branch on `worktree` here: which steps a row owes is the
-                // primitive's decision, and duplicating it in a wrapper is what
-                // #4096 fixed. A row owning neither resource runs no commands.
-                if let Err(err) = crate::dispatch::teardown_task(
+                if let Err(failure) = crate::dispatch::teardown_task(
                     &task.repo_path,
                     task.worktree.as_deref(),
                     task.tmux_window.as_deref(),
@@ -147,7 +144,7 @@ pub(crate) async fn cleanup_removed_feed_tasks(
                 ) {
                     tracing::warn!(
                         task_id = task.id.0,
-                        "feed cleanup: teardown_task failed: {err:#}"
+                        "feed cleanup: teardown_task failed: {failure}"
                     );
                 }
             }
@@ -1790,14 +1787,10 @@ mod tests {
         );
     }
 
-    // The tripwire against a reinstated shared-worktree guard used to be
-    // duplicated here (cleanup_removes_the_worktree_even_if_another_row_names_it).
-    // #4096 collapsed both teardown wrappers onto `dispatch::teardown_task`, and
-    // with them the pair: the surviving tripwire is
-    // `src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`,
-    // on the one wrapper that holds a store handle and could therefore acquire
-    // such a guard cheaply. See the `WorktreeIsNeverShared` coverage note in
-    // docs/specs/tasks.allium.
+    // This module's copy of the shared-worktree tripwire
+    // (cleanup_removes_the_worktree_even_if_another_row_names_it) went with #4096's
+    // unification; the survivor is
+    // `src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`.
 
     #[tokio::test]
     async fn cleanup_kills_window_only_when_there_is_no_worktree() {

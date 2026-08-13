@@ -1883,11 +1883,10 @@ impl App {
     ///
     /// Returns `None` only for a task that owns **neither** a worktree nor a tmux
     /// window — there is nothing to tear down, so the caller's follow-up applies
-    /// immediately instead. A task owning either one is queued: the two resources
-    /// are independent, and a window with no worktree still owes the kill
-    /// (`TeardownIsOwedWheneverThereIsSomethingToRelease` in
-    /// docs/specs/tasks.allium). Gating the command on the worktree is what leaked
-    /// the window of such a task through archive and delete (#4096).
+    /// immediately instead. Anything else is queued, the window-only shape
+    /// included: `TeardownIsOwedWheneverThereIsSomethingToRelease` in
+    /// docs/specs/tasks.allium, whose gating on the worktree here is what leaked
+    /// those windows through archive and delete (#4096).
     ///
     /// Clearing the board's copy here is optimism, not the authority: the DB
     /// write that forgets the path is `follow_up`, applied only once the removal

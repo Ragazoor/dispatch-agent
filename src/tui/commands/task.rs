@@ -61,9 +61,8 @@ pub enum TaskCommand {
     /// docs/specs/tasks.allium): kill the tmux window, remove the git worktree,
     /// best-effort delete the branch.
     ///
-    /// Both resources are optional and independent — a task owning a window but
-    /// no worktree is queued here too, and gets step 1
-    /// (`TeardownIsOwedWheneverThereIsSomethingToRelease`). Only a task owning
+    /// Both resources are optional and independent
+    /// (`TeardownIsOwedWheneverThereIsSomethingToRelease`); only a task owning
     /// neither is never queued at all.
     ///
     /// `follow_up` is what a **successful** removal earns, and it is only ever

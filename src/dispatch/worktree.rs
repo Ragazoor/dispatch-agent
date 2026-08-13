@@ -513,18 +513,64 @@ pub fn teardown_task(
     worktree_path: Option<&str>,
     tmux_window: Option<&str>,
     runner: &dyn ProcessRunner,
-) -> Result<()> {
+) -> Result<(), TeardownFailure> {
     tracing::info!(?worktree_path, ?tmux_window, "tearing down task");
 
     if let Some(window) = tmux_window {
-        tmux::kill_window_if_present(window, runner)
-            .context("failed to kill tmux window during cleanup")?;
+        if let Err(error) = tmux::kill_window_if_present(window, runner)
+            .context("failed to kill tmux window during cleanup")
+        {
+            // The kill aborts before step 2 runs, so a worktree this task owns is
+            // still on disk — which is the caller's gate, not this failure's kind.
+            return Err(TeardownFailure {
+                worktree_left: worktree_path.map(str::to_string),
+                error,
+            });
+        }
     }
 
     let Some(worktree_path) = worktree_path else {
         return Ok(());
     };
 
+    remove_worktree_and_branch(repo_path, worktree_path, runner).map_err(|error| {
+        TeardownFailure {
+            worktree_left: Some(worktree_path.to_string()),
+            error,
+        }
+    })
+}
+
+/// A failed [`teardown_task`], and — the part its callers' policies turn on —
+/// whether it left a worktree on disk.
+///
+/// Reporting step 2's outcome is the point. `WorktreeReleaseIsGated` in
+/// docs/specs/tasks.allium keys the requesting operation's follow-up on the
+/// worktree's *release*, so the wrapper must not have to infer that from the
+/// arguments it passed plus the order this function happens to run its steps in.
+/// Whoever changes that order changes `worktree_left` here, in one place, instead
+/// of silently inverting a gate two modules away.
+#[derive(Debug)]
+pub struct TeardownFailure {
+    /// `Some(path)` when the task owned a worktree that is still on disk.
+    pub worktree_left: Option<String>,
+    pub error: anyhow::Error,
+}
+
+impl std::fmt::Display for TeardownFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `{:#}` renders anyhow's full context chain, which is what every caller
+        // logs — so a bare `{failure}` already carries it.
+        write!(f, "{:#}", self.error)
+    }
+}
+
+/// Steps 2 and 3 of `TaskTeardown`, reached only for a task that owns a worktree.
+fn remove_worktree_and_branch(
+    repo_path: &str,
+    worktree_path: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
     let repo = expand_tilde(repo_path);
     let output = runner
         .run(

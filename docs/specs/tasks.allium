@@ -547,6 +547,12 @@ rule MoveTaskToEpic {
 -- warn-logs. Neither may branch on the worktree itself — that branch lives in the
 -- primitive, per TeardownIsOwedWheneverThereIsSomethingToRelease.
 --
+-- Step 2's outcome is reported, not inferred: teardown_task fails with
+-- src/dispatch/worktree.rs::TeardownFailure, whose worktree_left names the
+-- worktree still on disk (None when there was none to release). exec_cleanup
+-- matches on that field rather than on the arguments it passed, so the gate does
+-- not silently depend on the order the primitive happens to run its steps in.
+--
 -- WorktreeReleaseIsGated is implemented by the follow-up that travels with the
 -- teardown: src/tui/commands/task.rs::CleanupFollowUp, chosen at the request
 -- site (src/tui/mod.rs::take_cleanup callers) and applied only on the removal's
@@ -626,7 +632,7 @@ rule MoveTaskToEpic {
 -- src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree.
 --
 -- It sits on the archive/delete path deliberately, and there used to be a second
--- one on the feed path (cleanup_removes_the_worktree_even_if_another_row_names_it).
+-- one beside the feed wrapper's own cleanup tests (a comment there records which).
 -- The pair collapsed when #4096 unified both wrappers onto teardown_task: the
 -- primitive takes no store handle, so a guard inside it would need a signature
 -- change to be written at all, and of the two wrappers only exec_cleanup has a
