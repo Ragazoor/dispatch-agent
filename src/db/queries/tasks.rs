@@ -575,7 +575,7 @@ impl super::super::TaskCrud for Database {
                     .query_map(params![epic_id.0, keep_ids], removed_feed_task_from_row)
                     .context("Failed to delete stale feed tasks")?
                     .collect::<rusqlite::Result<Vec<_>>>()
-                    .context("Failed to delete stale feed tasks")?;
+                    .context("Failed to delete stale feed tasks: failed to read RETURNING rows")?;
             }
 
             tx.commit()?;
@@ -608,7 +608,9 @@ impl super::super::TaskCrud for Database {
                 .query_map(params![parent_id.0, keep], removed_feed_task_from_row)
                 .context("Failed to delete stale subtree feed tasks")?
                 .collect::<rusqlite::Result<Vec<_>>>()
-                .context("Failed to delete stale subtree feed tasks")?;
+                .context(
+                    "Failed to delete stale subtree feed tasks: failed to read RETURNING rows",
+                )?;
             Ok(needs_teardown(removed))
         })
         .await

@@ -625,16 +625,17 @@ rule UpsertFeedTasks {
                 -- existing.wrap_up_mode preserved
 
         -- Feed-as-source-of-truth deletion. Removing a feed task is not a
-        -- bare row drop: it performs tasks.allium's TaskTeardown first —
-        -- tmux window killed, git worktree removed unless another active
-        -- task shares it (then detached only), best-effort branch
-        -- deletion — exactly as ArchiveTask and DeleteTask do. A stale
-        -- feed task can carry an in-flight agent's session, and dropping
-        -- the row alone orphans that worktree on disk.
+        -- bare row drop: the row is deleted and reported, and the reported
+        -- row then gets tasks.allium's TaskTeardown — tmux window killed,
+        -- git worktree removed unless another active task shares it (then
+        -- detached only), best-effort branch deletion — exactly the
+        -- teardown ArchiveTask and DeleteTask perform. A stale feed task
+        -- can carry an in-flight agent's session, and dropping the row
+        -- alone orphans that worktree on disk.
         for task in Tasks where epic = epic and external_id != null:
             if not items.any(i => i.external_id = task.external_id):
-                TaskTeardown(task)
                 not exists task
+                TaskTeardown(task)
 
     @guidance
         -- Status preservation is intentional: once a user starts working
@@ -697,10 +698,16 @@ rule GroupedFeedUpsert {
     -- pre-existing flat tasks are deleted and recreated under their repo sub-epics.
     --
     -- Every deletion reached through those UpsertFeedTasks calls — in a present
-    -- group, in an absent sub-epic, or in the parent's empty upsert — performs
-    -- tasks.allium's TaskTeardown on the removed task before the row goes: tmux
-    -- window killed, git worktree removed unless another active task shares it
-    -- (then detached only), best-effort branch deletion. Grouping migration in
+    -- group, in an absent sub-epic, or in the parent's empty upsert — deletes
+    -- the row, reports it, and then performs tasks.allium's TaskTeardown on the
+    -- reported row: tmux window killed, git worktree removed unless another
+    -- active task shares it (then detached only), best-effort branch deletion.
+    -- Delete-then-teardown, not teardown-then-delete: the delete and the report
+    -- are one DELETE ... RETURNING statement, so what gets torn down is exactly
+    -- what was deleted, with no SELECT-then-DELETE window in which the two can
+    -- disagree. The cost is that a crash between the commit and the teardown
+    -- orphans the worktree with no DB row left to retry from (see the sequencing
+    -- note under RoleRoutedFeedSync). Grouping migration in
     -- particular deletes and recreates tasks wholesale, so a feed task carrying
     -- an in-flight agent must not have its worktree left orphaned on disk.
 
@@ -780,8 +787,9 @@ rule FlatFeedReconcile {
     -- children of the parent, so UpsertFeedTasks matches them by
     -- (epic, external_id) and either refreshes them (still emitted) or removes
     -- them as stale (absent from the emission) — the ordinary
-    -- feed-as-source-of-truth behaviour. Removing such a stale task performs
-    -- tasks.allium's TaskTeardown before the row goes — tmux window killed,
+    -- feed-as-source-of-truth behaviour. Removing such a stale task deletes and
+    -- reports the row and then performs tasks.allium's TaskTeardown on the
+    -- reported row — tmux window killed,
     -- git worktree removed unless another active task shares it (then detached
     -- only), best-effort branch deletion — so a re-homed task that still
     -- carries an in-flight agent is released rather than orphaned. This is what
@@ -1007,16 +1015,16 @@ rule RoleRoutedFeedSync {
         -- pass runs ALWAYS, even for roles with grouping off, so orphaned
         -- repo-group tasks are cleaned up. Both levels are captured here by
         -- matching any feed task whose epic is a child of the parent OR a child
-        -- of a role sub-epic. Removal performs tasks.allium's TaskTeardown
-        -- first — this is the path a merged PR's in-flight review agent
-        -- travels, so its tmux window and worktree must be released, not
-        -- orphaned.
+        -- of a role sub-epic. Removal deletes the row, reports it, and then
+        -- performs tasks.allium's TaskTeardown on the reported row — this is
+        -- the path a merged PR's in-flight review agent travels, so its tmux
+        -- window and worktree must be released, not orphaned.
         for task in Tasks where (task.epic.parent_epic_id = epic.id
                                  or task.epic.parent_epic_id in {my.id, team.id, bots.id})
                             and task.external_id != null:
             if not items.any(i => i.external_id = task.external_id):
-                TaskTeardown(task)
                 not exists task
+                TaskTeardown(task)
 
         -- Parent sweep: the reviews_parent epic must hold NO feed task directly
         -- (NoFlatFeedTasksOnReviewsParent). Present parent-stranded tasks were
@@ -1024,10 +1032,10 @@ rule RoleRoutedFeedSync {
         -- parent is a merged/closed stray or a legacy duplicate whose routed
         -- copy already lives in a role sub-epic — both are removed. Manual
         -- (external_id = null) tasks on the parent are preserved. Removal
-        -- performs tasks.allium's TaskTeardown first, as above.
+        -- deletes-then-tears-down the reported row, as above.
         for task in Tasks where task.epic = epic and task.external_id != null:
-            TaskTeardown(task)
             not exists task
+            TaskTeardown(task)
 
         -- Recalculate bottom-up through all three levels: repo-group sub-epics
         -- first (they roll up into their role sub-epic), then each role
@@ -1093,20 +1101,28 @@ rule RoleRoutedFeedSync {
         -- by repo_path and tears down sequentially within a repo (git worktree
         -- remove / branch -D contend on the shared checkout's index lock) and
         -- in parallel across repos. Teardown is best-effort and warn-logged;
-        -- it never fails the sync.
+        -- it never fails the sync. It is also unconditional on task state —
+        -- no clause here consults status or sub_status, so a task removed
+        -- because a partially degraded emission omitted its PR is force-torn-
+        -- down even with a live agent in it. See the RESIDUAL RISK paragraph
+        -- on DegradedEmptyEmission, which the empty-emission guard does not
+        -- cover.
         --
         -- Sequencing note — the ensures clauses of this rule and of
-        -- UpsertFeedTasks / GroupedFeedUpsert / FlatFeedReconcile all write
-        -- TaskTeardown(task) BEFORE `not exists task`. The implementation is
-        -- the reverse: the DELETE ... RETURNING commits first and the teardown
-        -- runs afterwards in the caller, off FeedSyncOutcome.removed. The
-        -- postcondition is the same once the pass finishes, which is what
-        -- those clauses assert, but the reversal carries a cost worth stating:
-        -- if the process dies between the commit and the teardown, the
-        -- worktree is orphaned on disk with no row left to retry from. That is
-        -- accepted — the alternative is holding a write transaction open
-        -- across `git worktree remove` — and it is bounded, since the orphan
-        -- is an inert directory under .worktrees/, not a resource leak.
+        -- UpsertFeedTasks / GroupedFeedUpsert write `not exists task` BEFORE
+        -- TaskTeardown(task), which is the order the implementation runs in:
+        -- the DELETE ... RETURNING commits first and the teardown runs
+        -- afterwards in the caller, off FeedSyncOutcome.removed. The delete
+        -- and the report are the SAME statement on purpose — a
+        -- SELECT-then-DELETE pair would leave a window in which the set torn
+        -- down and the set deleted disagree (a row could be modified, moved,
+        -- or deleted between the two), and RETURNING closes it.
+        -- The cost, stated honestly: if the process dies between the commit
+        -- and the teardown, the worktree is orphaned on disk with no row left
+        -- to retry from. That is accepted — the alternative is holding a write
+        -- transaction open across `git worktree remove` — and it is bounded,
+        -- since the orphan is an inert directory under .worktrees/, not a
+        -- resource leak.
         --
         -- Teardown-vs-notification ordering differs between the two feed paths
         -- and no clause governs it. src/feed/mod.rs::FeedJob::run sends its
@@ -1353,6 +1369,27 @@ rule DegradedEmptyEmission {
     -- The cost of this guard is recorded on FeedCommandStderrOnSuccess
     -- above: a script that always chatters on stderr and legitimately
     -- emits nothing never reconciles again.
+    --
+    -- RESIDUAL RISK — PARTIAL degradation is NOT covered. The guard fires
+    -- only at items.count = 0. A partially degraded emission — e.g. some of
+    -- scripts/fetch-reviews.sh's four repo-scoped queries soft-failing to []
+    -- while the others succeed — is non-empty, so it is waved through by the
+    -- "a NON-EMPTY emission syncs normally regardless of stderr" boundary
+    -- above. That is the same failure mechanism as #3900 at partial scale and
+    -- is at least as likely as total failure. The omitted PRs are then absent
+    -- from the emission and their tasks are removed as stale. Neither the
+    -- stale-delete SQL nor src/feed/mod.rs::cleanup_removed_feed_tasks
+    -- consults status or sub_status, so a removed task carrying a LIVE review
+    -- agent gets the full TaskTeardown: `git worktree remove --force`,
+    -- `git branch -D`, `tmux kill-window`. Before feed-driven teardown
+    -- existed the same transient omission cost a deleted card and an orphaned
+    -- worktree, which was recoverable — the agent kept running and its branch
+    -- survived. It now destroys uncommitted work and the branch. This is
+    -- specified behaviour (the design deliberately rejected "refuse to delete
+    -- tasks that carry state"), but that decision predates force-teardown
+    -- being the consequence. Whether a feed-removed task with a live agent
+    -- should be DETACHED rather than force-removed is an open question this
+    -- spec does not answer.
 
     requires: exit_status = 0 and items.count = 0 and stderr != ""
 

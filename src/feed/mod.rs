@@ -1906,10 +1906,20 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_of_a_stateless_row_runs_no_commands() {
-        // `unused()` panics on the first shell-out, so any command at all fails.
-        let runner = MockProcessRunner::unused();
+        // An empty response queue panics on the first shell-out — but that panic
+        // happens inside `spawn_blocking` and `cleanup_removed_feed_tasks` only
+        // *logs* the resulting `JoinError`, so queue exhaustion alone cannot fail
+        // this test. The explicit negative below is what carries the assertion.
+        let runner = Arc::new(MockProcessRunner::new(vec![]));
 
-        cleanup_removed_feed_tasks(runner, vec![removed_task(8, "/repo/a", None, None)]).await;
+        cleanup_removed_feed_tasks(runner.clone(), vec![removed_task(8, "/repo/a", None, None)])
+            .await;
+
+        let calls = flatten(&runner.recorded_calls());
+        assert!(
+            calls.is_empty(),
+            "a row with neither worktree nor window must shell out to nothing, got: {calls:?}"
+        );
     }
 
     /// One task's failure must not abort the rest of its repo's queue.
