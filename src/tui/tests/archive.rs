@@ -405,7 +405,9 @@ fn cleanup_succeeded_clears_the_pointer_in_the_db() {
 
     assert!(cmds.iter().any(|c| matches!(
         c,
-        Command::Task(crate::tui::commands::TaskCommand::DetachWorktree(TaskId(1)))
+        Command::Task(crate::tui::commands::TaskCommand::ClearWorktreePointer(
+            TaskId(1)
+        ))
     )));
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
     assert!(task.worktree.is_none(), "the board follows the write");

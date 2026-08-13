@@ -267,25 +267,6 @@ impl super::super::TaskRead for Database {
         .await
     }
 
-    async fn has_other_tasks_with_worktree(
-        &self,
-        worktree: &str,
-        exclude_id: TaskId,
-    ) -> Result<bool> {
-        let worktree = worktree.to_string();
-        self.db_call_read(move |conn| {
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM tasks WHERE worktree = ?1 AND id != ?2 AND status != 'done'",
-                    params![worktree, exclude_id.0],
-                    |row| row.get(0),
-                )
-                .context("Failed to check shared worktree")?;
-            Ok(count > 0)
-        })
-        .await
-    }
-
     async fn get_total_changes(&self) -> Result<i64> {
         self.db_call(|conn| {
             conn.query_row("SELECT total_changes()", [], |row| row.get(0))

@@ -627,8 +627,7 @@ rule UpsertFeedTasks {
         -- Feed-as-source-of-truth deletion. Removing a feed task is not a
         -- bare row drop: the row is deleted and reported, and the reported
         -- row then gets tasks.allium's TaskTeardown — tmux window killed,
-        -- git worktree removed unless another active task shares it (then
-        -- detached only), best-effort branch deletion — exactly the
+        -- git worktree removed, best-effort branch deletion — exactly the
         -- teardown ArchiveTask and DeleteTask perform. A stale feed task
         -- can carry an in-flight agent's session, and dropping the row
         -- alone orphans that worktree on disk.
@@ -700,8 +699,8 @@ rule GroupedFeedUpsert {
     -- Every deletion reached through those UpsertFeedTasks calls — in a present
     -- group, in an absent sub-epic, or in the parent's empty upsert — deletes
     -- the row, reports it, and then performs tasks.allium's TaskTeardown on the
-    -- reported row: tmux window killed, git worktree removed unless another
-    -- active task shares it (then detached only), best-effort branch deletion.
+    -- reported row: tmux window killed, git worktree removed, best-effort
+    -- branch deletion.
     -- Delete-then-teardown, not teardown-then-delete: the delete and the report
     -- are one DELETE ... RETURNING statement, so what gets torn down is exactly
     -- what was deleted, with no SELECT-then-DELETE window in which the two can
@@ -789,9 +788,8 @@ rule FlatFeedReconcile {
     -- them as stale (absent from the emission) — the ordinary
     -- feed-as-source-of-truth behaviour. Removing such a stale task deletes and
     -- reports the row and then performs tasks.allium's TaskTeardown on the
-    -- reported row — tmux window killed,
-    -- git worktree removed unless another active task shares it (then detached
-    -- only), best-effort branch deletion — so a re-homed task that still
+    -- reported row — tmux window killed, git worktree removed, best-effort
+    -- branch deletion — so a re-homed task that still
     -- carries an in-flight agent is released rather than orphaned. This is what
     -- makes the flat path self-healing on the first poll after the user
     -- un-groups, with no manual cleanup step. Running it when the parent has no RepoGroup sub-epics is a

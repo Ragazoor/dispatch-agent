@@ -1222,91 +1222,23 @@ async fn exec_jump_to_tmux_failure_shows_error() {
     assert!(app.error_popup().is_some());
 }
 
-#[tokio::test]
-async fn exec_cleanup_detaches_when_shared() {
-    let (rt, mut app) = test_runtime().await;
-
-    // Create two tasks sharing the same worktree
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "Task A".into(),
-            description: "desc".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "Task B".into(),
-            description: "desc".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-
-    let id_a = app.tasks()[0].id;
-    let id_b = app.tasks()[1].id;
-
-    let worktree = "/repo/.worktrees/1-task-a";
-    rt.db_write()
-        .patch_task(
-            id_a,
-            &db::TaskPatch::new()
-                .status(models::TaskStatus::Running)
-                .worktree(Some(worktree))
-                .tmux_window(Some("task-1")),
-        )
-        .await
-        .unwrap();
-    rt.db_write()
-        .patch_task(
-            id_b,
-            &db::TaskPatch::new()
-                .status(models::TaskStatus::Running)
-                .worktree(Some(worktree))
-                .tmux_window(Some("task-1")),
-        )
-        .await
-        .unwrap();
-
-    // Cleanup task A — should detach only (worktree is shared)
-    rt.exec_cleanup(
-        id_a,
-        "/repo".into(),
-        worktree.into(),
-        Some("task-1".into()),
-        crate::tui::commands::CleanupFollowUp::ClearPointer,
-    )
-    .await;
-
-    let task_a = rt.database.get_task(id_a).await.unwrap().unwrap();
-    assert!(task_a.worktree.is_none(), "task A should be detached");
-    assert!(
-        task_a.tmux_window.is_none(),
-        "task A tmux should be cleared"
-    );
-
-    // Task B should still have the worktree
-    let task_b = rt.database.get_task(id_b).await.unwrap().unwrap();
-    assert_eq!(task_b.worktree.as_deref(), Some(worktree));
-}
-
 /// Seed one archived task that owns `worktree`, and a runtime whose runner
-/// answers `script`. Returns the runtime, the task id and the message receiver.
+/// answers `script`. Returns the runtime, the task id, the message receiver and
+/// the concrete runner, so a caller that needs to assert on the issued commands
+/// can reach `flattened_calls()`.
 async fn cleanup_fixture(
     script: Vec<anyhow::Result<std::process::Output>>,
     worktree: &str,
-) -> (TuiRuntime, models::TaskId, mpsc::UnboundedReceiver<Message>) {
+) -> (
+    TuiRuntime,
+    models::TaskId,
+    mpsc::UnboundedReceiver<Message>,
+    Arc<MockProcessRunner>,
+) {
     let db = test_db().await;
     let (tx, rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(script));
-    let rt = make_runtime(db.clone(), tx, runner).await;
+    let runner = Arc::new(MockProcessRunner::new(script));
+    let rt = make_runtime(db.clone(), tx, runner.clone()).await;
 
     let task = create_task_returning(
         &*db,
@@ -1322,7 +1254,7 @@ async fn cleanup_fixture(
         .await
         .unwrap();
 
-    (rt, task.id, rx)
+    (rt, task.id, rx, runner)
 }
 
 /// A failed `git worktree remove` must not let the operation forget the path.
@@ -1333,22 +1265,19 @@ async fn cleanup_fixture(
 #[tokio::test]
 async fn exec_cleanup_failure_keeps_the_worktree_pointer() {
     let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx) = cleanup_fixture(
+    let (rt, id, mut rx, _runner) = cleanup_fixture(
         vec![MockProcessRunner::fail("fatal: could not lock index")],
         worktree,
     )
     .await;
 
-    let handle = rt
-        .exec_cleanup(
-            id,
-            "/repo".into(),
-            worktree.into(),
-            None,
-            crate::tui::commands::CleanupFollowUp::ClearPointer,
-        )
-        .await
-        .expect("an unshared worktree must attempt a removal");
+    let handle = rt.exec_cleanup(
+        id,
+        "/repo".into(),
+        worktree.into(),
+        None,
+        crate::tui::commands::CleanupFollowUp::ClearPointer,
+    );
     handle.await.unwrap();
 
     let row = rt.database.get_task(id).await.unwrap().unwrap();
@@ -1373,7 +1302,7 @@ async fn exec_cleanup_failure_keeps_the_worktree_pointer() {
 #[tokio::test]
 async fn exec_cleanup_success_reports_its_follow_up() {
     let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx) = cleanup_fixture(
+    let (rt, id, mut rx, _runner) = cleanup_fixture(
         vec![
             MockProcessRunner::ok(), // git worktree remove
             MockProcessRunner::ok(), // git branch -D
@@ -1382,16 +1311,13 @@ async fn exec_cleanup_success_reports_its_follow_up() {
     )
     .await;
 
-    let handle = rt
-        .exec_cleanup(
-            id,
-            "/repo".into(),
-            worktree.into(),
-            None,
-            crate::tui::commands::CleanupFollowUp::DeleteRow,
-        )
-        .await
-        .expect("an unshared worktree must attempt a removal");
+    let handle = rt.exec_cleanup(
+        id,
+        "/repo".into(),
+        worktree.into(),
+        None,
+        crate::tui::commands::CleanupFollowUp::DeleteRow,
+    );
     handle.await.unwrap();
 
     let msg = rx.recv().await.unwrap();
@@ -1413,22 +1339,19 @@ async fn exec_cleanup_success_reports_its_follow_up() {
 #[tokio::test]
 async fn exec_cleanup_failure_does_not_delete_the_row() {
     let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx) = cleanup_fixture(
+    let (rt, id, mut rx, _runner) = cleanup_fixture(
         vec![MockProcessRunner::fail("fatal: could not lock index")],
         worktree,
     )
     .await;
 
-    let handle = rt
-        .exec_cleanup(
-            id,
-            "/repo".into(),
-            worktree.into(),
-            None,
-            crate::tui::commands::CleanupFollowUp::DeleteRow,
-        )
-        .await
-        .expect("an unshared worktree must attempt a removal");
+    let handle = rt.exec_cleanup(
+        id,
+        "/repo".into(),
+        worktree.into(),
+        None,
+        crate::tui::commands::CleanupFollowUp::DeleteRow,
+    );
     handle.await.unwrap();
 
     let row = rt
@@ -1450,18 +1373,31 @@ async fn exec_cleanup_failure_does_not_delete_the_row() {
     );
 }
 
-/// Detaching a SHARED worktree is a release for this task — TaskTeardown
-/// clause 2 leaves it on disk for the task still using it — so the follow-up is
-/// earned. Without this the delete path would keep a row nothing can reach.
+/// `exec_cleanup` tears the worktree down unconditionally — deliberately.
+///
+/// Hand-builds the state the removed sharing exception described — a second live
+/// row naming the very same worktree, which the dispatch flow cannot produce —
+/// and pins that the full teardown runs anyway, follow-up and all. A reinstated
+/// guard fails here rather than passing silently. `WorktreeIsNeverShared` in
+/// docs/specs/tasks.allium is the argument; this is only its tripwire.
 #[tokio::test]
-async fn exec_cleanup_shared_worktree_still_earns_its_follow_up() {
+async fn exec_cleanup_tears_down_even_if_another_row_names_the_worktree() {
     let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx) = cleanup_fixture(vec![], worktree).await;
+    let (rt, id, mut rx, runner) = cleanup_fixture(
+        vec![
+            MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
+            MockProcessRunner::ok(),                        // tmux kill-window
+            MockProcessRunner::ok(),                        // git worktree remove
+            MockProcessRunner::ok(),                        // git branch -D
+        ],
+        worktree,
+    )
+    .await;
 
-    // A second, active task holding the same path makes it shared.
+    // The impossible second holder of the same path.
     let sharer = create_task_returning(
         &**rt.db_write(),
-        "Sharer",
+        "Impossible sharer",
         "desc",
         "/repo",
         None,
@@ -1474,18 +1410,31 @@ async fn exec_cleanup_shared_worktree_still_earns_its_follow_up() {
         .await
         .unwrap();
 
-    let handle = rt
-        .exec_cleanup(
-            id,
-            "/repo".into(),
-            worktree.into(),
-            None,
-            crate::tui::commands::CleanupFollowUp::DeleteRow,
-        )
-        .await;
+    rt.exec_cleanup(
+        id,
+        "/repo".into(),
+        worktree.into(),
+        Some("task-1".into()),
+        crate::tui::commands::CleanupFollowUp::DeleteRow,
+    )
+    .await
+    .unwrap();
+
+    let calls = runner.flattened_calls();
+    let removed_at = calls
+        .iter()
+        .position(|c| c.contains("worktree remove") && c.contains(worktree))
+        .unwrap_or_else(|| {
+            panic!("the worktree goes regardless of what other rows name, got: {calls:?}")
+        });
+    let killed_at = calls
+        .iter()
+        .position(|c| c.contains("kill-window"))
+        .unwrap_or_else(|| panic!("the window is reclaimed too, got: {calls:?}"));
+    // TaskTeardown's clause order: the window goes before the worktree.
     assert!(
-        handle.is_none(),
-        "a shared worktree must not be removed from disk"
+        killed_at < removed_at,
+        "the window must be killed before the worktree is removed, got: {calls:?}"
     );
 
     let msg = rx.recv().await.unwrap();
@@ -1497,10 +1446,8 @@ async fn exec_cleanup_shared_worktree_still_earns_its_follow_up() {
                 ..
             })
         ),
-        "a detach must still earn the follow-up, got: {msg:?}"
+        "a real removal must earn its follow-up, got: {msg:?}"
     );
-    let row = rt.database.get_task(id).await.unwrap().unwrap();
-    assert_eq!(row.worktree, None, "the task is detached from the worktree");
 }
 
 #[tokio::test]
@@ -1516,47 +1463,6 @@ async fn send_system_error_sends_error_message() {
     assert!(
         matches!(msg, Message::System(crate::tui::messages::SystemMessage::Error(ref e)) if e == "something went wrong"),
         "Expected SystemMessage::Error, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn detach_only_clears_worktree_and_tmux_window() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let mut app = App::new(db.list_all().await.unwrap());
-
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "T".into(),
-            description: "".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-    let id = app.tasks()[0].id;
-    db.patch_task(
-        id,
-        &db::TaskPatch::new()
-            .worktree(Some("/repo/.worktrees/1-t"))
-            .tmux_window(Some("win")),
-    )
-    .await
-    .unwrap();
-
-    rt.detach_only(id).await;
-
-    let task = db.get_task(id).await.unwrap().unwrap();
-    assert!(task.worktree.is_none(), "worktree should be cleared");
-    assert!(task.tmux_window.is_none(), "tmux_window should be cleared");
-    // No error message should have been sent
-    assert!(
-        rx.try_recv().is_err(),
-        "no error message expected on success"
     );
 }
 
@@ -5038,10 +4944,10 @@ mod command_dispatch {
         );
     }
 
-    /// `DetachWorktree` is the write a *successful* teardown earns: it is the
+    /// `ClearWorktreePointer` is the write a *successful* teardown earns: it is the
     /// only thing that clears the worktree column on the archive path.
     #[tokio::test]
-    async fn dispatch_task_detach_worktree_clears_both_pointers() {
+    async fn dispatch_task_clear_worktree_pointer_clears_both_pointers() {
         let (rt, mut app) = test_runtime().await;
         let task = seed(&rt, "Torn down", models::TaskStatus::Archived).await;
         rt.db_write()
@@ -5057,7 +4963,7 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::Task(TaskCommand::DetachWorktree(task.id)),
+            Command::Task(TaskCommand::ClearWorktreePointer(task.id)),
         )
         .await;
 

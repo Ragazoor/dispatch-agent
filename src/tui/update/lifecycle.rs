@@ -340,7 +340,7 @@ impl App {
                     task.tmux_window = None;
                 }
                 vec![Command::Task(
-                    crate::tui::commands::TaskCommand::DetachWorktree(id),
+                    crate::tui::commands::TaskCommand::ClearWorktreePointer(id),
                 )]
             }
             CleanupFollowUp::DeleteRow => {

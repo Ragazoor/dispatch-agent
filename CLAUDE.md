@@ -12,6 +12,14 @@ cargo test
 cargo run -- tui
 ```
 
+**`main` moves while you work.** Other agents land on it during your session, so
+the snapshot you read at startup goes stale. Before wrapping up, run `git log
+--oneline main..HEAD` **and** `git log --oneline HEAD..main` — the second is the
+one that catches a base that moved under you. If it is non-empty, merge `main`
+into your branch and re-run the suite before reporting completion; a green run
+against a stale base proves nothing. Assume a function you did not write may have
+been rewritten since you read it.
+
 Other useful CLI subcommands:
 
 ```bash

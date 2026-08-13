@@ -76,7 +76,7 @@ pub enum TaskCommand {
     /// Clear a task's `worktree` and `tmux_window` columns. Emitted by
     /// [`crate::tui::messages::TaskMessage::CleanupSucceeded`], and the only
     /// write that forgets a worktree path on the archive path.
-    DetachWorktree(TaskId),
+    ClearWorktreePointer(TaskId),
     CheckWindow {
         id: TaskId,
         window: String,

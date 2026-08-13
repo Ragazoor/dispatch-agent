@@ -1340,6 +1340,48 @@ fn provision_worktree_creates_new_when_dir_missing() {
     assert_eq!(result.worktree_path, expected_path);
 }
 
+/// The premise `WorktreeIsNeverShared` rests on: the derived path is injective
+/// in the task id, so two tasks can never name the same worktree.
+///
+/// This is the load-bearing assertion for that invariant in
+/// docs/specs/tasks.allium. The two tripwires elsewhere
+/// (`src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`
+/// and `src/feed/mod.rs::cleanup_removes_the_worktree_even_if_another_row_names_it`)
+/// only assert that consumers do not *check* for sharing; they would both stay
+/// green if the id prefix were dropped here. This one fails instead — pick the
+/// worst case, two tasks whose titles slugify identically, so the id is the only
+/// thing keeping the paths apart.
+#[test]
+fn provision_worktree_path_is_unique_per_task_id_even_for_identical_titles() {
+    let (_dir, repo_path) = make_test_repo();
+
+    let derive = |id: i64| {
+        let mock = MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // git worktree add
+            MockProcessRunner::ok(), // tmux new-window
+            MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+            MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        ]);
+        let mut task = make_task(&repo_path);
+        task.id = TaskId(id);
+        task.title = "Same title".to_string();
+        provision_worktree(&task, &mock, None, SUBPROCESS_TIMEOUT)
+            .unwrap()
+            .worktree_path
+    };
+
+    let first = derive(7);
+    let second = derive(8);
+
+    assert_eq!(first, format!("{repo_path}/.worktrees/7-same-title"));
+    assert_eq!(second, format!("{repo_path}/.worktrees/8-same-title"));
+    assert_ne!(
+        first, second,
+        "identical titles must still yield distinct worktrees — the task id is \
+         what makes the path injective, and WorktreeIsNeverShared depends on it"
+    );
+}
+
 #[test]
 fn provision_worktree_skips_git_when_dir_exists() {
     let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");

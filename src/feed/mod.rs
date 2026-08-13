@@ -102,21 +102,14 @@ pub(crate) async fn recalculate_epic_status_after_feed(
 ///
 /// # Why there is no shared-worktree check here
 ///
-/// `TaskTeardown`'s worktree clause is conditional — remove it *unless another
-/// active task shares it*. This path satisfies that clause **vacuously**: a feed
-/// task's worktree cannot be shared, because the path embeds the task id.
-/// `src/dispatch/worktree.rs::provision_worktree` derives it as
-/// `<repo>/.worktrees/<task-id>-<slug>`, so two different tasks cannot arrive at
-/// the same path; the reuse branch there reuses a directory only for that same
-/// id-scoped path, i.e. for the same task. Removing unconditionally is therefore
-/// not a relaxation of the rule, it is the rule with a condition that is
-/// constant-false.
+/// `TaskTeardown`'s worktree clause is unconditional, on this path and every
+/// other — see `WorktreeIsNeverShared` in `docs/specs/tasks.allium` for why no
+/// two tasks can name one worktree.
 ///
-/// This is deliberate and load-bearing: do **not** "restore" a
-/// `has_other_tasks_with_worktree` guard here as a missing safety net. It would
-/// buy nothing, and it would cost a DB round-trip per removed task plus an error
-/// path with no correct answer. `ArchiveTask` / `DeleteTask` keep their check in
-/// `src/runtime/tasks.rs::exec_cleanup` — that is unchanged, and out of scope.
+/// Worth stating here because this function is the tempting place to "restore" a
+/// safety net: do **not**. Beyond buying nothing, it would cost a store handle
+/// this function does not currently take, a round-trip per removed task, and an
+/// error path with no correct answer.
 ///
 /// # Per-repo serialisation
 ///
@@ -1804,15 +1797,11 @@ mod tests {
 
     /// The feed teardown removes the worktree unconditionally — deliberately.
     ///
-    /// `TaskTeardown`'s "unless another active task shares it" clause is
-    /// vacuous here: `src/dispatch/worktree.rs::provision_worktree` puts the
-    /// task id in the path, so no two tasks can reach the same one. This test
-    /// hand-builds the state that clause describes — a second live task row
-    /// naming the very same worktree, which the dispatch flow cannot produce —
-    /// and pins that the feed teardown removes it anyway. It exists so the
-    /// decision is visible in the suite rather than merely absent; if a future
-    /// change reinstates a `has_other_tasks_with_worktree` guard on this path,
-    /// this test fails and asks for the decision to be revisited on purpose.
+    /// Hand-builds the state the removed sharing exception described — a second
+    /// live row naming the very same worktree, which the dispatch flow cannot
+    /// produce — and pins that the feed teardown removes it anyway. A reinstated
+    /// guard fails here rather than passing silently. `WorktreeIsNeverShared` in
+    /// docs/specs/tasks.allium is the argument; this is only its tripwire.
     #[tokio::test]
     async fn cleanup_removes_the_worktree_even_if_another_row_names_it() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
@@ -1838,12 +1827,16 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(
-            db.has_other_tasks_with_worktree("/repo/a/.worktrees/999-shared", TaskId(999))
+        assert_eq!(
+            db.get_task(other)
                 .await
-                .unwrap(),
-            "precondition: a DB row really does name the same worktree, so a \
-             reinstated check would have something to trip on"
+                .unwrap()
+                .unwrap()
+                .worktree
+                .as_deref(),
+            Some("/repo/a/.worktrees/999-shared"),
+            "precondition: a live DB row really does name the same worktree, so \
+             a reinstated check would have something to trip on"
         );
 
         let runner = Arc::new(MockProcessRunner::new(vec![

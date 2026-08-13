@@ -188,11 +188,6 @@ pub trait TaskRead: Send + Sync {
     async fn list_all(&self) -> Result<Vec<Task>>;
     async fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
-    async fn has_other_tasks_with_worktree(
-        &self,
-        worktree: &str,
-        exclude_id: TaskId,
-    ) -> Result<bool>;
     /// Return the cumulative INSERT/UPDATE/DELETE count for this connection since
     /// it was opened. Cheap watermark: if the value is the same as the last
     /// snapshot, no writes have occurred and a tick-driven full refresh can be skipped.

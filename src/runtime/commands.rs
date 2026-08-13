@@ -234,14 +234,11 @@ async fn dispatch_task(
             tmux_window,
             follow_up,
         } => {
-            drop(
-                rt.exec_cleanup(id, repo_path, worktree, tmux_window, follow_up)
-                    .await,
-            );
+            drop(rt.exec_cleanup(id, repo_path, worktree, tmux_window, follow_up));
             vec![]
         }
-        DetachWorktree(id) => {
-            rt.detach_only(id).await;
+        ClearWorktreePointer(id) => {
+            rt.clear_worktree_pointer(id).await;
             vec![]
         }
         CheckWindow { id, window } => {

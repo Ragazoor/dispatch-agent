@@ -708,10 +708,10 @@ impl TuiRuntime {
         }
     }
 
-    /// Detach a task from its worktree and tmux window by clearing both fields
-    /// in the DB. Used when a worktree is shared — full cleanup is deferred to
-    /// the last task that holds the worktree.
-    pub(super) async fn detach_only(&self, id: TaskId) {
+    /// Clear a task's `worktree` and `tmux_window` columns: the DB half of
+    /// `CleanupFollowUp::ClearPointer`, i.e. the write a teardown earns by
+    /// *succeeding*, applied from `handle_cleanup_succeeded`.
+    pub(super) async fn clear_worktree_pointer(&self, id: TaskId) {
         if let Err(e) = self
             .task_svc
             .update_task(
@@ -721,12 +721,19 @@ impl TuiRuntime {
             )
             .await
         {
-            self.send_system_error(format!("Detach failed: {e:#}"));
+            self.send_system_error(format!("Clearing the worktree pointer failed: {e:#}"));
         }
     }
 
     /// Tear a task's live resources down, then report the outcome so the caller's
     /// follow-up write can depend on it.
+    ///
+    /// Kills the tmux window, removes the git worktree, deletes the branch
+    /// best-effort. This is `TaskTeardown` from the head of the archive section
+    /// of `docs/specs/tasks.allium`, and step 2 is unconditional: there is
+    /// deliberately no shared-worktree check, because no two tasks can name the
+    /// same worktree. The argument is `WorktreeIsNeverShared` in that spec — read
+    /// it there before adding a guard here.
     ///
     /// The removal shells out to git, so it runs detached — awaiting it here
     /// would stall the command drain (and with it input and rendering) for as
@@ -735,62 +742,19 @@ impl TuiRuntime {
     /// may run beside a removal that might not have happened
     /// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium).
     ///
-    /// Returns the removal's handle, or `None` when there was no removal to make
-    /// (a shared worktree is detached from this task instead, or the
-    /// shared-worktree check itself failed). Callers `drop` it; tests await it.
-    pub(super) async fn exec_cleanup(
+    /// Returns the removal's handle. Callers `drop` it; tests await it.
+    pub(super) fn exec_cleanup(
         &self,
         id: TaskId,
         repo_path: String,
         worktree: String,
         tmux_window: Option<String>,
         follow_up: crate::tui::commands::CleanupFollowUp,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let shared = match self
-            .database
-            .has_other_tasks_with_worktree(&worktree, id)
-            .await
-        {
-            Ok(v) => v,
-            Err(e) => {
-                let error = format!("{e:#}");
-                tracing::error!(
-                    task_id = id.0,
-                    worktree_path = %worktree,
-                    %error,
-                    "shared-worktree check failed, worktree left on disk"
-                );
-                // A check we could not make is a release we did not make: keep
-                // the pointer and the row, exactly as a failed removal does.
-                let _ = self.msg_tx.send(Message::Task(
-                    crate::tui::messages::TaskMessage::CleanupFailed {
-                        id,
-                        worktree,
-                        error,
-                    },
-                ));
-                return None;
-            }
-        };
-
-        if shared {
-            // Detaching *is* a release for this task — TaskTeardown clause 2
-            // leaves a shared worktree on disk for the task still using it — so
-            // the follow-up is earned. Without this the delete path would keep a
-            // row nothing can reach.
-            tracing::info!(task_id = id.0, "worktree shared, detaching only");
-            self.detach_only(id).await;
-            let _ = self.msg_tx.send(Message::Task(
-                crate::tui::messages::TaskMessage::CleanupSucceeded { id, follow_up },
-            ));
-            return None;
-        }
-
-        // No other active tasks — full cleanup
+    ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
 
-        Some(tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let msg = match dispatch::cleanup_task(
                 &repo_path,
                 &worktree,
@@ -818,7 +782,7 @@ impl TuiRuntime {
                 }
             };
             let _ = tx.send(Message::Task(msg));
-        }))
+        })
     }
 
     pub(super) fn exec_resume(&self, task: models::Task) {

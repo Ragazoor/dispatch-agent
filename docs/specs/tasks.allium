@@ -472,9 +472,7 @@ rule MoveTaskToEpic {
 -- TaskTeardown(task) means, in order:
 --
 --   1. Kill the task's tmux window if it has one.
---   2. Remove the task's git worktree if it has one — UNLESS another ACTIVE
---      task shares that same worktree, in which case the worktree is DETACHED
---      from this task only and LEFT ON DISK for the sharing task.
+--   2. Remove the task's git worktree if it has one.
 --   3. Best-effort branch deletion. A failure here is not fatal to the
 --      operation that requested the teardown.
 --
@@ -512,9 +510,8 @@ rule MoveTaskToEpic {
 -- perform this same teardown rather than dropping the row and orphaning the
 -- worktree of an in-flight agent.
 --
--- Implementation: src/dispatch/worktree.rs::cleanup_task, guarded by the
--- shared-worktree check src/db/mod.rs::has_other_tasks_with_worktree; the
--- reference sequencing is src/runtime/tasks.rs::exec_cleanup.
+-- Implementation: src/dispatch/worktree.rs::cleanup_task; the reference
+-- sequencing is src/runtime/tasks.rs::exec_cleanup.
 --
 -- WorktreeReleaseIsGated is implemented by the follow-up that travels with the
 -- teardown: src/tui/commands/task.rs::CleanupFollowUp, chosen at the request
@@ -526,15 +523,31 @@ rule MoveTaskToEpic {
 -- handle_cleanup_failed. The teardown runs detached because it shells out to
 -- git, which is why the follow-up cannot simply be sequenced beside it.
 --
--- Clause 2's "UNLESS another ACTIVE task shares it" exception is satisfied
--- VACUOUSLY on the feed removal path, which therefore removes the worktree
--- unconditionally and performs no shared-worktree check at all. This is not a
--- relaxation of clause 2 — it is clause 2 with a condition that cannot hold.
--- A worktree path embeds the task id: src/dispatch/worktree.rs::provision_worktree
+-- WorktreeIsNeverShared. Clause 2 is UNCONDITIONAL, and no path needs to ask
+-- whether another task also holds the worktree, because no two tasks can. A
+-- worktree path embeds the task id: src/dispatch/worktree.rs::provision_worktree
 -- derives it as <repo>/.worktrees/<task-id>-<slug>, so two distinct tasks can
 -- never name the same path, and its reuse branch reuses a directory only for
--- that same id-scoped path, i.e. for the same task. Implementation of the feed
--- path: src/feed/mod.rs::cleanup_removed_feed_tasks. It is fed by the feed
+-- that same id-scoped path, i.e. for the same task. The id prefix, not the
+-- slug, is what guarantees this: a rename never recomputes the stored path, and
+-- a later re-provision after a rename yields a second path under the SAME id
+-- rather than a collision with a different task's.
+--
+-- The worktree column has exactly one writer, patch_task in
+-- src/db/queries/tasks.rs, and every value that SETS it originates from
+-- provision_worktree — reaching the column through
+-- src/mcp/handlers/tasks/dispatch.rs or src/runtime/tasks.rs::exec_persist_task.
+-- No other surface can introduce one: CopyTask copies into a draft that has no
+-- worktree field, the MCP update_task schema does not expose worktree, the feed
+-- upsert omits the column, and no CLI subcommand writes it. A hand-edited
+-- database could fabricate two rows on one path; that is not a supported input.
+--
+-- Do NOT add a shared-worktree check on any path. Clause 2 once carried such an
+-- exception; it was removed because the condition is unsatisfiable, and the
+-- branch it gated had silently contradicted clause 1 for as long as it existed.
+--
+-- Implementation of the feed path: src/feed/mod.rs::cleanup_removed_feed_tasks,
+-- which performs the same unconditional teardown. It is fed by the feed
 -- stale-deletes, which report what they removed rather than tearing down
 -- inline: the DELETE statements in src/db/queries/tasks.rs carry a RETURNING
 -- clause and yield src/db/mod.rs::RemovedFeedTask rows (only those still owning
@@ -560,7 +573,6 @@ rule MoveTaskToEpic {
 -- cleanup_of_a_stateless_row_runs_no_commands.
 -- Coverage of the feed path: the src/feed/mod.rs cleanup_* tests
 -- (cleanup_removes_worktree_and_kills_window,
--- cleanup_removes_the_worktree_even_if_another_row_names_it,
 -- cleanup_kills_window_only_when_there_is_no_worktree,
 -- cleanup_of_a_stateless_row_runs_no_commands, cleanup_continues_after_a_failure,
 -- cleanup_serialises_same_repo_removals), plus
@@ -568,10 +580,25 @@ rule MoveTaskToEpic {
 -- src/runtime/tests.rs::exec_trigger_epic_feed_removed_task_tears_down_its_worktree
 -- for the wiring on each feed path.
 --
--- ArchiveTask and DeleteTask are UNCHANGED by this: they still evaluate the
--- exception through src/runtime/tasks.rs::exec_cleanup. Whether the sharing
--- machinery is reachable from any path at all is a separate question this note
--- deliberately does not answer.
+-- Coverage of WorktreeIsNeverShared, in two layers.
+--
+-- The PREMISE — that the derived path is injective in the task id — is pinned by
+-- src/dispatch/tests.rs::provision_worktree_path_is_unique_per_task_id_even_for_identical_titles.
+-- That is the load-bearing test: drop the id prefix in provision_worktree and it
+-- is the only one that fails.
+--
+-- The CONSEQUENCE — that no teardown path checks for sharing — has one tripwire
+-- per path, each fabricating the impossible two-rows-one-path state and
+-- asserting the teardown still removes the worktree, so a reinstated guard fails
+-- the suite rather than passing silently. On the feed path,
+-- src/feed/mod.rs::cleanup_removes_the_worktree_even_if_another_row_names_it; on
+-- the archive/delete path,
+-- src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree.
+-- These two guard different call graphs, but they are not equally earned:
+-- cleanup_removed_feed_tasks takes no store handle at all, so a guard there
+-- would need a signature change, whereas exec_cleanup has one in scope. When the
+-- two teardown wrappers are unified into one primitive, the tripwires must
+-- collapse to one deliberately rather than leaving an orphan behind.
 
 rule ArchiveTask {
     when: ArchiveTask(task)
@@ -580,12 +607,14 @@ rule ArchiveTask {
 
     let was_running = task.status = running
     let had_worktree = task.worktree != null
-    -- The two ways TaskTeardown step 2 can release a worktree FROM THIS TASK:
-    -- the path is gone from disk, or the worktree was detached because another
-    -- active task shares it and it was left on disk for them. Both are
-    -- vacuously true when the task had no worktree.
+    -- `released` is kept as a distinct name because WorktreeReleaseIsGated is
+    -- stated in terms of release, and this binding is the single place recording
+    -- that release and removal now COINCIDE: per WorktreeIsNeverShared a worktree
+    -- is never shared, so it is never merely detached, and step 2 releases a
+    -- worktree from this task exactly when the path is gone from disk — vacuously
+    -- true when the task had no worktree.
     let removed = worktree_removed(task)
-    let released = removed or worktree_detached(task)
+    let released = removed
 
     ensures:
         if task.status = done:
@@ -609,12 +638,10 @@ rule ArchiveTask {
     @guidance
         -- The resource release above is TaskTeardown (see the conceptual
         -- block at the head of this section): kill the tmux window if
-        -- present; remove the git worktree if present, unless another
-        -- active task shares it, in which case detach from this task and
-        -- leave the worktree on disk; best-effort branch deletion. The
-        -- ensures clauses above remain the normative statement of what
-        -- ArchiveTask guarantees — naming the concept changed nothing
-        -- about this rule's behaviour.
+        -- present; remove the git worktree if present; best-effort branch
+        -- deletion. The ensures clauses above remain the normative
+        -- statement of what ArchiveTask guarantees — naming the concept
+        -- changed nothing about this rule's behaviour.
         --
         -- The status move is unconditional; the pointer clear is not. Per
         -- WorktreeReleaseIsGated, a task whose worktree could not be removed
@@ -626,6 +653,7 @@ rule ArchiveTask {
         -- out to git and must not block the board), so the archive write and
         -- the pointer clear are two writes, not one — the clear is issued by
         -- the teardown's own completion path, not beside it.
+        --
         -- The task.status = done check reads the pre-archive status
         -- (evaluated before the status = archived assignment below), so
         -- only a task that was actually Done has its sort_order cleared.
@@ -681,10 +709,10 @@ rule DeleteTask {
     requires: task.status = archived
 
     let had_worktree = task.worktree != null
-    -- See ArchiveTask for what these two mean: removal from disk, versus
-    -- release from this task (which a shared worktree earns by detaching).
+    -- See ArchiveTask: removal from disk is the only way to be released, since
+    -- WorktreeIsNeverShared rules out a merely-detached worktree.
     let removed = worktree_removed(task)
-    let released = removed or worktree_detached(task)
+    let released = removed
 
     ensures:
         if had_worktree and removed:
@@ -708,8 +736,7 @@ rule DeleteTask {
         -- to release, so it is deleted immediately.
         -- The resource release above is TaskTeardown (see the conceptual
         -- block at the head of this section) — the same teardown
-        -- ArchiveTask performs: tmux window killed, worktree removed
-        -- unless another active task shares it (then detached only), and
+        -- ArchiveTask performs: tmux window killed, worktree removed, and
         -- best-effort branch deletion. The ensures clauses above remain
         -- the normative statement of what DeleteTask guarantees; naming
         -- the concept changed nothing about this rule's behaviour.
