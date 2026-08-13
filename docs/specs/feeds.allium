@@ -1765,10 +1765,15 @@ rule DegradedNonEmptyEmission {
         -- not_partially_degraded_when_zero_items and
         -- not_partially_degraded_when_no_stderr (both boundaries);
         -- src/db/tests/tasks.rs::upsert_feed_tasks_additive_upserts_without_deleting_absent_tasks;
-        -- src/feed/ingest/tests.rs for each sync path (role-routed keeps an
-        -- absent task and its parent-stranded strays, grouped keeps an absent
-        -- sub-epic's tasks, flat keeps an absent task) plus
-        -- additive_still_moves_a_task_between_role_sub_epics;
+        -- src/feed/ingest/tests.rs, one per removal mechanism:
+        -- additive_role_routed_sync_keeps_a_task_absent_from_the_emission,
+        -- additive_role_routed_sync_keeps_parent_stranded_tasks,
+        -- additive_grouped_sync_keeps_tasks_in_a_dropped_repo_sub_epic and
+        -- additive_flat_sync_keeps_a_task_absent_from_the_emission, plus
+        -- additive_role_routed_sync_still_moves_and_inserts (additive is "no
+        -- removals", not "no writes");
+        -- src/tui/tests/epics.rs::feed_refreshed_degraded_says_it_removed_nothing
+        -- (the status line names the withheld removals);
         -- src/feed/mod.rs::tick_partially_degraded_emission_does_not_delete_or_tear_down
         -- (auto-poll end to end, asserting the MockProcessRunner saw no
         -- `git worktree remove`) and the manual counterpart
