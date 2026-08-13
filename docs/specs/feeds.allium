@@ -1241,14 +1241,13 @@ rule FeedCommandFailure {
         -- FeedJob per eligible epic; src/feed/mod.rs::FeedJob::run drives
         -- exec -> parse -> sync. The three failure arms now live at: spawn
         -- and non-zero exit in src/feed/exec.rs::exec_feed_command, and the
-        -- JSON parse in src/feed/parse.rs::parse_feed_items — but note that
-        -- parse, UNLIKE exec, is not actually shared: only the auto-poll path
-        -- calls parse_feed_items, while src/runtime/epics.rs::exec_trigger_epic_feed
-        -- calls serde_json::from_slice directly. Behaviourally equivalent
-        -- today, so the anti-drift argument FeedCommandStderrOnSuccess makes
-        -- for the single shared exec does NOT hold here — a change to parse
-        -- semantics has to be made twice. Bucket 4 is
-        -- raised after the parse by the shared predicate in
+        -- JSON parse in src/feed/parse.rs::parse_feed_items. Parse is shared
+        -- exactly as exec is: the auto-poll path, the manual "r" refresh
+        -- (src/runtime/epics.rs::exec_trigger_epic_feed) and the verify-feed
+        -- CLI all call parse_feed_items, so the anti-drift argument
+        -- FeedCommandStderrOnSuccess makes for the single shared exec holds
+        -- here too — a change to parse semantics is made once (FeedItemParse).
+        -- Bucket 4 is raised after the parse by the shared predicate in
         -- src/feed/exec.rs (see DegradedEmptyEmission).
         -- A future improvement is surfacing repeated failures in the TUI
         -- as an epic-level health badge, but that is out of scope here.
