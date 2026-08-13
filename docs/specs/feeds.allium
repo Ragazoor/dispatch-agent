@@ -1174,8 +1174,11 @@ rule RoleRoutedFeedSync {
         -- src/feed/ingest/mod.rs::run_feed_sync_by_role when epic.feed_role =
         -- ReviewsParent (a MyReviews/TeamReviews/Bots epic with a feed_command is
         -- a provisioning bug, rejected by the provisioning guard in
-        -- src/feed/mod.rs::FeedJob::run (the debug_assert! block), which debug_asserts and skips it;
-        -- that guard does NOT itself do the role->path selection).
+        -- src/feed/cycle.rs::run_feed_cycle (the debug_assert! block), which
+        -- debug_asserts and fails the cycle; that guard does NOT itself do the
+        -- role->path selection. Because it sits in the shared cycle it now
+        -- covers the manual "r" refresh too, which previously had no such
+        -- guard and would have flat-upserted into the role sub-epic).
         -- Third-level (repo-group) routing lives in
         -- src/feed/ingest/routing.rs::route_and_group_entries: per item, after
         -- roles.target_for(route(signals)) gives the role sub-epic
@@ -1216,9 +1219,11 @@ rule RoleRoutedFeedSync {
         -- epic_id, so the move must land before the deletes or a MOVED task is
         -- reported as removed and has its live worktree destroyed. The
         -- concatenation rides out on the `removed` half of
-        -- src/feed/ingest/mod.rs::FeedSyncOutcome, and both feed paths
-        -- (src/feed/mod.rs::FeedJob::run, src/runtime/epics.rs::exec_trigger_epic_feed)
-        -- hand it to src/feed/mod.rs::cleanup_removed_feed_tasks, which groups
+        -- src/feed/ingest/mod.rs::FeedSyncOutcome, which
+        -- src/feed/cycle.rs::run_feed_cycle hands to
+        -- src/feed/mod.rs::cleanup_removed_feed_tasks -- once, in the shared
+        -- cycle, rather than once per feed path as when teardown was first
+        -- added. It groups
         -- by repo_path and tears down sequentially within a repo (git worktree
         -- remove / branch -D contend on the shared checkout's index lock) and
         -- in parallel across repos. Teardown is best-effort and warn-logged;
@@ -1351,7 +1356,7 @@ rule DispatchRequiresRepoPath {
 rule FeedCommandFailure {
     when: FeedCommandFailed(epic, error)
 
-    -- Failures fall into four buckets, all handled identically from the
+    -- Failures fall into six buckets, all handled identically from the
     -- user's perspective: the failure is logged at warn level and the
     -- epic's last_run is bumped so we don't retry until the next interval.
     --
@@ -1362,6 +1367,22 @@ rule FeedCommandFailure {
     --      (DegradedEmptyEmission below). Unlike buckets 1-3 this one is
     --      reached only AFTER a successful parse — the stdout was valid,
     --      it just carried nothing while the command complained.
+    --   5. The epic's own configuration cannot be read, or the epic no
+    --      longer exists / no longer carries a feed_command by the time the
+    --      cycle claims it. These come BEFORE the exec: nothing is spawned.
+    --      They exist because the cycle reads feed_command / feed_role /
+    --      group_by_repo from the epic itself rather than accepting them
+    --      from its caller (SerialisedFeedCycle), so an epic deleted or
+    --      reconfigured between the request and the claim is a failure here
+    --      rather than a sync against stale configuration.
+    --   6. The epic is a role sub-epic carrying a feed_command at all — a
+    --      provisioning bug (see RoleRoutedFeedSync). Reached after the
+    --      parse, before the sync.
+    --
+    -- Buckets 5 and 6 are unreachable in a correctly-provisioned, unraced
+    -- system; they are specified because the cycle must do something
+    -- definite when they happen, and "sync anyway" would be the wrong
+    -- something.
     --
     -- The TUI is NOT notified of feed errors. Tasks already in the epic
     -- are unaffected.
@@ -1372,8 +1393,10 @@ rule FeedCommandFailure {
 
     @guidance
         -- Implementation: src/feed/mod.rs::FeedRunner::tick spawns a
-        -- FeedJob per eligible epic; src/feed/mod.rs::FeedJob::run drives
-        -- exec -> parse -> sync. The three failure arms now live at: spawn
+        -- FeedJob per eligible epic, and that job runs
+        -- src/feed/cycle.rs::run_feed_cycle, which drives claim -> read config
+        -- -> exec -> parse -> sync -> teardown. The three command failure arms
+        -- live at: spawn
         -- and non-zero exit in src/feed/exec.rs::exec_feed_command, and the
         -- JSON parse in src/feed/parse.rs::parse_feed_items. Parse is shared
         -- exactly as exec is: the auto-poll path, the manual "r" refresh
@@ -1442,18 +1465,18 @@ rule FeedCommandStderrOnSuccess {
         -- Implementation: src/feed/exec.rs::exec_feed_command logs the
         -- warning and returns the trimmed, truncated text on its
         -- FeedOutput so callers can surface it too. It is the SINGLE exec
-        -- for both feed paths — src/feed/mod.rs::FeedJob (auto-poll) and
-        -- src/runtime/epics.rs::exec_trigger_epic_feed (manual "r") both
-        -- call it, so neither can regress to a private spawn that drops
-        -- stderr. The manual path surfaces it in the TUI as a FAILURE
+        -- for both feed paths: they share src/feed/cycle.rs::run_feed_cycle,
+        -- which is the single place it is called from, so neither can regress
+        -- to a private spawn that drops stderr. The manual path surfaces it in the TUI as a FAILURE
         -- status line when the emission is empty (DegradedEmptyEmission
         -- via ManualFeedTrigger's failure arm); a non-empty emission with
         -- stderr surfaces nothing beyond the ordinary success line.
         -- The zero-items-vs-non-empty split is not re-decided per caller:
         -- it is the single predicate src/feed/exec.rs::degraded_empty_emission
-        -- (item_count, stderr) -> Option<reason>, applied by both callers
-        -- after the parse and before the sync — src/feed/mod.rs::FeedJob::run
-        -- and src/runtime/epics.rs::exec_trigger_epic_feed. When it returns
+        -- (item_count, stderr) -> Option<reason>, applied ONCE after the parse
+        -- and before the sync in the shared
+        -- src/feed/cycle.rs::run_feed_cycle, so the two feed paths cannot even
+        -- in principle disagree about it. When it returns
         -- None the emission syncs with the stderr logged and nothing else.
         -- Coverage: src/feed/exec.rs::exec_feed_command_captures_stderr_written_on_zero_exit,
         -- exec_feed_command_truncates_long_stderr,
@@ -1539,12 +1562,13 @@ rule DegradedEmptyEmission {
         -- src/feed/exec.rs::degraded_empty_emission, next to FeedOutput in
         -- src/feed/exec.rs, so the two feed paths cannot drift — the same
         -- rationale that put the role dispatch in the single shared
-        -- src/feed/ingest/mod.rs::run_feed_sync_by_role. Both callers
-        -- apply it after parse and before sync:
-        --   - src/feed/mod.rs::FeedJob::run warns to app.log and returns.
-        --     last_run is already bumped by src/feed/mod.rs::FeedRunner
-        --     tick before the job is spawned, so this lands exactly on
-        --     FeedCommandFailure's existing contract.
+        -- src/feed/ingest/mod.rs::run_feed_sync_by_role. It is applied once,
+        -- after parse and before sync, in src/feed/cycle.rs::run_feed_cycle,
+        -- which logs it and returns a failed outcome. The two surfaces then
+        -- present that outcome:
+        --   - the auto-poll job adds nothing. last_run is already bumped by
+        --     src/feed/mod.rs::FeedRunner tick before the job is spawned, so
+        --     this lands exactly on FeedCommandFailure's existing contract.
         --   - src/runtime/epics.rs::exec_trigger_epic_feed fails with the
         --     predicate's reason, which CARRIES the stderr rather than being
         --     it: degraded_empty_emission returns "command emitted no items
@@ -1581,8 +1605,8 @@ rule DegradedEmptyEmission {
 -- Vec<FeedItem> lives in ONE shared function, src/feed/parse.rs::parse_feed_items,
 -- called by ALL THREE feed entry points:
 --
---   - src/feed/mod.rs::FeedJob::run            (auto-poll)
---   - src/runtime/epics.rs::exec_trigger_epic_feed (manual "r")
+--   - src/feed/cycle.rs::run_feed_cycle        (BOTH runtime paths: the
+--     auto-poll job and the manual "r" refresh share this one cycle)
 --   - src/main.rs::cmd_verify_feed             (verify-feed CLI)
 --
 -- One function rather than three literal serde_json calls, because N call sites
@@ -1640,9 +1664,10 @@ rule DegradedEmptyEmission {
 -- Implementation: src/feed/ingest/mod.rs::run_feed_sync_by_role is the shared
 -- role->path dispatcher; it delegates to src/feed/ingest/mod.rs::run_feed_sync (flat/grouped) or
 -- src/feed/ingest/role_routed.rs::run_role_routed_feed_sync (reviews_parent).
--- FeedRunner.tick (via src/feed/mod.rs::FeedJob::run) and
--- src/runtime/epics.rs::exec_trigger_epic_feed each call
--- run_feed_sync_by_role; neither performs its own feed_role switch.
+-- Both runtime paths reach run_feed_sync_by_role through the single shared
+-- src/feed/cycle.rs::run_feed_cycle, which reads feed_role from the epic
+-- itself; neither surface performs its own feed_role switch, and neither can
+-- pass a stale one down.
 
 -- == Manual trigger ==
 
