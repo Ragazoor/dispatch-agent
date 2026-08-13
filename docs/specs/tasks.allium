@@ -491,6 +491,21 @@ rule MoveTaskToEpic {
 -- Implementation: src/dispatch/worktree.rs::cleanup_task, guarded by the
 -- shared-worktree check src/db/mod.rs::has_other_tasks_with_worktree; the
 -- reference sequencing is src/runtime/tasks.rs::exec_cleanup.
+--
+-- Clause 2's "UNLESS another ACTIVE task shares it" exception is satisfied
+-- VACUOUSLY on the feed removal path, which therefore removes the worktree
+-- unconditionally and performs no shared-worktree check at all. This is not a
+-- relaxation of clause 2 — it is clause 2 with a condition that cannot hold.
+-- A worktree path embeds the task id: src/dispatch/worktree.rs::provision_worktree
+-- derives it as <repo>/.worktrees/<task-id>-<slug>, so two distinct tasks can
+-- never name the same path, and its reuse branch reuses a directory only for
+-- that same id-scoped path, i.e. for the same task. Implementation of the feed
+-- path: src/feed/mod.rs::cleanup_removed_feed_tasks.
+--
+-- ArchiveTask and DeleteTask are UNCHANGED by this: they still evaluate the
+-- exception through src/runtime/tasks.rs::exec_cleanup. Whether the sharing
+-- machinery is reachable from any path at all is a separate question this note
+-- deliberately does not answer.
 
 rule ArchiveTask {
     when: ArchiveTask(task)

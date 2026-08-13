@@ -71,8 +71,28 @@ pub(crate) async fn recalculate_epic_status_after_feed(
 /// A feed-driven removal is a deletion like any other and owes the same
 /// teardown `ArchiveTask` and `DeleteTask` perform — `TaskTeardown` at the head
 /// of the archive section of `docs/specs/tasks.allium`: kill the tmux window,
-/// remove the git worktree unless another active task shares it, and delete the
-/// branch best-effort. `crate::dispatch::cleanup_task` performs all three.
+/// remove the git worktree, and delete the branch best-effort.
+/// `crate::dispatch::cleanup_task` performs all three.
+///
+/// # Why there is no shared-worktree check here
+///
+/// `TaskTeardown`'s worktree clause is conditional — remove it *unless another
+/// active task shares it*. This path satisfies that clause **vacuously**: a feed
+/// task's worktree cannot be shared, because the path embeds the task id.
+/// `src/dispatch/worktree.rs::provision_worktree` derives it as
+/// `<repo>/.worktrees/<task-id>-<slug>`, so two different tasks cannot arrive at
+/// the same path; the reuse branch there reuses a directory only for that same
+/// id-scoped path, i.e. for the same task. Removing unconditionally is therefore
+/// not a relaxation of the rule, it is the rule with a condition that is
+/// constant-false.
+///
+/// This is deliberate and load-bearing: do **not** "restore" a
+/// `has_other_tasks_with_worktree` guard here as a missing safety net. It would
+/// buy nothing, and it would cost a DB round-trip per removed task plus an error
+/// path with no correct answer. `ArchiveTask` / `DeleteTask` keep their check in
+/// `src/runtime/tasks.rs::exec_cleanup` — that is unchanged, and out of scope.
+///
+/// # Per-repo serialisation
 ///
 /// Removals are grouped by `repo_path` and run sequentially within a repo.
 /// `cleanup_task` shells `git -C <repo> worktree remove --force` and
@@ -91,7 +111,6 @@ pub(crate) async fn recalculate_epic_status_after_feed(
 // file's test module in the meantime.
 #[allow(dead_code)]
 pub(crate) async fn cleanup_removed_feed_tasks(
-    db: &dyn TaskStore,
     runner: Arc<dyn ProcessRunner>,
     removed: Vec<RemovedFeedTask>,
 ) {
@@ -99,42 +118,23 @@ pub(crate) async fn cleanup_removed_feed_tasks(
         return;
     }
 
-    // The shared-worktree question needs the DB, so resolve it here rather than
-    // inside the blocking fan-out. The row itself is already deleted, so
-    // `exclude_id` is only defence in depth.
-    let mut by_repo: HashMap<String, Vec<(RemovedFeedTask, bool)>> = HashMap::new();
+    let mut by_repo: HashMap<String, Vec<RemovedFeedTask>> = HashMap::new();
     for task in removed {
-        let shared = match &task.worktree {
-            Some(worktree) => match db.has_other_tasks_with_worktree(worktree, task.id).await {
-                Ok(shared) => shared,
-                Err(err) => {
-                    // Fail closed: an unanswerable question must not delete a
-                    // worktree a live agent may still be working in.
-                    tracing::warn!(
-                        task_id = task.id.0,
-                        "feed cleanup: shared-worktree check failed, keeping worktree: {err:#}"
-                    );
-                    true
-                }
-            },
-            None => false,
-        };
         by_repo
             .entry(task.repo_path.clone())
             .or_default()
-            .push((task, shared));
+            .push(task);
     }
 
     let mut handles = Vec::new();
     for (_repo, tasks) in by_repo {
         let runner = runner.clone();
         handles.push(tokio::task::spawn_blocking(move || {
-            for (task, shared) in tasks {
-                match (&task.worktree, shared) {
-                    // Nothing but a window to reclaim: either the task never had
-                    // a worktree, or the one it had belongs to a live sibling and
-                    // must be left on disk.
-                    (None, _) | (Some(_), true) => {
+            for task in tasks {
+                match &task.worktree {
+                    // No worktree, so there is only a window to reclaim — and
+                    // possibly not even that, for a plain card.
+                    None => {
                         let Some(window) = &task.tmux_window else {
                             continue;
                         };
@@ -145,7 +145,7 @@ pub(crate) async fn cleanup_removed_feed_tasks(
                             );
                         }
                     }
-                    (Some(worktree), false) => {
+                    Some(worktree) => {
                         if let Err(err) = crate::dispatch::cleanup_task(
                             &task.repo_path,
                             worktree,
@@ -163,9 +163,12 @@ pub(crate) async fn cleanup_removed_feed_tasks(
         }));
     }
     for handle in handles {
-        // A panicked teardown thread is logged by the runtime; there is nothing
-        // for a background reconciliation pass to do about it.
-        let _ = handle.await;
+        // tokio does not log a `spawn_blocking` panic, and the default panic
+        // hook writes to stderr — which belongs to the TUI, so that output is
+        // lost or garbles the display. Log it ourselves, to the app log.
+        if let Err(err) = handle.await {
+            tracing::warn!("feed cleanup: teardown thread did not complete: {err}");
+        }
     }
 }
 
@@ -1658,7 +1661,6 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_removes_worktree_and_kills_window() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
         let runner = Arc::new(MockProcessRunner::new(vec![
             // has_window: list-windows names the window, so the kill proceeds
             MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
@@ -1668,7 +1670,6 @@ mod tests {
         ]));
 
         cleanup_removed_feed_tasks(
-            &*db,
             runner.clone(),
             vec![removed_task(
                 1,
@@ -1696,13 +1697,23 @@ mod tests {
         );
     }
 
-    // A worktree shared with a live task must survive — only the window goes.
+    /// The feed teardown removes the worktree unconditionally — deliberately.
+    ///
+    /// `TaskTeardown`'s "unless another active task shares it" clause is
+    /// vacuous here: `src/dispatch/worktree.rs::provision_worktree` puts the
+    /// task id in the path, so no two tasks can reach the same one. This test
+    /// hand-builds the state that clause describes — a second live task row
+    /// naming the very same worktree, which the dispatch flow cannot produce —
+    /// and pins that the feed teardown removes it anyway. It exists so the
+    /// decision is visible in the suite rather than merely absent; if a future
+    /// change reinstates a `has_other_tasks_with_worktree` guard on this path,
+    /// this test fails and asks for the decision to be revisited on purpose.
     #[tokio::test]
-    async fn cleanup_skips_worktree_removal_when_shared() {
+    async fn cleanup_removes_the_worktree_even_if_another_row_names_it() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
         let other = db
             .create_task(CreateTaskRequest {
-                title: "Live sharer",
+                title: "Impossible sharer",
                 description: "",
                 repo_path: "/repo/a",
                 plan: None,
@@ -1718,28 +1729,30 @@ mod tests {
             .unwrap();
         db.patch_task(
             other,
-            &TaskPatch::new().worktree(Some("/repo/a/.worktrees/shared")),
+            &TaskPatch::new().worktree(Some("/repo/a/.worktrees/999-shared")),
         )
         .await
         .unwrap();
         assert!(
-            db.has_other_tasks_with_worktree("/repo/a/.worktrees/shared", TaskId(999))
+            db.has_other_tasks_with_worktree("/repo/a/.worktrees/999-shared", TaskId(999))
                 .await
                 .unwrap(),
-            "precondition: the worktree really is shared"
+            "precondition: a DB row really does name the same worktree, so a \
+             reinstated check would have something to trip on"
         );
 
         let runner = Arc::new(MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
             MockProcessRunner::ok(), // tmux kill-window
+            MockProcessRunner::ok(), // git worktree remove
+            MockProcessRunner::ok(), // git branch -D (best effort)
         ]));
         cleanup_removed_feed_tasks(
-            &*db,
             runner.clone(),
             vec![removed_task(
                 999,
                 "/repo/a",
-                Some("/repo/a/.worktrees/shared"),
+                Some("/repo/a/.worktrees/999-shared"),
                 Some("dispatch:pr-1"),
             )],
         )
@@ -1747,29 +1760,26 @@ mod tests {
 
         let calls = flatten(&runner.recorded_calls());
         assert!(
-            !calls.iter().any(|c| c.contains("worktree remove")),
-            "a shared worktree must not be removed, got: {calls:?}"
-        );
-        assert!(
-            !calls.iter().any(|c| c.contains("branch -D")),
-            "nor may its branch be deleted, got: {calls:?}"
+            calls
+                .iter()
+                .any(|c| c.contains("worktree remove")
+                    && c.contains("/repo/a/.worktrees/999-shared")),
+            "the worktree goes regardless of what other rows name, got: {calls:?}"
         );
         assert!(
             calls.iter().any(|c| c.contains("kill-window")),
-            "the window still goes, got: {calls:?}"
+            "and so does the window, got: {calls:?}"
         );
     }
 
     #[tokio::test]
     async fn cleanup_kills_window_only_when_there_is_no_worktree() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
         let runner = Arc::new(MockProcessRunner::new(vec![
             MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
             MockProcessRunner::ok(), // tmux kill-window
         ]));
 
         cleanup_removed_feed_tasks(
-            &*db,
             runner.clone(),
             vec![removed_task(7, "/repo/a", None, Some("dispatch:pr-1"))],
         )
@@ -1788,18 +1798,15 @@ mod tests {
 
     #[tokio::test]
     async fn cleanup_of_a_stateless_row_runs_no_commands() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
         // `unused()` panics on the first shell-out, so any command at all fails.
         let runner = MockProcessRunner::unused();
 
-        cleanup_removed_feed_tasks(&*db, runner, vec![removed_task(8, "/repo/a", None, None)])
-            .await;
+        cleanup_removed_feed_tasks(runner, vec![removed_task(8, "/repo/a", None, None)]).await;
     }
 
     /// One task's failure must not abort the rest of its repo's queue.
     #[tokio::test]
     async fn cleanup_continues_after_a_failure() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
         let runner = Arc::new(MockProcessRunner::new(vec![
             MockProcessRunner::fail("fatal: could not lock index"), // pr-1 remove
             MockProcessRunner::ok(),                                // pr-2 remove
@@ -1807,7 +1814,6 @@ mod tests {
         ]));
 
         cleanup_removed_feed_tasks(
-            &*db,
             runner.clone(),
             vec![
                 removed_task(1, "/repo/a", Some("/repo/a/.worktrees/pr-1"), None),
@@ -1930,7 +1936,6 @@ mod tests {
     // still may.
     #[tokio::test]
     async fn cleanup_serialises_same_repo_removals() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
         // Every response is an identical success: with two repos in flight the
         // pop order is not deterministic, so nothing may depend on it.
         let runner = Arc::new(OverlapRunner::new(
@@ -1938,7 +1943,6 @@ mod tests {
         ));
 
         cleanup_removed_feed_tasks(
-            &*db,
             runner.clone(),
             vec![
                 removed_task(1, "/repo/a", Some("/repo/a/.worktrees/pr-1"), None),
