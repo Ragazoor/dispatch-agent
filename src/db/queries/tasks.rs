@@ -86,6 +86,35 @@ fn needs_teardown(rows: Vec<RemovedFeedTask>) -> Vec<RemovedFeedTask> {
         .collect()
 }
 
+/// Run a feed stale-delete whose `sql` ends in [`REMOVED_FEED_TASK_RETURNING`]
+/// and return the removed rows that own something to tear down.
+///
+/// Both feed stale-deletes go through here so the drain happens in exactly one
+/// place: rusqlite executes a `RETURNING` statement only as its rows are
+/// stepped, so a partial drain would silently skip deletions rather than fail.
+/// The `Statement` is confined to this function and dropped before returning,
+/// which is what lets [`TaskCrud::upsert_feed_tasks`] commit its transaction
+/// straight after the call.
+///
+/// `what` names the rows for the error chain (e.g. `"stale feed tasks"`).
+/// Takes `&Connection`, so a `&Transaction` coerces via `Deref`.
+fn delete_returning_removed(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    what: &str,
+) -> Result<Vec<RemovedFeedTask>> {
+    let mut stmt = conn
+        .prepare_cached(sql)
+        .with_context(|| format!("Failed to prepare {what} delete"))?;
+    let removed = stmt
+        .query_map(params, removed_feed_task_from_row)
+        .with_context(|| format!("Failed to delete {what}"))?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .with_context(|| format!("Failed to delete {what}: failed to read RETURNING rows"))?;
+    Ok(needs_teardown(removed))
+}
+
 /// Owned mirror of [`TaskPatch`] for moving into a `db_call` closure
 /// (`Send + 'static` bound, so borrowed fields cannot cross the boundary).
 ///
@@ -555,31 +584,24 @@ impl super::super::TaskCrud for Database {
                 .with_context(|| format!("Failed to upsert feed task '{}'", item.external_id))?;
             }
 
-            // The predicate is unchanged; only RETURNING is new. Note that a
-            // RETURNING statement in rusqlite executes as its rows are stepped,
-            // so the iterator MUST be fully drained or the delete never runs.
-            // The Statement borrows `tx`, hence the inner scope: it has to drop
-            // before `tx.commit()`.
-            let removed;
-            {
-                let mut stmt = tx
-                    .prepare(&format!(
-                        "DELETE FROM tasks
+            // The predicate is unchanged; only RETURNING is new. The drain (and
+            // the Statement's lifetime, which must end before `tx.commit()`)
+            // lives in `delete_returning_removed`.
+            let removed = delete_returning_removed(
+                &tx,
+                &format!(
+                    "DELETE FROM tasks
                  WHERE epic_id = ?1
                    AND external_id IS NOT NULL
                    AND external_id NOT IN (SELECT value FROM json_each(?2))
                  {REMOVED_FEED_TASK_RETURNING}"
-                    ))
-                    .context("Failed to prepare stale feed task delete")?;
-                removed = stmt
-                    .query_map(params![epic_id.0, keep_ids], removed_feed_task_from_row)
-                    .context("Failed to delete stale feed tasks")?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .context("Failed to delete stale feed tasks: failed to read RETURNING rows")?;
-            }
+                ),
+                params![epic_id.0, keep_ids],
+                "stale feed tasks",
+            )?;
 
             tx.commit()?;
-            Ok(needs_teardown(removed))
+            Ok(removed)
         })
         .await
     }
@@ -592,26 +614,20 @@ impl super::super::TaskCrud for Database {
         let keep = serde_json::to_string(keep_external_ids)
             .context("failed to serialize external_ids for subtree feed task cleanup")?;
         self.db_call(move |conn| {
-            // The predicate is unchanged; only RETURNING is new. The iterator
-            // MUST be fully drained — rusqlite executes a RETURNING statement
-            // as its rows are stepped, so a partial drain silently skips rows.
-            let mut stmt = conn
-                .prepare(&format!(
+            // The predicate is unchanged; only RETURNING is new. The drain lives
+            // in `delete_returning_removed`.
+            delete_returning_removed(
+                conn,
+                &format!(
                     "DELETE FROM tasks
                  WHERE epic_id IN (SELECT id FROM epics WHERE parent_epic_id = ?1)
                    AND external_id IS NOT NULL
                    AND external_id NOT IN (SELECT value FROM json_each(?2))
                  {REMOVED_FEED_TASK_RETURNING}"
-                ))
-                .context("Failed to prepare stale subtree feed task delete")?;
-            let removed = stmt
-                .query_map(params![parent_id.0, keep], removed_feed_task_from_row)
-                .context("Failed to delete stale subtree feed tasks")?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .context(
-                    "Failed to delete stale subtree feed tasks: failed to read RETURNING rows",
-                )?;
-            Ok(needs_teardown(removed))
+                ),
+                params![parent_id.0, keep],
+                "stale subtree feed tasks",
+            )
         })
         .await
     }

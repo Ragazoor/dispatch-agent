@@ -3407,11 +3407,7 @@ async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
         "the merged PR's row is gone"
     );
 
-    let calls: Vec<String> = proc_runner
-        .recorded_calls()
-        .iter()
-        .map(|(program, args)| format!("{program} {}", args.join(" ")))
-        .collect();
+    let calls: Vec<String> = proc_runner.flattened_calls();
     assert!(
         calls
             .iter()

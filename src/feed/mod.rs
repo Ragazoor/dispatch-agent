@@ -37,14 +37,20 @@ pub(crate) fn warn_on_err<T>(
     context: &str,
 ) {
     if let Err(err) = result {
-        match sub_epic_id {
-            Some(sub_epic_id) => tracing::warn!(
-                epic_id = epic_id.0,
-                sub_epic_id = sub_epic_id.0,
-                "{context}: {err:#}"
-            ),
-            None => tracing::warn!(epic_id = epic_id.0, "{context}: {err:#}"),
-        }
+        log_feed_err(&err, epic_id, sub_epic_id, context);
+    }
+}
+
+/// The one warn line both [`warn_on_err`] and [`removed_or_warn`] emit, so the
+/// two cannot drift in shape or in which fields they attach.
+fn log_feed_err(err: &anyhow::Error, epic_id: EpicId, sub_epic_id: Option<EpicId>, context: &str) {
+    match sub_epic_id {
+        Some(sub_epic_id) => tracing::warn!(
+            epic_id = epic_id.0,
+            sub_epic_id = sub_epic_id.0,
+            "{context}: {err:#}"
+        ),
+        None => tracing::warn!(epic_id = epic_id.0, "{context}: {err:#}"),
     }
 }
 
@@ -62,7 +68,7 @@ pub(crate) fn removed_or_warn(
     match result {
         Ok(removed) => removed,
         Err(err) => {
-            warn_on_err(Err::<(), _>(err), epic_id, sub_epic_id, context);
+            log_feed_err(&err, epic_id, sub_epic_id, context);
             Vec::new()
         }
     }
@@ -761,7 +767,7 @@ mod tests {
             "the merged PR's row is gone"
         );
 
-        let calls = flatten(&proc_runner.recorded_calls());
+        let calls = proc_runner.flattened_calls();
         assert!(
             calls
                 .iter()
@@ -1758,15 +1764,6 @@ mod tests {
         }
     }
 
-    /// Flatten a recorded call to `"<program> <arg> <arg> …"` so a test can ask
-    /// substring questions of it without destructuring the tuple every time.
-    fn flatten(calls: &[(String, Vec<String>)]) -> Vec<String> {
-        calls
-            .iter()
-            .map(|(program, args)| format!("{program} {}", args.join(" ")))
-            .collect()
-    }
-
     #[tokio::test]
     async fn cleanup_removes_worktree_and_kills_window() {
         let runner = Arc::new(MockProcessRunner::new(vec![
@@ -1788,7 +1785,7 @@ mod tests {
         )
         .await;
 
-        let calls = flatten(&runner.recorded_calls());
+        let calls = runner.flattened_calls();
         assert!(
             calls
                 .iter()
@@ -1866,7 +1863,7 @@ mod tests {
         )
         .await;
 
-        let calls = flatten(&runner.recorded_calls());
+        let calls = runner.flattened_calls();
         assert!(
             calls
                 .iter()
@@ -1893,7 +1890,7 @@ mod tests {
         )
         .await;
 
-        let calls = flatten(&runner.recorded_calls());
+        let calls = runner.flattened_calls();
         assert!(
             calls.iter().any(|c| c.contains("kill-window")),
             "the window must be killed, got: {calls:?}"
@@ -1915,7 +1912,7 @@ mod tests {
         cleanup_removed_feed_tasks(runner.clone(), vec![removed_task(8, "/repo/a", None, None)])
             .await;
 
-        let calls = flatten(&runner.recorded_calls());
+        let calls = runner.flattened_calls();
         assert!(
             calls.is_empty(),
             "a row with neither worktree nor window must shell out to nothing, got: {calls:?}"
@@ -1940,7 +1937,7 @@ mod tests {
         )
         .await;
 
-        let calls = flatten(&runner.recorded_calls());
+        let calls = runner.flattened_calls();
         assert!(
             calls.iter().any(|c| c.contains("/repo/a/.worktrees/pr-2")),
             "pr-2 must still be torn down after pr-1 failed, got: {calls:?}"
@@ -2070,7 +2067,7 @@ mod tests {
         )
         .await;
 
-        let calls = flatten(&runner.inner.recorded_calls());
+        let calls = runner.inner.flattened_calls();
         for wanted in ["pr-1", "pr-2", "pr-3"] {
             assert!(
                 calls.iter().any(|c| c.contains(wanted)),

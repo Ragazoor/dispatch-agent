@@ -469,6 +469,16 @@ impl MockProcessRunner {
         self.calls.lock().unwrap().clone()
     }
 
+    /// [`Self::recorded_calls`] rendered one `"program arg arg"` string per call,
+    /// for tests that assert on a substring of the command line (e.g.
+    /// `"worktree remove"`) rather than on an exact argv vector.
+    pub fn flattened_calls(&self) -> Vec<String> {
+        self.recorded_calls()
+            .iter()
+            .map(|(program, args)| format!("{program} {}", args.join(" ")))
+            .collect()
+    }
+
     /// The timeout each recorded call was made with — `None` for a plain
     /// [`ProcessRunner::run`], `Some(d)` for a
     /// [`ProcessRunner::run_with_timeout`]. Positionally aligned with

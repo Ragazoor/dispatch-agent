@@ -163,7 +163,7 @@ pub(super) async fn sync_grouped_feed(
     db: &dyn TaskStore,
     parent_id: EpicId,
     entries: Vec<FeedItemWithTarget>,
-) -> (Vec<EpicId>, Vec<RemovedFeedTask>) {
+) -> super::FeedSyncOutcome {
     let groups = group_by_repo(entries);
 
     let existing_sub_epics = match db.list_sub_epics(parent_id).await {
@@ -173,8 +173,13 @@ pub(super) async fn sync_grouped_feed(
                 epic_id = parent_id.0,
                 "sync_grouped_feed: list_sub_epics failed: {err:#}"
             );
-            // list_sub_epics failed: no writes occurred, skip notifications
-            return (vec![], vec![]);
+            // list_sub_epics failed: no sub-epic was written, so none is
+            // notified. The parent stays in `affected_epics` regardless — the
+            // caller has always notified it unconditionally.
+            return super::FeedSyncOutcome {
+                affected_epics: vec![parent_id],
+                removed: vec![],
+            };
         }
     };
 
@@ -187,14 +192,22 @@ pub(super) async fn sync_grouped_feed(
     // is consumed by value in `upsert_present_groups`.
     let group_names: std::collections::HashSet<String> = groups.keys().cloned().collect();
 
-    let (mut sub_epic_ids, mut removed) =
+    let (sub_epic_ids, mut removed) =
         upsert_present_groups(db, parent_id, groups, &active_sub_epics).await;
     let (absent_ids, absent_removed) =
         clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await;
-    sub_epic_ids.extend(absent_ids);
     removed.extend(absent_removed);
 
     removed.extend(clear_parent_flat_tasks(db, parent_id).await);
 
-    (sub_epic_ids, removed)
+    // Parent first, mirroring `run_role_routed_feed_sync`'s contract, so the
+    // caller forwards this outcome rather than reassembling one.
+    let mut affected_epics = vec![parent_id];
+    affected_epics.extend(sub_epic_ids);
+    affected_epics.extend(absent_ids);
+
+    super::FeedSyncOutcome {
+        affected_epics,
+        removed,
+    }
 }

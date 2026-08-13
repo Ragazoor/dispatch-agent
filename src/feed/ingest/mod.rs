@@ -118,13 +118,7 @@ pub(crate) async fn run_feed_sync(
     entries: Vec<FeedItemWithTarget>,
 ) -> Result<FeedSyncOutcome> {
     if group_by_repo {
-        let (sub_ids, removed) = grouped::sync_grouped_feed(db, epic_id, entries).await;
-        let mut affected_epics = vec![epic_id];
-        affected_epics.extend(sub_ids);
-        Ok(FeedSyncOutcome {
-            affected_epics,
-            removed,
-        })
+        Ok(grouped::sync_grouped_feed(db, epic_id, entries).await)
     } else {
         // FlatFeedReconcile: reconcile any leftover RepoGroup sub-epics back
         // onto the parent before the flat upsert. Reuses flatten_epic (shared

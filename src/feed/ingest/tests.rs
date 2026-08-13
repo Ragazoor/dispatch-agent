@@ -952,8 +952,14 @@ async fn archived_sub_epic_not_reused() {
 
     let items = vec![make_item("pr-1", "https://github.com/org/repo-a/pull/1")];
 
-    let (sub_ids, _removed) =
-        sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
+    let outcome = sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
+    // affected_epics leads with the parent; this assertion is about sub-epics.
+    let sub_ids: Vec<_> = outcome
+        .affected_epics
+        .iter()
+        .copied()
+        .filter(|id| *id != parent.id)
+        .collect();
 
     assert_eq!(sub_ids.len(), 1, "should return exactly one sub-epic ID");
     let new_id = sub_ids[0];
@@ -1044,8 +1050,14 @@ async fn existing_active_sub_epic_reused() {
 
     let items = vec![make_item("1", "https://github.com/org/repo-a/pull/1")];
 
-    let (sub_ids, _removed) =
-        sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
+    let outcome = sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
+    // affected_epics leads with the parent; this assertion is about sub-epics.
+    let sub_ids: Vec<_> = outcome
+        .affected_epics
+        .iter()
+        .copied()
+        .filter(|id| *id != parent.id)
+        .collect();
 
     assert_eq!(
         sub_ids,
