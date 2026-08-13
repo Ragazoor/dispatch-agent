@@ -31,7 +31,7 @@ trap 'rm -rf "$WORKDIR"' EXIT
 # --- Fixture repo -----------------------------------------------------------
 # Real identifiers live in code; the phantom `ghost_helper` appears ONLY inside
 # comments, so a comment-blind index would wrongly accept it.
-mkdir -p "$WORKDIR/src/db" "$WORKDIR/tests" "$WORKDIR/docs/specs" "$WORKDIR/docs/plans"
+mkdir -p "$WORKDIR/src/db" "$WORKDIR/src/feed" "$WORKDIR/tests" "$WORKDIR/docs/specs" "$WORKDIR/docs/plans"
 
 printf 'Fixture root doc.\n' >"$WORKDIR/CLAUDE.md"
 
@@ -42,8 +42,24 @@ pub fn real_function(opt_value: Option<u32>) -> Option<u32> {
 }
 RS
 
+# A second code file, so a citation can name a real symbol in the WRONG file —
+# the shape a global phantom index cannot see. `FeedCycle::run` lives only here.
+cat >"$WORKDIR/src/feed/cycle.rs" <<'RS'
+pub struct FeedCycle;
+
+impl FeedCycle {
+    pub fn run(&self) -> bool {
+        true
+    }
+}
+RS
+
 cat >"$WORKDIR/tests/harness.rs" <<'RS'
 pub fn poll_for_condition() -> bool {
+    true
+}
+
+pub fn feed_cycle_reports_removed_task_with_worktree() -> bool {
     true
 }
 RS
@@ -102,8 +118,6 @@ expect 0 docs/scratch.md 'Run `cargo test` before pushing.' \
     'a command with a space is not a candidate token'
 expect 0 docs/scratch.md 'Never pass `--force-with-lease`.' \
     'a CLI flag is not a candidate token'
-expect 0 docs/scratch.md 'See `Database::ghost_method` for that.' \
-    'a qualified path is not a candidate token'
 expect 0 docs/scratch.md 'The `main` entry point.' \
     'a single prosey word with no underscore is not a candidate token'
 expect 0 docs/scratch.md 'See `src/db/mod.rs` for CRUD.' \
@@ -144,6 +158,79 @@ expect 1 src/scratch.rs '// allow-phantom-symbol: too far away
 
 /// Migrated from `ghost_function`.' \
     'marker two lines above does not suppress the finding'
+
+# --- `path.rs::symbol` citations, backticked or not (#4091). --------------
+# Verified per-file, not against the global index: a symbol that exists in some
+# OTHER file is still a wrong citation, and that is exactly how #4091's
+# spec-first `run_feed_cycle` stayed green.
+expect 0 docs/specs/scratch.allium '-- Implementation: src/db/mod.rs::real_function.' \
+    'unbackticked path::symbol resolving in the cited file passes'
+expect 0 docs/specs/scratch.allium '-- Implementation: src/feed/cycle.rs::FeedCycle::run.' \
+    'multi-segment path::Type::method resolving in the cited file passes'
+expect 0 docs/scratch.md 'See `src/feed/cycle.rs::FeedCycle::run` for the loop.' \
+    'backticked path::symbol resolving in the cited file passes'
+expect 1 docs/specs/scratch.allium '-- Implementation: src/feed/cycle.rs::run_feed_cycle.' \
+    'path::symbol naming a function that never existed fails (the #4091 rot)'
+expect 1 docs/specs/scratch.allium '-- Implementation: src/db/mod.rs::ghost_function.' \
+    'path::symbol whose symbol is absent from the cited file fails'
+expect 1 docs/specs/scratch.allium '-- Implementation: src/feed/cycle.rs::real_function.' \
+    'path::symbol naming a real symbol in the WRONG file fails'
+expect 1 docs/specs/scratch.allium '-- Implementation: src/feed/nowhere.rs::real_function.' \
+    'path::symbol whose file does not exist fails'
+expect 1 docs/scratch.md 'See `src/db/mod.rs::ghost_function` for that.' \
+    'backticking does not launder a stale path::symbol citation'
+expect 0 docs/specs/scratch.allium '-- Was src/feed/cycle.rs::run_feed_cycle. allow-phantom-symbol: renamed' \
+    'marker suppresses a stale path::symbol citation'
+
+# --- `Type::method` citations, backticked or not (#4091 `FeedJob::run`). ---
+expect 0 docs/specs/scratch.allium '-- The FeedCycle::run entry point.' \
+    'unbackticked Type::method whose segments both resolve passes'
+expect 1 docs/specs/scratch.allium '-- The FeedJob::run entry point.' \
+    'unbackticked Type::method naming a deleted type fails'
+expect 1 docs/scratch.md 'See `FeedJob::run` for the loop.' \
+    'backticked Type::method naming a deleted type fails'
+expect 1 src/scratch.rs '/// Superseded by FeedJob::run.' \
+    'Type::method naming a deleted type fails in a Rust doc comment'
+expect 0 src/scratch.rs 'pub fn call_it() -> bool { FeedJob::run() }' \
+    'Type::method on a Rust CODE line is not scanned'
+expect 1 docs/scratch.md 'See `Database::ghost_method` for that.' \
+    'Type::method whose method resolves nowhere fails'
+expect 0 docs/scratch.md 'Formerly `FeedJob::run`. <!-- allow-phantom-symbol: removed in #4091 -->' \
+    'marker suppresses a stale Type::method citation'
+# The docs name families of symbols as `App::handle_*`. A stem is not a claim
+# that one exact symbol exists, so it is masked out but never reported.
+expect 0 src/scratch.rs '/// Wired to `FeedJob::run_*` handlers.' \
+    'a `*` wildcard stem is not a citation'
+expect 0 docs/specs/scratch.allium '-- Coverage: src/feed/nowhere.rs::ghost_*.' \
+    'a `*` wildcard stem on a path::symbol is not a citation'
+
+# --- Long bare snake_case names: the stale-test-name shape (#3989). --------
+# Only tokens with at least four underscores are candidates. That threshold is
+# a measurement, not a guess: across the real docs/specs/ corpus it is the
+# lowest value with zero false positives, and every shorter token is ordinary
+# spec vocabulary. The three-underscore green case below pins the calibration,
+# so lowering the threshold silently fails this suite.
+expect 1 docs/specs/scratch.allium '-- Boundary: exec_trigger_epic_feed_quiet_command_reports_no_stderr must stay green.' \
+    'bare stale test name in an Allium guidance block fails (the #3989 rot)'
+expect 0 docs/specs/scratch.allium '-- Coverage: feed_cycle_reports_removed_task_with_worktree.' \
+    'bare test name that still exists in tests/ passes'
+expect 1 docs/scratch.md 'Pinned by ghost_test_that_does_not_exist_here today.' \
+    'bare stale test name in a markdown doc fails'
+expect 0 docs/specs/scratch.allium '-- Cached as (role_sub_epic_id, repo_name) -> repo_group_epic_id.' \
+    'a three-underscore prose token is below the threshold and is not scanned'
+expect 0 docs/specs/scratch.allium '-- Boundary: ghost_test_that_does_not_exist_here. allow-phantom-symbol: deleted' \
+    'marker suppresses a stale bare test-name citation'
+
+# A long token inside backticks must be reported once, by the backtick-span
+# kind — not a second time by the bare-token kind.
+printf 'Call `ghost_test_that_does_not_exist_here` now.\n' >"$WORKDIR/docs/scratch.md"
+out="$(cd "$WORKDIR" && bash "$CHECKER" docs/scratch.md 2>&1)" || true
+rm -f "$WORKDIR/docs/scratch.md"
+if [[ "$(grep -c 'ghost_test_that_does_not_exist_here' <<<"$out")" != 1 ]]; then
+    echo "FAIL: a backticked long token must be reported exactly once" >&2
+    echo "  output: $out" >&2
+    failures=$((failures + 1))
+fi
 
 # --- Bare tokens in Allium comments are out of scope (green). -------------
 # Scanning these yields a 97% false-positive rate (37 hits, 1 real) — see

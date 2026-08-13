@@ -41,6 +41,7 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
    ```rust
    // For tools that only read state — use test_state():
    #[tokio::test]
+   // allow-phantom-symbol: illustrative test name, not a real test
    async fn my_tool_returns_expected_data() {
        let state = test_state().await;
        let resp = call(&state, "tools/call",
@@ -65,6 +66,7 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
 
 ## Adding a New TUI View/Mode
 
+<!-- allow-phantom-symbol: `MyNewView` is the placeholder name for the variant you are adding -->
 1. **Add a `ViewMode` variant** in `src/tui/types.rs` (e.g., `ViewMode::MyNewView { selection, saved_board }`).
 2. **Add `Message` variants** for entering/exiting and any view-specific actions.
 3. **Add `Command` variants** if the view triggers side effects (DB writes, shell commands).

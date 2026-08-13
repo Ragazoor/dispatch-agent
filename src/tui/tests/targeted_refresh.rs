@@ -1,5 +1,5 @@
-//! Tests for targeted single-entity refresh: `Message::TaskUpdated` and
-//! `Message::EpicUpdated`. These splice one row into the in-memory list
+//! Tests for targeted single-entity refresh: `TaskMessage::Updated` and
+//! `EpicMessage::Updated`. These splice one row into the in-memory list
 //! instead of rebuilding the whole vector.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]

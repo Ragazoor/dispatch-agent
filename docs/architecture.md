@@ -44,7 +44,7 @@ Rule of thumb: use `ServiceError` for request validation and business rules, dom
 1. Key handler emits `Command::QuickDispatch { draft: TaskDraft { title: DEFAULT_QUICK_TASK_TITLE, repo_path, .. }, epic_id }` (`src/tui/mod.rs`)
 2. Runtime handles it in `exec_quick_dispatch()` (`src/runtime/tasks.rs`) — calls `create_task()` then immediately dispatches
 3. The created task gets title `"Quick task"` (`DEFAULT_QUICK_TASK_TITLE` in `src/models/tasks.rs`), no tag, no plan
-4. If the board has multiple repo paths, `Shift+D` first enters `InputMode::QuickDispatchRepo` (repo picker), then emits `Message::SelectQuickDispatchRepo(idx)` to resolve the repo before dispatching
+4. If the board has multiple repo paths, `Shift+D` first enters `InputMode::QuickDispatch` (repo picker), then emits `InputMessage::SelectQuickDispatchRepo(idx)` (`src/tui/messages/input.rs`) to resolve the repo before dispatching
 
 Quick dispatch is the same code path as normal dispatch — the difference is the task is created with defaults and skips the creation dialog entirely.
 

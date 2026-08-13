@@ -12,7 +12,7 @@ MCP handler (e.g. handle_update_task)
       → runtime event loop receives it             # tokio::select! in run_event_loop()
         → calls rt.exec_refresh_from_db(app)
           → reads all tasks/epics from DB
-          → calls app.update(Message::RefreshTasks(tasks))
+          → calls app.update(Message::Task(TaskMessage::Refresh(tasks)))
             → App replaces its in-memory task list, re-renders
 ```
 
@@ -20,9 +20,9 @@ Key types in the chain:
 - `McpEvent` (`src/mcp/mod.rs:24`) — `Refresh` (catch-all full reload), `TaskChanged(TaskId)` / `EpicChanged(EpicId)` (targeted single-row reloads, preferred when the changed entity is known), and `MessageSent { to_task_id }`
 - `McpState::notify()` — fire-and-forget send on the channel
 - `TuiRuntime::exec_refresh_from_db()` (`src/runtime/tasks.rs`) — reloads tasks, epics, and usage from DB
-- `Message::RefreshTasks` (`src/tui/types.rs`) — carries the fresh task list into the App
+- `TaskMessage::Refresh` (`src/tui/messages/task.rs`) — carries the fresh task list into the App, wrapped as `Message::Task`
 
-The `MessageSent` variant additionally triggers `Message::MessageReceived(task_id)`, which flashes the target task's card in the TUI.
+The `MessageSent` variant additionally triggers `SystemMessage::MessageReceived(task_id)` (`src/tui/messages/system.rs`), which flashes the target task's card in the TUI.
 
 ## MCP State Machines
 
