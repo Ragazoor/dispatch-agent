@@ -434,11 +434,16 @@ rule FeedTick {
                 else:
                     core/config.default_feed_interval
             if elapsed_since_last_run(epic) >= interval:
-                Spawn(epic.feed_command)
+                FeedCycleRequested(epic: epic)
 
     @guidance
         -- Each epic's last_run timestamp is bumped before the spawn so
-        -- that a misconfigured command is not retried on every tick.
+        -- that a misconfigured command is not retried on every tick. Note the
+        -- interaction with SerialisedFeedCycle: last_run is bumped even when
+        -- the request is then DROPPED because a cycle for that epic is already
+        -- in flight, so a dropped tick waits a full interval rather than
+        -- retrying on the next one. That is deliberate — a tick that retried
+        -- immediately would spin against a slow in-flight cycle.
         -- Command execution MUST NOT block the event loop. Each eligible
         -- epic's command is spawned as a background tokio::task so that
         -- key events and MCP notifications remain responsive during fetch.
@@ -474,6 +479,124 @@ rule FeedTick {
         -- src/runtime/tests.rs::mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed
         -- (Refresh invalidates), and
         -- src/feed/mod.rs::tick_re_queries_after_epic_changed_invalidation.
+}
+
+-- == Serialisation ==
+
+rule SerialisedFeedCycle {
+    when: FeedCycleRequested(epic)
+
+    -- A FEED CYCLE is the whole sequence a feed request performs for one epic:
+    -- exec the feed command, parse its stdout, apply the DegradedEmptyEmission
+    -- guard, dispatch FeedSync, and tear down the worktrees of any task the sync
+    -- removed. Exactly TWO surfaces request one: FeedTick (per eligible epic,
+    -- above) and ManualFeedRefresh (the "r" key). The verify-feed CLI execs a
+    -- feed command but performs no sync and shares no process with the TUI, so
+    -- it is outside this rule.
+    --
+    -- At most ONE cycle per epic runs at a time. A request arriving while a
+    -- cycle for the SAME epic is in flight is DROPPED — not queued, not
+    -- delayed: no exec, no parse, no sync, no teardown, no notification. The
+    -- claim is symmetric, so whichever surface requested first wins; an
+    -- auto-poll tick is dropped by an in-flight manual refresh exactly as the
+    -- reverse. Requests for DIFFERENT epics never contend.
+    --
+    -- == Why the whole cycle, and why dropped ==
+    --
+    -- The steps of RoleRoutedFeedSync are separate non-transactional writes,
+    -- each filtering on a task's CURRENT epic, and its stale-delete keep-set is
+    -- computed from ONE emission. Two cycles interleaving there can have one
+    -- pass see a task the other has moved as absent from its own (older)
+    -- emission, delete it, and — since the delete feeds TaskTeardown — force
+    -- remove a live review agent's worktree. Serialising ONLY the sync would
+    -- still leave a cycle reconciling against an emission fetched before the
+    -- other cycle's writes landed, so the claim spans the exec too. It also
+    -- halves the upstream API spend of a double refresh.
+    --
+    -- Dropping rather than queueing: the exec is an unbounded child process, so
+    -- a queue behind a slow or hung command has no bound. Dropping caps
+    -- in-flight work per epic at one cycle.
+    --
+    -- == Scope: this closes the feed-vs-feed race ONLY ==
+    --
+    -- The claim serialises feed cycles against EACH OTHER. It does nothing
+    -- about a concurrent NON-feed writer. Any writer that moves a task into the
+    -- reconciled subtree mid-cycle — an MCP task update carrying a new epic, an
+    -- epic reparent, a flatten, a board move — can place a feed task under a
+    -- role sub-epic while it is absent from the in-flight emission, and the
+    -- stale delete will then remove it and tear down its worktree. Same
+    -- mechanism, same consequence, one leg simply is not a feed cycle. The
+    -- invariant below is therefore worded "another cycle", not "another
+    -- writer". Whether the stale delete should refuse to remove a task carrying
+    -- live agent state is the open question recorded on DegradedEmptyEmission's
+    -- RESIDUAL RISK; it is not answered here.
+
+    ensures:
+        if in_flight_cycle(epic):
+            -- Dropped. Nothing runs, and nothing about the epic's tasks
+            -- changes. The requesting surface presents this per its own rule
+            -- (silently for FeedTick, as a status line for ManualFeedTrigger).
+            FeedCycleDropped(epic: epic)
+        else:
+            -- Claimed for the whole cycle, and released when it ends however it
+            -- ends: success, spawn failure, non-zero exit, parse failure,
+            -- degraded emission, or a panic partway through. What the claimed
+            -- cycle then DOES is specified elsewhere — FeedCommandFailure,
+            -- DegradedEmptyEmission and FeedSync's dispatch — so this rule
+            -- deliberately asserts only the serialisation decision.
+            FeedCycleStarted(epic: epic)
+
+    @guidance
+        -- Implementation: the claim registry is
+        -- src/feed/guard.rs::FeedSyncGuard, a set of claimed epic ids behind a
+        -- short-lived mutex; src/feed/guard.rs::FeedClaim is the RAII token and
+        -- releases on Drop, which is what makes "released however it ends" hold
+        -- across the cycle's many early returns and a panicking task alike.
+        -- The cycle itself is src/feed/cycle.rs::run_feed_cycle, which claims
+        -- FIRST and then owns every step through teardown. Both request
+        -- surfaces — src/feed/mod.rs::FeedJob::run (auto-poll) and
+        -- src/runtime/epics.rs::exec_trigger_epic_feed (manual "r") — delegate
+        -- to it and differ ONLY in how they present the outcome, the same
+        -- single-shared-function discipline that FeedSync's dispatcher and
+        -- FeedItemParse already follow. A third step added to a feed cycle must
+        -- land in run_feed_cycle, never twice in the two callers.
+        --
+        -- The claim key is the POLLED epic's id — for a reviews_parent that is
+        -- the parent, never a role sub-epic. Role sub-epics carry no
+        -- feed_command (epics.allium ProvisionManagedEpics), and only the
+        -- parent's cycle writes the subtree, so one key covers everything the
+        -- cycle reconciles. Two NESTED feed epics whose subtrees overlap would
+        -- still contend, since the subtree stale-delete reaches any child epic;
+        -- not reachable today, and out of scope.
+        --
+        -- ACCEPTED COST — a hung feed command starves its epic.
+        -- src/feed/exec.rs::exec_feed_command has NO timeout: it awaits the
+        -- child to completion. Because the claim spans the exec, a feed command
+        -- that never exits holds its epic's claim for the life of the process,
+        -- and from then on EVERY tick and EVERY manual "r" for that epic is
+        -- dropped, with no in-app recovery — only a restart. This is a real
+        -- change: today the two paths are unserialised, so a manual refresh
+        -- still works while a poll is stuck. It was accepted deliberately (a
+        -- feed command that hangs forever is itself a bug, and it is bounded to
+        -- one epic) in preference to letting a manual refresh STEAL an aged
+        -- claim, which would reintroduce exactly the interleave this rule
+        -- exists to prevent. A future reader must not "fix" the starvation by
+        -- loosening the claim. The sanctioned fix is to bound the exec —
+        -- noting that src/process.rs::run_bounded, the repo's kill-on-timeout
+        -- primitive, covers SYNCHRONOUS ProcessRunner children and so is not a
+        -- drop-in for this async call site.
+        --
+        -- Coverage: src/feed/guard.rs unit tests (exclusivity per epic, release
+        -- on drop, independence across epics, release when the holder panics);
+        -- src/feed/mod.rs::tick_skips_an_epic_whose_cycle_is_already_in_flight
+        -- and
+        -- src/runtime/tests.rs::exec_trigger_epic_feed_reports_already_refreshing_while_a_cycle_is_in_flight
+        -- (each request surface drops and writes nothing while a claim is
+        -- held); and
+        -- src/runtime/tests.rs::manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight
+        -- (both surfaces against one epic with a genuine cycle mid-exec, which
+        -- is the only test that would catch the two surfaces being wired to
+        -- different registries).
 }
 
 -- == Upsert semantics ==
@@ -1122,17 +1245,30 @@ rule RoleRoutedFeedSync {
         -- since the orphan is an inert directory under .worktrees/, not a
         -- resource leak.
         --
-        -- Teardown-vs-notification ordering differs between the two feed paths
-        -- and no clause governs it. src/feed/mod.rs::FeedJob::run sends its
-        -- McpEvent::EpicChanged per affected epic and THEN awaits the cleanup,
-        -- so the board shows the rows gone while teardown is still running.
-        -- src/runtime/epics.rs::exec_trigger_epic_feed awaits the cleanup
-        -- FIRST and only then sends Refreshed, deliberately, so that
-        -- ManualFeedTrigger's "N task(s) synced" line means reconciled AND
-        -- cleaned up — at the cost of blocking that status line on every
-        -- `git worktree remove`. Whether the manual path's stronger guarantee
-        -- should become normative, or both paths should notify first, is an
-        -- open question this spec does not answer. The existing-task lookup
+        -- Teardown-vs-notification ordering is NORMATIVE and the same on both
+        -- feed paths: the teardown of every removed row completes BEFORE the
+        -- notification for that cycle is sent. So a notification means
+        -- reconciled AND cleaned up, and the board never shows a row gone while
+        -- its worktree is still being removed.
+        --
+        -- This resolves what was previously an unspecified divergence — the
+        -- auto-poll path notified first, the manual path cleaned up first — and
+        -- it resolves it towards the manual path's stronger guarantee. It became
+        -- a single decision to make rather than two behaviours to keep in step
+        -- once both paths were funnelled through the one shared cycle
+        -- (src/feed/cycle.rs::run_feed_cycle, which owns the teardown and hands
+        -- its callers an already-cleaned-up outcome to present).
+        --
+        -- The cost, stated honestly: the auto-poll path's McpEvent::EpicChanged
+        -- now waits on `git worktree remove` for every removed task, so a
+        -- mass-merge that removes a dozen tasks at once lags the board by that
+        -- fan-out. It is bounded — cleanup_removed_feed_tasks runs repos in
+        -- parallel and only serialises within a repo — and buying it is the
+        -- elimination of a window in which the board disagreed with the
+        -- filesystem. The previous asymmetry was not a considered trade; it was
+        -- an artefact of two call sites growing the same feature independently.
+        --
+        -- The existing-task lookup
         -- that decides
         -- move-vs-insert is
         -- src/feed/ingest/role_routed.rs:131::build_existing_task_index: it
@@ -1528,6 +1664,17 @@ rule ManualFeedTrigger {
     --   - On start:   "Fetching feed for '<title>'…"
     --   - On success: "Feed for '<title>': N task(s) synced"
     --   - On failure: "Feed for '<title>' failed: <error>"
+    --   - When DROPPED: "Feed for '<title>' is already refreshing…"
+    --
+    -- The dropped line is the third outcome, and it is NEITHER a success nor a
+    -- failure: a cycle for this epic was already in flight, so per
+    -- SerialisedFeedCycle this request ran nothing at all. It is surfaced rather
+    -- than swallowed because the alternative is a keypress that looks like a
+    -- no-op. Note the honest limit of the reassurance it gives: it means "a
+    -- cycle is running", not "fresh data is arriving imminently" — if that
+    -- in-flight cycle is stuck on a hung command, every subsequent "r" keeps
+    -- reporting this and the feed never advances (SerialisedFeedCycle's ACCEPTED
+    -- COST).
     --
     -- There is no zero-item stderr hint on the success line. #3900 had
     -- one (" — command wrote to stderr (see app.log)", gated on N = 0 AND
@@ -1546,10 +1693,26 @@ rule ManualFeedTrigger {
         -- command wrote to stderr while exiting 0, whose {error} is the
         -- stderr text):
         --   status_bar = "Feed for '{epic.title}' failed: {error}"
+        -- and when SerialisedFeedCycle drops the request, no command is
+        -- spawned at all:
+        --   status_bar = "Feed for '{epic.title}' is already refreshing…"
 
     @guidance
-        -- Implementation: src/runtime/epics.rs::exec_trigger_epic_feed.
+        -- Implementation: src/runtime/epics.rs::exec_trigger_epic_feed, which is
+        -- presentation only — it builds a src/feed/cycle.rs::FeedCycle, awaits
+        -- it, and maps the outcome onto the four status lines above. The
+        -- dropped arm is a distinct FeedMessage variant (AlreadyRefreshing),
+        -- not a Failed with a special string, so the status bar cannot blame the
+        -- user's feed command for a serialisation decision.
         -- Keybinding: src/tui/input/normal.rs::handle_key_normal, KeyCode::Char('r').
+        -- The keypress gate ("is this a feed epic at all?") is still answered
+        -- from the TUI's loaded board in
+        -- src/tui/update/feeds.rs::App::handle_trigger_epic_feed — that is this
+        -- rule's requires clause and cached data is fine for it. But the values
+        -- the cycle ACTS on (feed_command, feed_role, group_by_repo) are read
+        -- fresh from the epic inside run_feed_cycle, never passed down from that
+        -- snapshot, so a manual refresh cannot run a command or a grouping mode
+        -- the user has since changed.
         -- FeedSync dispatches by epic.feed_role IDENTICALLY to the auto-poll
         -- path (see the FeedSync dispatch block above): feed_role =
         -- reviews_parent -> run_role_routed_feed_sync; otherwise
@@ -1573,6 +1736,23 @@ rule ManualFeedTrigger {
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
+
+-- OneFeedCycleAtATimePerEpic (prose invariant): at most one feed cycle per epic
+-- is in flight at any moment. Enforced by SerialisedFeedCycle. Stated as prose
+-- rather than as an expression-bearing invariant because a cycle is an
+-- in-process activity, not entity state — there is nothing to quantify over.
+--
+-- This is what makes RoleRoutedFeedSync's phase ordering sound. Its steps are
+-- separate non-transactional writes, each filtering on a task's CURRENT epic,
+-- and the argument that "the move lands before the deletes, so a moved task is
+-- never reported as removed" holds WITHIN one cycle only. Two cycles for the
+-- same epic interleaving across those writes breaks it, and because the
+-- stale-delete feeds TaskTeardown, breaking it destroys a live agent's worktree
+-- rather than merely losing a row.
+--
+-- Deliberately scoped to "another CYCLE", not "another writer": a concurrent
+-- non-feed writer moving a task into the reconciled subtree can still produce
+-- the same outcome. See SerialisedFeedCycle's scope paragraph.
 
 -- A reviews_parent epic is a pure router: it holds NO feed-managed task
 -- directly. Every feed task (external_id != null) in its subtree lives in one

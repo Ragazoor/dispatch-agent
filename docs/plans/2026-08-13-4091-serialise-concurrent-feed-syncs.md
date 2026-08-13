@@ -509,31 +509,31 @@ pins behaviour change 1 — the manual path syncs against the epic's current
   had to be identical across the two feed paths, and the reason `src/feed/cycle.rs`
   now exists — so the next agent adds step four *there*, not twice.
 
-### WP5 — bound `exec_feed_command` (recommended; needs a decision)
+### WP5 — bound `exec_feed_command` — DECIDED: not now, document instead
 
-Not required to fix the race, and strictly speaking a different bug. Included
-because WP1–WP4 *introduce* the failure mode it closes (see Risks): once a claim
-is held for the duration of an unbounded child process, a hung feed command
-wedges that epic's feed for the life of the session. Decide before WP1 lands, not
-after — retrofitting it changes `exec_feed_command`'s signature and every test
-that drives it.
+**Decision (user, 2026-08-13): accept the window; do not bound the exec in this
+change. Document the resulting starvation in `feeds.allium` so it is specified
+behaviour rather than a surprise.** The reasoning for accepting it: a feed command
+that hangs forever is itself a bug, it is rare, and the alternative — stealing a
+claim past some age — would reintroduce exactly the interleave this task exists
+to remove.
 
-- **Test first**: a feed command that never exits (`sleep 600`, or `cat` on a
-  FIFO nothing writes to) yields a `Failed` outcome within the deadline, and the
-  claim is released afterwards so the next cycle for that epic proceeds. The
-  second half is the point — the test must prove the epic recovers, not merely
-  that one call returned.
-- **Implement**: a timeout around the child in `src/feed/exec.rs`. Note
-  `run_bounded` (`src/process.rs`) is the sanctioned kill-on-timeout primitive
-  for **synchronous** `ProcessRunner` children, and `exec_feed_command` uses
-  `tokio::process::Command` instead — so this is not a drop-in. Either route the
-  feed exec through the existing primitive, or use `tokio::time::timeout` plus
-  `kill_on_drop(true)` so the child is reaped rather than orphaned. CLAUDE.md's
-  "never hand-roll a second kill-on-timeout" rule means the choice needs a
-  sentence of justification in the code, whichever way it goes.
-- **Spec**: a new `requires`/failure clause on `FeedCommandFailure` for the
-  timeout bucket, and the chosen duration named in core.allium's config block if
-  it is configurable rather than a constant.
+So the obligation moves from WP5 into WP4's spec work, and it is not optional:
+
+- `SerialisedFeedCycle`'s `@guidance` must state that the claim is held for the
+  whole cycle including an **unbounded** `exec_feed_command`, so a feed command
+  that never exits holds its epic's claim for the life of the process. Every
+  later tick and every manual `r` for that epic is then dropped, and there is no
+  in-app recovery — only a restart. Name the contrast with today explicitly (an
+  unserialised manual refresh currently still works while a poll is stuck), so a
+  future reader sees it as a known accepted cost and not a regression to
+  "helpfully" undo by loosening the claim.
+- Point at `src/feed/exec.rs::exec_feed_command`'s lack of a timeout as the
+  precise reason, and record bounding it as the sanctioned fix if the window ever
+  bites — noting that `run_bounded` (`src/process.rs`) is the repo's
+  kill-on-timeout primitive for **synchronous** `ProcessRunner` children and so
+  is not a drop-in for this `tokio::process` call site.
+- File it as a follow-up task rather than leaving it only in the spec.
 
 ## Verification
 
@@ -564,12 +564,10 @@ sleep, and if a bounded poll step turns out unavoidable it needs an
   reaps the claim. That converts a data-corruption bug into a
   liveness/availability bug for that one epic. The status line at least says why,
   which is more than today's silent pile-up, but "for as long as it hangs" can be
-  forever. Options, in preference order:
-    1. **Bound `exec_feed_command`** (WP5 below) — closes it properly.
-    2. Ship WP1–WP4 alone and accept the window, on the grounds that a feed
-       command hanging forever is itself a bug and rare.
-    3. Let a manual `r` steal a claim older than some threshold. Rejected:
-       reintroduces exactly the interleave this task exists to remove.
+  forever. **Decided: accept it, and specify it** (see WP5) — a feed command that
+  hangs forever is itself a bug, and the alternative of letting a manual `r` steal
+  an aged claim would reintroduce the interleave this task removes. Bounding the
+  exec stays available as the sanctioned fix and is filed as a follow-up.
 - **Auto-poll board updates lag teardown** (behaviour change 2). Bounded by the
   `git worktree remove` fan-out, which is already parallel across repos.
 - **Merge order with #3989** (see WP0). If #3989 is revised before it lands,
