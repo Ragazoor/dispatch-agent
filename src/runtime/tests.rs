@@ -128,6 +128,37 @@ pub(super) async fn test_db() -> Arc<Database> {
 /// command string to `exec_trigger_epic_feed` exercises nothing — the cycle
 /// fails with "epic has no feed command". That mirrors production, where the
 /// "r" key is only live for an epic whose feed_command is set.
+/// Assert `msg` is a feed failure that reached the failure it is testing for,
+/// rather than tripping over the epic's own configuration first.
+///
+/// Deliberately stricter than `matches!(.., Failed { .. })`. The cycle has six
+/// failure buckets (feeds.allium: FeedCommandFailure) and two of them are
+/// config ones — "epic no longer exists", "epic has no feed command" — which a
+/// test that forgets `set_feed_command` hits instead of the bucket it is named
+/// after. A bare Failed match cannot tell the difference, and three of these
+/// tests silently went vacuous exactly that way.
+///
+/// `needle` is `None` where the failure legitimately carries no text: a bare
+/// `exit 1` writes nothing to stderr, so its error string is empty.
+fn assert_feed_failed_because(msg: &Message, needle: Option<&str>, what: &str) {
+    let Message::Feed(crate::tui::messages::FeedMessage::Failed { error, .. }) = msg else {
+        panic!("{what} should produce FeedMessage::Failed, got: {msg:?}");
+    };
+    for config_bucket in ["no feed command", "no longer exists"] {
+        assert!(
+            !error.contains(config_bucket),
+            "{what} failed for a CONFIG reason ({error:?}) -- the test never got \
+             as far as {what}. Is set_feed_command missing?"
+        );
+    }
+    if let Some(needle) = needle {
+        assert!(
+            error.contains(needle),
+            "{what} must fail with an error mentioning {needle:?}, got: {error:?}"
+        );
+    }
+}
+
 pub(super) async fn set_feed_command(
     db: &Arc<Database>,
     epic_id: crate::models::EpicId,
@@ -3326,7 +3357,7 @@ async fn exec_trigger_epic_feed_reports_already_refreshing_while_a_cycle_is_in_f
     // Would delete the seeded task (absent from an empty emission) and tear its
     // worktree down, if it ever ran.
     set_feed_command(&db, epic.id, "echo '[]'").await;
-    seed_feed_task_with_worktree(&db, epic.id).await;
+    seed_feed_task_with_worktree(&db, epic.id, "In-flight PR").await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
@@ -3354,6 +3385,33 @@ async fn exec_trigger_epic_feed_reports_already_refreshing_while_a_cycle_is_in_f
         db.list_tasks_for_epic(epic.id).await.unwrap().len(),
         1,
         "a dropped refresh must run no sync, so the existing task survives"
+    );
+}
+
+/// The wiring invariant, pinned directly and cheaply: the manual "r" path and
+/// the auto-poll runner must share ONE claim registry. A second registry
+/// type-checks, compiles, and silently serialises nothing.
+///
+/// This is a one-line structural check, so it survives any change to feed
+/// behaviour. It does NOT subsume the FIFO test below: identity of the registry
+/// is not the same property as the claim actually being HELD across the exec,
+/// and only a real in-flight cycle can show the latter.
+#[tokio::test]
+async fn the_manual_path_and_the_feed_runner_share_one_claim_registry() {
+    let db = test_db().await;
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+    assert!(
+        Arc::ptr_eq(
+            &rt.feed_sync_guard,
+            &rt.feed_runner
+                .as_ref()
+                .expect("make_runtime wires a FeedRunner")
+                .sync_guard(),
+        ),
+        "TuiRuntime.feed_sync_guard must be the FeedRunner's registry, not a \
+         second one -- otherwise the two feed surfaces never serialise"
     );
 }
 
@@ -3453,12 +3511,16 @@ async fn manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight() {
 /// Seed one feed task carrying a worktree and tmux window, as a dispatched
 /// review agent would. Its survival is what distinguishes "the cycle was
 /// dropped" from "the cycle ran and destroyed a live session".
-async fn seed_feed_task_with_worktree(db: &Arc<Database>, epic_id: crate::models::EpicId) {
+async fn seed_feed_task_with_worktree(
+    db: &Arc<Database>,
+    epic_id: crate::models::EpicId,
+    title: &str,
+) {
     db.upsert_feed_tasks(
         epic_id,
         &[crate::models::FeedItem {
             external_id: "pr-1".to_string(),
-            title: "In-flight PR".to_string(),
+            title: title.to_string(),
             description: String::new(),
             url: String::new(),
             url_type: None,
@@ -3648,35 +3710,7 @@ async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
     let epic = db.create_epic("Reviews", "", None).await.unwrap();
 
     // Seed one feed task with the on-disk state a dispatched agent would own.
-    db.upsert_feed_tasks(
-        epic.id,
-        &[crate::models::FeedItem {
-            external_id: "pr-1".to_string(),
-            title: "Merged PR".to_string(),
-            description: String::new(),
-            url: String::new(),
-            url_type: None,
-            status: crate::models::TaskStatus::Backlog,
-            tag: crate::models::TaskTag::PrReview,
-            labels: Vec::new(),
-            sort_order: None,
-            signals: vec![],
-            wrap_up_mode: None,
-        }],
-        &["/repo/a".to_string()],
-        &["main".to_string()],
-    )
-    .await
-    .unwrap();
-    let task = db.list_tasks_for_epic(epic.id).await.unwrap().remove(0);
-    db.patch_task(
-        task.id,
-        &db::TaskPatch::new()
-            .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-            .tmux_window(Some("dispatch:pr-1")),
-    )
-    .await
-    .unwrap();
+    seed_feed_task_with_worktree(&db, epic.id, "Merged PR").await;
 
     set_feed_command(&db, epic.id, "echo '[]'").await;
 
@@ -3730,6 +3764,7 @@ async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
 async fn exec_trigger_epic_feed_command_fails() {
     let db = test_db().await;
     let epic = db.create_epic("Failing Feed", "", None).await.unwrap();
+    set_feed_command(&db, epic.id, "exit 1").await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
@@ -3740,19 +3775,14 @@ async fn exec_trigger_epic_feed_command_fails() {
         .await
         .expect("timed out")
         .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Failed { .. })
-        ),
-        "non-zero exit should produce FeedFailed, got: {msg:?}"
-    );
+    assert_feed_failed_because(&msg, None, "non-zero exit");
 }
 
 #[tokio::test]
 async fn exec_trigger_epic_feed_malformed_json() {
     let db = test_db().await;
     let epic = db.create_epic("Bad JSON Feed", "", None).await.unwrap();
+    set_feed_command(&db, epic.id, "echo 'not-json'").await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
@@ -3763,13 +3793,7 @@ async fn exec_trigger_epic_feed_malformed_json() {
         .await
         .expect("timed out")
         .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Failed { .. })
-        ),
-        "malformed JSON should produce FeedFailed, got: {msg:?}"
-    );
+    assert_feed_failed_because(&msg, Some("parse"), "malformed JSON");
 }
 
 #[tokio::test]
@@ -3781,6 +3805,12 @@ async fn exec_trigger_epic_feed_missing_tag_fails_and_upserts_nothing() {
     // FeedItemParse block.
     let db = test_db().await;
     let epic = db.create_epic("Untagged Feed", "", None).await.unwrap();
+    set_feed_command(
+        &db,
+        epic.id,
+        r#"echo '[{"external_id":"x1","title":"T","description":"","status":"backlog"}]'"#,
+    )
+    .await;
 
     let (tx, mut rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
@@ -3791,13 +3821,7 @@ async fn exec_trigger_epic_feed_missing_tag_fails_and_upserts_nothing() {
         .await
         .expect("timed out")
         .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Failed { .. })
-        ),
-        "a missing tag should produce FeedFailed, got: {msg:?}"
-    );
+    assert_feed_failed_because(&msg, Some("parse"), "a missing tag");
     let tasks = db.list_all().await.unwrap();
     assert!(
         tasks.is_empty(),

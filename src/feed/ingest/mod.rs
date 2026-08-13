@@ -153,9 +153,14 @@ pub(crate) async fn run_feed_sync(
 /// auto-poll ([`crate::feed::FeedRunner`] tick) and the manual "r" refresh
 /// (`exec_trigger_epic_feed`) so the two paths cannot drift — a `reviews_parent`
 /// epic ALWAYS routes through [`run_role_routed_feed_sync`], never a flat upsert
-/// onto the parent (feeds.allium: FeedSync dispatch). Callers that must reject
-/// role sub-epics carrying a feed_command (the tick's provisioning guard) do so
-/// BEFORE calling this; every reachable role here is safe to sync.
+/// onto the parent (feeds.allium: FeedSync dispatch).
+///
+/// The role→strategy mapping is TOTAL: the three role sub-epic roles are
+/// rejected here rather than by callers. A My/Team/Bots epic carrying a
+/// feed_command is a provisioning bug (they are reconciled only via their
+/// reviews_parent), and the `_` arm below would flat-upsert into one. Guarding
+/// in the dispatcher rather than in front of it means a future third caller
+/// inherits the guard instead of having to remember it.
 pub(crate) async fn run_feed_sync_by_role(
     db: &dyn TaskStore,
     epic_id: EpicId,
@@ -163,9 +168,18 @@ pub(crate) async fn run_feed_sync_by_role(
     group_by_repo: bool,
     entries: Vec<FeedItemWithTarget>,
 ) -> Result<FeedSyncOutcome> {
+    use crate::models::FeedRole;
     match feed_role {
-        crate::models::FeedRole::ReviewsParent => {
-            run_role_routed_feed_sync(db, epic_id, entries).await
+        FeedRole::ReviewsParent => run_role_routed_feed_sync(db, epic_id, entries).await,
+        role @ (FeedRole::MyReviews | FeedRole::TeamReviews | FeedRole::Bots) => {
+            debug_assert!(
+                false,
+                "role sub-epic {} (feed_role={role:?}) must not carry a feed_command",
+                epic_id.0
+            );
+            anyhow::bail!(
+                "role sub-epic carries a feed command; it is reconciled only via its reviews parent"
+            )
         }
         _ => run_feed_sync(db, epic_id, group_by_repo, entries).await,
     }

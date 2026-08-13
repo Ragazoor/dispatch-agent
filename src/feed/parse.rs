@@ -3,8 +3,9 @@ use crate::models::FeedItem;
 /// Deserialise a JSON byte slice as a `Vec<FeedItem>`.
 ///
 /// The SINGLE feed-stdout decode, called by all three feed entry points:
-/// [`crate::feed::FeedJob::run`] (auto-poll), `exec_trigger_epic_feed`
-/// (manual "r"), and `cmd_verify_feed` (the `verify-feed` CLI). Three separate
+/// [`crate::feed::FeedCycle::run`] (which both the auto-poll path and the
+/// manual "r" refresh share) and `cmd_verify_feed` (the `verify-feed` CLI).
+/// Three separate
 /// `serde_json` call sites were three places a change to the feed wire format
 /// could land in one path and not the others — the shape that produced the
 /// `reviews_parent` parent-flat bug in the sync layer. See `feeds.allium`'s

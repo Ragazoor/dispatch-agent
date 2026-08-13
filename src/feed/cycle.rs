@@ -21,7 +21,7 @@ use std::sync::Arc;
 use super::guard::FeedSyncGuard;
 use crate::db::TaskStore;
 use crate::dispatch::resolve_feed_item_repo_paths;
-use crate::models::{EpicId, FeedRole};
+use crate::models::EpicId;
 use crate::process::ProcessRunner;
 
 /// What a feed cycle did, for its caller to present.
@@ -78,12 +78,12 @@ impl FeedCycle {
             return FeedCycleOutcome::Busy;
         };
 
-        let epic = match self.db.get_epic(self.epic_id).await {
+        let mut epic = match self.db.get_epic(self.epic_id).await {
             Ok(Some(epic)) => epic,
             Ok(None) => return self.fail("epic no longer exists"),
             Err(err) => return self.fail(format!("failed to read epic: {err:#}")),
         };
-        let Some(feed_command) = epic.feed_command.clone() else {
+        let Some(feed_command) = epic.feed_command.take() else {
             return self.fail("epic has no feed command");
         };
 
@@ -105,26 +105,6 @@ impl FeedCycle {
         // subtree. feeds.allium: DegradedEmptyEmission.
         if let Some(reason) = super::degraded_empty_emission(items.len(), &output.stderr) {
             return self.fail(reason);
-        }
-
-        // Role sub-epics (my/team/bots) carry no feed_command, enforced at
-        // provisioning, so only the parent is ever polled. A role sub-epic that
-        // somehow has one is a provisioning bug: skip it rather than reconcile a
-        // child as if it were a feed. Applies to BOTH surfaces now that this is
-        // shared — a manual "r" on a misconfigured role sub-epic must not
-        // flat-upsert into it either.
-        if matches!(
-            epic.feed_role,
-            FeedRole::MyReviews | FeedRole::TeamReviews | FeedRole::Bots
-        ) {
-            debug_assert!(
-                false,
-                "role sub-epic {} (feed_role={:?}) must not carry a feed_command",
-                self.epic_id.0, epic.feed_role
-            );
-            return self.fail(
-                "role sub-epic carries a feed command; it is reconciled only via its reviews parent",
-            );
         }
 
         let count = items.len();
@@ -149,7 +129,7 @@ impl FeedCycle {
             Err(err) => return self.fail(format!("{err:#}")),
         };
 
-        super::recalculate_epic_status_after_feed(&*self.db, self.epic_id, "run_feed_cycle").await;
+        super::recalculate_epic_status_after_feed(&*self.db, self.epic_id, "FeedCycle::run").await;
 
         // Teardown before the caller notifies, on BOTH surfaces: a notification
         // means reconciled AND cleaned up, so the board never shows a row gone

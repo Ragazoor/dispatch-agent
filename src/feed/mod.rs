@@ -26,21 +26,6 @@ pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget};
 pub use parse::parse_feed_items;
 pub use routing::route;
 
-/// The one warn line the feed pipeline's fire-and-forget per-epic writes emit.
-/// Kept as its own function so every such warning carries the same fields in
-/// the same shape; `sub_epic_id` is attached when the write is scoped to a
-/// sub-epic beneath `epic_id`.
-fn log_feed_err(err: &anyhow::Error, epic_id: EpicId, sub_epic_id: Option<EpicId>, context: &str) {
-    match sub_epic_id {
-        Some(sub_epic_id) => tracing::warn!(
-            epic_id = epic_id.0,
-            sub_epic_id = sub_epic_id.0,
-            "{context}: {err:#}"
-        ),
-        None => tracing::warn!(epic_id = epic_id.0, "{context}: {err:#}"),
-    }
-}
-
 /// Log-and-discard on `Err` for the feed writes that report what they deleted,
 /// keeping the `Ok` payload so the removed rows reach
 /// [`cleanup_removed_feed_tasks`]. An `Err` yields an empty vec — nothing was
@@ -58,7 +43,16 @@ pub(crate) fn removed_or_warn(
     match result {
         Ok(removed) => removed,
         Err(err) => {
-            log_feed_err(&err, epic_id, sub_epic_id, context);
+            // `sub_epic_id` is attached when the write is scoped to a sub-epic
+            // beneath `epic_id`, so a warning names the epic it actually wrote.
+            match sub_epic_id {
+                Some(sub_epic_id) => tracing::warn!(
+                    epic_id = epic_id.0,
+                    sub_epic_id = sub_epic_id.0,
+                    "{context}: {err:#}"
+                ),
+                None => tracing::warn!(epic_id = epic_id.0, "{context}: {err:#}"),
+            }
             Vec::new()
         }
     }
@@ -113,9 +107,9 @@ pub(crate) async fn recalculate_epic_status_after_feed(
 /// The whole of `TaskTeardown` is best-effort: failures are logged at warn and
 /// never surfaced, because feed reconciliation is background work, and one
 /// task's failure must not abort the rest of its repo's queue.
-/// Called from both feed paths — [`FeedJob::run`] (auto-poll) and
-/// `exec_trigger_epic_feed` (manual "r" refresh) — with the `removed` half of
-/// the [`ingest::FeedSyncOutcome`] their sync returned.
+/// Called once, from [`cycle::FeedCycle::run`], with the `removed` half of the
+/// [`ingest::FeedSyncOutcome`] the sync returned — so both feed paths get the
+/// teardown by sharing that cycle rather than by each remembering to call this.
 pub(crate) async fn cleanup_removed_feed_tasks(
     runner: Arc<dyn ProcessRunner>,
     removed: Vec<RemovedFeedTask>,
@@ -178,52 +172,6 @@ pub(crate) async fn cleanup_removed_feed_tasks(
     }
 }
 
-/// Per-item dispatch context for one epic's feed poll, spawned by
-/// [`FeedRunner::tick`]. Bundles the fields `tick` used to clone individually
-/// into its spawned task, so `tick` only has to build a `FeedJob` and spawn
-/// it — scheduling (interval bookkeeping, `last_run`) stays in `tick`,
-/// separate from the exec→parse→sync→notify sequence in [`FeedJob::run`].
-struct FeedJob {
-    db: Arc<dyn TaskStore>,
-    notify: mpsc::UnboundedSender<McpEvent>,
-    runner: Arc<dyn ProcessRunner>,
-    guard: Arc<FeedSyncGuard>,
-    epic_id: EpicId,
-    epic_title: String,
-    known_paths: Arc<Vec<String>>,
-}
-
-impl FeedJob {
-    /// Run one feed cycle and present its outcome the auto-poll way: notify on
-    /// success, stay quiet otherwise. Every step of the cycle itself lives in
-    /// [`FeedCycle::run`], shared with the manual "r" refresh.
-    async fn run(self) {
-        let cycle = FeedCycle {
-            db: self.db.clone(),
-            runner: self.runner.clone(),
-            guard: self.guard,
-            epic_id: self.epic_id,
-            epic_title: self.epic_title,
-            known_paths: Some(self.known_paths),
-        };
-
-        match cycle.run().await {
-            // The cycle has already torn down every removed task's worktree by
-            // the time it returns, so these notifications mean "reconciled and
-            // cleaned up" (feeds.allium RoleRoutedFeedSync).
-            FeedCycleOutcome::Synced { affected_epics, .. } => {
-                for id in &affected_epics {
-                    let _ = self.notify.send(McpEvent::EpicChanged(*id));
-                }
-            }
-            // Both already logged by the cycle. The auto-poll path adds no TUI
-            // surface, per feeds.allium FeedCommandFailure ("the TUI is NOT
-            // notified"); a dropped request is not a failure at all.
-            FeedCycleOutcome::Busy | FeedCycleOutcome::Failed(_) => {}
-        }
-    }
-}
-
 const DEFAULT_FEED_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Poll interval for the background feed task.
@@ -253,7 +201,7 @@ pub struct FeedRunner {
     guard: Arc<FeedSyncGuard>,
     /// Test-only join handles for the jobs spawned by `tick`. Production keeps
     /// firing-and-forgetting: the field, and the push that fills it, exist only
-    /// under `cfg(test)`. Tests need it because some `FeedJob::run` outcomes
+    /// under `cfg(test)`. Tests need it because some feed-cycle outcomes
     /// deliberately send no `McpEvent` — the degraded-empty-emission guard
     /// (feeds.allium: DegradedEmptyEmission) returns before any sync — so
     /// awaiting `rx` is not a usable completion signal there, and sleeping is
@@ -394,17 +342,37 @@ impl FeedRunner {
 
             self.last_run.insert(epic.id, Instant::now());
 
-            let job = FeedJob {
+            let cycle = cycle::FeedCycle {
                 db: self.db.clone(),
-                notify: self.notify.clone(),
                 runner: self.runner.clone(),
                 guard: Arc::clone(&self.guard),
                 epic_id: epic.id,
                 epic_title: epic.title,
-                known_paths: Arc::clone(&known_paths),
+                known_paths: Some(Arc::clone(&known_paths)),
             };
+            let notify = self.notify.clone();
 
-            let _handle = tokio::task::spawn(job.run());
+            // Spawned, so a slow feed command cannot stall the poll loop. The
+            // claim is taken INSIDE the cycle rather than here: `tick` must not
+            // block, so contention is resolved by whichever spawned cycle
+            // reaches try_claim first, and the loser returns Busy.
+            let _handle = tokio::task::spawn(async move {
+                match cycle.run().await {
+                    // The cycle has already torn down every removed task's
+                    // worktree by the time it returns, so these notifications
+                    // mean "reconciled and cleaned up" (feeds.allium
+                    // RoleRoutedFeedSync).
+                    FeedCycleOutcome::Synced { affected_epics, .. } => {
+                        for id in affected_epics {
+                            let _ = notify.send(McpEvent::EpicChanged(id));
+                        }
+                    }
+                    // Both already logged by the cycle. The auto-poll path adds
+                    // no TUI surface, per feeds.allium FeedCommandFailure ("the
+                    // TUI is NOT notified"); a dropped request is not a failure.
+                    FeedCycleOutcome::Busy | FeedCycleOutcome::Failed(_) => {}
+                }
+            });
             #[cfg(test)]
             self.spawned.push(_handle);
         }
@@ -548,7 +516,7 @@ mod tests {
     // auto-poll path — a command that writes to stderr while still exiting 0
     // with a valid item array must sync exactly as if it had written nothing.
     // Only the manual "r" path (src/runtime/tests.rs:3211) had this proven
-    // before; this closes the gap for FeedJob::run.
+    // before; this closes the gap for the auto-poll path.
     #[tokio::test]
     async fn tick_stderr_on_zero_exit_does_not_suppress_sync() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
@@ -638,7 +606,7 @@ mod tests {
     /// This crosses the seam the rest of the suite leaves untested. The ingest
     /// tests prove `FeedSyncOutcome::removed` is populated; the `cleanup_*` tests
     /// call `cleanup_removed_feed_tasks` directly with a hand-built `Vec`.
-    /// Neither notices if `FeedJob::run` stops passing one to the other — before
+    /// Neither notices if the cycle stops passing one to the other — before
     /// this test, deleting the fan-out call left the whole suite green. Removing
     /// the helper's `#[allow(dead_code)]` was the compiler's only check on that
     /// wiring, and it is gone now that a caller exists.

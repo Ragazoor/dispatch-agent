@@ -701,29 +701,33 @@ mod tests {
     use crate::tui::{App, EditKind};
     use tokio::sync::mpsc::unbounded_channel;
 
-    async fn runtime_with_runner(runner: Arc<dyn ProcessRunner>) -> (TuiRuntime, App) {
-        let db: Arc<dyn crate::db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-        let (tx, _rx) = unbounded_channel();
+    /// Build a `TuiRuntime` for these editor tests.
+    ///
+    /// One fixture rather than a literal per test: every `TuiRuntime` field
+    /// addition would otherwise be a nine-site edit, and one of those fields —
+    /// `feed_sync_guard` — has to be the `FeedRunner`'s own registry or the two
+    /// feed surfaces silently stop serialising against each other. Wiring that
+    /// correctly once beats warning about it nine times.
+    fn editor_runtime(
+        db: Arc<dyn crate::db::TaskStore>,
+        runner: Arc<dyn ProcessRunner>,
+        msg_tx: tokio::sync::mpsc::UnboundedSender<crate::tui::Message>,
+        todo_db: Arc<dyn crate::db::TodoStore>,
+    ) -> TuiRuntime {
         let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
         let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
         let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
+        TuiRuntime {
             task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
+            todo_svc: Arc::new(crate::service::TodoService::new(todo_db)),
             feed_runner: Some(feed_runner),
             feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
             feed_db: db.clone(),
             database: db,
-            msg_tx: tx,
+            msg_tx,
             runner,
             editor_session: Arc::new(Mutex::new(None)),
             emb_svc: EmbeddingService::new_noop(),
@@ -731,7 +735,18 @@ mod tests {
             budget_snapshot_path: std::path::PathBuf::from(
                 "/nonexistent-test-path/rate-limits.json",
             ),
-        };
+        }
+    }
+
+    async fn runtime_with_runner(runner: Arc<dyn ProcessRunner>) -> (TuiRuntime, App) {
+        let db: Arc<dyn crate::db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
+        let (tx, _rx) = unbounded_channel();
+        let rt = editor_runtime(
+            db,
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         let app = App::new(vec![]);
         (rt, app)
     }
@@ -835,34 +850,12 @@ mod tests {
         let task = seed_task(&*db).await;
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         let mut app = App::new(vec![task.clone()]);
 
         let edited_text = "--- TITLE ---\nNew title\n\
@@ -900,34 +893,12 @@ mod tests {
         assert!(task.url.is_none());
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         let mut app = App::new(vec![task.clone()]);
 
         let edited_text = "--- TITLE ---\n\n\
@@ -959,34 +930,12 @@ mod tests {
         let task = seed_task(&*db).await;
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         // Pre-set a url on the task.
         rt.task_svc
             .update_task(
@@ -1026,34 +975,12 @@ mod tests {
         assert!(task.plan_path.is_some(), "precondition: task has a plan");
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         let mut app = App::new(vec![task.clone()]);
 
         // PLAN section present but empty → clear.
@@ -1080,34 +1007,12 @@ mod tests {
         let task = seed_task(&*db).await;
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         // Pre-set a tag on the task.
         rt.task_svc
             .update_task(UpdateTaskParams::for_task(task.id).tag(Some(Some(TaskTag::Bug))))
@@ -1150,34 +1055,12 @@ mod tests {
         );
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         let mut app = App::new(vec![task.clone()]);
 
         let edited_text = "--- TITLE ---\n\n\
@@ -1212,34 +1095,12 @@ mod tests {
         let task = seed_task(&*db).await;
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         let mut app = App::new(vec![task.clone()]);
 
         // Title change only — REPO_PATH section is empty so the editor
@@ -1275,34 +1136,12 @@ mod tests {
         let task = seed_task(&*db).await;
 
         let (tx, _rx) = unbounded_channel();
-        let (feed_tx, _) = unbounded_channel();
-        // Bound first so feed_sync_guard is THIS runner's registry:
-        // a fresh FeedSyncGuard here would compile and silently
-        // serialise nothing.
-        let feed_runner = crate::feed::FeedRunner::new(db.clone(), feed_tx, runner.clone());
-        let feed_sync_guard = feed_runner.sync_guard();
-        let rt = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(db.clone(), runner.clone())),
-            epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
-            todo_svc: Arc::new(crate::service::TodoService::new(Arc::new(
-                Database::open_in_memory().await.unwrap(),
-            )
-                as Arc<dyn crate::db::TodoStore>)),
-            feed_runner: Some(feed_runner),
-            feed_sync_guard,
-            feed_invalidate_tx: None,
-            learning_svc: Arc::new(crate::service::MockLearningService),
-            feed_db: db.clone(),
-            database: db.clone(),
-            msg_tx: tx,
-            runner,
-            editor_session: Arc::new(Mutex::new(None)),
-            emb_svc: EmbeddingService::new_noop(),
-            last_change_count: std::sync::atomic::AtomicI64::new(-1),
-            budget_snapshot_path: std::path::PathBuf::from(
-                "/nonexistent-test-path/rate-limits.json",
-            ),
-        };
+        let rt = editor_runtime(
+            db.clone(),
+            runner.clone(),
+            tx,
+            Arc::new(Database::open_in_memory().await.unwrap()) as Arc<dyn crate::db::TodoStore>,
+        );
         let mut app = App::new(vec![task.clone()]);
 
         rt.exec_finalize_editor_result(

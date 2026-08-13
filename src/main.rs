@@ -524,8 +524,9 @@ fn cmd_verify_feed(command: String) -> Result<()> {
             stderr_on_success.trim()
         );
     }
-    // The SAME parse the two runtime feed paths use (auto-poll's FeedJob::run
-    // and the manual "r" exec_trigger_epic_feed), so verify-feed accepts and
+    // The SAME parse the two runtime feed paths use (they share FeedCycle::run,
+    // reached from the auto-poll tick and from the manual "r" refresh), so
+    // verify-feed accepts and
     // rejects exactly what they do — the whole point of a pre-flight check
     // (feeds.allium: FeedItemParse). Only the reporting below is CLI-specific.
     // Parsing the raw bytes rather than a lossy String also means invalid-UTF-8
