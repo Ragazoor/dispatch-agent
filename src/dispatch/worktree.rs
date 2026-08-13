@@ -494,22 +494,36 @@ pub(super) fn provision_worktree(
     })
 }
 
-/// Remove the tmux window (if it still exists) and the git worktree.
+/// `TaskTeardown` from docs/specs/tasks.allium: kill the tmux window if there is
+/// one, remove the git worktree if there is one, delete its branch best-effort.
 ///
-/// Errors are logged but not propagated for the tmux step so that the
-/// worktree removal is always attempted.
-pub fn cleanup_task(
+/// The two resources are **independent optionals**, and that is the whole point
+/// of this signature: a task owning a window but no worktree still owes step 1
+/// (`TeardownIsOwedWheneverThereIsSomethingToRelease`). This is the one
+/// implementation of that clause — its callers
+/// (`crate::runtime::TuiRuntime::exec_cleanup`, `cleanup_removed_feed_tasks`)
+/// differ only in what they do with an `Err`, and must not re-branch on the
+/// worktree themselves. Two wrappers that each decided this for themselves is
+/// exactly how the archive path came to leak windows (#4096).
+///
+/// Branch deletion is reachable only through the worktree arm, deliberately: a
+/// task that never had a worktree never had a branch either.
+pub fn teardown_task(
     repo_path: &str,
-    worktree_path: &str,
+    worktree_path: Option<&str>,
     tmux_window: Option<&str>,
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
-    tracing::info!(worktree_path, "cleaning up task");
+    tracing::info!(?worktree_path, ?tmux_window, "tearing down task");
 
     if let Some(window) = tmux_window {
         tmux::kill_window_if_present(window, runner)
             .context("failed to kill tmux window during cleanup")?;
     }
+
+    let Some(worktree_path) = worktree_path else {
+        return Ok(());
+    };
 
     let repo = expand_tilde(repo_path);
     let output = runner

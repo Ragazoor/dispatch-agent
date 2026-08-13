@@ -61,15 +61,22 @@ pub enum TaskCommand {
     /// docs/specs/tasks.allium): kill the tmux window, remove the git worktree,
     /// best-effort delete the branch.
     ///
+    /// Both resources are optional and independent — a task owning a window but
+    /// no worktree is queued here too, and gets step 1
+    /// (`TeardownIsOwedWheneverThereIsSomethingToRelease`). Only a task owning
+    /// neither is never queued at all.
+    ///
     /// `follow_up` is what a **successful** removal earns, and it is only ever
     /// applied on the removal's own completion path — never beside it. That is
     /// the gate: a failed removal leaves the task pointing at the directory that
     /// is still on disk, instead of forgetting it and stranding an orphan
-    /// (`WorktreeReleaseIsGated`).
+    /// (`WorktreeReleaseIsGated`). The gate keys on the worktree: with `worktree:
+    /// None` there is nothing to release, so the follow-up applies regardless of
+    /// what the window kill reported.
     Cleanup {
         id: TaskId,
         repo_path: String,
-        worktree: String,
+        worktree: Option<String>,
         tmux_window: Option<String>,
         follow_up: CleanupFollowUp,
     },

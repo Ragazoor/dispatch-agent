@@ -554,6 +554,37 @@ fn delete_epic_removes_from_state_and_tasks() {
         .any(|c| matches!(c, Command::Epic(crate::tui::commands::EpicCommand::Delete(id)) if *id == EpicId(10))));
 }
 
+/// #4096 on the epic-delete path: the subtree's rows all go, so a subtask that
+/// owns only a window must still have it reclaimed — nothing will name it again
+/// (`TeardownIsOwedWheneverThereIsSomethingToRelease`).
+#[test]
+fn delete_epic_tears_down_a_subtask_that_owns_only_a_window() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic(10)];
+
+    let mut subtask = make_task(1, TaskStatus::Running);
+    subtask.epic_id = Some(EpicId(10));
+    subtask.worktree = None;
+    subtask.tmux_window = Some("task-1".to_string());
+    app.board.tasks = vec![subtask];
+
+    let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Delete(
+        EpicId(10),
+    )));
+
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup {
+                worktree: None,
+                tmux_window: Some(w),
+                ..
+            }) if w == "task-1"
+        )),
+        "the subtask's window must be reclaimed with its row, got: {cmds:?}"
+    );
+}
+
 #[test]
 fn delete_epic_cleans_up_worktrees_of_sub_epic_subtasks() {
     // `EpicCrud::delete_epic` deletes the whole subtree (delete_epic_recursive
@@ -581,7 +612,7 @@ fn delete_epic_cleans_up_worktrees_of_sub_epic_subtasks() {
         .iter()
         .filter_map(|c| match c {
             Command::Task(crate::tui::commands::TaskCommand::Cleanup { worktree, .. }) => {
-                Some(worktree.as_str())
+                worktree.as_deref()
             }
             _ => None,
         })

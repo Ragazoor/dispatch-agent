@@ -1330,7 +1330,7 @@ async fn exec_cleanup_failure_keeps_the_worktree_pointer() {
     let handle = rt.exec_cleanup(
         id,
         "/repo".into(),
-        worktree.into(),
+        Some(worktree.into()),
         None,
         crate::tui::commands::CleanupFollowUp::ClearPointer,
     );
@@ -1370,7 +1370,7 @@ async fn exec_cleanup_success_reports_its_follow_up() {
     let handle = rt.exec_cleanup(
         id,
         "/repo".into(),
-        worktree.into(),
+        Some(worktree.into()),
         None,
         crate::tui::commands::CleanupFollowUp::DeleteRow,
     );
@@ -1404,7 +1404,7 @@ async fn exec_cleanup_failure_does_not_delete_the_row() {
     let handle = rt.exec_cleanup(
         id,
         "/repo".into(),
-        worktree.into(),
+        Some(worktree.into()),
         None,
         crate::tui::commands::CleanupFollowUp::DeleteRow,
     );
@@ -1426,6 +1426,124 @@ async fn exec_cleanup_failure_does_not_delete_the_row() {
             Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded { .. })
         ),
         "a failed removal must never report success, got: {msg:?}"
+    );
+}
+
+/// Seed one archived task that owns `window` and no worktree — the row shape
+/// whose window archive/delete used to leak (#4096).
+async fn window_only_cleanup_fixture(
+    script: Vec<anyhow::Result<std::process::Output>>,
+    window: &str,
+) -> (
+    TuiRuntime,
+    models::TaskId,
+    mpsc::UnboundedReceiver<Message>,
+    Arc<MockProcessRunner>,
+) {
+    let db = test_db().await;
+    let (tx, rx) = mpsc::unbounded_channel();
+    let runner = Arc::new(MockProcessRunner::new(script));
+    let rt = make_runtime(db.clone(), tx, runner.clone()).await;
+
+    let task = create_task_returning(
+        &*db,
+        "Window but no worktree",
+        "desc",
+        "/repo",
+        None,
+        models::TaskStatus::Archived,
+    )
+    .await
+    .unwrap();
+    db.patch_task(task.id, &db::TaskPatch::new().tmux_window(Some(window)))
+        .await
+        .unwrap();
+
+    (rt, task.id, rx, runner)
+}
+
+/// `TeardownIsOwedWheneverThereIsSomethingToRelease` in docs/specs/tasks.allium:
+/// a task with a window and no worktree still owes step 1. Before #4096
+/// `take_cleanup` dropped the whole command for this shape, so nothing ever ran.
+#[tokio::test]
+async fn exec_cleanup_kills_the_window_of_a_task_with_no_worktree() {
+    let (rt, id, mut rx, runner) = window_only_cleanup_fixture(
+        vec![
+            MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
+            MockProcessRunner::ok(),                        // tmux kill-window
+        ],
+        "task-1",
+    )
+    .await;
+
+    rt.exec_cleanup(
+        id,
+        "/repo".into(),
+        None,
+        Some("task-1".into()),
+        crate::tui::commands::CleanupFollowUp::DeleteRow,
+    )
+    .await
+    .unwrap();
+
+    let calls = runner.flattened_calls();
+    assert!(
+        calls.iter().any(|c| c.contains("kill-window")),
+        "the window must be reclaimed even with no worktree, got: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.contains("worktree remove")),
+        "there is no worktree to remove, got: {calls:?}"
+    );
+
+    let msg = rx.recv().await.unwrap();
+    assert!(
+        matches!(
+            msg,
+            Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
+                follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+                ..
+            })
+        ),
+        "the follow-up must come back so the row is deleted, got: {msg:?}"
+    );
+}
+
+/// The gate is keyed on step 2 and only on step 2 (`WorktreeReleaseIsGated`).
+/// With no worktree there is nothing to release and nothing to retry, so a failed
+/// window kill is warn-logged and the follow-up still applies — withholding it
+/// would strand the row instead of the resource.
+#[tokio::test]
+async fn exec_cleanup_window_only_kill_failure_still_applies_the_follow_up() {
+    let (rt, id, mut rx, _runner) = window_only_cleanup_fixture(
+        vec![
+            MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
+            MockProcessRunner::fail("can't find window"),   // kill-window fails
+        ],
+        "task-1",
+    )
+    .await;
+
+    rt.exec_cleanup(
+        id,
+        "/repo".into(),
+        None,
+        Some("task-1".into()),
+        crate::tui::commands::CleanupFollowUp::DeleteRow,
+    )
+    .await
+    .unwrap();
+
+    let msg = rx.recv().await.unwrap();
+    assert!(
+        matches!(
+            msg,
+            Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
+                follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+                ..
+            })
+        ),
+        "a window-only teardown must not withhold its follow-up, got: {msg:?}"
     );
 }
 
@@ -1469,7 +1587,7 @@ async fn exec_cleanup_tears_down_even_if_another_row_names_the_worktree() {
     rt.exec_cleanup(
         id,
         "/repo".into(),
-        worktree.into(),
+        Some(worktree.into()),
         Some("task-1".into()),
         crate::tui::commands::CleanupFollowUp::DeleteRow,
     )

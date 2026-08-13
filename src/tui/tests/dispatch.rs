@@ -443,6 +443,39 @@ fn retry_fresh_emits_cleanup_and_dispatch() {
     )));
 }
 
+/// #4096 on the retry path: a crashed task whose worktree pointer is already
+/// clear still owns a window, and re-dispatching over it must reclaim it rather
+/// than leave a second window behind
+/// (`TeardownIsOwedWheneverThereIsSomethingToRelease`).
+#[test]
+fn retry_fresh_tears_down_a_window_with_no_worktree() {
+    let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
+    app.board.tasks[0].tmux_window = Some("task-4".to_string());
+    app.board.tasks[0].worktree = None;
+    app.board.tasks[0].sub_status = SubStatus::Crashed;
+    app.input.mode = InputMode::ConfirmRetry(TaskId(4));
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::RetryFresh(TaskId(4)),
+    ));
+
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup {
+                worktree: None,
+                tmux_window: Some(w),
+                ..
+            }) if w == "task-4"
+        )),
+        "the stale window must be torn down before the re-dispatch, got: {cmds:?}"
+    );
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Task(crate::tui::commands::TaskCommand::DispatchAgent { .. })
+    )));
+}
+
 #[test]
 fn crashed_card_with_no_window_shows_detached_not_crashed() {
     // Detached out-prioritizes Crashed when tmux_window is None

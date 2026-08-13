@@ -2027,9 +2027,9 @@ fn cleanup_kills_window_and_removes_worktree() {
         MockProcessRunner::ok(), // git branch -D (best-effort)
     ]);
 
-    cleanup_task(
+    teardown_task(
         "/repo",
-        "/repo/.worktrees/42-fix-bug",
+        Some("/repo/.worktrees/42-fix-bug"),
         Some("task-42"),
         &mock,
     )
@@ -2055,7 +2055,7 @@ fn cleanup_succeeds_when_worktree_already_removed() {
         MockProcessRunner::ok(), // git branch -D (best-effort)
     ]);
 
-    cleanup_task("/repo", "/repo/.worktrees/42-fix-bug", None, &mock).unwrap();
+    teardown_task("/repo", Some("/repo/.worktrees/42-fix-bug"), None, &mock).unwrap();
 }
 
 #[test]
@@ -2804,7 +2804,7 @@ fn provision_worktree_git_add_fails_returns_error() {
     assert!(result.is_err(), "git worktree add failure should propagate");
 }
 
-// --- cleanup_task edge cases ---
+// --- teardown_task edge cases ---
 
 #[test]
 fn cleanup_skips_kill_when_window_not_found() {
@@ -2815,9 +2815,9 @@ fn cleanup_skips_kill_when_window_not_found() {
         MockProcessRunner::ok(),                  // git branch -D (best-effort)
     ]);
 
-    cleanup_task(
+    teardown_task(
         "/repo",
-        "/repo/.worktrees/42-fix-bug",
+        Some("/repo/.worktrees/42-fix-bug"),
         Some("task-42"),
         &mock,
     )
@@ -2912,18 +2912,76 @@ fn finish_task_no_tmux_window_skips_tmux_entirely() {
 }
 
 // ---------------------------------------------------------------------------
-// cleanup_task — additional branch coverage
+// teardown_task — additional branch coverage
 // ---------------------------------------------------------------------------
 
+/// `TeardownIsOwedWheneverThereIsSomethingToRelease` in docs/specs/tasks.allium:
+/// step 1 is owed on the window's presence alone. Before #4096 the archive/delete
+/// wrapper skipped the whole teardown for this row shape and leaked the window.
 #[test]
-fn cleanup_task_no_tmux_window_arg_skips_tmux() {
+fn teardown_task_kills_window_when_there_is_no_worktree() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window → true
+        MockProcessRunner::ok(),                         // tmux kill-window
+    ]);
+
+    teardown_task("/repo", None, Some("task-42"), &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    assert!(
+        calls
+            .iter()
+            .any(|(prog, args)| prog == "tmux" && args.iter().any(|a| a == "kill-window")),
+        "the window must be killed even with no worktree, got: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.0 == "git"),
+        "no git calls expected with no worktree — no worktree means no branch \
+         either, got: {calls:?}"
+    );
+}
+
+/// The other half of the same clause: a row owning neither resource runs nothing.
+#[test]
+fn teardown_task_with_neither_worktree_nor_window_runs_no_commands() {
+    let mock = MockProcessRunner::new(vec![]);
+
+    teardown_task("/repo", None, None, &mock).unwrap();
+
+    assert!(
+        mock.recorded_calls().is_empty(),
+        "a stateless row must run no commands, got: {:?}",
+        mock.recorded_calls()
+    );
+}
+
+/// The primitive reports a window-only kill failure to its caller; deciding what
+/// that means for the follow-up is the wrapper's job (`WorktreeReleaseIsGated`).
+#[test]
+fn teardown_task_window_only_kill_failure_is_an_error() {
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window → true
+        MockProcessRunner::fail("can't find window"),    // kill-window fails
+    ]);
+
+    let err = teardown_task("/repo", None, Some("task-42"), &mock).unwrap_err();
+
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("failed to kill tmux window"),
+        "expected kill-window failure in error chain, got: {msg}"
+    );
+}
+
+#[test]
+fn teardown_task_no_tmux_window_arg_skips_tmux() {
     // tmux_window=None → cleanup goes straight to worktree remove + branch -D.
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok(), // git worktree remove
         MockProcessRunner::ok(), // git branch -D (best-effort)
     ]);
 
-    cleanup_task("/repo", "/repo/.worktrees/42-fix-bug", None, &mock).unwrap();
+    teardown_task("/repo", Some("/repo/.worktrees/42-fix-bug"), None, &mock).unwrap();
 
     let calls = mock.recorded_calls();
     assert!(
@@ -2934,14 +2992,14 @@ fn cleanup_task_no_tmux_window_arg_skips_tmux() {
 }
 
 #[test]
-fn cleanup_task_other_remove_failure_propagates() {
+fn teardown_task_other_remove_failure_propagates() {
     // git worktree remove fails with stderr that is NOT "is not a working tree"
-    // → cleanup_task surfaces an error to the caller.
+    // → teardown_task surfaces an error to the caller.
     let mock = MockProcessRunner::new(vec![MockProcessRunner::fail(
         "fatal: some unexpected git failure",
     )]);
 
-    let err = cleanup_task("/repo", "/repo/.worktrees/42-fix-bug", None, &mock).unwrap_err();
+    let err = teardown_task("/repo", Some("/repo/.worktrees/42-fix-bug"), None, &mock).unwrap_err();
 
     let msg = format!("{err:#}");
     assert!(
@@ -2951,17 +3009,17 @@ fn cleanup_task_other_remove_failure_propagates() {
 }
 
 #[test]
-fn cleanup_task_kill_window_failure_propagates() {
-    // tmux kill-window fails → cleanup_task returns an error and does NOT
+fn teardown_task_kill_window_failure_propagates() {
+    // tmux kill-window fails → teardown_task returns an error and does NOT
     // attempt the worktree remove.
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"task-42\n"), // has_window → true
         MockProcessRunner::fail("can't find window"),    // kill-window fails
     ]);
 
-    let err = cleanup_task(
+    let err = teardown_task(
         "/repo",
-        "/repo/.worktrees/42-fix-bug",
+        Some("/repo/.worktrees/42-fix-bug"),
         Some("task-42"),
         &mock,
     )
@@ -2981,12 +3039,12 @@ fn cleanup_task_kill_window_failure_propagates() {
     );
 }
 
-// --- cleanup_task has_window runner error path ---
+// --- teardown_task has_window runner error path ---
 
 #[test]
-fn cleanup_task_has_window_runner_error_warns_and_continues() {
+fn teardown_task_has_window_runner_error_warns_and_continues() {
     // When runner.run() itself returns Err (e.g. tmux not installed), has_window
-    // propagates the error to cleanup_task, which logs a warning and continues
+    // propagates the error to teardown_task, which logs a warning and continues
     // rather than aborting — worktree remove must still run.
     let mock = MockProcessRunner::new(vec![
         Err(anyhow::anyhow!("tmux not installed")), // has_window → runner error
@@ -2994,9 +3052,9 @@ fn cleanup_task_has_window_runner_error_warns_and_continues() {
         MockProcessRunner::ok(),                    // git branch -D (best-effort)
     ]);
 
-    cleanup_task(
+    teardown_task(
         "/repo",
-        "/repo/.worktrees/42-fix-bug",
+        Some("/repo/.worktrees/42-fix-bug"),
         Some("task-42"),
         &mock,
     )

@@ -479,6 +479,26 @@ rule MoveTaskToEpic {
 -- A task whose worktree or window has already been removed out of band tears
 -- down cleanly: step 2 treats an already-absent worktree as released.
 --
+-- TeardownIsOwedWheneverThereIsSomethingToRelease. The teardown is performed
+-- when the task owns a worktree OR a tmux window; only a task owning NEITHER
+-- runs no commands at all. The two columns are independent, so all four
+-- combinations are reachable, and each step is owed exactly on its own
+-- condition:
+--
+--   * worktree and window -> steps 1, 2, 3.
+--   * window, no worktree -> step 1 only. There is no branch to delete either,
+--     because a task that never had a worktree never had a branch.
+--   * worktree, no window -> steps 2 and 3.
+--   * neither -> nothing.
+--
+-- Step 1 is NOT contingent on step 2 having something to remove. Making the
+-- whole teardown conditional on the worktree leaks the window of a window-only
+-- task, and it is what the archive/delete path did until #4096 while the feed
+-- path did not — the divergence that motivated collapsing both onto one
+-- primitive, src/dispatch/worktree.rs::teardown_task, which takes the worktree
+-- and the window as independent optionals and is now the only implementation of
+-- this clause.
+--
 -- WorktreeReleaseIsGated. Step 2 either releases the worktree or it does not,
 -- and the difference is observable. A FAILED removal:
 --
@@ -502,6 +522,16 @@ rule MoveTaskToEpic {
 -- change nothing observable), and DeleteEpic in epics.allium (it removes the
 -- subtask rows in one operation, leaving nothing that could hold a pointer).
 --
+-- The gate is keyed on step 2, and ONLY on step 2. A task with no worktree has
+-- nothing to release: ArchiveTask and DeleteTask both bind released from
+-- worktree_removed, which is vacuously true there, so the requesting operation's
+-- follow-up — the pointer clear, or the row delete — is applied even if step 1
+-- FAILED. Such a failure is warn-logged and not surfaced. It must not withhold
+-- the follow-up: there is no directory left on disk for a retained pointer to
+-- make reachable, so withholding would gate a row delete on a tmux call and
+-- strand the row instead of the resource. Only the worktree arm can produce the
+-- reported-and-ERROR-logged failure of (a) and (b).
+--
 
 -- Referenced by: ArchiveTask and DeleteTask below (whose own ensures clauses
 -- remain the normative statement of their postconditions), and by the feed
@@ -510,8 +540,12 @@ rule MoveTaskToEpic {
 -- perform this same teardown rather than dropping the row and orphaning the
 -- worktree of an in-flight agent.
 --
--- Implementation: src/dispatch/worktree.rs::cleanup_task; the reference
--- sequencing is src/runtime/tasks.rs::exec_cleanup.
+-- Implementation: src/dispatch/worktree.rs::teardown_task, the one primitive
+-- that performs all three steps. Its two callers are policy wrappers over it and
+-- differ only in what they do with a failure: src/runtime/tasks.rs::exec_cleanup
+-- gates the follow-up (see below), and src/feed/mod.rs::cleanup_removed_feed_tasks
+-- warn-logs. Neither may branch on the worktree itself — that branch lives in the
+-- primitive, per TeardownIsOwedWheneverThereIsSomethingToRelease.
 --
 -- WorktreeReleaseIsGated is implemented by the follow-up that travels with the
 -- teardown: src/tui/commands/task.rs::CleanupFollowUp, chosen at the request
@@ -554,23 +588,21 @@ rule MoveTaskToEpic {
 -- a worktree or a tmux window — the delete is unconditional either way), which
 -- reach both feed entry points on src/feed/ingest/mod.rs::FeedSyncOutcome.
 -- cleanup_removed_feed_tasks groups them by repo_path and runs a repo's
--- removals sequentially — cleanup_task shells git against the shared checkout,
+-- removals sequentially — teardown_task shells git against the shared checkout,
 -- so concurrent removals in one repo would contend on its index lock — while
 -- distinct repos proceed in parallel. Failures are warn-logged, never
 -- surfaced: feed reconciliation is background work.
 --
--- How the feed path reads step 3. cleanup_removed_feed_tasks branches on the
--- removed row's worktree. With a worktree it calls
--- src/dispatch/worktree.rs::cleanup_task, which performs all three steps.
--- WITHOUT a worktree it only reclaims the tmux window
--- (src/tmux.rs::kill_window_if_present), and a row owning neither worktree nor
--- window runs no commands at all. So step 3 is in practice contingent on step
--- 2 having something to remove: branch deletion is reached only through the
--- worktree arm, because cleanup_task is the only thing that runs `git branch
--- -D`. This is deliberate — a feed task that never had a worktree never had a
--- branch either, so there is nothing to delete — and it is pinned by
--- src/feed/mod.rs::cleanup_kills_window_only_when_there_is_no_worktree and
--- cleanup_of_a_stateless_row_runs_no_commands.
+-- How step 3 is reached, on every path. Branch deletion lives inside
+-- teardown_task's worktree arm — that arm is the only thing that runs
+-- `git branch -D` — so step 3 is contingent on step 2 having something to
+-- remove. This is deliberate and not a per-path quirk: a task that never had a
+-- worktree never had a branch either, so there is nothing to delete. Step 1 is
+-- independent of both (TeardownIsOwedWheneverThereIsSomethingToRelease). Pinned
+-- on the primitive by src/dispatch/tests.rs::teardown_task_kills_window_when_there_is_no_worktree
+-- and teardown_task_with_neither_worktree_nor_window_runs_no_commands, and on the
+-- feed wrapper by src/feed/mod.rs::cleanup_kills_window_only_when_there_is_no_worktree
+-- and cleanup_of_a_stateless_row_runs_no_commands.
 -- Coverage of the feed path: the src/feed/mod.rs cleanup_* tests
 -- (cleanup_removes_worktree_and_kills_window,
 -- cleanup_kills_window_only_when_there_is_no_worktree,
@@ -587,18 +619,19 @@ rule MoveTaskToEpic {
 -- That is the load-bearing test: drop the id prefix in provision_worktree and it
 -- is the only one that fails.
 --
--- The CONSEQUENCE — that no teardown path checks for sharing — has one tripwire
--- per path, each fabricating the impossible two-rows-one-path state and
--- asserting the teardown still removes the worktree, so a reinstated guard fails
--- the suite rather than passing silently. On the feed path,
--- src/feed/mod.rs::cleanup_removes_the_worktree_even_if_another_row_names_it; on
--- the archive/delete path,
+-- The CONSEQUENCE — that no teardown path checks for sharing — has ONE tripwire,
+-- fabricating the impossible two-rows-one-path state and asserting the teardown
+-- still removes the worktree, so a reinstated guard fails the suite rather than
+-- passing silently:
 -- src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree.
--- These two guard different call graphs, but they are not equally earned:
--- cleanup_removed_feed_tasks takes no store handle at all, so a guard there
--- would need a signature change, whereas exec_cleanup has one in scope. When the
--- two teardown wrappers are unified into one primitive, the tripwires must
--- collapse to one deliberately rather than leaving an orphan behind.
+--
+-- It sits on the archive/delete path deliberately, and there used to be a second
+-- one on the feed path (cleanup_removes_the_worktree_even_if_another_row_names_it).
+-- The pair collapsed when #4096 unified both wrappers onto teardown_task: the
+-- primitive takes no store handle, so a guard inside it would need a signature
+-- change to be written at all, and of the two wrappers only exec_cleanup has a
+-- handle in scope — it is the single place where a guard could be reintroduced
+-- cheaply, so it is the place worth guarding.
 
 rule ArchiveTask {
     when: ArchiveTask(task)
@@ -733,7 +766,11 @@ rule DeleteTask {
         -- is NOT deleted. The task stays archived, keeps its worktree and tmux
         -- pointers, the failure is surfaced and logged at ERROR, and pressing
         -- delete again retries the removal. A task with no worktree has nothing
-        -- to release, so it is deleted immediately.
+        -- to release, so it is deleted whatever the teardown reports — a
+        -- window-only row still gets its tmux window killed first (step 1 of
+        -- TaskTeardown), and a failure there is warn-logged without withholding
+        -- the delete. A row owning neither worktree nor window is deleted
+        -- immediately, with no teardown at all.
         -- The resource release above is TaskTeardown (see the conceptual
         -- block at the head of this section) — the same teardown
         -- ArchiveTask performs: tmux window killed, worktree removed, and

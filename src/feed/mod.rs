@@ -82,7 +82,10 @@ pub(crate) async fn recalculate_epic_status_after_feed(
 /// teardown `ArchiveTask` and `DeleteTask` perform — `TaskTeardown` at the head
 /// of the archive section of `docs/specs/tasks.allium`: kill the tmux window,
 /// remove the git worktree, and delete the branch best-effort.
-/// `crate::dispatch::cleanup_task` performs all three.
+/// `crate::dispatch::teardown_task` performs all three, and which of them a given
+/// row owes is *its* decision, not this function's — see
+/// `TeardownIsOwedWheneverThereIsSomethingToRelease` in that spec. This wrapper
+/// contributes exactly two policies: per-repo serialisation, and warn-on-failure.
 ///
 /// # Why there is no shared-worktree check here
 ///
@@ -93,12 +96,14 @@ pub(crate) async fn recalculate_epic_status_after_feed(
 /// Worth stating here because this function is the tempting place to "restore" a
 /// safety net: do **not**. Beyond buying nothing, it would cost a store handle
 /// this function does not currently take, a round-trip per removed task, and an
-/// error path with no correct answer.
+/// error path with no correct answer. The tripwire against a reinstated guard now
+/// lives on the one wrapper that *does* hold a store handle — see that spec
+/// block's coverage note.
 ///
 /// # Per-repo serialisation
 ///
 /// Removals are grouped by `repo_path` and run sequentially within a repo.
-/// `cleanup_task` shells `git -C <repo> worktree remove --force` and
+/// `teardown_task` shells `git -C <repo> worktree remove --force` and
 /// `git branch -D` against the *shared* checkout, and a reviews epic's tasks
 /// overwhelmingly share one repo — running those concurrently would contend on
 /// that repo's index lock and fail spuriously. Different repos have no shared
@@ -131,33 +136,19 @@ pub(crate) async fn cleanup_removed_feed_tasks(
         let runner = runner.clone();
         handles.push(tokio::task::spawn_blocking(move || {
             for task in tasks {
-                match &task.worktree {
-                    // No worktree, so there is only a window to reclaim — and
-                    // possibly not even that, for a plain card.
-                    None => {
-                        let Some(window) = &task.tmux_window else {
-                            continue;
-                        };
-                        if let Err(err) = crate::tmux::kill_window_if_present(window, &*runner) {
-                            tracing::warn!(
-                                task_id = task.id.0,
-                                "feed cleanup: kill_window_if_present failed: {err:#}"
-                            );
-                        }
-                    }
-                    Some(worktree) => {
-                        if let Err(err) = crate::dispatch::cleanup_task(
-                            &task.repo_path,
-                            worktree,
-                            task.tmux_window.as_deref(),
-                            &*runner,
-                        ) {
-                            tracing::warn!(
-                                task_id = task.id.0,
-                                "feed cleanup: cleanup_task failed: {err:#}"
-                            );
-                        }
-                    }
+                // No branch on `worktree` here: which steps a row owes is the
+                // primitive's decision, and duplicating it in a wrapper is what
+                // #4096 fixed. A row owning neither resource runs no commands.
+                if let Err(err) = crate::dispatch::teardown_task(
+                    &task.repo_path,
+                    task.worktree.as_deref(),
+                    task.tmux_window.as_deref(),
+                    &*runner,
+                ) {
+                    tracing::warn!(
+                        task_id = task.id.0,
+                        "feed cleanup: teardown_task failed: {err:#}"
+                    );
                 }
             }
         }));
@@ -1743,7 +1734,7 @@ mod tests {
     use std::collections::HashSet;
     use std::sync::{Condvar, Mutex};
 
-    use crate::db::{CreateTaskRequest, RemovedFeedTask, TaskPatch, TaskRead};
+    use crate::db::{RemovedFeedTask, TaskPatch};
     use crate::models::TaskId;
     use crate::process::MockProcessRunner;
 
@@ -1799,80 +1790,14 @@ mod tests {
         );
     }
 
-    /// The feed teardown removes the worktree unconditionally — deliberately.
-    ///
-    /// Hand-builds the state the removed sharing exception described — a second
-    /// live row naming the very same worktree, which the dispatch flow cannot
-    /// produce — and pins that the feed teardown removes it anyway. A reinstated
-    /// guard fails here rather than passing silently. `WorktreeIsNeverShared` in
-    /// docs/specs/tasks.allium is the argument; this is only its tripwire.
-    #[tokio::test]
-    async fn cleanup_removes_the_worktree_even_if_another_row_names_it() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
-        let other = db
-            .create_task(CreateTaskRequest {
-                title: "Impossible sharer",
-                description: "",
-                repo_path: "/repo/a",
-                plan: None,
-                status: TaskStatus::Running,
-                base_branch: "main",
-                epic_id: None,
-                sort_order: None,
-                tag: None,
-                wrap_up_mode: None,
-                auto_run_plan: false,
-            })
-            .await
-            .unwrap();
-        db.patch_task(
-            other,
-            &TaskPatch::new().worktree(Some("/repo/a/.worktrees/999-shared")),
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            db.get_task(other)
-                .await
-                .unwrap()
-                .unwrap()
-                .worktree
-                .as_deref(),
-            Some("/repo/a/.worktrees/999-shared"),
-            "precondition: a live DB row really does name the same worktree, so \
-             a reinstated check would have something to trip on"
-        );
-
-        let runner = Arc::new(MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
-            MockProcessRunner::ok(), // tmux kill-window
-            MockProcessRunner::ok(), // git worktree remove
-            MockProcessRunner::ok(), // git branch -D (best effort)
-        ]));
-        cleanup_removed_feed_tasks(
-            runner.clone(),
-            vec![removed_task(
-                999,
-                "/repo/a",
-                Some("/repo/a/.worktrees/999-shared"),
-                Some("dispatch:pr-1"),
-            )],
-        )
-        .await;
-
-        let calls = runner.flattened_calls();
-        assert!(
-            calls
-                .iter()
-                .any(|c| c.contains("worktree remove")
-                    && c.contains("/repo/a/.worktrees/999-shared")),
-            "the worktree goes regardless of what other rows name, got: {calls:?}"
-        );
-        assert!(
-            calls.iter().any(|c| c.contains("kill-window")),
-            "and so does the window, got: {calls:?}"
-        );
-    }
+    // The tripwire against a reinstated shared-worktree guard used to be
+    // duplicated here (cleanup_removes_the_worktree_even_if_another_row_names_it).
+    // #4096 collapsed both teardown wrappers onto `dispatch::teardown_task`, and
+    // with them the pair: the surviving tripwire is
+    // `src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`,
+    // on the one wrapper that holds a store handle and could therefore acquire
+    // such a guard cheaply. See the `WorktreeIsNeverShared` coverage note in
+    // docs/specs/tasks.allium.
 
     #[tokio::test]
     async fn cleanup_kills_window_only_when_there_is_no_worktree() {

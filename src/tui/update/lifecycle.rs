@@ -293,12 +293,15 @@ impl App {
         vec![]
     }
 
-    /// Permanent removal, GATED on the teardown: when the task owns a worktree
+    /// Permanent removal, GATED on the teardown: when the task owns live resources
     /// the row delete is the cleanup's follow-up, not a sibling command, so a
     /// failed `git worktree remove` leaves the row in place — still archived,
     /// still pointing at what is on disk, and retryable by deleting again
-    /// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium). With no worktree
-    /// there is nothing to release and the delete is immediate.
+    /// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium). A task owning a
+    /// window but no worktree also goes through the cleanup (for the kill), and
+    /// still gets deleted whatever that reports: the gate keys on the worktree, so
+    /// with nothing to release there is nothing to withhold the delete for. Only a
+    /// task owning neither resource is deleted immediately, with no teardown.
     ///
     /// The card leaves the board either way; a failed cleanup pulls it back with
     /// a `RefreshFromDb` (see `handle_cleanup_failed`).

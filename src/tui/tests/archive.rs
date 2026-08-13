@@ -450,8 +450,95 @@ fn cleanup_succeeded_with_nothing_follow_up_writes_nothing() {
     );
 }
 
+/// #4096: a task owning a window but no worktree still owes the kill
+/// (`TeardownIsOwedWheneverThereIsSomethingToRelease` in docs/specs/tasks.allium).
+/// The command's *contents* are asserted, not just its presence — a Cleanup that
+/// dropped the window name would satisfy a bare `matches!`.
 #[test]
-fn archive_task_without_worktree_no_cleanup() {
+fn archive_task_with_window_but_no_worktree_emits_cleanup() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = None;
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Archive(
+        TaskId(1),
+    )));
+
+    let (worktree, window) = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup {
+                worktree,
+                tmux_window,
+                ..
+            }) => Some((worktree.clone(), tmux_window.clone())),
+            _ => None,
+        })
+        .expect("archiving a task that still owns a tmux window must tear it down");
+    assert_eq!(worktree, None, "there is no worktree to remove");
+    assert_eq!(
+        window.as_deref(),
+        Some("dev:1-test"),
+        "the window to kill must travel with the command"
+    );
+}
+
+/// The delete half of #4096. The row delete is the teardown's follow-up here,
+/// which is what makes the kill happen at all — and it still lands, because the
+/// gate keys on the worktree and there is none (`WorktreeReleaseIsGated`).
+#[test]
+fn delete_task_with_window_but_no_worktree_tears_down_the_window() {
+    let mut task = make_task(1, TaskStatus::Archived);
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Delete(
+        TaskId(1),
+    )));
+
+    let follow_up = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup {
+                worktree: None,
+                tmux_window,
+                follow_up,
+                ..
+            }) if tmux_window.as_deref() == Some("dev:1-test") => Some(*follow_up),
+            _ => None,
+        })
+        .expect("deleting a task that still owns a tmux window must tear it down");
+    assert_eq!(follow_up, CleanupFollowUp::DeleteRow);
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Delete(_))
+        )),
+        "the delete is the teardown's follow-up, never a sibling, got: {cmds:?}"
+    );
+
+    // And the follow-up arrives: exec_cleanup reports success for a window-only
+    // teardown whatever the kill did (src/runtime/tests.rs::
+    // exec_cleanup_window_only_kill_failure_still_applies_the_follow_up).
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::CleanupSucceeded {
+            id: TaskId(1),
+            follow_up,
+        },
+    ));
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Delete(TaskId(1)))
+        )),
+        "the row must still be deleted, got: {cmds:?}"
+    );
+}
+
+/// Only a task owning *neither* resource skips the teardown entirely.
+#[test]
+fn archive_task_without_worktree_or_window_no_cleanup() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Archive(
         TaskId(1),

@@ -735,6 +735,11 @@ impl TuiRuntime {
     /// same worktree. The argument is `WorktreeIsNeverShared` in that spec — read
     /// it there before adding a guard here.
     ///
+    /// `worktree` is optional because a task can own a window and no worktree, and
+    /// still owes step 1 (`TeardownIsOwedWheneverThereIsSomethingToRelease`). This
+    /// function does not branch on it — `dispatch::teardown_task` does; the branch
+    /// here is only over what a failure means for the follow-up.
+    ///
     /// The removal shells out to git, so it runs detached — awaiting it here
     /// would stall the command drain (and with it input and rendering) for as
     /// long as git takes. That is why `follow_up` travels *with* the cleanup and
@@ -747,7 +752,7 @@ impl TuiRuntime {
         &self,
         id: TaskId,
         repo_path: String,
-        worktree: String,
+        worktree: Option<String>,
         tmux_window: Option<String>,
         follow_up: crate::tui::commands::CleanupFollowUp,
     ) -> tokio::task::JoinHandle<()> {
@@ -755,14 +760,28 @@ impl TuiRuntime {
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
-            let msg = match dispatch::cleanup_task(
+            let result = dispatch::teardown_task(
                 &repo_path,
-                &worktree,
+                worktree.as_deref(),
                 tmux_window.as_deref(),
                 &*runner,
-            ) {
-                Ok(()) => crate::tui::messages::TaskMessage::CleanupSucceeded { id, follow_up },
-                Err(e) => {
+            );
+            let msg = match (result, worktree) {
+                (Ok(()), _) => {
+                    crate::tui::messages::TaskMessage::CleanupSucceeded { id, follow_up }
+                }
+                // No worktree means nothing to release, so the gate does not
+                // apply and the follow-up still stands: withholding it would
+                // strand the row rather than protect a resource. Warn-logged
+                // only, matching the feed wrapper.
+                (Err(e), None) => {
+                    tracing::warn!(
+                        task_id = id.0,
+                        "tmux window teardown failed for a task with no worktree: {e:#}"
+                    );
+                    crate::tui::messages::TaskMessage::CleanupSucceeded { id, follow_up }
+                }
+                (Err(e), Some(worktree)) => {
                     let error = format!("{e:#}");
                     // The only durable record of a failed teardown. Without it a
                     // leftover worktree cannot be attributed to anything after
