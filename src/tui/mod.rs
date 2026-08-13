@@ -1881,13 +1881,22 @@ impl App {
 
     /// Take worktree/tmux fields from a task and build a Cleanup command.
     /// Returns `None` if the task has no worktree (still clears tmux_window).
-    pub(in crate::tui) fn take_cleanup(task: &mut Task) -> Option<Command> {
+    ///
+    /// Clearing the board's copy here is optimism, not the authority: the DB
+    /// write that forgets the path is `follow_up`, applied only once the removal
+    /// has succeeded (`WorktreeReleaseIsGated` in docs/specs/tasks.allium). A
+    /// failed removal refreshes the board from the row it did not change.
+    pub(in crate::tui) fn take_cleanup(
+        task: &mut Task,
+        follow_up: crate::tui::commands::CleanupFollowUp,
+    ) -> Option<Command> {
         match task.worktree.take() {
             Some(wt) => Some(Command::Task(crate::tui::commands::TaskCommand::Cleanup {
                 id: task.id,
                 repo_path: task.repo_path.clone(),
                 worktree: wt,
                 tmux_window: task.tmux_window.take(),
+                follow_up,
             })),
             None => {
                 task.tmux_window.take();

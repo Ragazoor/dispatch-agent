@@ -249,8 +249,13 @@ fn navigate_row_clamps_to_task_count_in_flat_mode_with_epic_headers() {
     );
 }
 
+/// Deleting a task that owns a worktree is GATED on the removal: the row is
+/// dropped by the cleanup's success path, so the delete must NOT be emitted
+/// beside the cleanup (`WorktreeReleaseIsGated` in docs/specs/tasks.allium).
+/// Emitting both is what let a failed removal drop the row anyway and strand
+/// the directory with nothing referencing it.
 #[test]
-fn delete_task_with_worktree_emits_cleanup() {
+fn delete_task_with_worktree_gates_the_row_delete_on_cleanup() {
     let mut app = make_app();
     let task = app.find_task_mut(TaskId(4)).unwrap();
     task.worktree = Some("/repo/.worktrees/4-task".to_string());
@@ -260,13 +265,39 @@ fn delete_task_with_worktree_emits_cleanup() {
         TaskId(4),
     )));
     assert!(app.board.tasks.iter().all(|t| t.id != TaskId(4)));
-    assert!(cmds.iter().any(|c| matches!(
-        c,
-        Command::Task(crate::tui::commands::TaskCommand::Cleanup { .. })
+    let follow_up = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup { follow_up, .. }) => {
+                Some(*follow_up)
+            }
+            _ => None,
+        })
+        .expect("delete of a task with a worktree must emit Cleanup");
+    assert_eq!(
+        follow_up,
+        crate::tui::commands::CleanupFollowUp::DeleteRow,
+        "the cleanup owns the row delete"
+    );
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::Delete(TaskId(4)))
+        )),
+        "the row must not be deleted before the worktree removal has succeeded"
+    );
+}
+
+/// The other half: with nothing to release, the delete is immediate.
+#[test]
+fn delete_task_without_worktree_deletes_the_row_immediately() {
+    let mut app = make_app();
+    let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Delete(
+        TaskId(1),
     )));
     assert!(cmds.iter().any(|c| matches!(
         c,
-        Command::Task(crate::tui::commands::TaskCommand::Delete(TaskId(4)))
+        Command::Task(crate::tui::commands::TaskCommand::Delete(TaskId(1)))
     )));
 }
 

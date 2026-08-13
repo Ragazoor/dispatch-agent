@@ -164,12 +164,40 @@ async fn full_lifecycle() {
     let db_task = db.get_task(task_id).await.unwrap().unwrap();
     assert_eq!(db_task.status, TaskStatus::Done);
 
-    // 6. Delete → removed from state and DB
+    // 6. Delete → leaves the board immediately, but the row delete is gated on
+    // the worktree teardown succeeding (WorktreeReleaseIsGated in
+    // docs/specs/tasks.allium), so it arrives as the cleanup's follow-up.
     let cmds = app.update(Message::Task(
         dispatch_tui::tui::messages::TaskMessage::Delete(task_id),
     ));
     execute(&db, &cmds).await;
     assert!(app.tasks().is_empty());
+    let follow_up = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::Task(dispatch_tui::tui::commands::TaskCommand::Cleanup {
+                follow_up, ..
+            }) => Some(*follow_up),
+            _ => None,
+        })
+        .expect("deleting a task with a worktree must tear it down first");
+    assert_eq!(
+        follow_up,
+        dispatch_tui::tui::commands::CleanupFollowUp::DeleteRow
+    );
+    assert!(
+        db.get_task(task_id).await.unwrap().is_some(),
+        "the row must outlive the delete until the worktree is actually released"
+    );
+
+    // 7. The teardown succeeds → the row goes.
+    let cmds = app.update(Message::Task(
+        dispatch_tui::tui::messages::TaskMessage::CleanupSucceeded {
+            id: task_id,
+            follow_up,
+        },
+    ));
+    execute(&db, &cmds).await;
 
     let db_task = db.get_task(task_id).await.unwrap();
     assert!(db_task.is_none());

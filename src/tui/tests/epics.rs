@@ -594,6 +594,25 @@ fn delete_epic_cleans_up_worktrees_of_sub_epic_subtasks() {
         cleaned.contains(&"/repo/.worktrees/2-nested"),
         "sub-epic subtask worktree must be cleaned up, got: {cleaned:?}"
     );
+    // The epic delete drops every subtask row in one operation, so a successful
+    // teardown has nothing left to write back — asking it to clear a column on a
+    // deleted row would only produce a spurious failure. This is the documented
+    // exemption from WorktreeReleaseIsGated (docs/specs/tasks.allium).
+    let follow_ups: Vec<crate::tui::commands::CleanupFollowUp> = cmds
+        .iter()
+        .filter_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup { follow_up, .. }) => {
+                Some(*follow_up)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        follow_ups
+            .iter()
+            .all(|f| *f == crate::tui::commands::CleanupFollowUp::Nothing),
+        "epic-delete teardowns have no follow-up to apply, got: {follow_ups:?}"
+    );
 }
 
 #[test]

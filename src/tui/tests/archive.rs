@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
+use crate::tui::commands::CleanupFollowUp;
 use crossterm::event::KeyCode;
 
 #[test]
@@ -297,6 +298,154 @@ fn archive_task_with_worktree_emits_cleanup() {
     assert_eq!(task.status, TaskStatus::Archived);
     assert!(task.worktree.is_none());
     assert!(task.tmux_window.is_none());
+}
+
+/// The board clears the pointers optimistically, but the DB write must NOT:
+/// the column is only cleared once the removal has actually succeeded
+/// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium). So the persisted
+/// snapshot still carries the worktree and the tmux window.
+#[test]
+fn archive_task_persists_a_snapshot_that_retains_the_worktree() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = Some("/wt/1-test".to_string());
+    task.tmux_window = Some("dev:1-test".to_string());
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Archive(
+        TaskId(1),
+    )));
+
+    let persisted = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::Persist(t)) => Some(t),
+            _ => None,
+        })
+        .expect("archive must persist the task");
+    assert_eq!(persisted.status, TaskStatus::Archived);
+    assert_eq!(
+        persisted.worktree.as_deref(),
+        Some("/wt/1-test"),
+        "the persisted snapshot must retain the worktree until removal succeeds"
+    );
+    assert_eq!(
+        persisted.tmux_window.as_deref(),
+        Some("dev:1-test"),
+        "the persisted snapshot must retain the tmux window too"
+    );
+}
+
+/// The cleanup declares what a *successful* removal earns: for archive, the
+/// worktree pointer is cleared and nothing else.
+#[test]
+fn archive_task_cleanup_follow_up_clears_the_pointer() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.worktree = Some("/wt/1-test".to_string());
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Archive(
+        TaskId(1),
+    )));
+
+    let follow_up = cmds
+        .iter()
+        .find_map(|c| match c {
+            Command::Task(crate::tui::commands::TaskCommand::Cleanup { follow_up, .. }) => {
+                Some(*follow_up)
+            }
+            _ => None,
+        })
+        .expect("archive of a task with a worktree must emit Cleanup");
+    assert_eq!(follow_up, CleanupFollowUp::ClearPointer);
+}
+
+/// A failed removal must leave the row exactly as it was and pull the board
+/// back in step with it, rather than letting the optimistic clear stand.
+#[test]
+fn cleanup_failed_reports_the_error_and_refreshes_the_board() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Archived)]);
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::CleanupFailed {
+            id: TaskId(1),
+            worktree: "/wt/1-test".to_string(),
+            error: "fatal: could not lock index".to_string(),
+        },
+    ));
+
+    let popup = app
+        .error_popup()
+        .expect("a failed cleanup must be surfaced, not swallowed");
+    assert!(
+        popup.contains("/wt/1-test"),
+        "the error must name the worktree that was left behind, got: {popup}"
+    );
+    assert!(
+        cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::RefreshFromDb)
+        )),
+        "the board must be pulled back in step with the row it did not change"
+    );
+}
+
+/// A successful removal is what earns the column clear.
+#[test]
+fn cleanup_succeeded_clears_the_pointer_in_the_db() {
+    let mut task = make_task(1, TaskStatus::Archived);
+    task.worktree = Some("/wt/1-test".to_string());
+    let mut app = App::new(vec![task]);
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::CleanupSucceeded {
+            id: TaskId(1),
+            follow_up: CleanupFollowUp::ClearPointer,
+        },
+    ));
+
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Task(crate::tui::commands::TaskCommand::DetachWorktree(TaskId(1)))
+    )));
+    let task = app.board.tasks.iter().find(|t| t.id == TaskId(1)).unwrap();
+    assert!(task.worktree.is_none(), "the board follows the write");
+}
+
+/// The delete half of the same gate: the row is dropped by the cleanup's
+/// success path, so `CleanupSucceeded` is what emits the delete.
+#[test]
+fn cleanup_succeeded_with_delete_follow_up_deletes_the_row() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Archived)]);
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::CleanupSucceeded {
+            id: TaskId(1),
+            follow_up: CleanupFollowUp::DeleteRow,
+        },
+    ));
+
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Task(crate::tui::commands::TaskCommand::Delete(TaskId(1)))
+    )));
+}
+
+/// The epic-delete exemption: nothing to apply means no write is attempted.
+#[test]
+fn cleanup_succeeded_with_nothing_follow_up_writes_nothing() {
+    let mut app = App::new(vec![]);
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::CleanupSucceeded {
+            id: TaskId(1),
+            follow_up: CleanupFollowUp::Nothing,
+        },
+    ));
+
+    assert!(
+        cmds.is_empty(),
+        "a row that went with its epic must not be written to, got: {cmds:?}"
+    );
 }
 
 #[test]

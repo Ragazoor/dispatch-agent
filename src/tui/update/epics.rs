@@ -96,7 +96,14 @@ impl App {
             .collect();
         for task_id in subtask_ids {
             if let Some(task) = self.find_task_mut(task_id) {
-                let cleanup = Self::take_cleanup(task);
+                // DeleteEpic is exempt from the pointer gate: the epic delete
+                // drops every subtask row in one operation, so there is nothing
+                // left that could hold a retryable pointer — and nothing to
+                // write back on success either. The failure is still reported
+                // and logged. See WorktreeReleaseIsGated in
+                // docs/specs/tasks.allium.
+                let cleanup =
+                    Self::take_cleanup(task, crate::tui::commands::CleanupFollowUp::Nothing);
                 if let Some(c) = cleanup {
                     cmds.push(c);
                 }

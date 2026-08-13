@@ -478,9 +478,33 @@ rule MoveTaskToEpic {
 --   3. Best-effort branch deletion. A failure here is not fatal to the
 --      operation that requested the teardown.
 --
--- The whole of TaskTeardown is best-effort: a task whose worktree or window
--- has already been removed out of band tears down cleanly.
+-- A task whose worktree or window has already been removed out of band tears
+-- down cleanly: step 2 treats an already-absent worktree as released.
 --
+-- WorktreeReleaseIsGated. Step 2 either releases the worktree or it does not,
+-- and the difference is observable. A FAILED removal:
+--
+--   a. is reported to the operator, and
+--   b. is recorded durably in the application log at ERROR, naming the task and
+--      the worktree path, and
+--   c. does NOT let the requesting operation forget the path. ArchiveTask keeps
+--      the worktree pointer on the task, and DeleteTask does not remove the row
+--      at all (see both rules below).
+--
+-- (c) is what makes the failure recoverable rather than an orphan: the task
+-- still names the directory and the branch that are still on disk, so the
+-- operator can retry the teardown by deleting the archived task again. Without
+-- it, a transient git failure permanently strands a worktree that nothing in
+-- the system references — the mechanism investigated in
+-- docs/plans/2026-08-11-3897-worktree-cleanup-investigation.md.
+--
+-- Two paths are deliberately exempt from (c), and both still owe (a) and (b):
+-- RetryFresh (its own postcondition clears the pointer, and the immediate
+-- re-dispatch derives the same worktree path, so a retained pointer would
+-- change nothing observable), and DeleteEpic in epics.allium (it removes the
+-- subtask rows in one operation, leaving nothing that could hold a pointer).
+--
+
 -- Referenced by: ArchiveTask and DeleteTask below (whose own ensures clauses
 -- remain the normative statement of their postconditions), and by the feed
 -- removal clauses in feeds.allium (RoleRoutedFeedSync, GroupedFeedUpsert,
@@ -491,6 +515,16 @@ rule MoveTaskToEpic {
 -- Implementation: src/dispatch/worktree.rs::cleanup_task, guarded by the
 -- shared-worktree check src/db/mod.rs::has_other_tasks_with_worktree; the
 -- reference sequencing is src/runtime/tasks.rs::exec_cleanup.
+--
+-- WorktreeReleaseIsGated is implemented by the follow-up that travels with the
+-- teardown: src/tui/commands/task.rs::CleanupFollowUp, chosen at the request
+-- site (src/tui/mod.rs::take_cleanup callers) and applied only on the removal's
+-- completion path, which reports CleanupSucceeded or CleanupFailed
+-- (src/tui/messages/task.rs) from src/runtime/tasks.rs::exec_cleanup. The
+-- ERROR record is the tracing::error! there; the two handlers are
+-- src/tui/update/lifecycle.rs::handle_cleanup_succeeded and
+-- handle_cleanup_failed. The teardown runs detached because it shells out to
+-- git, which is why the follow-up cannot simply be sequenced beside it.
 --
 -- Clause 2's "UNLESS another ACTIVE task shares it" exception is satisfied
 -- VACUOUSLY on the feed removal path, which therefore removes the worktree
@@ -545,6 +579,13 @@ rule ArchiveTask {
     requires: task.status != archived
 
     let was_running = task.status = running
+    let had_worktree = task.worktree != null
+    -- The two ways TaskTeardown step 2 can release a worktree FROM THIS TASK:
+    -- the path is gone from disk, or the worktree was detached because another
+    -- active task shares it and it was left on disk for them. Both are
+    -- vacuously true when the task had no worktree.
+    let removed = worktree_removed(task)
+    let released = removed or worktree_detached(task)
 
     ensures:
         if task.status = done:
@@ -554,10 +595,15 @@ rule ArchiveTask {
         if was_running:
             task.stop_pending = false
     ensures:
-        if task.worktree != null:
+        if had_worktree and removed:
             not exists task.worktree
-    ensures: task.worktree = null
-    ensures: task.tmux_window = null
+    ensures:
+        if released:
+            task.worktree = null
+            task.tmux_window = null
+        else:
+            task.worktree = task.worktree
+            task.tmux_window = task.tmux_window
     ensures: task.updated_at = now
 
     @guidance
@@ -569,6 +615,17 @@ rule ArchiveTask {
         -- ensures clauses above remain the normative statement of what
         -- ArchiveTask guarantees — naming the concept changed nothing
         -- about this rule's behaviour.
+        --
+        -- The status move is unconditional; the pointer clear is not. Per
+        -- WorktreeReleaseIsGated, a task whose worktree could not be removed
+        -- is still archived, but keeps its worktree and tmux pointers so the
+        -- directory on disk stays reachable from the board. The failure is
+        -- surfaced in the status bar AND logged at ERROR.
+        --
+        -- Implementation note: the removal runs in the background (it shells
+        -- out to git and must not block the board), so the archive write and
+        -- the pointer clear are two writes, not one — the clear is issued by
+        -- the teardown's own completion path, not beside it.
         -- The task.status = done check reads the pre-archive status
         -- (evaluated before the status = archived assignment below), so
         -- only a task that was actually Done has its sort_order cleared.
@@ -623,13 +680,32 @@ rule DeleteTask {
 
     requires: task.status = archived
 
+    let had_worktree = task.worktree != null
+    -- See ArchiveTask for what these two mean: removal from disk, versus
+    -- release from this task (which a shared worktree earns by detaching).
+    let removed = worktree_removed(task)
+    let released = removed or worktree_detached(task)
+
     ensures:
-        if task.worktree != null:
+        if had_worktree and removed:
             not exists task.worktree
-    ensures: not exists task
+    ensures:
+        if released:
+            not exists task
+        else:
+            task.status = archived
+            task.worktree = task.worktree
+            task.tmux_window = task.tmux_window
 
     @guidance
         -- Permanent removal. Only accessible from the archive view.
+        --
+        -- The delete is GATED on the teardown (WorktreeReleaseIsGated at the
+        -- head of this section): if the worktree could not be removed, the row
+        -- is NOT deleted. The task stays archived, keeps its worktree and tmux
+        -- pointers, the failure is surfaced and logged at ERROR, and pressing
+        -- delete again retries the removal. A task with no worktree has nothing
+        -- to release, so it is deleted immediately.
         -- The resource release above is TaskTeardown (see the conceptual
         -- block at the head of this section) — the same teardown
         -- ArchiveTask performs: tmux window killed, worktree removed

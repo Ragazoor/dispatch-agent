@@ -2,6 +2,7 @@
 
 use crate::models::{DispatchMode, SubStatus, TaskId, TaskStatus};
 
+use super::super::commands::CleanupFollowUp;
 use super::super::types::*;
 use super::super::App;
 
@@ -78,7 +79,13 @@ impl App {
             if task.status != TaskStatus::Running {
                 return vec![];
             }
-            let cleanup = Self::take_cleanup(task);
+            // RetryFresh is exempt from the pointer gate (see
+            // WorktreeReleaseIsGated in docs/specs/tasks.allium): the Persist
+            // below clears the column eagerly, and the re-dispatch that follows
+            // derives the same worktree path either way, so retaining the
+            // pointer would change nothing observable. The failure is still
+            // reported and logged.
+            let cleanup = Self::take_cleanup(task, CleanupFollowUp::ClearPointer);
             // Retry-fresh is the likeliest leaving-Running board write to carry
             // a deferred Stop: a crashed task is still Running.
             Self::set_local_status(task, TaskStatus::Backlog);
@@ -110,9 +117,19 @@ impl App {
             if task.status == TaskStatus::Archived {
                 return vec![];
             }
-            let cleanup = Self::take_cleanup(task);
+            // The board clears both pointers optimistically; the *persisted*
+            // snapshot keeps them. Only a successful removal earns the column
+            // clear, and it arrives as the cleanup's own follow-up
+            // (WorktreeReleaseIsGated in docs/specs/tasks.allium). Archiving
+            // itself is unconditional — a task whose worktree could not be
+            // removed is still archived, just still pointing at it.
+            let worktree = task.worktree.clone();
+            let tmux_window = task.tmux_window.clone();
+            let cleanup = Self::take_cleanup(task, CleanupFollowUp::ClearPointer);
             Self::set_local_status(task, TaskStatus::Archived);
-            let task_clone = task.clone();
+            let mut task_clone = task.clone();
+            task_clone.worktree = worktree;
+            task_clone.tmux_window = tmux_window;
             self.clear_agent_tracking(id);
             self.sync_board_selection();
 

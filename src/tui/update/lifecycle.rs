@@ -2,6 +2,7 @@
 
 use crate::models::{DispatchMode, EpicId, SubStatus, Task, TaskId, TaskStatus};
 
+use super::super::commands::CleanupFollowUp;
 use super::super::types::*;
 use super::super::{truncate_title, App, TITLE_DISPLAY_LENGTH};
 
@@ -292,8 +293,19 @@ impl App {
         vec![]
     }
 
+    /// Permanent removal, GATED on the teardown: when the task owns a worktree
+    /// the row delete is the cleanup's follow-up, not a sibling command, so a
+    /// failed `git worktree remove` leaves the row in place — still archived,
+    /// still pointing at what is on disk, and retryable by deleting again
+    /// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium). With no worktree
+    /// there is nothing to release and the delete is immediate.
+    ///
+    /// The card leaves the board either way; a failed cleanup pulls it back with
+    /// a `RefreshFromDb` (see `handle_cleanup_failed`).
     pub(in crate::tui) fn handle_delete_task(&mut self, id: TaskId) -> Vec<Command> {
-        let cleanup = self.find_task_mut(id).and_then(Self::take_cleanup);
+        let cleanup = self
+            .find_task_mut(id)
+            .and_then(|t| Self::take_cleanup(t, CleanupFollowUp::DeleteRow));
         self.clear_agent_tracking(id);
         self.board.tasks.retain(|t| t.id != id);
         self.sync_board_selection();
@@ -303,11 +315,62 @@ impl App {
             self.selection_mut().set_row(archive_col, archive_count - 1);
         }
         *self.archive.list_state.selected_mut() = Some(self.selection().row(archive_col));
-        let mut cmds = Vec::new();
-        if let Some(c) = cleanup {
-            cmds.push(c);
+        match cleanup {
+            // The cleanup owns the delete — see the doc comment above.
+            Some(c) => vec![c],
+            None => vec![Command::Task(crate::tui::commands::TaskCommand::Delete(id))],
         }
-        cmds.push(Command::Task(crate::tui::commands::TaskCommand::Delete(id)));
+    }
+
+    /// The teardown released the worktree, so its follow-up is now safe to
+    /// apply. This is the only path that clears the column or drops the row for
+    /// a task that owned a worktree.
+    pub(in crate::tui) fn handle_cleanup_succeeded(
+        &mut self,
+        id: TaskId,
+        follow_up: CleanupFollowUp,
+    ) -> Vec<Command> {
+        match follow_up {
+            CleanupFollowUp::ClearPointer => {
+                // The board already cleared these optimistically; keeping it in
+                // step matters for the paths that did not (a cleanup issued for
+                // a task the board has since refreshed).
+                if let Some(task) = self.find_task_mut(id) {
+                    task.worktree = None;
+                    task.tmux_window = None;
+                }
+                vec![Command::Task(
+                    crate::tui::commands::TaskCommand::DetachWorktree(id),
+                )]
+            }
+            CleanupFollowUp::DeleteRow => {
+                vec![Command::Task(crate::tui::commands::TaskCommand::Delete(id))]
+            }
+            // The row went with the epic that owned it — writing to it now would
+            // only produce a spurious "not found" error.
+            CleanupFollowUp::Nothing => vec![],
+        }
+    }
+
+    /// The teardown could not release the worktree. Nothing is cleared and
+    /// nothing is deleted: the row still names the directory and the branch that
+    /// are still on disk, which is what makes the failure retryable rather than
+    /// an invisible orphan. The board is pulled back in step with that row,
+    /// since it dropped the card (or its pointers) optimistically.
+    pub(in crate::tui) fn handle_cleanup_failed(
+        &mut self,
+        id: TaskId,
+        worktree: String,
+        error: String,
+    ) -> Vec<Command> {
+        let mut cmds = self.handle_error(format!(
+            "Cleanup failed for task {}: {worktree} was left on disk ({error}). \
+             Delete the task again to retry.",
+            id.0
+        ));
+        cmds.push(Command::Task(
+            crate::tui::commands::TaskCommand::RefreshFromDb,
+        ));
         cmds
     }
 

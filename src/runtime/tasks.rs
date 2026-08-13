@@ -725,13 +725,27 @@ impl TuiRuntime {
         }
     }
 
+    /// Tear a task's live resources down, then report the outcome so the caller's
+    /// follow-up write can depend on it.
+    ///
+    /// The removal shells out to git, so it runs detached — awaiting it here
+    /// would stall the command drain (and with it input and rendering) for as
+    /// long as git takes. That is why `follow_up` travels *with* the cleanup and
+    /// is applied on its completion path: nothing that forgets the worktree path
+    /// may run beside a removal that might not have happened
+    /// (`WorktreeReleaseIsGated` in docs/specs/tasks.allium).
+    ///
+    /// Returns the removal's handle, or `None` when there was no removal to make
+    /// (a shared worktree is detached from this task instead, or the
+    /// shared-worktree check itself failed). Callers `drop` it; tests await it.
     pub(super) async fn exec_cleanup(
         &self,
         id: TaskId,
         repo_path: String,
         worktree: String,
         tmux_window: Option<String>,
-    ) {
+        follow_up: crate::tui::commands::CleanupFollowUp,
+    ) -> Option<tokio::task::JoinHandle<()>> {
         let shared = match self
             .database
             .has_other_tasks_with_worktree(&worktree, id)
@@ -739,30 +753,72 @@ impl TuiRuntime {
         {
             Ok(v) => v,
             Err(e) => {
-                self.send_system_error(format!("Cleanup check failed: {e:#}"));
-                return;
+                let error = format!("{e:#}");
+                tracing::error!(
+                    task_id = id.0,
+                    worktree_path = %worktree,
+                    %error,
+                    "shared-worktree check failed, worktree left on disk"
+                );
+                // A check we could not make is a release we did not make: keep
+                // the pointer and the row, exactly as a failed removal does.
+                let _ = self.msg_tx.send(Message::Task(
+                    crate::tui::messages::TaskMessage::CleanupFailed {
+                        id,
+                        worktree,
+                        error,
+                    },
+                ));
+                return None;
             }
         };
 
         if shared {
+            // Detaching *is* a release for this task — TaskTeardown clause 2
+            // leaves a shared worktree on disk for the task still using it — so
+            // the follow-up is earned. Without this the delete path would keep a
+            // row nothing can reach.
             tracing::info!(task_id = id.0, "worktree shared, detaching only");
             self.detach_only(id).await;
-            return;
+            let _ = self.msg_tx.send(Message::Task(
+                crate::tui::messages::TaskMessage::CleanupSucceeded { id, follow_up },
+            ));
+            return None;
         }
 
         // No other active tasks — full cleanup
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
 
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) =
-                dispatch::cleanup_task(&repo_path, &worktree, tmux_window.as_deref(), &*runner)
-            {
-                let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
-                    format!("Cleanup failed: {e:#}"),
-                )));
-            }
-        });
+        Some(tokio::task::spawn_blocking(move || {
+            let msg = match dispatch::cleanup_task(
+                &repo_path,
+                &worktree,
+                tmux_window.as_deref(),
+                &*runner,
+            ) {
+                Ok(()) => crate::tui::messages::TaskMessage::CleanupSucceeded { id, follow_up },
+                Err(e) => {
+                    let error = format!("{e:#}");
+                    // The only durable record of a failed teardown. Without it a
+                    // leftover worktree cannot be attributed to anything after
+                    // the fact — see
+                    // docs/plans/2026-08-11-3897-worktree-cleanup-investigation.md.
+                    tracing::error!(
+                        task_id = id.0,
+                        worktree_path = %worktree,
+                        %error,
+                        "worktree cleanup failed, worktree left on disk"
+                    );
+                    crate::tui::messages::TaskMessage::CleanupFailed {
+                        id,
+                        worktree,
+                        error,
+                    }
+                }
+            };
+            let _ = tx.send(Message::Task(msg));
+        }))
     }
 
     pub(super) fn exec_resume(&self, task: models::Task) {

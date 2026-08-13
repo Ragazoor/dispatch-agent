@@ -4,6 +4,29 @@ use crate::models::{DispatchMode, DrainMode, EpicId, SubStatus, Task, TaskId};
 
 use super::super::types::TaskDraft;
 
+/// What a **successful** worktree removal earns the requesting operation.
+///
+/// The operation that asked for the teardown cannot apply this itself: the
+/// removal shells out to git in the background, so the write that acts on its
+/// outcome has to happen on the teardown's completion path. See
+/// [`TaskCommand::Cleanup`] and `WorktreeReleaseIsGated` in
+/// docs/specs/tasks.allium.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupFollowUp {
+    /// Clear the task's `worktree`/`tmux_window` columns (archive, retry-fresh).
+    ClearPointer,
+    /// Delete the task row (delete from the archive view). A failed removal
+    /// therefore leaves the row in place, archived and still pointing at the
+    /// directory on disk, so deleting again retries the removal.
+    DeleteRow,
+    /// Nothing to apply: the row is being removed by the operation that asked
+    /// for the teardown, so there is no column left to clear and no pointer that
+    /// could be retained. Used by the epic delete, which drops every subtask row
+    /// in one operation — the documented exemption from the gate. The failure is
+    /// still reported and logged.
+    Nothing,
+}
+
 /// Side-effect commands for the task domain.
 ///
 /// Wrapped by [`crate::tui::types::Command::Task`] for runtime dispatch.
@@ -34,12 +57,26 @@ pub enum TaskCommand {
         repo_path: String,
         mode: DispatchMode,
     },
+    /// Tear a task's live resources down (`TaskTeardown` in
+    /// docs/specs/tasks.allium): kill the tmux window, remove the git worktree,
+    /// best-effort delete the branch.
+    ///
+    /// `follow_up` is what a **successful** removal earns, and it is only ever
+    /// applied on the removal's own completion path — never beside it. That is
+    /// the gate: a failed removal leaves the task pointing at the directory that
+    /// is still on disk, instead of forgetting it and stranding an orphan
+    /// (`WorktreeReleaseIsGated`).
     Cleanup {
         id: TaskId,
         repo_path: String,
         worktree: String,
         tmux_window: Option<String>,
+        follow_up: CleanupFollowUp,
     },
+    /// Clear a task's `worktree` and `tmux_window` columns. Emitted by
+    /// [`crate::tui::messages::TaskMessage::CleanupSucceeded`], and the only
+    /// write that forgets a worktree path on the archive path.
+    DetachWorktree(TaskId),
     CheckWindow {
         id: TaskId,
         window: String,

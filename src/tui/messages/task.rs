@@ -2,6 +2,7 @@
 
 use crate::models::{DispatchMode, EpicId, Task, TaskId};
 
+use super::super::commands::CleanupFollowUp;
 use super::super::types::{Command, MoveDirection, TaskDraft, TaskEdit, TreeNav};
 use crate::tui::App;
 
@@ -91,6 +92,20 @@ pub enum TaskMessage {
     RetryResume(TaskId),
     RetryFresh(TaskId),
     Archive(TaskId),
+    /// A background `TaskCommand::Cleanup` released the worktree. Carries the
+    /// follow-up the cleanup was issued with, which is only now safe to apply.
+    CleanupSucceeded {
+        id: TaskId,
+        follow_up: CleanupFollowUp,
+    },
+    /// A background `TaskCommand::Cleanup` could NOT release the worktree. The
+    /// pointer stays where it is (and the row, on the delete path), so the
+    /// leftover directory is still reachable and the teardown can be retried.
+    CleanupFailed {
+        id: TaskId,
+        worktree: String,
+        error: String,
+    },
     ToggleSelect(TaskId),
     BatchMove {
         ids: Vec<TaskId>,
@@ -157,6 +172,14 @@ impl TaskMessage {
             TaskMessage::RetryResume(id) => app.handle_retry_resume(id),
             TaskMessage::RetryFresh(id) => app.handle_retry_fresh(id),
             TaskMessage::Archive(id) => app.handle_archive_task(id),
+            TaskMessage::CleanupSucceeded { id, follow_up } => {
+                app.handle_cleanup_succeeded(id, follow_up)
+            }
+            TaskMessage::CleanupFailed {
+                id,
+                worktree,
+                error,
+            } => app.handle_cleanup_failed(id, worktree, error),
             TaskMessage::ToggleSelect(id) => app.handle_toggle_select(id),
             TaskMessage::BatchMove { ids, direction } => {
                 app.handle_batch_move_tasks(ids, direction)

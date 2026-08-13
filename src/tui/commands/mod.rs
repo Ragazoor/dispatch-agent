@@ -29,5 +29,5 @@ pub use repo_filter::RepoFilterCommand;
 pub use repo_sync::RepoSyncCommand;
 pub use split::SplitCommand;
 pub use system::SystemCommand;
-pub use task::TaskCommand;
+pub use task::{CleanupFollowUp, TaskCommand};
 pub use todos::TodoCommand;
