@@ -310,13 +310,18 @@ impl TuiRuntime {
             )
             .await;
             match sync_result {
-                Ok(_) => {
+                Ok(outcome) => {
                     crate::feed::recalculate_epic_status_after_feed(
                         &*db,
                         epic_id,
                         "exec_trigger_epic_feed",
                     )
                     .await;
+                    // A feed-driven removal owes the same teardown as any other
+                    // deletion; without this the worktree and tmux window are
+                    // orphaned. Awaited before Refreshed so the status-bar
+                    // message means "reconciled AND cleaned up".
+                    crate::feed::cleanup_removed_feed_tasks(runner.clone(), outcome.removed).await;
                     let _ = tx.send(Message::Feed(
                         crate::tui::messages::FeedMessage::Refreshed { epic_title, count },
                     ));

@@ -195,6 +195,211 @@ async fn route_routed_move_not_deleted_same_cycle() {
     assert!(db.list_tasks_for_epic(team).await.unwrap().is_empty());
 }
 
+/// A task MOVED between role sub-epics during a sync must NEVER appear in the
+/// removed set. The ordering that makes this true is not compiler-enforced:
+/// `apply_move`'s `set_task_epic_id` lands before `upsert_role_groups`,
+/// `delete_stale_subtree` and `clear_parent_stranded_tasks`, each of whose SQL
+/// filters on the task's CURRENT `epic_id`. Before feed-task teardown existed a
+/// mis-ordering merely deleted a row; now it would force-remove a live review
+/// agent's worktree and kill its tmux window. Pin it.
+///
+/// `pr-2` stays in Team Reviews on purpose: it keeps a non-empty group on the
+/// LOSING role sub-epic, so `upsert_role_groups`' per-epic stale-delete would
+/// actually sweep `pr-1` out of Team if the move had not already landed. Drop
+/// `pr-2` and the test stops detecting the mis-ordering.
+#[tokio::test]
+async fn moved_task_is_never_reported_as_removed() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    db.patch_epic(
+        parent.id,
+        &EpicPatch::new().feed_role(FeedRole::ReviewsParent),
+    )
+    .await
+    .unwrap();
+
+    // Cycle 1: both PRs are team-requested, so both land in Team Reviews.
+    let cycle1 = vec![
+        make_signal_item(
+            "pr-1",
+            "https://github.com/org/repo/pull/1",
+            vec![Signal::TeamRequest],
+        ),
+        make_signal_item(
+            "pr-2",
+            "https://github.com/org/repo/pull/2",
+            vec![Signal::TeamRequest],
+        ),
+    ];
+    let outcome = run_feed_sync_by_role(
+        &*db,
+        parent.id,
+        FeedRole::ReviewsParent,
+        false,
+        entries(&cycle1, &["", ""], &["main", "main"]),
+    )
+    .await
+    .unwrap();
+    assert!(
+        outcome.removed.is_empty(),
+        "nothing removed on first sight, got: {:?}",
+        outcome.removed
+    );
+
+    // Give pr-1 an in-flight worktree and tmux window, as a dispatched review
+    // agent would.
+    let team = role_sub_epic(&db, parent.id, FeedRole::TeamReviews).await;
+    let task = db
+        .list_tasks_for_epic(team)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|t| t.external_id.as_deref() == Some("pr-1"))
+        .expect("pr-1 landed in Team Reviews");
+    db.patch_task(
+        task.id,
+        &TaskPatch::new()
+            .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+            .tmux_window(Some("dispatch:pr-1")),
+    )
+    .await
+    .unwrap();
+
+    // Cycle 2: pr-1 is now also reviewed, so it routes to My Reviews — a MOVE
+    // across role sub-epics, not a delete-and-reinsert. pr-2 stays in Team.
+    let cycle2 = vec![
+        make_signal_item(
+            "pr-1",
+            "https://github.com/org/repo/pull/1",
+            vec![Signal::TeamRequest, Signal::Reviewed],
+        ),
+        make_signal_item(
+            "pr-2",
+            "https://github.com/org/repo/pull/2",
+            vec![Signal::TeamRequest],
+        ),
+    ];
+    let outcome = run_feed_sync_by_role(
+        &*db,
+        parent.id,
+        FeedRole::ReviewsParent,
+        false,
+        entries(&cycle2, &["", ""], &["main", "main"]),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        outcome.removed.is_empty(),
+        "a moved task must not be reported for teardown, got: {:?}",
+        outcome.removed
+    );
+
+    let my = role_sub_epic(&db, parent.id, FeedRole::MyReviews).await;
+    let moved = db.list_tasks_for_epic(my).await.unwrap().remove(0);
+    assert_eq!(moved.id, task.id, "same task row, not a recreate");
+    assert_eq!(
+        moved.worktree.as_deref(),
+        Some("/repo/a/.worktrees/7-pr-1"),
+        "the move must preserve the in-flight worktree"
+    );
+    assert_eq!(moved.tmux_window.as_deref(), Some("dispatch:pr-1"));
+}
+
+/// A PR that genuinely leaves the emission (merged/closed) IS reported, so the
+/// caller can tear its worktree down — the counterpart to the move case above.
+#[tokio::test]
+async fn absent_task_with_worktree_is_reported_as_removed() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    db.patch_epic(
+        parent.id,
+        &EpicPatch::new().feed_role(FeedRole::ReviewsParent),
+    )
+    .await
+    .unwrap();
+
+    let cycle1 = vec![make_signal_item(
+        "pr-1",
+        "https://github.com/org/repo/pull/1",
+        vec![Signal::TeamRequest],
+    )];
+    run_feed_sync_by_role(
+        &*db,
+        parent.id,
+        FeedRole::ReviewsParent,
+        false,
+        entries(&cycle1, &[""], &["main"]),
+    )
+    .await
+    .unwrap();
+
+    let team = role_sub_epic(&db, parent.id, FeedRole::TeamReviews).await;
+    let task = db.list_tasks_for_epic(team).await.unwrap().remove(0);
+    db.patch_task(
+        task.id,
+        &TaskPatch::new()
+            .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+            .tmux_window(Some("dispatch:pr-1")),
+    )
+    .await
+    .unwrap();
+
+    // Cycle 2: the PR merged, so it is gone from the emission.
+    let outcome = run_feed_sync_by_role(&*db, parent.id, FeedRole::ReviewsParent, false, vec![])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome.removed.len(),
+        1,
+        "the merged PR's worktree must be reported for teardown, got: {:?}",
+        outcome.removed
+    );
+    assert_eq!(outcome.removed[0].id, task.id);
+    assert_eq!(
+        outcome.removed[0].worktree.as_deref(),
+        Some("/repo/a/.worktrees/7-pr-1")
+    );
+    assert_eq!(
+        outcome.removed[0].tmux_window.as_deref(),
+        Some("dispatch:pr-1")
+    );
+}
+
+/// The flat (non-reviews_parent) path reports its removals too — the flat
+/// branch of `run_feed_sync` is a `RemovedFeedTask` producer like the rest.
+#[tokio::test]
+async fn flat_sync_reports_removed_task_with_worktree() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let epic = db.create_epic("Flat Feed", "", None).await.unwrap();
+
+    let items = vec![make_item("pr-1", "https://github.com/org/repo/pull/1")];
+    run_feed_sync(&*db, epic.id, false, entries(&items, &[""], &["main"]))
+        .await
+        .unwrap();
+
+    let task = db.list_tasks_for_epic(epic.id).await.unwrap().remove(0);
+    db.patch_task(
+        task.id,
+        &TaskPatch::new()
+            .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+            .tmux_window(Some("dispatch:pr-1")),
+    )
+    .await
+    .unwrap();
+
+    let outcome = run_feed_sync(&*db, epic.id, false, vec![]).await.unwrap();
+
+    assert_eq!(
+        outcome.removed.len(),
+        1,
+        "flat stale-delete must report its removal, got: {:?}",
+        outcome.removed
+    );
+    assert_eq!(outcome.removed[0].id, task.id);
+}
+
 /// Count feed-managed tasks (external_id set) sitting DIRECTLY on an epic.
 async fn flat_feed_task_count(db: &Database, epic: EpicId) -> usize {
     db.list_tasks_for_epic(epic)
@@ -747,7 +952,8 @@ async fn archived_sub_epic_not_reused() {
 
     let items = vec![make_item("pr-1", "https://github.com/org/repo-a/pull/1")];
 
-    let sub_ids = sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
+    let (sub_ids, _removed) =
+        sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
 
     assert_eq!(sub_ids.len(), 1, "should return exactly one sub-epic ID");
     let new_id = sub_ids[0];
@@ -838,7 +1044,8 @@ async fn existing_active_sub_epic_reused() {
 
     let items = vec![make_item("1", "https://github.com/org/repo-a/pull/1")];
 
-    let sub_ids = sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
+    let (sub_ids, _removed) =
+        sync_grouped_feed(&*db, parent.id, entries(&items, &[""], &["main"])).await;
 
     assert_eq!(
         sub_ids,
@@ -867,11 +1074,11 @@ async fn run_feed_sync_flat_upserts_to_parent_epic() {
         wrap_up_mode: None,
     }];
 
-    let ids = run_feed_sync(&*db, epic.id, false, entries(&items, &[""], &["main"]))
+    let outcome = run_feed_sync(&*db, epic.id, false, entries(&items, &[""], &["main"]))
         .await
         .unwrap();
 
-    assert_eq!(ids, vec![epic.id]);
+    assert_eq!(outcome.affected_epics, vec![epic.id]);
     let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].external_id.as_deref(), Some("1"));
@@ -895,12 +1102,12 @@ async fn run_feed_sync_grouped_puts_tasks_in_sub_epics() {
         wrap_up_mode: None,
     }];
 
-    let ids = run_feed_sync(&*db, epic.id, true, entries(&items, &[""], &["main"]))
+    let outcome = run_feed_sync(&*db, epic.id, true, entries(&items, &[""], &["main"]))
         .await
         .unwrap();
 
-    assert!(ids.contains(&epic.id));
-    assert_eq!(ids.len(), 2, "parent id + 1 sub-epic id");
+    assert!(outcome.affected_epics.contains(&epic.id));
+    assert_eq!(outcome.affected_epics.len(), 2, "parent id + 1 sub-epic id");
 
     let parent_tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
     assert_eq!(parent_tasks.len(), 0, "parent should have no direct tasks");

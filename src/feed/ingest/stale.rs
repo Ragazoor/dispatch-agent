@@ -2,7 +2,7 @@
 //! feed task stranded flat on the reviews_parent epic.
 
 use super::role_routed::RoleSubEpics;
-use crate::db::TaskStore;
+use crate::db::{RemovedFeedTask, TaskStore};
 use crate::models::EpicId;
 
 /// Subtree-scoped delete: removes merged/closed PRs from flat role sub-epics
@@ -13,13 +13,18 @@ use crate::models::EpicId;
 /// group_by_repo is off. The SQL is one level deep, so calling it with the
 /// role sub-epic as root reaches its repo-group children — exactly the
 /// grandchild level relative to the parent.
+///
+/// Returns every removed row that still owned a worktree or tmux window, from
+/// the parent-rooted pass and all three role-rooted passes, for the caller to
+/// tear down. A task MOVED this cycle is not among them: `apply_move` has
+/// already rehomed it and its `external_id` is in `all_external_ids`.
 pub(super) async fn delete_stale_subtree(
     db: &dyn TaskStore,
     parent_id: EpicId,
     roles: &RoleSubEpics,
     all_external_ids: &[String],
-) {
-    crate::feed::warn_on_err(
+) -> Vec<RemovedFeedTask> {
+    let mut removed = crate::feed::removed_or_warn(
         db.delete_stale_subtree_feed_tasks(parent_id, all_external_ids)
             .await,
         parent_id,
@@ -28,14 +33,16 @@ pub(super) async fn delete_stale_subtree(
     );
 
     for sub in roles.ids() {
-        crate::feed::warn_on_err(
+        removed.extend(crate::feed::removed_or_warn(
             db.delete_stale_subtree_feed_tasks(sub, all_external_ids)
                 .await,
             parent_id,
             Some(sub),
             "run_role_routed_feed_sync: delete_stale_subtree_feed_tasks (role level) failed",
-        );
+        ));
     }
+
+    removed
 }
 
 /// Parent sweep: a reviews_parent epic must hold NO feed-managed task
@@ -48,11 +55,17 @@ pub(super) async fn delete_stale_subtree(
 /// manual tasks (external_id IS NULL). Same idiom
 /// [`super::grouped::sync_grouped_feed`] uses to clear the parent on the
 /// grouped path.
-pub(super) async fn clear_parent_stranded_tasks(db: &dyn TaskStore, parent_id: EpicId) {
-    crate::feed::warn_on_err(
+///
+/// Returns the cleared rows that still owned a worktree or tmux window, for the
+/// caller to tear down.
+pub(super) async fn clear_parent_stranded_tasks(
+    db: &dyn TaskStore,
+    parent_id: EpicId,
+) -> Vec<RemovedFeedTask> {
+    crate::feed::removed_or_warn(
         db.upsert_feed_tasks(parent_id, &[], &[], &[]).await,
         parent_id,
         None,
         "run_role_routed_feed_sync: failed to clear parent-stranded feed tasks",
-    );
+    )
 }

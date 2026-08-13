@@ -48,6 +48,26 @@ pub(crate) fn warn_on_err<T>(
     }
 }
 
+/// [`warn_on_err`] for the two feed writes that report what they deleted:
+/// log-and-discard on `Err` exactly as `warn_on_err` does, but keep the `Ok`
+/// payload so the removed rows reach [`cleanup_removed_feed_tasks`]. An `Err`
+/// yields an empty vec — nothing was reported, so there is nothing to tear
+/// down; the reconciliation pass continues either way.
+pub(crate) fn removed_or_warn(
+    result: anyhow::Result<Vec<RemovedFeedTask>>,
+    epic_id: EpicId,
+    sub_epic_id: Option<EpicId>,
+    context: &str,
+) -> Vec<RemovedFeedTask> {
+    match result {
+        Ok(removed) => removed,
+        Err(err) => {
+            warn_on_err(Err::<(), _>(err), epic_id, sub_epic_id, context);
+            Vec::new()
+        }
+    }
+}
+
 /// Recalculate an epic's status after feed tasks have been upserted, logging a
 /// warning on failure. New non-done tasks can cause a done epic to regress to
 /// backlog; the recalculation propagates upward to any parent epic.
@@ -104,12 +124,9 @@ pub(crate) async fn recalculate_epic_status_after_feed(
 /// The whole of `TaskTeardown` is best-effort: failures are logged at warn and
 /// never surfaced, because feed reconciliation is background work, and one
 /// task's failure must not abort the rest of its repo's queue.
-// Not yet called from the ingest pipeline: the four `RemovedFeedTask` producers
-// in `src/feed/ingest.rs` are threaded into this helper by the next task of the
-// empty-feed-emission-guard plan (task #3989, task 7 of the plan), which removes
-// this allow. Every branch below is covered by the `cleanup_*` tests in this
-// file's test module in the meantime.
-#[allow(dead_code)]
+/// Called from both feed paths — [`FeedJob::run`] (auto-poll) and
+/// `exec_trigger_epic_feed` (manual "r" refresh) — with the `removed` half of
+/// the [`ingest::FeedSyncOutcome`] their sync returned.
 pub(crate) async fn cleanup_removed_feed_tasks(
     runner: Arc<dyn ProcessRunner>,
     removed: Vec<RemovedFeedTask>,
@@ -262,18 +279,26 @@ impl FeedJob {
         )
         .await;
 
-        if let Ok(affected_ids) = &sync_result {
-            recalculate_epic_status_after_feed(&*self.db, self.epic.id, "FeedRunner").await;
-            for id in affected_ids {
-                let _ = self.notify.send(McpEvent::EpicChanged(*id));
+        // Matched (rather than the previous `if let Ok(&…)` + `warn_on_err`
+        // pair) so `outcome.removed` can be MOVED into the teardown without
+        // cloning. The two behaviours are unchanged: one `EpicChanged` per
+        // affected epic on success, the same `warn_on_err` log on failure.
+        match sync_result {
+            Ok(outcome) => {
+                recalculate_epic_status_after_feed(&*self.db, self.epic.id, "FeedRunner").await;
+                for id in &outcome.affected_epics {
+                    let _ = self.notify.send(McpEvent::EpicChanged(*id));
+                }
+                // Feed removals owe the same teardown as any other deletion.
+                cleanup_removed_feed_tasks(self.runner.clone(), outcome.removed).await;
             }
+            Err(err) => warn_on_err(
+                Err::<(), _>(err),
+                self.epic.id,
+                None,
+                "FeedRunner: upsert_feed_tasks failed",
+            ),
         }
-        warn_on_err(
-            sync_result,
-            self.epic.id,
-            None,
-            "FeedRunner: upsert_feed_tasks failed",
-        );
     }
 }
 

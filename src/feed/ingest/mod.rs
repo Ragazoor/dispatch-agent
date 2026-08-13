@@ -25,9 +25,25 @@ mod tests;
 
 use role_routed::run_role_routed_feed_sync;
 
-use crate::db::TaskStore;
+use crate::db::{RemovedFeedTask, TaskStore};
 use crate::models::{EpicId, FeedItem};
 use anyhow::Result;
+
+/// What one sync pass did: which epics it wrote to, and which task rows it
+/// removed that still owned on-disk or in-tmux state.
+///
+/// `affected_epics` drives one TUI notification per epic. `removed` is handed
+/// to [`crate::feed::cleanup_removed_feed_tasks`] — a feed-driven removal owes
+/// the same teardown as `ArchiveTask`/`DeleteTask`, and before this existed it
+/// orphaned the worktree and tmux window on disk.
+///
+/// A task MOVED between role sub-epics is never in `removed`: the move lands
+/// before every delete phase, and each delete filters on the task's current
+/// `epic_id`. See `run_role_routed_feed_sync`'s phase-order note.
+pub(crate) struct FeedSyncOutcome {
+    pub(crate) affected_epics: Vec<EpicId>,
+    pub(crate) removed: Vec<RemovedFeedTask>,
+}
 
 /// A feed item paired with its resolved repo path and base branch. Assembled
 /// once at the `FeedCommandCompleted` boundary (see [`FeedItemWithTarget::zip`])
@@ -91,19 +107,24 @@ impl FeedItemWithTarget {
 /// - `group_by_repo = true`: group by repo name, upsert into per-repo sub-epics,
 ///   then clear flat tasks from the parent.
 ///
-/// Returns `epic_id` plus any sub-epic IDs written to (grouped path only).
-/// Callers use this list to send one TUI notification per affected epic.
+/// Returns `epic_id` plus any sub-epic IDs written to (grouped path only) as
+/// `affected_epics` — callers use this list to send one TUI notification per
+/// affected epic — and every removed row still owning a worktree or tmux window
+/// as `removed`, for teardown.
 pub(crate) async fn run_feed_sync(
     db: &dyn TaskStore,
     epic_id: EpicId,
     group_by_repo: bool,
     entries: Vec<FeedItemWithTarget>,
-) -> Result<Vec<EpicId>> {
+) -> Result<FeedSyncOutcome> {
     if group_by_repo {
-        let sub_ids = grouped::sync_grouped_feed(db, epic_id, entries).await;
-        let mut all_ids = vec![epic_id];
-        all_ids.extend(sub_ids);
-        Ok(all_ids)
+        let (sub_ids, removed) = grouped::sync_grouped_feed(db, epic_id, entries).await;
+        let mut affected_epics = vec![epic_id];
+        affected_epics.extend(sub_ids);
+        Ok(FeedSyncOutcome {
+            affected_epics,
+            removed,
+        })
     } else {
         // FlatFeedReconcile: reconcile any leftover RepoGroup sub-epics back
         // onto the parent before the flat upsert. Reuses flatten_epic (shared
@@ -123,9 +144,13 @@ pub(crate) async fn run_feed_sync(
             crate::service::flatten_epic(db, epic_id).await?;
         }
         let (items, repo_paths, base_branches) = FeedItemWithTarget::unzip(entries);
-        db.upsert_feed_tasks(epic_id, &items, &repo_paths, &base_branches)
+        let removed = db
+            .upsert_feed_tasks(epic_id, &items, &repo_paths, &base_branches)
             .await?;
-        Ok(vec![epic_id])
+        Ok(FeedSyncOutcome {
+            affected_epics: vec![epic_id],
+            removed,
+        })
     }
 }
 
@@ -143,7 +168,7 @@ pub(crate) async fn run_feed_sync_by_role(
     feed_role: crate::models::FeedRole,
     group_by_repo: bool,
     entries: Vec<FeedItemWithTarget>,
-) -> Result<Vec<EpicId>> {
+) -> Result<FeedSyncOutcome> {
     match feed_role {
         crate::models::FeedRole::ReviewsParent => {
             run_role_routed_feed_sync(db, epic_id, entries).await

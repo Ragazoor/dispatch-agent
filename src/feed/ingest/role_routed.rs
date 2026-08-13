@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use super::routing::route_and_group_entries;
 use super::stale::{clear_parent_stranded_tasks, delete_stale_subtree};
 use super::upsert::upsert_role_groups;
-use super::FeedItemWithTarget;
+use super::{FeedItemWithTarget, FeedSyncOutcome};
 use crate::db::TaskStore;
 use crate::models::{Epic, EpicId, Task};
 use anyhow::Result;
@@ -195,9 +195,20 @@ async fn recalculate_subtree(
 ///   just-moved task is never deleted. Manual tasks (`external_id IS NULL`) are
 ///   preserved.
 ///
-/// Steps run as one non-interleaved unit per parent tick. Returns the parent id
-/// plus the three role sub-epic ids (for TUI notification), mirroring
-/// [`super::grouped::sync_grouped_feed`]'s return contract.
+/// Steps run as one non-interleaved unit per parent tick. Returns a
+/// [`FeedSyncOutcome`] whose `affected_epics` is the parent id plus the three
+/// role sub-epic ids (for TUI notification), mirroring
+/// [`super::grouped::sync_grouped_feed`]'s return contract, and whose `removed`
+/// is every row the three write phases deleted that still owned a worktree or
+/// tmux window (for teardown).
+///
+/// **Phase order is load-bearing and NOT compiler-enforced.** `apply_move`'s
+/// `set_task_epic_id` (inside [`route_and_group_entries`]) must land BEFORE
+/// [`upsert_role_groups`], [`delete_stale_subtree`] and
+/// [`clear_parent_stranded_tasks`], each of whose SQL filters on the task's
+/// CURRENT `epic_id`. Mis-ordering them would report a MOVED task as removed
+/// and so force-remove a live review agent's worktree. Pinned by
+/// `moved_task_is_never_reported_as_removed` in `super::tests`.
 ///
 /// Takes a single owned `Vec<FeedItemWithTarget>` rather than three parallel
 /// slices, so per-index alignment with `repo_path`/`base_branch` is
@@ -207,15 +218,15 @@ pub(super) async fn run_role_routed_feed_sync(
     db: &dyn TaskStore,
     parent_id: EpicId,
     entries: Vec<FeedItemWithTarget>,
-) -> Result<Vec<EpicId>> {
+) -> Result<FeedSyncOutcome> {
     let roles = ensure_role_sub_epics(db, parent_id).await?;
     let (existing, pre_existing_repo_group_ids) =
         build_existing_task_index(db, parent_id, &roles).await?;
     let routed = route_and_group_entries(db, parent_id, entries, &existing, &roles).await?;
 
-    upsert_role_groups(db, parent_id, routed.groups).await;
-    delete_stale_subtree(db, parent_id, &roles, &routed.all_external_ids).await;
-    clear_parent_stranded_tasks(db, parent_id).await;
+    let mut removed = upsert_role_groups(db, parent_id, routed.groups).await;
+    removed.extend(delete_stale_subtree(db, parent_id, &roles, &routed.all_external_ids).await);
+    removed.extend(clear_parent_stranded_tasks(db, parent_id).await);
 
     let repo_group_ids: std::collections::HashSet<EpicId> = routed
         .repo_group_cache
@@ -224,7 +235,10 @@ pub(super) async fn run_role_routed_feed_sync(
         .collect();
     recalculate_subtree(db, parent_id, &roles, &repo_group_ids).await;
 
-    let mut all_ids = vec![parent_id, roles.my, roles.team, roles.bots];
-    all_ids.extend(repo_group_ids);
-    Ok(all_ids)
+    let mut affected_epics = vec![parent_id, roles.my, roles.team, roles.bots];
+    affected_epics.extend(repo_group_ids);
+    Ok(FeedSyncOutcome {
+        affected_epics,
+        removed,
+    })
 }

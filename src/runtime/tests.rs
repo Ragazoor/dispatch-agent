@@ -3255,6 +3255,74 @@ async fn exec_trigger_epic_feed_fails_on_degraded_empty_emission() {
     }
 }
 
+/// Companion to the auto-poll guard test
+/// (`tick_degraded_empty_emission_does_not_delete_existing_tasks`): the
+/// message-only assertion above would still pass if the DegradedEmptyEmission
+/// guard were relocated to AFTER `run_feed_sync_by_role`, by which point the
+/// stale-delete has already run — and, since feed removals now tear down
+/// worktrees, already destroyed a live agent's session. Pin "no sync ran" on
+/// the manual path, not just "a failure was reported".
+#[tokio::test]
+async fn exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing_tasks() {
+    let db = test_db().await;
+    let epic = db.create_epic("Degraded Feed", "", None).await.unwrap();
+
+    // Seed one feed task, as a previous healthy refresh would have.
+    db.upsert_feed_tasks(
+        epic.id,
+        &[crate::models::FeedItem {
+            external_id: "pr-1".to_string(),
+            title: "Existing PR".to_string(),
+            description: String::new(),
+            url: String::new(),
+            url_type: None,
+            status: crate::models::TaskStatus::Backlog,
+            tag: crate::models::TaskTag::PrReview,
+            labels: Vec::new(),
+            sort_order: None,
+            signals: vec![],
+            wrap_up_mode: None,
+        }],
+        &["".to_string()],
+        &["main".to_string()],
+    )
+    .await
+    .unwrap();
+    assert_eq!(db.list_tasks_for_epic(epic.id).await.unwrap().len(), 1);
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+    rt.exec_trigger_epic_feed(
+        epic.id,
+        "Degraded Feed".to_string(),
+        "echo 'Invalid search query' >&2; echo '[]'".to_string(),
+        false,
+    );
+
+    // Awaiting the message is the deterministic completion signal: the spawned
+    // job sends it on its way out, so the DB is settled once it arrives.
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("timed out")
+        .expect("channel closed");
+    assert!(
+        matches!(
+            msg,
+            Message::Feed(crate::tui::messages::FeedMessage::Failed { .. })
+        ),
+        "expected FeedMessage::Failed, got: {msg:?}"
+    );
+
+    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+    assert_eq!(
+        tasks.len(),
+        1,
+        "a degraded empty emission must not run the sync, so existing feed tasks survive"
+    );
+    assert_eq!(tasks[0].external_id.as_deref(), Some("pr-1"));
+}
+
 #[tokio::test]
 async fn exec_trigger_epic_feed_command_fails() {
     let db = test_db().await;

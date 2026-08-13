@@ -5,13 +5,16 @@
 use std::collections::HashMap;
 
 use super::FeedItemWithTarget;
-use crate::db::TaskStore;
+use crate::db::{RemovedFeedTask, TaskStore};
 use crate::models::{EpicId, FeedItem};
 
 /// Upsert `items` into `sub_epic_id`, then recalculate its status on success
 /// (which propagates upward to the parent). Logs a warning on failure. Shared
 /// by both reconciliation paths of [`sync_grouped_feed`]: the present-group
 /// upsert and the absent-sub-epic clear (called with empty slices).
+///
+/// Returns the stale rows the upsert deleted that still owned a worktree or
+/// tmux window, for the caller to tear down (empty on failure).
 async fn upsert_sub_epic_and_recalc(
     db: &dyn TaskStore,
     parent_id: EpicId,
@@ -19,19 +22,19 @@ async fn upsert_sub_epic_and_recalc(
     items: &[FeedItem],
     repo_paths: &[String],
     base_branches: &[String],
-) {
+) -> Vec<RemovedFeedTask> {
     let result = db
         .upsert_feed_tasks(sub_epic_id, items, repo_paths, base_branches)
         .await;
     if result.is_ok() {
         crate::feed::recalculate_epic_status_after_feed(db, sub_epic_id, "sync_grouped_feed").await;
     }
-    crate::feed::warn_on_err(
+    crate::feed::removed_or_warn(
         result,
         parent_id,
         Some(sub_epic_id),
         "sync_grouped_feed: upsert_feed_tasks failed",
-    );
+    )
 }
 
 /// Phase 1: group entries by repo name, moving each entry into its group (no
@@ -51,14 +54,15 @@ fn group_by_repo(entries: Vec<FeedItemWithTarget>) -> HashMap<String, Vec<FeedIt
 /// Phase 2: find-or-create each present group's sub-epic and upsert its
 /// items. Returns the sub-epic IDs written to (used by the caller to notify
 /// the TUI, even when an individual upsert fails — partial writes are still
-/// visible).
+/// visible), paired with the removed rows needing teardown.
 async fn upsert_present_groups(
     db: &dyn TaskStore,
     parent_id: EpicId,
     groups: HashMap<String, Vec<FeedItemWithTarget>>,
     active_sub_epics: &[&crate::models::Epic],
-) -> Vec<EpicId> {
+) -> (Vec<EpicId>, Vec<RemovedFeedTask>) {
     let mut sub_epic_ids = Vec::new();
+    let mut removed = Vec::new();
     for (repo_name, group) in groups {
         let (group_items, group_repo_paths, group_base_branches) = FeedItemWithTarget::unzip(group);
 
@@ -83,17 +87,19 @@ async fn upsert_present_groups(
 
         // New backlog tasks may regress a done sub-epic; the recalculation
         // inside the helper propagates upward to the parent.
-        upsert_sub_epic_and_recalc(
-            db,
-            parent_id,
-            sub_epic_id,
-            &group_items,
-            &group_repo_paths,
-            &group_base_branches,
-        )
-        .await;
+        removed.extend(
+            upsert_sub_epic_and_recalc(
+                db,
+                parent_id,
+                sub_epic_id,
+                &group_items,
+                &group_repo_paths,
+                &group_base_branches,
+            )
+            .await,
+        );
     }
-    sub_epic_ids
+    (sub_epic_ids, removed)
 }
 
 /// Phase 3: clear feed tasks from any active sub-epic whose repo contributed
@@ -108,22 +114,23 @@ async fn clear_absent_sub_epics(
     parent_id: EpicId,
     active_sub_epics: &[&crate::models::Epic],
     group_names: &std::collections::HashSet<String>,
-) -> Vec<EpicId> {
+) -> (Vec<EpicId>, Vec<RemovedFeedTask>) {
     let mut sub_epic_ids = Vec::new();
+    let mut removed = Vec::new();
     for sub_epic in active_sub_epics
         .iter()
         .filter(|e| !group_names.contains(&e.title))
     {
         // Surface the cleared sub-epic to the caller so the TUI refreshes it.
         sub_epic_ids.push(sub_epic.id);
-        upsert_sub_epic_and_recalc(db, parent_id, sub_epic.id, &[], &[], &[]).await;
+        removed.extend(upsert_sub_epic_and_recalc(db, parent_id, sub_epic.id, &[], &[], &[]).await);
     }
-    sub_epic_ids
+    (sub_epic_ids, removed)
 }
 
 /// Phase 4: clear any flat feed tasks left on the parent (migration + ongoing
 /// hygiene), regardless of per-group failures in phases 2/3.
-async fn clear_parent_flat_tasks(db: &dyn TaskStore, parent_id: EpicId) {
+async fn clear_parent_flat_tasks(db: &dyn TaskStore, parent_id: EpicId) -> Vec<RemovedFeedTask> {
     let result = db.upsert_feed_tasks(parent_id, &[], &[], &[]).await;
     if result.is_ok() {
         // Recalculate the parent's status after its flat tasks are cleared.
@@ -132,17 +139,19 @@ async fn clear_parent_flat_tasks(db: &dyn TaskStore, parent_id: EpicId) {
         // the parent's flat task list is now empty.
         crate::feed::recalculate_epic_status_after_feed(db, parent_id, "sync_grouped_feed").await;
     }
-    crate::feed::warn_on_err(
+    crate::feed::removed_or_warn(
         result,
         parent_id,
         None,
         "sync_grouped_feed: failed to clear parent feed tasks",
-    );
+    )
 }
 
 /// Group feed items by repo name and upsert each group into its own sub-epic.
 /// Clears any flat feed tasks on the parent epic (migration + ongoing
-/// hygiene). Returns the IDs of all sub-epics that were found or created.
+/// hygiene). Returns the IDs of all sub-epics that were found or created,
+/// paired with every removed row that still owned a worktree or tmux window
+/// (for teardown by the caller).
 ///
 /// Orchestrates four phases, in order: [`group_by_repo`] (pure),
 /// [`upsert_present_groups`], [`clear_absent_sub_epics`], then
@@ -154,7 +163,7 @@ pub(super) async fn sync_grouped_feed(
     db: &dyn TaskStore,
     parent_id: EpicId,
     entries: Vec<FeedItemWithTarget>,
-) -> Vec<EpicId> {
+) -> (Vec<EpicId>, Vec<RemovedFeedTask>) {
     let groups = group_by_repo(entries);
 
     let existing_sub_epics = match db.list_sub_epics(parent_id).await {
@@ -165,7 +174,7 @@ pub(super) async fn sync_grouped_feed(
                 "sync_grouped_feed: list_sub_epics failed: {err:#}"
             );
             // list_sub_epics failed: no writes occurred, skip notifications
-            return vec![];
+            return (vec![], vec![]);
         }
     };
 
@@ -178,11 +187,14 @@ pub(super) async fn sync_grouped_feed(
     // is consumed by value in `upsert_present_groups`.
     let group_names: std::collections::HashSet<String> = groups.keys().cloned().collect();
 
-    let mut sub_epic_ids = upsert_present_groups(db, parent_id, groups, &active_sub_epics).await;
-    sub_epic_ids
-        .extend(clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await);
+    let (mut sub_epic_ids, mut removed) =
+        upsert_present_groups(db, parent_id, groups, &active_sub_epics).await;
+    let (absent_ids, absent_removed) =
+        clear_absent_sub_epics(db, parent_id, &active_sub_epics, &group_names).await;
+    sub_epic_ids.extend(absent_ids);
+    removed.extend(absent_removed);
 
-    clear_parent_flat_tasks(db, parent_id).await;
+    removed.extend(clear_parent_flat_tasks(db, parent_id).await);
 
-    sub_epic_ids
+    (sub_epic_ids, removed)
 }
