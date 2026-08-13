@@ -23,11 +23,25 @@ WP0 below — it is a blocking prerequisite, not a footnote. Everything after it
 assumes the merge has happened. Line references are to the post-merge tree;
 symbol references (`path::symbol`) are stable either way.
 
-## WP0 — get #3989 into this branch (blocking prerequisite)
+## WP0 — get #3989 into this branch — ALREADY DONE
 
-Do this first and do not start WP1 until `cargo test` is green on the result.
+**This is satisfied. Do not redo it.** Merge commit `00798712` on this branch
+brought #3989 in; `cargo test` and `cargo clippy --all-targets -- -D warnings`
+are green on the result. Both predicted conflicts resolved the way the plan
+wanted, verified in the tree:
 
-**Direction matters. Do not rebase this branch onto `51e28f9e`.** The #3989
+- `src/runtime/epics.rs:276` uses `crate::feed::parse_feed_items` (`main`'s
+  shared parse), not `serde_json::from_slice`.
+- `src/tui/messages/feed.rs:19` has the two-field
+  `Refreshed { epic_title, count }` (#3989's form); `wrote_stderr` is gone from
+  the message, its handler and its tests.
+
+The rest of this section is the reasoning behind *how* it was merged, kept
+because it explains why this branch carries #3989's 13 commits and what that
+means at wrap-up time. Skip to WP1 unless that matters to you.
+
+**Direction mattered. Rebasing this branch onto `51e28f9e` would have been
+wrong.** The #3989
 branch is 3 commits *behind* `main`, and one of those three is `effb09e9`
 ("unify feed-stdout parsing across all three entry points") — the very commit
 that makes the manual path use the shared `parse_feed_items`. Rebasing 4091 onto
@@ -36,35 +50,18 @@ exist, so WP2's shared cycle would be built on the older `serde_json::from_slice
 glue and the conflict resolution below would be unsatisfiable without a
 cherry-pick.
 
-So, in preference order:
+What was done instead: `git merge --no-ff` of the #3989 branch **into** this one.
+That brings its 13 commits in while keeping `main`'s 3, and puts the conflict
+resolution in this branch's history where it can be reviewed. Git merged both
+files cleanly, so the two "conflicts" never surfaced as conflict markers — which
+is exactly why they were verified by reading the result rather than trusted.
 
-1. **Best: #3989 lands on `main` on its own** (it is finished work — tip commit
-   is `fix(feeds): close the final-review findings` — but has no PR open, so it
-   needs whoever owns it to wrap it up). Then `git merge origin/main` into this
-   branch and carry on. Whoever merges #3989 resolves the two conflicts below;
-   verify they resolved them as stated before building on top.
-2. **Otherwise: merge, don't rebase.** From this branch, `git merge` the #3989
-   branch. That brings its 13 commits in while keeping `main`'s 3, and puts the
-   conflict resolution in this branch's history where it can be reviewed. Note
-   for the wrap-up: this branch then carries #3989's commits, so it cannot merge
-   to `main` before #3989 does without taking that work with it — flag it on the
-   PR rather than letting it land silently.
-
-Either way, the two known `main` ↔ #3989 conflicts resolve as:
-
-- `src/runtime/epics.rs::exec_trigger_epic_feed` — #3989 still calls
-  `serde_json::from_slice`; `main`'s `effb09e9` replaced that with the shared
-  `crate::feed::parse_feed_items`. **Keep `main`'s shared parse** — the whole
-  point of WP2 is that both paths share this layer.
-- `FeedMessage::Refreshed` — `main` carries `wrote_stderr`; #3989 deletes it
-  (a degraded zero-item emission is now a hard failure, so the zero-item stderr
-  hint is unreachable). **Keep #3989's two-field form**, and check that
-  `App::handle_feed_refreshed` and any status-bar test or snapshot referencing
-  `wrote_stderr` came along with the deletion.
-
-Both `git log --oneline main..<3989-branch>` and the reverse should be re-checked
-at the time — the counts quoted here (13 ahead, 3 behind) are as of 2026-08-13
-and will drift.
+**Wrap-up consequence, do not let this land silently:** this branch now carries
+#3989's commits, so it cannot merge to `main` before #3989 does without taking
+that work with it. Say so on the PR. If #3989 lands on `main` independently
+first (it is finished work — tip commit `fix(feeds): close the final-review
+findings` — it just has no PR open), the shared history collapses and this
+becomes a non-issue.
 
 ## The bug
 
@@ -149,14 +146,34 @@ Both are improvements, both are called out in the spec, both get their own test.
 Neither is required by the race fix — if review pushes back, WP4 can be dropped
 without affecting WP1–WP3.
 
-1. **`feed_role` and `group_by_repo` are read inside the cycle**, from one
-   `db.get_epic(epic_id)` after the claim, instead of the auto-poll path using
-   its in-hand `Epic` and the manual path mixing a fresh `get_epic` read for
-   `feed_role` with a `group_by_repo` value passed down from the TUI's cached
-   board. That mixed sourcing is a live drift: a manual `r` today can sync with a
-   stale `group_by_repo`. One read, one source of truth, one fewer parameter on
-   both callers. An epic deleted between spawn and cycle becomes a `Failed`
-   outcome rather than a flat upsert onto a missing epic.
+1. **`feed_command`, `feed_role` and `group_by_repo` are all read inside the
+   cycle**, from one `db.get_epic(epic_id)` after the claim, instead of the
+   auto-poll path using its in-hand `Epic` and the manual path mixing a fresh
+   `get_epic` read for `feed_role` with `feed_command` and `group_by_repo` passed
+   down from the TUI's cached board. That mixed sourcing is a live drift:
+   `App::handle_trigger_epic_feed` (`src/tui/update/feeds.rs:9`) pulls all three
+   of title, `feed_command` and `group_by_repo` off `self.find_epic(id)`, i.e.
+   the last-loaded board snapshot. So a manual `r` today can sync with a stale
+   `group_by_repo` **and can execute a stale `feed_command`** — the second is
+   strictly worse (wrong command runs) and it would be incoherent to fix the
+   grouping flag while leaving it. One read, one source of truth.
+
+   Consequences: `feed_command` and `group_by_repo` drop out of
+   `FeedCommand::TriggerEpic` (`src/tui/commands/feed.rs:11`) and out of
+   `exec_trigger_epic_feed`'s signature — only `epic_id` and `epic_title`
+   remain, the title purely for status-bar presentation. `handle_trigger_epic_feed`
+   keeps reading the cached `feed_command` as the *gate* for whether `r` does
+   anything at all (that is `ManualFeedTrigger`'s `requires:` clause and it is
+   fine on cached data); it just stops passing the value down. An epic that lost
+   its `feed_command`, or was deleted, between keypress and cycle becomes a
+   `Failed` outcome instead of a flat upsert onto a missing epic.
+
+   Cost, stated plainly: one extra `get_epic` per eligible auto-poll cycle that
+   does not exist today — `FeedRunner::tick` already has the `Epic` in hand from
+   its single `list_epics()`. It is a pure read, so it goes to the read pool via
+   `db_call_read` and does not queue behind the writer (docs/conventions.md, "DB
+   access"). One read per epic per interval is not a real cost, but it is a
+   change in the access pattern and should not be waved through as free.
 2. **Both paths now notify *after* teardown.** feeds.allium currently records the
    divergence as an open question — `FeedJob::run` sends `EpicChanged` then
    awaits cleanup; `exec_trigger_epic_feed` awaits cleanup then sends
@@ -178,6 +195,22 @@ Keyed by the **polled epic's id** — the `reviews_parent`, never a role sub-epi
 Only the parent carries a `feed_command` (enforced at provisioning), and only the
 parent's cycle writes the subtree, so one key per polled epic covers the whole
 subtree it reconciles. Distinct epics never contend.
+
+**This does NOT close the destructive-teardown bug class — only the feed-vs-feed
+half of it.** The claim serialises feed cycles against each other. It does
+nothing about a concurrent **non-feed** writer. `delete_stale_subtree_feed_tasks`
+filters on the task's current `epic_id` and its keep-set is the emission's
+`external_id`s, so any writer that moves a task's `epic_id` *into* the reconciled
+subtree mid-cycle — an MCP `update_task` with `epic_id`, an epic reparent, a
+`flatten_epic`, a TUI move — can land a feed task under a role sub-epic while it
+is absent from the in-flight emission, and the stale delete will remove it and
+tear down its worktree. Same mechanism, same consequence, one leg simply is not a
+feed cycle. Nothing in this plan detects that, and the spec's new invariant is
+deliberately worded "another *cycle*" rather than "another writer" so it does not
+overclaim. A reader must not walk away thinking the class is closed. Whether the
+stale delete should refuse to remove a task carrying live agent state is the real
+fix for that half, and feeds.allium already flags it as an open question under
+`DegradedEmptyEmission`'s RESIDUAL RISK paragraph — worth its own task.
 
 **Out of scope, noted for honesty:** two *nested* feed epics whose subtrees
 overlap would still contend — `delete_stale_subtree_feed_tasks(P, …)` reaches any
@@ -313,6 +346,19 @@ handshake:
   `cat`), then — from `spawn_blocking` — opens the FIFO **for writing**. That
   open blocks until the reader opens, so it *is* the signal that the exec is in
   flight; no polling, no sleep.
+- **The handshake MUST be deadline-bounded.** A blocking FIFO open that never
+  unblocks is worse than a failing test: it wedges CI silently, and the way it
+  gets wedged is precisely a regression in the code this plan adds — if
+  `try_claim`, the `get_epic`, or the role guard bails before `exec`, `cat` never
+  opens the FIFO for reading and the writer-side open blocks forever. So
+  `tokio::time::timeout` the `JoinHandle`, and fail the test on elapse with a
+  message naming the likely cause. Note honestly what that does and does not buy:
+  `spawn_blocking` work is **not cancellable**, so the timeout frees the *test*,
+  not the thread — the blocked thread leaks until the process exits. That is
+  acceptable in a test binary and is the standard trade; it is not acceptable to
+  leave the deadline off. This is why the two claim-held tests below are not
+  merely "cheaper" — they are the ones that will still be diagnosable if the FIFO
+  test ever goes red.
 - With the cycle provably mid-exec, trigger the manual path and assert
   `AlreadyRefreshing` plus zero writes.
 - Then write + close the FIFO to let the cycle finish, and drain events.
@@ -328,8 +374,11 @@ pub(crate) struct FeedCycle {
     pub(crate) runner: Arc<dyn ProcessRunner>,
     pub(crate) guard: Arc<FeedSyncGuard>,
     pub(crate) epic_id: EpicId,
+    /// Presentation only — the status-bar strings on the manual path and the
+    /// log fields on both. Never used to decide behaviour, so a stale title is
+    /// harmless; `feed_command`, `feed_role` and `group_by_repo` are NOT fields
+    /// here, they are read fresh inside `run` (behaviour change 1).
     pub(crate) epic_title: String,
-    pub(crate) cmd: String,
     /// `Some` from the auto-poll path, which fetches once per tick for all
     /// epics; `None` from the manual path, resolved inside after the claim so
     /// a dropped request does no DB work.
@@ -345,12 +394,19 @@ pub(crate) enum FeedCycleOutcome {
 impl FeedCycle { pub(crate) async fn run(self) -> FeedCycleOutcome }
 ```
 
+`Failed(String)` is a bare string because both consumers render it directly
+(`FeedMessage::Failed` → status bar, or a `tracing::warn!`). Follow-up worth
+noting, not doing here: the repo prefers typed failure vocabularies for anything
+a caller branches on (see repo-sync.allium), so if a future caller ever needs to
+*distinguish* these failures, promote it to an enum then rather than
+string-matching.
+
 Body, in order — this is the whole of today's two glue blocks, merged:
 
 1. `let Some(_claim) = self.guard.try_claim(self.epic_id) else { return Busy };`
-2. `get_epic` → `feed_role`, `group_by_repo` (behaviour change 1; missing epic →
-   `Failed`).
-3. `exec_feed_command` → `Err` → `Failed`.
+2. `get_epic` → `feed_command`, `feed_role`, `group_by_repo` (behaviour change 1;
+   missing epic, or an epic whose `feed_command` is now `None` → `Failed`).
+3. `exec_feed_command` with the `feed_command` from step 2 → `Err` → `Failed`.
 4. `parse_feed_items` → `Err` → `Failed`.
 5. `degraded_empty_emission` → `Some(reason)` → `Failed(reason)`.
 6. role-sub-epic provisioning guard (`debug_assert!` + `Failed`).
@@ -375,6 +431,12 @@ the behaviour-preservation harness — every one of them must stay green
   assertion (exactly one feed task in the subtree) holds whether the second tick
   serialises or is dropped as `Busy`. Keep the test; update only its comment to
   say the property is now structurally enforced rather than incidental.
+  Worth writing down next to that comment, because it is not obvious: the claim
+  is taken **inside the spawned job**, not synchronously in `tick()`. So `tick()`
+  never blocks and never itself observes contention — whichever of the two
+  spawned jobs reaches `try_claim` first wins, and the loser returns `Busy`. The
+  outcome is order-dependent but the *assertion* is not, which is why the test is
+  race-free either way and must not be rewritten to expect one specific arm.
 - `tick_twice_is_idempotent` and `tick_interval_not_elapsed_skips_command` both
   await the first refresh before the second tick, so neither hits `Busy`.
 - `tick_removed_task_tears_down_its_worktree` and
@@ -404,21 +466,40 @@ pins behaviour change 1 — the manual path syncs against the epic's current
   expires on `STATUS_MESSAGE_TTL` like the other two).
 - Wiring: `FeedRunner::new` constructs the guard; add
   `pub(crate) fn sync_guard(&self) -> Arc<FeedSyncGuard>`, mirroring the existing
-  `epic_invalidate_tx()`. `runtime::bootstrap` (`src/runtime/mod.rs:492`) binds
-  the runner to a local, pulls `sync_guard()`, and stores it on a new
-  `TuiRuntime.feed_sync_guard` field.
-  **Both call sites must share one guard or the fix is inert**, and there is no
-  compiler check for that. The eight test constructors of `TuiRuntime` in
-  `src/runtime/editor.rs` (lines ~715–1156) build their `FeedRunner` inline in the
-  struct literal; each must be changed to bind it first and take the guard from
-  it — *not* to mint a fresh `FeedSyncGuard::default()`, which would silently
-  make those runtimes unable to observe the poll path. Consider a small
-  `fn wire_feed(db, notify, runner) -> (FeedRunner, Arc<FeedSyncGuard>)` factory
-  used by bootstrap and all eight test sites so the pairing cannot be got wrong.
+  `epic_invalidate_tx()`. Then a new `TuiRuntime.feed_sync_guard` field, set from
+  it. **Both call sites must share one guard or the fix is inert**, and there is
+  no compiler check for that — a `FeedSyncGuard::default()` minted at a second
+  site type-checks and silently disables the serialisation.
+
+  The real inventory of `TuiRuntime` construction sites — verified, and *not* the
+  "eight in `editor.rs`" an earlier draft of this plan claimed:
+
+  | Site | Count | Note |
+  |---|---|---|
+  | `src/runtime/mod.rs:495` (`bootstrap`) | 1 | production; the only one that matters at runtime |
+  | `src/runtime/tests.rs::make_runtime` | 1 | the canonical test fixture — already builds a `FeedRunner` and is what `todos.rs`, `learnings.rs` and the other `src/runtime/*` test modules delegate to |
+  | `src/runtime/editor.rs` | 9 | lines 708, 837, 900, 957, 1022, 1074, 1142, 1202, 1263 — the outlier: each builds its own literal instead of using the fixture |
+
+  So the correct shape is a `fn wire_feed(db, notify, runner) -> (FeedRunner,
+  Arc<FeedSyncGuard>)` factory applied at **11** sites, of which the one that
+  earns the flagship test is `tests.rs::make_runtime` — fixing that fixture gives
+  every delegating test module a correctly-wired runtime for free, and is where
+  the FIFO test should get its runtime from. `editor.rs`'s 9 literals are
+  mechanical follow-through; none of them exercises a feed path, but they must
+  take the guard from their own `FeedRunner` rather than minting one, so the
+  wrong pattern is not left in the tree to be copied.
 
 ### WP4 — spec alignment and the doc sweep
 
 - `allium:weed` over `feeds.allium` against the new code; `allium check`.
+- When replacing the "Teardown-vs-notification ordering … open question"
+  paragraph, keep the file's register. `feeds.allium` is unusually good at naming
+  its own residual risks ("The cost, stated honestly: …"), so the replacement
+  states the new normative order *and* what it costs (auto-poll board updates now
+  wait on `git worktree remove`) rather than collapsing to a bare rule. Same for
+  the new `SerialisedFeedCycle` rule: it must carry the non-feed-writer residual
+  risk from the "does NOT close the bug class" paragraph above, or the spec will
+  read as a stronger guarantee than the code gives.
 - Status-bar snapshots: a new transient message should not touch
   `src/tui/tests/snapshots/`, but if any snapshot does move, accept it with
   `INSTA_UPDATE=always cargo test tui::tests::snapshots` and **delete the
@@ -427,6 +508,32 @@ pins behaviour change 1 — the manual path syncs against the epic's current
 - Record a learning: the per-epic single-flight claim is the third decision that
   had to be identical across the two feed paths, and the reason `src/feed/cycle.rs`
   now exists — so the next agent adds step four *there*, not twice.
+
+### WP5 — bound `exec_feed_command` (recommended; needs a decision)
+
+Not required to fix the race, and strictly speaking a different bug. Included
+because WP1–WP4 *introduce* the failure mode it closes (see Risks): once a claim
+is held for the duration of an unbounded child process, a hung feed command
+wedges that epic's feed for the life of the session. Decide before WP1 lands, not
+after — retrofitting it changes `exec_feed_command`'s signature and every test
+that drives it.
+
+- **Test first**: a feed command that never exits (`sleep 600`, or `cat` on a
+  FIFO nothing writes to) yields a `Failed` outcome within the deadline, and the
+  claim is released afterwards so the next cycle for that epic proceeds. The
+  second half is the point — the test must prove the epic recovers, not merely
+  that one call returned.
+- **Implement**: a timeout around the child in `src/feed/exec.rs`. Note
+  `run_bounded` (`src/process.rs`) is the sanctioned kill-on-timeout primitive
+  for **synchronous** `ProcessRunner` children, and `exec_feed_command` uses
+  `tokio::process::Command` instead — so this is not a drop-in. Either route the
+  feed exec through the existing primitive, or use `tokio::time::timeout` plus
+  `kill_on_drop(true)` so the child is reaped rather than orphaned. CLAUDE.md's
+  "never hand-roll a second kill-on-timeout" rule means the choice needs a
+  sentence of justification in the code, whichever way it goes.
+- **Spec**: a new `requires`/failure clause on `FeedCommandFailure` for the
+  timeout bucket, and the chosen duration named in core.allium's config block if
+  it is configurable rather than a constant.
 
 ## Verification
 
@@ -448,10 +555,21 @@ sleep, and if a bounded poll step turns out unavoidable it needs an
   WP2 exercise the guard directly and would *also* pass under a mis-wire — only
   the FIFO test crosses both paths through one runtime. That is the argument for
   landing it, and for the `wire_feed` factory.
-- **A hung feed command now blocks its epic's manual refresh** for as long as it
-  hangs, instead of piling up parallel cycles. Better failure mode, but a
-  visible change; the status line says why. Bounding `exec_feed_command` with
-  `run_bounded` is the real fix and is a follow-up.
+- **A hung feed command becomes an availability regression, and this needs your
+  sign-off.** Today, a stuck auto-poll does not block a manual `r`: the two run
+  unserialised, so the user always has a way to force a sync. Under single-flight
+  the stuck cycle holds the claim, and then *every* subsequent tick and *every*
+  `r` press for that epic is dropped — with no user-facing recovery short of
+  restarting the app, because `exec_feed_command` has no timeout and nothing
+  reaps the claim. That converts a data-corruption bug into a
+  liveness/availability bug for that one epic. The status line at least says why,
+  which is more than today's silent pile-up, but "for as long as it hangs" can be
+  forever. Options, in preference order:
+    1. **Bound `exec_feed_command`** (WP5 below) — closes it properly.
+    2. Ship WP1–WP4 alone and accept the window, on the grounds that a feed
+       command hanging forever is itself a bug and rare.
+    3. Let a manual `r` steal a claim older than some threshold. Rejected:
+       reintroduces exactly the interleave this task exists to remove.
 - **Auto-poll board updates lag teardown** (behaviour change 2). Bounded by the
   `git worktree remove` fan-out, which is already parallel across repos.
 - **Merge order with #3989** (see WP0). If #3989 is revised before it lands,
