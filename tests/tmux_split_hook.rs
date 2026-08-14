@@ -188,9 +188,9 @@ impl Fixture {
         ])
     }
 
-    /// Block until `pane` reports `worktree` as its cwd. The hook fires through
-    /// `run-shell -b`, so the correction is not visible when the split call
-    /// returns.
+    /// Assert that `pane` ends up in the worktree, waiting for it to get there.
+    /// The hook fires through `run-shell -b`, so the correction is not visible
+    /// when the split call returns.
     ///
     /// Doubles as the happens-before anchor every negative assertion in this file
     /// needs: once a correction has demonstrably landed, anything the hook
@@ -245,9 +245,8 @@ fn user_split_without_a_start_dir_is_corrected_into_the_worktree() {
     let log = fx.log("user_pane");
 
     let pane = fx.user_split(AGENT_WINDOW, &log);
-    fx.await_corrected(&pane);
 
-    fx.assert_cwd_is_worktree(&pane);
+    fx.await_corrected(&pane);
 }
 
 /// Tier 1: dispatch's own split is correct at creation, with the correction hook
@@ -408,7 +407,6 @@ fn split_correction_handles_a_worktree_path_containing_a_space() {
     let log = fx.log("user_pane");
 
     let pane = fx.user_split(AGENT_WINDOW, &log);
-    fx.await_corrected(&pane);
 
-    fx.assert_cwd_is_worktree(&pane);
+    fx.await_corrected(&pane);
 }
