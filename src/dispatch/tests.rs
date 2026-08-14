@@ -491,15 +491,16 @@ fn toggle_with_an_editor_pane_open_kills_only_the_tree_pane() {
 fn toggle_ignores_an_unmarked_pane_and_splits_a_tree_pane() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"%1 \n%3 \n"),
-        MockProcessRunner::ok_with_stdout(b"%4\n"), // split-window
-        MockProcessRunner::ok(),                    // set-option
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
+        MockProcessRunner::ok_with_stdout(b"%4\n"),  // split-window
+        MockProcessRunner::ok(),                     // set-option
     ])
     .with_windows(&["task-42"]);
 
     toggle_agent_tree_pane("task-42", &mock).unwrap();
 
     let calls = mock.recorded_calls();
-    assert_eq!(calls[1].1[0], "split-window", "calls: {calls:?}");
+    assert_eq!(calls[2].1[0], "split-window", "calls: {calls:?}");
     assert!(
         !calls.iter().any(|(_, args)| args[0] == "kill-pane"),
         "must not kill a pane it did not create; calls: {calls:?}"
@@ -510,14 +511,15 @@ fn toggle_ignores_an_unmarked_pane_and_splits_a_tree_pane() {
 fn toggle_splits_a_tree_pane_when_the_window_has_none() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"%1 \n"),
-        MockProcessRunner::ok_with_stdout(b"%2\n"), // split-window
-        MockProcessRunner::ok(),                    // set-option
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
+        MockProcessRunner::ok_with_stdout(b"%2\n"),  // split-window
+        MockProcessRunner::ok(),                     // set-option
     ])
     .with_windows(&["task-42"]);
 
     toggle_agent_tree_pane("task-42", &mock).unwrap();
 
-    assert_eq!(mock.recorded_calls()[1].1[0], "split-window");
+    assert_eq!(mock.recorded_calls()[2].1[0], "split-window");
 }
 
 /// The spawn side writes the marker the lookup side reads — the whole mechanism
@@ -526,8 +528,9 @@ fn toggle_splits_a_tree_pane_when_the_window_has_none() {
 fn the_spawned_tree_pane_is_marked_with_its_role() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"%1 \n"),
-        MockProcessRunner::ok_with_stdout(b"%2\n"), // split-window returns the new pane
-        MockProcessRunner::ok(),                    // set-option
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
+        MockProcessRunner::ok_with_stdout(b"%2\n"),  // split-window returns the new pane
+        MockProcessRunner::ok(),                     // set-option
     ])
     .with_windows(&["task-42"]);
 
@@ -535,7 +538,7 @@ fn the_spawned_tree_pane_is_marked_with_its_role() {
 
     let calls = mock.recorded_calls();
     assert_eq!(
-        calls[2].1,
+        calls[3].1,
         vec![
             "set-option",
             "-p",
@@ -556,12 +559,17 @@ fn the_spawned_tree_pane_is_marked_with_its_role() {
 fn a_failing_role_marker_write_does_not_fail_the_toggle() {
     let mock = MockProcessRunner::new(vec![
         MockProcessRunner::ok_with_stdout(b"%1 \n"),
-        MockProcessRunner::ok_with_stdout(b"%2\n"),
-        MockProcessRunner::fail("bad option"),
+        MockProcessRunner::ok_with_stdout(b"/wt\n"), // show-options @dispatch_dir
+        MockProcessRunner::ok_with_stdout(b"%2\n"),  // split-window
+        MockProcessRunner::fail("bad option"),       // set-option: the marker write
     ])
     .with_windows(&["task-42"]);
 
     assert!(toggle_agent_tree_pane("task-42", &mock).is_ok());
+    // The failure must land on the marker write, not on an earlier call — this
+    // test is worthless if the split is what failed.
+    let calls = mock.recorded_calls();
+    assert_eq!(calls[3].1[0], "set-option", "calls: {calls:?}");
 }
 
 #[test]

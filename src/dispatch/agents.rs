@@ -584,7 +584,7 @@ mod tests {
         ]);
         resync_agent_tree_pane("task-5", &mock);
         let calls = mock.recorded_calls();
-        assert_eq!(calls.len(), 4);
+        assert_eq!(calls.len(), 5);
         assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%9"]);
         assert!(calls[3].1.contains(&"split-window".to_string()));
         // The window being split is targeted by its resolved pane ID, not its
