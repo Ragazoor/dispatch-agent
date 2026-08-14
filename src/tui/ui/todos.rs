@@ -1,12 +1,13 @@
 //! Personal TODO overlay — render function.
 
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use super::palette::{BLUE, CYAN, PURPLE};
+use super::palette::{BLUE, CYAN, MUTED, PURPLE, YELLOW};
+use super::shared::rounded_block;
 use crate::models::TodoLink;
 use crate::tui::{App, InputMode, ViewMode};
 
@@ -37,12 +38,9 @@ pub fn render_todos(frame: &mut Frame, app: &App, area: Rect) {
     let open_count = todos.iter().filter(|t| !t.done).count();
     let title = format!(" TODO ({open_count} open) ");
 
-    let outer_block = Block::default()
+    let outer_block = rounded_block(CYAN)
         .title(title)
-        .title_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(CYAN));
+        .title_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD));
 
     let inner_area = outer_block.inner(overlay_area);
     frame.render_widget(outer_block, overlay_area);
@@ -71,15 +69,13 @@ pub fn render_todos(frame: &mut Frame, app: &App, area: Rect) {
                     Span::raw(indent),
                     Span::styled(
                         DONE_GLYPH,
-                        Style::default()
-                            .fg(Color::DarkGray)
-                            .add_modifier(Modifier::DIM),
+                        Style::default().fg(MUTED).add_modifier(Modifier::DIM),
                     ),
                     Span::raw(" "),
                     Span::styled(
                         todo.title.clone(),
                         Style::default()
-                            .fg(Color::DarkGray)
+                            .fg(MUTED)
                             .add_modifier(Modifier::DIM | Modifier::CROSSED_OUT),
                     ),
                 ]))
@@ -128,9 +124,7 @@ pub fn render_todos(frame: &mut Frame, app: &App, area: Rect) {
             "",
             &app.input.buffer,
             app.input.caret,
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
         );
         frame.render_widget(Paragraph::new(line), input_area);
     }
@@ -146,6 +140,6 @@ pub fn render_todos(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         " a add · space done · J/K order · Tab nest · S-Tab unnest · e edit · L link · U unlink · Enter/g jump · c clear-done · d del · q back"
     };
-    let hints = Paragraph::new(hint_text).style(Style::default().fg(Color::DarkGray));
+    let hints = Paragraph::new(hint_text).style(Style::default().fg(MUTED));
     frame.render_widget(hints, footer_area);
 }

@@ -2,12 +2,13 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
+use crate::tui::ui::palette::{CYAN, FG, MUTED, MUTED_LIGHT, YELLOW};
 use crate::tui::{App, InputMode, RepoFilterMode};
 
 pub(in crate::tui::ui::kanban) fn render_repo_filter_overlay(
@@ -68,21 +69,13 @@ pub(in crate::tui::ui::kanban) fn render_repo_filter_overlay(
         .title(format!(" Repo Filter ({mode_label}) "))
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+        .border_style(Style::default().fg(CYAN))
+        .title_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD));
 
-    let key_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
-    let desc_style = Style::default().fg(Color::Gray);
-    let note_style = Style::default().fg(Color::DarkGray);
-    let cursor_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(MUTED_LIGHT);
+    let note_style = Style::default().fg(MUTED);
+    let cursor_style = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
 
     let mut lines = vec![Line::from("")];
 
@@ -90,9 +83,7 @@ pub(in crate::tui::ui::kanban) fn render_repo_filter_overlay(
     if !app.filter_presets().is_empty() {
         lines.push(Line::from(vec![Span::styled(
             "  Presets:",
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(FG).add_modifier(Modifier::BOLD),
         )]));
         for (i, (name, _, mode)) in app.filter_presets().iter().enumerate() {
             let letter = (b'A' + i as u8) as char;
@@ -130,7 +121,7 @@ pub(in crate::tui::ui::kanban) fn render_repo_filter_overlay(
             note_style,
         )));
     }
-    let broken_style = Style::default().fg(Color::DarkGray);
+    let broken_style = Style::default().fg(MUTED);
     for (i, path) in app
         .repo_paths()
         .iter()
@@ -181,8 +172,8 @@ pub(in crate::tui::ui::kanban) fn render_repo_filter_overlay(
     if matches!(app.mode(), InputMode::InputPresetName) {
         lines.push(Line::from(vec![
             Span::styled("  Name: ", key_style),
-            Span::styled(app.input_buffer(), Style::default().fg(Color::White)),
-            Span::styled("_", Style::default().fg(Color::DarkGray)),
+            Span::styled(app.input_buffer(), Style::default().fg(FG)),
+            Span::styled("_", Style::default().fg(MUTED)),
         ]));
     }
 
@@ -219,7 +210,7 @@ pub(in crate::tui::ui::kanban) fn render_repo_filter_overlay(
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  Delete {path_label}?  "),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(YELLOW),
                 ),
                 Span::styled("y", key_style),
                 Span::styled(": yes  ", note_style),

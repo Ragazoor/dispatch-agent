@@ -874,10 +874,10 @@ async fn render_shows_border_when_split_active_and_focused() {
     app.board.split.right_pane_id = Some("pane1".to_string());
 
     let buf = render_to_buffer(&mut app, 80, 24);
-    // Top-left corner should be a border character (┌)
+    // Top-left corner should be a border character (╭ — rounded)
     assert_eq!(
         buf[(0, 0)].symbol(),
-        "┌",
+        "╭",
         "Expected border corner when split active"
     );
 }

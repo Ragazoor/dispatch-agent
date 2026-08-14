@@ -1,4 +1,4 @@
-use super::palette::{FG, MUTED};
+use super::palette::{FG, GREEN, MUTED, RED, YELLOW};
 
 use crate::models::{FeedRole, Staleness};
 use crate::tui::{App, RepoFilterMode, ViewMode};
@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, ListItem, Paragraph},
     Frame,
 };
 use std::time::{Duration, Instant};
@@ -21,10 +21,10 @@ pub fn refresh_status(
     interval: Duration,
 ) -> (String, Color) {
     if loading {
-        return ("Refreshing...  [r] refresh".to_string(), Color::DarkGray);
+        return ("Refreshing...  [r] refresh".to_string(), MUTED);
     }
     let Some(last) = last_fetch else {
-        return ("Never fetched  [r] refresh".to_string(), Color::DarkGray);
+        return ("Never fetched  [r] refresh".to_string(), MUTED);
     };
     let elapsed = last.elapsed();
     let elapsed_str = if elapsed.as_secs() < 60 {
@@ -38,11 +38,11 @@ pub fn refresh_status(
     };
     let text = format!("Updated {elapsed_str}  [r] refresh");
     let color = if elapsed >= interval * 4 {
-        Color::Red
+        RED
     } else if elapsed >= interval * 2 {
-        Color::Yellow
+        YELLOW
     } else {
-        Color::White
+        FG
     };
     (text, color)
 }
@@ -56,6 +56,15 @@ pub(in crate::tui::ui) fn staleness_color(staleness: Staleness) -> Color {
         Staleness::Aging => Color::Yellow,
         Staleness::Stale => Color::Red,
     }
+}
+
+/// A `Block` with all four sides and rounded corners, border-styled with `color`.
+/// Callers chain `.title(...)` / `.title_style(...)` / `.style(...)` as needed.
+pub(in crate::tui::ui) fn rounded_block(color: Color) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
 }
 
 /// Truncate a string to at most `max` characters, appending "…" if truncated.
@@ -156,7 +165,7 @@ pub(in crate::tui::ui) fn render_top_indicators(frame: &mut Frame, app: &App, ar
     if let ViewMode::Epic { epic_id, .. } = app.view_mode() {
         if let Some(epic) = app.epics().iter().find(|e| e.id == *epic_id) {
             let (label, style) = if epic.auto_dispatch {
-                ("auto dispatch [U]  ", Style::default().fg(Color::Green))
+                ("auto dispatch [U]  ", Style::default().fg(GREEN))
             } else {
                 ("manual dispatch [U]  ", Style::default().fg(MUTED))
             };
@@ -169,7 +178,7 @@ pub(in crate::tui::ui) fn render_top_indicators(frame: &mut Frame, app: &App, ar
 
             // Group-by-repo indicator — shown for all epics
             let (label, style) = if epic.group_by_repo {
-                ("group:on [R]  ", Style::default().fg(Color::Green))
+                ("group:on [R]  ", Style::default().fg(GREEN))
             } else {
                 ("group:off [R]  ", Style::default().fg(MUTED))
             };
@@ -186,10 +195,7 @@ pub(in crate::tui::ui) fn render_top_indicators(frame: &mut Frame, app: &App, ar
         parts.push(Span::styled(label, Style::default().fg(MUTED)));
     }
     if app.notifications_enabled() {
-        parts.push(Span::styled(
-            "\u{1F514} [N]",
-            Style::default().fg(Color::Yellow),
-        ));
+        parts.push(Span::styled("\u{1F514} [N]", Style::default().fg(YELLOW)));
     } else {
         parts.push(Span::styled("\u{1F515} [N]", Style::default().fg(MUTED)));
     }

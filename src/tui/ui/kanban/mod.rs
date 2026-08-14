@@ -22,8 +22,8 @@ use super::input_form::{
     input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
     input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
 };
-use super::palette::{ARCHIVE_STRIPE, BLUE, BORDER, CYAN, FG, GREEN, MUTED, PURPLE, YELLOW};
-use super::shared::{push_hint_spans, render_top_indicators};
+use super::palette::{ARCHIVE_STRIPE, BLUE, BORDER, CYAN, FG, GREEN, MUTED, PURPLE, RED, YELLOW};
+use super::shared::{push_hint_spans, render_top_indicators, rounded_block};
 use super::todos::render_todos;
 
 use crate::models::{Epic, Task, TaskStatus};
@@ -33,7 +33,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
@@ -133,10 +133,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     // When split mode is active, wrap everything in a focus border.
     let area = if app.split_active() {
         let border_color = if app.split_focused() { CYAN } else { BORDER };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(border_color));
+        let block = rounded_block(border_color);
         frame.render_widget(block, full_area);
         Rect {
             x: full_area.x + 1,
@@ -393,11 +390,9 @@ pub(super) fn wrapped_line_count(text: &str, width: usize) -> usize {
 }
 
 fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
-    let completed = Style::default().fg(Color::White);
-    let active = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
-    let hint = Style::default().fg(Color::DarkGray);
+    let completed = Style::default().fg(FG);
+    let active = Style::default().fg(YELLOW).add_modifier(Modifier::BOLD);
+    let hint = Style::default().fg(MUTED);
 
     let lines: Vec<Line> = match &app.input.mode {
         InputMode::InputTitle => input_title_lines(app, area, active, hint),
@@ -430,15 +425,12 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
     };
 
     let border_color = match &app.input.mode {
-        InputMode::ConfirmRetry(_) => Color::Red,
-        _ if is_epic_input => Color::Magenta,
-        _ => Color::Yellow,
+        InputMode::ConfirmRetry(_) => RED,
+        _ if is_epic_input => PURPLE,
+        _ => YELLOW,
     };
 
-    let block = Block::default()
-        .title(block_title)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+    let block = rounded_block(border_color).title(block_title);
 
     let paragraph = Paragraph::new(lines)
         .block(block)

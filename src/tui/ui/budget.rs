@@ -5,20 +5,20 @@
 //! state is testable without sleeping (docs/conventions.md: no sleeping in
 //! tests).
 
-use super::palette::MUTED;
+use super::palette::{GREEN, MUTED, RED, YELLOW};
 use crate::models::budget::{BudgetSnapshot, BudgetWindow};
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use ratatui::text::Span;
 use std::time::Duration;
 
 /// Colour for a used-percentage: comfortable, tightening, nearly gone.
 fn window_style(pct: f64) -> Style {
     let colour = if pct > 80.0 {
-        Color::Red
+        RED
     } else if pct >= 50.0 {
-        Color::Yellow
+        YELLOW
     } else {
-        Color::Green
+        GREEN
     };
     Style::default().fg(colour)
 }
@@ -193,9 +193,9 @@ mod tests {
         let green = budget_spans(Some(&full(10.0, 10.0, 0)), 0, STALE, WIDE);
         let yellow = budget_spans(Some(&full(65.0, 65.0, 0)), 0, STALE, WIDE);
         let red = budget_spans(Some(&full(91.0, 91.0, 0)), 0, STALE, WIDE);
-        assert!(green.iter().any(|s| s.style.fg == Some(Color::Green)));
-        assert!(yellow.iter().any(|s| s.style.fg == Some(Color::Yellow)));
-        assert!(red.iter().any(|s| s.style.fg == Some(Color::Red)));
+        assert!(green.iter().any(|s| s.style.fg == Some(GREEN)));
+        assert!(yellow.iter().any(|s| s.style.fg == Some(YELLOW)));
+        assert!(red.iter().any(|s| s.style.fg == Some(RED)));
     }
 
     #[test]

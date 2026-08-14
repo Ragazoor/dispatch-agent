@@ -2,14 +2,16 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::Text,
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, Clear, Paragraph},
     Frame,
 };
 use std::collections::HashSet;
 
 use crate::models::{Epic, EpicId};
+use crate::tui::ui::palette::{MUTED, PURPLE};
+use crate::tui::ui::shared::rounded_block;
 use crate::tui::{types::REPARENT_NO_PARENT_SENTINEL, App, InputMode};
 
 pub(in crate::tui::ui::kanban) fn render_reparent_epic_overlay(
@@ -86,16 +88,9 @@ fn render_tree_picker(
 
     frame.render_widget(Clear, overlay_area);
 
-    let block = Block::default()
+    let block = rounded_block(PURPLE)
         .title(title.to_string())
-        .title_style(
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        )
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Magenta));
+        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD));
 
     let inner_area = block.inner(overlay_area);
     frame.render_widget(block, overlay_area);
@@ -114,7 +109,7 @@ fn render_tree_picker(
     let hints = Paragraph::new(
         " j/k:navigate  l/Space/\u{2192}:expand  h/\u{2190}:collapse  Enter:select  q/Esc:cancel",
     )
-    .style(Style::default().fg(Color::DarkGray));
+    .style(Style::default().fg(MUTED));
     frame.render_widget(hints, footer_area);
 
     let tree = match tui_tree_widget::Tree::new(items) {

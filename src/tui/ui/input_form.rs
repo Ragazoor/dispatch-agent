@@ -1,8 +1,9 @@
+use super::palette::{CYAN, MUTED, RED};
 use crate::models::TaskId;
 use crate::tui::App;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
 };
 
@@ -53,9 +54,7 @@ fn append_filtered_repos_with_new_entry<'a>(
         );
     }
     if show_new {
-        let cursor_style = Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD);
+        let cursor_style = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
         if cursor == filtered.len() {
             lines.push(Line::from(vec![
                 Span::styled("  ► ", cursor_style),
@@ -86,9 +85,7 @@ pub(in crate::tui) fn append_repo_path_list<'a>(
             .saturating_sub(visible_repos - 1)
             .min(repo_count - visible_repos)
     };
-    let cursor_style = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
+    let cursor_style = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
     for (i, path) in repo_paths
         .iter()
         .enumerate()
@@ -413,8 +410,8 @@ pub(in crate::tui) fn confirm_retry_lines(app: &App, id: TaskId) -> Vec<Line<'st
     } else {
         "stale"
     };
-    let warning = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-    let hint = Style::default().fg(Color::DarkGray);
+    let warning = Style::default().fg(RED).add_modifier(Modifier::BOLD);
+    let hint = Style::default().fg(MUTED);
     vec![
         Line::from(Span::styled(
             format!("  Agent is {label}. What do you want to do?"),

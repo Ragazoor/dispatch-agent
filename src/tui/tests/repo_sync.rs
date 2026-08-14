@@ -9,7 +9,8 @@ use crate::repo_sync::{AheadBehind, RepoSyncMeasurement, RepoSyncState, SyncOutc
 use crate::tui::commands::RepoSyncCommand;
 use crate::tui::messages::RepoSyncMessage;
 use crate::tui::ui::{
-    repo_drift_segment, repo_path_for_prompt, repo_sync_prompt_text, REPO_PATH_DISPLAY_BUDGET,
+    palette::YELLOW, repo_drift_segment, repo_path_for_prompt, repo_sync_prompt_text,
+    REPO_PATH_DISPLAY_BUDGET,
 };
 use crossterm::event::KeyCode;
 
@@ -299,9 +300,7 @@ fn drift_segment_styles_behind_as_a_warning() {
     let app = app_with_measurement(drifted(0, 2));
     let spans = repo_drift_segment(state_of(&app)).expect("visible");
     assert!(
-        spans
-            .iter()
-            .any(|s| s.style.fg == Some(ratatui::style::Color::Yellow)),
+        spans.iter().any(|s| s.style.fg == Some(YELLOW)),
         "behind > 0 must be styled as a warning"
     );
 }
@@ -312,9 +311,7 @@ fn drift_segment_styles_ahead_only_neutrally() {
     let app = app_with_measurement(drifted(3, 0));
     let spans = repo_drift_segment(state_of(&app)).expect("visible");
     assert!(
-        !spans
-            .iter()
-            .any(|s| s.style.fg == Some(ratatui::style::Color::Yellow)),
+        !spans.iter().any(|s| s.style.fg == Some(YELLOW)),
         "ahead-only is the normal post-rebase state, so it is not a warning"
     );
 }

@@ -4,12 +4,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
 use crate::tui::ui::palette::{BORDER, FG, MUTED, MUTED_LIGHT};
 use crate::tui::{App, ViewMode};
+
+use crate::tui::ui::shared::rounded_block;
 
 use super::super::wrapped_line_count;
 
@@ -100,15 +102,12 @@ pub(in crate::tui::ui::kanban) fn render_task_detail_overlay(
 
     // ── Block with hints ─────────────────────────────────────────────────────
     let hint_style = Style::default().fg(MUTED);
-    let block = Block::default()
+    let block = rounded_block(BORDER)
         .title(format!(" Task #{task_id} "))
         .title_bottom(Line::from(Span::styled(
             " j/k scroll · z zoom · q/Esc/Enter close ",
             hint_style,
-        )))
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(BORDER));
+        )));
 
     let inner = block.inner(overlay_area);
     frame.render_widget(block, overlay_area);

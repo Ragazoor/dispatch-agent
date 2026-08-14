@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState},
     Frame,
 };
 
@@ -13,7 +13,7 @@ use crate::models::{EpicId, TaskStatus};
 use crate::tui::{App, ColumnItem, ColumnLayout, EpicStatsMap, ViewMode};
 
 use super::super::palette::{ARCHIVE_COL_BG, ARCHIVE_STRIPE, MUTED, PURPLE};
-use super::super::shared::{render_substatus_header, truncate};
+use super::super::shared::{render_substatus_header, rounded_block, truncate};
 use super::cards::{build_task_list_item, render_epic_header_item, render_epic_item, ColRenderCtx};
 use super::{board_column_constraints, column_bg_color, column_color, render_column_separator};
 
@@ -421,12 +421,9 @@ pub(super) fn compute_columns_data<'a>(
 pub(super) fn render_columns(frame: &mut Frame, app: &mut App, data: ColumnsData) {
     // Render the epic view border if applicable.
     if let Some((title, outer_area)) = &data.epic_border {
-        let block = Block::default()
+        let block = rounded_block(PURPLE)
             .title(title.as_str())
             .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD))
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(PURPLE))
             .style(Style::default().bg(Color::Rgb(24, 20, 34)));
         frame.render_widget(block, *outer_area);
     }

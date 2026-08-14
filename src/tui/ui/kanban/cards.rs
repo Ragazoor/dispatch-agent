@@ -10,7 +10,7 @@ use ratatui::{
 use crate::models::{format_age, Epic, EpicSubstatus, Staleness, SubStatus, Task, TaskStatus};
 use crate::tui::{App, EpicStatsMap};
 
-use super::super::palette::{CYAN, FG, FLASH_BG, MUTED, PURPLE};
+use super::super::palette::{CYAN, FG, FLASH_BG, GREEN, MUTED, PURPLE, RED, YELLOW};
 use super::super::shared::{staleness_color, truncate};
 use super::{column_color, cursor_bg_color, status_icon};
 
@@ -192,24 +192,22 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
         CardIndicator::Dispatching { spinner_frame } => {
             let glyph = DISPATCHING_SPINNER
                 [(spinner_frame as usize) % crate::tui::DISPATCH_SPINNER_FRAMES as usize];
-            (format!("{glyph} dispatching\u{2026}"), Color::Yellow)
+            (format!("{glyph} dispatching\u{2026}"), YELLOW)
         }
-        CardIndicator::Unprovisioned => ("\u{26a0} no worktree".to_string(), Color::Red),
-        CardIndicator::AutoDispatchFailed => {
-            ("\u{26a0} auto-dispatch failed".to_string(), Color::Red)
-        }
-        CardIndicator::Conflict => ("\u{26a0} rebase conflict".to_string(), Color::Red),
-        CardIndicator::DetachedReview { pr_label } => (format!("\u{25cb} {pr_label}"), Color::Cyan),
+        CardIndicator::Unprovisioned => ("\u{26a0} no worktree".to_string(), RED),
+        CardIndicator::AutoDispatchFailed => ("\u{26a0} auto-dispatch failed".to_string(), RED),
+        CardIndicator::Conflict => ("\u{26a0} rebase conflict".to_string(), RED),
+        CardIndicator::DetachedReview { pr_label } => (format!("\u{25cb} {pr_label}"), CYAN),
         CardIndicator::Detached => ("\u{25cb} detached".to_string(), MUTED),
-        CardIndicator::Crashed => ("\u{26a0} crashed".to_string(), Color::Red),
+        CardIndicator::Crashed => ("\u{26a0} crashed".to_string(), RED),
         CardIndicator::Stale { inactive_mins } => {
             let label = match inactive_mins {
                 Some(m) => format!("\u{25c9} stale \u{00b7} {m}m"),
                 None => "\u{25c9} stale".to_string(),
             };
-            (label, Color::Yellow)
+            (label, YELLOW)
         }
-        CardIndicator::Blocked => ("\u{25c9} blocked".to_string(), Color::Yellow),
+        CardIndicator::Blocked => ("\u{25c9} blocked".to_string(), YELLOW),
         CardIndicator::Running { subagents } => {
             let icon = status_icon(TaskStatus::Running);
             let label = match subagents {
@@ -219,10 +217,8 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
             };
             (label, CYAN)
         }
-        CardIndicator::ReviewPr { pr_label } => (format!("\u{25cf} {pr_label}"), Color::Cyan),
-        CardIndicator::DoneMerged { pr_label } => {
-            (format!("\u{2714} {pr_label} merged"), Color::Green)
-        }
+        CardIndicator::ReviewPr { pr_label } => (format!("\u{25cf} {pr_label}"), CYAN),
+        CardIndicator::DoneMerged { pr_label } => (format!("\u{2714} {pr_label} merged"), GREEN),
         CardIndicator::Idle {
             status,
             age,
@@ -344,10 +340,7 @@ pub(super) fn build_task_list_item<'a>(
         Span::styled(title_text.to_string(), title_style),
     ];
     if has_message_flash {
-        line1_spans.push(Span::styled(
-            " \u{2709}",
-            Style::default().fg(Color::Yellow),
-        ));
+        line1_spans.push(Span::styled(" \u{2709}", Style::default().fg(YELLOW)));
     }
 
     let line1 = Line::from(line1_spans);
@@ -398,7 +391,7 @@ pub(super) fn build_task_list_item<'a>(
 
 fn epic_substatus_color(substatus: &EpicSubstatus) -> Color {
     match substatus {
-        EpicSubstatus::Blocked(_) => Color::Yellow,
+        EpicSubstatus::Blocked(_) => YELLOW,
         EpicSubstatus::InReview => CYAN,
         EpicSubstatus::Active | EpicSubstatus::Unplanned | EpicSubstatus::Planned => MUTED,
         EpicSubstatus::Done => MUTED,

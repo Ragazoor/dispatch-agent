@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
+use crate::tui::ui::palette::{FG, MUTED, RED, YELLOW};
 use crossterm::event::KeyCode;
-use ratatui::style::Color;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -1963,7 +1963,7 @@ fn a_freshly_started_app_routes_the_formerly_intercepted_keys_to_the_board() {
 fn refresh_status_never_fetched() {
     let (text, color) = ui::refresh_status(None, false, Duration::from_secs(30));
     assert_eq!(text, "Never fetched  [r] refresh");
-    assert_eq!(color, Color::DarkGray);
+    assert_eq!(color, MUTED);
 }
 
 #[test]
@@ -1971,14 +1971,14 @@ fn refresh_status_loading() {
     let last = Instant::now() - Duration::from_secs(5);
     let (text, color) = ui::refresh_status(Some(last), true, Duration::from_secs(30));
     assert_eq!(text, "Refreshing...  [r] refresh");
-    assert_eq!(color, Color::DarkGray);
+    assert_eq!(color, MUTED);
 }
 
 #[test]
 fn refresh_status_loading_overrides_never_fetched() {
     let (text, color) = ui::refresh_status(None, true, Duration::from_secs(30));
     assert_eq!(text, "Refreshing...  [r] refresh");
-    assert_eq!(color, Color::DarkGray);
+    assert_eq!(color, MUTED);
 }
 
 #[test]
@@ -1989,7 +1989,7 @@ fn refresh_status_fresh_seconds() {
         text.starts_with("Updated ") && text.contains("s ago") && text.ends_with("  [r] refresh"),
         "expected 'Updated Xs ago  [r] refresh', got: {text}"
     );
-    assert_eq!(color, Color::White);
+    assert_eq!(color, FG);
 }
 
 #[test]
@@ -1998,7 +1998,7 @@ fn refresh_status_fresh_just_below_minutes_threshold() {
     let last = Instant::now() - Duration::from_secs(59);
     let (text, color) = ui::refresh_status(Some(last), false, Duration::from_secs(30));
     assert!(text.contains("59s ago"), "expected '59s ago' in: {text}");
-    assert_eq!(color, Color::White);
+    assert_eq!(color, FG);
 }
 
 #[test]
@@ -2010,7 +2010,7 @@ fn refresh_status_minutes_format() {
         text.contains("1m") && text.contains("s ago"),
         "expected minutes format in: {text}"
     );
-    assert_eq!(color, Color::White);
+    assert_eq!(color, FG);
 }
 
 #[test]
@@ -2019,7 +2019,7 @@ fn refresh_status_yellow_at_2x_interval() {
     // exactly 2× interval → Yellow
     let last = Instant::now() - interval * 2;
     let (_, color) = ui::refresh_status(Some(last), false, interval);
-    assert_eq!(color, Color::Yellow);
+    assert_eq!(color, YELLOW);
 }
 
 #[test]
@@ -2028,7 +2028,7 @@ fn refresh_status_white_just_below_2x_interval() {
     // 1ms under 2× interval → still White
     let last = Instant::now() - (interval * 2 - Duration::from_millis(100));
     let (_, color) = ui::refresh_status(Some(last), false, interval);
-    assert_eq!(color, Color::White);
+    assert_eq!(color, FG);
 }
 
 #[test]
@@ -2037,7 +2037,7 @@ fn refresh_status_yellow_just_below_4x_interval() {
     // 1ms under 4× interval → still Yellow
     let last = Instant::now() - (interval * 4 - Duration::from_millis(100));
     let (_, color) = ui::refresh_status(Some(last), false, interval);
-    assert_eq!(color, Color::Yellow);
+    assert_eq!(color, YELLOW);
 }
 
 #[test]
@@ -2046,7 +2046,7 @@ fn refresh_status_red_at_4x_interval() {
     // exactly 4× interval → Red
     let last = Instant::now() - interval * 4;
     let (_, color) = ui::refresh_status(Some(last), false, interval);
-    assert_eq!(color, Color::Red);
+    assert_eq!(color, RED);
 }
 
 #[test]

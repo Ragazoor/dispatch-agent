@@ -2,12 +2,13 @@
 
 use ratatui::{
     layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
+use crate::tui::ui::palette::{FG, MUTED, RED};
 use crate::tui::App;
 
 pub(in crate::tui::ui::kanban) fn render_error_popup(frame: &mut Frame, app: &App, area: Rect) {
@@ -27,19 +28,16 @@ pub(in crate::tui::ui::kanban) fn render_error_popup(frame: &mut Frame, app: &Ap
         .title(" Error ")
         .borders(Borders::ALL)
         .border_type(BorderType::Thick)
-        .border_style(Style::default().fg(Color::Red))
-        .title_style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+        .border_style(Style::default().fg(RED))
+        .title_style(Style::default().fg(RED).add_modifier(Modifier::BOLD));
 
     let text = vec![
         Line::from(""),
-        Line::from(Span::styled(
-            error_msg.as_str(),
-            Style::default().fg(Color::White),
-        )),
+        Line::from(Span::styled(error_msg.as_str(), Style::default().fg(FG))),
         Line::from(""),
         Line::from(Span::styled(
             "Press any key to dismiss",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(MUTED),
         )),
     ];
 

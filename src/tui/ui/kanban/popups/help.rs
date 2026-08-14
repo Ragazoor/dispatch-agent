@@ -2,12 +2,13 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
+use crate::tui::ui::palette::{CYAN, MUTED, MUTED_LIGHT};
 use crate::tui::{App, InputMode};
 
 pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
@@ -27,21 +28,13 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
         .title(" Help ")
         .borders(Borders::ALL)
         .border_type(BorderType::Double)
-        .border_style(Style::default().fg(Color::Cyan))
-        .title_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+        .border_style(Style::default().fg(CYAN))
+        .title_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD));
 
-    let header = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
-    let key = Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD);
-    let desc = Style::default().fg(Color::Gray);
-    let note = Style::default().fg(Color::DarkGray);
+    let header = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
+    let key = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
+    let desc = Style::default().fg(MUTED_LIGHT);
+    let note = Style::default().fg(MUTED);
 
     // Keep this body short enough that the `General` section still renders at
     // the popup's clamped 25-row floor (inner height = popup_height - 2, so 23
