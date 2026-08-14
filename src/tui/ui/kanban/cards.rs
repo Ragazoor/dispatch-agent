@@ -327,7 +327,9 @@ pub(super) fn build_task_list_item<'a>(
     // Cursor gets a thicker stripe (▌) as a left accent bar
     let stripe_char = if is_cursor { "\u{258c}" } else { "\u{258e}" };
     let stripe_style = Style::default().fg(col_color);
-    let title_style = if is_batch_selected {
+    // The cursor card's title is bold as well as tinted — the strongest of the
+    // three emphasis levels (core.allium: "Column background tint").
+    let title_style = if is_batch_selected || is_cursor {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
         Style::default()

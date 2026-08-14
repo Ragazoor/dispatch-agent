@@ -738,6 +738,120 @@ value VisualColumn {
 }
 
 ------------------------------------------------------------
+-- Column Identity and Focus
+------------------------------------------------------------
+
+-- How a navigation column tells the user (a) which column this is and
+-- (b) whether it currently has the keyboard cursor. These are two
+-- separate questions, and the board answers them with two separate
+-- visual channels: hue answers "which column", intensity answers
+-- "is it focused".
+--
+-- == Column identity colour ==
+--
+-- Every task-status navigation column has an identity colour, drawn from
+-- the palette and constant regardless of focus:
+--
+--   nav# | Column   | identity colour
+--   -----+----------+----------------
+--      0 | Backlog  | BLUE
+--      1 | Running  | YELLOW
+--      2 | Review   | PURPLE
+--      3 | Done     | GREEN
+--      4 | Archive  | MUTED
+--
+-- The identity colour is used in three places for that column: its
+-- header bar, the stripe on its cards, and its background tint. A
+-- column never borrows another column's colour, and never loses its own.
+-- (Archive is an edge column and is only rendered while focused — see
+-- the VisualColumn section — but it carries an identity colour on the
+-- same terms as the rest while it is on screen.)
+--
+-- == Focus is intensity, not colour-vs-absence ==
+--
+-- Previously an unfocused column header rendered in a flat neutral grey,
+-- discarding its identity colour entirely; only the focused column
+-- showed colour at all. That is replaced.
+--
+-- The rule: the column's identity colour is always visible; focus
+-- modulates emphasis only.
+--   - An unfocused column header keeps its identity colour at reduced
+--     emphasis.
+--   - The focused column header is distinguished by increased emphasis:
+--     a brighter/more saturated fill, plus bold text.
+--
+-- Rationale: a board where only one column carries colour reads as flat
+-- and inert — four of the five columns look switched off. Focus remains
+-- unambiguous when it is signalled by intensity, because the focused
+-- column is the only one at full strength, so nothing is lost by giving
+-- every column its hue back.
+--
+-- == Column header bar ==
+--
+-- Each column header renders as a filled bar in the column's identity
+-- colour. It shows the column label, uppercased, followed by the count
+-- of selectable items in that column, the count at reduced emphasis
+-- relative to the label.
+--
+-- The focused column's header additionally carries the select-all
+-- checkbox indicator. That checkbox's behaviour is unchanged and is
+-- specified in tasks.allium; recorded here only because the header bar
+-- is where it is rendered.
+--
+-- == Column background tint ==
+--
+-- Every task-status column carries a faint background tint derived from
+-- its identity colour — not only the focused column — so that the
+-- columns read as distinct panels rather than as one undivided
+-- surface. The focused column's tint is stronger than an unfocused
+-- column's.
+--
+-- Separately, and within the focused column, the cursor (selected) card
+-- carries a stronger tint still, plus a bold title. So there are three
+-- tint levels in strict ascending order:
+--
+--   unfocused column  <  focused column  <  cursor card
+--
+-- The invariant below states that ordering. The scale is relative: the
+-- absolute values are a rendering concern, but the three levels must
+-- stay distinguishable from each other and from the bare terminal
+-- background (level 0) — a tint nobody can see is the same defect as
+-- no tint at all.
+
+enum PaletteToken { blue | yellow | purple | green | muted }
+
+value ColumnChrome {
+    -- The column's identity colour. Not a function of focus.
+    identity_colour: PaletteToken
+    focused: Boolean
+
+    -- The three surfaces that carry the identity colour.
+    header_fill_colour: identity_colour
+    card_stripe_colour: identity_colour
+    background_tint_colour: identity_colour
+
+    -- Focus modulates emphasis only, never presence of colour.
+    header_bold: focused
+    shows_select_all_checkbox: focused
+}
+
+value ColumnTintScale {
+    -- Relative tint strengths on a shared scale whose zero point is the
+    -- bare terminal background. Only the ordering is normative.
+    unfocused_column: Integer
+    focused_column: Integer
+    cursor_card: Integer
+
+    -- Three levels, strictly ordered and each visible against what sits
+    -- below it: terminal background < unfocused < focused < cursor.
+    invariant TintLevelsRemainDistinguishable {
+        0 < unfocused_column
+            and unfocused_column < focused_column
+            and focused_column < cursor_card
+    }
+}
+
+------------------------------------------------------------
 -- FlattenedView
 ------------------------------------------------------------
 

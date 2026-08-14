@@ -24,6 +24,25 @@ pub(in crate::tui) fn buffer_contains(buf: &Buffer, text: &str) -> bool {
     false
 }
 
+/// Case-insensitive [`buffer_contains`]. Use when the assertion is "this text
+/// is on screen" rather than "this text is in this exact case" — column headers
+/// are uppercased for presentation (core.allium: "Column header bar"), so a
+/// case-sensitive match there asserts styling it does not mean to pin.
+pub(in crate::tui) fn buffer_contains_ignore_case(buf: &Buffer, text: &str) -> bool {
+    let needle = text.to_lowercase();
+    let area = buf.area();
+    for y in area.top()..area.bottom() {
+        let mut line = String::new();
+        for x in area.left()..area.right() {
+            line.push_str(buf[(x, y)].symbol());
+        }
+        if line.to_lowercase().contains(&needle) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Helper: render the app into a test terminal and return the buffer.
 pub(in crate::tui) fn render_to_buffer(app: &mut App, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);

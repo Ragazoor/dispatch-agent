@@ -22,7 +22,7 @@ use super::input_form::{
     input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
     input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
 };
-use super::palette::{ARCHIVE_STRIPE, BLUE, BORDER, CYAN, FG, GREEN, MUTED, PURPLE, RED, YELLOW};
+use super::palette::{BLUE, BORDER, CYAN, FG, GREEN, MUTED, PURPLE, RED, YELLOW};
 use super::shared::{push_hint_spans, render_top_indicators, rounded_block};
 use super::todos::render_todos;
 
@@ -55,27 +55,85 @@ pub(in crate::tui) fn column_color(status: TaskStatus) -> Color {
     }
 }
 
-/// Tinted background for the cursor card in each column.
+/// Tinted background for the cursor card in each column — the strongest of the
+/// three tint levels (`core.allium`: `ColumnTintScale`).
 pub(in crate::tui) fn cursor_bg_color(status: TaskStatus) -> Color {
     match status {
-        TaskStatus::Backlog => Color::Rgb(34, 38, 66),
-        TaskStatus::Running => Color::Rgb(62, 50, 28),
-        TaskStatus::Review => Color::Rgb(50, 34, 66),
-        TaskStatus::Done => Color::Rgb(32, 52, 36),
-        TaskStatus::Archived => Color::Rgb(34, 38, 66),
+        TaskStatus::Backlog => Color::Rgb(42, 48, 82),
+        TaskStatus::Running => Color::Rgb(78, 62, 32),
+        TaskStatus::Review => Color::Rgb(62, 42, 82),
+        TaskStatus::Done => Color::Rgb(38, 64, 42),
+        TaskStatus::Archived => Color::Rgb(42, 48, 82),
     }
 }
 
-/// Faint background wash for the focused column, tinted to the column color.
-/// Must be just barely visible against the terminal bg (~26,27,38) so the
-/// cursor card highlight (cursor_bg_color) stands out clearly on top of it.
-pub(in crate::tui) fn column_bg_color(status: TaskStatus) -> Color {
-    match status {
-        TaskStatus::Backlog => Color::Rgb(28, 30, 44),
-        TaskStatus::Running => Color::Rgb(38, 34, 26),
-        TaskStatus::Review => Color::Rgb(34, 28, 44),
-        TaskStatus::Done => Color::Rgb(27, 36, 30),
-        TaskStatus::Archived => Color::Rgb(28, 30, 44),
+/// Background wash for a column, tinted to its identity color.
+///
+/// Every column is tinted, not only the focused one, so the columns read as
+/// distinct panels (`core.allium`: "Column background tint"). The three tint
+/// levels must stay strictly ordered — unfocused < focused < cursor card — per
+/// the `TintLevelsRemainDistinguishable` invariant; `column_tint_levels_are_
+/// strictly_ordered` in `src/tui/tests/rendering.rs` enforces it.
+pub(in crate::tui) fn column_bg_color(status: TaskStatus, is_focused: bool) -> Color {
+    if is_focused {
+        match status {
+            TaskStatus::Backlog => Color::Rgb(30, 33, 50),
+            TaskStatus::Running => Color::Rgb(50, 41, 14),
+            TaskStatus::Review => Color::Rgb(42, 29, 50),
+            TaskStatus::Done => Color::Rgb(28, 45, 22),
+            TaskStatus::Archived => Color::Rgb(30, 33, 50),
+        }
+    } else {
+        match status {
+            TaskStatus::Backlog => Color::Rgb(28, 30, 44),
+            TaskStatus::Running => Color::Rgb(38, 34, 26),
+            TaskStatus::Review => Color::Rgb(34, 28, 44),
+            TaskStatus::Done => Color::Rgb(27, 36, 30),
+            TaskStatus::Archived => Color::Rgb(28, 30, 44),
+        }
+    }
+}
+
+/// Fill color for a column's header bar, tinted to its identity color.
+///
+/// Focus is signalled by intensity, never by presence-of-color: the unfocused
+/// fill is a weaker wash of the same hue, not grey (`core.allium`: "Focus is
+/// intensity, not colour-vs-absence").
+pub(in crate::tui) fn column_header_bg(status: TaskStatus, is_focused: bool) -> Color {
+    if is_focused {
+        match status {
+            TaskStatus::Backlog => Color::Rgb(45, 58, 102),
+            TaskStatus::Running => Color::Rgb(86, 66, 30),
+            TaskStatus::Review => Color::Rgb(74, 47, 102),
+            TaskStatus::Done => Color::Rgb(46, 74, 40),
+            TaskStatus::Archived => Color::Rgb(48, 54, 82),
+        }
+    } else {
+        match status {
+            TaskStatus::Backlog => Color::Rgb(35, 40, 66),
+            TaskStatus::Running => Color::Rgb(61, 53, 32),
+            TaskStatus::Review => Color::Rgb(52, 38, 68),
+            TaskStatus::Done => Color::Rgb(36, 58, 40),
+            TaskStatus::Archived => Color::Rgb(34, 38, 54),
+        }
+    }
+}
+
+/// Label color for a column's header bar.
+///
+/// Unfocused keeps the column's identity color; focused brightens toward the
+/// foreground so the focused column reads as the one at full strength.
+pub(in crate::tui) fn column_header_fg(status: TaskStatus, is_focused: bool) -> Color {
+    if is_focused {
+        match status {
+            TaskStatus::Backlog => Color::Rgb(208, 224, 255),
+            TaskStatus::Running => Color::Rgb(255, 230, 190),
+            TaskStatus::Review => Color::Rgb(230, 212, 255),
+            TaskStatus::Done => Color::Rgb(216, 244, 190),
+            TaskStatus::Archived => Color::Rgb(200, 208, 236),
+        }
+    } else {
+        column_color(status)
     }
 }
 
@@ -228,7 +286,12 @@ pub(super) fn render_column_separator(frame: &mut Frame, area: Rect) {
 
 struct SummarySegment {
     label: String,
-    color: Color,
+    /// Selectable-item count, rendered after the label at reduced emphasis.
+    count: String,
+    /// Header-bar fill and label colors, resolved per column identity + focus
+    /// (`core.allium`: "Column header bar").
+    header_bg: Color,
+    header_fg: Color,
     is_focused: bool,
     checkbox: CheckboxInfo,
 }
@@ -273,8 +336,10 @@ fn build_summary_segments(app: &App, layout: &ColumnLayout, sel: usize) -> Vec<S
     if sel == TaskStatus::COLUMN_COUNT + 1 {
         let count = app.archived_tasks().len();
         segments.push(SummarySegment {
-            label: format!("\u{25b8} Archive {}", count),
-            color: ARCHIVE_STRIPE,
+            label: "\u{25b8} ARCHIVE".to_string(),
+            count: format!(" {count}"),
+            header_bg: column_header_bg(TaskStatus::Archived, true),
+            header_fg: column_header_fg(TaskStatus::Archived, true),
             is_focused: true,
             checkbox: CheckboxInfo::None,
         });
@@ -291,9 +356,10 @@ fn task_column_segment(
 ) -> SummarySegment {
     let items = layout.get(status);
     let count = items.iter().filter(|i| i.is_selectable()).count();
-    let color = column_color(status);
     let prefix = if is_focused { "\u{25b8} " } else { "\u{25e6} " };
-    let label = format!("{}{} {}", prefix, status.as_str(), count);
+    // Label uppercased, count carried separately so it can render at reduced
+    // emphasis (core.allium: "Column header bar").
+    let label = format!("{}{}", prefix, status.as_str().to_uppercase());
 
     let checkbox = if is_focused {
         let selectable = items.iter().filter(|i| i.is_selectable());
@@ -318,49 +384,69 @@ fn task_column_segment(
 
     SummarySegment {
         label,
-        color,
+        count: format!(" {count}"),
+        header_bg: column_header_bg(status, is_focused),
+        header_fg: column_header_fg(status, is_focused),
         is_focused,
         checkbox,
     }
 }
 
 fn render_summary_segment(frame: &mut Frame, seg: &SummarySegment, area: Rect) {
-    let label_style = if seg.is_focused {
-        Style::default()
-            .fg(seg.color)
-            .add_modifier(Modifier::BOLD)
-            .add_modifier(Modifier::UNDERLINED)
-    } else {
-        Style::default().fg(MUTED)
-    };
+    // The header is a filled bar in the column's identity color; focus is
+    // carried by the fill/label intensity and bold, never by dropping the hue
+    // (core.allium: "Focus is intensity, not colour-vs-absence").
+    let bar_style = Style::default().bg(seg.header_bg);
+    let mut label_style = bar_style.fg(seg.header_fg);
+    if seg.is_focused {
+        label_style = label_style.add_modifier(Modifier::BOLD);
+    }
+    // Count sits at reduced emphasis against the same fill.
+    let count_style = bar_style.fg(dim_against(seg.header_fg, seg.header_bg));
 
-    let spans = match &seg.checkbox {
-        CheckboxInfo::Task {
-            all_selected,
-            on_select_all,
-            status,
-        } => {
-            let checkbox = if *all_selected { " [x]" } else { " [ ]" };
-            let checkbox_style = if *on_select_all {
-                Style::default()
-                    .bg(cursor_bg_color(*status))
-                    .fg(FG)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(MUTED)
-            };
-            vec![
-                Span::styled(seg.label.clone(), label_style),
-                Span::styled(checkbox, checkbox_style),
-            ]
-        }
-        CheckboxInfo::None => {
-            vec![Span::styled(seg.label.clone(), label_style)]
-        }
-    };
+    let mut spans = vec![
+        Span::styled(seg.label.clone(), label_style),
+        Span::styled(seg.count.clone(), count_style),
+    ];
+    if let CheckboxInfo::Task {
+        all_selected,
+        on_select_all,
+        status,
+    } = &seg.checkbox
+    {
+        let checkbox = if *all_selected { " [x]" } else { " [ ]" };
+        let checkbox_style = if *on_select_all {
+            bar_style
+                .bg(cursor_bg_color(*status))
+                .fg(FG)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            count_style
+        };
+        spans.push(Span::styled(checkbox, checkbox_style));
+    }
 
-    let paragraph = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
+    // Paint the whole segment with the bar fill first so the tint runs edge to
+    // edge, then draw the centred label over it.
+    frame.render_widget(Block::default().style(bar_style), area);
+    let paragraph = Paragraph::new(Line::from(spans))
+        .style(bar_style)
+        .alignment(Alignment::Center);
     frame.render_widget(paragraph, area);
+}
+
+/// Midpoint between a label color and its background — used for the header's
+/// item count, which must read as secondary to the label without losing the
+/// column's hue.
+fn dim_against(fg: Color, bg: Color) -> Color {
+    match (fg, bg) {
+        (Color::Rgb(fr, fg_, fb), Color::Rgb(br, bg_, bb)) => Color::Rgb(
+            ((u16::from(fr) + u16::from(br)) / 2) as u8,
+            ((u16::from(fg_) + u16::from(bg_)) / 2) as u8,
+            ((u16::from(fb) + u16::from(bb)) / 2) as u8,
+        ),
+        _ => MUTED,
+    }
 }
 
 fn render_input_form_panel(frame: &mut Frame, app: &App, area: Rect) {

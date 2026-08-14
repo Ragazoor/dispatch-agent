@@ -3,7 +3,7 @@ source: src/tui/tests/snapshots.rs
 expression: rendered
 ---
                                                                                manual dispatch [U]  group:on [R]  🔕  [N]
-        ▸ backlog 0 [ ]                 ◦ running 0                   ◦ review 0                     ◦ done 0
+        ▸ BACKLOG 0 [ ]                 ◦ RUNNING 0                   ◦ REVIEW 0                     ◦ DONE 0
 ╭ My Feature ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │──────────────────────────────│──────────────────────────│──────────────────────────────│─────────────────────────────│
 │                              │                          │                              │                             │

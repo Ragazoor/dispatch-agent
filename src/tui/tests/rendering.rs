@@ -197,10 +197,10 @@ async fn action_hints_shows_copy_and_split() {
 async fn render_empty_board_shows_all_column_headers() {
     let mut app = App::new(vec![]);
     let buf = render_to_buffer(&mut app, 100, 20);
-    assert!(buffer_contains(&buf, "backlog"));
-    assert!(buffer_contains(&buf, "running"));
-    assert!(buffer_contains(&buf, "review"));
-    assert!(buffer_contains(&buf, "done"));
+    assert!(buffer_contains_ignore_case(&buf, "backlog"));
+    assert!(buffer_contains_ignore_case(&buf, "running"));
+    assert!(buffer_contains_ignore_case(&buf, "review"));
+    assert!(buffer_contains_ignore_case(&buf, "done"));
 }
 
 #[tokio::test]
@@ -414,7 +414,7 @@ async fn render_columns_appear_left_to_right() {
     let buf = render_to_buffer(&mut app, 120, 30);
 
     // Find the leftmost x-position where each header appears
-    let headers = ["backlog", "running", "review", "done"];
+    let headers = ["BACKLOG", "RUNNING", "REVIEW", "DONE"];
     let mut positions: Vec<Option<u16>> = Vec::new();
     for header in &headers {
         let mut found = None;
@@ -466,7 +466,7 @@ async fn render_columns_fill_terminal_width() {
     let buf = render_to_buffer(&mut app, width, 20);
 
     // Find the rightmost x-position where "done" header text appears
-    let header = "done";
+    let header = "DONE";
     let mut header_x = None;
     'outer: for y in 0..3u16 {
         for x in (0..width).rev() {
@@ -945,20 +945,27 @@ async fn focused_column_has_tinted_background() {
     // Columns use Ratio constraints (3/18, 2/18, ...) so they aren't equal width.
     let buf = render_to_buffer(&mut app, 240, 30);
 
-    // Focused column (Backlog, col 0) should have a tinted bg.
+    // Both focused and unfocused columns are tinted (core.allium: "Column
+    // background tint"), but at different strengths — the focused column's
+    // tint is the stronger one.
     // Check a row well below the cursor card to avoid cursor highlight.
-    let expected_bg = Color::Rgb(28, 30, 44);
+    let focused_bg = ui::column_bg_color(TaskStatus::Backlog, true);
     let cell = &buf[(1, 15)];
     // Backlog is 3/18 of 240 = 40px. Check well past that at x=120 (middle of board).
     let cell2 = &buf[(120, 15)];
 
     assert_eq!(
-        cell.bg, expected_bg,
-        "Focused column should have tinted background"
+        cell.bg, focused_bg,
+        "Focused column should carry the focused tint"
     );
     assert_ne!(
-        cell2.bg, expected_bg,
-        "Unfocused column should NOT have tinted background"
+        cell2.bg, focused_bg,
+        "An unfocused column must be tinted differently from the focused one"
+    );
+    assert_ne!(
+        cell2.bg,
+        Color::Rgb(26, 27, 38),
+        "An unfocused column must still be tinted, not left at the bare terminal background"
     );
 }
 
@@ -1314,19 +1321,19 @@ async fn render_shows_parent_status_headers() {
     let mut app = make_app();
     let buf = render_to_buffer(&mut app, 160, 30);
     assert!(
-        buffer_contains(&buf, "backlog"),
+        buffer_contains_ignore_case(&buf, "backlog"),
         "parent header 'backlog' not found"
     );
     assert!(
-        buffer_contains(&buf, "running"),
+        buffer_contains_ignore_case(&buf, "running"),
         "parent header 'running' not found"
     );
     assert!(
-        buffer_contains(&buf, "review"),
+        buffer_contains_ignore_case(&buf, "review"),
         "parent header 'review' not found"
     );
     assert!(
-        buffer_contains(&buf, "done"),
+        buffer_contains_ignore_case(&buf, "done"),
         "parent header 'done' not found"
     );
 }
@@ -1421,7 +1428,7 @@ async fn render_card_running_shows_running() {
     app.update(Message::NavigateColumn(1)); // Running column
     let buf = render_to_buffer(&mut app, 120, 30);
     assert!(
-        buffer_contains(&buf, "running"),
+        buffer_contains_ignore_case(&buf, "running"),
         "Active running task should show 'running'"
     );
 }
@@ -1680,8 +1687,12 @@ async fn focused_backlog_header_renders_in_blue() {
 
     let buf = render_to_buffer(&mut app, 100, 20);
     let area = buf.area();
-    let blue = Color::Rgb(122, 162, 247);
-    let target = "backlog";
+    // The focused header brightens toward the foreground rather than dropping
+    // to grey; the hue stays Backlog's (core.allium: "Focus is intensity, not
+    // colour-vs-absence").
+    let expected_fg = ui::column_header_fg(TaskStatus::Backlog, true);
+    let expected_bg = ui::column_header_bg(TaskStatus::Backlog, true);
+    let target = "BACKLOG";
     let mut found = false;
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right().saturating_sub(target.len() as u16 - 1) {
@@ -1690,8 +1701,8 @@ async fn focused_backlog_header_renders_in_blue() {
                 .enumerate()
                 .all(|(i, ch)| buf[(x + i as u16, y)].symbol().as_bytes().first() == Some(&ch));
             if matches {
-                let fg = buf[(x, y)].fg;
-                if fg == blue {
+                let cell = &buf[(x, y)];
+                if cell.fg == expected_fg && cell.bg == expected_bg {
                     found = true;
                 }
                 break;
@@ -1703,7 +1714,7 @@ async fn focused_backlog_header_renders_in_blue() {
     }
     assert!(
         found,
-        "Focused Backlog header should render with blue foreground color"
+        "Focused Backlog header should render its label on the focused header bar"
     );
 }
 
@@ -1794,7 +1805,7 @@ async fn summary_shows_four_columns_when_backlog_focused() {
         "summary row should NOT show Projects when col 1 focused; got: {summary_row:?}"
     );
     assert!(
-        summary_row.contains("backlog"),
+        summary_row.contains("BACKLOG"),
         "summary row should show backlog header; got: {summary_row:?}"
     );
 }
@@ -1811,7 +1822,7 @@ async fn summary_shows_five_columns_when_archive_focused() {
         .map(|x| buf[(x, 1)].symbol().to_string())
         .collect();
     assert!(
-        summary_row.contains("Archive"),
+        summary_row.contains("ARCHIVE"),
         "summary row should show Archive header when col 5 focused; got: {summary_row:?}"
     );
     assert!(
@@ -1884,4 +1895,117 @@ async fn scroll_indicators_do_not_panic_on_empty_column() {
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(!buffer_contains(&buf, "\u{25BC}"));
     assert!(!buffer_contains(&buf, "\u{25B2}"));
+}
+
+// ── Column identity and focus (core.allium: Column Identity and Focus) ──────
+
+/// Tint strength on the shared scale whose zero point is the bare terminal
+/// background (Tokyo Night `#1a1b26`). Mirrors `ColumnTintScale` in
+/// core.allium: only the ordering of these numbers is normative.
+fn tint_strength(c: Color) -> i32 {
+    const BG: (i32, i32, i32) = (26, 27, 38);
+    match c {
+        Color::Rgb(r, g, b) => {
+            let (r, g, b) = (i32::from(r), i32::from(g), i32::from(b));
+            (r - BG.0).abs() + (g - BG.1).abs() + (b - BG.2).abs()
+        }
+        other => panic!("expected an Rgb tint, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn every_column_carries_a_background_tint_even_unfocused() {
+    // core.allium: "Every task-status column carries a faint background tint
+    // ... not only the focused column". A zero tint is the defect this guards.
+    for status in [
+        TaskStatus::Backlog,
+        TaskStatus::Running,
+        TaskStatus::Review,
+        TaskStatus::Done,
+    ] {
+        let unfocused = ui::column_bg_color(status, false);
+        assert!(
+            tint_strength(unfocused) > 0,
+            "{status:?} unfocused column must be tinted, got {unfocused:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn column_tint_levels_are_strictly_ordered() {
+    // core.allium invariant TintLevelsRemainDistinguishable:
+    //   0 < unfocused_column < focused_column < cursor_card
+    for status in [
+        TaskStatus::Backlog,
+        TaskStatus::Running,
+        TaskStatus::Review,
+        TaskStatus::Done,
+    ] {
+        let unfocused = tint_strength(ui::column_bg_color(status, false));
+        let focused = tint_strength(ui::column_bg_color(status, true));
+        let cursor = tint_strength(ui::cursor_bg_color(status));
+
+        assert!(
+            0 < unfocused,
+            "{status:?}: unfocused tint must be visible against the terminal bg"
+        );
+        assert!(
+            unfocused < focused,
+            "{status:?}: focused tint ({focused}) must exceed unfocused ({unfocused})"
+        );
+        assert!(
+            focused < cursor,
+            "{status:?}: cursor tint ({cursor}) must exceed focused column ({focused})"
+        );
+    }
+}
+
+#[tokio::test]
+async fn unfocused_column_header_keeps_its_identity_colour() {
+    // core.allium: "the column's identity colour is always visible; focus
+    // modulates emphasis only". The superseded behaviour flattened unfocused
+    // headers to MUTED grey — that is the regression this guards.
+    const MUTED: Color = Color::Rgb(86, 95, 137);
+    for status in [
+        TaskStatus::Backlog,
+        TaskStatus::Running,
+        TaskStatus::Review,
+        TaskStatus::Done,
+    ] {
+        let fg = ui::column_header_fg(status, false);
+        assert_ne!(
+            fg, MUTED,
+            "{status:?} unfocused header must not collapse to MUTED grey"
+        );
+    }
+}
+
+#[tokio::test]
+async fn focused_column_header_is_more_emphatic_than_unfocused() {
+    // Focus is signalled by intensity: the focused header's fill is stronger.
+    for status in [
+        TaskStatus::Backlog,
+        TaskStatus::Running,
+        TaskStatus::Review,
+        TaskStatus::Done,
+    ] {
+        let unfocused = tint_strength(ui::column_header_bg(status, false));
+        let focused = tint_strength(ui::column_header_bg(status, true));
+        assert!(
+            unfocused < focused,
+            "{status:?}: focused header fill ({focused}) must exceed unfocused ({unfocused})"
+        );
+    }
+}
+
+#[tokio::test]
+async fn column_header_label_is_uppercased() {
+    // core.allium: "It shows the column label, uppercased, followed by the
+    // count of selectable items".
+    let mut app = make_app();
+    let buf = render_to_buffer(&mut app, 120, 40);
+    assert!(
+        buffer_contains(&buf, "BACKLOG"),
+        "column header should render the label uppercased"
+    );
 }

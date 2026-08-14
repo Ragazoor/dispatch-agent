@@ -451,14 +451,12 @@ pub(super) fn render_columns(frame: &mut Frame, app: &mut App, data: ColumnsData
             } else {
                 MUTED
             };
+            // Every column is tinted, not only the focused one, so the columns
+            // read as distinct panels (core.allium: "Column background tint").
             let block = Block::default()
                 .borders(Borders::TOP)
-                .border_style(Style::default().fg(border_color));
-            let block = if col_data.is_focused {
-                block.style(Style::default().bg(column_bg_color(col_data.status)))
-            } else {
-                block
-            };
+                .border_style(Style::default().fg(border_color))
+                .style(Style::default().bg(column_bg_color(col_data.status, col_data.is_focused)));
             let inner = block.inner(col_data.col_area);
             frame.render_widget(block, col_data.col_area);
             frame.render_stateful_widget(

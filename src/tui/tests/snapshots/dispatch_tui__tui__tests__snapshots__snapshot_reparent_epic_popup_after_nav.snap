@@ -3,7 +3,7 @@ source: src/tui/tests/snapshots.rs
 expression: rendered
 ---
                                                                                                                   🔕  [N]
-        ▸ backlog 4 [ ]                 ◦ running 0                   ◦ review 0                     ◦ done 0
+        ▸ BACKLOG 4 [ ]                 ◦ RUNNING 0                   ◦ REVIEW 0                     ◦ DONE 0
 ──────────────────────────────╭ Reparent epic: "Platform" ───────────────────────────────╮──────────────────────────────
 ──────────────────────────────│  — no parent —                                           │
   ▌ #1 Task 1                 │  Backend                                                 │
