@@ -1344,10 +1344,9 @@ fn provision_worktree_creates_new_when_dir_missing() {
 /// in the task id, so two tasks can never name the same worktree.
 ///
 /// This is the load-bearing assertion for that invariant in
-/// docs/specs/tasks.allium. The two tripwires elsewhere
-/// (`src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`
-/// and `src/feed/mod.rs::cleanup_removes_the_worktree_even_if_another_row_names_it`)
-/// only assert that consumers do not *check* for sharing; they would both stay
+/// docs/specs/tasks.allium. The surviving tripwire elsewhere
+/// (`src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`)
+/// only asserts that consumers do not *check* for sharing; it would stay
 /// green if the id prefix were dropped here. This one fails instead — pick the
 /// worst case, two tasks whose titles slugify identically, so the id is the only
 /// thing keeping the paths apart.
