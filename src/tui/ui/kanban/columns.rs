@@ -12,7 +12,7 @@ use ratatui::{
 use crate::models::{EpicId, TaskStatus};
 use crate::tui::{App, ColumnItem, ColumnLayout, EpicStatsMap, ViewMode};
 
-use super::super::palette::{ARCHIVE_COL_BG, ARCHIVE_STRIPE, MUTED, PURPLE};
+use super::super::palette::{ARCHIVE_STRIPE, MUTED, PURPLE};
 use super::super::shared::{render_substatus_header, rounded_block, truncate};
 use super::cards::{build_task_list_item, render_epic_header_item, render_epic_item, ColRenderCtx};
 use super::{board_column_constraints, column_bg_color, column_color, render_column_separator};
@@ -196,6 +196,7 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
         let ctx = ColRenderCtx {
             color,
             width: col_area.width,
+            ground: column_bg_color(status, is_focused),
         };
         push_item!(match item {
             ColumnItem::Task(task) => {
@@ -236,9 +237,12 @@ fn build_archive_col_data(
     let mut items: Vec<ListItem<'static>> = Vec::new();
     let mut item_heights: Vec<usize> = Vec::new();
 
+    // The archive column is only ever rendered while focused, so it takes the
+    // focused ground — the same uniform neutral as every other column.
     let ctx = ColRenderCtx {
         color,
         width: area.width,
+        ground: column_bg_color(TaskStatus::Archived, true),
     };
 
     for epic in archived_epics.iter() {
@@ -420,8 +424,9 @@ pub(super) fn render_columns(frame: &mut Frame, app: &mut App, data: ColumnsData
             } else {
                 MUTED
             };
-            // Every column is tinted, not only the focused one, so the columns
-            // read as distinct panels (core.allium: "Column background tint").
+            // Every column paints the same uniform neutral ground; focus raises
+            // its lightness rather than tinting it (core.allium: "Column ground
+            // and card surface").
             let block = Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(border_color))
@@ -446,7 +451,8 @@ pub(super) fn render_columns(frame: &mut Frame, app: &mut App, data: ColumnsData
 
     // Archive column.
     if let Some(archive_data) = data.archive_col {
-        let bg_block = Block::default().style(Style::default().bg(ARCHIVE_COL_BG));
+        let bg_block = Block::default()
+            .style(Style::default().bg(column_bg_color(TaskStatus::Archived, true)));
         frame.render_widget(bg_block, archive_data.area);
 
         let total = archive_data.total;

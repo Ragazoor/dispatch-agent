@@ -22,7 +22,10 @@ use super::input_form::{
     input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
     input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
 };
-use super::palette::{BLUE, BORDER, CYAN, FG, GREEN, MUTED, PURPLE, RED, YELLOW};
+use super::palette::{
+    BLUE, BOARD_GROUND, BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CYAN, FG, GREEN,
+    MUTED, PURPLE, RED, YELLOW,
+};
 use super::shared::{push_hint_spans, render_top_indicators, rounded_block};
 use super::todos::render_todos;
 
@@ -55,9 +58,12 @@ pub(in crate::tui) fn column_color(status: TaskStatus) -> Color {
     }
 }
 
-/// Tinted background for the cursor card in each column — the strongest of the
-/// three tint levels (`core.allium`: `ColumnTintScale`).
-pub(in crate::tui) fn cursor_bg_color(status: TaskStatus) -> Color {
+/// Highlight fill for the select-all checkbox in a focused column header.
+///
+/// This is the *header* checkbox, not a card: it is the one place a tinted fill
+/// still tracks the column's identity colour. Cards no longer take a tinted
+/// fill at all — see [`card_surface_color`].
+pub(in crate::tui) fn select_all_highlight_bg(status: TaskStatus) -> Color {
     match status {
         TaskStatus::Backlog => Color::Rgb(42, 48, 82),
         TaskStatus::Running => Color::Rgb(78, 62, 32),
@@ -67,31 +73,44 @@ pub(in crate::tui) fn cursor_bg_color(status: TaskStatus) -> Color {
     }
 }
 
-/// Background wash for a column, tinted to its identity color.
+/// Neutral ground for a column, uniform across every column.
 ///
-/// Every column is tinted, not only the focused one, so the columns read as
-/// distinct panels (`core.allium`: "Column background tint"). The three tint
-/// levels must stay strictly ordered — unfocused < focused < cursor card — per
-/// the `TintLevelsRemainDistinguishable` invariant; `column_tint_levels_are_
-/// strictly_ordered` in `src/tui/tests/rendering.rs` enforces it.
-pub(in crate::tui) fn column_bg_color(status: TaskStatus, is_focused: bool) -> Color {
+/// The `status` parameter is deliberately unused: `core.allium` ("Column ground
+/// and card surface") makes the ground *the same colour in every column* at a
+/// given focus state, so binding it under a leading underscore is what
+/// compiler-enforces that no identity hue can leak back in. It is retained so
+/// call sites read symmetrically and so `board_ground_is_uniform_across_columns`
+/// in `src/tui/tests/rendering.rs` has something to vary.
+///
+/// Focus raises the ground's lightness without tinting it
+/// (`NeutralRampIsStrictlyAscending`).
+pub(in crate::tui) fn column_bg_color(_status: TaskStatus, is_focused: bool) -> Color {
     if is_focused {
-        match status {
-            TaskStatus::Backlog => Color::Rgb(30, 33, 50),
-            TaskStatus::Running => Color::Rgb(50, 41, 14),
-            TaskStatus::Review => Color::Rgb(42, 29, 50),
-            TaskStatus::Done => Color::Rgb(28, 45, 22),
-            TaskStatus::Archived => Color::Rgb(30, 33, 50),
-        }
+        BOARD_GROUND_FOCUSED
     } else {
-        match status {
-            TaskStatus::Backlog => Color::Rgb(28, 30, 44),
-            TaskStatus::Running => Color::Rgb(38, 34, 26),
-            TaskStatus::Review => Color::Rgb(34, 28, 44),
-            TaskStatus::Done => Color::Rgb(27, 36, 30),
-            TaskStatus::Archived => Color::Rgb(28, 30, 44),
-        }
+        BOARD_GROUND
     }
+}
+
+/// The fill every card is drawn on — the top of the neutral ramp.
+pub(in crate::tui) fn card_surface_color() -> Color {
+    CARD_SURFACE
+}
+
+/// The fill a *selected* card is drawn on.
+///
+/// Equal to [`card_surface_color`] by design (`core.allium` invariant
+/// `SelectionDoesNotLiftTheFill`): selection is carried by frame hue and title
+/// weight, not by a lighter fill. Kept as its own function so the equality is
+/// something a test can assert rather than something a reader has to infer.
+pub(in crate::tui) fn selected_card_surface_color() -> Color {
+    CARD_SURFACE
+}
+
+/// A resting card's frame colour. Neutral — the frame takes the column's
+/// identity colour only while the card is selected.
+pub(in crate::tui) fn card_border_color() -> Color {
+    CARD_BORDER
 }
 
 /// Fill color for a column's header bar, tinted to its identity color.
@@ -417,7 +436,7 @@ fn render_summary_segment(frame: &mut Frame, seg: &SummarySegment, area: Rect) {
         let checkbox = if *all_selected { " [x]" } else { " [ ]" };
         let checkbox_style = if *on_select_all {
             bar_style
-                .bg(cursor_bg_color(*status))
+                .bg(select_all_highlight_bg(*status))
                 .fg(FG)
                 .add_modifier(Modifier::BOLD)
         } else {

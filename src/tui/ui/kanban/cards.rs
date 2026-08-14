@@ -12,7 +12,9 @@ use crate::tui::{App, EpicStatsMap};
 
 use super::super::palette::{CYAN, FG, FLASH_BG, GREEN, MUTED, PURPLE, RED, YELLOW};
 use super::super::shared::{staleness_color, truncate};
-use super::{column_color, cursor_bg_color, status_icon};
+use super::{
+    card_border_color, card_surface_color, column_color, selected_card_surface_color, status_icon,
+};
 
 /// Format the title text for a task card (line 1 only — status annotations are on line 2).
 fn format_task_title(task: &Task, max_title: usize) -> String {
@@ -275,50 +277,79 @@ pub(super) fn render_epic_header_item(
 /// Per-column rendering context shared by every card in a column.
 ///
 /// Bundles the column-level parameters threaded through the card/epic
-/// renderers: the stripe/frame colour and the column width.
+/// renderers: the stripe colour, the column width, and the column's neutral
+/// ground.
 ///
-/// Both are constant across a column. The pre-built shared-rule string and the
-/// suppress-top-rule flag this once carried are gone: every card now draws its
-/// own complete frame and neighbours share no borders, so there is no
-/// cross-card rule state left to thread (`core.allium`: "Task card frame").
+/// All three are constant across a column. `ground` is needed because a card is
+/// inset by [`CARD_MARGIN`] on each side, so the renderer has to paint the
+/// margin cells in the column's own ground rather than let them inherit the card
+/// surface (`core.allium`: "Task card frame").
 pub(super) struct ColRenderCtx {
     pub color: Color,
     pub width: u16,
+    pub ground: Color,
 }
+
+/// Columns of column-ground left visible on each side of a card, so cards float
+/// inside the column instead of tiling flush against its edges.
+const CARD_MARGIN: usize = 1;
+
+/// Total horizontal cells a card spends on chrome: two ground margins plus two
+/// frame rails. Subtracted from the column width to get the content budget.
+pub(super) const CARD_CHROME_WIDTH: usize = CARD_MARGIN * 2 + 2;
 
 /// Wrap a card's two content lines in a complete rounded frame.
 ///
 /// Returns the four lines of a framed card — top border, the two content lines
 /// each flanked by rails, and the bottom border (`core.allium`: "Task card
 /// frame"). Every card carries its own full frame; borders are never shared
-/// between neighbours. `frame_color` is the caller's already-resolved emphasis:
-/// full identity strength for the cursor card, reduced otherwise.
+/// between neighbours.
+///
+/// The whole card is lit, frame included: the caller sets the card surface as
+/// the `ListItem`'s base background, so the border rows and rails inherit it and
+/// a card's boundary is the change of colour at its outer edge. Only the margin
+/// spans override that, back to the column ground.
+///
+/// `frame_color` is the caller's already-resolved state: the column's identity
+/// colour for the selected card, the resting neutral otherwise.
 fn frame_card(
     line1: Line<'static>,
     line2: Line<'static>,
     col_width: u16,
     frame_color: Color,
+    ground: Color,
 ) -> Vec<Line<'static>> {
-    let content_width = (col_width as usize).saturating_sub(2);
+    let card_width = (col_width as usize).saturating_sub(CARD_MARGIN * 2);
+    let content_width = card_width.saturating_sub(2);
     let style = Style::default().fg(frame_color);
+    let margin = || Span::styled(" ".repeat(CARD_MARGIN), Style::default().bg(ground));
     let horizontal = "\u{2500}".repeat(content_width);
 
     let rail = |inner: Line<'static>| -> Line<'static> {
         let pad = content_width.saturating_sub(inner.width());
-        let mut spans = vec![Span::styled("\u{2502}", style)];
+        let mut spans = vec![margin(), Span::styled("\u{2502}", style)];
         spans.extend(inner.spans);
         if pad > 0 {
             spans.push(Span::raw(" ".repeat(pad)));
         }
         spans.push(Span::styled("\u{2502}", style));
+        spans.push(margin());
         Line::from(spans)
     };
 
+    let border = |left: &str, right: &str| -> Line<'static> {
+        Line::from(vec![
+            margin(),
+            Span::styled(format!("{left}{horizontal}{right}"), style),
+            margin(),
+        ])
+    };
+
     vec![
-        Line::from(Span::styled(format!("\u{256d}{horizontal}\u{256e}"), style)),
+        border("\u{256d}", "\u{256e}"),
         rail(line1),
         rail(line2),
-        Line::from(Span::styled(format!("\u{2570}{horizontal}\u{256f}"), style)),
+        border("\u{2570}", "\u{256f}"),
     ]
 }
 
@@ -348,17 +379,18 @@ pub(super) fn build_task_list_item<'a>(
     // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + optional flash(" ✉", 2)
     let id_len = task.id.0.unsigned_abs().max(1).ilog10() as usize + 1;
     let flash_width = if has_message_flash { 2 } else { 0 };
-    // +2 for the card frame's left and right rails.
-    let prefix_width = 2 + 1 + 3 + id_len + flash_width + 2;
+    let prefix_width = 2 + 1 + 3 + id_len + flash_width + CARD_CHROME_WIDTH;
     let max_title = (col_width as usize).saturating_sub(prefix_width);
     let title_text = format_task_title(task, max_title);
 
-    // Line 1: prefix + stripe + title
-    // Cursor gets a thicker stripe (▌) as a left accent bar
-    let stripe_char = if is_cursor { "\u{258c}" } else { "\u{258e}" };
+    // Line 1: prefix + stripe + title.
+    // One quarter block on every card, cursor included (core.allium: "Card
+    // stripe"). Stripe weight no longer moves with the cursor — selection is
+    // carried by the frame hue and the bold title.
+    let stripe_char = "\u{258e}";
     let stripe_style = Style::default().fg(col_color);
-    // The cursor card's title is bold as well as tinted — the strongest of the
-    // three emphasis levels (core.allium: "Column background tint").
+    // Bold marks the selected card's title (core.allium: "Selection"). Its fill
+    // is unchanged from a resting card's, by design.
     let title_style = if is_batch_selected || is_cursor {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
@@ -382,29 +414,43 @@ pub(super) fn build_task_list_item<'a>(
         &task.labels,
     );
 
+    // The frame carries hue only for the selected card and, for at most three
+    // seconds, a flashing one — the bounded exception recorded under "Message
+    // flash" in core.allium. Every resting frame is neutral.
     let frame_color = if is_cursor || has_message_flash {
         col_color
     } else {
-        MUTED
+        card_border_color()
     };
-    let mut item = ListItem::new(frame_card(line1, line2, col_width, frame_color));
-
-    // Flash bg takes priority over cursor — it's transient (3s) and meant to grab attention
-    if has_message_flash {
-        item = item.style(
-            Style::default()
-                .bg(FLASH_BG)
-                .fg(FG)
-                .add_modifier(Modifier::BOLD),
-        );
+    // A flash replaces the card surface for its duration; that differing fill is
+    // what keeps it distinguishable from the selection despite sharing the hue.
+    //
+    // The selected card asks for its own surface even though
+    // `SelectionDoesNotLiftTheFill` pins it equal to a resting card's. Routing
+    // the call this way keeps the equality load-bearing: if the two ever diverge,
+    // the render follows and `selection_does_not_lift_the_fill` fails.
+    let surface = if has_message_flash {
+        FLASH_BG
     } else if is_cursor {
-        item = item.style(
-            Style::default()
-                .bg(cursor_bg_color(status))
-                .fg(FG)
-                .add_modifier(Modifier::BOLD),
-        );
+        selected_card_surface_color()
+    } else {
+        card_surface_color()
+    };
+    let mut item = ListItem::new(frame_card(
+        line1,
+        line2,
+        col_width,
+        frame_color,
+        ctx.ground,
+    ));
+
+    // Base style for the whole card, so the frame rows inherit the surface and
+    // the card reads as one lit object. Margin spans override back to ground.
+    let mut style = Style::default().bg(surface).fg(FG);
+    if has_message_flash {
+        style = style.add_modifier(Modifier::BOLD);
     }
+    item = item.style(style);
 
     item
 }
@@ -437,16 +483,16 @@ pub(super) fn render_epic_item(
 
     // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + plan_indicator
     let id_len = epic.id.0.unsigned_abs().max(1).ilog10() as usize + 1;
-    // +2 for the card frame's left and right rails.
-    let prefix_width = 2 + 1 + 3 + id_len + plan_indicator.chars().count() + 2;
+    let prefix_width = 2 + 1 + 3 + id_len + plan_indicator.chars().count() + CARD_CHROME_WIDTH;
     let max_title = (col_width as usize).saturating_sub(prefix_width);
     let title_text = truncate(&epic.title, max_title);
 
     let is_batch_selected = app.selected_epics().contains(&epic.id);
     let select_prefix = if is_batch_selected { "* " } else { "  " };
 
-    // Line 1: stripe + title (thicker stripe for cursor)
-    let stripe_char = if is_cursor { "\u{258c}" } else { "\u{258e}" };
+    // Line 1: stripe + title. One quarter block on every card, cursor included
+    // (core.allium: "Card stripe").
+    let stripe_char = "\u{258e}";
     let title_style = Style::default().fg(PURPLE).add_modifier(Modifier::BOLD);
     let line1 = Line::from(vec![
         Span::raw(select_prefix.to_string()),
@@ -484,19 +530,21 @@ pub(super) fn render_epic_item(
         ])
     };
 
-    let frame_color = if is_cursor { PURPLE } else { MUTED };
-    let mut item = ListItem::new(frame_card(line1, line2, col_width, frame_color));
-
-    if is_cursor {
-        item = item.style(
-            Style::default()
-                .bg(cursor_bg_color(status))
-                .fg(FG)
-                .add_modifier(Modifier::BOLD),
-        );
-    }
-
-    item
+    // Epics carry PURPLE as their own identity, so a selected epic's frame takes
+    // that rather than the column hue; a resting one is neutral like any card.
+    let frame_color = if is_cursor {
+        PURPLE
+    } else {
+        card_border_color()
+    };
+    ListItem::new(frame_card(
+        line1,
+        line2,
+        col_width,
+        frame_color,
+        ctx.ground,
+    ))
+    .style(Style::default().bg(card_surface_color()).fg(FG))
 }
 
 #[cfg(test)]

@@ -1537,7 +1537,12 @@ fn archive_column_renders_task_cards_when_focused() {
         app.update(Message::NavigateColumn(1));
     }
     assert_eq!(app.selected_column(), TaskStatus::COLUMN_COUNT + 1);
-    let buf = render_to_buffer(&mut app, 120, 40);
+    // 160 wide, not 120: with the archive edge column visible the board splits
+    // five ways, and at 120 the archive column is ~23 cells — less than the
+    // 13-char title plus the card's prefix and chrome. This test is about the
+    // archive column rendering cards at all, so give it a width where the title
+    // is not competing with the frame for room.
+    let buf = render_to_buffer(&mut app, 160, 40);
     assert!(
         buffer_contains(&buf, "archived task"),
         "expected archived task card in buffer"

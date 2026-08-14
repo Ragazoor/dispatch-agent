@@ -330,12 +330,22 @@ async fn truncate_respects_max_length() {
 
 #[tokio::test]
 async fn render_v2_task_card_shows_stripe() {
-    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    // core.allium "Card stripe": every card carries the quarter block ▎
+    // (U+258E), the cursor card included. The superseded behaviour swapped in a
+    // half block ▌ (U+258C) for the cursor — stripe weight no longer moves with
+    // the cursor, because selection is carried by the hued frame and bold title.
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Backlog),
+    ]);
     let buf = render_to_buffer(&mut app, 120, 20);
-    // Cursor card uses thicker stripe ▌ (U+258C), non-cursor uses ▎ (U+258E)
     assert!(
-        buffer_contains(&buf, "\u{258c}") || buffer_contains(&buf, "\u{258e}"),
-        "task card should have stripe character"
+        buffer_contains(&buf, "\u{258e}"),
+        "task cards must carry the quarter-block stripe"
+    );
+    assert!(
+        !buffer_contains(&buf, "\u{258c}"),
+        "the half-block cursor stripe is superseded and must not be rendered"
     );
 }
 
@@ -936,7 +946,7 @@ async fn truncate_title_multibyte_chars() {
 }
 
 #[tokio::test]
-async fn focused_column_has_tinted_background() {
+async fn focused_column_ground_is_distinct_from_unfocused() {
     let mut app = App::new(vec![
         make_task(1, TaskStatus::Backlog),
         make_task(2, TaskStatus::Running),
@@ -945,10 +955,10 @@ async fn focused_column_has_tinted_background() {
     // Columns use Ratio constraints (3/18, 2/18, ...) so they aren't equal width.
     let buf = render_to_buffer(&mut app, 240, 30);
 
-    // Both focused and unfocused columns are tinted (core.allium: "Column
-    // background tint"), but at different strengths — the focused column's
-    // tint is the stronger one.
-    // Check a row well below the cursor card to avoid cursor highlight.
+    // core.allium "Focus is intensity, not colour-vs-absence": the focused
+    // column's ground is one step lighter than an unfocused column's, and that
+    // step is neutral. Check a row well below the cursor card so the assertion
+    // reads column ground rather than card surface.
     let focused_bg = ui::column_bg_color(TaskStatus::Backlog, true);
     let cell = &buf[(1, 15)];
     // Backlog is 3/18 of 240 = 40px. Check well past that at x=120 (middle of board).
@@ -956,16 +966,16 @@ async fn focused_column_has_tinted_background() {
 
     assert_eq!(
         cell.bg, focused_bg,
-        "Focused column should carry the focused tint"
+        "Focused column should carry the focused ground"
     );
     assert_ne!(
         cell2.bg, focused_bg,
-        "An unfocused column must be tinted differently from the focused one"
+        "An unfocused column's ground must differ from the focused one's"
     );
     assert_ne!(
         cell2.bg,
         Color::Rgb(26, 27, 38),
-        "An unfocused column must still be tinted, not left at the bare terminal background"
+        "The board ground is painted, not left at the bare terminal background"
     );
 }
 
@@ -1899,65 +1909,271 @@ async fn scroll_indicators_do_not_panic_on_empty_column() {
 
 // ── Column identity and focus (core.allium: Column Identity and Focus) ──────
 
-/// Tint strength on the shared scale whose zero point is the bare terminal
-/// background (Tokyo Night `#1a1b26`). Mirrors `ColumnTintScale` in
-/// core.allium: only the ordering of these numbers is normative.
-fn tint_strength(c: Color) -> i32 {
-    const BG: (i32, i32, i32) = (26, 27, 38);
+/// Every column that renders a ground, including the Archive edge column.
+const GROUND_COLUMNS: [TaskStatus; 5] = [
+    TaskStatus::Backlog,
+    TaskStatus::Running,
+    TaskStatus::Review,
+    TaskStatus::Done,
+    TaskStatus::Archived,
+];
+
+/// Signed lightness on the shared scale whose zero point is the bare terminal
+/// background (Tokyo Night `#1a1b26`). Mirrors `BoardNeutralRamp` in
+/// core.allium: only the ordering of these numbers is normative, and values
+/// below the terminal background are negative.
+fn lightness_vs_terminal_bg(c: Color) -> i32 {
+    const BG: i32 = 26 + 27 + 38;
     match c {
-        Color::Rgb(r, g, b) => {
-            let (r, g, b) = (i32::from(r), i32::from(g), i32::from(b));
-            (r - BG.0).abs() + (g - BG.1).abs() + (b - BG.2).abs()
+        Color::Rgb(r, g, b) => i32::from(r) + i32::from(g) + i32::from(b) - BG,
+        other => panic!("expected an Rgb surface, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn board_ground_is_uniform_across_columns() {
+    // core.allium "Column ground and card surface": every column renders the
+    // *same* ground at a given focus state — there is no per-column tint and the
+    // ground carries no hue. The superseded design derived each column's ground
+    // from its identity colour; that is the regression this guards.
+    for is_focused in [false, true] {
+        let expected = ui::column_bg_color(TaskStatus::Backlog, is_focused);
+        for status in GROUND_COLUMNS {
+            assert_eq!(
+                ui::column_bg_color(status, is_focused),
+                expected,
+                "{status:?} (focused={is_focused}) must share the uniform board ground"
+            );
         }
-        other => panic!("expected an Rgb tint, got {other:?}"),
     }
 }
 
 #[tokio::test]
-async fn every_column_carries_a_background_tint_even_unfocused() {
-    // core.allium: "Every task-status column carries a faint background tint
-    // ... not only the focused column". A zero tint is the defect this guards.
-    for status in [
-        TaskStatus::Backlog,
-        TaskStatus::Running,
-        TaskStatus::Review,
-        TaskStatus::Done,
-    ] {
-        let unfocused = ui::column_bg_color(status, false);
-        assert!(
-            tint_strength(unfocused) > 0,
-            "{status:?} unfocused column must be tinted, got {unfocused:?}"
-        );
-    }
+async fn neutral_ramp_is_strictly_ascending() {
+    // core.allium invariant NeutralRampIsStrictlyAscending:
+    //   column_ground_unfocused < column_ground_focused < card_surface
+    let unfocused = lightness_vs_terminal_bg(ui::column_bg_color(TaskStatus::Backlog, false));
+    let focused = lightness_vs_terminal_bg(ui::column_bg_color(TaskStatus::Backlog, true));
+    let card = lightness_vs_terminal_bg(ui::card_surface_color());
+
+    assert!(
+        unfocused < focused,
+        "focused ground ({focused}) must be lighter than unfocused ({unfocused})"
+    );
+    assert!(
+        focused < card,
+        "card surface ({card}) must be lighter than the focused ground ({focused})"
+    );
 }
 
 #[tokio::test]
-async fn column_tint_levels_are_strictly_ordered() {
-    // core.allium invariant TintLevelsRemainDistinguishable:
-    //   0 < unfocused_column < focused_column < cursor_card
-    for status in [
-        TaskStatus::Backlog,
-        TaskStatus::Running,
-        TaskStatus::Review,
-        TaskStatus::Done,
-    ] {
-        let unfocused = tint_strength(ui::column_bg_color(status, false));
-        let focused = tint_strength(ui::column_bg_color(status, true));
-        let cursor = tint_strength(ui::cursor_bg_color(status));
+async fn board_ground_is_recessed_below_terminal_background() {
+    // core.allium invariant GroundIsRecessedBelowTerminalBackground: the ground
+    // sits *below* the bare terminal background so cards read as raised rather
+    // than inset. Assumes the dark terminal the palette is built for.
+    let unfocused = lightness_vs_terminal_bg(ui::column_bg_color(TaskStatus::Backlog, false));
+    assert!(
+        unfocused < 0,
+        "unfocused ground must be recessed below the terminal background, got {unfocused}"
+    );
+}
 
-        assert!(
-            0 < unfocused,
-            "{status:?}: unfocused tint must be visible against the terminal bg"
-        );
-        assert!(
-            unfocused < focused,
-            "{status:?}: focused tint ({focused}) must exceed unfocused ({unfocused})"
-        );
-        assert!(
-            focused < cursor,
-            "{status:?}: cursor tint ({cursor}) must exceed focused column ({focused})"
+#[tokio::test]
+async fn selection_does_not_lift_the_fill() {
+    // core.allium invariant SelectionDoesNotLiftTheFill: a selected card's
+    // surface is exactly a resting card's. Its emphasis lives in frame hue and
+    // title weight, neither of which is a tint. A test asserting "selected is
+    // lighter than resting" would be asserting something this design
+    // deliberately does not do.
+    assert_eq!(
+        ui::selected_card_surface_color(),
+        ui::card_surface_color(),
+        "selection must not change the card fill"
+    );
+}
+
+#[tokio::test]
+async fn resting_card_border_is_neutral() {
+    // core.allium "Task card frame": the frame colour is neutral for a resting
+    // card and the column's identity colour only for the selected card. A
+    // resting border must therefore never equal any column's identity colour.
+    let border = ui::card_border_color();
+    for &status in TaskStatus::ALL.iter() {
+        assert_ne!(
+            border,
+            ui::column_color(status),
+            "a resting card's border must not carry {status:?}'s identity colour"
         );
     }
+    // Archive is checked separately and against a different colour on purpose:
+    // `build_archive_col_data` threads ARCHIVE_STRIPE as the archive column's
+    // stripe/frame hue, not `column_color(Archived)`, so comparing against the
+    // latter would guard a colour the archive column never renders.
+    assert_ne!(
+        border,
+        ui::ARCHIVE_STRIPE,
+        "a resting card's border must not carry the archive column's stripe colour"
+    );
+}
+
+/// The position of the first cell whose symbol is exactly `sym`, scanning
+/// top-to-bottom then left-to-right.
+fn position_of_symbol(buf: &ratatui::buffer::Buffer, sym: &str) -> Option<(u16, u16)> {
+    for y in buf.area.top()..buf.area.bottom() {
+        for x in buf.area.left()..buf.area.right() {
+            if buf[(x, y)].symbol() == sym {
+                return Some((x, y));
+            }
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn cards_are_inset_by_one_cell_of_column_ground() {
+    // core.allium "Task card frame": the card is inset from the column by one
+    // cell on each side, and those margin cells are ground, not card surface.
+    //
+    // This exists because the inset was implemented before it was specified, and
+    // nothing enforced it — it could have been widened or dropped with a green
+    // suite. The assertions below pin the margin's width, its colour, and the
+    // fact that the rail immediately inside it is lit, in one place.
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    let (cx, cy) = position_of_symbol(&buf, "\u{256d}").expect("expected a framed card");
+    assert!(
+        cx >= 1,
+        "a card must not begin at the column's first cell; found the corner at x={cx}"
+    );
+
+    let ground = ui::column_bg_color(TaskStatus::Backlog, true);
+    let surface = ui::card_surface_color();
+
+    assert_eq!(
+        buf[(cx - 1, cy)].bg,
+        ground,
+        "the cell left of a card's corner must be column ground, not card surface"
+    );
+    assert_eq!(
+        buf[(cx, cy)].bg,
+        surface,
+        "the card's own corner must be lit by the card surface"
+    );
+
+    // The rail on the row below the top border: same column, and lit.
+    assert_eq!(
+        buf[(cx, cy + 1)].symbol(),
+        "\u{2502}",
+        "the row below a card's top border must open with its left rail"
+    );
+    assert_eq!(
+        buf[(cx, cy + 1)].bg,
+        surface,
+        "a card's side rail must be lit by the card surface"
+    );
+    assert_eq!(
+        buf[(cx - 1, cy + 1)].bg,
+        ground,
+        "the margin beside a card's rail must be column ground"
+    );
+
+    // Right margin: find the closing corner on the same row.
+    let rx = (cx..buf.area.right())
+        .find(|&x| buf[(x, cy)].symbol() == "\u{256e}")
+        .expect("expected a closing top corner on the same row");
+    assert_eq!(
+        buf[(rx + 1, cy)].bg,
+        ground,
+        "the cell right of a card's closing corner must be column ground"
+    );
+}
+
+/// Every position in `buf` whose symbol is exactly `sym`.
+fn cells_with_symbol<'a>(
+    buf: &'a ratatui::buffer::Buffer,
+    sym: &'a str,
+) -> Vec<&'a ratatui::buffer::Cell> {
+    let mut out = Vec::new();
+    for y in buf.area.top()..buf.area.bottom() {
+        for x in buf.area.left()..buf.area.right() {
+            let cell = &buf[(x, y)];
+            if cell.symbol() == sym {
+                out.push(cell);
+            }
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn every_card_frame_is_lit_by_the_card_surface() {
+    // core.allium "Task card frame": the whole card is lit, frame included. The
+    // border rows and side rails carry the *card surface* background, not the
+    // column ground, so the card's boundary is the change of colour at its outer
+    // edge. The rejected alternative painted the border on the ground.
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Backlog),
+    ]);
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    // All four corners, not just ╭ — the bottom border and the closing rails are
+    // as much part of "the whole card is lit" as the top one. The side rails are
+    // covered by `cards_are_inset_by_one_cell_of_column_ground`, which can tell a
+    // card rail from the column separator by position; both use the │ glyph, so a
+    // symbol scan alone cannot.
+    let mut checked = 0usize;
+    for glyph in ["\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}"] {
+        let corners = cells_with_symbol(&buf, glyph);
+        assert!(
+            !corners.is_empty(),
+            "expected at least one card corner {glyph} to render"
+        );
+        for cell in corners {
+            assert_eq!(
+                cell.bg,
+                ui::card_surface_color(),
+                "card corner {glyph} must sit on the card surface, not the column ground"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked >= 8, "expected both cards' four corners, saw {checked}");
+}
+
+#[tokio::test]
+async fn only_the_selected_card_has_a_hued_frame() {
+    // core.allium "Selection": the selected card's frame is drawn in the
+    // column's identity colour, and that is the only hued frame on the board.
+    // Every resting frame is neutral.
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Backlog),
+        make_task(3, TaskStatus::Backlog),
+    ]);
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    let hue = ui::column_color(TaskStatus::Backlog);
+    let neutral = ui::card_border_color();
+    let corners = cells_with_symbol(&buf, "\u{256d}"); // ╭
+    let hued = corners.iter().filter(|c| c.fg == hue).count();
+    let resting = corners.iter().filter(|c| c.fg == neutral).count();
+
+    assert_eq!(
+        hued, 1,
+        "exactly one card frame may carry the column hue, found {hued}"
+    );
+    assert!(
+        resting >= 1,
+        "resting card frames must be neutral, found {resting} of {}",
+        corners.len()
+    );
+    assert_eq!(
+        hued + resting,
+        corners.len(),
+        "every card frame must be either the column hue or the resting neutral"
+    );
 }
 
 #[tokio::test]
@@ -1982,15 +2198,17 @@ async fn unfocused_column_header_keeps_its_identity_colour() {
 
 #[tokio::test]
 async fn focused_column_header_is_more_emphatic_than_unfocused() {
-    // Focus is signalled by intensity: the focused header's fill is stronger.
+    // core.allium "Column header bar": the bar, not the ground, is where focus
+    // is read as colour intensity. The header fill stays hued at both focus
+    // states; the focused one is the brighter fill of the two.
     for status in [
         TaskStatus::Backlog,
         TaskStatus::Running,
         TaskStatus::Review,
         TaskStatus::Done,
     ] {
-        let unfocused = tint_strength(ui::column_header_bg(status, false));
-        let focused = tint_strength(ui::column_header_bg(status, true));
+        let unfocused = lightness_vs_terminal_bg(ui::column_header_bg(status, false));
+        let focused = lightness_vs_terminal_bg(ui::column_header_bg(status, true));
         assert!(
             unfocused < focused,
             "{status:?}: focused header fill ({focused}) must exceed unfocused ({unfocused})"
