@@ -470,15 +470,12 @@ impl super::super::TaskCrud for Database {
         items: &[FeedItem],
         repo_paths: &[String],
         base_branches: &[String],
-    ) -> Result<()> {
-        let removed = self
-            .upsert_feed_tasks_inner(epic_id, items, repo_paths, base_branches, false)
-            .await?;
-        debug_assert!(
-            removed.is_empty(),
-            "the additive upsert must not delete anything"
-        );
-        Ok(())
+    ) -> Result<Vec<RemovedFeedTask>> {
+        // Always empty: the inner body returns `Vec::new()` outright when
+        // `delete_absent` is false. Kept as a Vec so callers share one tail with
+        // the reconciling variant.
+        self.upsert_feed_tasks_inner(epic_id, items, repo_paths, base_branches, false)
+            .await
     }
 
     async fn delete_stale_subtree_feed_tasks(
@@ -931,9 +928,16 @@ impl Database {
             .iter()
             .map(|i| write_json_string_vec(&i.labels))
             .collect::<Result<Vec<_>>>()?;
-        let keep_ids =
+        // Only the stale delete reads the keep-set, so the additive path neither
+        // builds it nor can fail on it — it is not merely unused there, it is
+        // meaningless: an untrusted emission's item list is not a statement
+        // about what should survive.
+        let keep_ids = if delete_absent {
             serde_json::to_string(&items.iter().map(|i| &i.external_id).collect::<Vec<_>>())
-                .context("failed to serialize external_ids for feed task cleanup")?;
+                .context("failed to serialize external_ids for feed task cleanup")?
+        } else {
+            String::new()
+        };
         self.db_call(move |conn| {
             // Verify epic exists before upserting tasks
             let epic_exists: bool = conn

@@ -176,8 +176,7 @@ pub(crate) async fn run_feed_sync(
                 .await?
         } else {
             db.upsert_feed_tasks_additive(epic_id, &items, &repo_paths, &base_branches)
-                .await?;
-            Vec::new()
+                .await?
         };
         Ok(FeedSyncOutcome {
             affected_epics: vec![epic_id],

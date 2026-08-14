@@ -27,24 +27,22 @@ pub(super) async fn upsert_role_groups(
     let mut removed = Vec::new();
     for (sub_id, group) in groups {
         let (items, repo_paths, base_branches) = FeedItemWithTarget::unzip(group);
-        if mode.removes_absent() {
-            removed.extend(crate::feed::removed_or_warn(
-                db.upsert_feed_tasks(sub_id, &items, &repo_paths, &base_branches)
-                    .await,
-                parent_id,
-                Some(sub_id),
-                "run_role_routed_feed_sync: upsert_feed_tasks failed",
-            ));
-        } else if let Err(err) = db
-            .upsert_feed_tasks_additive(sub_id, &items, &repo_paths, &base_branches)
-            .await
-        {
-            tracing::warn!(
-                epic_id = parent_id.0,
-                sub_epic_id = sub_id.0,
-                "run_role_routed_feed_sync: upsert_feed_tasks_additive failed: {err:#}"
-            );
-        }
+        // The mode picks the DB variant; everything after it — the log-and-
+        // discard on failure, the removed-row report — is one shared tail, so
+        // the two modes cannot drift in how a failed upsert is reported.
+        let result = if mode.removes_absent() {
+            db.upsert_feed_tasks(sub_id, &items, &repo_paths, &base_branches)
+                .await
+        } else {
+            db.upsert_feed_tasks_additive(sub_id, &items, &repo_paths, &base_branches)
+                .await
+        };
+        removed.extend(crate::feed::removed_or_warn(
+            result,
+            parent_id,
+            Some(sub_id),
+            "run_role_routed_feed_sync: upsert_feed_tasks failed",
+        ));
     }
     removed
 }

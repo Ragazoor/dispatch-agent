@@ -16,8 +16,10 @@ use crate::models::{EpicId, FeedItem};
 /// Returns the stale rows the upsert deleted that still owned a worktree or
 /// tmux window, for the caller to tear down (empty on failure).
 /// On [`SyncMode::Additive`] the additive upsert variant is used, so an item
-/// that dropped out of this group's emission is left in place; the clearing
-/// callers (which pass empty slices) are not called at all in that mode.
+/// that dropped out of this group's emission is left in place. The mode picks
+/// the DB variant and nothing else: the recalculate-on-success rule and the
+/// failure reporting are one shared tail, so they cannot come to mean different
+/// things in the two modes.
 ///
 /// [`SyncMode::Additive`]: super::SyncMode::Additive
 async fn upsert_sub_epic_and_recalc(
@@ -29,31 +31,13 @@ async fn upsert_sub_epic_and_recalc(
     base_branches: &[String],
     mode: super::SyncMode,
 ) -> Vec<RemovedFeedTask> {
-    if !mode.removes_absent() {
-        match db
-            .upsert_feed_tasks_additive(sub_epic_id, items, repo_paths, base_branches)
+    let result = if mode.removes_absent() {
+        db.upsert_feed_tasks(sub_epic_id, items, repo_paths, base_branches)
             .await
-        {
-            Ok(()) => {
-                crate::feed::recalculate_epic_status_after_feed(
-                    db,
-                    sub_epic_id,
-                    "sync_grouped_feed",
-                )
-                .await
-            }
-            Err(err) => tracing::warn!(
-                epic_id = parent_id.0,
-                sub_epic_id = sub_epic_id.0,
-                "sync_grouped_feed: upsert_feed_tasks_additive failed: {err:#}"
-            ),
-        }
-        return Vec::new();
-    }
-
-    let result = db
-        .upsert_feed_tasks(sub_epic_id, items, repo_paths, base_branches)
-        .await;
+    } else {
+        db.upsert_feed_tasks_additive(sub_epic_id, items, repo_paths, base_branches)
+            .await
+    };
     if result.is_ok() {
         crate::feed::recalculate_epic_status_after_feed(db, sub_epic_id, "sync_grouped_feed").await;
     }
@@ -63,6 +47,31 @@ async fn upsert_sub_epic_and_recalc(
         Some(sub_epic_id),
         "sync_grouped_feed: upsert_feed_tasks failed",
     )
+}
+
+/// Clear a sub-epic's feed tasks: the empty-emission idiom, which relies on
+/// `upsert_feed_tasks`' stale-delete removing every feed task on the epic.
+///
+/// Deliberately mode-free rather than taking a `SyncMode` and passing
+/// `Reconcile`. CLEARING IS A RECONCILE ACT BY DEFINITION — there is no
+/// additive way to clear — so the mode question belongs at the caller that
+/// decides whether to clear at all, not inside a helper whose every call would
+/// have to name `Reconcile` and be trusted not to name the other one.
+async fn clear_sub_epic_and_recalc(
+    db: &dyn TaskStore,
+    parent_id: EpicId,
+    sub_epic_id: EpicId,
+) -> Vec<RemovedFeedTask> {
+    upsert_sub_epic_and_recalc(
+        db,
+        parent_id,
+        sub_epic_id,
+        &[],
+        &[],
+        &[],
+        super::SyncMode::Reconcile,
+    )
+    .await
 }
 
 /// Phase 1: group entries by repo name, moving each entry into its group (no
@@ -153,18 +162,7 @@ async fn clear_absent_sub_epics(
     {
         // Surface the cleared sub-epic to the caller so the TUI refreshes it.
         sub_epic_ids.push(sub_epic.id);
-        removed.extend(
-            upsert_sub_epic_and_recalc(
-                db,
-                parent_id,
-                sub_epic.id,
-                &[],
-                &[],
-                &[],
-                super::SyncMode::Reconcile,
-            )
-            .await,
-        );
+        removed.extend(clear_sub_epic_and_recalc(db, parent_id, sub_epic.id).await);
     }
     (sub_epic_ids, removed)
 }

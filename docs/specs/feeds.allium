@@ -1736,19 +1736,43 @@ rule DegradedNonEmptyEmission {
         -- threaded from FeedCycle::run through run_feed_sync_by_role into
         -- every sync path. It is an enum rather than a bool so a call site
         -- cannot silently mean the opposite of what it reads.
-        -- Additive is honoured in three places, one per removal mechanism:
-        --   - src/db/queries/tasks.rs::upsert_feed_tasks_additive — the
-        --     insert/update half of upsert_feed_tasks WITHOUT its per-epic
-        --     stale delete, sharing one private helper with it so the two
-        --     cannot drift in what they write. It reports no removed rows
-        --     because it removes none.
-        --   - src/feed/ingest/stale.rs::delete_stale_subtree and
-        --     clear_parent_stranded_tasks are not called at all.
-        --   - src/feed/ingest/grouped.rs::clear_absent_sub_epics and
-        --     clear_parent_flat_tasks are not called at all.
+        -- The mode is decided once, but its CONSEQUENCE is applied at five
+        -- sites, in two shapes. Counting them honestly matters: a sixth removal
+        -- path added later inherits neither shape automatically.
+        --
+        -- Shape 1 — pick the DB variant. The removal is inside the upsert, so
+        -- there is no step to skip: src/db/queries/tasks.rs::upsert_feed_tasks_additive
+        -- is the insert/update half of upsert_feed_tasks WITHOUT its per-epic
+        -- stale delete, sharing one private helper with it so the two cannot
+        -- drift in what they WRITE. It returns the same (empty) removed-row type
+        -- as its sibling precisely so the three call sites that choose between
+        -- them — src/feed/ingest/mod.rs::run_feed_sync (flat),
+        -- src/feed/ingest/upsert.rs::upsert_role_groups and
+        -- src/feed/ingest/grouped.rs::upsert_sub_epic_and_recalc — share one
+        -- success/failure tail instead of restating it per mode.
+        --
+        -- Shape 2 — skip the call. The removal is its own phase, so the caller
+        -- omits it: src/feed/ingest/role_routed.rs skips
+        -- src/feed/ingest/stale.rs::delete_stale_subtree and
+        -- clear_parent_stranded_tasks; src/feed/ingest/grouped.rs skips
+        -- clear_absent_sub_epics and clear_parent_flat_tasks. A clearing pass
+        -- takes no mode — clearing is a reconcile act by definition, so
+        -- src/feed/ingest/grouped.rs::clear_sub_epic_and_recalc is mode-free
+        -- and the decision to clear at all lives in its caller.
+        --
         -- FeedSyncOutcome.removed is therefore empty on every additive path,
         -- so src/feed/mod.rs::cleanup_removed_feed_tasks is a no-op by
         -- construction rather than by a second guard.
+        --
+        -- KNOWN LIMIT of that choice: the destructive step has no defence of its
+        -- own. Nothing at the teardown seam re-checks the mode — it cannot, the
+        -- mode does not reach there — so a future path that leaks a row into
+        -- `removed` on a degraded cycle destroys a worktree, which is this
+        -- rule's whole subject. Empty-by-construction was preferred anyway
+        -- because a second guard there would make the invariant ambiguous
+        -- (which layer owns it?) while covering only the paths someone
+        -- remembered to route through it. A new removal path's obligation is to
+        -- take one of the two shapes above.
         --
         -- SURFACING. An additive cycle is not silent: a run that declines to
         -- remove anything must say so, or the user reads an unchanged board as

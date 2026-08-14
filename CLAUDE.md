@@ -60,6 +60,8 @@ cargo test --test tmux_editor_pane        # real tmux: agent-tree editor pane, t
 
 **The full suite needs `tmux` on `PATH`.** The three `--test tmux_*` targets above drive a real tmux server (private `-L` socket, `-f /dev/null`, drop-guard teardown — see `tests/tmux_harness/mod.rs`). Without tmux they print `skipping: tmux not available on PATH` and pass, so a green local run is not proof they ran. Under `CI` the same check hard-fails instead of skipping, and `.github/workflows/ci.yml` installs tmux in both the `test` and `coverage` jobs so the skip path never masks a regression there.
 
+**Don't pipe `cargo test` into `tail`/`head`/`grep`.** The suite takes ~2.5 minutes, so it is tempting to trim the output — but a shell pipeline's exit code is the LAST command's, so `cargo test | tail -40` reports the exit status of `tail`, which is always 0. Combined with a truncation that happens to cut the summary lines, a failing suite reads as a clean pass. Redirect instead, then grep the file: `cargo test > /tmp/t.txt 2>&1; echo $?` followed by `grep -E "^(test result|failures:)" /tmp/t.txt`.
+
 Suite is green; if a runtime test fails locally, suspect timing — `spawn_blocking`-based tests are timing-sensitive.
 
 ### Snapshot tests

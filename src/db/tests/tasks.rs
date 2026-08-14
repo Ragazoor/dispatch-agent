@@ -1874,17 +1874,23 @@ async fn upsert_feed_tasks_additive_upserts_without_deleting_absent_tasks() {
     .unwrap();
 
     // A partially degraded emission: `live-1` dropped out, one item is new.
-    db.upsert_feed_tasks_additive(
-        epic.id,
-        &[
-            make_feed_item("keep-2", "Still open, retitled"),
-            make_feed_item("new-3", "Newly seen"),
-        ],
-        &vec!["/repo/a".to_string(); 2],
-        &main_branches(2),
-    )
-    .await
-    .unwrap();
+    let removed = db
+        .upsert_feed_tasks_additive(
+            epic.id,
+            &[
+                make_feed_item("keep-2", "Still open, retitled"),
+                make_feed_item("new-3", "Newly seen"),
+            ],
+            &vec!["/repo/a".to_string(); 2],
+            &main_branches(2),
+        )
+        .await
+        .unwrap();
+    assert!(
+        removed.is_empty(),
+        "the additive variant reports nothing for teardown because it removes \
+         nothing, got {removed:?}"
+    );
 
     let left = db.list_tasks_for_epic(epic.id).await.unwrap();
     let ext = |t: &crate::models::Task| t.external_id.clone().unwrap_or_default();
