@@ -416,9 +416,13 @@ pub(super) fn build_task_list_item<'a>(
         &task.labels,
     );
 
-    // The frame carries hue only for the selected card and, for at most three
-    // seconds, a flashing one — the bounded exception recorded under "Message
-    // flash" in core.allium. Every resting frame is neutral.
+    // The frame carries hue only for the selected card and, for the length of
+    // `MESSAGE_FLASH_TTL`, a flashing one — the bounded exception recorded under
+    // "Message flash" in core.allium. Every resting frame is neutral.
+    //
+    // `col_color` is the literal palette token, not a derivation. Together with
+    // the card stripe these are the only two surfaces that render an identity
+    // colour exactly; every other one mixes it (core.allium: "Column header bar").
     let frame_color = if is_cursor || has_message_flash {
         col_color
     } else {

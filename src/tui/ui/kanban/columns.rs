@@ -12,7 +12,7 @@ use ratatui::{
 use crate::models::{EpicId, TaskStatus};
 use crate::tui::{App, ColumnItem, ColumnLayout, EpicStatsMap, ViewMode};
 
-use super::super::palette::{ARCHIVE_STRIPE, MUTED, PURPLE};
+use super::super::palette::{MUTED, PURPLE};
 use super::super::shared::{render_substatus_header, rounded_block, truncate};
 use super::cards::{build_task_list_item, render_epic_header_item, render_epic_item, ColRenderCtx};
 use super::{board_column_constraints, column_bg_color, column_color, render_column_separator};
@@ -232,7 +232,7 @@ fn build_archive_col_data(
     let archived_epics = app.archived_epics();
     let archived_tasks = app.archived_tasks();
     let sel_row = app.selected_archive_row();
-    let color = ARCHIVE_STRIPE;
+    let color = column_color(TaskStatus::Archived);
 
     let mut items: Vec<ListItem<'static>> = Vec::new();
     let mut item_heights: Vec<usize> = Vec::new();
@@ -461,11 +461,11 @@ pub(super) fn render_columns(frame: &mut Frame, app: &mut App, data: ColumnsData
             .title(title)
             .title_style(
                 Style::default()
-                    .fg(ARCHIVE_STRIPE)
+                    .fg(column_color(TaskStatus::Archived))
                     .add_modifier(Modifier::BOLD),
             )
             .borders(Borders::TOP)
-            .border_style(Style::default().fg(ARCHIVE_STRIPE));
+            .border_style(Style::default().fg(column_color(TaskStatus::Archived)));
         let inner = block.inner(archive_data.area);
         let list = List::new(archive_data.items).block(block);
         frame.render_stateful_widget(list, archive_data.area, &mut app.archive.list_state);
@@ -475,7 +475,7 @@ pub(super) fn render_columns(frame: &mut Frame, app: &mut App, data: ColumnsData
             &archive_data.item_heights,
             inner,
             archive_data.area,
-            ARCHIVE_STRIPE,
+            column_color(TaskStatus::Archived),
         );
     }
 }

@@ -21,11 +21,6 @@ pub use shared::{refresh_status, truncate};
 
 #[cfg(test)]
 pub(in crate::tui) use kanban::{action_hints, column_color, epic_action_hints};
-// The archive column's stripe/frame hue, re-exported so a test can compare
-// against the colour the archive renderer actually threads in rather than
-// duplicating the literal.
-#[cfg(test)]
-pub(in crate::tui) use palette::ARCHIVE_STRIPE;
 // Column identity/focus chrome, re-exported so core.allium's
 // "Column Identity and Focus" rules can be asserted directly.
 #[cfg(test)]

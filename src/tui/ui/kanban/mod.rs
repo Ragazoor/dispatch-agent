@@ -23,8 +23,9 @@ use super::input_form::{
     input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
 };
 use super::palette::{
-    BLUE, BOARD_GROUND, BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CYAN, FG, GREEN,
-    MUTED, PURPLE, RED, YELLOW,
+    header_label_focused, header_label_unfocused, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
+    BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CYAN, FG, GREEN, HEADER_BG,
+    HEADER_BG_FOCUSED, MUTED, PURPLE, RED, SELECT_ALL_HIGHLIGHT_BG, YELLOW,
 };
 use super::shared::{push_hint_spans, render_top_indicators, rounded_block};
 use super::todos::render_todos;
@@ -47,30 +48,36 @@ use popups::{
 };
 use status_bar::render_status_bar;
 
-/// Column color per status
-pub(in crate::tui) fn column_color(status: TaskStatus) -> Color {
+/// A column's identity colour — the single source of truth for it.
+///
+/// `const` so that everything derived from a hue (the header labels, chiefly)
+/// can be computed from this at compile time rather than pasted in as literals.
+///
+/// Archive's identity is `ARCHIVE_STRIPE`, not `MUTED`. `MUTED` is the palette's
+/// generic grey for de-emphasised text; the archive column has always *rendered*
+/// its own muted blue-grey, and this returning `MUTED` meant the archive
+/// renderer had to reach for `ARCHIVE_STRIPE` directly, leaving two sources of
+/// truth with only one of them ever reaching the screen (`core.allium`: the
+/// identity table under "Column identity colour").
+pub(in crate::tui) const fn column_color(status: TaskStatus) -> Color {
     match status {
         TaskStatus::Backlog => BLUE,
         TaskStatus::Running => YELLOW,
         TaskStatus::Review => PURPLE,
         TaskStatus::Done => GREEN,
-        TaskStatus::Archived => MUTED,
+        TaskStatus::Archived => ARCHIVE_STRIPE,
     }
 }
 
 /// Highlight fill for the select-all checkbox in a focused column header.
 ///
-/// This is the *header* checkbox, not a card: it is the one place a tinted fill
-/// still tracks the column's identity colour. Cards no longer take a tinted
-/// fill at all — see [`card_surface_color`].
-pub(in crate::tui) fn select_all_highlight_bg(status: TaskStatus) -> Color {
-    match status {
-        TaskStatus::Backlog => Color::Rgb(42, 48, 82),
-        TaskStatus::Running => Color::Rgb(78, 62, 32),
-        TaskStatus::Review => Color::Rgb(62, 42, 82),
-        TaskStatus::Done => Color::Rgb(38, 64, 42),
-        TaskStatus::Archived => Color::Rgb(42, 48, 82),
-    }
+/// One neutral value rather than a per-column ramp. It was a third hued ramp
+/// derived from the column identity; with the header fill and the card surface
+/// both neutral, a hued checkbox would be the only hued *fill* on the board
+/// (`core.allium`: "Column header bar"). It takes no `TaskStatus` for that
+/// reason — there is nothing per-column left to vary.
+pub(in crate::tui) fn select_all_highlight_bg() -> Color {
+    SELECT_ALL_HIGHLIGHT_BG
 }
 
 /// Neutral ground for a column, uniform across every column.
@@ -113,46 +120,46 @@ pub(in crate::tui) fn card_border_color() -> Color {
     CARD_BORDER
 }
 
-/// Fill color for a column's header bar, tinted to its identity color.
+/// Neutral fill for a column's header bar, uniform across every column.
 ///
-/// Focus is signalled by intensity, never by presence-of-color: the unfocused
-/// fill is a weaker wash of the same hue, not grey (`core.allium`: "Focus is
-/// intensity, not colour-vs-absence").
-pub(in crate::tui) fn column_header_bg(status: TaskStatus, is_focused: bool) -> Color {
+/// The bar carries no hue: identity lives in the *label* (see
+/// [`column_header_fg`]), and the fill only steps lighter when the column is
+/// focused (`core.allium`: "Column header bar"). The superseded fill was a
+/// per-column darkened wash of the identity colour, tuned to sit on the
+/// per-column tinted grounds that no longer exist.
+///
+/// `status` is deliberately unused, same as in [`column_bg_color`]: binding it
+/// under a leading underscore is what compiler-enforces that no identity hue
+/// re-enters the fill.
+pub(in crate::tui) fn column_header_bg(_status: TaskStatus, is_focused: bool) -> Color {
     if is_focused {
-        match status {
-            TaskStatus::Backlog => Color::Rgb(45, 58, 102),
-            TaskStatus::Running => Color::Rgb(86, 66, 30),
-            TaskStatus::Review => Color::Rgb(74, 47, 102),
-            TaskStatus::Done => Color::Rgb(46, 74, 40),
-            TaskStatus::Archived => Color::Rgb(48, 54, 82),
-        }
+        HEADER_BG_FOCUSED
     } else {
-        match status {
-            TaskStatus::Backlog => Color::Rgb(35, 40, 66),
-            TaskStatus::Running => Color::Rgb(61, 53, 32),
-            TaskStatus::Review => Color::Rgb(52, 38, 68),
-            TaskStatus::Done => Color::Rgb(36, 58, 40),
-            TaskStatus::Archived => Color::Rgb(34, 38, 54),
-        }
+        HEADER_BG
     }
 }
 
-/// Label color for a column's header bar.
+/// Label colour for a column's header bar — the column's identity surface.
 ///
-/// Unfocused keeps the column's identity color; focused brightens toward the
-/// foreground so the focused column reads as the one at full strength.
-pub(in crate::tui) fn column_header_fg(status: TaskStatus, is_focused: bool) -> Color {
+/// With the fill neutral, the label is where the column's hue lives and the only
+/// place focus can be read as colour intensity. It carries the hue at *both*
+/// focus states and only its brightness moves ("Focus is intensity, not
+/// colour-vs-absence"): unfocused is the hue dimmed toward the fill, focused is
+/// the hue brightened toward white.
+///
+/// Neither state is the literal palette token: unfocused is the hue mixed 30%
+/// into [`HEADER_BG`], focused is the hue mixed 25% toward white. Both are
+/// *derived* from [`column_color`] at compile time rather than written out, so
+/// changing a hue moves its header labels with it. Hardcoding them left a gap no
+/// test could close — four literals that happened to be distinct and correctly
+/// ordered would satisfy every assertion while having nothing to do with the
+/// column's actual hue.
+pub(in crate::tui) const fn column_header_fg(status: TaskStatus, is_focused: bool) -> Color {
+    let hue = column_color(status);
     if is_focused {
-        match status {
-            TaskStatus::Backlog => Color::Rgb(208, 224, 255),
-            TaskStatus::Running => Color::Rgb(255, 230, 190),
-            TaskStatus::Review => Color::Rgb(230, 212, 255),
-            TaskStatus::Done => Color::Rgb(216, 244, 190),
-            TaskStatus::Archived => Color::Rgb(200, 208, 236),
-        }
+        header_label_focused(hue)
     } else {
-        column_color(status)
+        header_label_unfocused(hue)
     }
 }
 
@@ -319,7 +326,6 @@ enum CheckboxInfo {
     Task {
         all_selected: bool,
         on_select_all: bool,
-        status: TaskStatus,
     },
     None,
 }
@@ -395,7 +401,6 @@ fn task_column_segment(
         CheckboxInfo::Task {
             all_selected: n > 0 && all_selected,
             on_select_all: app.on_select_all(),
-            status,
         }
     } else {
         CheckboxInfo::None
@@ -430,13 +435,12 @@ fn render_summary_segment(frame: &mut Frame, seg: &SummarySegment, area: Rect) {
     if let CheckboxInfo::Task {
         all_selected,
         on_select_all,
-        status,
     } = &seg.checkbox
     {
         let checkbox = if *all_selected { " [x]" } else { " [ ]" };
         let checkbox_style = if *on_select_all {
             bar_style
-                .bg(select_all_highlight_bg(*status))
+                .bg(select_all_highlight_bg())
                 .fg(FG)
                 .add_modifier(Modifier::BOLD)
         } else {

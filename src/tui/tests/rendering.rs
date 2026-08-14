@@ -2138,22 +2138,60 @@ async fn resting_card_border_is_neutral() {
     // card and the column's identity colour only for the selected card. A
     // resting border must therefore never equal any column's identity colour.
     let border = ui::card_border_color();
-    for &status in TaskStatus::ALL.iter() {
+    // Archive needs no special case any more: `column_color(Archived)` is
+    // ARCHIVE_STRIPE, the colour the archive renderer actually threads in, so one
+    // loop covers every column.
+    for status in GROUND_COLUMNS {
         assert_ne!(
             border,
             ui::column_color(status),
             "a resting card's border must not carry {status:?}'s identity colour"
         );
     }
-    // Archive is checked separately and against a different colour on purpose:
-    // `build_archive_col_data` threads ARCHIVE_STRIPE as the archive column's
-    // stripe/frame hue, not `column_color(Archived)`, so comparing against the
-    // latter would guard a colour the archive column never renders.
-    assert_ne!(
-        border,
-        ui::ARCHIVE_STRIPE,
-        "a resting card's border must not carry the archive column's stripe colour"
-    );
+}
+
+/// A colour's channel signature: the RGB channels ranked brightest to dimmest.
+///
+/// This is a hue-family fingerprint that survives linear mixing toward any
+/// neutral: `BLUE` is `b > g > r` and stays so whether dimmed toward the header
+/// fill or brightened toward white, while `PURPLE` is `b > r > g` throughout.
+/// Absolute distance does not work for this — a *dimmed* colour is by definition
+/// far from its own undimmed source, so distance-to-own-hue is unsatisfiable.
+fn channel_signature(c: Color) -> [usize; 3] {
+    match c {
+        Color::Rgb(r, g, b) => {
+            let mut idx = [0usize, 1, 2];
+            let v = [r, g, b];
+            idx.sort_by_key(|&i| std::cmp::Reverse(v[i]));
+            idx
+        }
+        other => panic!("expected an Rgb colour, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn each_header_label_keeps_its_column_hue_signature() {
+    // The header labels are derived from `column_color` by a const mix, and this
+    // asserts the property that derivation is *for*: whatever the mix does to
+    // brightness, the label still reads as the same hue family as its source.
+    //
+    // The other three header tests — uniformity, per-column distinctness, and the
+    // brightness ordering — would every one of them pass on a set of hand-picked
+    // literals having nothing to do with the column hues. This is the one that
+    // would not, because preserving all five channel signatures by accident is a
+    // far stronger coincidence than being merely distinct and correctly ordered.
+    for is_focused in [false, true] {
+        for status in GROUND_COLUMNS {
+            let hue = ui::column_color(status);
+            let label = ui::column_header_fg(status, is_focused);
+            assert_eq!(
+                channel_signature(label),
+                channel_signature(hue),
+                "{status:?} (focused={is_focused}): label {label:?} does not share the \
+                 channel signature of its hue {hue:?} — it is no longer derived from it"
+            );
+        }
+    }
 }
 
 /// The position of the first cell whose symbol is exactly `sym`, scanning
@@ -2314,6 +2352,65 @@ async fn only_the_selected_card_has_a_hued_frame() {
         corners.len(),
         "every card frame must be either the column hue or the resting neutral"
     );
+}
+
+#[tokio::test]
+async fn header_fill_is_uniform_across_columns() {
+    // core.allium "Column header bar": the header fill carries no hue and is the
+    // same in every column at a given focus state — identity moved to the label.
+    // The superseded fill was a per-column darkened wash of the identity colour;
+    // that is the regression this guards.
+    for is_focused in [false, true] {
+        let expected = ui::column_header_bg(TaskStatus::Backlog, is_focused);
+        for status in GROUND_COLUMNS {
+            assert_eq!(
+                ui::column_header_bg(status, is_focused),
+                expected,
+                "{status:?} (focused={is_focused}) must share the uniform header fill"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn header_label_is_hued_in_every_column_at_both_focus_states() {
+    // Identity rests on the label now, so it must be distinguishable per column at
+    // both focus states. Two guards: no two columns may share a label colour, and
+    // no label may collapse to a neutral.
+    for is_focused in [false, true] {
+        let mut seen: Vec<(TaskStatus, Color)> = Vec::new();
+        for &status in TaskStatus::ALL.iter() {
+            let fg = ui::column_header_fg(status, is_focused);
+            assert_ne!(
+                fg,
+                ui::column_header_bg(status, is_focused),
+                "{status:?} (focused={is_focused}) label must not vanish into the fill"
+            );
+            for (other, prev) in &seen {
+                assert_ne!(
+                    fg, *prev,
+                    "{status:?} and {other:?} must not share a header label colour \
+                     (focused={is_focused}) — the label is the only per-column signal left"
+                );
+            }
+            seen.push((status, fg));
+        }
+    }
+}
+
+#[tokio::test]
+async fn focused_header_label_is_brighter_than_unfocused() {
+    // core.allium "Focus is intensity, not colour-vs-absence": the label keeps its
+    // hue at both states and focus moves only its brightness. With the fill now
+    // neutral, the label is the only place that intensity can be read.
+    for &status in TaskStatus::ALL.iter() {
+        let unfocused = lightness_vs_terminal_bg(ui::column_header_fg(status, false));
+        let focused = lightness_vs_terminal_bg(ui::column_header_fg(status, true));
+        assert!(
+            unfocused < focused,
+            "{status:?}: focused label ({focused}) must be brighter than unfocused ({unfocused})"
+        );
+    }
 }
 
 #[tokio::test]
