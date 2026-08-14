@@ -37,6 +37,20 @@ pub(in crate::tui) const GG_CHORD_TIMEOUT: Duration = Duration::from_millis(150)
 /// Interval between PR status polls for tasks in review.
 pub(in crate::tui) const PR_POLL_INTERVAL: Duration = Duration::from_secs(30);
 
+/// How long a delivered message keeps flashing its task's card — warm fill,
+/// envelope glyph, and a frame in the column's identity colour.
+///
+/// Long enough that a human whose attention is elsewhere still notices it; the
+/// superseded 3-second window did not clear that bar (`core.allium`: "Message
+/// flash").
+///
+/// This is the *single* home for the duration. It is read by both
+/// `App::tick_message_flash`, which sweeps expired entries, and the card
+/// renderer, which decides whether to draw the flash. Those two used to carry
+/// the number independently and could silently disagree — leaving an entry in
+/// the map that the card no longer drew, or the reverse.
+pub(in crate::tui) const MESSAGE_FLASH_TTL: Duration = Duration::from_secs(30);
+
 /// Number of ticks between main-session liveness polls. At `TICK_INTERVAL` (2s)
 /// this is 10s — mirrors config.main_session_poll_interval (see
 /// docs/specs/core.allium config and dispatch.allium: MainSessionIndicator) and

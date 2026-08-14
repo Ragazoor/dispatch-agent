@@ -370,11 +370,13 @@ pub(super) fn build_task_list_item<'a>(
     let is_batch_selected = app.selected_tasks().contains(&task.id);
     let select_prefix = if is_batch_selected { "* " } else { "  " };
 
+    // Same threshold the expiry sweep uses (`App::tick_message_flash`), read from
+    // the one constant so the two cannot drift apart.
     let has_message_flash = app
         .agents
         .message_flash
         .get(&task.id)
-        .is_some_and(|t| t.elapsed().as_secs() < 3);
+        .is_some_and(|t| t.elapsed() < crate::tui::MESSAGE_FLASH_TTL);
 
     // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + optional flash(" ✉", 2)
     let id_len = task.id.0.unsigned_abs().max(1).ilog10() as usize + 1;

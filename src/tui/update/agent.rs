@@ -239,11 +239,15 @@ impl App {
         self.spinner_tick = (self.spinner_tick + 1) % DISPATCH_SPINNER_FRAMES;
     }
 
-    /// Clear expired message-flash indicators (older than 3 seconds).
+    /// Clear message-flash indicators older than [`MESSAGE_FLASH_TTL`].
+    ///
+    /// Shares that constant with the card renderer on purpose: the sweep and the
+    /// draw decision must agree on the threshold, or the map and the screen
+    /// diverge.
     fn tick_message_flash(&mut self) {
         self.agents
             .message_flash
-            .retain(|_, t| t.elapsed().as_secs() < 3);
+            .retain(|_, t| t.elapsed() < crate::tui::MESSAGE_FLASH_TTL);
     }
 
     /// Idle backstop for the `gg` chord: if the user pressed a lone `g` and went

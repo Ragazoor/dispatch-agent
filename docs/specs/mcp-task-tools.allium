@@ -467,9 +467,12 @@ rule SendMessageViaMcp {
         -- `tmux send-keys` telling the target to read and delete the
         -- file. If send-keys fails, the message file is removed and
         -- an error is returned to the caller.
-        -- The TUI shows a brief envelope flash on the target task's card
-        -- (message_flash tracking state, cleared after 3 seconds) via
-        -- the MessageSent MCP event and the MessageReceived message.
+        -- The TUI shows an envelope flash on the target task's card
+        -- (message_flash tracking state, cleared after
+        -- core/config.message_flash_ttl) via the MessageSent MCP event and
+        -- the MessageReceived message. The duration and appearance are
+        -- specified once, in core.allium ("Message flash"); this rule only
+        -- triggers the flash and does not restate the number.
         -- Both tasks must exist. The target must have an active worktree
         -- and tmux window (i.e. a running agent). The sender has no
         -- such constraint — it only needs to exist.

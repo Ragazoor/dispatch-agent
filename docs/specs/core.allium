@@ -554,6 +554,15 @@ config {
     gg_chord_timeout: Duration = 150.milliseconds   -- window for completing the vim-style `gg` chord (see VisualColumn row navigation)
     inactivity_timeout: Duration = 10.minutes
     status_message_expiry: Duration = 5.seconds
+    -- How long a delivered message's flash stays on the target task's card.
+    -- Long enough that a human whose attention is elsewhere still catches it;
+    -- a few seconds does not clear that bar. This is the single source of the
+    -- duration: both the expiry sweep that clears the tracking state and the
+    -- render check that decides whether to draw the flash read it, so they
+    -- cannot disagree. See "Message flash" in the Column Identity and Focus
+    -- section for the appearance, and mcp-task-tools.allium (SendMessageToTask)
+    -- for what triggers it.
+    message_flash_ttl: Duration = 30.seconds
     notifications_enabled: Boolean = false
     pr_poll_interval: Duration = 30.seconds
     main_session_poll_interval: Duration = 10.seconds   -- cadence for the live tmux liveness check behind the main-session status-bar indicator (see dispatch.allium: MainSessionIndicator); a fixed multiple of tick_interval
@@ -1125,21 +1134,50 @@ value VisualColumn {
 -- == Message flash ==
 --
 -- When a message is delivered to a task, that task's card flashes for
--- three seconds: an envelope glyph, a distinct warm fill, and a frame in
--- the column's identity colour.
+-- config.message_flash_ttl: an envelope glyph, a distinct warm fill, and
+-- a frame in the column's identity colour.
 --
--- The hued frame is a deliberate, explicitly bounded exception to "the
--- selected card's border is the only hued *card* border on the board".
--- While a flash is live there may be two hued card borders, for at most
--- three seconds. The flash stays unambiguous because the border is not
--- its only channel: it is the only card on the board whose fill differs
--- from the shared card surface, and it carries a glyph the selected card
--- never has. (It also applies bold to the whole card rather than to the
--- title alone — see "Selection", where that is one of the reasons bold
--- carries no cursor meaning by itself.)
+-- The duration is a notice, not a blink. It is set long enough that a
+-- human whose attention is elsewhere — reading a diff, watching another
+-- agent — still catches the card on their next glance at the board. A
+-- few seconds does not clear that bar; the flash would routinely begin
+-- and end while nobody was looking at it, which is the same as not
+-- flashing.
 --
--- Whether the flash should keep the column hue or take a hue of its own
--- is not settled — see the open question at the end of this file.
+-- The hued frame is a deliberate, bounded exception to "the selected
+-- card's border is the only hued *card* border on the board". While a
+-- flash is live there may be two hued card borders.
+--
+-- The exception is safe because of the envelope, not because of the
+-- clock. What resolves the ambiguity is that a flashing card carries two
+-- marks the selected card never has: the envelope glyph, and a fill that
+-- differs from the shared card surface (it is the only card on the board
+-- of which that is true). Either one tells the reader which card is the
+-- cursor and which is merely flashing, without reference to how long the
+-- flash has left to run. (The flash also applies bold to the whole card
+-- rather than to the title alone — see "Selection", where that is one of
+-- the reasons bold carries no cursor meaning by itself.)
+--
+-- Boundedness is a fact about the flash but is not the justification for
+-- the exception. An earlier version of this subsection leaned on the
+-- flash being short-lived, which was a weak argument even then and does
+-- not survive a duration this long: "it will be gone in a moment" is not
+-- a reason a shared hue is unambiguous while it is on screen.
+--
+-- Resolved: the flash keeps the column's identity hue rather than taking
+-- a hue of its own. A dedicated hue would solve a problem the envelope
+-- already solves, and would spend a colour to do it.
+--
+-- That resolution rests on one property, and it is the property to
+-- protect: the envelope and the hued frame are co-terminous. The glyph is
+-- present for exactly as long as the frame is hued, both governed by the
+-- single config.message_flash_ttl, so the disambiguator never expires
+-- before the ambiguity does. Splitting them — expiring the glyph early,
+-- or holding the hued frame past the glyph — would leave a window in
+-- which a card shows the column's hue on its border with nothing to say
+-- it is not the cursor, and the exception would stop being safe. Anyone
+-- giving the two different lifetimes is removing the reason this design
+-- is sound, not making a cosmetic change.
 --
 -- == Where these rules are enforced ==
 --
@@ -1163,6 +1201,19 @@ value VisualColumn {
 --                                                the header bar: guards
 --                                                against the superseded
 --                                                flatten-to-grey
+--   render_card_message_flash_shows_envelope     the flash's glyph
+--   message_flash_envelope_outlives_the_old_three_second_window
+--                                                the glyph is still drawn
+--                                                well past the superseded
+--                                                short window
+--   message_flash_expires_once_past_its_ttl      the other side of the
+--                                                threshold: swept, and no
+--                                                longer drawn
+--   message_flash_render_and_sweep_share_one_threshold
+--                                                the sweep and the renderer
+--                                                read one duration, so they
+--                                                cannot disagree about
+--                                                whether a flash is live
 --
 -- The superseded three-level tint ladder (unfocused < focused < cursor
 -- card) was replaced rather than retuned, because a selected card no
@@ -1181,6 +1232,12 @@ value VisualColumn {
 --     epic's purple frame.
 --   - The Archive column's rendered identity colour — that ARCHIVE_STRIPE
 --     and not MUTED is what reaches the screen.
+--   - That the flash's hued frame and its envelope are co-terminous. The
+--     tests above pin the *glyph* against the TTL on both sides, but none
+--     of them looks at the frame's colour, so a change that expired the
+--     hue and the glyph at different times would pass. That is the one
+--     property the "Message flash" resolution rests on, and it is the
+--     least guarded thing in this section.
 --   - The top rule's and scroll indicators' colour at *either* focus
 --     state: neither that they take the identity hue while focused nor
 --     that they drop to grey while unfocused. The named exception in
@@ -1466,9 +1523,3 @@ value FlattenedView {
 --
 --   When the cursor is on the select-all column header (on_select_all = true), the anchor
 --   is None and the header state is preserved across refreshes.
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
-open question "Message-flash border hue - the three-second flash frames the card in its column's identity colour, which is a second hued border alongside the selected card's for as long as it lasts. The exception is now stated in 'Message flash', but should the flash instead take a hue of its own (e.g. the warm tone it already uses for the fill and envelope glyph) so that 'the column hue on a border means selected' holds without exception?"

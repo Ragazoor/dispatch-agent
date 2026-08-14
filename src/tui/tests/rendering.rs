@@ -1534,6 +1534,146 @@ async fn render_card_message_flash_shows_envelope() {
     );
 }
 
+/// Build a Running task with a message flash stamped `age_secs` ago.
+///
+/// Backdates the `Instant` rather than sleeping: the flash TTL is a wall-clock
+/// threshold, and `./scripts/check-no-test-sleep.sh` rejects sleeping to cross
+/// one. See the "No `tokio::time::sleep` in tests" section of docs/conventions.md.
+fn app_with_aged_message_flash(age_secs: u64) -> App {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.sub_status = SubStatus::Active;
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.tmux_window = Some("task-1".to_string());
+    let mut app = App::new(vec![task]);
+    let stamped = Instant::now()
+        .checked_sub(Duration::from_secs(age_secs))
+        .expect("monotonic clock must reach back far enough to age a flash");
+    app.agents.message_flash.insert(TaskId(1), stamped);
+    app.update(Message::NavigateColumn(1)); // Running column
+    app
+}
+
+#[tokio::test]
+async fn message_flash_envelope_outlives_the_old_three_second_window() {
+    // core.allium "Message flash": the flash lasts MESSAGE_FLASH_TTL (30s), long
+    // enough that a human whose attention is elsewhere still sees it. Ten seconds
+    // in — well past the superseded 3s window — the envelope must still render.
+    let mut app = app_with_aged_message_flash(10);
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        buffer_contains(&buf, "\u{2709}"),
+        "a 10s-old flash must still show the envelope; the window is {:?}",
+        crate::tui::MESSAGE_FLASH_TTL
+    );
+}
+
+#[tokio::test]
+async fn message_flash_expires_once_past_its_ttl() {
+    // The other side of the threshold: a flash older than MESSAGE_FLASH_TTL is
+    // swept by `tick_message_flash` and stops rendering. Without this the TTL
+    // could be raised to infinity and nothing would notice.
+    let ttl = crate::tui::MESSAGE_FLASH_TTL.as_secs();
+    let mut app = app_with_aged_message_flash(ttl + 1);
+    let _ = app.handle_tick();
+    assert!(
+        !app.agents.message_flash.contains_key(&TaskId(1)),
+        "a flash older than {ttl}s must be swept from the tracking map"
+    );
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        !buffer_contains(&buf, "\u{2709}"),
+        "an expired flash must not render the envelope"
+    );
+}
+
+/// Two Running tasks: the cursor sits on the first, the second carries a flash
+/// stamped `age_secs` ago. Isolating the flash onto a non-cursor card is what
+/// lets a test read the flash's own contribution to the frame colour — on the
+/// cursor card the hue would be there either way.
+fn app_with_flash_on_a_non_cursor_card(age_secs: u64) -> App {
+    let mut tasks = Vec::new();
+    for id in [1, 2] {
+        let mut t = make_task(id, TaskStatus::Running);
+        t.sub_status = SubStatus::Active;
+        t.worktree = Some(format!("/repo/.worktrees/{id}-task"));
+        t.tmux_window = Some(format!("task-{id}"));
+        tasks.push(t);
+    }
+    let mut app = App::new(tasks);
+    let stamped = Instant::now()
+        .checked_sub(Duration::from_secs(age_secs))
+        .expect("monotonic clock must reach back far enough to age a flash");
+    app.agents.message_flash.insert(TaskId(2), stamped);
+    app.update(Message::NavigateColumn(1)); // Running column; cursor on task 1
+    app
+}
+
+#[tokio::test]
+async fn message_flash_hue_and_envelope_expire_together() {
+    // core.allium "Message flash": the flash's hued frame is a deliberate
+    // exception to "the selected card's border is the only hued card border", and
+    // the exception is sound *only* because the envelope is present for exactly as
+    // long as the hue is. If the two ever got different lifetimes there would be a
+    // window where a card shows the column hue with nothing saying it is not the
+    // cursor — so co-terminality is the load-bearing claim, and this pins it.
+    let hue = ui::column_color(TaskStatus::Running);
+
+    // Inside the TTL: two hued frames — the cursor's and the flashing card's.
+    let mut live = app_with_flash_on_a_non_cursor_card(crate::tui::MESSAGE_FLASH_TTL.as_secs() - 1);
+    let _ = live.handle_tick();
+    let buf = render_to_buffer(&mut live, 120, 30);
+    let hued = cells_with_symbol(&buf, "\u{256d}")
+        .iter()
+        .filter(|c| c.fg == hue)
+        .count();
+    assert!(
+        buffer_contains(&buf, "\u{2709}"),
+        "inside the TTL the envelope must render"
+    );
+    assert_eq!(
+        hued, 2,
+        "inside the TTL both the cursor card and the flashing card must be hued"
+    );
+
+    // Past the TTL: the envelope is gone and so is the second hued frame.
+    let mut dead = app_with_flash_on_a_non_cursor_card(crate::tui::MESSAGE_FLASH_TTL.as_secs() + 1);
+    let _ = dead.handle_tick();
+    let buf = render_to_buffer(&mut dead, 120, 30);
+    let hued = cells_with_symbol(&buf, "\u{256d}")
+        .iter()
+        .filter(|c| c.fg == hue)
+        .count();
+    assert!(
+        !buffer_contains(&buf, "\u{2709}"),
+        "past the TTL the envelope must be gone"
+    );
+    assert_eq!(
+        hued, 1,
+        "past the TTL only the cursor card may keep the column hue — the flash's \
+         frame and its envelope must expire on the same threshold"
+    );
+}
+
+#[tokio::test]
+async fn message_flash_render_and_sweep_share_one_threshold() {
+    // The duration used to be hardcoded in both `tick_message_flash` and the
+    // card renderer with no shared constant, so the two could silently disagree —
+    // the map holding an entry the card no longer draws, or the reverse. Just
+    // inside the TTL, both must still agree the flash is live.
+    let ttl = crate::tui::MESSAGE_FLASH_TTL.as_secs();
+    let mut app = app_with_aged_message_flash(ttl - 1);
+    let _ = app.handle_tick();
+    assert!(
+        app.agents.message_flash.contains_key(&TaskId(1)),
+        "a flash one second inside the TTL must survive the sweep"
+    );
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        buffer_contains(&buf, "\u{2709}"),
+        "a flash the sweep kept must still render the envelope"
+    );
+}
+
 #[tokio::test]
 async fn render_detail_task_with_tag_shows_tag() {
     let mut task = make_task(1, TaskStatus::Backlog);

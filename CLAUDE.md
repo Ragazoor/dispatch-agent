@@ -213,6 +213,7 @@ Exactly two mechanisms read the tag:
 - **DB refresh** (event-driven + 10s fallback): `dirty_since_refresh` / `ticks_since_last_refresh` on `App` — `RefreshFromDb` emitted only when a `Persist`/`BatchPatchSubStatus` write has occurred since the last refresh, or every 5 ticks (10 s) as a fallback catch-all.
 - **Status TTL** (5s): `STATUS_MESSAGE_TTL` in `src/tui/mod.rs` — transient status bar messages auto-clear.
 - **PR poll** (30s): `PR_POLL_INTERVAL` in `src/tui/mod.rs` — polls PR status for tasks in review.
+- **Message flash** (30s): `MESSAGE_FLASH_TTL` in `src/tui/mod.rs` — how long a delivered message keeps flashing its task's card (warm fill, envelope glyph, hued frame). Read by *both* `tick_message_flash` (the sweep, `src/tui/update/agent.rs`) and the card renderer; they must share it or the map and the screen diverge. The hued frame is a deliberate exception to "only the selected card has a hued border", sound only because the envelope is co-terminous with it — see "Message flash" in `docs/specs/core.allium`.
 - **Main-session poll** (5 ticks / 10s): `MAIN_SESSION_POLL_TICKS` in `src/tui/mod.rs` — tick-driven tmux liveness check behind the main-session status-bar indicator; wired in `handle_tick` (`src/tui/update/agent.rs`), mirrors `config.main_session_poll_interval` in `docs/specs/core.allium`.
 - **gg-chord timeout** (150ms): `GG_CHORD_TIMEOUT` in `src/tui/mod.rs` — double-tap window for the `gg` jump-to-top keybinding.
 
