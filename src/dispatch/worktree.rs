@@ -533,11 +533,9 @@ pub fn teardown_task(
         return Ok(());
     };
 
-    remove_worktree_and_branch(repo_path, worktree_path, runner).map_err(|error| {
-        TeardownFailure {
-            worktree_left: Some(worktree_path.to_string()),
-            error,
-        }
+    remove_worktree_and_branch(repo_path, worktree_path, runner).map_err(|error| TeardownFailure {
+        worktree_left: Some(worktree_path.to_string()),
+        error,
     })
 }
 
