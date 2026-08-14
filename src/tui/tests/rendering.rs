@@ -2009,3 +2009,42 @@ async fn column_header_label_is_uppercased() {
         "column header should render the label uppercased"
     );
 }
+
+#[tokio::test]
+async fn task_cards_render_a_complete_frame() {
+    // core.allium: "Every card draws its own complete frame — rounded top and
+    // bottom borders plus left and right rails ... no two cards share a border."
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    let buf = render_to_buffer(&mut app, 120, 40);
+
+    for glyph in ["\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}"] {
+        assert!(
+            buffer_contains(&buf, glyph),
+            "card frame should draw the rounded corner {glyph:?}"
+        );
+    }
+    assert!(
+        buffer_contains(&buf, "\u{2502}"),
+        "card frame should draw left/right rails"
+    );
+}
+
+#[tokio::test]
+async fn task_card_frame_spans_four_lines_top_to_bottom() {
+    // The frame costs one line over the old shared-rule presentation: top
+    // border, title, metadata, bottom border (core.allium: "Task card frame"),
+    // so the closing corner sits exactly 3 rows below the opening one.
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    let buf = render_to_buffer(&mut app, 120, 40);
+    let area = buf.area();
+
+    let row_has =
+        |y: u16, glyph: &str| (area.left()..area.right()).any(|x| buf[(x, y)].symbol() == glyph);
+    let top = (area.top()..area.bottom())
+        .find(|&y| row_has(y, "\u{256d}"))
+        .expect("a card top border");
+    assert!(
+        row_has(top + 3, "\u{2570}"),
+        "the card's bottom border should sit 3 rows below its top border"
+    );
+}

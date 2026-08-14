@@ -274,24 +274,55 @@ pub(super) fn render_epic_header_item(
 
 /// Per-column rendering context shared by every card in a column.
 ///
-/// Bundles the column-level parameters that were previously threaded through
-/// the card/epic renderers piecemeal: the stripe/rule colour, the column width,
-/// the pre-built horizontal-rule string, and whether the top rule of the next
-/// card should be suppressed (because a separator was just emitted).
+/// Bundles the column-level parameters threaded through the card/epic
+/// renderers: the stripe/frame colour and the column width.
 ///
-/// `rule_str` is the pre-built horizontal-rule string (e.g.
-/// `"\u{2500}".repeat(width as usize)`); callers hoist this allocation once per
-/// column rather than repeating it for every card. `suppress_top_rule` is the
-/// only field that varies per item, so it is rebuilt per card while the rest
-/// stay constant across the column.
-pub(super) struct ColRenderCtx<'a> {
+/// Both are constant across a column. The pre-built shared-rule string and the
+/// suppress-top-rule flag this once carried are gone: every card now draws its
+/// own complete frame and neighbours share no borders, so there is no
+/// cross-card rule state left to thread (`core.allium`: "Task card frame").
+pub(super) struct ColRenderCtx {
     pub color: Color,
     pub width: u16,
-    pub rule_str: &'a str,
-    pub suppress_top_rule: bool,
 }
 
-/// Build a styled two-line ListItem for a task card in a kanban column.
+/// Wrap a card's two content lines in a complete rounded frame.
+///
+/// Returns the four lines of a framed card — top border, the two content lines
+/// each flanked by rails, and the bottom border (`core.allium`: "Task card
+/// frame"). Every card carries its own full frame; borders are never shared
+/// between neighbours. `frame_color` is the caller's already-resolved emphasis:
+/// full identity strength for the cursor card, reduced otherwise.
+fn frame_card(
+    line1: Line<'static>,
+    line2: Line<'static>,
+    col_width: u16,
+    frame_color: Color,
+) -> Vec<Line<'static>> {
+    let content_width = (col_width as usize).saturating_sub(2);
+    let style = Style::default().fg(frame_color);
+    let horizontal = "\u{2500}".repeat(content_width);
+
+    let rail = |inner: Line<'static>| -> Line<'static> {
+        let pad = content_width.saturating_sub(inner.width());
+        let mut spans = vec![Span::styled("\u{2502}", style)];
+        spans.extend(inner.spans);
+        if pad > 0 {
+            spans.push(Span::raw(" ".repeat(pad)));
+        }
+        spans.push(Span::styled("\u{2502}", style));
+        Line::from(spans)
+    };
+
+    vec![
+        Line::from(Span::styled(format!("\u{256d}{horizontal}\u{256e}"), style)),
+        rail(line1),
+        rail(line2),
+        Line::from(Span::styled(format!("\u{2570}{horizontal}\u{256f}"), style)),
+    ]
+}
+
+/// Build a styled framed ListItem for a task card in a kanban column.
 /// Line 1: stripe + title
 /// Line 2: status icon + age/activity metadata
 pub(super) fn build_task_list_item<'a>(
@@ -300,12 +331,10 @@ pub(super) fn build_task_list_item<'a>(
     app: &App,
     now: DateTime<Utc>,
     is_cursor: bool,
-    ctx: &ColRenderCtx<'_>,
+    ctx: &ColRenderCtx,
 ) -> ListItem<'a> {
     let col_color = ctx.color;
     let col_width = ctx.width;
-    let col_rule_str = ctx.rule_str;
-    let suppress_top_rule = ctx.suppress_top_rule;
 
     let is_batch_selected = app.selected_tasks().contains(&task.id);
     let select_prefix = if is_batch_selected { "* " } else { "  " };
@@ -319,7 +348,8 @@ pub(super) fn build_task_list_item<'a>(
     // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + optional flash(" ✉", 2)
     let id_len = task.id.0.unsigned_abs().max(1).ilog10() as usize + 1;
     let flash_width = if has_message_flash { 2 } else { 0 };
-    let prefix_width = 2 + 1 + 3 + id_len + flash_width;
+    // +2 for the card frame's left and right rails.
+    let prefix_width = 2 + 1 + 3 + id_len + flash_width + 2;
     let max_title = (col_width as usize).saturating_sub(prefix_width);
     let title_text = format_task_title(task, max_title);
 
@@ -352,24 +382,12 @@ pub(super) fn build_task_list_item<'a>(
         &task.labels,
     );
 
-    let rule_color = if is_cursor || has_message_flash {
+    let frame_color = if is_cursor || has_message_flash {
         col_color
     } else {
         MUTED
     };
-    let lines: Vec<Line<'static>> = if suppress_top_rule {
-        vec![line1, line2]
-    } else {
-        vec![
-            Line::from(Span::styled(
-                col_rule_str.to_owned(),
-                Style::default().fg(rule_color),
-            )),
-            line1,
-            line2,
-        ]
-    };
-    let mut item = ListItem::new(lines);
+    let mut item = ListItem::new(frame_card(line1, line2, col_width, frame_color));
 
     // Flash bg takes priority over cursor — it's transient (3s) and meant to grab attention
     if has_message_flash {
@@ -406,11 +424,9 @@ pub(super) fn render_epic_item(
     app: &App,
     epic_stats: &EpicStatsMap,
     status: TaskStatus,
-    ctx: &ColRenderCtx<'_>,
+    ctx: &ColRenderCtx,
 ) -> ListItem<'static> {
     let col_width = ctx.width;
-    let col_rule_str = ctx.rule_str;
-    let suppress_top_rule = ctx.suppress_top_rule;
     let stats = epic_stats.get(&epic.id);
 
     let plan_indicator = if epic.plan_path.is_some() && status == TaskStatus::Backlog {
@@ -421,7 +437,8 @@ pub(super) fn render_epic_item(
 
     // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + plan_indicator
     let id_len = epic.id.0.unsigned_abs().max(1).ilog10() as usize + 1;
-    let prefix_width = 2 + 1 + 3 + id_len + plan_indicator.chars().count();
+    // +2 for the card frame's left and right rails.
+    let prefix_width = 2 + 1 + 3 + id_len + plan_indicator.chars().count() + 2;
     let max_title = (col_width as usize).saturating_sub(prefix_width);
     let title_text = truncate(&epic.title, max_title);
 
@@ -467,20 +484,8 @@ pub(super) fn render_epic_item(
         ])
     };
 
-    let rule_color = if is_cursor { PURPLE } else { MUTED };
-    let lines: Vec<Line<'static>> = if suppress_top_rule {
-        vec![line1, line2]
-    } else {
-        vec![
-            Line::from(Span::styled(
-                col_rule_str.to_owned(),
-                Style::default().fg(rule_color),
-            )),
-            line1,
-            line2,
-        ]
-    };
-    let mut item = ListItem::new(lines);
+    let frame_color = if is_cursor { PURPLE } else { MUTED };
+    let mut item = ListItem::new(frame_card(line1, line2, col_width, frame_color));
 
     if is_cursor {
         item = item.style(

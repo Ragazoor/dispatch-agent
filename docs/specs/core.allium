@@ -817,6 +817,25 @@ value VisualColumn {
 -- stay distinguishable from each other and from the bare terminal
 -- background (level 0) — a tint nobody can see is the same defect as
 -- no tint at all.
+--
+-- == Task card frame ==
+--
+-- A task card is a discrete framed box, not a run of text separated
+-- from its neighbours by a rule. Every card draws its own complete
+-- frame — rounded top and bottom borders plus left and right rails —
+-- in the column's identity colour, so that a card is bounded on all
+-- four sides and no two cards share a border.
+--
+-- The frame is what makes the column read as a stack of objects rather
+-- than as a paragraph. It costs one line per card over the previous
+-- shared-rule presentation (four lines: top border, title, metadata,
+-- bottom border), which is the intended trade: fewer cards visible, but
+-- each unambiguously a card.
+--
+-- The frame follows the same intensity rule as everything else here:
+-- the cursor card's frame renders at the column's full identity
+-- strength, and a non-cursor card's frame at reduced emphasis. Colour
+-- is never dropped to signal "not the cursor" — only intensity moves.
 
 enum PaletteToken { blue | yellow | purple | green | muted }
 

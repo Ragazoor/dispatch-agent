@@ -112,10 +112,6 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
     let show_headers =
         !app.board.flattened && matches!(status, TaskStatus::Running | TaskStatus::Review);
     let selected_row = app.selected_row()[col_idx];
-    // Precompute the horizontal-rule string once per column so each card can
-    // do a cheap clone() rather than repeat() per card.
-    let col_rule_str: String = "\u{2500}".repeat(col_area.width as usize);
-
     let mut list_items: Vec<ListItem<'static>> = Vec::new();
     let mut item_heights: Vec<usize> = Vec::new();
     let mut list_selection_idx: Option<usize> = None;
@@ -131,7 +127,6 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
     }
 
     let mut selectable_idx: usize = 0;
-    let mut last_was_separator = false;
 
     for item in items.iter() {
         // EpicHeader items are decorative — render immediately, don't affect
@@ -142,13 +137,11 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
                 &app.board.epics,
                 col_area.width
             ));
-            last_was_separator = true;
             continue;
         }
 
         if let ColumnItem::SubstatusLabel(label) = item {
             push_item!(render_substatus_header(label, list_items.is_empty()));
-            last_was_separator = true;
             continue;
         }
 
@@ -157,7 +150,6 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
                 col_area.width,
                 list_items.is_empty()
             ));
-            last_was_separator = true;
             continue;
         }
 
@@ -191,7 +183,6 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
                     | ColumnItem::OrphanSeparator => unreachable!(),
                 };
                 push_item!(render_substatus_header(&label, list_items.is_empty()));
-                last_was_separator = true;
             }
         }
 
@@ -205,8 +196,6 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
         let ctx = ColRenderCtx {
             color,
             width: col_area.width,
-            rule_str: &col_rule_str,
-            suppress_top_rule: last_was_separator,
         };
         push_item!(match item {
             ColumnItem::Task(task) => {
@@ -219,14 +208,6 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
             | ColumnItem::SubstatusLabel(_)
             | ColumnItem::OrphanSeparator => unreachable!(),
         });
-        last_was_separator = false;
-    }
-
-    if !items.is_empty() {
-        push_item!(ListItem::new(Line::from(Span::styled(
-            col_rule_str.clone(),
-            Style::default().fg(MUTED),
-        ))));
     }
 
     TaskColData {
@@ -251,7 +232,6 @@ fn build_archive_col_data(
     let archived_tasks = app.archived_tasks();
     let sel_row = app.selected_archive_row();
     let color = ARCHIVE_STRIPE;
-    let col_rule_str: String = "\u{2500}".repeat(area.width as usize);
 
     let mut items: Vec<ListItem<'static>> = Vec::new();
     let mut item_heights: Vec<usize> = Vec::new();
@@ -259,8 +239,6 @@ fn build_archive_col_data(
     let ctx = ColRenderCtx {
         color,
         width: area.width,
-        rule_str: &col_rule_str,
-        suppress_top_rule: false,
     };
 
     for epic in archived_epics.iter() {
@@ -274,15 +252,6 @@ fn build_archive_col_data(
         let li = build_task_list_item(task, TaskStatus::Archived, app, now, is_cursor, &ctx);
         item_heights.push(li.height());
         items.push(li);
-    }
-
-    if !items.is_empty() {
-        let rule = ListItem::new(Line::from(Span::styled(
-            col_rule_str.clone(),
-            Style::default().fg(MUTED),
-        )));
-        item_heights.push(rule.height());
-        items.push(rule);
     }
 
     let total = archived_epics.len() + archived_tasks.len();

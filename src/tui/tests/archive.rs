@@ -768,7 +768,9 @@ fn render_archive_overlay_shows_archived_tasks() {
     task.title = "Archived Item".to_string();
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(5);
-    let buf = render_to_buffer(&mut app, 100, 30);
+    // Wide enough that the title is not truncated: the card frame's rails
+    // consume two columns of the per-card width budget.
+    let buf = render_to_buffer(&mut app, 160, 30);
     assert!(
         buffer_contains(&buf, "Archived Item"),
         "archive overlay should show archived task title"
