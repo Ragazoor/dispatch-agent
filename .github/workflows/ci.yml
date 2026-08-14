@@ -20,16 +20,27 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      # `~/.cache/ort.pyke.io` must be cached together with `target`. fastembed
+      # pulls ort-sys, whose build script downloads ONNX Runtime into that
+      # directory and then emits an absolute `-L` pointing at it. That `-L` is
+      # recorded in `target/**/build/ort-sys-*/output`, and cargo replays the
+      # recorded output instead of re-running the script (registry sources never
+      # change, so its fingerprint stays fresh). Caching `target` alone therefore
+      # restores an `-L` to a directory that does not exist on a fresh runner,
+      # and rustc fails the moment it rebuilds the ort-sys lib with
+      # "could not find native static library `onnxruntime`". Both paths live in
+      # one cache entry, so they are saved and restored together and cannot drift.
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cache/ort.pyke.io
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v2-
 
       # The tests/tmux_*.rs targets (split_hook, lifecycle, window_targets) drive
       # a real tmux server (each on its own private socket) because the mock
@@ -56,16 +67,18 @@ jobs:
           targets: x86_64-unknown-linux-gnu
           components: clippy
 
+      # See the Test job's cache step for why ~/.cache/ort.pyke.io is here.
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cache/ort.pyke.io
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v2-
 
       - name: Run clippy
         run: cargo clippy --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
@@ -81,16 +94,18 @@ jobs:
         with:
           targets: x86_64-unknown-linux-gnu
 
+      # See the Test job's cache step for why ~/.cache/ort.pyke.io is here.
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cache/ort.pyke.io
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-cargo-v2-
 
       # Same reason as the test job: tarpaulin runs the suite, and without tmux
       # the real-tmux tests (the tests/tmux_*.rs targets) skip, understating
