@@ -3,7 +3,7 @@ source: src/tui/tests/snapshots.rs
 expression: rendered
 ---
                                                                                                                   🔕  [N]
-          ◦ BACKLOG 1                 ▸ RUNNING 1 [ ]                 ◦ REVIEW 0                     ◦ DONE 0
+          ◦ BACKLOG 1                ▸ RUNNING 1 [ ]                 ◦ REVIEW 0                      ◦ DONE 0
 ──────────────────────────────│───────────────────────────│──────────────────────────────│──────────────────────────────
  ╭──────────────────────────╮ │  ── active                │                              │
  │  ▎ #10 PR Reviews        │ │── PR Reviews › Bots PR ── │                              │

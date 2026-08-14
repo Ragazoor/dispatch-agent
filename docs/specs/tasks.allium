@@ -1,7 +1,8 @@
 -- allium: 3
 -- tasks.allium
 --
--- Scope: Task lifecycle — creation, status movement, reorder, archive, copy, editor.
+-- Scope: Task lifecycle — creation, status movement, reorder, archive, copy, editor,
+--        and the board-wide multi-selection the batch rules consume.
 -- Excludes: Agent health and hooks (see agent-health.allium);
 --           dispatch and retry (see dispatch.allium);
 --           PR/wrap-up (see pr-workflow.allium);
@@ -11,6 +12,12 @@
 --           domain model (see core.allium).
 
 use "./core.allium" as core
+
+-- The one board-wide multi-selection every batch rule in this file
+-- consumes. See "Multi-Selection".
+given {
+    selection: core/BoardSelection
+}
 
 ------------------------------------------------------------
 -- Rules
@@ -326,6 +333,105 @@ rule ConfirmDone {
         -- pr-workflow.allium), and epics.allium's MoveEpicForward when
         -- entering done. Leaving done (MoveTaskBackward, ArchiveTask when
         -- the task was done) clears task.sort_order back to null.
+}
+
+-- == Multi-Selection ==
+
+-- Two different things are called "select all", and conflating them is the
+-- trap this subsection exists to close.
+--
+--   1. The select-all *cursor position* (core.allium's on_select_all): the
+--      cursor is parked on a column's header rather than on a card. Row
+--      navigation sets it — moving up off the first row lands there — and
+--      moving back down leaves it. It is a place the cursor can be, not a
+--      selection, and moving off it changes no selection at all.
+--   2. The select-all *action* (SelectAllColumn below): it mutates the
+--      selection and does not touch the cursor position. It can be invoked
+--      while the cursor is on the header or on any card in the column.
+--
+-- They are independent. Only ClearSelection touches both.
+
+rule SelectAllColumn {
+    -- tasks and epics are the column's currently *visible* selectable
+    -- items, in the sense fixed by the guidance below. is_edge_column says
+    -- whether the cursor column is one of the two edge columns.
+    when: SelectAllColumn(is_edge_column, tasks, epics)
+
+    -- Edge columns cannot select-all. This is the behavioural counterpart
+    -- of the rendering rule that hides the checkbox on them
+    -- (core.allium: ColumnChrome.shows_select_all_checkbox) — the two must
+    -- move together, so neither should be changed alone.
+    requires: not is_edge_column
+
+    -- An empty column is a no-op.
+    requires: tasks.count > 0 or epics.count > 0
+
+    ensures:
+        if tasks.all(t => t in selection.selected_tasks)
+            and epics.all(e => e in selection.selected_epics):
+            for t in tasks:
+                selection.selected_tasks.remove(t)
+            for e in epics:
+                selection.selected_epics.remove(e)
+        else:
+            for t in tasks:
+                selection.selected_tasks.add(t)
+            for e in epics:
+                selection.selected_epics.add(e)
+
+    @guidance
+        -- Bound to `a` in any task-status column, and to Enter while the
+        -- cursor is on that column's header. Enter on the header toggles
+        -- exactly as `a` does — it is not a clear.
+        --
+        -- What gets selected is what is *visible*. The column's items are
+        -- the ones the board is currently showing there, so the active epic
+        -- scope, the repo filter and the search query all apply (see
+        -- core.allium: tasks_for_current_view and the board search filter).
+        -- A task that shares the column's status but is filtered out is not
+        -- reachable by this action. This is the safety-relevant part: batch
+        -- operations consume the resulting selection, so "select all" means
+        -- all of what you can see, never all of what has this status.
+        --
+        -- Scope is one column, the focused one, never the whole board. The
+        -- selection it feeds is board-wide though, so selecting all in
+        -- Backlog and then all in Running leaves both columns' items
+        -- selected. Per-column action, board-wide result.
+        --
+        -- Covers tasks and epics together. The decorative items in a column
+        -- — epic header rules, sub-status labels, the orphan separator —
+        -- are not selectable and are skipped.
+        --
+        -- The toggle is deliberately asymmetric, and this is the part worth
+        -- knowing: it completes to full rather than inverting. From a
+        -- partial selection it selects everything; only when every task and
+        -- epic in the column is already selected does it deselect. So two
+        -- presses from a partial state leave the column empty, not back at
+        -- the partial set the user started from — the intermediate state is
+        -- not recoverable by pressing again.
+        --
+        -- An empty column is a no-op: nothing is selected, deselected, or
+        -- otherwise changed.
+        --
+        -- Ordering of batch operations over the resulting selection is not
+        -- specified here — see the Batch Status Movement and BatchArchive
+        -- rules for what consumes it.
+}
+
+rule ClearSelection {
+    when: ClearSelection()
+
+    ensures:
+        selection.selected_tasks = {}
+        selection.selected_epics = {}
+
+    @guidance
+        -- The only operation that touches both meanings of "select all":
+        -- it empties the selection sets *and* releases the select-all cursor
+        -- position (core.allium's on_select_all, which no entity in these
+        -- specs carries as a field — it is board view state, described in
+        -- core.allium under Cursor Selection Preservation). Every other path
+        -- affects one or the other, never both.
 }
 
 -- == Batch Status Movement ==

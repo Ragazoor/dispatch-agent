@@ -527,7 +527,14 @@ impl App {
         }
     }
 
-    /// `Enter` — open task detail, or toggle off select-all.
+    /// `Enter` — open task detail, or, with the cursor on a column header,
+    /// toggle that column's select-all.
+    ///
+    /// It toggles rather than clears: from a column that is not fully selected it
+    /// *selects* (`SelectAllColumn` in `docs/specs/tasks.allium`), exactly as `a`
+    /// does. The `clear_select_all` telemetry label predates that and describes
+    /// only one of the two outcomes; it is left alone because renaming a usage key
+    /// splits its recorded history, which is not worth a naming fix.
     fn handle_key_enter_normal(&mut self) -> Vec<Command> {
         if self.selection().on_select_all {
             return self.dispatch_keyed(Message::SelectAllColumn, "clear_select_all", "Enter");

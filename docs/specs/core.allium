@@ -524,6 +524,31 @@ entity Retrieval {
 --            no status change
 -- See learnings.allium for the rule that applies these effects.
 
+-- BoardSelection is a runtime-only UI concept (not persisted): the set of
+-- tasks and epics the user has multi-selected. It is modelled here, on the
+-- same terms as SplitPane below, because the batch rules in tasks.allium
+-- and epics.allium all consume it.
+--
+-- There is exactly one BoardSelection. It is board-wide, not per-column:
+-- selecting items in one column and then another leaves both sets
+-- selected, and the selection outlives moving the cursor between columns.
+--
+-- The action that fills it, and the two independent things called
+-- "select all", are specified in tasks.allium ("Multi-Selection").
+
+entity BoardSelection {
+    selected_tasks: Set<Task>
+    selected_epics: Set<Epic>
+
+    is_empty: selected_tasks.count = 0 and selected_epics.count = 0
+
+    @guidance
+        -- Session-scoped and never persisted: it does not survive an app
+        -- restart, and nothing in the database records it.
+        -- A card in either set renders with a leading `*` and a bold title
+        -- (core.allium: "Selection").
+}
+
 -- SplitPane is a runtime-only UI concept (not persisted) that tracks
 -- whether the TUI is displaying a task's tmux window as a side pane.
 -- It is modelled here because task lifecycle events (finish, PR creation)
@@ -675,7 +700,10 @@ config {
 --   - Switching into a different, non-empty navigation column (via h/l or
 --     Left/Right) always places the cursor on the first card (row 0) —
 --     never a row remembered from a previous visit to that column — and
---     clears the select-all toggle. The column also scrolls back to the
+--     releases the select-all cursor position (on_select_all), which is a
+--     cursor move and not a change to the multi-selection: the selected
+--     tasks and epics are untouched (see tasks.allium: "Multi-Selection").
+--     The column also scrolls back to the
 --     top so the first card is visible. A clamped no-op (already at the
 --     leftmost/rightmost edge) leaves the cursor and scroll position
 --     untouched. Switching into an empty column is also a no-op for the
@@ -692,8 +720,8 @@ config {
 --     column. Bound to `]` and to `G` (Shift+G).
 --   - `gg`/`G` are pure aliases of `[`/`]`: they carry no new semantics.
 --     They share the same behaviour on an empty column (a no-op that
---     leaves cursor/scroll/toggle untouched), the same select-all-toggle
---     clearing on a real move, and the same behaviour in the Archive edge
+--     leaves cursor/scroll/toggle untouched), the same release of the
+--     select-all cursor position on a real move, and the same behaviour in the Archive edge
 --     column and in ViewMode::Epic. Jump-to-top/bottom are available on
 --     the main board and in epic view.
 --   - G/gg are deliberately scoped to the main board and epic view only.
@@ -915,6 +943,25 @@ value VisualColumn {
 -- count of selectable items in that column, the count at reduced emphasis
 -- relative to the label.
 --
+-- A bar spans exactly the horizontal extent of the column it labels — no
+-- more and no less — and the separators between columns are part of no
+-- bar. The header row and the board below it are divided by *one* split,
+-- not by two divisions of the same width that agree: the row of bars and
+-- the row of columns are the same division of the screen, seen at two
+-- heights.
+--
+-- Stating it as one split rather than as two things that must be kept
+-- equal is the normative part. Two independent divisions of one width can
+-- disagree in ways that depend on how the division rounds, so they drift
+-- rather than break — the discrepancy grows across the row and shows up as
+-- slop rather than as a clean offset, which is exactly what a
+-- keep-them-in-step rule fails to prevent.
+--
+-- What is at stake is identity attribution, not neatness. The label is the
+-- column's identity surface, so a bar that overhangs into its neighbour
+-- puts one column's header over another column's cards, which is the single
+-- thing the identity rules exist to prevent.
+--
 -- The bar's fill is near-neutral and uniform: the same value in every
 -- column at a given focus state, with the focused fill one step lighter
 -- than the unfocused one. It carries no hue and no per-column variation —
@@ -971,11 +1018,10 @@ value VisualColumn {
 -- Archive edge column.
 --
 -- The checkbox is recorded here because the header bar is where it is
--- rendered. Its *behaviour* — what toggling it selects, and how that
--- interacts with the multi-selection the batch rules in tasks.allium
--- operate on — is not specified anywhere; see the open question at the end
--- of this file. An earlier version of this paragraph claimed it was
--- specified in tasks.allium, which was a pointer to nothing.
+-- rendered. Its *behaviour* — what toggling it selects — is specified in
+-- tasks.allium ("Multi-Selection", rule SelectAllColumn), together with the
+-- distinction between the select-all action and the select-all cursor
+-- position that this section's on_select_all refers to.
 --
 -- The Archive edge column never shows the checkbox, even though it is
 -- always focused while on screen: there is no batch operation over
@@ -1289,6 +1335,9 @@ value VisualColumn {
 --                                                the header label: guards
 --                                                against the superseded
 --                                                flatten-to-grey
+--   header_bar_stops_at_the_column_separators    no header fill covers a
+--                                                separator cell, at five
+--                                                terminal widths
 --   header_fill_is_uniform_across_columns        the fill is the same in
 --                                                every column at a given
 --                                                focus state and carries
@@ -1312,6 +1361,13 @@ value VisualColumn {
 --                                                each keeps the channel
 --                                                *ranking* of its source
 --                                                at both focus states
+--
+-- The separator test checks five widths on purpose. Whether a misaligned
+-- header row is visible at all depends on how the division rounds at that
+-- particular width, so one width can coincidentally line up and hide the
+-- defect entirely — at 120 columns it very nearly does, while the code this
+-- replaced fails at 100. A single-width assertion here would have been
+-- worse than none, because it would have read as coverage.
 --
 -- That last one pins the derivation, and its formulation is deliberate:
 -- the property is channel *ranking*, not distance from the source hue. The
@@ -1659,9 +1715,3 @@ value FlattenedView {
 --
 --   When the cursor is on the select-all column header (on_select_all = true), the anchor
 --   is None and the header state is preserved across refreshes.
-
-------------------------------------------------------------
--- Open Questions
-------------------------------------------------------------
-
-open question "SelectAllCheckboxBehaviour: the select-all checkbox is described in 'Column header bar' as a rendered surface (focused non-Archive columns only, neutral fill, no per-column variation) and appears in selection_preservation as a cursor position (on_select_all), but what toggling it actually does is specified nowhere. tasks.allium specifies batch operations *over* a multi-selection without saying how select-all produces one: does it select every item in the column or only the visible/filtered ones, does it interact with the active search and only-active filters, is it per-column or board-wide, and does moving the cursor off the header clear it (core.allium row navigation says some movements clear the toggle, which implies the answer is partly settled in code but not written down). Where should this live - tasks.allium beside the batch rules that consume the selection, or core.allium beside the board navigation that exposes it?"

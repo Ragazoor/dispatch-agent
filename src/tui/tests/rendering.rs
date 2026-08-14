@@ -2355,6 +2355,58 @@ async fn only_the_selected_card_has_a_hued_frame() {
 }
 
 #[tokio::test]
+async fn header_bar_stops_at_the_column_separators() {
+    // The header bar must span exactly its own column. It used to be laid out by a
+    // *different* constraint set than the board — the summary row divided the width
+    // into N equal parts with no separator columns, while the board divided it into
+    // N parts plus N-1 one-cell separators — so the two drifted apart and a header
+    // fill bled across the separator into its neighbour.
+    //
+    // Checked at several widths because the drift depends on how the ratio rounding
+    // falls, so a single width can happen to line up.
+    const SEP_FG: Color = Color::Rgb(41, 46, 66); // palette BORDER
+    let header_fills = [
+        ui::column_header_bg(TaskStatus::Backlog, false),
+        ui::column_header_bg(TaskStatus::Backlog, true),
+    ];
+
+    for width in [100u16, 120, 137, 200, 251] {
+        let mut app = App::new(vec![
+            make_task(1, TaskStatus::Backlog),
+            make_task(2, TaskStatus::Running),
+            make_task(3, TaskStatus::Review),
+            make_task(4, TaskStatus::Done),
+        ]);
+        let buf = render_to_buffer(&mut app, width, 30);
+
+        // Separator columns run the full height of the board in BORDER. Card rails
+        // share the │ glyph but never that colour, and this row sits below the
+        // cards, so anything matching here is a separator.
+        let probe_y = 18;
+        let sep_xs: Vec<u16> = (buf.area.left()..buf.area.right())
+            .filter(|&x| {
+                let c = &buf[(x, probe_y)];
+                c.symbol() == "\u{2502}" && c.fg == SEP_FG
+            })
+            .collect();
+        assert!(
+            !sep_xs.is_empty(),
+            "width {width}: expected column separators at y={probe_y}"
+        );
+
+        // The summary row sits directly under the top indicator row.
+        for x in sep_xs {
+            let cell = &buf[(x, 1)];
+            assert!(
+                !header_fills.contains(&cell.bg),
+                "width {width}: a header fill covers the separator at x={x} — the bar \
+                 is wider than its column"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn header_fill_is_uniform_across_columns() {
     // core.allium "Column header bar": the header fill carries no hue and is the
     // same in every column at a given focus state — identity moved to the label.

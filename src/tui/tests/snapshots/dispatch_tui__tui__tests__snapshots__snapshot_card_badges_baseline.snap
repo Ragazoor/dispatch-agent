@@ -3,7 +3,7 @@ source: src/tui/tests/snapshots.rs
 expression: rendered
 ---
                                                                                                                   🔕  [N]
-        ▸ BACKLOG 4 [ ]                 ◦ RUNNING 4                   ◦ REVIEW 3                     ◦ DONE 1
+        ▸ BACKLOG 4 [ ]                ◦ RUNNING 4                   ◦ REVIEW 3                      ◦ DONE 1
 ──────────────────────────────│───────────────────────────│──────────────────────────────│──────────────────────────────
  ╭──────────────────────────╮ │  ── crashed               │  ── changes requested        │ ╭──────────────────────────╮
  │  ▎ #1 bug task           │ │ ╭───────────────────────╮ │ ╭──────────────────────────╮ │ │  ▎ #12 merged            │

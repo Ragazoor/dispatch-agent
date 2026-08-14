@@ -3,7 +3,7 @@ source: src/tui/tests/snapshots.rs
 expression: rendered
 ---
                                                                                                                   🔕  [N]
-        ▸ BACKLOG 1 [ ]                 ◦ RUNNING 0                   ◦ REVIEW 1                     ◦ DONE 0
+        ▸ BACKLOG 1 [ ]                ◦ RUNNING 0                   ◦ REVIEW 1                      ◦ DONE 0
 ──────────────────────────────│───────────────────────────│──────────────────────────────│──────────────────────────────
  ╭──────────────────────────╮ │                           │  ── awaiting review          │
  │  ▎ #1 CVE-2024-9999      │ │                           │ ╭──────────────────────────╮ │

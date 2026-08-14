@@ -266,18 +266,6 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     render_move_task_overlay(frame, app, area);
 }
 
-/// Returns the layout constraints for the summary row based on which column is focused.
-/// When an edge column (Projects=0 or Archive=5) is focused, 5 segments are shown.
-/// When a task column (1–4) is focused, 4 segments are shown (task columns only).
-fn column_layout_constraints(selected_col: usize) -> Vec<Constraint> {
-    let n = if is_edge_column(selected_col) {
-        5u32
-    } else {
-        4u32
-    };
-    vec![Constraint::Ratio(1, n); n as usize]
-}
-
 /// Layout constraints for the kanban board: content columns interleaved with
 /// 1-char separator columns. Separators are at odd indices, content at even.
 /// Returns 7 constraints for 4 task columns (normal) or 9 for 5 (edge column visible).
@@ -332,18 +320,28 @@ enum CheckboxInfo {
 
 fn render_summary(frame: &mut Frame, app: &App, layout: &ColumnLayout, area: Rect) {
     let sel = app.selected_column();
-    let constraints = column_layout_constraints(sel);
-    let col_segments = Layout::default()
+    // The board's own constraints, separator columns included, so the summary row
+    // is split on exactly the same grid as the columns beneath it. These used to be
+    // a separate `Ratio(1, n)` split with no separators, which divided the width
+    // differently and left every header bar drifting out of line with its column —
+    // a fill bleeding past the separator into its neighbour. Two splits of one
+    // width cannot be kept in step by hand, so there is only one split now.
+    let all_areas = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints(constraints)
+        .constraints(board_column_constraints(sel))
         .split(area);
+
+    // The split interleaves content and separator columns; take the even indices,
+    // exactly as `compute_columns_data` does for the board. The separator cells on
+    // this row are left unpainted, so a header bar ends where its column ends.
+    let col_segments: Vec<Rect> = (0..all_areas.len()).step_by(2).map(|i| all_areas[i]).collect();
 
     let segments = build_summary_segments(app, layout, sel);
 
     debug_assert_eq!(
         segments.len(),
         col_segments.len(),
-        "summary segment count must match layout constraint count"
+        "summary segment count must match the content-column count"
     );
     for (i, seg) in segments.iter().enumerate() {
         render_summary_segment(frame, seg, col_segments[i]);
