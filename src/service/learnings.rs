@@ -22,18 +22,20 @@ use super::ServiceError;
 // why the fourth shape (bare backticked snake_case) is deliberately excluded.
 static PATHSYM_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[A-Za-z0-9_./-]+\.rs::[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
-        .expect("PATHSYM_RE must compile")
+        .unwrap_or_else(|e| unreachable!("PATHSYM_RE is a hardcoded pattern: {e}"))
 });
 
 static TYPESYM_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[A-Z][A-Za-z0-9]*(?:::[A-Za-z_][A-Za-z0-9_]*)+").expect("TYPESYM_RE must compile")
+    Regex::new(r"[A-Z][A-Za-z0-9]*(?:::[A-Za-z_][A-Za-z0-9_]*)+")
+        .unwrap_or_else(|e| unreachable!("TYPESYM_RE is a hardcoded pattern: {e}"))
 });
 
 // At least four underscores (five word segments) — the same threshold
 // check-doc-symbols.sh measured as the lowest value with zero false positives
 // across the docs/specs/ corpus.
 static BARE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+){4,}").expect("BARE_RE must compile")
+    Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+){4,}")
+        .unwrap_or_else(|e| unreachable!("BARE_RE is a hardcoded pattern: {e}"))
 });
 
 /// Detects an internal-code-shaped citation in learning text: a

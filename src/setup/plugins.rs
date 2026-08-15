@@ -920,6 +920,60 @@ mod tests {
         );
     }
 
+    /// The "Do NOT record" list must name the internal-code-citation failure
+    /// mode explicitly (task #4152 — learning #401 carried a stale
+    /// `src/feed/cycle.rs::run_feed_cycle` citation that no gate ever caught).
+    /// Scoped to that one section: the rest of the skill mentions plenty of
+    /// backticked identifiers (tool names) that would make a whole-document
+    /// check pass even with this specific rule missing.
+    #[test]
+    fn learnings_skill_forbids_code_citations() {
+        let section = section_after(skill_body("learnings"), "### Do NOT record:")
+            .expect("learnings skill must have a 'Do NOT record' section");
+        assert!(
+            section.contains("path.rs::symbol") || section.contains("path.rs"),
+            "the Do NOT record list must name the path.rs::symbol citation shape: {section}"
+        );
+        assert!(
+            section.to_lowercase().contains("rot"),
+            "the rule must explain WHY (silent rot, no re-check) not just state a ban: {section}"
+        );
+    }
+
+    /// The scope table must not offer `project` — LearningScope has only
+    /// user/repo/epic/task (task #4152: the row was stale, and an agent
+    /// passing scope="project" gets a deserialization error).
+    #[test]
+    fn learnings_skill_scope_table_has_no_project_row() {
+        let content = skill_body("learnings");
+        assert!(
+            !content.contains("| `project` |"),
+            "the scope table must not offer a project scope row: {content}"
+        );
+    }
+
+    /// The `wrong` verdict bullet must not claim a human-review step exists
+    /// (learnings.allium: no human gate, no needs_review state, no status
+    /// change on either verdict).
+    #[test]
+    fn learnings_skill_wrong_verdict_does_not_claim_human_review() {
+        // The correct text says "there is no human review step", which itself
+        // contains the substring "human review" — so this checks for the old
+        // false CLAIM (routing an entry TO review) rather than the substring.
+        let content = skill_body("learnings").to_lowercase();
+        assert!(
+            !content.contains("routes an approved entry"),
+            "the learnings skill must not claim a wrong verdict routes an entry \
+             for human review — learnings.allium: no human gate, no status \
+             change on either verdict: {content}"
+        );
+        assert!(
+            content.contains("no human review"),
+            "the learnings skill should state plainly that there is no human \
+             review step: {content}"
+        );
+    }
+
     #[test]
     fn plugin_hook_scripts_are_executable() {
         let hooks_scripts = PLUGIN_DIR

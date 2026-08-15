@@ -375,7 +375,10 @@ async fn record_learning_rejects_code_citation_in_summary() {
         .list_learnings(crate::db::LearningFilter::default())
         .await
         .unwrap();
-    assert!(learnings.is_empty(), "rejected learning must not be created");
+    assert!(
+        learnings.is_empty(),
+        "rejected learning must not be created"
+    );
 }
 
 #[tokio::test]
