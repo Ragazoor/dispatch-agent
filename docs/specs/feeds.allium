@@ -1476,10 +1476,8 @@ rule FeedCommandFailure {
         -- manual path defaulted the unreadable feed_role to none and synced
         -- FLAT onto a reviews_parent epic.
         -- Bucket 7 is exec_feed_command's tokio::time::timeout around the
-        -- child, with kill_on_drop(true) so a timed-out child is killed and
-        -- reaped rather than orphaned — the async counterpart of
-        -- src/process.rs::run_bounded, which only covers SYNCHRONOUS
-        -- ProcessRunner children and so cannot be reused here directly.
+        -- child (see SerialisedFeedCycle's BOUNDED COST note above for why
+        -- src/process.rs::run_bounded couldn't be reused for this call site).
         -- Coverage: src/feed/exec.rs::exec_feed_command_returns_err_when_it_exceeds_the_deadline
         -- (the raw timeout, with a bounded elapsed-time assertion so the test
         -- doesn't merely wait out the hang) and

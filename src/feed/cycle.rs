@@ -363,16 +363,6 @@ mod tests {
             "a hung command must fail as a timeout, got: {err}"
         );
 
-        // The claim must be free again immediately after `run()` returns —
-        // scoped so this probing claim is dropped before the next real cycle.
-        {
-            let probe = guard.try_claim(epic.id);
-            assert!(
-                probe.is_some(),
-                "a timed-out cycle must release its claim, not hold the epic forever"
-            );
-        }
-
         // The real proof: point the epic at a fast, successful command and
         // run a FRESH cycle. If the claim (or anything else) were still
         // wedged, this would come back Busy or Failed instead of Synced.

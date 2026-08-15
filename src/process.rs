@@ -127,10 +127,17 @@ fn abandon(child: &mut std::process::Child, program: &str, timeout: Duration) ->
 /// Run `program` with `args` and kill it if it has not finished within `timeout`,
 /// returning its captured output.
 ///
-/// **The one place a bounded child is spawned.** Both
+/// **The one place a SYNCHRONOUS bounded child is spawned.** Both
 /// [`RealProcessRunner::run_with_timeout`] (git, worktree, tmux work) and the
 /// statusline decorator's chained command (`src/cli/statusline.rs`) go through
-/// here; a second hand-rolled kill-on-timeout is a bug, not a variation.
+/// here; a second hand-rolled kill-on-timeout over `std::process::Command` is a
+/// bug, not a variation. The one sanctioned exception is
+/// `crate::feed::exec::exec_feed_command`, which bounds an ASYNC
+/// `tokio::process::Command` via `tokio::time::timeout` + `kill_on_drop(true)`
+/// instead — this function's threaded drain-and-poll design has no async
+/// equivalent to delegate to, so that call site is a second kill-on-timeout
+/// mechanism by necessity, not by drift. See feeds.allium `SerialisedFeedCycle`
+/// (its "BOUNDED COST" note) for why that command in particular needed one.
 ///
 /// `timeout` is **one** deadline spanning both of the waits below. A child that
 /// produces no output and one that produces output but never exits are equally
