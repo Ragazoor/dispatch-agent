@@ -4382,10 +4382,9 @@ mod watchers {
     use super::*;
     use crate::service::tasks::watchers::SubscribeOutcome;
 
-    /// A `capture-pane` snapshot showing Claude Code idle at its own chat
-    /// input, so `notify::notify_tmux`'s pane-readiness probe (see
-    /// `src/notify.rs`) treats the watcher's pane as safe to nudge.
-    const READY_PANE_STDOUT: &[u8] = b"> \nauto mode on (shift+tab to cycle) - 1 agent\n";
+    /// Shared with `src/notify.rs`'s own tests, so the two can't drift into
+    /// two different "ready pane" fixtures.
+    use crate::notify::test_fixtures::READY_PANE as READY_PANE_STDOUT;
 
     #[tokio::test]
     async fn subscribe_to_task_creates_watch() {

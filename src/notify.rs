@@ -90,7 +90,20 @@ pub fn notify_tmux(
     filename: &str,
     text: &str,
 ) -> Result<DeliveryOutcome, String> {
-    let captured = match crate::tmux::capture_pane(tmux_window, runner) {
+    // Resolved once and reused for both calls below — `capture_pane` and
+    // `send_keys` would otherwise each independently re-resolve the same
+    // window name, running `window_target`'s `list-panes` subprocess twice
+    // for one notification. Passing the already-resolved pane id through
+    // costs nothing extra: `window_target` short-circuits immediately for a
+    // target already shaped like one.
+    let target = match crate::tmux::window_target(tmux_window, runner) {
+        Ok(target) => target,
+        Err(e) => {
+            let _ = std::fs::remove_file(format!("{worktree}/.claude-messages/{filename}"));
+            return Err(format!("failed to send notification to target agent: {e}"));
+        }
+    };
+    let captured = match crate::tmux::capture_pane(&target, runner) {
         Ok(captured) => captured,
         Err(e) => {
             let _ = std::fs::remove_file(format!("{worktree}/.claude-messages/{filename}"));
@@ -100,11 +113,27 @@ pub fn notify_tmux(
     if !pane_shows_ready_for_input(&captured) {
         return Ok(DeliveryOutcome::QueuedNoNudge);
     }
-    if let Err(e) = crate::tmux::send_keys(tmux_window, text, runner) {
+    if let Err(e) = crate::tmux::send_keys(&target, text, runner) {
         let _ = std::fs::remove_file(format!("{worktree}/.claude-messages/{filename}"));
         return Err(format!("failed to send notification to target agent: {e}"));
     }
     Ok(DeliveryOutcome::Notified)
+}
+
+/// Test-only fixtures for a `tmux capture-pane -p` snapshot, shared by this
+/// module's own tests and by `src/service/tasks/tests.rs` (both in-crate, so
+/// both can reach a `pub(crate)` item here) — one hand-written byte string
+/// per shape, rather than three independent copies that could drift apart.
+/// `tests/task_watchers.rs` and `tests/tmux_send_message_pane_state.rs` are
+/// crate-external integration tests and so necessarily keep their own copies
+/// (an integration test target links against the crate without `cfg(test)`,
+/// the same reason `McpState::db_write()` is unavailable to them — see
+/// `docs/conventions.md`).
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    /// A capture-pane snapshot representing Claude Code idle at its own chat
+    /// input — the "safe to inject keystrokes" case.
+    pub(crate) const READY_PANE: &[u8] = b"> \nauto mode on (shift+tab to cycle) - 1 agent\n";
 }
 
 /// Writes `body` to a message file and injects a tmux nudge pointing at it,
@@ -135,6 +164,8 @@ pub async fn deliver(
 mod tests {
     use super::*;
     use crate::process::MockProcessRunner;
+
+    use super::test_fixtures::READY_PANE;
 
     #[test]
     fn write_message_file_creates_dir_and_file_with_prefix() {
@@ -169,11 +200,6 @@ mod tests {
         assert_eq!(content_a, "a");
         assert_eq!(content_b, "b");
     }
-
-    /// A capture-pane snapshot representing Claude Code idle at its own chat
-    /// input — the "safe to inject keystrokes" case.
-    const READY_PANE: &[u8] =
-        b"> \n---\n  [Sonnet 5] /tmp/x (main)\n  auto mode on (shift+tab to cycle) - 1 agent\n";
 
     /// A capture-pane snapshot representing a plan-mode/elicitation dialog —
     /// the exact shape reproduced in the design doc. No "shift+tab to cycle"

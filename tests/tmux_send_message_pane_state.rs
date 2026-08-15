@@ -34,8 +34,7 @@ const READY_SCREEN: &str = "> \\nauto mode on (shift+tab to cycle) - 1 agent\\n"
 /// A capture-pane snapshot representing a plan-mode/elicitation dialog — the
 /// exact shape reproduced in the design doc. No "shift+tab to cycle"
 /// anywhere.
-const DIALOG_SCREEN: &str =
-    "> 1. MIT\\n  2. Apache 2.0\\n\\nEnter to select - Esc to cancel\\n";
+const DIALOG_SCREEN: &str = "> 1. MIT\\n  2. Apache 2.0\\n\\nEnter to select - Esc to cancel\\n";
 
 struct Fixture {
     server: TmuxServer,

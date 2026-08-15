@@ -122,7 +122,13 @@ fn is_resolved_target(target: &str) -> bool {
 /// `select-window`, but silently picks one for `set-option -w`. Refusing
 /// uniformly is what [`set_window_dispatch_dir`]'s stderr sniff for
 /// "ambiguous" used to approximate for that one call.
-fn window_target(window: &str, runner: &dyn ProcessRunner) -> Result<String> {
+///
+/// `pub(crate)` rather than private: [`crate::notify::notify_tmux`] resolves
+/// a window once and reuses the resolved pane id for both its `capture-pane`
+/// and `send-keys` calls, rather than letting each of those helpers
+/// independently re-run this lookup's `list-panes` subprocess for the exact
+/// same window on every notification.
+pub(crate) fn window_target(window: &str, runner: &dyn ProcessRunner) -> Result<String> {
     if is_resolved_target(window) {
         return Ok(window.to_string());
     }
