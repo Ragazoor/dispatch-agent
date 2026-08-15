@@ -1792,13 +1792,13 @@ git commit -m "test(4187): lock running · N shells and shell-stale card snapsho
 
 ## Final verification
 
-- [ ] **Run the full suite**
+- [x] **Run the full suite**
 
 Run: `cargo test > /tmp/full_test.txt 2>&1; echo $?`
 Then: `grep -E "^(test result|failures:)" /tmp/full_test.txt`
 Expected: all green, including the real-tmux integration targets if tmux is on `PATH`.
 
-- [ ] **Run the pre-push checks**
+- [x] **Run the pre-push checks**
 
 Run: `cargo fmt --check`
 Run: `cargo clippy --all-targets -- -D warnings`
@@ -1806,4 +1806,4 @@ Run: `./scripts/check-doc-paths.sh`
 Run: `./scripts/check-doc-symbols.sh`
 Expected: all clean.
 
-- [ ] **Run `allium:weed` to check spec/code alignment before wrap-up**, since this plan touches four Allium spec files across eleven Rust-code tasks — drift between them is exactly what that skill catches.
+- [x] **Run `allium:weed` to check spec/code alignment before wrap-up**, since this plan touches four Allium spec files across eleven Rust-code tasks — drift between them is exactly what that skill catches.
