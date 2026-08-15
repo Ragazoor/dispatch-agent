@@ -58,6 +58,8 @@ cargo test --test tmux_editor_pane        # real tmux: agent-tree editor pane, t
 
 **Don't pipe `cargo test` into `tail`/`head`/`grep`.** A shell pipeline's exit code is the LAST command's, so `cargo test | tail -40` reports `tail`'s exit status (always 0) — combined with a truncation that happens to cut the summary lines, a failing suite reads as a clean pass. Redirect instead: `cargo test > /tmp/t.txt 2>&1; echo $?`, then `grep -E "^(test result|failures:)" /tmp/t.txt`.
 
+The full suite takes roughly 5 minutes. A backgrounded run (`run_in_background: true`) can be killed mid-suite by the harness for reasons unrelated to the tests themselves — observed causes include another subagent's stray `cargo test` still holding the `target/` build lock. If a background run reports `killed` rather than a completed exit code, don't assume a real hang: check for and let go a stray process holding the lock (`ps aux | grep cargo`), then prefer running the full suite in the foreground with an explicit long timeout over backgrounding it again.
+
 Suite is green; if a runtime test fails locally, suspect timing — `spawn_blocking`-based tests are timing-sensitive.
 
 ### Snapshot tests
