@@ -212,7 +212,7 @@ fn classify_card_indicator(
 /// picks the glyph, this picks the border, and only
 /// `every_indicator_claims_the_border_its_severity_earns` keeps them in step. A
 /// `CardIndicator::severity()` consumed by both would make it true by
-/// construction. Amber is the two that want a human's
+/// construction. Amber is the three that want a human's
 /// attention without being broken.
 ///
 /// `Dispatching` is deliberately absent despite rendering an amber indicator: it
@@ -227,7 +227,9 @@ fn state_border_color(indicator: &CardIndicator) -> Option<Color> {
         | CardIndicator::AutoDispatchFailed
         | CardIndicator::Conflict
         | CardIndicator::Crashed => Some(RED),
-        CardIndicator::Blocked | CardIndicator::Stale { .. } => Some(YELLOW),
+        CardIndicator::Blocked | CardIndicator::Stale { .. } | CardIndicator::StaleShell { .. } => {
+            Some(YELLOW)
+        }
         CardIndicator::Dispatching { .. }
         | CardIndicator::DetachedReview { .. }
         | CardIndicator::Detached
@@ -675,6 +677,13 @@ mod tests {
                 Some(YELLOW),
                 "stale",
             ),
+            (
+                CardIndicator::StaleShell {
+                    inactive_hours: Some(5),
+                },
+                Some(YELLOW),
+                "stale shell",
+            ),
             // Everything else claims nothing. `Dispatching` is the load-bearing
             // entry: it renders an amber *indicator* while claiming no border,
             // which is a judgement rather than a category and so the likeliest
@@ -694,7 +703,14 @@ mod tests {
                 "detached review",
             ),
             (CardIndicator::Detached, None, "detached"),
-            (CardIndicator::Running { subagents: 0 }, None, "running"),
+            (
+                CardIndicator::Running {
+                    subagents: 0,
+                    shells: 0,
+                },
+                None,
+                "running",
+            ),
             (
                 CardIndicator::ReviewPr {
                     pr_label: "PR #1".to_string(),
@@ -748,7 +764,10 @@ mod tests {
             red, 4,
             "the hard-failure set must have exactly four members"
         );
-        assert_eq!(amber, 2, "the attention set must have exactly two members");
+        assert_eq!(
+            amber, 3,
+            "the attention set must have exactly three members"
+        );
         assert_eq!(
             red + amber + none,
             all.len(),

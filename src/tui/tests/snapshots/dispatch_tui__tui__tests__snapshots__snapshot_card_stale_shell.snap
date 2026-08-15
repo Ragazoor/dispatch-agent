@@ -3,13 +3,13 @@ source: src/tui/tests/snapshots.rs
 expression: rendered
 ---
                                                                                                                   🔕  [N]
-        ▸ backlog 0 [ ]                 ◦ running 1                   ◦ review 0                     ◦ done 0
+        ▸ BACKLOG 0 [ ]                ◦ RUNNING 1                   ◦ REVIEW 0                      ◦ DONE 0
 ──────────────────────────────│───────────────────────────│──────────────────────────────│──────────────────────────────
                               │  ── shell stale           │                              │
-                              │  ▎ #1 abandoned shell     │                              │
-                              │   ◉ shell stale · 5h      │                              │
-                              │───────────────────────────│                              │
-                              │                           │                              │
+                              │ ╭───────────────────────╮ │                              │
+                              │ │  ▎ #1 abandoned shell │ │                              │
+                              │ │   ◉ shell stale · 5h  │ │                              │
+                              │ ╰───────────────────────╯ │                              │
                               │                           │                              │
                               │                           │                              │
                               │                           │                              │
