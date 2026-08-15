@@ -309,6 +309,8 @@ impl App {
                     t.last_pre_tool_use_at,
                     t.last_notification_at,
                     t.live_subagents,
+                    t.live_shells,
+                    t.oldest_live_shell_started_at,
                     now,
                 );
                 let target = activity.to_sub_status();

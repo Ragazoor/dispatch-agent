@@ -715,7 +715,7 @@ git commit -m "fix(4187): try_record_stop defers Running->Review while a backgro
 **Interfaces:**
 - Produces: `Task.live_shells: i64`, `Task.oldest_live_shell_started_at: Option<DateTime<Utc>>`; `ShellEvent { Start { shell_id: String, session_id: String }, Stop { shell_id: String, session_id: String } }`; `ShellDrain { live: i64, applied_pending_stop: bool }`; `SubStatus::StaleShell`; `AgentActivity::StaleShell`; `classify_agent_activity`'s new signature — consumed by Task 3 (already forward-referenced there), Task 6 (service layer), Task 9-10 (hook CLI/card rendering).
 
-- [ ] **Step 1: Write the failing model tests**
+- [x] **Step 1: Write the failing model tests**
 
 In `src/models/tasks.rs`'s existing `#[cfg(test)] mod activity_tests` (right after the existing `classify_agent_activity` tests, following their exact style — e.g. the test using `at(N, now)`/`past`/`long_ago` helpers already defined there):
 
@@ -758,14 +758,14 @@ fn classify_agent_activity_prefers_live_subagents_over_a_stale_shell() {
 
 (Note: existing tests in this module call `classify_agent_activity` with 4 args — those will need updating to the new 6-arg signature as part of Step 3 below, or they'll fail to compile. Update every existing call site in this file to pass `0, None` for the two new params where the test doesn't care about shells.)
 
-- [ ] **Step 2: Run tests to verify they fail (compile error)**
+- [x] **Step 2: Run tests to verify they fail (compile error)**
 
 Run: `cargo test --lib models::tasks::activity_tests`
 Expected: FAIL to compile — wrong arg count.
 
 **Do NOT add `live_shells`/`oldest_live_shell_started_at` to `TaskPatch`** (`src/db/mod.rs`, the `patch_struct!` block around line 77-111). `live_subagents` is deliberately excluded there today, with a doc comment explaining why: it's a denormalised count owned exclusively by its query module's transactional writes, and excluding it from the generic patch surface makes "no handler can desync the count" a compile-time property. `live_shells`/`oldest_live_shell_started_at` follow the identical reasoning — they're owned exclusively by `src/db/queries/shells.rs` (Task 3).
 
-- [ ] **Step 3: Add `Task` fields**
+- [x] **Step 3: Add `Task` fields**
 
 In the `Task` struct (`src/models/tasks.rs:292-327`), add after `stop_pending: bool`:
 
@@ -781,7 +781,7 @@ In the `Task` struct (`src/models/tasks.rs:292-327`), add after `stop_pending: b
     pub oldest_live_shell_started_at: Option<DateTime<Utc>>,
 ```
 
-- [ ] **Step 4: Add `ShellEvent` and `ShellDrain`**
+- [x] **Step 4: Add `ShellEvent` and `ShellDrain`**
 
 Right after `SubagentEvent` (`src/models/tasks.rs:740-761`):
 
@@ -814,7 +814,7 @@ pub struct ShellDrain {
 }
 ```
 
-- [ ] **Step 5: Add `SubStatus::StaleShell` — all five touch points**
+- [x] **Step 5: Add `SubStatus::StaleShell` — all five touch points**
 
 In `SubStatus` enum (line 138-148), add `StaleShell,` after `Stale,`.
 
@@ -833,7 +833,7 @@ In `properties()` (line 210-251), add an arm reusing the existing staleness prio
 
 In the `define_str_enum!` macro invocation (line 272-282), add `StaleShell => "stale_shell",`.
 
-- [ ] **Step 6: Add `AgentActivity::StaleShell` and `SHELL_STALE_THRESHOLD`**
+- [x] **Step 6: Add `AgentActivity::StaleShell` and `SHELL_STALE_THRESHOLD`**
 
 Right after `ACTIVE_THRESHOLD` (line 914):
 
@@ -870,7 +870,7 @@ Update `to_sub_status` (line 928-934):
     }
 ```
 
-- [ ] **Step 7: Widen `classify_agent_activity`'s signature**
+- [x] **Step 7: Widen `classify_agent_activity`'s signature**
 
 ```rust
 pub fn classify_agent_activity(
@@ -908,7 +908,7 @@ pub fn classify_agent_activity(
 
 Update every existing call site in this file's test modules to pass the two new params (`0, None` where a test doesn't care about shells).
 
-- [ ] **Step 8: Add `live_shells`/`oldest_live_shell_started_at` to `TASK_COLUMNS` and `row_to_task`**
+- [x] **Step 8: Add `live_shells`/`oldest_live_shell_started_at` to `TASK_COLUMNS` and `row_to_task`**
 
 In `src/db/queries/mod.rs`, append to `TASK_COLUMNS` (line 111-115):
 
@@ -928,21 +928,21 @@ In `row_to_task` (line 158-191), add after `stop_pending: row.get("stop_pending"
         oldest_live_shell_started_at: read_optional_datetime(row, "oldest_live_shell_started_at")?,
 ```
 
-- [ ] **Step 9: Fix every construction site of `Task` that lists fields explicitly**
+- [x] **Step 9: Fix every construction site of `Task` that lists fields explicitly**
 
 Run: `cargo build 2>&1 | grep "missing field"` and add `live_shells: 0, oldest_live_shell_started_at: None,` (or the appropriate test value) to every struct literal the compiler flags — likely test helpers like `make_task` in `src/tui/tests/helpers.rs` and any fixture builders under `src/db/tests/`.
 
-- [ ] **Step 10: Run tests to verify they pass**
+- [x] **Step 10: Run tests to verify they pass**
 
 Run: `cargo test --lib models::tasks`
 Expected: PASS
 
-- [ ] **Step 11: Run the full lib test suite to catch any remaining compile fallout**
+- [x] **Step 11: Run the full lib test suite to catch any remaining compile fallout**
 
 Run: `cargo build --all-targets 2>&1 | tee /tmp/build.log; grep -E "error" /tmp/build.log`
 Expected: no errors. Fix any remaining call sites the earlier grep missed.
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add src/models/tasks.rs src/db/queries/mod.rs

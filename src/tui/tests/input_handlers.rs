@@ -31,7 +31,8 @@ fn task_created_adds_to_list() {
         auto_run_plan: false,
         live_subagents: 0,
         stop_pending: false,
-    };
+        live_shells: 0,
+        oldest_live_shell_started_at: None,    };
     let mut app = App::new(vec![]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
         task,
@@ -712,7 +713,8 @@ fn editor_result_task_edit_returns_finalize_command() {
         auto_run_plan: false,
         live_subagents: 0,
         stop_pending: false,
-    };
+        live_shells: 0,
+        oldest_live_shell_started_at: None,    };
     let mut app = App::new(vec![task.clone()]);
     let cmds = app.update(Message::Editor(
         crate::tui::messages::EditorMessage::Result {

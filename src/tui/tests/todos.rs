@@ -33,7 +33,8 @@ fn make_todo_test_task(id: TaskId, title: &str) -> crate::models::Task {
         auto_run_plan: false,
         live_subagents: 0,
         stop_pending: false,
-    }
+        live_shells: 0,
+        oldest_live_shell_started_at: None,    }
 }
 
 use crate::models::TaskId;

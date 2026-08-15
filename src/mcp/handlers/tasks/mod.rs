@@ -374,7 +374,8 @@ mod tests {
             auto_run_plan: false,
             live_subagents: 0,
             stop_pending: false,
-        }
+            live_shells: 0,
+            oldest_live_shell_started_at: None,        }
     }
 
     #[test]

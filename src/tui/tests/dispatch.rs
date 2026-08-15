@@ -1682,7 +1682,8 @@ fn quick_dispatch_status_uses_freshly_created_title() {
         auto_run_plan: false,
         live_subagents: 0,
         stop_pending: false,
-    };
+        live_shells: 0,
+        oldest_live_shell_started_at: None,    };
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
         task,

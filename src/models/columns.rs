@@ -30,7 +30,12 @@ impl VisualColumn {
         VisualColumn {
             label: "Stale",
             parent_status: TaskStatus::Running,
-            sub_statuses: &[SubStatus::Stale, SubStatus::Crashed, SubStatus::Conflict],
+            sub_statuses: &[
+                SubStatus::Stale,
+                SubStatus::StaleShell,
+                SubStatus::Crashed,
+                SubStatus::Conflict,
+            ],
         },
         VisualColumn {
             label: "PR Created",

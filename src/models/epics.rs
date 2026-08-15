@@ -384,7 +384,8 @@ mod tests {
             auto_run_plan: false,
             live_subagents: 0,
             stop_pending: false,
-        }
+            live_shells: 0,
+            oldest_live_shell_started_at: None,        }
     }
 
     #[test]
@@ -611,7 +612,8 @@ mod tests {
             auto_run_plan: false,
             live_subagents: 0,
             stop_pending: false,
-        };
+            live_shells: 0,
+            oldest_live_shell_started_at: None,        };
         assert!(task.epic_id.is_none());
     }
 
@@ -643,7 +645,8 @@ mod tests {
             auto_run_plan: false,
             live_subagents: 0,
             stop_pending: false,
-        };
+            live_shells: 0,
+            oldest_live_shell_started_at: None,        };
         assert_eq!(task.epic_id, Some(EpicId(5)));
     }
 
@@ -738,7 +741,8 @@ mod tests {
             auto_run_plan: false,
             live_subagents: 0,
             stop_pending: false,
-        }
+            live_shells: 0,
+            oldest_live_shell_started_at: None,        }
     }
 
     #[test]

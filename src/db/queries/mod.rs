@@ -112,7 +112,8 @@ pub(super) const TASK_COLUMNS: &str =
     "id, title, description, repo_path, status, worktree, tmux_window, \
      plan_path, epic_id, sub_status, url, url_type, tag, sort_order, base_branch, external_id, \
      created_at, updated_at, labels, last_pre_tool_use_at, last_notification_at, \
-     wrap_up_mode, auto_run_plan, live_subagents, stop_pending";
+     wrap_up_mode, auto_run_plan, live_subagents, stop_pending, \
+     live_shells, oldest_live_shell_started_at";
 
 /// The `SET` list that applies a `Stop` — the one definition of what "the task
 /// finished its turn" writes. Shared by the two statements that can apply it:
@@ -188,6 +189,8 @@ pub(super) fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         auto_run_plan: row.get("auto_run_plan")?,
         live_subagents: row.get("live_subagents")?,
         stop_pending: row.get("stop_pending")?,
+        live_shells: row.get("live_shells")?,
+        oldest_live_shell_started_at: read_optional_datetime(row, "oldest_live_shell_started_at")?,
     })
 }
 

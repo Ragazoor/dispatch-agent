@@ -735,6 +735,8 @@ impl TaskService {
                     Some(now),
                     task.last_notification_at,
                     task.live_subagents,
+                    task.live_shells,
+                    task.oldest_live_shell_started_at,
                     now,
                 );
                 Some(

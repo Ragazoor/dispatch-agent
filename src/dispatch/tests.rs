@@ -99,7 +99,8 @@ pub(super) fn make_task(repo_path: &str) -> Task {
         auto_run_plan: false,
         live_subagents: 0,
         stop_pending: false,
-    }
+        live_shells: 0,
+        oldest_live_shell_started_at: None,    }
 }
 
 fn find_call_arg(calls: &[(String, Vec<String>)], call_idx: usize, pattern: &str) -> String {
