@@ -66,6 +66,9 @@ enum SubStatus {
     active          -- agent is running normally
     needs_input     -- agent is blocked waiting for human interaction (Blocked visual column)
     stale           -- no PreToolUse hook event seen for longer than inactivity_timeout (time since last_pre_tool_use_at)
+    stale_shell     -- a live backgrounded shell (Bash tool with run_in_background = true) has been
+                    -- running longer than shell_stale_threshold (time since the oldest live
+                    -- ShellEntry's started_at); see ClassifyAgentActivity in agent-health.allium
     crashed         -- tmux window disappeared unexpectedly
     conflict        -- rebase/merge encountered a conflict (valid for both running and review)
 
@@ -81,7 +84,7 @@ enum SubStatus {
 -- Valid SubStatus values per parent status (enforced in the DB by a CHECK
 -- constraint and in-code via SubStatus.is_valid_for):
 --   backlog   : none
---   running   : active | needs_input | stale | crashed | conflict
+--   running   : active | needs_input | stale | stale_shell | crashed | conflict
 --   review    : awaiting_review | changes_requested | approved | conflict
 --   done      : none
 --   archived  : none
@@ -1184,7 +1187,13 @@ value VisualColumn {
 --           states whose indicator line already renders a ⚠, so border
 --           and glyph agree by construction rather than by two lists
 --           being maintained in parallel.
---   YELLOW  the two attention states — needs-input (blocked) and stale.
+--   YELLOW  the three attention states — needs-input (blocked), stale,
+--           and stale-shell (a live backgrounded shell running long
+--           enough to look abandoned; see "ShellEntry" and
+--           ClassifyAgentActivity in agent-health.allium). Grouped with
+--           plain stale rather than given its own colour: both mean
+--           "this task looks idle", just for different structural
+--           reasons.
 --
 -- Nothing else takes a border colour. *Dispatching* is deliberately
 -- excluded even though its indicator renders amber: it is a transient
