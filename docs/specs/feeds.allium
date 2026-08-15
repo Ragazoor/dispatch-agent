@@ -571,22 +571,32 @@ rule SerialisedFeedCycle {
         -- still contend, since the subtree stale-delete reaches any child epic;
         -- not reachable today, and out of scope.
         --
-        -- ACCEPTED COST — a hung feed command starves its epic.
-        -- src/feed/exec.rs::exec_feed_command has NO timeout: it awaits the
-        -- child to completion. Because the claim spans the exec, a feed command
-        -- that never exits holds its epic's claim for the life of the process,
-        -- and from then on EVERY tick and EVERY manual "r" for that epic is
-        -- dropped, with no in-app recovery — only a restart. This is a real
-        -- change: today the two paths are unserialised, so a manual refresh
-        -- still works while a poll is stuck. It was accepted deliberately (a
-        -- feed command that hangs forever is itself a bug, and it is bounded to
-        -- one epic) in preference to letting a manual refresh STEAL an aged
-        -- claim, which would reintroduce exactly the interleave this rule
-        -- exists to prevent. A future reader must not "fix" the starvation by
-        -- loosening the claim. The sanctioned fix is to bound the exec —
-        -- noting that src/process.rs::run_bounded, the repo's kill-on-timeout
-        -- primitive, covers SYNCHRONOUS ProcessRunner children and so is not a
-        -- drop-in for this async call site.
+        -- BOUNDED COST (was ACCEPTED COST until #4150) — a hung feed command
+        -- starves its epic for at most feed_command_timeout (core.allium
+        -- config), not forever.
+        -- src/feed/exec.rs::exec_feed_command wraps the child in
+        -- tokio::time::timeout(feed_command_timeout, ...), with
+        -- kill_on_drop(true) set on the Command, so a command that never exits
+        -- is killed and reaped at the deadline instead of awaited to
+        -- completion. src/process.rs::run_bounded, the repo's kill-on-timeout
+        -- primitive, only covers SYNCHRONOUS ProcessRunner children and so
+        -- could not be reused for this async call site directly;
+        -- tokio::time::timeout + kill_on_drop(true) is the async counterpart —
+        -- dropping the timed-out future drops the Child, and kill_on_drop is
+        -- what turns that drop into a kill-and-reap rather than an orphan.
+        -- Because the claim still spans the exec, the epic's claim IS held for
+        -- up to feed_command_timeout — every tick and every manual "r" for
+        -- that epic in that window is still dropped, exactly as before — but
+        -- the window is now bounded, and the epic recovers on its own once the
+        -- deadline fires: no restart needed. This remains a real change from
+        -- pre-#4091 behaviour (the two paths were unserialised then, so a
+        -- manual refresh still worked while a poll was stuck), and the
+        -- residual bounded window is deliberate for the same reason the
+        -- original claim was: letting a manual refresh STEAL an aged claim
+        -- would reintroduce exactly the interleave this rule exists to
+        -- prevent. A future reader must not "fix" the residual window by
+        -- loosening the claim; shrinking feed_command_timeout is the
+        -- sanctioned lever if the window proves too wide in practice.
         --
         -- Coverage: src/feed/guard.rs unit tests (exclusivity per epic, release
         -- on drop, independence across epics, release when the holder panics);
@@ -598,7 +608,11 @@ rule SerialisedFeedCycle {
         -- src/runtime/tests.rs::manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight
         -- (both surfaces against one epic with a genuine cycle mid-exec, which
         -- is the only test that would catch the two surfaces being wired to
-        -- different registries).
+        -- different registries); and
+        -- src/feed/cycle.rs::a_hung_command_times_out_and_the_epic_recovers_on_the_next_cycle
+        -- (the bounded-cost case: a hung command times out, fails, releases
+        -- its claim, and a fresh cycle for the same epic afterward proceeds
+        -- and syncs).
 }
 
 -- == Upsert semantics ==
@@ -1394,7 +1408,7 @@ rule DispatchRequiresRepoPath {
 rule FeedCommandFailure {
     when: FeedCommandFailed(epic, error)
 
-    -- Failures fall into six buckets, all handled identically from the
+    -- Failures fall into seven buckets, all handled identically from the
     -- user's perspective: the failure is logged at warn level and the
     -- epic's last_run is bumped so we don't retry until the next interval.
     --
@@ -1416,6 +1430,12 @@ rule FeedCommandFailure {
     --   6. The epic is a role sub-epic carrying a feed_command at all — a
     --      provisioning bug (see RoleRoutedFeedSync). Reached after the
     --      parse, before the sync.
+    --   7. The command exceeded feed_command_timeout (core.allium config)
+    --      without exiting. It is killed and reaped rather than left to
+    --      finish or orphaned; the exec never produces output for the
+    --      degraded-emission guards to see, so this bucket is reached the
+    --      same way buckets 1-2 are — before any parse. See
+    --      SerialisedFeedCycle's bounded-cost note below.
     --
     -- Buckets 5 and 6 are unreachable in a correctly-provisioned, unraced
     -- system; they are specified because the cycle must do something
@@ -1433,10 +1453,10 @@ rule FeedCommandFailure {
         -- Implementation: src/feed/mod.rs::FeedRunner::tick spawns a
         -- feed cycle per eligible epic, and that job runs
         -- src/feed/cycle.rs::FeedCycle::run, which drives claim -> read config
-        -- -> exec -> parse -> sync -> teardown. The three command failure arms
-        -- live at: spawn
-        -- and non-zero exit in src/feed/exec.rs::exec_feed_command, and the
-        -- JSON parse in src/feed/parse.rs::parse_feed_items. Parse is shared
+        -- -> exec -> parse -> sync -> teardown. The command failure arms live
+        -- at: spawn, timeout, and non-zero exit in
+        -- src/feed/exec.rs::exec_feed_command, and the JSON parse in
+        -- src/feed/parse.rs::parse_feed_items. Parse is shared
         -- exactly as exec is: the auto-poll path, the manual "r" refresh
         -- (src/runtime/epics.rs::exec_trigger_epic_feed) and the verify-feed
         -- CLI all call parse_feed_items, so the anti-drift argument
@@ -1452,6 +1472,18 @@ rule FeedCommandFailure {
         -- the arms are otherwise unreachable, and an earlier version of the
         -- manual path defaulted the unreadable feed_role to none and synced
         -- FLAT onto a reviews_parent epic.
+        -- Bucket 7 is exec_feed_command's tokio::time::timeout around the
+        -- child, with kill_on_drop(true) so a timed-out child is killed and
+        -- reaped rather than orphaned — the async counterpart of
+        -- src/process.rs::run_bounded, which only covers SYNCHRONOUS
+        -- ProcessRunner children and so cannot be reused here directly.
+        -- Coverage: src/feed/exec.rs::exec_feed_command_returns_err_when_it_exceeds_the_deadline
+        -- (the raw timeout, with a bounded elapsed-time assertion so the test
+        -- doesn't merely wait out the hang) and
+        -- src/feed/cycle.rs::a_hung_command_times_out_and_the_epic_recovers_on_the_next_cycle
+        -- (the whole cycle: a hung command times out, fails, releases its
+        -- claim, and a fresh cycle for the same epic afterward proceeds and
+        -- syncs — proving recovery, not merely that one call returned).
         -- A future improvement is surfacing repeated failures in the TUI
         -- as an epic-level health badge, but that is out of scope here.
 }

@@ -634,6 +634,13 @@ config {
     budget_poll_interval: Duration = 10.seconds
     budget_stale_after: Duration = 10.minutes
     default_feed_interval: Duration = 30.seconds   -- default cadence for feed epics with no explicit feed_interval_secs (see feeds.allium)
+    -- Upper bound on ONE feed command's execution. The per-epic feed-cycle
+    -- claim (feeds.allium: SerialisedFeedCycle) spans the whole exec, so
+    -- without this bound a command that never exits would hold its epic's
+    -- claim for the life of the process. A command still running at this
+    -- deadline is killed and reaped instead, and the cycle fails
+    -- (feeds.allium: FeedCommandFailure bucket 7).
+    feed_command_timeout: Duration = 120.seconds
     mcp_port: Integer = 3142                         -- MCP server port (override via DISPATCH_PORT env var)
     -- Fallback when the repo has no origin/HEAD symbolic-ref.
     -- Runtime code inspects `git symbolic-ref refs/remotes/origin/HEAD`
