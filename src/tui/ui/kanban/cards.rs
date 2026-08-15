@@ -13,7 +13,8 @@ use crate::tui::{App, EpicStatsMap};
 use super::super::palette::{CYAN, FG, FLASH_BG, GREEN, MUTED, PURPLE, RED, YELLOW};
 use super::super::shared::{staleness_color, truncate};
 use super::{
-    card_border_color, card_surface_color, column_color, selected_card_surface_color, status_icon,
+    card_border_color, card_surface_color, column_color, cursor_border_color,
+    selected_card_surface_color, status_icon,
 };
 
 /// Format the title text for a task card (line 1 only — status annotations are on line 2).
@@ -179,6 +180,37 @@ fn classify_card_indicator(
         staleness,
         plan_indicator,
         tag_suffix,
+    }
+}
+
+/// The border colour a card's state claims, or `None` if it claims none.
+///
+/// The card frame carries *state*, not identity (`core.allium`: "Selection" and
+/// "Border as state"). Red is the four hard failures — exactly the states whose
+/// indicator renders a `⚠`, so glyph and border agree by construction rather than
+/// by two lists being kept in step. Amber is the two that want a human's
+/// attention without being broken.
+///
+/// `Dispatching` is deliberately absent despite rendering an amber indicator: it
+/// is a transient expected state, and bordering it would make every ordinary
+/// dispatch alarm for its duration.
+///
+/// Matched exhaustively on purpose — a new `CardIndicator` variant must decide
+/// whether it is alarming rather than defaulting to silence.
+fn state_border_color(indicator: &CardIndicator) -> Option<Color> {
+    match indicator {
+        CardIndicator::Unprovisioned
+        | CardIndicator::AutoDispatchFailed
+        | CardIndicator::Conflict
+        | CardIndicator::Crashed => Some(RED),
+        CardIndicator::Blocked | CardIndicator::Stale { .. } => Some(YELLOW),
+        CardIndicator::Dispatching { .. }
+        | CardIndicator::DetachedReview { .. }
+        | CardIndicator::Detached
+        | CardIndicator::Running { .. }
+        | CardIndicator::ReviewPr { .. }
+        | CardIndicator::DoneMerged { .. }
+        | CardIndicator::Idle { .. } => None,
     }
 }
 
@@ -411,20 +443,29 @@ pub(super) fn build_task_list_item<'a>(
 
     let line1 = Line::from(line1_spans);
 
-    let line2 = render_card_indicator(
-        classify_card_indicator(task, status, app, now),
-        &task.labels,
-    );
+    let indicator = classify_card_indicator(task, status, app, now);
+    // Read the severity off the indicator before it is consumed, so the border and
+    // the glyph beneath it come from one classification rather than two.
+    let state_border = state_border_color(&indicator);
+    let line2 = render_card_indicator(indicator, &task.labels);
 
-    // The frame carries hue only for the selected card and, for the length of
-    // `MESSAGE_FLASH_TTL`, a flashing one — the bounded exception recorded under
-    // "Message flash" in core.allium. Every resting frame is neutral.
+    // Precedence: cursor, then state, then neutral (`core.allium`: "Selection").
     //
-    // `col_color` is the literal palette token, not a derivation. Together with
-    // the card stripe these are the only two surfaces that render an identity
-    // colour exactly; every other one mixes it (core.allium: "Column header bar").
-    let frame_color = if is_cursor || has_message_flash {
-        col_color
+    // The frame carries *state*, not identity — a hued border means something is
+    // wrong, not that this is the column's colour. The cursor takes a white of its
+    // own precisely so it is not competing for the alarm hues.
+    //
+    // The cursor winning means an unhealthy card that is *also* the cursor shows
+    // white rather than its state colour. That is the accepted cost: its indicator
+    // line still says so directly beneath, and the alternative hides the cursor on
+    // the card you just navigated to, which is worse.
+    //
+    // The flash contributes nothing here. It is carried by its fill and its
+    // envelope glyph, which are the two things no other card has.
+    let frame_color = if is_cursor {
+        cursor_border_color()
+    } else if let Some(state) = state_border {
+        state
     } else {
         card_border_color()
     };
@@ -536,10 +577,16 @@ pub(super) fn render_epic_item(
         ])
     };
 
-    // Epics carry PURPLE as their own identity, so a selected epic's frame takes
-    // that rather than the column hue; a resting one is neutral like any card.
+    // The cursor white applies to epic cards too, so "white frame" means cursor
+    // everywhere rather than on task cards only. An epic's own PURPLE identity
+    // stays on its stripe and title, which it keeps at rest.
+    //
+    // This matters more on an epic than on a task: an epic's title is bold
+    // unconditionally, so the frame is the *only* cursor signal an epic card has.
+    // Epics carry no CardIndicator and so claim no state colour; a resting epic
+    // frame is neutral like any other.
     let frame_color = if is_cursor {
-        PURPLE
+        cursor_border_color()
     } else {
         card_border_color()
     };

@@ -24,7 +24,7 @@ use super::input_form::{
 };
 use super::palette::{
     header_label_focused, header_label_unfocused, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
-    BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CYAN, FG, GREEN, HEADER_BG,
+    BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CURSOR_BORDER, CYAN, FG, GREEN, HEADER_BG,
     HEADER_BG_FOCUSED, MUTED, PURPLE, RED, SELECT_ALL_HIGHLIGHT_BG, YELLOW,
 };
 use super::shared::{push_hint_spans, render_top_indicators, rounded_block};
@@ -114,10 +114,22 @@ pub(in crate::tui) fn selected_card_surface_color() -> Color {
     CARD_SURFACE
 }
 
-/// A resting card's frame colour. Neutral — the frame takes the column's
-/// identity colour only while the card is selected.
+/// A healthy resting card's frame colour.
+///
+/// Neutral because the frame is a *state* channel: a card with nothing to report
+/// says nothing (`core.allium`: "Selection").
 pub(in crate::tui) fn card_border_color() -> Color {
     CARD_BORDER
+}
+
+/// The selected card's frame colour — a near-white owned by nothing else.
+///
+/// The cursor is deliberately outside the hue vocabulary. The frame carries
+/// state, so a cursor drawn in any hue would be competing with the alarm colours
+/// it sits among; on the Running column it would have been the same amber that
+/// means needs-input.
+pub(in crate::tui) fn cursor_border_color() -> Color {
+    CURSOR_BORDER
 }
 
 /// Neutral fill for a column's header bar, uniform across every column.

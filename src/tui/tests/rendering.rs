@@ -1597,6 +1597,12 @@ fn app_with_flash_on_a_non_cursor_card(age_secs: u64) -> App {
         t.sub_status = SubStatus::Active;
         t.worktree = Some(format!("/repo/.worktrees/{id}-task"));
         t.tmux_window = Some(format!("task-{id}"));
+        // Seed recent activity. These tests drive `handle_tick`, which reclassifies
+        // an inactive Running task as Stale — and Stale now claims an amber state
+        // border, which would put a colour on a frame this fixture means to keep
+        // healthy. Without this the tasks go stale mid-test and the assertions read
+        // the wrong cause.
+        t.last_pre_tool_use_at = Some(Utc::now());
         tasks.push(t);
     }
     let mut app = App::new(tasks);
@@ -1609,48 +1615,43 @@ fn app_with_flash_on_a_non_cursor_card(age_secs: u64) -> App {
 }
 
 #[tokio::test]
-async fn message_flash_hue_and_envelope_expire_together() {
-    // core.allium "Message flash": the flash's hued frame is a deliberate
-    // exception to "the selected card's border is the only hued card border", and
-    // the exception is sound *only* because the envelope is present for exactly as
-    // long as the hue is. If the two ever got different lifetimes there would be a
-    // window where a card shows the column hue with nothing saying it is not the
-    // cursor — so co-terminality is the load-bearing claim, and this pins it.
-    let hue = ui::column_color(TaskStatus::Running);
+async fn message_flash_never_colours_the_card_frame() {
+    // core.allium "Message flash": the flash is carried by its warm fill and its
+    // envelope glyph, and it leaves the frame alone.
+    //
+    // It used to take the column hue, which was safe only because the envelope was
+    // co-terminous with it — a whole exception resting on one timing coincidence.
+    // Worse, once the frame began carrying state that hue collided head-on with
+    // needs-input: in Running the column hue *is* amber. Giving the frame up
+    // deleted the exception and the collision together, so what needs guarding now
+    // is simply that the flash never touches the frame.
+    let neutral = ui::card_border_color();
+    let cursor = ui::cursor_border_color();
+    let running_hue = ui::column_color(TaskStatus::Running);
 
-    // Inside the TTL: two hued frames — the cursor's and the flashing card's.
-    let mut live = app_with_flash_on_a_non_cursor_card(crate::tui::MESSAGE_FLASH_TTL.as_secs() - 1);
-    let _ = live.handle_tick();
-    let buf = render_to_buffer(&mut live, 120, 30);
-    let hued = cells_with_symbol(&buf, "\u{256d}")
-        .iter()
-        .filter(|c| c.fg == hue)
-        .count();
+    let mut app = app_with_flash_on_a_non_cursor_card(crate::tui::MESSAGE_FLASH_TTL.as_secs() - 1);
+    let _ = app.handle_tick();
+    let buf = render_to_buffer(&mut app, 120, 30);
+
     assert!(
         buffer_contains(&buf, "\u{2709}"),
-        "inside the TTL the envelope must render"
-    );
-    assert_eq!(
-        hued, 2,
-        "inside the TTL both the cursor card and the flashing card must be hued"
+        "inside the TTL the envelope must render — otherwise this test proves nothing"
     );
 
-    // Past the TTL: the envelope is gone and so is the second hued frame.
-    let mut dead = app_with_flash_on_a_non_cursor_card(crate::tui::MESSAGE_FLASH_TTL.as_secs() + 1);
-    let _ = dead.handle_tick();
-    let buf = render_to_buffer(&mut dead, 120, 30);
-    let hued = cells_with_symbol(&buf, "\u{256d}")
-        .iter()
-        .filter(|c| c.fg == hue)
-        .count();
+    let corners = cells_with_symbol(&buf, "\u{256d}");
+    let frames: Vec<Color> = corners.iter().map(|c| c.fg).collect();
     assert!(
-        !buffer_contains(&buf, "\u{2709}"),
-        "past the TTL the envelope must be gone"
+        !frames.contains(&running_hue),
+        "a live flash must not put the column hue on any frame; in Running that hue \
+         is the same amber needs-input claims, so it would read as a blocked agent"
     );
+    // Both tasks are healthy, so the only non-neutral frame is the cursor's.
+    let non_neutral: Vec<Color> = frames.iter().copied().filter(|c| *c != neutral).collect();
     assert_eq!(
-        hued, 1,
-        "past the TTL only the cursor card may keep the column hue — the flash's \
-         frame and its envelope must expire on the same threshold"
+        non_neutral,
+        vec![cursor],
+        "with a flash live on a healthy non-cursor card, the only non-neutral frame \
+         on the board is the cursor white"
     );
 }
 
@@ -2321,10 +2322,81 @@ async fn every_card_frame_is_lit_by_the_card_surface() {
 }
 
 #[tokio::test]
-async fn only_the_selected_card_has_a_hued_frame() {
-    // core.allium "Selection": the selected card's frame is drawn in the
-    // column's identity colour, and that is the only hued frame on the board.
-    // Every resting frame is neutral.
+async fn card_frame_carries_state_and_the_cursor_outranks_it() {
+    // core.allium "Card border: cursor and state". Three claims in one board,
+    // because they only mean anything together:
+    //   - a hard failure borders red,
+    //   - an attention state borders amber,
+    //   - and the cursor outranks both, so an unhealthy card that is also the
+    //     cursor shows white and reports its state on the indicator line instead.
+    const RED: Color = Color::Rgb(247, 118, 142);
+    const AMBER: Color = Color::Rgb(224, 175, 104);
+
+    let mut crashed = make_task(1, TaskStatus::Running);
+    crashed.sub_status = SubStatus::Crashed;
+    crashed.worktree = Some("/repo/.worktrees/1-task".to_string());
+    let mut blocked = make_task(2, TaskStatus::Running);
+    blocked.sub_status = SubStatus::NeedsInput;
+    blocked.worktree = Some("/repo/.worktrees/2-task".to_string());
+    blocked.tmux_window = Some("task-2".to_string());
+    let mut healthy = make_task(3, TaskStatus::Running);
+    healthy.sub_status = SubStatus::Active;
+    healthy.worktree = Some("/repo/.worktrees/3-task".to_string());
+    healthy.tmux_window = Some("task-3".to_string());
+    healthy.last_pre_tool_use_at = Some(Utc::now());
+
+    // Cursor on the *crashed* card: the case where the two rules collide.
+    let mut app = App::new(vec![crashed, blocked, healthy]);
+    app.update(Message::NavigateColumn(1)); // Running
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    let frames: Vec<Color> = cells_with_symbol(&buf, "\u{256d}")
+        .iter()
+        .map(|c| c.fg)
+        .collect();
+    assert_eq!(frames.len(), 3, "expected three framed cards, got {frames:?}");
+
+    assert!(
+        frames.contains(&AMBER),
+        "the blocked card must border amber; frames were {frames:?}"
+    );
+    assert!(
+        frames.contains(&ui::cursor_border_color()),
+        "the cursor card must border white; frames were {frames:?}"
+    );
+    assert!(
+        frames.contains(&ui::card_border_color()),
+        "the healthy card must border neutral; frames were {frames:?}"
+    );
+    assert!(
+        !frames.contains(&RED),
+        "the only crashed card here is the cursor, so the cursor white must win and \
+         no red may appear; frames were {frames:?}"
+    );
+
+    // Move the cursor off it and the red it was suppressing appears.
+    app.update(Message::NavigateRow(1));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    let frames: Vec<Color> = cells_with_symbol(&buf, "\u{256d}")
+        .iter()
+        .map(|c| c.fg)
+        .collect();
+    assert!(
+        frames.contains(&RED),
+        "with the cursor moved away the crashed card must border red; frames were \
+         {frames:?}"
+    );
+}
+
+#[tokio::test]
+async fn only_the_selected_card_has_the_cursor_white_frame() {
+    // core.allium "Selection": the cursor's frame is a near-white owned by nothing
+    // else on the board, and at most one card carries it. Healthy resting frames
+    // are neutral.
+    //
+    // The card frame carries *state*, not identity — the cursor took a white of its
+    // own precisely so it is not competing with the alarm colours. A test asserting
+    // the cursor's frame is the *column hue* is asserting the superseded design.
     let mut app = App::new(vec![
         make_task(1, TaskStatus::Backlog),
         make_task(2, TaskStatus::Backlog),
@@ -2332,25 +2404,31 @@ async fn only_the_selected_card_has_a_hued_frame() {
     ]);
     let buf = render_to_buffer(&mut app, 120, 30);
 
-    let hue = ui::column_color(TaskStatus::Backlog);
+    let cursor = ui::cursor_border_color();
     let neutral = ui::card_border_color();
+    let hue = ui::column_color(TaskStatus::Backlog);
     let corners = cells_with_symbol(&buf, "\u{256d}"); // ╭
-    let hued = corners.iter().filter(|c| c.fg == hue).count();
+    let white = corners.iter().filter(|c| c.fg == cursor).count();
     let resting = corners.iter().filter(|c| c.fg == neutral).count();
 
     assert_eq!(
-        hued, 1,
-        "exactly one card frame may carry the column hue, found {hued}"
+        white, 1,
+        "exactly one card frame may carry the cursor white, found {white}"
     );
     assert!(
         resting >= 1,
-        "resting card frames must be neutral, found {resting} of {}",
+        "healthy resting card frames must be neutral, found {resting} of {}",
         corners.len()
     );
     assert_eq!(
-        hued + resting,
+        white + resting,
         corners.len(),
-        "every card frame must be either the column hue or the resting neutral"
+        "with every task healthy, each frame must be the cursor white or the neutral"
+    );
+    assert!(
+        !corners.iter().any(|c| c.fg == hue),
+        "no card frame may carry the column's identity hue — the frame is a state \
+         channel now, and identity lives on the stripe and the header label"
     );
 }
 
@@ -2409,11 +2487,12 @@ async fn column_top_rule_is_hued_only_while_focused() {
 }
 
 #[tokio::test]
-async fn no_unfocused_column_leaks_a_hued_card_frame() {
-    // The cross-column companion to `only_the_selected_card_has_a_hued_frame`,
-    // which renders one column and so cannot see a hue appearing in another. Across
-    // a board with cards in every column, exactly one frame may be non-neutral —
-    // the cursor's — and it must be its own column's hue.
+async fn no_column_leaks_an_identity_hue_onto_a_card_frame() {
+    // The cross-column companion: `only_the_selected_card_has_the_cursor_white_frame`
+    // renders one column and so structurally cannot see a colour appearing in
+    // another. With every task healthy, the whole board should show exactly one
+    // cursor white and neutrals everywhere else — and, crucially, no column's
+    // identity hue anywhere, since the frame stopped being an identity channel.
     let mut app = App::new(vec![
         make_task(1, TaskStatus::Backlog),
         make_task(2, TaskStatus::Backlog),
@@ -2424,24 +2503,33 @@ async fn no_unfocused_column_leaks_a_hued_card_frame() {
     let buf = render_to_buffer(&mut app, 160, 30);
 
     let neutral = ui::card_border_color();
+    let cursor = ui::cursor_border_color();
     let corners = cells_with_symbol(&buf, "\u{256d}");
     assert!(corners.len() >= 5, "expected a card in every column");
 
-    let hued: Vec<Color> = corners
+    let non_neutral: Vec<Color> = corners
         .iter()
         .map(|c| c.fg)
         .filter(|fg| *fg != neutral)
         .collect();
     assert_eq!(
-        hued.len(),
+        non_neutral.len(),
         1,
-        "exactly one card frame on the whole board may be hued; found {hued:?}"
+        "with every task healthy exactly one frame may differ from the neutral; \
+         found {non_neutral:?}"
     );
     assert_eq!(
-        hued[0],
-        ui::column_color(TaskStatus::Backlog),
-        "the one hued frame must be the cursor's, in the focused column"
+        non_neutral[0], cursor,
+        "the one non-neutral frame must be the cursor white"
     );
+    for &status in TaskStatus::ALL.iter() {
+        let hue = ui::column_color(status);
+        assert!(
+            !corners.iter().any(|c| c.fg == hue),
+            "{status:?}'s identity hue appears on a card frame; the frame carries \
+             state, not identity"
+        );
+    }
 }
 
 #[tokio::test]

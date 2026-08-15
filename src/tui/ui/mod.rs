@@ -26,5 +26,5 @@ pub(in crate::tui) use kanban::{action_hints, column_color, epic_action_hints};
 #[cfg(test)]
 pub(in crate::tui) use kanban::{
     card_border_color, card_surface_color, column_bg_color, column_header_bg, column_header_fg,
-    selected_card_surface_color,
+    cursor_border_color, selected_card_surface_color,
 };

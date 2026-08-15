@@ -18,16 +18,24 @@ pub(crate) const ARCHIVE_STRIPE: Color = Color::Rgb(72, 82, 120);
 
 // ── Board neutral ramp (core.allium: BoardNeutralRamp) ──────────────
 // Four neutral surfaces in strictly ascending lightness. No hue enters
-// this ramp: column identity lives in the header bar, the card stripe,
-// and the selected card's border. The ground is uniform across every
+// this ramp: column identity lives in the header label and the card
+// stripe. (The card frame carries state, not identity — see
+// CURSOR_BORDER.) The ground is uniform across every
 // column and sits *below* the bare terminal background (#1a1b26) so
 // cards read as raised rather than inset.
 pub(super) const BOARD_GROUND: Color = Color::Rgb(22, 22, 30); // #16161e
 pub(super) const BOARD_GROUND_FOCUSED: Color = Color::Rgb(28, 28, 38); // #1c1c26
 pub(super) const CARD_SURFACE: Color = Color::Rgb(36, 40, 59); // #24283b
-// A resting card's frame. Neutral by design — the frame takes the
-// column's identity colour only when the card is selected.
+// A resting card's frame. Neutral by design — the frame carries state,
+// and a healthy card has none to report.
 pub(super) const CARD_BORDER: Color = Color::Rgb(59, 66, 97); // #3b4261
+
+// The selected card's frame. A near-white owned by nothing else on the
+// board, deliberately outside the hue vocabulary so the cursor never
+// competes with the state colours it sits among — and a step brighter
+// than FG so it does not read as a stray line of ordinary card text
+// (`core.allium`: "Selection").
+pub(super) const CURSOR_BORDER: Color = Color::Rgb(232, 237, 251); // #e8edfb
 
 // ── Column header bar (core.allium: "Column header bar") ────────────
 // The header fill carries no hue and is uniform across every column,

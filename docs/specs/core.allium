@@ -845,11 +845,17 @@ value VisualColumn {
 --   - the per-card stripe accent.
 --   - the per-card state indicators, which carry their own semantic hues
 --     (crashed, needs-input, and so on) rather than the column's.
---   - the selected card's border.
---   - an epic card's stripe and selected border, and an epic breadcrumb
---     header row, all in PURPLE regardless of column ("Epic cards").
+--   - an epic card's stripe and an epic breadcrumb header row, both in
+--     PURPLE regardless of column ("Epic cards").
 --   - the panel enclosing the columns in Epic view, faintly purple as a
 --     mode signal ("Column ground and card surface").
+--
+-- Those are the *identity* uses of colour. A card's border is no longer
+-- among them: it carries state rather than identity, in a separate
+-- vocabulary of its own — RED and YELLOW for unhealthy cards, and a
+-- near-white for the cursor. See "Card border: cursor and state". The two
+-- vocabularies are deliberately disjoint, which is why the cursor is white
+-- rather than a hue.
 --
 -- Everything else is neutral: the column ground, the header bar's fill,
 -- the card surface, a resting card's border, the column separator, and
@@ -927,10 +933,10 @@ value VisualColumn {
 --
 -- Scope: this exception covers the top rule and the scroll indicators and
 -- nothing else. It is not a general licence to drop hue when unfocused.
--- Every other identity-bearing surface — the header label, the card
--- stripe, the selected card's border — keeps its hue at both focus
--- states, and dropping hue anywhere else would be a regression against
--- the principle rather than an extension of this exception.
+-- Every other identity-bearing surface — the header label and the card
+-- stripe — keeps its hue at both focus states, and dropping hue anywhere
+-- else would be a regression against the principle rather than an
+-- extension of this exception.
 --
 -- == Column header bar ==
 --
@@ -993,13 +999,15 @@ value VisualColumn {
 -- the board's large areas.
 --
 -- One consequence is worth stating plainly, because it is easy to assume
--- otherwise: the literal palette token is now rendered on exactly two
--- surfaces, the card stripe and the selected card's frame. Every other
--- identity-bearing surface is a derivation of it — the header label is
--- dimmed or brightened, and the top rule and scroll indicators are the hue
--- only while focused. So the palette token as written appears in only two
--- places, one of which is a one-quarter block a couple of pixels wide and
--- the other of which is present on at most one card at a time.
+-- otherwise: on a card, the literal palette token is now rendered on
+-- exactly one surface — the stripe. The header label is a derivation of
+-- the token rather than the token (dimmed or brightened), the top rule and
+-- scroll indicators show it only while focused, and the card border no
+-- longer carries identity at all ("Card border: cursor and state"). So the
+-- identity colour as written survives on a single one-quarter block a
+-- couple of pixels wide, per card. That is a thin thread, and it is worth
+-- knowing it is thin: the stripe is the last place a column's exact
+-- identity colour appears on a card.
 --
 -- The focused column's header additionally carries the select-all
 -- checkbox indicator, and behind that checkbox sits a single neutral fill
@@ -1091,17 +1099,17 @@ value VisualColumn {
 -- == Selection ==
 --
 -- The cursor (selected) task card is marked by two things:
---   - its frame is drawn in the column's identity colour, and
+--   - its frame is drawn in the cursor white, and
 --   - its title is bold.
 --
 -- Its fill does not change. A selected card's surface is exactly a
 -- resting card's surface. Selection is the top of the emphasis ladder
 -- but it is *not* a fourth step of the lightness ramp — its emphasis is
--- carried by border hue and title weight, neither of which is a tint.
+-- carried by border colour and title weight, neither of which is a tint.
 -- A test that asserts "selected is lighter than resting" is asserting
 -- something this design deliberately does not do.
 --
--- Of those two markers only the frame hue is unambiguous. Bold weight is
+-- Of those two markers only the frame is unambiguous. Bold weight is
 -- shared with three other states, so bold on a card does not mean "this
 -- is the cursor":
 --   - a multi-selected card (batch selection) takes a bold title as well
@@ -1112,21 +1120,68 @@ value VisualColumn {
 --   - an epic card's title is bold unconditionally, at rest (see "Epic
 --     cards").
 --
--- The hued frame is therefore the cursor signal, and the bold title is a
+-- The frame is therefore the cursor signal, and the bold title is a
 -- reinforcement of it that carries no meaning on its own. The `*` prefix,
 -- not weight, is what distinguishes a multi-selected card.
 --
--- The selected card's border is the only hued *card* border on the board
--- at a given moment. That exclusivity is what makes the cursor findable
--- without scanning. Two qualifications: hued column chrome (the focused
--- column's top rule, its scroll indicators) is not a card border and is
--- unaffected; and there is one time-bounded exception on cards
--- themselves, the message flash, below.
+-- == Card border: cursor and state ==
 --
--- Deliberately out of scope: using the card border to carry task state
--- (red for Crashed/Conflict, yellow for NeedsInput). Neutral resting
--- borders make that possible for the first time, but it is deferred and
--- is not specified here.
+-- A card's border answers one question, and which question it answers has
+-- changed. It used to mean "this is the selected card" — the cursor took
+-- the column's identity hue and every other border was neutral. It now
+-- means **state**, and the cursor has been moved off the identity hue
+-- onto a colour of its own.
+--
+-- Every card's border is decided by the first of these that applies:
+--
+--   1. the cursor card       a near-white (#e8edfb) used for nothing
+--                            else anywhere on the board
+--   2. an unhealthy card     its state colour, below
+--   3. anything else         the resting neutral
+--
+-- The state colours are a closed set, chosen so that the border never
+-- says anything the card is not already saying elsewhere:
+--
+--   RED     the four hard failures — unprovisioned, auto-dispatch
+--           failed, rebase conflict, crashed. These are exactly the
+--           states whose indicator line already renders a ⚠, so border
+--           and glyph agree by construction rather than by two lists
+--           being maintained in parallel.
+--   YELLOW  the two attention states — needs-input (blocked) and stale.
+--
+-- Nothing else takes a border colour. *Dispatching* is deliberately
+-- excluded even though its indicator renders amber: it is a transient
+-- expected state, not a condition wanting a human, and bordering it would
+-- make every ordinary dispatch alarm for as long as it took.
+--
+-- Why the cursor is white rather than the column hue: with the border
+-- carrying state, a hued cursor border would be competing with the state
+-- vocabulary in the same channel on the same surface — in the Running
+-- column the identity hue *is* amber, which is precisely what needs-input
+-- claims. A colour used for nothing else cannot be misread as a state.
+--
+-- The accepted cost: because the cursor wins outright, a card that is both
+-- unhealthy and the cursor shows white, not its state colour. That is a
+-- real loss of information and was accepted knowingly. Its mitigation is
+-- that the state remains readable on the same card without moving the eye
+-- — the indicator line directly beneath says `⚠ crashed` in red. The
+-- alternative, letting state win, hides the cursor instead; losing the
+-- cursor cue on the card you have just navigated to was judged worse than
+-- losing a border cue on a card you are already looking straight at.
+--
+-- What is now exclusive is the white, not hue in general: at most one card
+-- on the board carries the cursor white, while any number may carry state
+-- colours at once. The old claim — that the selected card's was the only
+-- hued card border — is false in both directions now and should not be
+-- reintroduced in any form.
+--
+-- The rule is uniform across card kinds. An epic card takes the cursor
+-- white on the same terms as a task card, with no exemption for its own
+-- identity colour — see "Epic cards" for why the purple frame it used to
+-- take had to go.
+--
+-- Hued column chrome (the focused column's top rule, its scroll
+-- indicators) is not a card border and is unaffected by any of this.
 --
 -- == Card stripe ==
 --
@@ -1136,8 +1191,8 @@ value VisualColumn {
 -- uses the same glyph as every other card. The earlier behaviour — the
 -- cursor card swapping in a half block (▌ U+258C) while resting cards
 -- used the quarter block — is replaced; selection is carried by the
--- hued border and the bold title alone, and stripe weight no longer
--- moves with the cursor.
+-- cursor-white border and the bold title alone, and stripe weight no
+-- longer moves with the cursor.
 --
 -- The stripe is an accent, not the identity carrier. At normal terminal
 -- font sizes a quarter block is roughly two pixels wide, which is too
@@ -1157,11 +1212,25 @@ value VisualColumn {
 --
 -- An epic card is not a member of its column's identity. It is its own
 -- identity object, and it carries PURPLE in every column: its stripe is
--- purple and, when it is the cursor, its frame is purple. A selected epic
--- sitting in Done frames purple, not green; the same epic dragged to
--- Backlog frames purple, not blue. The epic breadcrumb header row that
+-- purple wherever the card sits — in Done it is purple, not green; dragged
+-- to Backlog it is purple, not blue. The epic breadcrumb header row that
 -- precedes a group of epic-owned tasks in flattened view is purple on the
 -- same terms.
+--
+-- An epic's purple stops at its frame. A *selected* epic frames in the
+-- cursor white like any other card ("Card border: cursor and state") —
+-- the cursor rule is uniform across card kinds and has no exemption for
+-- epics. Purple identity lives on the stripe and on the title, which an
+-- epic keeps at rest.
+--
+-- A selected epic used to frame purple, and the reason that had to go is
+-- worth keeping: PURPLE is also the Review column's identity hue. A purple
+-- epic frame would put a column's own hue on a card frame — exactly the
+-- identity-vs-state collision the cursor white was chosen to remove,
+-- reintroduced on the one card type that had escaped it. A selected epic
+-- sitting in Review would have framed in that column's colour, and a
+-- reader would have had no way to tell that frame from a column-identity
+-- one.
 --
 -- Intent: an epic is a container, not a task, and it reads as a different
 -- *kind* of thing rather than as a task that happens to be in a
@@ -1172,12 +1241,14 @@ value VisualColumn {
 -- One consequence must be stated because it breaks a rule that holds
 -- everywhere else: an epic card's title is bold **at rest**,
 -- unconditionally. Bold is therefore not a cursor signal on an epic card
--- at all, and the frame hue is the *only* thing that distinguishes a
--- selected epic from a resting one. Where a task card has two markers of
--- which one is ambiguous, an epic card has exactly one, and it is not
--- ambiguous. Anything that later weakens the frame-hue signal on epics —
--- for instance giving resting epic frames a hue too — removes the only
--- cursor cue they have.
+-- at all, and the frame is the *only* thing that distinguishes a selected
+-- epic from a resting one. Where a task card has two markers of which one
+-- is ambiguous, an epic card has exactly one, and it is not ambiguous.
+-- Anything that later weakens the frame signal on epics — for instance
+-- giving resting epic frames a colour too — removes the only cursor cue
+-- they have. That is the reason the white has to stay legible here
+-- specifically: on a task card a weakened frame still leaves the bold
+-- title as a partial cue, and on an epic card it leaves nothing.
 --
 -- Everything else about an epic card is unchanged from a task card: the
 -- neutral card surface, the neutral resting frame, the lit frame, the
@@ -1224,11 +1295,11 @@ value VisualColumn {
 -- there, and adding it would cost a further row per card on top of the
 -- frame's existing one.
 --
--- The frame colour is neutral for a resting card and the column's
--- identity colour for the selected card. This is the one place on the
--- board where hue, not merely intensity, moves with state — see
--- "Selection". It is also a departure from the frame's previous rule,
--- under which every frame was hued and only its intensity moved.
+-- The frame's colour is not a property of the frame but of the card's
+-- condition: cursor white, else a state colour, else the resting neutral.
+-- The rule and its precedence live in "Card border: cursor and state";
+-- this subsection is about the frame's shape and extent, and deliberately
+-- does not restate them.
 --
 -- The frame is what makes the column read as a stack of objects rather
 -- than as a paragraph. It costs one line per card over the previous
@@ -1262,8 +1333,10 @@ value VisualColumn {
 -- == Message flash ==
 --
 -- When a message is delivered to a task, that task's card flashes for
--- config.message_flash_ttl: an envelope glyph, a distinct warm fill, and
--- a frame in the column's identity colour.
+-- config.message_flash_ttl: an envelope glyph and a distinct warm fill.
+-- Its border is the resting neutral, exactly like any other card's — the
+-- flash does not colour the border at all, and takes no exception to the
+-- border rules in "Card border: cursor and state".
 --
 -- The duration is a notice, not a blink. It is set long enough that a
 -- human whose attention is elsewhere — reading a diff, watching another
@@ -1272,40 +1345,31 @@ value VisualColumn {
 -- and end while nobody was looking at it, which is the same as not
 -- flashing.
 --
--- The hued frame is a deliberate, bounded exception to "the selected
--- card's border is the only hued *card* border on the board". While a
--- flash is live there may be two hued card borders.
+-- Fill and glyph are enough on their own: a flashing card is the only card
+-- on the board whose fill differs from the shared card surface, and it
+-- carries a glyph no other card has. (It also applies bold to the whole
+-- card rather than to the title alone — see "Selection", where that is one
+-- of the reasons bold carries no cursor meaning by itself.)
 --
--- The exception is safe because of the envelope, not because of the
--- clock. What resolves the ambiguity is that a flashing card carries two
--- marks the selected card never has: the envelope glyph, and a fill that
--- differs from the shared card surface (it is the only card on the board
--- of which that is true). Either one tells the reader which card is the
--- cursor and which is merely flashing, without reference to how long the
--- flash has left to run. (The flash also applies bold to the whole card
--- rather than to the title alone — see "Selection", where that is one of
--- the reasons bold carries no cursor meaning by itself.)
+-- The flash used to take the column's identity hue on its border, as a
+-- named exception to a rule that no longer exists. What forced the change
+-- was a collision rather than a preference: once the border began carrying
+-- state, a flash in the Running column would have drawn its border in that
+-- column's identity hue — amber — which is exactly what needs-input
+-- claims. The flash would have been indistinguishable from a blocked
+-- agent. Recorded because the obvious repair is to give the flash a hue of
+-- its own, and that is the thing not to do: it would put a third
+-- vocabulary on a surface that now has two, to solve a problem the
+-- envelope already solves.
 --
--- Boundedness is a fact about the flash but is not the justification for
--- the exception. An earlier version of this subsection leaned on the
--- flash being short-lived, which was a weak argument even then and does
--- not survive a duration this long: "it will be gone in a moment" is not
--- a reason a shared hue is unambiguous while it is on screen.
---
--- Resolved: the flash keeps the column's identity hue rather than taking
--- a hue of its own. A dedicated hue would solve a problem the envelope
--- already solves, and would spend a colour to do it.
---
--- That resolution rests on one property, and it is the property to
--- protect: the envelope and the hued frame are co-terminous. The glyph is
--- present for exactly as long as the frame is hued, both governed by the
--- single config.message_flash_ttl, so the disambiguator never expires
--- before the ambiguity does. Splitting them — expiring the glyph early,
--- or holding the hued frame past the glyph — would leave a window in
--- which a card shows the column's hue on its border with nothing to say
--- it is not the cursor, and the exception would stop being safe. Anyone
--- giving the two different lifetimes is removing the reason this design
--- is sound, not making a cosmetic change.
+-- Retiring the hue also retired a standing obligation. While the flash's
+-- border was hued, the design depended on the envelope and the hue being
+-- co-terminous — the glyph had to last exactly as long as the border
+-- colour, or a card would show a hue with nothing to say what it was.
+-- That constraint is gone rather than relaxed: with a neutral border there
+-- is nothing to disambiguate, and the glyph's lifetime is now free to be
+-- reasoned about on its own. This change removes a rule from the spec
+-- instead of adding one, which is the main reason it is worth making.
 --
 -- == Where these rules are enforced ==
 --
@@ -1328,12 +1392,20 @@ value VisualColumn {
 --   cards_are_inset_by_one_cell_of_column_ground margin width, its ground
 --                                                colour, and the lit rail
 --                                                inside it
---   only_the_selected_card_has_a_hued_frame      within one column
---   no_unfocused_column_leaks_a_hued_card_frame  across all four: cards in
---                                                every column, exactly one
---                                                non-neutral frame on the
---                                                whole board, and it is the
---                                                cursor's own column hue
+--   card_frame_carries_state_and_the_cursor_outranks_it
+--                                                the whole border rule on
+--                                                one board — see the note
+--   only_the_selected_card_has_the_cursor_white_frame
+--                                                at most one white, healthy
+--                                                frames neutral, and no
+--                                                column identity hue on any
+--                                                frame
+--   no_column_leaks_an_identity_hue_onto_a_card_frame
+--                                                the cross-column
+--                                                companion: all tasks
+--                                                healthy, so the whole
+--                                                board is one white and
+--                                                neutrals
 --   render_v2_task_card_shows_stripe
 --   unfocused_column_header_keeps_its_identity_colour
 --                                                the principle above, on
@@ -1384,21 +1456,39 @@ value VisualColumn {
 --                                                read one duration, so they
 --                                                cannot disagree about
 --                                                whether a flash is live
---   message_flash_hue_and_envelope_expire_together
---                                                the co-terminality the
---                                                "Message flash" exception
---                                                rests on: hued frames are
---                                                counted either side of the
---                                                threshold (two inside, one
---                                                past) alongside the glyph's
---                                                presence and absence
+--   message_flash_never_colours_the_card_frame   a live flash leaves the
+--                                                frame alone: no column
+--                                                hue, and the only
+--                                                non-neutral frame is the
+--                                                cursor's
 --
--- That last test puts the flash on a *non-cursor* card, and that is the
--- load-bearing part of its fixture rather than an incidental choice: on the
--- cursor card the frame would be hued whether or not the flash contributed
--- anything, so only a non-cursor card makes the flash's own contribution to
--- the frame colour readable at all. Moving the flash onto the cursor card
--- would leave the test passing while measuring nothing.
+-- card_frame_carries_state_and_the_cursor_outranks_it is the one that
+-- carries the rule, and its shape is the reason. It puts a crashed card, a
+-- blocked card and a healthy card on one board and places the cursor *on
+-- the crashed one*, so the precedence collision is the subject rather than
+-- a case the fixture avoids. It asserts amber on the blocked card, white on
+-- the cursor, neutral on the healthy one, and no red anywhere — then moves
+-- the cursor off and asserts the red it was suppressing appears. That last
+-- step is what makes it a test of precedence rather than of three colours
+-- sitting side by side; without it, a renderer that had simply forgotten
+-- red would pass.
+--
+-- These four replaced three tests written for the superseded rule that a
+-- hued card border meant selection. Those were invalidated rather than
+-- retuned: two asserted at most one card frame is non-neutral, which the
+-- state colours falsify outright, and the third pinned the flash's hue to
+-- its glyph, an obligation retired with the flash's hue.
+--
+-- A fixture hazard the border rule creates, worth knowing before writing
+-- the next one: a card is *healthy* only if the fixture makes it so. Any
+-- test that drives a tick will have an inactive Running task reclassified
+-- as stale, and stale now claims an amber border — so a card meant to be a
+-- neutral control silently becomes an amber one, and the failed assertion
+-- points at whatever the test was actually about rather than at its
+-- fixture. This is the cost of the border reading states a fixture
+-- acquires by default rather than by asking: "healthy" is no longer the
+-- absence of setup, it is setup. Seed recent activity on any card that is
+-- meant to rest.
 --
 -- The separator test checks five widths on purpose. Whether a misaligned
 -- header row is visible at all depends on how the division rounds at that
@@ -1427,12 +1517,19 @@ value VisualColumn {
 -- Not enforced by any test — normative claims above that a reader should
 -- not assume are covered:
 --   - Epic cards, entirely: the PURPLE stripe, the unconditionally bold
---     title, and the selected frame in *both* directions — that a selected
---     epic takes PURPLE and that a resting epic does not ("Epic cards").
---     The cross-column frame test above renders no epic, so it does not
---     reach any of this; and because bold is unconditional on an epic, the
---     frame is the only cursor signal an epic card has, which makes this
---     the gap covering the least-substitutable claim in the section.
+--     title, and that a selected epic takes the cursor white while a
+--     resting one does not ("Epic cards"). No test above renders an epic at
+--     all — the four border tests are task-card boards — and because bold
+--     is unconditional on an epic, the frame is the only cursor signal an
+--     epic card has, which makes this the gap covering the
+--     least-substitutable claim in the section.
+--   - Two narrower parts of "Card border: cursor and state" that the four
+--     tests above do not reach: that the RED set is exactly the four hard
+--     failures (only crashed is exercised, so a state wrongly promoted into
+--     or dropped out of that set would pass), and that *dispatching* takes
+--     no border despite rendering an amber indicator. The second is the
+--     more fragile: it is an absence, and an absence is what a renderer
+--     drifts into asserting by accident.
 --   - The four-cell horizontal chrome total as a number. The inset test
 --     pins the margin's width, but nothing asserts the sum the title
 --     budget is reduced by.
@@ -1464,13 +1561,16 @@ value ColumnChrome {
     focused: Boolean
     is_archive_edge_column: Boolean
 
-    -- The only two surfaces that render the identity colour itself. Both
-    -- are on cards, and between them they are every place the literal
-    -- palette token reaches the screen (see "Column header bar"). Epic
-    -- cards are not among them: they carry their own identity — see
-    -- EpicCardChrome.
+    -- The only surface that renders the identity colour itself, and so the
+    -- only place the literal palette token reaches a card at all (see
+    -- "Column header bar"). Epic cards are not among them: they carry their
+    -- own identity — see EpicCardChrome.
+    --
+    -- A selected card's border used to be the second such surface. It is
+    -- not any longer: the border carries state and the cursor takes a white
+    -- of its own, so no border is a function of identity_colour. See "Card
+    -- border: cursor and state".
     task_card_stripe_colour: identity_colour
-    selected_task_card_border_colour: identity_colour
 
     -- The top rule and scroll indicators, but only while focused.
     -- Unfocused, both drop to a flat neutral grey rather than to a dimmed
@@ -1512,13 +1612,19 @@ value EpicCardChrome {
     selected: Boolean
 
     stripe_colour: identity_colour
-    selected_frame_colour: identity_colour
+
+    -- The stripe is the whole of it. There is deliberately no
+    -- selected_frame_colour here: a selected epic frames in the shared
+    -- cursor white, which is not an epic-specific value and is not a
+    -- function of identity_colour, so it belongs to the board-wide border
+    -- rule rather than to this value ("Card border: cursor and state").
+    -- Adding one back would be reintroducing the purple frame.
 
     -- Bold at rest, unconditionally — so weight carries no cursor
-    -- information on an epic card and the frame hue is the only cursor
-    -- signal it has.
+    -- information on an epic card and the frame is the only cursor signal
+    -- it has.
     title_bold: true
-    frame_hue_marks_cursor: selected
+    frame_marks_cursor: selected
 }
 
 value BoardNeutralRamp {
