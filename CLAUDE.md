@@ -205,7 +205,7 @@ Exactly two mechanisms read the tag:
 
 ## Timing Constants
 
-Tick interval, DB refresh, status TTL, PR poll, message flash, main-session poll, and the gg-chord timeout are documented in "Timing Constants" in `docs/reference.md`.
+Tick interval, DB refresh, status TTL, PR poll, message flash, main-session poll, the gg-chord timeout, and the dispatch watchdog are documented in "Timing Constants" in `docs/reference.md`.
 
 ## Documentation
 

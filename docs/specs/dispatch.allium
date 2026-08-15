@@ -1132,7 +1132,7 @@ surface DispatchingFeedback {
         -- watchdog timeout).
 
     @guarantee DispatchingTimeout
-        -- A task that remains in `dispatching` for more than 60 seconds is
+        -- A task that remains in `dispatching` for more than 120 seconds is
         -- removed by the next Tick and a "dispatch timed out" failure is
         -- raised as an error popup — naming the task when one expired, and
         -- reporting the count when several expire on the same tick.

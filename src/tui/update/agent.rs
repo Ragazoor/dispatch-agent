@@ -671,6 +671,29 @@ mod tick_tests {
     }
 
     #[test]
+    fn watchdog_does_not_force_fail_dispatch_within_deadline() {
+        let mut app = make_app();
+        let task = make_task(60, TaskStatus::Backlog);
+        let id = task.id;
+        app.board.tasks.push(task);
+        // A hair under the deadline (not past it) must still survive —
+        // `dispatching_timeout_clears_stuck_task` in tui/tests/dispatch.rs covers
+        // the past-deadline force-fail at the message-flow level.
+        app.dispatching.insert(
+            id,
+            Instant::now() - crate::tui::DISPATCH_WATCHDOG_TIMEOUT + Duration::from_secs(1),
+        );
+
+        app.tick_dispatching();
+
+        assert!(
+            app.dispatching.contains_key(&id),
+            "a dispatch just under the deadline must not be force-failed"
+        );
+        assert!(app.status.error_popup.is_none());
+    }
+
+    #[test]
     fn db_refresh_fires_on_dirty_flag() {
         let mut app = make_app();
         app.dirty_since_refresh = true;

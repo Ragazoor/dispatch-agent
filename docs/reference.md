@@ -155,6 +155,7 @@ subcommand for task creation.
 - **Message flash** (30s): `MESSAGE_FLASH_TTL` in `src/tui/mod.rs` — how long a task's card keeps flashing after it sends or receives a native cross-session message (task #4098; warm fill, plus a direction glyph — envelope for received, outgoing arrow for sent, both if it did both). The border is the resting neutral, never hued. Read by *both* `tick_message_flash` (the sweep, `src/tui/update/agent.rs`, which sweeps `AgentTracking::message_flash`/`message_flash_sent`) and the card renderer; they must share it or the map and the screen diverge. See "Message flash" in `docs/specs/core.allium`.
 - **Main-session poll** (5 ticks / 10s): `MAIN_SESSION_POLL_TICKS` in `src/tui/mod.rs` — tick-driven tmux liveness check behind the main-session status-bar indicator; wired in `handle_tick` (`src/tui/update/agent.rs`), mirrors `config.main_session_poll_interval` in `docs/specs/core.allium`.
 - **gg-chord timeout** (150ms): `GG_CHORD_TIMEOUT` in `src/tui/mod.rs` — double-tap window for the `gg` jump-to-top keybinding.
+- **Dispatch watchdog** (120s): `DISPATCH_WATCHDOG_TIMEOUT` in `src/tui/mod.rs` — force-fails a task stuck in the `dispatching` set (see `docs/specs/dispatch.allium`: `DispatchingTimeout`). Kept in sync with `SUBPROCESS_TIMEOUT` in `src/process.rs`, which bounds the `git fetch`/`git worktree add` subprocesses run during provisioning.
 
 ## Feeds
 

@@ -1413,8 +1413,10 @@ fn dispatching_timeout_does_not_release_the_claim() {
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::MarkDispatching(TaskId(1)),
     ));
-    app.dispatching
-        .insert(TaskId(1), Instant::now() - Duration::from_secs(90));
+    app.dispatching.insert(
+        TaskId(1),
+        Instant::now() - crate::tui::DISPATCH_WATCHDOG_TIMEOUT - Duration::from_secs(1),
+    );
 
     let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
 
@@ -1533,15 +1535,17 @@ fn dispatching_timeout_clears_stuck_task() {
     ));
     assert!(app.is_dispatching(TaskId(1)));
 
-    // Backdate the start time past the 60-second watchdog deadline.
-    app.dispatching
-        .insert(TaskId(1), Instant::now() - Duration::from_secs(90));
+    // Backdate the start time past the watchdog deadline.
+    app.dispatching.insert(
+        TaskId(1),
+        Instant::now() - crate::tui::DISPATCH_WATCHDOG_TIMEOUT - Duration::from_secs(1),
+    );
 
     app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
 
     assert!(
         !app.is_dispatching(TaskId(1)),
-        "watchdog should remove a task that has been mid-dispatch for >60s"
+        "watchdog should remove a task that has been mid-dispatch past the deadline"
     );
     let popup = app
         .status

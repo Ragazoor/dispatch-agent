@@ -84,8 +84,9 @@ pub(crate) const STALE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60)
 pub(in crate::tui) const TITLE_DISPLAY_LENGTH: usize = 30;
 
 /// Maximum time a task may remain in the `dispatching` set before the watchdog
-/// force-fails it. Defence-in-depth against a stuck dispatch worker.
-pub(in crate::tui) const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(60);
+/// force-fails it. Defence-in-depth against a stuck dispatch worker. Matches
+/// `SUBPROCESS_TIMEOUT` in `src/process.rs` — both kept in sync at 120s.
+pub(in crate::tui) const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Number of braille spinner frames for the per-card "dispatching…" indicator.
 /// Must match the length of `DISPATCHING_SPINNER` in `kanban.rs`.

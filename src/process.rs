@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Canonical timeout for long-running subprocesses (git fetch, worktree add).
-/// Matches `DISPATCH_WATCHDOG_TIMEOUT` in `src/tui/mod.rs` — both kept in sync at 60s.
-pub(crate) const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(60);
+/// Matches `DISPATCH_WATCHDOG_TIMEOUT` in `src/tui/mod.rs` — both kept in sync at 120s.
+pub(crate) const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -635,6 +635,19 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    // --- Timeouts ---
+
+    /// A network hiccup during `git fetch`/`git worktree add` (slow DNS, a
+    /// flaky TLS handshake) must have enough room to recover before dispatch
+    /// gives up on it.
+    #[test]
+    fn subprocess_timeout_is_at_least_two_minutes() {
+        assert!(
+            SUBPROCESS_TIMEOUT >= Duration::from_secs(120),
+            "SUBPROCESS_TIMEOUT is {SUBPROCESS_TIMEOUT:?}, needs to be at least 2 minutes"
+        );
+    }
 
     // --- AgentBinaries ---
 
