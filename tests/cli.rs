@@ -727,7 +727,10 @@ async fn hook_shell_start_then_stop_round_trips() {
 
     let conn = Database::open(db.path()).await.unwrap();
     let task = conn.get_task(id).await.unwrap().unwrap();
-    assert_eq!(task.live_shells, 1, "expected live_shells to be 1 after start");
+    assert_eq!(
+        task.live_shells, 1,
+        "expected live_shells to be 1 after start"
+    );
     drop(conn);
 
     let out = binary()

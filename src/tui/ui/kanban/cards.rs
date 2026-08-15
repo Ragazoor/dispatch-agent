@@ -846,7 +846,10 @@ mod tests {
         );
         assert_eq!(
             classify_card_indicator(&task, task.status, &app, now),
-            CardIndicator::Running { subagents: 0, shells: 0 },
+            CardIndicator::Running {
+                subagents: 0,
+                shells: 0
+            },
         );
     }
 
@@ -885,7 +888,10 @@ mod tests {
         let app = App::new(vec![]);
         assert_eq!(
             classify_card_indicator(&task, task.status, &app, now),
-            CardIndicator::Running { subagents: 0, shells: 0 },
+            CardIndicator::Running {
+                subagents: 0,
+                shells: 0
+            },
         );
     }
 
@@ -899,20 +905,29 @@ mod tests {
 
     #[test]
     fn running_card_shows_subagent_count() {
-        let text = label_of(CardIndicator::Running { subagents: 3, shells: 0 });
+        let text = label_of(CardIndicator::Running {
+            subagents: 3,
+            shells: 0,
+        });
         assert!(text.contains("running \u{00b7} 3 agents"), "got: {text:?}");
     }
 
     #[test]
     fn running_card_uses_the_singular_for_one_subagent() {
-        let text = label_of(CardIndicator::Running { subagents: 1, shells: 0 });
+        let text = label_of(CardIndicator::Running {
+            subagents: 1,
+            shells: 0,
+        });
         assert!(text.contains("running \u{00b7} 1 agent"), "got: {text:?}");
         assert!(!text.contains("1 agents"), "got: {text:?}");
     }
 
     #[test]
     fn running_card_omits_the_suffix_at_zero() {
-        let text = label_of(CardIndicator::Running { subagents: 0, shells: 0 });
+        let text = label_of(CardIndicator::Running {
+            subagents: 0,
+            shells: 0,
+        });
         assert!(
             !text.contains("agent"),
             "zero subagents must render no suffix; got: {text:?}"
@@ -987,7 +1002,10 @@ mod tests {
             subagents: 0,
             shells: 0,
         });
-        assert!(!text.contains("shell"), "zero shells must render no suffix; got: {text:?}");
+        assert!(
+            !text.contains("shell"),
+            "zero shells must render no suffix; got: {text:?}"
+        );
     }
 
     #[test]

@@ -1334,10 +1334,8 @@ pub(super) fn migrate_v85_create_task_shells(conn: &Connection) -> Result<()> {
     .context("Failed to create task_shells (migration v85)")?;
 
     if !column_exists(conn, "tasks", "live_shells") {
-        conn.execute_batch(
-            "ALTER TABLE tasks ADD COLUMN live_shells INTEGER NOT NULL DEFAULT 0",
-        )
-        .context("Failed to add tasks.live_shells (migration v85)")?;
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN live_shells INTEGER NOT NULL DEFAULT 0")
+            .context("Failed to add tasks.live_shells (migration v85)")?;
     }
     if !column_exists(conn, "tasks", "oldest_live_shell_started_at") {
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN oldest_live_shell_started_at TEXT")

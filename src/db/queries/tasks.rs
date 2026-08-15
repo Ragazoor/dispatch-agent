@@ -5,8 +5,7 @@ use crate::set_field;
 
 use crate::models::{
     EpicId, FeedItem, ShellDrain, StopOutcome, SubStatus, SubagentDrain, TaskId, TaskStatus,
-    UserPromptOutcome,
-    WrapUpMode,
+    UserPromptOutcome, WrapUpMode,
 };
 
 use super::super::{CreateTaskRequest, Database, RemovedFeedTask, TaskPatch};
@@ -566,8 +565,10 @@ impl super::super::TaskCrud for Database {
     ) -> Result<i64> {
         let shell_id = shell_id.to_string();
         let session_id = session_id.to_string();
-        self.db_call(move |conn| super::shells::shell_start(conn, id.0, &shell_id, &session_id, now))
-            .await
+        self.db_call(move |conn| {
+            super::shells::shell_start(conn, id.0, &shell_id, &session_id, now)
+        })
+        .await
     }
 
     async fn shell_stop(&self, id: TaskId, shell_id: &str, session_id: &str) -> Result<ShellDrain> {

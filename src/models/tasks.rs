@@ -791,9 +791,15 @@ pub enum SubagentEvent {
 pub enum ShellEvent {
     /// A backgrounded Bash call was launched (`PostToolUse`, not
     /// `PreToolUse` — the shell_id doesn't exist until the call returns).
-    Start { shell_id: String, session_id: String },
+    Start {
+        shell_id: String,
+        session_id: String,
+    },
     /// `KillBash`, or `BashOutput` reporting the shell is no longer running.
-    Stop { shell_id: String, session_id: String },
+    Stop {
+        shell_id: String,
+        session_id: String,
+    },
 }
 
 /// Whether clearing a task's subagent entries also runs the drain path.
@@ -1795,7 +1801,8 @@ mod model_tests {
             live_subagents: 0,
             stop_pending: false,
             live_shells: 0,
-            oldest_live_shell_started_at: None,        }
+            oldest_live_shell_started_at: None,
+        }
     }
 
     #[test]

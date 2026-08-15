@@ -3086,7 +3086,9 @@ async fn shell_stop_drains_a_deferred_stop_to_review() {
     )
     .await
     .unwrap();
-    svc.record_hook_event(id, HookEventKind::Stop).await.unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop)
+        .await
+        .unwrap();
 
     let task = svc.get_task(id).await.unwrap();
     assert_eq!(

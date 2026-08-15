@@ -14,10 +14,22 @@ async fn start_then_stop_returns_to_zero() {
     let task = make_task(&db, "t").await;
     let now = Utc::now();
 
-    assert_eq!(db.shell_start(task.id, "bash_1", "s1", now).await.unwrap(), 1);
-    assert_eq!(db.shell_start(task.id, "bash_2", "s1", now).await.unwrap(), 2);
-    assert_eq!(db.shell_stop(task.id, "bash_1", "s1").await.unwrap().live, 1);
-    assert_eq!(db.shell_stop(task.id, "bash_2", "s1").await.unwrap().live, 0);
+    assert_eq!(
+        db.shell_start(task.id, "bash_1", "s1", now).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        db.shell_start(task.id, "bash_2", "s1", now).await.unwrap(),
+        2
+    );
+    assert_eq!(
+        db.shell_stop(task.id, "bash_1", "s1").await.unwrap().live,
+        1
+    );
+    assert_eq!(
+        db.shell_stop(task.id, "bash_2", "s1").await.unwrap().live,
+        0
+    );
 }
 
 #[tokio::test]
@@ -26,7 +38,10 @@ async fn duplicate_start_is_idempotent() {
     let task = make_task(&db, "t").await;
     let now = Utc::now();
 
-    assert_eq!(db.shell_start(task.id, "bash_1", "s1", now).await.unwrap(), 1);
+    assert_eq!(
+        db.shell_start(task.id, "bash_1", "s1", now).await.unwrap(),
+        1
+    );
     assert_eq!(
         db.shell_start(task.id, "bash_1", "s1", now).await.unwrap(),
         1,
@@ -40,7 +55,10 @@ async fn unknown_stop_is_a_noop_not_an_underflow() {
     let task = make_task(&db, "t").await;
 
     assert_eq!(
-        db.shell_stop(task.id, "never-started", "s1").await.unwrap().live,
+        db.shell_stop(task.id, "never-started", "s1")
+            .await
+            .unwrap()
+            .live,
         0,
         "an unrecognised shell_id must not drive the count negative"
     );
@@ -54,8 +72,13 @@ async fn new_session_id_evicts_the_previous_sessions_entries() {
     let task = make_task(&db, "t").await;
     let now = Utc::now();
 
-    db.shell_start(task.id, "bash_1", "old-session", now).await.unwrap();
-    let count = db.shell_start(task.id, "bash_2", "new-session", now).await.unwrap();
+    db.shell_start(task.id, "bash_1", "old-session", now)
+        .await
+        .unwrap();
+    let count = db
+        .shell_start(task.id, "bash_2", "new-session", now)
+        .await
+        .unwrap();
     assert_eq!(
         count, 1,
         "the old session's row must be fenced out, leaving only the new one"

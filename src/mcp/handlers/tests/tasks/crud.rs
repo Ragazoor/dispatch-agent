@@ -422,7 +422,8 @@ fn mock_task(id: i64, title: &str) -> crate::models::Task {
         live_subagents: 0,
         stop_pending: false,
         live_shells: 0,
-        oldest_live_shell_started_at: None,    }
+        oldest_live_shell_started_at: None,
+    }
 }
 
 /// Constructs McpState with `task_svc` injected — the mock-service seam.

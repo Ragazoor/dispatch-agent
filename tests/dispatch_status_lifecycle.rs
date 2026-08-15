@@ -36,7 +36,8 @@ fn make_task(id: i64, title: &str) -> Task {
         live_subagents: 0,
         stop_pending: false,
         live_shells: 0,
-        oldest_live_shell_started_at: None,    }
+        oldest_live_shell_started_at: None,
+    }
 }
 
 fn make_app(task: Task) -> App {

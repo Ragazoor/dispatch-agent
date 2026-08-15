@@ -685,7 +685,8 @@ fn render_input_form_confirm_retry_shows_options() {
         live_subagents: 0,
         stop_pending: false,
         live_shells: 0,
-        oldest_live_shell_started_at: None,    };
+        oldest_live_shell_started_at: None,
+    };
     app.board.tasks.push(crashed_task);
     app.input.mode = InputMode::ConfirmRetry(TaskId(5));
     let buf = render_to_buffer(&mut app, 120, 30);

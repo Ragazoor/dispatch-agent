@@ -214,7 +214,8 @@ fn task(id: i64, repo: &Path) -> Task {
         live_subagents: 0,
         stop_pending: false,
         live_shells: 0,
-        oldest_live_shell_started_at: None,    }
+        oldest_live_shell_started_at: None,
+    }
 }
 
 impl Fixture {
