@@ -276,6 +276,18 @@ mod validation_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    /// `LearningKind::ALL`/`LearningScope::ALL`/`LearningVerdict::ALL` back
+    /// record_learning's and rate_learning's MCP schema enums (dispatch.rs)
+    /// — a variant added to one of these enums without updating its `ALL`
+    /// would silently under-advertise it, the same drift class as #4152's
+    /// stale `project` scope.
+    #[test]
+    fn learning_enum_all_consts_have_every_variant() {
+        assert_eq!(LearningKind::ALL.len(), 6);
+        assert_eq!(LearningScope::ALL.len(), 4);
+        assert_eq!(LearningVerdict::ALL.len(), 2);
+    }
+
     #[test]
     fn needs_review_no_longer_parses() {
         // The needs_review status was removed; parsing it must hard-error per

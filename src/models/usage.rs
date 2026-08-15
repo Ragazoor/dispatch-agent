@@ -86,6 +86,15 @@ pub struct UsageSummary {
 mod tests {
     use super::*;
 
+    /// `UsageCategory::ALL`/`UsageActor::ALL` back the query_usage MCP
+    /// schema's category/actor enums (dispatch.rs) — a variant added there
+    /// without updating `ALL` would silently under-advertise it.
+    #[test]
+    fn usage_category_and_actor_all_have_every_variant() {
+        assert_eq!(UsageCategory::ALL.len(), 2);
+        assert_eq!(UsageActor::ALL.len(), 2);
+    }
+
     #[test]
     fn usage_category_roundtrip() {
         for (cat, s) in [

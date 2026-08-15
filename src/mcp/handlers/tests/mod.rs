@@ -541,6 +541,14 @@ async fn tool_schemas_have_consistent_required_fields() {
     }
 }
 
+/// `WrapUpAction::ALL` backs the wrap_up/exit_session MCP schema's action
+/// enum (dispatch.rs) — a variant added there without updating `ALL` would
+/// silently under-advertise it.
+#[test]
+fn wrap_up_action_all_has_every_variant() {
+    assert_eq!(crate::mcp::handlers::tasks::WrapUpAction::ALL.len(), 3);
+}
+
 /// Most schema `"enum"` arrays in the registry are derived directly from a
 /// Rust enum's `::ALL` const, so they cannot drift from it. Two fields are
 /// deliberate exceptions — `update_task.status` excludes `done` (not

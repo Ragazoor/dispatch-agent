@@ -1237,6 +1237,14 @@ mod wrap_up_mode_tests {
         }
     }
 
+    /// `WrapUpMode::ALL` backs the create_task/update_task MCP schema's
+    /// wrap_up_mode enum (dispatch.rs) — a variant added there without
+    /// updating `ALL` would silently under-advertise it.
+    #[test]
+    fn wrap_up_mode_all_has_every_variant() {
+        assert_eq!(WrapUpMode::ALL.len(), 3);
+    }
+
     #[test]
     fn wrap_up_mode_from_str() {
         assert_eq!("rebase".parse::<WrapUpMode>().unwrap(), WrapUpMode::Rebase);
@@ -1371,6 +1379,16 @@ mod model_tests {
             let parsed = TaskStatus::parse(s).expect("roundtrip failed");
             assert_eq!(status, parsed, "roundtrip failed for {:?}", status);
         }
+    }
+
+    /// `TaskStatus::ALL_INCLUDING_ARCHIVED` backs the list_tasks MCP schema's
+    /// status filter (dispatch.rs) — unlike `TaskStatus::ALL`, which is
+    /// deliberately just the four kanban columns. A variant added to
+    /// `TaskStatus` without updating this const would silently under-
+    /// advertise the filter.
+    #[test]
+    fn status_all_including_archived_has_every_variant() {
+        assert_eq!(TaskStatus::ALL_INCLUDING_ARCHIVED.len(), 5);
     }
 
     #[test]
@@ -1893,6 +1911,14 @@ mod model_tests {
                 "FromStr mismatch for {expected_str}"
             );
         }
+    }
+
+    /// `TaskTag::ALL` backs the create_task/update_task MCP schema's tag enum
+    /// (dispatch.rs) — a variant added there without updating `ALL` would
+    /// silently under-advertise it.
+    #[test]
+    fn task_tag_all_has_every_variant() {
+        assert_eq!(TaskTag::ALL.len(), 7);
     }
 
     #[test]

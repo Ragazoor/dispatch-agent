@@ -130,6 +130,14 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
+    /// `UrlType::ALL` backs the update_task MCP schema's url_type enum
+    /// (dispatch.rs) — a variant added there without updating `ALL` would
+    /// silently under-advertise it.
+    #[test]
+    fn url_type_all_has_every_variant() {
+        assert_eq!(UrlType::ALL.len(), 4);
+    }
+
     #[test]
     fn url_type_roundtrip() {
         for ut in [
