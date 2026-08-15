@@ -329,10 +329,19 @@ rule GetTaskViaMcp {
         --   [Epic (as "<title> (#<id>)", or "#<id>" when the title cannot be
         --   resolved)], [Tag], [Plan], [<url label>: <url> — the typed label
         --   derived from url.url_type], [Worktree], Base branch,
-        --   [Tmux window], [Sort order], [Wrap-up mode], Created, Updated.
+        --   [Tmux window], [Sort order], [Verify command], [Wrap-up mode],
+        --   Created, Updated.
         -- Not surfaced at all: labels, external_id, auto_run_plan, origin, and
         -- the hook timestamps (last_pre_tool_use_at, last_notification_at,
         -- pr_learnings_gate_shown_at).
+        --
+        -- [Verify command] is not a Task field: it is task.repo_path resolved
+        -- against core/SavedRepoPath.verify_command, the same lookup wrap_up
+        -- performs for its own "Verify before exiting" line. Omitted when no
+        -- verify_command is set for the repo. This is the earlier of the two
+        -- surfaces that carry the command to the agent — see the verify-command
+        -- note in dispatch.allium and WrapUpRebase/WrapUpPr/WrapUpDone in
+        -- pr-workflow.allium for the other one and why both exist.
         -- An unknown task_id is a not-found condition, not a validation one:
         -- ServiceError::NotFound surfaces as the -32001 not-found code, the
         -- same mapping every other NotFound uses (see CreateTaskViaMcp).

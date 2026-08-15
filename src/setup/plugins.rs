@@ -934,6 +934,51 @@ mod tests {
         }
     }
 
+    /// Task #4193: the verify command must reach the agent, and be acted on,
+    /// before `wrap_up` is ever called — not just via the response's
+    /// after-the-fact "Verify before exiting" line, which for the rebase path
+    /// arrives after the base branch has already been fast-forwarded.
+    #[test]
+    fn wrap_up_skill_runs_verification_before_calling_wrap_up() {
+        let content = skill_body("wrap-up");
+        let commit_at = content
+            .find("## Step 6: Commit uncommitted changes")
+            .expect("wrap-up skill must have a commit step to anchor verification after");
+        let verify_at = content
+            .find("## Step 7: Run verification")
+            .expect("wrap-up skill must have a verification step between commit and closing");
+        let closing_at = content
+            .find("## Step 8: The closing sequence")
+            .expect("wrap-up skill's closing sequence must be Step 8, after verification");
+        assert!(
+            commit_at < verify_at,
+            "verification step must come after the commit step"
+        );
+        assert!(
+            verify_at < closing_at,
+            "verification step must come before the closing sequence (and so before wrap_up \
+             is ever called)"
+        );
+        assert!(
+            !content.contains("## Step 7: The closing sequence"),
+            "the closing sequence must be renumbered to Step 8, not left as Step 7"
+        );
+
+        let verify_section = section_after(content, "## Step 7: Run verification")
+            .expect("wrap-up skill must have a verification step to anchor the section on");
+        assert!(
+            verify_section.contains("Verify command") && verify_section.contains("Step 2"),
+            "verification step must tell the agent to read the Verify command shown by \
+             get_task in Step 2, got: {verify_section}"
+        );
+        assert!(
+            verify_section.to_lowercase().contains("before")
+                && verify_section.contains("`wrap_up`"),
+            "verification step must instruct running verification before calling wrap_up, \
+             got: {verify_section}"
+        );
+    }
+
     // -- Plugin removal --
 
     #[test]

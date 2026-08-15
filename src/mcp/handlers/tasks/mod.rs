@@ -208,7 +208,11 @@ async fn build_epic_titles(state: &McpState) -> HashMap<EpicId, String> {
         .collect()
 }
 
-fn format_task_detail(task: &Task, epic_titles: &HashMap<EpicId, String>) -> String {
+fn format_task_detail(
+    task: &Task,
+    epic_titles: &HashMap<EpicId, String>,
+    verify_command: Option<&str>,
+) -> String {
     let mut text = format!(
         "Task {id}: {title}\nStatus: {status}\nRepo: {repo}\nDescription: {desc}",
         id = task.id,
@@ -243,6 +247,9 @@ fn format_task_detail(task: &Task, epic_titles: &HashMap<EpicId, String>) -> Str
     }
     if let Some(sort_order) = task.sort_order {
         text.push_str(&format!("\nSort order: {sort_order}"));
+    }
+    if let Some(cmd) = verify_command {
+        text.push_str(&format!("\nVerify command: {cmd}"));
     }
     if let Some(wrap_up_mode) = task.wrap_up_mode {
         text.push_str(&format!("\nWrap-up mode: {wrap_up_mode}"));
@@ -373,10 +380,30 @@ mod tests {
     #[test]
     fn format_task_detail_includes_base_branch() {
         let task = make_task("develop");
-        let output = format_task_detail(&task, &HashMap::new());
+        let output = format_task_detail(&task, &HashMap::new(), None);
         assert!(
             output.contains("Base branch: develop"),
             "expected 'Base branch: develop' in output, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn format_task_detail_includes_verify_command_when_set() {
+        let task = make_task("main");
+        let output = format_task_detail(&task, &HashMap::new(), Some("cargo test"));
+        assert!(
+            output.contains("Verify command: cargo test"),
+            "expected 'Verify command: cargo test' in output, got:\n{output}"
+        );
+    }
+
+    #[test]
+    fn format_task_detail_omits_verify_command_when_unset() {
+        let task = make_task("main");
+        let output = format_task_detail(&task, &HashMap::new(), None);
+        assert!(
+            !output.contains("Verify command"),
+            "expected no 'Verify command' line in output, got:\n{output}"
         );
     }
 }

@@ -430,11 +430,13 @@ pub async fn prepare_inputs_with_epic_ctx(
 
 /// Fetch the verify command for a repository path from the settings store.
 ///
-/// Called by the `wrap_up` handler, which echoes the command back as its
-/// "Verify before exiting" line — the only place an agent is shown it. No
-/// prompt builder reads it, so this has no caller on a dispatch path despite
-/// living here. Logs a warning and returns `None` if the DB lookup fails so a
-/// wrap-up proceeds without the line rather than failing.
+/// Called by both `get_task` (the earlier of the two surfaces — the
+/// `/wrap-up` skill reads its "Verify command" line before ever calling
+/// `wrap_up`) and the `wrap_up` handler itself, which echoes it back as a
+/// secondary "Verify before exiting" reminder. No prompt builder reads it, so
+/// this has no caller on a dispatch path despite living here. Logs a warning
+/// and returns `None` if the DB lookup fails so either caller proceeds
+/// without the line rather than failing.
 pub async fn fetch_verify_command(
     db: &dyn crate::db::TaskReadStore,
     repo_path: &str,

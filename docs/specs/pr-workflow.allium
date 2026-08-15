@@ -260,10 +260,24 @@ rule WrapUpRebase {
         -- there is no board entry point.
         --
         -- The wrap_up success response includes a "Verify before exiting:
-        -- run `<c>`" sentence between the "session is NOT yet closed" line
-        -- and the "call exit_session" line when task.repo_path has
-        -- verify_command = Some(c). When verify_command is null, the
-        -- response text is byte-for-byte identical to today.
+        -- this rebase may have pulled in changes since you last checked —
+        -- run `<c>` and confirm it passes." sentence between the "session is
+        -- NOT yet closed" line and the "call exit_session" line when
+        -- task.repo_path has verify_command = Some(c). When verify_command is
+        -- null, the response text is byte-for-byte identical to today.
+        --
+        -- This is deliberately worded differently from WrapUpPr/WrapUpDone's
+        -- shared wording (see WrapUpPr below): the /wrap-up skill's own
+        -- verification step (see the get_task verify-command note in
+        -- mcp-task-tools.allium and the verify-command note in
+        -- dispatch.allium) already ran <c> before this call, so the rebase
+        -- step above is the only thing that could have changed the code since
+        -- — sibling epic work landing on task.base_branch between the skill's
+        -- check and this rebase. The wording names that reason rather than
+        -- offering a blanket "skip if already done", because an agent that
+        -- reached wrap_up without running the skill's check (a bypass, a stale
+        -- skill copy) must not read this as permission to skip verifying
+        -- altogether.
         --
         -- On the MCP wrap_up(action="rebase") path, after the base branch
         -- is successfully fast-forwarded, the handler refreshes the repo's
@@ -333,11 +347,22 @@ rule WrapUpPr {
         -- Wrap-up is agent-driven through the MCP wrap_up tool only.
         --
         -- The wrap_up success response (PR path) includes a "Verify before
-        -- exiting: run `<c>`" instruction when task.repo_path has
-        -- verify_command = Some(c), appearing before the exit_session
-        -- instruction. When verify_command is null, that line is omitted. (This
-        -- verify line was previously claimed here but missing from the PR
-        -- branch's response; it is added as part of this consolidation.)
+        -- exiting: if you haven't already run `<c>` and confirmed it passes
+        -- earlier in this wrap-up, do so now." instruction when
+        -- task.repo_path has verify_command = Some(c), appearing before the
+        -- exit_session instruction. When verify_command is null, that line is
+        -- omitted. (This verify line was previously claimed here but missing
+        -- from the PR branch's response; it is added as part of this
+        -- consolidation.)
+        --
+        -- Unlike WrapUpRebase, wrap_up(action="pr") performs no git operation
+        -- that could change the code after the /wrap-up skill's own
+        -- verification step already ran <c> (see the get_task verify-command
+        -- note in mcp-task-tools.allium). So nothing here justifies telling the
+        -- agent to re-run it unconditionally; the wording instead defaults to
+        -- verifying, conditioned on it not already having happened this
+        -- wrap-up, rather than granting a blanket permission to skip. WrapUpDone
+        -- shares this exact wording for the same reason.
         --
         -- The same response also carries an unconditional rate_learning nudge,
         -- specified in learnings.allium: WrapUpReflection (not repeated
@@ -377,6 +402,13 @@ rule WrapUpDone {
         -- or if the user selects "done" in Step 4, the skill calls
         -- wrap_up(action="done"), then exit_session(token,
         -- action="done") — no git commands.
+        --
+        -- The wrap_up success response includes the same "Verify before
+        -- exiting: if you haven't already run `<c>` and confirmed it passes
+        -- earlier in this wrap-up, do so now." line as WrapUpPr, when
+        -- task.repo_path has verify_command = Some(c) — see WrapUpPr's
+        -- guidance for why this wording (rather than WrapUpRebase's) applies:
+        -- wrap_up(action="done") performs no git operation either.
 }
 
 rule ExitSession {

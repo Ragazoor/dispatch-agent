@@ -7,7 +7,7 @@ description: Use to finish a dispatch task and close its session — whenever wo
 
 Wrap up a dispatch worktree. All three paths follow the same shape:
 
-choose the action → `/retro` → commit → `wrap_up(action)` → a single `exit_session(token, action, ...)` call that applies the terminal state change and closes the session.
+choose the action → `/retro` → commit → verify → `wrap_up(action)` → a single `exit_session(token, action, ...)` call that applies the terminal state change and closes the session.
 
 **`exit_session` is mandatory on every path.** `wrap_up` alone changes nothing terminal — it issues a token and, for `rebase`, does the git work. The task's status is not moved and the session is not closed until `exit_session` runs. A wrap-up that stops after `wrap_up` leaves the tmux window alive and the task stuck in its old status. Never end your turn between the two calls.
 
@@ -45,6 +45,8 @@ If the branch does not match the `{id}-{slug}` pattern, stop and tell the user:
 Call the `dispatch` MCP tool `get_task` with the task ID from Step 1. Read the `base_branch` field from the response and use it wherever the instructions below refer to `{base_branch}`. If the field is absent or empty, fall back to `main`. (The rebase path resolves the real base branch server-side from the task record, so `{base_branch}` only matters for the diff/PR commands you run locally.)
 
 Also read the `wrap_up_mode` field. If it is set (`rebase`, `pr`, or `done`) **and** no argument was provided at invocation, treat it exactly like an argument: skip Step 4 (AskUserQuestion) and proceed to Step 5 with that action.
+
+Also read the `Verify command` field, if present, and hold onto it for Step 7. If it is absent, there is nothing to verify and Step 7 is a no-op.
 
 ## Step 3: Simplify code changes (conditional)
 
@@ -129,7 +131,17 @@ If there are changes, commit them inline — run these commands yourself rather 
 
 Don't polish the message. This commit exists so no work is lost before the branch is integrated — on the rebase path it lands on `{base_branch}` among your earlier commits, and on the PR path the PR body is where the real explanation goes. Once committed, move straight to Step 7.
 
-## Step 7: The closing sequence
+## Step 7: Run verification
+
+If Step 2 did not show a `Verify command`, skip straight to Step 8 — there is nothing to run.
+
+If it did, run that command in your worktree now, **before** calling `wrap_up`. This is what closes the gap where an agent only learns about verification after `wrap_up(action="rebase")` has already fast-forwarded `{base_branch}` — by running it here, you confirm the code is good before any git operation touches the shared branch, on all three paths.
+
+If it passes, continue to Step 8.
+
+If it fails, fix the issues, then go back to Step 6 to commit the fix, and re-run this step. Do not proceed to Step 8 — and do not call `wrap_up(action="rebase")` — with a failing verify command.
+
+## Step 8: The closing sequence
 
 Every path ends with the same four steps. Only Step C differs by action, plus the PR path's authoring work which happens *before* this sequence (see *The PR path* below). The task moves to "done" (rebase, done) or "review" (pr) automatically — don't set the status by hand.
 
@@ -189,7 +201,7 @@ Only entries surfaced to you this task can be rated. There is no separate "unuse
 
 ## The PR path: author the PR before the closing sequence
 
-You are creating a real PR with a title and body that reflect the actual work. Dispatch will not do this for you. Do all of the following *before* Step 7, then run the closing sequence with `action="pr"`.
+You are creating a real PR with a title and body that reflect the actual work. Dispatch will not do this for you. Do all of the following *after* Step 7 (verification) but *before* Step 8, then run the closing sequence with `action="pr"` — verify before you push and open the PR, not after.
 
 ### Inspect what changed
 
@@ -267,4 +279,4 @@ If `gh` reports `a pull request for branch '...' already exists`, parse the URL 
 
 ### Then run the closing sequence
 
-Go to Step 7 with `action="pr"`, skipping Step A (the PR body is your summary). The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down between the two calls. Don't reorder to "close first, then finish up".
+Go to Step 8 with `action="pr"`, skipping Step A (the PR body is your summary). The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down between the two calls. Don't reorder to "close first, then finish up".

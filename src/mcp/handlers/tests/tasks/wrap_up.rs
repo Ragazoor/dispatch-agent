@@ -803,6 +803,10 @@ async fn wrap_up_success_includes_verify_reminder_when_configured() {
         "Expected 'cargo test' in response, got: {text}"
     );
     assert!(
+        text.contains("this rebase may have pulled in changes since you last checked"),
+        "Expected the rebase-specific rationale in response, got: {text}"
+    );
+    assert!(
         text.contains("exit_session"),
         "Expected 'exit_session' in response, got: {text}"
     );
@@ -885,6 +889,43 @@ async fn wrap_up_pr_success_includes_verify_reminder_when_configured() {
     assert!(
         text.contains("cargo test"),
         "Expected 'cargo test' in pr response, got: {text}"
+    );
+    assert!(
+        text.contains("if you haven't already") && text.contains("do so now"),
+        "Expected the default-to-verify (not skip-permission) wording in pr response, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn wrap_up_done_success_includes_verify_reminder_when_configured() {
+    let (state, db) = make_state_with_runner(rebase_ok_runner()).await;
+    let task_id = create_wrappable_task(&db).await;
+    db.set_verify_command("/repo", Some("cargo test"))
+        .await
+        .unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "wrap_up",
+            "arguments": { "task_id": task_id.0, "action": "done" }
+        })),
+    )
+    .await;
+
+    let text = extract_response_text(&resp);
+    assert!(
+        text.contains("Verify before exiting"),
+        "Expected 'Verify before exiting' in done response, got: {text}"
+    );
+    assert!(
+        text.contains("cargo test"),
+        "Expected 'cargo test' in done response, got: {text}"
+    );
+    assert!(
+        text.contains("if you haven't already") && text.contains("do so now"),
+        "Expected done to share pr's default-to-verify wording, got: {text}"
     );
 }
 

@@ -24,11 +24,33 @@ fn exit_instruction(action: WrapUpAction) -> String {
     )
 }
 
-async fn wrap_up_verify_line(db: &dyn crate::db::TaskReadStore, repo_path: &str) -> String {
+/// Worded per action rather than uniformly, because what changed since the
+/// `/wrap-up` skill's own pre-`wrap_up` verification step (see the get_task
+/// verify-command note in `docs/specs/mcp-task-tools.allium`) differs by
+/// action: `rebase` just ran a real git rebase server-side, which can pull in
+/// sibling-epic changes the skill's check could not have seen, so it names
+/// that as a reason to re-verify. `pr`/`done` perform no git operation at all,
+/// so nothing justifies telling the agent to redo work — the wording defaults
+/// to verifying only when it is not already known to have happened, rather
+/// than granting a blanket permission to skip (an agent that reached
+/// `wrap_up` without running the skill's check must not read this as licence
+/// to skip verifying altogether).
+async fn wrap_up_verify_line(
+    db: &dyn crate::db::TaskReadStore,
+    repo_path: &str,
+    action: WrapUpAction,
+) -> String {
     match dispatch::fetch_verify_command(db, repo_path).await {
-        Some(cmd) => format!(
-            " **Verify before exiting**: run `{cmd}` in your worktree and confirm it passes."
-        ),
+        Some(cmd) => match action {
+            WrapUpAction::Rebase => format!(
+                " **Verify before exiting**: this rebase may have pulled in changes since \
+                you last checked — run `{cmd}` and confirm it passes."
+            ),
+            WrapUpAction::Pr | WrapUpAction::Done => format!(
+                " **Verify before exiting**: if you haven't already run `{cmd}` and confirmed \
+                it passes earlier in this wrap-up, do so now."
+            ),
+        },
         None => String::new(),
     }
 }
@@ -43,7 +65,7 @@ async fn issue_wrap_up_token(
     repo_path: &str,
     action: WrapUpAction,
 ) -> (String, String, String) {
-    let verify_line = wrap_up_verify_line(&*state.db, repo_path).await;
+    let verify_line = wrap_up_verify_line(&*state.db, repo_path, action).await;
     let token = state.issue_exit_token(task_id, action);
     let exit_line = exit_instruction(action);
     (verify_line, token, exit_line)

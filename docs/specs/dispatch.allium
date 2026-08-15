@@ -426,14 +426,23 @@ rule DispatchTask {
         -- The prompt deliberately carries no verify command. Even when
         -- task.repo_path has a SavedRepoPath row with verify_command = Some(c),
         -- no "## Verification" section is emitted and c appears nowhere in the
-        -- prompt: the command reaches the agent solely through the wrap_up
-        -- response (see WrapUpRebase and WrapUpPr in pr-workflow.allium, which
-        -- own the "Verify before exiting" line). Carrying it in both places was
-        -- duplicated context, so the prompt-side copy was removed. The
-        -- consequence is accepted rather than overlooked: wrap_up runs after the
-        -- wrap-up skill's commit step, and on the rebase path after the base
-        -- branch has been fast-forwarded, so an agent may not learn the command
-        -- until late in the session.
+        -- prompt. Carrying it there as well as in the surfaces below would be
+        -- duplicated context, so the prompt-side copy was removed.
+        --
+        -- The command reaches the agent through two surfaces instead. First,
+        -- get_task's response (see GetTaskViaMcp in mcp-task-tools.allium),
+        -- which the /wrap-up skill already calls in its Step 2 — the skill acts
+        -- on it in its own verification step, run before the closing sequence
+        -- ever calls wrap_up, so an agent following the rebase path now learns
+        -- the command and can act on it before the base branch is touched at
+        -- all. Second, and still, the wrap_up response's "Verify before
+        -- exiting" line (see WrapUpRebase, WrapUpPr and WrapUpDone in
+        -- pr-workflow.allium) — kept as a secondary reminder rather than
+        -- removed, because on the rebase path wrap_up's own git rebase step
+        -- runs between the skill's pre-check and that response, and can pull in
+        -- sibling-epic changes the pre-check could not have seen. That residual
+        -- race is not closed by this design; the response line is what an
+        -- agent has left to catch it.
         --
         -- DispatchTask emits one of two variants of build_prompt:
         --   * has_plan = false: preamble "Your task is:" and the addendum

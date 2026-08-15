@@ -3510,3 +3510,44 @@ async fn get_task_shows_wrap_up_mode_when_set() {
         "expected rebase in output, got: {text}"
     );
 }
+
+#[tokio::test]
+async fn get_task_shows_verify_command_when_configured() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+    state
+        .db_write()
+        .set_verify_command("/repo", Some("cargo test"))
+        .await
+        .unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({ "name": "get_task", "arguments": { "task_id": task_id.0 } })),
+    )
+    .await;
+    let text = extract_response_text(&resp);
+    assert!(
+        text.contains("Verify command: cargo test"),
+        "expected 'Verify command: cargo test' in output, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn get_task_omits_verify_command_when_unconfigured() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({ "name": "get_task", "arguments": { "task_id": task_id.0 } })),
+    )
+    .await;
+    let text = extract_response_text(&resp);
+    assert!(
+        !text.contains("Verify command"),
+        "expected no 'Verify command' line in output, got: {text}"
+    );
+}
