@@ -27,6 +27,7 @@
 # Scanned surfaces (or the explicit paths given as arguments):
 #   - CLAUDE.md and the topic files under docs/ that CLAUDE.md points at
 #   - docs/specs/*.allium
+#   - plugin/skills/*/SKILL.md — agent-facing skill copy
 #   - src/**/*.rs doc comments (`///`, `//!`) — where #3806's phantom lived
 #
 # Deliberately NOT scanned:
@@ -47,8 +48,15 @@
 #
 # Escape hatch: an `allow-phantom-symbol: <why>` comment on the offending line
 # or the line directly above it, mirroring `allow-test-sleep:` in
-# check-no-test-sleep.sh. Use it for deliberate references to removed code and
-# to external-crate names.
+# check-no-test-sleep.sh. Use it for deliberate references to removed code, to
+# external-crate names, and to a skill's own self-managed local-state schema
+# (field names that exist only in that skill's prose, describing a state file
+# the skill itself reads/writes — e.g. allium-loop's `.claude/allium-loop-
+# state.local.md` fields, #4195). That last case is a real false-positive
+# class, not staleness: the fields have no backing Rust/Allium declaration to
+# validate against, so indexing plugin/skills/*.md as a source would just
+# make every phantom self-validate through its own prose (see the identifier-
+# index note above).
 #
 # Behaviour is pinned by scripts/test-check-doc-symbols.sh.
 # Run from the repo root. Exits non-zero if anything is stale.
@@ -58,15 +66,12 @@ if [[ $# -gt 0 ]]; then
     TARGETS=("$@")
 else
     TARGETS=(CLAUDE.md)
-    # The prose docs and specs that exist; plus every Rust file, for its doc
-    # comments. Globs that match nothing are dropped rather than passed through.
+    # The prose docs and specs that exist, every agent-facing skill doc, plus
+    # every Rust file for its doc comments. Globs that match nothing are
+    # dropped rather than passed through.
     shopt -s nullglob
-    TARGETS+=(docs/*.md docs/specs/*.allium)
+    TARGETS+=(docs/*.md docs/specs/*.allium plugin/skills/*/SKILL.md)
     shopt -u nullglob
-    # Only this one skill file, not the full plugin/skills/*/SKILL.md glob —
-    # see the comment on the same line in test-check-doc-symbols.sh (#4152 /
-    # follow-up #4195).
-    [[ -f plugin/skills/learnings/SKILL.md ]] && TARGETS+=(plugin/skills/learnings/SKILL.md)
     mapfile -t -O "${#TARGETS[@]}" TARGETS < <(find src -name '*.rs' 2>/dev/null)
 fi
 

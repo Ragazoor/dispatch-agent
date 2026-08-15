@@ -258,19 +258,19 @@ for needed in 'docs/specs' 'CLAUDE.md' 'src'; do
     fi
 done
 
-# --- The default scan list must also cover the learnings skill (#4152), and
-# actually catch a phantom there — not just grep the checker's own source for
-# the path string, the way the loop above does for its three surfaces. ----
-# Only this one file, not the full plugin/skills/*/SKILL.md glob: the glob
-# also matches plugin/skills/allium-loop/SKILL.md, which describes its own
-# local state-file schema in prose (field names with no backing Rust/Allium
-# declaration) and would false-positive — see follow-up task #4195.
-mkdir -p "$WORKDIR/plugin/skills/learnings"
-printf 'Call `ghost_kb_function` before doing anything.\n' >"$WORKDIR/plugin/skills/learnings/SKILL.md"
+# --- The default scan list must cover every plugin skill, not one hardcoded
+# path (#4152 added only plugin/skills/learnings/SKILL.md; #4195 widened it to
+# the full plugin/skills/*/SKILL.md glob once allium-loop's local state-file
+# field names — the one real false-positive shape found — were annotated with
+# allow-phantom-symbol instead of carving that file out of the scan). Prove
+# the glob, not a name: a phantom in an arbitrarily-named skill dir must still
+# be caught.
+mkdir -p "$WORKDIR/plugin/skills/some-skill"
+printf 'Call `ghost_kb_function` before doing anything.\n' >"$WORKDIR/plugin/skills/some-skill/SKILL.md"
 out="$(cd "$WORKDIR" && bash "$CHECKER" 2>&1)" || true
-rm -f "$WORKDIR/plugin/skills/learnings/SKILL.md"
+rm -rf "$WORKDIR/plugin/skills/some-skill"
 if ! grep -q 'ghost_kb_function' <<<"$out"; then
-    echo "FAIL: default scan does not catch a phantom in plugin/skills/learnings/SKILL.md" >&2
+    echo "FAIL: default scan does not catch a phantom in an arbitrary plugin/skills/*/SKILL.md" >&2
     echo "  output: $out" >&2
     failures=$((failures + 1))
 fi

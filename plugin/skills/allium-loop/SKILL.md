@@ -22,10 +22,10 @@ rebase/tend/implement/verify/weed work itself.
 
 1. **Check for an existing active loop first.** Look for `.claude/allium-loop-state.local.md`
    with `active: true`. If found, read it and tell the user a loop is already active, including its
-   current progress (`started_at`, and `runs_completed` of `max_iterations`). Then use
-   AskUserQuestion to ask whether to:
+   current progress (`started_at`, and `runs_completed` of `max_iterations`). <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
+   Then use AskUserQuestion to ask whether to:
    - **Resume** — dispatch the next iteration using the existing file's values (do not reset
-     `runs_completed`, `retry_count`, or `consecutive_no_change_runs`).
+     `runs_completed`, `retry_count`, or `consecutive_no_change_runs`). <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
    - **Abandon** — delete the state file and continue with a fresh kickoff below.
    - **Cancel** — stop here, do nothing further.
 
@@ -63,7 +63,7 @@ rebase/tend/implement/verify/weed work itself.
 
 6. **Resolve `model`** — the model each iteration agent runs on: if the user explicitly asked for
    one when invoking the skill (e.g. "run allium-loop on opus"), use it; otherwise default to
-   `sonnet`. A run does up to `max_iterations` full iterations, so the iteration agent's model
+   `sonnet`. A run does up to `max_iterations` full iterations, so the iteration agent's model <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
    multiplies across the whole loop; sonnet is the default because the iteration agent's own work
    (rebase, `/propagate`, red check, implement, verify, commit) is mechanical. The judgement-heavy
    spec steps are not affected — see the note in step 2 of the prompt file. Recording this as a
@@ -94,7 +94,7 @@ started_at: "TIMESTAMP"
    Get the timestamp with `date -u +%Y-%m-%dT%H:%M:%SZ`.
 
 9. **Tell the user** the loop is active (naming the design doc, verify command, base branch,
-   `model`, and `max_iterations` — noting both can be changed by asking), then dispatch iteration 1
+   `model`, and `max_iterations` — noting both can be changed by asking), then dispatch iteration 1 <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
    immediately (see "Each Iteration" below).
 
 ### Each Iteration
@@ -119,15 +119,15 @@ started_at: "TIMESTAMP"
 
    - **The subagent errored, was skipped, or returned an unparseable report** — treat a report as
      unparseable if it is missing EITHER required label (`CONVERGED:` or `SUMMARY:`), not just
-     `CONVERGED:`; a partial or malformed report is an error, not a result. Read `retry_count` from
+     `CONVERGED:`; a partial or malformed report is an error, not a result. Read `retry_count` from <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
      the state file.
      - If `retry_count == 0`: set it to `1`, keep `{{ITERATION_NUMBER}}` unchanged, and
        re-dispatch the same iteration (repeat step 2 above).
-     - If `retry_count` was already `1`: delete the state file and tell the user this iteration
+     - If `retry_count` was already `1`: delete the state file and tell the user this iteration <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
        failed twice and the loop has stopped — do not retry indefinitely or silently treat this
        as "no progress."
-   - **A real report was returned** (both labels present): increment `runs_completed` in the state
-     file by exactly 1 and reset `retry_count` to `0`. Then update `consecutive_no_change_runs`: if
+   - **A real report was returned** (both labels present): increment `runs_completed` in the state <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
+     file by exactly 1 and reset `retry_count` to `0`. Then update `consecutive_no_change_runs`: if <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
      this run's `SUMMARY` reports no changes, increment it by 1; otherwise reset it to `0`.
      - **`CONVERGED: yes`**: delete `.claude/allium-loop-state.local.md` and report success to
        the user, including the final `SUMMARY`.
@@ -137,6 +137,6 @@ started_at: "TIMESTAMP"
      - **`CONVERGED: no`** and budget remains (`runs_completed < max_iterations` **and**
        `consecutive_no_change_runs < 2`): dispatch the next iteration (repeat step 1 above).
 
-   When dispatching the next iteration the number advances on its own: `runs_completed` was just
+   When dispatching the next iteration the number advances on its own: `runs_completed` was just <!-- allow-phantom-symbol: allium-loop's own state-file field, schema declared only in this skill's prose -->
    incremented, and step 1 derives the number as `runs_completed + 1`. (The retry re-dispatch above
    is the one case that deliberately reuses the same number.)
