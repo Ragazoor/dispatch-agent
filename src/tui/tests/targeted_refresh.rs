@@ -122,3 +122,84 @@ fn task_updated_fires_review_notification_on_transition() {
         "expected a SendNotification command on review transition"
     );
 }
+
+#[test]
+fn task_updated_flashes_sent_on_new_peer_message_sent_timestamp() {
+    let mut app = make_app();
+    let mut updated = app
+        .board
+        .tasks
+        .iter()
+        .find(|t| t.id == TaskId(1))
+        .cloned()
+        .expect("task 1 fixture");
+    assert!(!app.agents.message_flash_sent.contains_key(&TaskId(1)));
+
+    updated.last_peer_message_sent_at = Some(chrono::Utc::now());
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+        updated,
+    )));
+
+    assert!(
+        app.agents.message_flash_sent.contains_key(&TaskId(1)),
+        "a freshly-stamped last_peer_message_sent_at must flash the sent indicator"
+    );
+    assert!(
+        !app.agents.message_flash.contains_key(&TaskId(1)),
+        "a sent stamp must not also flash the received indicator"
+    );
+}
+
+#[test]
+fn task_updated_flashes_received_on_new_peer_message_received_timestamp() {
+    let mut app = make_app();
+    let mut updated = app
+        .board
+        .tasks
+        .iter()
+        .find(|t| t.id == TaskId(1))
+        .cloned()
+        .expect("task 1 fixture");
+    assert!(!app.agents.message_flash.contains_key(&TaskId(1)));
+
+    updated.last_peer_message_received_at = Some(chrono::Utc::now());
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+        updated,
+    )));
+
+    assert!(
+        app.agents.message_flash.contains_key(&TaskId(1)),
+        "a freshly-stamped last_peer_message_received_at must flash the received indicator"
+    );
+    assert!(!app.agents.message_flash_sent.contains_key(&TaskId(1)));
+}
+
+#[test]
+fn task_updated_does_not_reflash_an_unchanged_peer_message_timestamp() {
+    let mut app = make_app();
+    let stamp = chrono::Utc::now();
+    let mut updated = app
+        .board
+        .tasks
+        .iter()
+        .find(|t| t.id == TaskId(1))
+        .cloned()
+        .expect("task 1 fixture");
+    updated.last_peer_message_sent_at = Some(stamp);
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+        updated.clone(),
+    )));
+    assert!(app.agents.message_flash_sent.contains_key(&TaskId(1)));
+
+    // Manually clear the tracked flash to prove the second update, carrying
+    // the *same* timestamp, does not re-insert it.
+    app.agents.message_flash_sent.remove(&TaskId(1));
+    app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
+        updated,
+    )));
+
+    assert!(
+        !app.agents.message_flash_sent.contains_key(&TaskId(1)),
+        "an unchanged last_peer_message_sent_at must not re-trigger the flash"
+    );
+}

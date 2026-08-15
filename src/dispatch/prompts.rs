@@ -51,7 +51,9 @@ impl EpicContext {
         format!(
             "\n\nThis task is part of epic #{}: {}\n\
             To find other tasks in this epic, call list_tasks with epic_id={}.\n\
-            To ask questions or send updates to sibling agents, use send_message with their task ID.",
+            To ask questions or send updates to a sibling agent, use ListAgents to find its \
+            session (named task-<id>, matching that task's own id) and message it directly \
+            with SendMessage.",
             self.epic_id, self.epic_title, self.epic_id
         )
     }
@@ -64,7 +66,15 @@ pub(super) fn build_tmux_window_name(task_id: TaskId) -> String {
 /// Inverse of [`build_tmux_window_name`]: recover the task id from a tmux
 /// window name, or `None` for any window that isn't a task-agent window
 /// (the board's own TUI window, the main-session window, anything else).
-pub(super) fn parse_tmux_window_task_id(window: &str) -> Option<TaskId> {
+///
+/// `pub(crate)` rather than `pub(super)`: the same `task-<id>` string also
+/// names a task's native cross-session-messaging session
+/// ([`super::agents::session_name_flag`]), so
+/// `TaskService::record_peer_message_sent`'s target resolution
+/// (`src/service/tasks/crud.rs`) parses a `SendMessage` call's `to` field
+/// through this exact function too, rather than a second copy of the same
+/// `strip_prefix("task-")` logic that could drift from this one.
+pub(crate) fn parse_tmux_window_task_id(window: &str) -> Option<TaskId> {
     window.strip_prefix("task-")?.parse().ok()
 }
 

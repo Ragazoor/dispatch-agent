@@ -32,6 +32,10 @@ async fn subscribe_then_finish_delivers_notification() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let mock = Arc::new(
         MockProcessRunner::new(vec![
+            // tmux capture-pane -p — reports the watcher's pane idle at its
+            // own chat input, so notify::notify_tmux's readiness probe lets
+            // the nudge through.
+            MockProcessRunner::ok_with_stdout(b"> \nauto mode on (shift+tab to cycle) - 1 agent\n"),
             MockProcessRunner::ok(), // tmux send-keys -l (notification text)
             MockProcessRunner::ok(), // tmux send-keys Enter
         ])
@@ -137,34 +141,41 @@ async fn subscribe_then_finish_delivers_notification() {
         .await
         .unwrap();
 
-    // 6. Assert the MockProcessRunner recorded a tmux send-keys call for A's
-    //    window (2 calls, matching the established send_keys convention:
-    //    `-l` then `Enter`).
+    // 6. Assert the MockProcessRunner recorded a capture-pane readiness check
+    //    followed by a tmux send-keys call for A's window (3 calls total:
+    //    capture-pane, then the established send_keys convention of `-l`
+    //    then `Enter`).
     let calls = mock.recorded_calls();
     assert_eq!(
         calls.len(),
-        2,
-        "expected one tmux notification (send-keys -l + send-keys Enter): {calls:?}"
+        3,
+        "expected a capture-pane check plus one tmux notification (send-keys -l + send-keys Enter): {calls:?}"
     );
     assert_eq!(calls[0].0, "tmux");
     assert!(
-        calls[0].1.contains(&"-l".to_string()),
-        "first call should be send-keys -l: {:?}",
+        calls[0].1.contains(&"capture-pane".to_string()),
+        "first call should be the pane-readiness check: {:?}",
         calls[0]
+    );
+    assert_eq!(calls[1].0, "tmux");
+    assert!(
+        calls[1].1.contains(&"-l".to_string()),
+        "second call should be send-keys -l: {:?}",
+        calls[1]
     );
     // A's window is targeted by its resolved pane ID, not its name — tmux
     // resolves a bare `-t <name>` by prefix, so every window target goes through
     // `tmux::window_target` first.
     assert!(
-        calls[0].1.contains(&mock.pane_id_of("task-watcher")),
-        "first call should target A's tmux window: {:?}",
-        calls[0]
-    );
-    assert_eq!(calls[1].0, "tmux");
-    assert!(
-        calls[1].1.contains(&"Enter".to_string()),
-        "second call should be send-keys Enter: {:?}",
+        calls[1].1.contains(&mock.pane_id_of("task-watcher")),
+        "send-keys -l should target A's tmux window: {:?}",
         calls[1]
+    );
+    assert_eq!(calls[2].0, "tmux");
+    assert!(
+        calls[2].1.contains(&"Enter".to_string()),
+        "third call should be send-keys Enter: {:?}",
+        calls[2]
     );
 
     // 7. Assert a file was written under A's worktree's .claude-messages/ directory.

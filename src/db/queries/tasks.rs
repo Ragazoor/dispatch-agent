@@ -141,6 +141,8 @@ struct OwnedTaskPatch {
     external_id: Option<Option<String>>,
     last_pre_tool_use_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
     last_notification_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    last_peer_message_sent_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
+    last_peer_message_received_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
     wrap_up_mode: Option<Option<WrapUpMode>>,
     auto_run_plan: Option<bool>,
     stop_pending: Option<bool>,
@@ -165,6 +167,8 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             labels: _, // pre-serialised to JSON before db_call; see patch_task
             last_pre_tool_use_at,
             last_notification_at,
+            last_peer_message_sent_at,
+            last_peer_message_received_at,
             wrap_up_mode,
             auto_run_plan,
             stop_pending,
@@ -185,6 +189,8 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             external_id: external_id.map(|o| o.map(str::to_string)),
             last_pre_tool_use_at,
             last_notification_at,
+            last_peer_message_sent_at,
+            last_peer_message_received_at,
             wrap_up_mode,
             auto_run_plan,
             stop_pending,
@@ -424,6 +430,22 @@ impl super::super::TaskCrud for Database {
                     .last_notification_at
                     .map(|opt| opt.map(super::format_datetime)),
                 "last_notification_at"
+            );
+            set_field!(
+                sets,
+                values,
+                patch
+                    .last_peer_message_sent_at
+                    .map(|opt| opt.map(super::format_datetime)),
+                "last_peer_message_sent_at"
+            );
+            set_field!(
+                sets,
+                values,
+                patch
+                    .last_peer_message_received_at
+                    .map(|opt| opt.map(super::format_datetime)),
+                "last_peer_message_received_at"
             );
             set_field!(
                 sets,

@@ -1680,6 +1680,114 @@ async fn message_flash_render_and_sweep_share_one_threshold() {
 }
 
 #[tokio::test]
+async fn render_card_message_flash_sent_shows_outgoing_glyph() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.sub_status = SubStatus::Active;
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.tmux_window = Some("task-1".to_string());
+    let mut app = App::new(vec![task]);
+    app.agents
+        .message_flash_sent
+        .insert(TaskId(1), Instant::now());
+    app.update(Message::NavigateColumn(1)); // Running column
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        buffer_contains(&buf, "\u{27a4}"),
+        "Running task with message_flash_sent set should show '\u{27a4}' (outgoing arrow)"
+    );
+    assert!(
+        !buffer_contains(&buf, "\u{2709}"),
+        "a sent-only flash must not also show the received envelope"
+    );
+}
+
+#[tokio::test]
+async fn render_card_message_flash_sent_expires_once_past_its_ttl() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.sub_status = SubStatus::Active;
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.tmux_window = Some("task-1".to_string());
+    let mut app = App::new(vec![task]);
+    let ttl = crate::tui::MESSAGE_FLASH_TTL.as_secs();
+    let stamped = Instant::now()
+        .checked_sub(Duration::from_secs(ttl + 1))
+        .expect("monotonic clock must reach back far enough to age a flash");
+    app.agents.message_flash_sent.insert(TaskId(1), stamped);
+    app.update(Message::NavigateColumn(1));
+    let _ = app.handle_tick();
+    assert!(
+        !app.agents.message_flash_sent.contains_key(&TaskId(1)),
+        "a sent-flash older than {ttl}s must be swept from the tracking map"
+    );
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        !buffer_contains(&buf, "\u{27a4}"),
+        "an expired sent-flash must not render the outgoing glyph"
+    );
+}
+
+#[tokio::test]
+async fn a_sent_flash_expiring_marks_the_app_dirty() {
+    // mark_tick_dirty's dirty check only diffed message_flash's length before
+    // and after a tick — it never looked at message_flash_sent, so a sent-only
+    // flash (no matching change to message_flash) expiring on its own would
+    // never mark the app dirty, and the stale ➤ glyph would keep rendering
+    // until an unrelated event happened to set app.dirty.
+    let mut task = make_task(1, TaskStatus::Running);
+    task.sub_status = SubStatus::Active;
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.tmux_window = Some("task-1".to_string());
+    // Seed recent activity so `tick_sub_status` reclassifies nothing this
+    // tick — otherwise its own `self.dirty = true` on a sub_status change
+    // would mask the bug this test targets. Same reasoning as
+    // `app_with_flash_on_a_non_cursor_card` above.
+    task.last_pre_tool_use_at = Some(Utc::now());
+    let mut app = App::new(vec![task]);
+    let ttl = crate::tui::MESSAGE_FLASH_TTL.as_secs();
+    let stamped = Instant::now()
+        .checked_sub(Duration::from_secs(ttl + 1))
+        .expect("monotonic clock must reach back far enough to age a flash");
+    app.agents.message_flash_sent.insert(TaskId(1), stamped);
+    app.update(Message::NavigateColumn(1));
+    app.dirty = false;
+
+    let _ = app.handle_tick();
+
+    assert!(
+        !app.agents.message_flash_sent.contains_key(&TaskId(1)),
+        "precondition: the sent-flash must actually have been swept"
+    );
+    assert!(
+        app.dirty,
+        "the tick that sweeps an expired sent-flash must mark the app dirty, \
+         or the stale outgoing-arrow glyph keeps rendering"
+    );
+}
+
+#[tokio::test]
+async fn render_card_message_flash_shows_both_glyphs_when_sent_and_received() {
+    let mut task = make_task(1, TaskStatus::Running);
+    task.sub_status = SubStatus::Active;
+    task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
+    task.tmux_window = Some("task-1".to_string());
+    let mut app = App::new(vec![task]);
+    app.agents.message_flash.insert(TaskId(1), Instant::now());
+    app.agents
+        .message_flash_sent
+        .insert(TaskId(1), Instant::now());
+    app.update(Message::NavigateColumn(1));
+    let buf = render_to_buffer(&mut app, 120, 30);
+    assert!(
+        buffer_contains(&buf, "\u{2709}"),
+        "a task both sent and received must still show the envelope"
+    );
+    assert!(
+        buffer_contains(&buf, "\u{27a4}"),
+        "a task both sent and received must still show the outgoing arrow"
+    );
+}
+
+#[tokio::test]
 async fn render_detail_task_with_tag_shows_tag() {
     let mut task = make_task(1, TaskStatus::Backlog);
     task.tag = Some(TaskTag::Bug);

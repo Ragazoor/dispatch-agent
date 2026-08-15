@@ -324,6 +324,14 @@ pub struct Task {
     pub updated_at: DateTime<Utc>,
     pub last_pre_tool_use_at: Option<DateTime<Utc>>,
     pub last_notification_at: Option<DateTime<Utc>>,
+    /// Stamped by `dispatch hook <id> peer-message` (task #4098) when this
+    /// task's agent is observed calling the native `SendMessage` tool. Drives
+    /// the TUI's "sent" flash — see `docs/specs/agent-health.allium`'s
+    /// `HookPeerMessageSent`.
+    pub last_peer_message_sent_at: Option<DateTime<Utc>>,
+    /// Stamped on the *resolved target* task's row by the same hook
+    /// observation. Drives the TUI's "received" flash.
+    pub last_peer_message_received_at: Option<DateTime<Utc>>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
     /// Number of subagents currently executing for this task. Denormalised
@@ -1794,6 +1802,8 @@ mod model_tests {
             updated_at: now,
             last_pre_tool_use_at: None,
             last_notification_at: None,
+            last_peer_message_sent_at: None,
+            last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
             live_subagents: 0,

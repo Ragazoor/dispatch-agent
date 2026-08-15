@@ -247,13 +247,6 @@ impl App {
         }
     }
 
-    pub(in crate::tui) fn handle_message_received(&mut self, id: TaskId) -> Vec<Command> {
-        self.agents
-            .message_flash
-            .insert(id, std::time::Instant::now());
-        vec![]
-    }
-
     pub(in crate::tui) fn handle_open_in_browser(&self, url: String) -> Vec<Command> {
         vec![Command::System(
             crate::tui::commands::SystemCommand::OpenInBrowser { url },

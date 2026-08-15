@@ -480,10 +480,21 @@ pub(super) fn build_task_list_item<'a>(
         .message_flash
         .get(&task.id)
         .is_some_and(|t| t.elapsed() < crate::tui::MESSAGE_FLASH_TTL);
+    // Sent-flash sibling (task #4098): a distinct glyph, same fill/TTL. Both
+    // can be true at once — a task that sent and received within the same
+    // window shows both glyphs, per core.allium's "Message flash".
+    let has_message_flash_sent = app
+        .agents
+        .message_flash_sent
+        .get(&task.id)
+        .is_some_and(|t| t.elapsed() < crate::tui::MESSAGE_FLASH_TTL);
+    let any_message_flash = has_message_flash || has_message_flash_sent;
 
-    // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + optional flash(" ✉", 2)
+    // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + optional flash glyphs
+    // (" ✉"/" ➤", 2 each)
     let id_len = task.id.0.unsigned_abs().max(1).ilog10() as usize + 1;
-    let flash_width = if has_message_flash { 2 } else { 0 };
+    let flash_width =
+        if has_message_flash { 2 } else { 0 } + if has_message_flash_sent { 2 } else { 0 };
     let prefix_width = 2 + 1 + 3 + id_len + flash_width + CARD_CHROME_WIDTH;
     let max_title = (col_width as usize).saturating_sub(prefix_width);
     let title_text = format_task_title(task, max_title);
@@ -511,6 +522,9 @@ pub(super) fn build_task_list_item<'a>(
     if has_message_flash {
         line1_spans.push(Span::styled(" \u{2709}", Style::default().fg(YELLOW)));
     }
+    if has_message_flash_sent {
+        line1_spans.push(Span::styled(" \u{27a4}", Style::default().fg(YELLOW)));
+    }
 
     let line1 = Line::from(line1_spans);
 
@@ -532,16 +546,19 @@ pub(super) fn build_task_list_item<'a>(
     // the card you just navigated to, which is worse.
     //
     // The flash contributes nothing here. It is carried by its fill and its
-    // envelope glyph, which are the two things no other card has.
+    // glyph(s) — envelope for received, outgoing arrow for sent — which are
+    // the only things no other card has.
     let frame_color = resolve_frame_color(is_cursor, state_border);
     // A flash replaces the card surface for its duration; that differing fill is
     // what keeps it distinguishable from the selection despite sharing the hue.
+    // Sent and received share one fill — the glyph, not the fill, carries the
+    // direction.
     //
     // The selected card asks for its own surface even though
     // `SelectionDoesNotLiftTheFill` pins it equal to a resting card's. Routing
     // the call this way keeps the equality load-bearing: if the two ever diverge,
     // the render follows and `selection_does_not_lift_the_fill` fails.
-    let surface = if has_message_flash {
+    let surface = if any_message_flash {
         FLASH_BG
     } else if is_cursor {
         selected_card_surface_color()
@@ -553,7 +570,7 @@ pub(super) fn build_task_list_item<'a>(
     // Base style for the whole card, so the frame rows inherit the surface and
     // the card reads as one lit object. Margin spans override back to ground.
     let mut style = Style::default().bg(surface).fg(FG);
-    if has_message_flash {
+    if any_message_flash {
         style = style.add_modifier(Modifier::BOLD);
     }
     item = item.style(style);

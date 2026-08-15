@@ -1385,11 +1385,17 @@ value VisualColumn {
 --
 -- == Message flash ==
 --
--- When a message is delivered to a task, that task's card flashes for
--- config.message_flash_ttl: an envelope glyph and a distinct warm fill.
--- Its border is the resting neutral, exactly like any other card's — the
--- flash does not colour the border at all, and takes no exception to the
--- border rules in "Card border: cursor and state".
+-- When a task sends or receives a native cross-session message (task #4098
+-- — Claude Code's own SendMessage, observed via the hook pipeline; see
+-- HookPeerMessageSent in agent-health.allium), that task's card flashes for
+-- config.message_flash_ttl: a direction-specific glyph and a distinct warm
+-- fill. A card that received a message shows an envelope (✉); one that sent
+-- one shows an outgoing arrow (➤); a card that did both within the same
+-- window shows both glyphs, since sender and receiver are just two rows this
+-- rule can independently mark true. Its border is the resting neutral,
+-- exactly like any other card's — the flash does not colour the border at
+-- all, and takes no exception to the border rules in "Card border: cursor
+-- and state".
 --
 -- The duration is a notice, not a blink. It is set long enough that a
 -- human whose attention is elsewhere — reading a diff, watching another
@@ -1400,9 +1406,12 @@ value VisualColumn {
 --
 -- Fill and glyph are enough on their own: a flashing card is the only card
 -- on the board whose fill differs from the shared card surface, and it
--- carries a glyph no other card has. (It also applies bold to the whole
--- card rather than to the title alone — see "Selection", where that is one
--- of the reasons bold carries no cursor meaning by itself.)
+-- carries a glyph no other card has — the sent/received split is expressed
+-- entirely as which glyph(s) appear, not as a second fill; both directions
+-- share the one warm fill, per the same "no third vocabulary on this
+-- surface" reasoning below. (It also applies bold to the whole card rather
+-- than to the title alone — see "Selection", where that is one of the
+-- reasons bold carries no cursor meaning by itself.)
 --
 -- The flash used to take the column's identity hue on its border, as a
 -- named exception to a rule that no longer exists. What forced the change

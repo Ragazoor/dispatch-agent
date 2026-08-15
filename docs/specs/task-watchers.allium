@@ -8,11 +8,14 @@
 --           Archive/PR-merge/exit_session/dispatch-update paths that
 --           produce the Done/Archived transitions this spec reacts to
 --           (see tasks.allium); the subscribe_to_task/unsubscribe_from_task
---           MCP tool argument contracts (see mcp-task-tools.allium); the
---           tmux-injection + .claude-messages delivery mechanism itself,
---           which this spec reuses rather than redefining (TmuxNotificationSent,
---           see SendMessageViaMcp in mcp-task-tools.allium); domain model
---           (see core.allium).
+--           MCP tool argument contracts (see mcp-task-tools.allium); domain
+--           model (see core.allium). The tmux-injection + .claude-messages
+--           delivery mechanism (write_message_file/notify_tmux,
+--           src/notify.rs) is owned by this spec's own
+--           DeliverWatcherNotification rule below — agent-initiated
+--           messaging no longer shares it (see mcp-task-tools.allium's note
+--           on why send_message was replaced by native cross-session
+--           messaging).
 
 use "./core.allium" as core
 
@@ -238,26 +241,43 @@ rule DeliverWatcherNotification {
 
     ensures:
         if reason = finished:
-            TmuxNotificationSent(to: watcher_task, about: task_finished)
+            if TmuxWindowIsReadyForInput(watcher_task):
+                TmuxNotificationSent(to: watcher_task, about: task_finished)
+            else:
+                MessageQueuedNoNudge(to: watcher_task, about: task_finished)
         else:
-            TmuxNotificationSent(to: watcher_task, about: task_deleted)
+            if TmuxWindowIsReadyForInput(watcher_task):
+                TmuxNotificationSent(to: watcher_task, about: task_deleted)
+            else:
+                MessageQueuedNoNudge(to: watcher_task, about: task_deleted)
 
     @guidance
-        -- Reuses the exact same delivery primitives SendMessageViaMcp uses
-        -- (see mcp-task-tools.allium): a timestamped, uniquely-suffixed file
-        -- written under <watcher_task.worktree>/.claude-messages/ (the
-        -- filename formula, including the collision-safe counter segment,
-        -- is owned by mcp-task-tools.allium), followed by a
-        -- tmux send-keys nudge pointing at it. The shared primitives are
-        -- write_message_file and notify_tmux (src/notify.rs), called from
-        -- both handle_send_message and this rule's own
-        -- deliver_watch_notification helper (src/service/tasks/watchers.rs)
-        -- — the low-level file-write/tmux-send-keys mechanics are not
-        -- reimplemented, though each call site still builds its own
-        -- message body and wraps its own spawn_blocking call.
+        -- Delivery primitives: a timestamped, uniquely-suffixed file written
+        -- under <watcher_task.worktree>/.claude-messages/ (filename formula,
+        -- including the collision-safe counter segment, owned by
+        -- write_message_file, src/notify.rs), followed by a tmux send-keys
+        -- nudge pointing at it — write_message_file and notify_tmux
+        -- (src/notify.rs), called from this rule's own
+        -- deliver_watch_notification helper (src/service/tasks/watchers.rs).
         -- Message body distinguishes the two reasons: task_finished names
         -- target_task's title and its new status; task_deleted states the
         -- task was deleted, not finished.
+        --
+        -- Before injecting the nudge, notify_tmux captures the watcher's
+        -- pane (`tmux capture-pane -p`) and checks whether its last
+        -- non-blank line shows Claude Code's idle-chat-input status footer
+        -- (`TmuxWindowIsReadyForInput`, task #4098) — present only when the
+        -- watcher is at its own input, absent during a permission prompt, a
+        -- plan-mode/elicitation dialog, or a pager. When absent, the nudge
+        -- is withheld (`MessageQueuedNoNudge`): the message file is kept
+        -- (it's queued, not failed) and no keystrokes are sent. Reproduced
+        -- concretely in
+        -- docs/superpowers/specs/2026-08-15-send-message-delivery-hardening-design.md:
+        -- the identical send-keys sequence, injected into a real plan-mode
+        -- dialog, silently answered a multiple-choice question instead of
+        -- being read. A hard failure (the window itself can't be resolved
+        -- or captured) is unaffected by this rule — that path is unchanged
+        -- and still surfaces as a log warning, not delivery.
 }
 
 rule DeadWatcherDrop {

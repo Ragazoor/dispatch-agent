@@ -2,13 +2,15 @@
 -- mcp-task-tools.allium
 --
 -- Scope: MCP tools for task management (create, get, update, list,
---        dispatch, send-message, subscribe/unsubscribe-to-task, query-usage,
+--        dispatch, subscribe/unsubscribe-to-task, query-usage,
 --        set-verify-command) and the CLI plan-attachment surface.
 -- Excludes: Task lifecycle (see tasks.allium); dispatch/retry (see dispatch.allium);
 --           MCP epic tools (see epics.allium); learnings tools (see learnings.allium);
 --           repo indexing / semantic search (see repo-rag.allium); the
 --           task-watcher domain rules underlying subscribe_to_task/
---           unsubscribe_from_task (see task-watchers.allium).
+--           unsubscribe_from_task (see task-watchers.allium); agent-to-agent
+--           messaging, which is no longer a dispatch MCP tool — see
+--           HookPeerMessageSent in agent-health.allium.
 
 use "./core.allium" as core
 
@@ -444,48 +446,31 @@ rule DispatchTaskViaMcp {
         -- that never won the claim releases nothing.
 }
 
-rule SendMessageViaMcp {
-    when: McpSendMessage(from_task, to_task, body)
-
-    requires: from_task != null
-    requires: to_task != null
-    requires: to_task.worktree != null
-    requires: to_task.tmux_window != null
-
-    ensures: MessageDelivered(
-        from: from_task,
-        to: to_task,
-        path: to_task.worktree + "/.claude-messages/" + from_task.id + "-" + timestamp_ms() + "-" + next_message_seq() + ".md"
-    )
-    ensures: TmuxNotificationSent(to: to_task, about: message_received)
-
-    @guidance
-        -- Inter-agent messaging. An agent writes a message file into the
-        -- target agent's worktree under .claude-messages/, using a
-        -- filename of `<from_task.id>-<unix_epoch_millis>-<seq>.md`, where
-        -- `<seq>` is a process-wide monotonic counter incremented on every
-        -- message-file write. The timestamp alone is not unique: two writes
-        -- landing in the same millisecond (concurrent sends, or a watcher
-        -- notification racing a send) would collide and the second write
-        -- would silently overwrite the first. No caller parses the
-        -- filename — it is passed back opaquely in the tmux nudge — so the
-        -- counter segment is purely a uniqueness guarantee. The file
-        -- contents begin with `[Message from task <id>: "<title>"]`
-        -- followed by the body text.
-        -- After writing the file, a tmux notification is injected via
-        -- `tmux send-keys` telling the target to read and delete the
-        -- file. If send-keys fails, the message file is removed and
-        -- an error is returned to the caller.
-        -- The TUI shows an envelope flash on the target task's card
-        -- (message_flash tracking state, cleared after
-        -- core/config.message_flash_ttl) via the MessageSent MCP event and
-        -- the MessageReceived message. The duration and appearance are
-        -- specified once, in core.allium ("Message flash"); this rule only
-        -- triggers the flash and does not restate the number.
-        -- Both tasks must exist. The target must have an active worktree
-        -- and tmux window (i.e. a running agent). The sender has no
-        -- such constraint — it only needs to exist.
-}
+-- Inter-agent messaging no longer has a dispatch MCP tool. It was
+-- `send_message` (from_task_id, to_task_id, body) → a message file under the
+-- target's worktree + a `tmux send-keys` nudge — replaced (task #4098) after
+-- reproducing that the nudge could land on a permission prompt or
+-- plan-mode/elicitation dialog instead of the agent's chat input, silently
+-- answering it rather than being read. See
+-- docs/superpowers/specs/2026-08-15-send-message-delivery-hardening-design.md
+-- for that reproduction.
+--
+-- Agents now use Claude Code's own native `ListAgents`/`SendMessage` tools
+-- directly, addressed by the `task-<id>` session name dispatch assigns at
+-- launch (`dispatch.allium`'s `DispatchTask`/`ResumeTask`). Delivery is
+-- queued and read between tool calls — it cannot land on a dialog, because
+-- it never touches the pane's raw stdin. Dispatch never sits in the call
+-- path; it only observes the sender's own tool call via the existing Claude
+-- Code hook pipeline to drive the TUI flash and reconstruct an audit entry —
+-- see `HookPeerMessageSent` in `agent-health.allium`.
+--
+-- Task-watcher completion/deletion notices (`task-watchers.allium`) are a
+-- different case — dispatch's own background service fires them with no
+-- live agent turn to piggyback a native tool call on — so they remain on the
+-- file+tmux-send-keys transport, hardened instead of replaced: see
+-- `DeliverWatcherNotification` in `task-watchers.allium` and
+-- `2026-08-15-send-message-delivery-hardening-design.md`'s pane-content
+-- probe.
 
 rule SubscribeToTaskViaMcp {
     when: McpSubscribeToTask(watcher_task, target_task)
@@ -500,8 +485,8 @@ rule SubscribeToTaskViaMcp {
         -- one-shot watch: watcher_task is notified via a tmux-injected
         -- message once target_task reaches Done or Archived (or is deleted
         -- first). Both ids must resolve to existing tasks — an unresolved
-        -- id is rejected the same way from_task_id/to_task_id are rejected
-        -- in send_message.
+        -- id is rejected the same way any other MCP tool rejects a task id
+        -- that does not exist.
         -- Self-watch rejection, the already_finished short-circuit, and
         -- idempotency on an existing unfinished (watcher, target) pair are
         -- all enforced by the underlying SubscribeToTask rule — see

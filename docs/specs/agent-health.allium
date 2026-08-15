@@ -766,6 +766,70 @@ rule HookNotification {
         -- lifecycle steps that agents must not perform on their own.
 }
 
+rule HookPeerMessageSent {
+    -- Fires when a task's agent calls Claude Code's native `SendMessage`
+    -- tool (task #4098). Dispatch never performs this delivery itself —
+    -- agents message each other directly, addressed by the `task-<id>`
+    -- session name dispatch assigns at launch — this rule only observes the
+    -- call, via the same Claude Code hook pipeline as HookPreToolUse /
+    -- HookNotification, to drive the TUI flash and reconstruct an audit
+    -- trail. See mcp-task-tools.allium's note on why `send_message` (the
+    -- former MCP tool) was replaced by this.
+    -- SendMessageObserved is PostToolUse already filtered to tool = "SendMessage"
+    -- — mirrors agent-tree.allium's AgentFileToolCompleted, a named,
+    -- pre-filtered trigger rather than a raw PostToolUse annotated with a
+    -- literal tool name (which isn't valid trigger syntax for a listening
+    -- rule; literal annotations are only for trigger *emissions*).
+    when: SendMessageObserved(sender, to, message)
+
+    let target = core/Task.find_by_session_name(to)
+
+    ensures: sender.last_peer_message_sent_at = now
+    ensures:
+        if target != null:
+            target.last_peer_message_received_at = now
+
+    @guidance
+        -- `tool_input.to` is Claude Code's own field name for the message's
+        -- addressee (not `name` — verified against the live tool schema,
+        -- since the docs describing this feature don't spell out the
+        -- payload shape). It may carry a disambiguating `" [ref]"` suffix
+        -- per `ListAgents`' listing format; `parse_peer_message_target_name`
+        -- (src/service/tasks/crud.rs — the `core/Task.find_by_session_name`
+        -- of the rule body above) strips it before delegating to
+        -- `parse_tmux_window_task_id` (src/dispatch/prompts.rs), the same
+        -- parser tmux window names go through, so the two conventions
+        -- cannot drift apart.
+        -- A `to` that doesn't parse to that shape, or a task id that no
+        -- longer exists, is not an error — the sender addressed a session
+        -- outside dispatch's own fleet, or one since deleted — only
+        -- `sender.last_peer_message_sent_at` is stamped in that case.
+        --
+        -- Implemented by `dispatch hook-peer-message <sender_id> --target
+        -- <to> --body <message>` (src/main.rs, cmd_hook_peer_message),
+        -- invoked from `plugin/hooks/scripts/task-status-hook`'s
+        -- `PostToolUse` case — additive alongside that same case's existing
+        -- file-event forwarding, gated on `tool_name == "SendMessage"`
+        -- rather than the `mcp__dispatch__*` skip (a native tool call is
+        -- never skipped by that filter). `TaskService::record_peer_message_sent`
+        -- (src/service/tasks/crud.rs) does the two stamps and also appends a
+        -- `SendMessage` trajectory entry for the sender
+        -- (`src/mcp/trajectory.rs::append_entry`, called directly from the
+        -- CLI process) — the only audit record this call gets, since it
+        -- never reaches dispatch's own MCP server.
+        --
+        -- Both timestamps are read by the TUI's tick-driven task diff
+        -- (`detect_task_transition_notifications`, src/tui/update/agent.rs)
+        -- the same way `last_notification_at` already drives `needs_input`
+        -- detection: a changed value inserts into the corresponding
+        -- sent/received flash map. See core.allium's "Message flash" for the
+        -- rendering contract.
+        --
+        -- Only `PostToolUse` fires this — `PreToolUse` for the same call is
+        -- ignored, since the message hasn't actually been sent until the
+        -- tool call completes.
+}
+
 ------------------------------------------------------------
 -- Open Questions
 ------------------------------------------------------------

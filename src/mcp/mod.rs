@@ -30,8 +30,6 @@ pub enum McpEvent {
     /// A single epic changed — reload just that row (and the epic's task list,
     /// since feed-sync changes appear here as a batch update for the epic).
     EpicChanged(EpicId),
-    /// A message was sent to an agent — flash the target task's card.
-    MessageSent { to_task_id: TaskId },
     /// A `wrap_up(rebase)` succeeded, so the repository's local base branch was
     /// just fast-forwarded and its drift changed (docs/specs/repo-sync.allium:
     /// rule RefreshRepoSyncStateAfterRebase). Carries the repository taken from
@@ -209,12 +207,6 @@ impl McpState {
     #[cfg(test)]
     pub(crate) fn db_write(&self) -> &Arc<dyn db::TaskStore> {
         &self.test_hooks.db_write
-    }
-
-    pub fn notify_message_sent(&self, to_task_id: TaskId) {
-        if let Some(tx) = &self.notify_tx {
-            let _ = tx.send(McpEvent::MessageSent { to_task_id });
-        }
     }
 
     /// Notify the runtime that a single task changed. Prefer this over

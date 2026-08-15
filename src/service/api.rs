@@ -234,12 +234,6 @@ macro_rules! task_service_api {
                 outcome: $crate::service::CloseSessionOutcome
             ) -> Result<$crate::service::ClosedSession, $crate::service::ServiceError>;
 
-            async fn validate_send_message(
-                &self,
-                from_task_id: $crate::models::TaskId,
-                to_task_id: $crate::models::TaskId
-            ) -> Result<($crate::models::Task, $crate::models::Task), $crate::service::ServiceError>;
-
             async fn record_hook_event(
                 &self,
                 id: $crate::models::TaskId,

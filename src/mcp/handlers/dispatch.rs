@@ -334,20 +334,8 @@ the resulting URL to exit_session (not to wrap_up).",
             "required": ["task_id"]
         };
 
-    async "send_message" => tasks::handle_send_message,
-        "Send a message/prompt to another running agent. The message is written to a file in the target's worktree and a notification is injected into their tmux window. Fire-and-forget — no response tracking.",
-        {
-            "type": "object",
-            "properties": {
-                "from_task_id": { "type": "integer", "description": "Your own task ID (the sender)" },
-                "to_task_id": { "type": "integer", "description": "Target agent's task ID" },
-                "body": { "type": "string", "description": "Message content to send to the other agent" }
-            },
-            "required": ["from_task_id", "to_task_id", "body"]
-        };
-
     async "subscribe_to_task" => tasks::handle_subscribe_to_task,
-        "Subscribe to be notified when another task finishes (reaches Done or Archived) or is deleted first. If the target has already finished, you're told immediately instead of being subscribed. Delivery is a one-shot tmux nudge, same mechanism as send_message.",
+        "Subscribe to be notified when another task finishes (reaches Done or Archived) or is deleted first. If the target has already finished, you're told immediately instead of being subscribed. Delivery is a one-shot tmux nudge (write_message_file + notify_tmux).",
         {
             "type": "object",
             "properties": {

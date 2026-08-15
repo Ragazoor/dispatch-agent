@@ -56,6 +56,19 @@ case "$EVENT" in
                 dispatch hook-file-event "$ID" --tool "$TOOL" --path "$FILE_PATH"
             fi
 
+            # Additive: observe native cross-session SendMessage calls so the
+            # TUI can flash both the sender's and the resolved target's card
+            # (task #4098). Dispatch never performs this delivery itself —
+            # agents call SendMessage directly — this only records that it
+            # happened.
+            if [[ "$TOOL" == "SendMessage" ]]; then
+                MSG_TO=$(echo "$INPUT" | jq -r '.tool_input.to // empty')
+                MSG_BODY=$(echo "$INPUT" | jq -r '.tool_input.message // empty')
+                if [[ -n "$MSG_TO" ]]; then
+                    dispatch hook-peer-message "$ID" --target "$MSG_TO" --body "$MSG_BODY"
+                fi
+            fi
+
             # Additive, independent of the file-event switch above: forward
             # backgrounded-shell lifecycle signals to `dispatch hook-shell`.
             # See docs/superpowers/specs/2026-08-15-shell-visibility-design.md.

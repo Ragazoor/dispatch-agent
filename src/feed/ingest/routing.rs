@@ -152,6 +152,8 @@ mod tests {
             updated_at: now,
             last_pre_tool_use_at: None,
             last_notification_at: None,
+            last_peer_message_sent_at: None,
+            last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
             live_subagents: 0,

@@ -113,6 +113,7 @@ pub(super) const TASK_COLUMNS: &str =
     "id, title, description, repo_path, status, worktree, tmux_window, \
      plan_path, epic_id, sub_status, url, url_type, tag, sort_order, base_branch, external_id, \
      created_at, updated_at, labels, last_pre_tool_use_at, last_notification_at, \
+     last_peer_message_sent_at, last_peer_message_received_at, \
      wrap_up_mode, auto_run_plan, live_subagents, stop_pending, \
      live_shells, oldest_live_shell_started_at";
 
@@ -226,6 +227,11 @@ pub(super) fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         updated_at: parse_datetime(&updated_str)?,
         last_pre_tool_use_at: read_optional_datetime(row, "last_pre_tool_use_at")?,
         last_notification_at: read_optional_datetime(row, "last_notification_at")?,
+        last_peer_message_sent_at: read_optional_datetime(row, "last_peer_message_sent_at")?,
+        last_peer_message_received_at: read_optional_datetime(
+            row,
+            "last_peer_message_received_at",
+        )?,
         wrap_up_mode: parse_wrap_up_mode(row.get("wrap_up_mode")?)?,
         auto_run_plan: row.get("auto_run_plan")?,
         live_subagents: row.get("live_subagents")?,

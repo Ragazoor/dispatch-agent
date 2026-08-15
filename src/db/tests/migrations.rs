@@ -373,6 +373,24 @@ async fn v50_adds_hook_timestamp_columns() {
 }
 
 #[tokio::test]
+async fn v87_adds_peer_message_columns() {
+    let db = in_memory_db().await;
+    let count: i64 = db
+        .db_call(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') \
+                 WHERE name IN ('last_peer_message_sent_at', 'last_peer_message_received_at')",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .await
+        .unwrap();
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
 async fn latest_schema_keeps_retrievals_drops_verdicts() {
     // learning_retrievals survives; learning_verdicts is dropped by migration v74
     // (verdicts are no longer persisted — rate_learning applies only the score).

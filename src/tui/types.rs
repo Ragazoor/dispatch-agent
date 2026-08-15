@@ -398,7 +398,12 @@ pub struct AgentTracking {
     pub notified_review: HashSet<TaskId>,
     pub notified_needs_input: HashSet<TaskId>,
     pub last_pr_poll: HashMap<TaskId, Instant>,
+    /// A task that just *received* a native peer message — envelope glyph.
     pub message_flash: HashMap<TaskId, Instant>,
+    /// A task that just *sent* one — its own glyph, same TTL and fill as
+    /// [`Self::message_flash`]. See `docs/specs/core.allium`'s "Message
+    /// flash".
+    pub message_flash_sent: HashMap<TaskId, Instant>,
     /// Subtasks whose epic auto-dispatch chain claimed them and then failed to
     /// provision them, mapped to why (`AutoDispatchFailureIndicator` in
     /// docs/specs/epics.allium). Unlike every other entry here this one carries
@@ -418,6 +423,7 @@ impl AgentTracking {
         self.notified_needs_input.remove(&id);
         self.last_pr_poll.remove(&id);
         self.message_flash.remove(&id);
+        self.message_flash_sent.remove(&id);
         self.auto_dispatch_failed.remove(&id);
     }
 }
@@ -1056,6 +1062,8 @@ mod tests {
             updated_at: now,
             last_pre_tool_use_at: None,
             last_notification_at: None,
+            last_peer_message_sent_at: None,
+            last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
             live_subagents: 0,

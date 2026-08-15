@@ -52,6 +52,22 @@ fn with_status_transition(
     patch
 }
 
+/// Parse a native `SendMessage` `to` value back to the `TaskId` dispatch
+/// assigned it at launch (`--name task-<id>`, `session_name_flag` in
+/// `src/dispatch/agents.rs`). Strips a disambiguating `" [ref]"` suffix
+/// first — `ListAgents`/`SendMessage` append one when more than one live
+/// agent answers to a name, even though dispatch's own `task-<id>` names are
+/// unique by construction and should rarely need it — then delegates to
+/// `parse_tmux_window_task_id`, the same parser tmux window names go
+/// through, so the two can't drift apart into two spellings of one
+/// convention. `None` for any value that doesn't match this shape — a
+/// message addressed to a session dispatch didn't launch, or one the sender
+/// renamed itself away from.
+fn parse_peer_message_target_name(to: &str) -> Option<TaskId> {
+    let name = to.split(' ').next().unwrap_or(to);
+    crate::dispatch::prompts::parse_tmux_window_task_id(name)
+}
+
 /// Result of [`TaskService::update_task`]. Carries the updated task id plus
 /// presentation-relevant transition flags so MCP handlers can format their
 /// response without re-reading the DB.
@@ -649,36 +665,6 @@ impl TaskService {
         Ok(task)
     }
 
-    pub async fn validate_send_message(
-        &self,
-        from_task_id: TaskId,
-        to_task_id: TaskId,
-    ) -> Result<(Task, Task), ServiceError> {
-        let from_task = self.db.get_task(from_task_id).await?.ok_or_else(|| {
-            ServiceError::NotFound(format!("sender task {} not found", from_task_id.0))
-        })?;
-
-        let to_task = self.db.get_task(to_task_id).await?.ok_or_else(|| {
-            ServiceError::NotFound(format!("target task {} not found", to_task_id.0))
-        })?;
-
-        if to_task.worktree.is_none() {
-            return Err(ServiceError::Validation(format!(
-                "target task {} has no worktree (not running)",
-                to_task_id.0
-            )));
-        }
-
-        if to_task.tmux_window.is_none() {
-            return Err(ServiceError::Validation(format!(
-                "target task {} has no tmux window (not running)",
-                to_task_id.0
-            )));
-        }
-
-        Ok((from_task, to_task))
-    }
-
     /// Record a Claude Code hook event for a task.
     ///
     /// `Stop` transitions Running → Review and clears both timestamps.
@@ -776,6 +762,70 @@ impl TaskService {
         if let Some(patch) = patch {
             self.db.patch_task(id, &patch).await?;
         }
+        Ok(())
+    }
+
+    /// Record an observed native Claude Code `SendMessage` call from
+    /// `sender_id`'s agent, addressed to session `target_name` (task #4098).
+    /// Called from the `dispatch hook <id> peer-message` CLI subcommand, which
+    /// the Claude Code hook pipeline invokes on `PostToolUse` for the
+    /// `SendMessage` tool — dispatch never performs the delivery itself, only
+    /// observes it to drive the TUI flash and reconstruct an audit trail.
+    ///
+    /// Stamps `last_peer_message_sent_at` on the sender's own row
+    /// unconditionally. `target_name` is resolved against dispatch's own
+    /// `task-<id>` session-naming convention (`session_name_flag`,
+    /// `src/dispatch/agents.rs`); when it resolves to a task that still
+    /// exists, that task's `last_peer_message_received_at` is stamped too. A
+    /// name that doesn't parse, or a task id that no longer exists, is not an
+    /// error — the sender addressed a session outside dispatch's own fleet
+    /// (or one that's since been deleted), which is not dispatch's concern.
+    /// Only a missing *sender* is an error, matching `record_hook_event`'s
+    /// contract.
+    pub async fn record_peer_message_sent(
+        &self,
+        sender_id: TaskId,
+        target_name: &str,
+    ) -> Result<(), ServiceError> {
+        if !self.db.task_exists(sender_id).await? {
+            return Err(Self::task_not_found(sender_id));
+        }
+
+        let now = self.clock.now();
+        self.db
+            .patch_task(
+                sender_id,
+                &TaskPatch::new().last_peer_message_sent_at(Some(now)),
+            )
+            .await?;
+
+        if let Some(target_id) = parse_peer_message_target_name(target_name) {
+            // No existence pre-check: patch_task itself is the only
+            // authoritative answer to "does this row still exist", and
+            // checking first would leave a race (the target could be
+            // deleted between the check and the write) that this direct
+            // attempt does not have. A failure here — an unresolvable
+            // target is already handled above; this is specifically "it
+            // resolved but the row is gone by the time we got here" — is
+            // not this call's concern either: the sender's own stamp above
+            // already landed, and a missed *target* stamp is a missed TUI
+            // flash, not a lost message (the message itself travels over
+            // Claude Code's own native delivery, not through this call).
+            if let Err(e) = self
+                .db
+                .patch_task(
+                    target_id,
+                    &TaskPatch::new().last_peer_message_received_at(Some(now)),
+                )
+                .await
+            {
+                tracing::debug!(
+                    target_id = target_id.0,
+                    "peer-message target vanished before its stamp landed: {e}"
+                );
+            }
+        }
+
         Ok(())
     }
 

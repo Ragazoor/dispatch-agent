@@ -977,6 +977,26 @@ pub fn pane_exists(pane_id: &str, runner: &dyn ProcessRunner) -> bool {
         .unwrap_or(false)
 }
 
+/// Capture the current on-screen content of `window`'s active pane — exactly
+/// what a human attached to it would see right now, not scrollback history.
+///
+/// `window` is resolved by [`window_target`] first, so an absent window fails
+/// the same way every other name-taking helper here does, rather than
+/// capturing a prefix-matched sibling's pane.
+///
+/// Used by [`crate::notify`] to decide whether a pane is showing its normal
+/// input surface before injecting keystrokes into it — see
+/// `docs/superpowers/specs/2026-08-15-send-message-delivery-hardening-design.md`
+/// for the reproduction this exists to guard against.
+pub fn capture_pane(window: &str, runner: &dyn ProcessRunner) -> Result<String> {
+    let target = window_target(window, runner)?;
+    run_checked_stdout(
+        runner,
+        &["capture-pane", "-p", "-t", &target],
+        "capture-pane",
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -2349,6 +2369,32 @@ mod tests {
     fn pane_exists_returns_false_on_runner_error() {
         let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("binary not found"))]);
         assert!(!pane_exists("%42", &mock));
+    }
+
+    // --- capture_pane ---
+
+    #[test]
+    fn capture_pane_issues_correct_args_against_the_resolved_target() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"hello\n")])
+            .with_windows(&["task-42"]);
+        let result = capture_pane("task-42", &mock).unwrap();
+        assert_eq!(result, "hello");
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1,
+            vec!["capture-pane", "-p", "-t", &mock.pane_id_of("task-42")]
+        );
+    }
+
+    #[test]
+    fn capture_pane_fails_when_the_window_is_absent() {
+        let mock = MockProcessRunner::new(vec![]).with_windows(&["task-42"]);
+        let err = capture_pane("task-4", &mock).unwrap_err();
+        assert!(
+            err.to_string().contains("no tmux window named 'task-4'"),
+            "got: {err}"
+        );
     }
 
     // --- set_focus_events failure ---

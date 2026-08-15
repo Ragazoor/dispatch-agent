@@ -2190,128 +2190,6 @@ async fn list_tasks_excludes_caller_task() {
     assert_eq!(tasks[0].title, "T2");
 }
 
-#[tokio::test]
-async fn validate_send_message_missing_worktree() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-
-    let from_id = svc
-        .create_task(CreateTaskParams {
-            title: "Sender".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    // Target task has no worktree (still backlog)
-    let to_id = svc
-        .create_task(CreateTaskParams {
-            title: "Receiver".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    let err = svc.validate_send_message(from_id, to_id).await.unwrap_err();
-    assert!(matches!(err, ServiceError::Validation(_)));
-    assert!(err.to_string().contains("no worktree"));
-}
-
-#[tokio::test]
-async fn validate_send_message_missing_tmux_window() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-
-    let from_id = svc
-        .create_task(CreateTaskParams {
-            title: "Sender".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    let to_id = svc
-        .create_task(CreateTaskParams {
-            title: "Receiver".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    // Set worktree but not tmux_window
-    svc.update_task(
-        UpdateTaskParams::for_task(to_id)
-            .status(TaskStatus::Running)
-            .worktree(FieldUpdate::Set("/repo/.worktrees/feat".into())),
-    )
-    .await
-    .unwrap();
-
-    let err = svc.validate_send_message(from_id, to_id).await.unwrap_err();
-    assert!(matches!(err, ServiceError::Validation(_)));
-    assert!(err.to_string().contains("no tmux window"));
-}
-
-#[tokio::test]
-async fn validate_send_message_target_not_found() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-
-    let from_id = svc
-        .create_task(CreateTaskParams {
-            title: "Sender".into(),
-            description: "".into(),
-            repo_path: "/repo".to_string(),
-            plan_path: None,
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            base_branch: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    let err = svc
-        .validate_send_message(from_id, TaskId(999))
-        .await
-        .unwrap_err();
-    assert!(matches!(err, ServiceError::NotFound(_)));
-}
-
 // -------------------------------------------------------------------------
 // Epic-in-epic service tests
 // -------------------------------------------------------------------------
@@ -2552,6 +2430,96 @@ async fn create_running_task(svc: &TaskService, sub_status: SubStatus) -> TaskId
     .await
     .unwrap();
     id
+}
+
+// -- record_peer_message_sent (task #4098: hook-observed native SendMessage) -
+
+#[tokio::test]
+async fn record_peer_message_sent_stamps_sender_and_resolved_target() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let sender = svc.create_task(make_task_params("/repo")).await.unwrap();
+    let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.record_peer_message_sent(sender, &format!("task-{}", target.0))
+        .await
+        .unwrap();
+
+    let sender_task = svc.get_task(sender).await.unwrap();
+    let target_task = svc.get_task(target).await.unwrap();
+    assert!(
+        sender_task.last_peer_message_sent_at.is_some(),
+        "sender's own row should be stamped"
+    );
+    assert!(
+        target_task.last_peer_message_received_at.is_some(),
+        "resolved target's row should be stamped"
+    );
+    assert!(sender_task.last_peer_message_received_at.is_none());
+    assert!(target_task.last_peer_message_sent_at.is_none());
+}
+
+#[tokio::test]
+async fn record_peer_message_sent_ignores_a_name_outside_dispatchs_own_naming_convention() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let sender = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    // Not a "task-<id>" name at all — a message to some other local session
+    // dispatch didn't launch. Must not error.
+    svc.record_peer_message_sent(sender, "my-other-terminal-3f")
+        .await
+        .unwrap();
+
+    let sender_task = svc.get_task(sender).await.unwrap();
+    assert!(
+        sender_task.last_peer_message_sent_at.is_some(),
+        "sender's own stamp still lands even when the target can't be resolved"
+    );
+}
+
+#[tokio::test]
+async fn record_peer_message_sent_strips_a_disambiguating_ref_suffix() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let sender = svc.create_task(make_task_params("/repo")).await.unwrap();
+    let target = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    // SendMessage's `to` field can carry a disambiguating " [ref]" suffix
+    // (per ListAgents' listing format) even though dispatch's task-<id>
+    // names are unique by construction and should rarely need one.
+    svc.record_peer_message_sent(sender, &format!("task-{} [3fa9c1]", target.0))
+        .await
+        .unwrap();
+
+    let target_task = svc.get_task(target).await.unwrap();
+    assert!(target_task.last_peer_message_received_at.is_some());
+}
+
+#[tokio::test]
+async fn record_peer_message_sent_ignores_a_task_id_that_no_longer_exists() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let sender = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.record_peer_message_sent(sender, "task-999999")
+        .await
+        .unwrap();
+
+    let sender_task = svc.get_task(sender).await.unwrap();
+    assert!(sender_task.last_peer_message_sent_at.is_some());
+}
+
+#[tokio::test]
+async fn record_peer_message_sent_errors_when_sender_is_missing() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+
+    let err = svc
+        .record_peer_message_sent(TaskId(999999), "task-1")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ServiceError::NotFound(_)));
 }
 
 #[tokio::test]
@@ -4414,6 +4382,11 @@ mod watchers {
     use super::*;
     use crate::service::tasks::watchers::SubscribeOutcome;
 
+    /// A `capture-pane` snapshot showing Claude Code idle at its own chat
+    /// input, so `notify::notify_tmux`'s pane-readiness probe (see
+    /// `src/notify.rs`) treats the watcher's pane as safe to nudge.
+    const READY_PANE_STDOUT: &[u8] = b"> \nauto mode on (shift+tab to cycle) - 1 agent\n";
+
     #[tokio::test]
     async fn subscribe_to_task_creates_watch() {
         let db = test_db().await;
@@ -4511,6 +4484,7 @@ mod watchers {
         let worktree = tmp.path().to_str().unwrap().to_string();
         let db = test_db().await;
         let mock = Arc::new(crate::process::MockProcessRunner::new(vec![
+            crate::process::MockProcessRunner::ok_with_stdout(READY_PANE_STDOUT),
             crate::process::MockProcessRunner::ok(),
             crate::process::MockProcessRunner::ok(),
         ]));
@@ -4535,8 +4509,8 @@ mod watchers {
 
         assert_eq!(
             mock.recorded_calls().len(),
-            2,
-            "expected one tmux notification (2 send-keys calls)"
+            3,
+            "expected a capture-pane check plus one tmux notification (2 send-keys calls)"
         );
         assert!(
             db.list_watchers_of(target).await.unwrap().is_empty(),
@@ -4591,6 +4565,7 @@ mod watchers {
         let db = test_db().await;
         let runner: Arc<dyn crate::process::ProcessRunner> =
             Arc::new(crate::process::MockProcessRunner::new(vec![
+                crate::process::MockProcessRunner::ok_with_stdout(READY_PANE_STDOUT),
                 crate::process::MockProcessRunner::ok(),
                 crate::process::MockProcessRunner::ok(),
             ]));
@@ -4621,6 +4596,7 @@ mod watchers {
         let worktree = tmp.path().to_str().unwrap().to_string();
         let db = test_db().await;
         let mock = Arc::new(crate::process::MockProcessRunner::new(vec![
+            crate::process::MockProcessRunner::ok_with_stdout(READY_PANE_STDOUT),
             crate::process::MockProcessRunner::ok(),
             crate::process::MockProcessRunner::ok(),
         ]));
@@ -4641,7 +4617,7 @@ mod watchers {
 
         svc.delete_task(target).await.unwrap();
 
-        assert_eq!(mock.recorded_calls().len(), 2);
+        assert_eq!(mock.recorded_calls().len(), 3);
         assert!(db.list_watchers_of(target).await.unwrap().is_empty());
 
         // Assert the delivered message body actually says the task was

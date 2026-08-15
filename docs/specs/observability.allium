@@ -191,8 +191,11 @@ rule TrajectoryAppend {
         -- dir behaviour.
         -- Implementation lives behind the MCP handler dispatch boundary so
         -- that every tool call (create_task, update_task, query_learnings,
-        -- record_learning, query_usage, send_message, dispatch_task,
-        -- list_tasks, list_epics, …) is captured uniformly.
+        -- record_learning, query_usage, subscribe_to_task, dispatch_task,
+        -- list_tasks, list_epics, …) is captured uniformly. A native
+        -- SendMessage call between agents never reaches this boundary at
+        -- all — see HookPeerMessageSent in agent-health.allium for how that
+        -- gets its own trajectory entry instead.
         -- The duration_ms field measures the wall-clock interval from the
         -- moment the handler receives the parsed JSON-RPC request to the
         -- moment it returns a response (success or error). The timestamp

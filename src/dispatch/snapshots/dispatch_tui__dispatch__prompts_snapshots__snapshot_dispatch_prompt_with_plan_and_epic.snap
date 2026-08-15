@@ -11,7 +11,7 @@ Task:
 
 This task is part of epic #7: Auth overhaul
 To find other tasks in this epic, call list_tasks with epic_id=7.
-To ask questions or send updates to sibling agents, use send_message with their task ID.
+To ask questions or send updates to a sibling agent, use ListAgents to find its session (named task-<id>, matching that task's own id) and message it directly with SendMessage.
 
 Plan: /home/user/repo/docs/plans/fix-auth.md
 Read this file for the full implementation plan.

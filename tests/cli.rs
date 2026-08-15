@@ -889,6 +889,114 @@ async fn hook_subagent_unknown_action_fails() {
 }
 
 // ---------------------------------------------------------------------------
+// hook-peer-message
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn hook_peer_message_stamps_sender_and_resolved_target() {
+    let db = NamedTempFile::new().unwrap();
+    let db_path = db.path().to_str().unwrap();
+    let sender = seed_task(db.path(), "Sender").await;
+    let target = seed_task(db.path(), "Target").await;
+
+    let out = binary()
+        .args([
+            "--db",
+            db_path,
+            "hook-peer-message",
+            &sender.0.to_string(),
+            "--target",
+            &format!("task-{}", target.0),
+            "--body",
+            "hello sibling",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = Database::open(db.path()).await.unwrap();
+    let sender_task = conn.get_task(sender).await.unwrap().unwrap();
+    let target_task = conn.get_task(target).await.unwrap().unwrap();
+    assert!(sender_task.last_peer_message_sent_at.is_some());
+    assert!(target_task.last_peer_message_received_at.is_some());
+}
+
+#[tokio::test]
+async fn hook_peer_message_appends_a_trajectory_entry_for_the_sender() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("test.db");
+    let sender = seed_task(&db_path, "Sender").await;
+    let target = seed_task(&db_path, "Target").await;
+
+    let out = binary()
+        .args([
+            "--db",
+            db_path.to_str().unwrap(),
+            "hook-peer-message",
+            &sender.0.to_string(),
+            "--target",
+            &format!("task-{}", target.0),
+            "--body",
+            "hello sibling",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let trajectory_path = dir
+        .path()
+        .join("trajectories")
+        .join(format!("{}.jsonl", sender.0));
+    let content = std::fs::read_to_string(&trajectory_path).unwrap_or_else(|e| {
+        panic!(
+            "expected a trajectory entry at {}: {e}",
+            trajectory_path.display()
+        )
+    });
+    assert!(content.contains("SendMessage"), "got: {content}");
+    assert!(content.contains("hello sibling"), "got: {content}");
+}
+
+#[tokio::test]
+async fn hook_peer_message_on_missing_sender_exits_zero() {
+    let db = NamedTempFile::new().unwrap();
+    // A hook must never fail the agent's own tool call just because dispatch
+    // can't find the task it's associated with.
+    let out = binary()
+        .args([
+            "--db",
+            db.path().to_str().unwrap(),
+            "hook-peer-message",
+            "9999",
+            "--target",
+            "task-1",
+            "--body",
+            "hi",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[tokio::test]
+async fn hook_peer_message_initialises_app_log_in_data_dir() {
+    assert_hook_initialises_app_log("hook-peer-message", &["--target", "task-1", "--body", "hi"])
+        .await;
+}
+
+// ---------------------------------------------------------------------------
 // verify-feed
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,5 @@
 //! System-level messages: lifecycle, ticks, focus, errors, status, notifications,
-//! help/notification toggles, browser-opens, inter-agent flashes.
-
-use crate::models::TaskId;
+//! help/notification toggles, browser-opens.
 
 use crate::tui::types::Command;
 use crate::tui::App;
@@ -31,8 +29,6 @@ pub enum SystemMessage {
     ToggleNotifications,
     /// Open a URL in the user's browser.
     OpenInBrowser { url: String },
-    /// Inter-agent message received: flash the target task's card.
-    MessageReceived(TaskId),
 }
 
 impl SystemMessage {
@@ -49,7 +45,6 @@ impl SystemMessage {
             SystemMessage::ToggleHelp => app.handle_toggle_help(),
             SystemMessage::ToggleNotifications => app.handle_toggle_notifications(),
             SystemMessage::OpenInBrowser { url } => app.handle_open_in_browser(url),
-            SystemMessage::MessageReceived(id) => app.handle_message_received(id),
         }
     }
 }

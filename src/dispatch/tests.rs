@@ -95,6 +95,8 @@ pub(super) fn make_task(repo_path: &str) -> Task {
         updated_at: Utc::now(),
         last_pre_tool_use_at: None,
         last_notification_at: None,
+        last_peer_message_sent_at: None,
+        last_peer_message_received_at: None,
         wrap_up_mode: None,
         auto_run_plan: false,
         live_subagents: 0,
@@ -734,7 +736,7 @@ fn build_quick_dispatch_prompt_includes_epic_context() {
     assert!(prompt.contains("EpicId: 7"), "should include epic ID");
     assert!(prompt.contains("My Epic"), "should include epic title");
     assert!(
-        prompt.contains("send_message"),
+        prompt.contains("SendMessage"),
         "should tell agent how to message sibling agents"
     );
 }
@@ -884,8 +886,16 @@ fn epic_preamble_returns_id_line_and_section_for_some() {
     assert!(id_line.contains("EpicId: 5"));
     assert!(section.contains("Auth Rework"));
     assert!(
-        section.contains("send_message"),
-        "should guide agent to use send_message"
+        section.contains("SendMessage") && section.contains("ListAgents"),
+        "should guide agent to use native cross-session messaging, got: {section}"
+    );
+    assert!(
+        section.contains("task-<id>") || section.contains("task-{"),
+        "should name the task-<id> session-naming convention, got: {section}"
+    );
+    assert!(
+        !section.contains("send_message"),
+        "the dispatch send_message MCP tool no longer exists, got: {section}"
     );
     assert!(
         !section.contains("Sibling tasks:"),
@@ -2691,6 +2701,49 @@ fn resume_agent_includes_plugin_dir() {
     assert!(
         send_keys_arg.contains(".claude/plugins/local/dispatch"),
         "plugin-dir should point to local dispatch plugin, got: {send_keys_arg}"
+    );
+}
+
+// --- session naming tests (task #4098: deterministic --name for native
+// cross-session messaging addressing) ---
+
+#[test]
+fn dispatch_agent_names_the_session_after_the_task() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+
+    let task = make_task(&repo_path);
+    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+
+    let calls = mock.recorded_calls();
+    let send_keys_arg = find_call_arg(&calls, 5, "claude");
+    assert!(
+        send_keys_arg.contains("--name task-42"),
+        "dispatch_agent should name the session task-<id> for native \
+cross-session-messaging addressing, got: {send_keys_arg}"
+    );
+}
+
+#[test]
+fn resume_agent_names_the_session_after_the_task() {
+    let (_dir, worktree_path) = make_test_repo();
+
+    let script = DispatchScript::resume();
+    let mock = script.runner();
+
+    resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    let send_keys_arg = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
+    assert!(
+        send_keys_arg.contains("--name task-42"),
+        "resume_agent should name the session task-<id>, got: {send_keys_arg}"
+    );
+    assert!(
+        send_keys_arg.ends_with("--continue"),
+        "resume must still pass --continue last, got: {send_keys_arg}"
     );
 }
 

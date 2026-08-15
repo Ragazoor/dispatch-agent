@@ -503,6 +503,58 @@ async fn patch_task_round_trips_hook_event_timestamps() {
 }
 
 #[tokio::test]
+async fn patch_task_round_trips_peer_message_timestamps() {
+    let db = in_memory_db().await;
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "t",
+            description: "",
+            repo_path: "/r",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+        })
+        .await
+        .unwrap();
+
+    let task = db.get_task(id).await.unwrap().unwrap();
+    assert!(task.last_peer_message_sent_at.is_none());
+    assert!(task.last_peer_message_received_at.is_none());
+
+    let sent = chrono::Utc::now();
+    let received = sent - chrono::Duration::seconds(5);
+    db.patch_task(
+        id,
+        &TaskPatch::new()
+            .last_peer_message_sent_at(Some(sent))
+            .last_peer_message_received_at(Some(received)),
+    )
+    .await
+    .unwrap();
+
+    let task = db.get_task(id).await.unwrap().unwrap();
+    let stored_sent = task
+        .last_peer_message_sent_at
+        .expect("peer message sent timestamp written");
+    let stored_received = task
+        .last_peer_message_received_at
+        .expect("peer message received timestamp written");
+    assert!(
+        (stored_sent - sent).num_seconds().abs() <= 1,
+        "stored sent {stored_sent} too far from {sent}"
+    );
+    assert!(
+        (stored_received - received).num_seconds().abs() <= 1,
+        "stored received {stored_received} too far from {received}"
+    );
+}
+
+#[tokio::test]
 async fn patch_task_none_preserves_labels() {
     let db = in_memory_db().await;
     let id = db

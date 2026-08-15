@@ -201,11 +201,21 @@ impl TaskService {
         )
         .await;
 
-        if let Err(e) = result {
-            tracing::warn!(
-                watcher_id = watcher_id.0,
-                "failed to deliver watch notification: {e}"
-            );
+        match result {
+            Ok(crate::notify::DeliveryOutcome::Notified) => {}
+            Ok(crate::notify::DeliveryOutcome::QueuedNoNudge) => {
+                tracing::debug!(
+                    watcher_id = watcher_id.0,
+                    target_id = target_id.0,
+                    "watch notification queued but not nudged — watcher's pane wasn't ready for input"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    watcher_id = watcher_id.0,
+                    "failed to deliver watch notification: {e}"
+                );
+            }
         }
     }
 }

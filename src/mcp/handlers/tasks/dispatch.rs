@@ -5,9 +5,7 @@ use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
 use crate::models::{DispatchMode, EpicId, TaskId};
 
-use super::{
-    parse_args, service_err_to_response, DispatchTaskArgs, JsonRpcResponse, SendMessageArgs,
-};
+use super::{parse_args, service_err_to_response, DispatchTaskArgs, JsonRpcResponse};
 use crate::service::{FieldUpdate, UpdateTaskParams};
 
 fn do_dispatch(
@@ -299,76 +297,5 @@ async fn not_in_backlog_response(
         id,
         -32602,
         format!("task #{} is not in backlog (current: {current})", task_id.0),
-    )
-}
-
-pub(crate) async fn handle_send_message(
-    state: &McpState,
-    id: Option<Value>,
-    _identity: &CallerIdentity,
-    args: Value,
-) -> JsonRpcResponse {
-    let parsed: SendMessageArgs = match parse_args(&id, args) {
-        Ok(v) => v,
-        Err(e) => return e,
-    };
-
-    let (from_task, to_task) = match state
-        .task_svc
-        .validate_send_message(TaskId(parsed.from_task_id), TaskId(parsed.to_task_id))
-        .await
-    {
-        Ok(pair) => pair,
-        Err(e) => return service_err_to_response(id, e),
-    };
-
-    let Some(worktree) = to_task.worktree.as_ref() else {
-        return JsonRpcResponse::err(id, -32603, "target task has no worktree (internal error)");
-    };
-    let Some(tmux_window) = to_task.tmux_window.as_ref() else {
-        return JsonRpcResponse::err(
-            id,
-            -32603,
-            "target task has no tmux window (internal error)",
-        );
-    };
-
-    let sender_id = from_task.id.0;
-    let message_content = format!(
-        "[Message from task {}: \"{}\"]\n{}",
-        from_task.id.0, from_task.title, parsed.body
-    );
-    let file_prefix = sender_id.to_string();
-    if let Err(e) = crate::notify::deliver(
-        state.runner.clone(),
-        worktree.clone(),
-        tmux_window.clone(),
-        file_prefix,
-        message_content,
-        move |filename| {
-            format!(
-                "You received a message from task {sender_id}. Read .claude-messages/{filename} for the full content, then delete the file."
-            )
-        },
-    )
-    .await
-    {
-        return JsonRpcResponse::err(id, -32603, e);
-    }
-
-    state.notify_message_sent(to_task.id);
-
-    tracing::info!(
-        from_task_id = parsed.from_task_id,
-        to_task_id = parsed.to_task_id,
-        "message sent between agents"
-    );
-
-    JsonRpcResponse::ok(
-        id,
-        json!({"content": [{"type": "text", "text": format!(
-            "Message sent to task {} ({})",
-            to_task.id.0, to_task.title
-        )}]}),
     )
 }

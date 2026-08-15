@@ -117,6 +117,27 @@ mod tests {
     }
 
     #[test]
+    fn hook_script_forwards_send_message_calls() {
+        // Additive to the PreToolUse|PostToolUse arm, alongside file events:
+        // on PostToolUse only, an observed native SendMessage call must
+        // forward to `dispatch hook-peer-message` (task #4098) — dispatch
+        // never performs the delivery itself.
+        let s = hook_script();
+        assert!(
+            s.contains("hook-peer-message"),
+            "hook must forward SendMessage calls to `dispatch hook-peer-message`"
+        );
+        assert!(
+            s.contains("tool_input.to"),
+            "must extract the SendMessage tool's `to` field, not `name`"
+        );
+        assert!(
+            s.contains("tool_input.message"),
+            "must extract the SendMessage tool's `message` field"
+        );
+    }
+
+    #[test]
     fn hook_script_extracts_task_id_from_git_branch() {
         // Agents commonly cd into subdirectories of the worktree. The hook
         // must still resolve the task ID via `git branch --show-current` so
@@ -469,6 +490,63 @@ mod tests {
             "mcp__dispatch__ tools must still be skipped entirely; got: {log:?}"
         );
         assert!(!log.contains("hook-file-event"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_forwards_send_message_on_post_tool_use() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("119-tree");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"SendMessage","tool_input":{{"to":"task-42","message":"hello sibling"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-peer-message 119 --target task-42 --body hello sibling"),
+            "expected hook-peer-message forwarded for SendMessage; got: {log:?}"
+        );
+        assert!(
+            log.contains("hook 119 pre_tool_use"),
+            "pre_tool_use must still fire on PostToolUse for SendMessage; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_does_not_forward_send_message_on_pre_tool_use() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("120-tree");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PreToolUse","tool_name":"SendMessage","tool_input":{{"to":"task-42","message":"hello"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(log.contains("hook 120 pre_tool_use"));
+        assert!(
+            !log.contains("hook-peer-message"),
+            "hook-peer-message must not fire on PreToolUse; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_does_not_forward_send_message_when_to_missing() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("121-tree");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"SendMessage","tool_input":{{"message":"hello"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(log.contains("hook 121 pre_tool_use"));
+        assert!(
+            !log.contains("hook-peer-message"),
+            "malformed payload (missing to) must be skipped, not forwarded; got: {log:?}"
+        );
     }
 
     #[cfg(unix)]

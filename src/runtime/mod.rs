@@ -690,13 +690,6 @@ fn apply_loop_event(app: &mut App, event: LoopEvent, rt: &TuiRuntime) -> Vec<Com
                         },
                     ))
                 }
-                mcp::McpEvent::MessageSent { to_task_id } => {
-                    app.update(Message::System(
-                        crate::tui::messages::SystemMessage::MessageReceived(to_task_id),
-                    ));
-                    drop(rt.spawn_refresh_task(to_task_id));
-                    vec![]
-                }
             }
         }
         // Handlers set app.dirty themselves when they detect visible changes.

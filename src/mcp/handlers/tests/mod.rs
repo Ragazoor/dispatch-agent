@@ -566,10 +566,6 @@ async fn every_tool_with_args_rejects_unknown_field() {
         ("wrap_up", json!({"task_id": 1, "action": "rebase"})),
         ("dispatch_task", json!({"task_id": 1})),
         (
-            "send_message",
-            json!({"from_task_id": 1, "to_task_id": 2, "body": "hi"}),
-        ),
-        (
             "subscribe_to_task",
             json!({"watcher_task_id": 1, "target_task_id": 2}),
         ),

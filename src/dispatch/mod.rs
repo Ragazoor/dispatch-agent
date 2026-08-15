@@ -11,7 +11,11 @@ pub(crate) mod git_output;
 /// module's own, and three other test suites drive it.
 #[cfg(test)]
 pub(crate) mod mock_sequence;
-mod prompts;
+// `pub(crate)` (not plain-private) because `parse_tmux_window_task_id` is
+// also the resolver `TaskService::record_peer_message_sent`
+// (src/service/tasks/crud.rs) uses for a SendMessage `to` field — every
+// other item in this module keeps its own `pub(super)` cap regardless.
+pub(crate) mod prompts;
 mod split_panes;
 mod trust;
 mod worktree;

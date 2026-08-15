@@ -147,6 +147,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (84, migrate_v84_drop_tips_state), // drops table created in v36
     (85, migrate_v85_create_task_shells),
     (86, migrate_v86_allow_stale_shell),
+    (87, migrate_v87_add_peer_message_columns),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1644,6 +1645,32 @@ fn migrate_v50_add_hook_timestamps(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "tasks", "last_notification_at") {
         conn.execute("ALTER TABLE tasks ADD COLUMN last_notification_at TEXT", [])
             .context("migration v50: add last_notification_at")?;
+    }
+    Ok(())
+}
+
+/// Timestamps stamped by the `dispatch hook <id> peer-message` CLI subcommand
+/// (task #4098) when it observes a native `SendMessage` tool call via the
+/// Claude Code hook pipeline: `last_peer_message_sent_at` on the sending
+/// task's own row, `last_peer_message_received_at` on the resolved target's
+/// row. The TUI's tick-driven task diff (mirroring how `last_notification_at`
+/// already drives `needs_input` detection) turns a changed value into a
+/// flash on that task's card. See
+/// `docs/superpowers/specs/2026-08-15-send-message-native-relay-design.md`.
+fn migrate_v87_add_peer_message_columns(conn: &Connection) -> Result<()> {
+    if !column_exists(conn, "tasks", "last_peer_message_sent_at") {
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN last_peer_message_sent_at TEXT",
+            [],
+        )
+        .context("migration v87: add last_peer_message_sent_at")?;
+    }
+    if !column_exists(conn, "tasks", "last_peer_message_received_at") {
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN last_peer_message_received_at TEXT",
+            [],
+        )
+        .context("migration v87: add last_peer_message_received_at")?;
     }
     Ok(())
 }

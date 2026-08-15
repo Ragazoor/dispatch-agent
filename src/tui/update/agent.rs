@@ -99,6 +99,8 @@ impl App {
         let old_task = self.find_task(new_task.id);
         let was_needs_input = old_task.is_some_and(|t| t.sub_status == SubStatus::NeedsInput);
         let was_review = old_task.is_some_and(|t| t.status == TaskStatus::Review);
+        let old_peer_message_sent_at = old_task.and_then(|t| t.last_peer_message_sent_at);
+        let old_peer_message_received_at = old_task.and_then(|t| t.last_peer_message_received_at);
 
         if self.notifications_enabled {
             if new_task.sub_status == SubStatus::NeedsInput
@@ -145,6 +147,28 @@ impl App {
         if new_task.status != TaskStatus::Backlog {
             self.agents.auto_dispatch_failed.remove(&new_task.id);
         }
+
+        // Peer-message flash (task #4098): a hook-observed native SendMessage
+        // call stamps one of these two columns, picked up here the same way
+        // `last_notification_at` already drives `needs_input` detection above.
+        // Compared against the old snapshot (not just "is Some") so an
+        // already-flashing task isn't perpetually re-flashed on every refresh
+        // — only a genuinely new timestamp restarts the TTL.
+        if new_task.last_peer_message_sent_at.is_some()
+            && new_task.last_peer_message_sent_at != old_peer_message_sent_at
+        {
+            self.agents
+                .message_flash_sent
+                .insert(new_task.id, std::time::Instant::now());
+        }
+        if new_task.last_peer_message_received_at.is_some()
+            && new_task.last_peer_message_received_at != old_peer_message_received_at
+        {
+            self.agents
+                .message_flash
+                .insert(new_task.id, std::time::Instant::now());
+        }
+
         cmds
     }
 
@@ -164,6 +188,7 @@ impl App {
     pub(in crate::tui) fn handle_tick(&mut self) -> Vec<Command> {
         let status_before = self.status.message.clone();
         let flash_count_before = self.agents.message_flash.len();
+        let flash_sent_count_before = self.agents.message_flash_sent.len();
 
         self.tick_status_ttl();
         self.tick_dispatching();
@@ -179,7 +204,7 @@ impl App {
         cmds.extend(self.tick_budget_poll());
         cmds.extend(self.tick_db_refresh());
 
-        self.mark_tick_dirty(&status_before, flash_count_before);
+        self.mark_tick_dirty(&status_before, flash_count_before, flash_sent_count_before);
         cmds
     }
 
@@ -247,6 +272,9 @@ impl App {
     fn tick_message_flash(&mut self) {
         self.agents
             .message_flash
+            .retain(|_, t| t.elapsed() < crate::tui::MESSAGE_FLASH_TTL);
+        self.agents
+            .message_flash_sent
             .retain(|_, t| t.elapsed() < crate::tui::MESSAGE_FLASH_TTL);
     }
 
@@ -446,9 +474,15 @@ impl App {
     /// handle_refresh_tasks) does likewise when it finds changed tasks. This
     /// covers the remaining transient state: status message, message flash, and
     /// the always-advancing dispatch spinner.
-    fn mark_tick_dirty(&mut self, status_before: &Option<String>, flash_count_before: usize) {
+    fn mark_tick_dirty(
+        &mut self,
+        status_before: &Option<String>,
+        flash_count_before: usize,
+        flash_sent_count_before: usize,
+    ) {
         if self.status.message != *status_before
             || self.agents.message_flash.len() != flash_count_before
+            || self.agents.message_flash_sent.len() != flash_sent_count_before
             || !self.dispatching.is_empty()
         // spinner always advances when dispatching
         {

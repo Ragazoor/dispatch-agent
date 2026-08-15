@@ -24,7 +24,7 @@ mod wrap_up;
 pub(super) use crud::{
     handle_create_task, handle_get_task, handle_list_tasks, handle_query_usage, handle_update_task,
 };
-pub(super) use dispatch::{handle_dispatch_task, handle_send_message};
+pub(super) use dispatch::handle_dispatch_task;
 pub(super) use verify::handle_set_verify_command;
 pub(super) use watch::{handle_subscribe_to_task, handle_unsubscribe_from_task};
 pub(super) use wrap_up::{handle_exit_session, handle_wrap_up};
@@ -143,16 +143,6 @@ pub(super) struct ExitSessionArgs {
 pub(super) struct SetVerifyCommandArgs {
     pub(super) repo_path: String,
     pub(super) command: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SendMessageArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) from_task_id: i64,
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) to_task_id: i64,
-    pub(super) body: String,
 }
 
 #[derive(Deserialize)]
@@ -370,6 +360,8 @@ mod tests {
             updated_at: now,
             last_pre_tool_use_at: None,
             last_notification_at: None,
+            last_peer_message_sent_at: None,
+            last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
             live_subagents: 0,

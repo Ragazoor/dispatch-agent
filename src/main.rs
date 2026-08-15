@@ -131,6 +131,27 @@ enum Commands {
         #[arg(long = "session-id")]
         session_id: Option<String>,
     },
+    /// Record an observed native Claude Code `SendMessage` tool call for a
+    /// task (task #4098). Dispatch never performs the delivery itself —
+    /// agents message each other directly via `SendMessage`/`ListAgents` —
+    /// this only stamps the sender's and (when resolvable) the target's row
+    /// so the TUI can flash both cards. See
+    /// `docs/specs/agent-health.allium`'s `HookPeerMessageSent`.
+    HookPeerMessage {
+        /// Task ID of the sending agent
+        id: i64,
+        /// The `SendMessage` tool call's target session name
+        /// (`tool_input.to`), e.g. `task-42` — may carry a disambiguating
+        /// `" [ref]"` suffix, which [`service::TaskService::record_peer_message_sent`]
+        /// strips before matching dispatch's own naming convention.
+        #[arg(long)]
+        target: String,
+        /// The `SendMessage` tool call's message body (`tool_input.message`),
+        /// recorded in the sender's trajectory log for audit parity with the
+        /// removed `send_message` MCP tool.
+        #[arg(long)]
+        body: String,
+    },
     /// Append a file-touch event (Read/Write/Edit/NotebookEdit) to a task's
     /// file-events JSONL log (see `docs/specs/agent-tree.allium`). Deliberately
     /// independent of `Hook`/`HookEventKind` — this command never touches
@@ -337,12 +358,21 @@ fn hook_data_dir(db: &std::path::Path) -> Result<&std::path::Path> {
     Ok(data_dir)
 }
 
-/// [`hook_data_dir`] plus the service the hook writes through.
-async fn open_hook_service(db: &std::path::Path) -> Result<service::TaskService> {
-    hook_data_dir(db)?;
+/// [`hook_data_dir`] plus the service the hook writes through. Returns the
+/// data dir alongside the service — `cmd_hook_peer_message` needs it for
+/// `trajectory::append_entry` — so a caller with no use for it can just
+/// ignore the second element rather than this function recomputing
+/// `hook_data_dir` a second time, which would call `init_app_log_subscriber`
+/// (and so `tracing_subscriber::fmt().init()`) twice in one process and
+/// panic.
+async fn open_hook_service(
+    db: &std::path::Path,
+) -> Result<(service::TaskService, std::path::PathBuf)> {
+    let data_dir = hook_data_dir(db)?.to_path_buf();
     let database = db::Database::open(db).await?;
-    Ok(service::TaskService::new_with_real_runner(
-        std::sync::Arc::new(database),
+    Ok((
+        service::TaskService::new_with_real_runner(std::sync::Arc::new(database)),
+        data_dir,
     ))
 }
 
@@ -384,7 +414,7 @@ async fn cmd_hook(
             )
         })?
     };
-    let svc = open_hook_service(db).await?;
+    let (svc, _data_dir) = open_hook_service(db).await?;
     let outcome = svc.record_hook_event(models::TaskId(id), parsed).await;
     report_hook_outcome(id, outcome)
 }
@@ -429,11 +459,42 @@ async fn cmd_hook_subagent(
         }
         other => anyhow::bail!("Invalid subagent action: {other}. Valid: start, stop, clear"),
     };
-    let svc = open_hook_service(db).await?;
+    let (svc, _data_dir) = open_hook_service(db).await?;
     let outcome = match event {
         Some(event) => svc.record_subagent_event(models::TaskId(id), event).await,
         None => svc.clear_subagents_no_drain(models::TaskId(id)).await,
     };
+    report_hook_outcome(id, outcome)
+}
+
+/// Handles `dispatch hook-peer-message`: an observed native `SendMessage`
+/// tool call (task #4098). Stamps the sender's (and, when resolvable, the
+/// target's) row via [`service::TaskService::record_peer_message_sent`], then
+/// appends a trajectory entry for the sender — this is the only audit record
+/// a native `SendMessage` call gets, since it never reaches dispatch's own
+/// MCP server.
+async fn cmd_hook_peer_message(
+    db: &std::path::Path,
+    id: i64,
+    target: String,
+    body: String,
+) -> Result<()> {
+    let (svc, data_dir) = open_hook_service(db).await?;
+
+    let outcome = svc
+        .record_peer_message_sent(models::TaskId(id), &target)
+        .await;
+    if outcome.is_ok() {
+        let entry = dispatch_tui::mcp::trajectory::TrajectoryEntry {
+            timestamp: chrono::Utc::now(),
+            task_id: id,
+            method: "SendMessage".to_string(),
+            args: serde_json::json!({"target": target, "body": body}),
+            result: serde_json::json!({"observed": true}),
+            duration_ms: 0,
+        };
+        dispatch_tui::mcp::trajectory::append_entry(&data_dir, &entry).await;
+    }
     report_hook_outcome(id, outcome)
 }
 
@@ -461,7 +522,7 @@ async fn cmd_hook_shell(
         },
         other => anyhow::bail!("Invalid shell action: {other}. Valid: start, stop"),
     };
-    let svc = open_hook_service(db).await?;
+    let (svc, _data_dir) = open_hook_service(db).await?;
     let outcome = svc.record_shell_event(models::TaskId(id), event).await;
     report_hook_outcome(id, outcome)
 }
@@ -900,6 +961,9 @@ async fn run_async(db: &std::path::Path, command: Commands) -> Result<()> {
             shell_id,
             session_id,
         } => cmd_hook_shell(db, id, action, shell_id, session_id).await?,
+        Commands::HookPeerMessage { id, target, body } => {
+            cmd_hook_peer_message(db, id, target, body).await?
+        }
         Commands::HookFileEvent { id, tool, path } => {
             cmd_hook_file_event(db, id, tool, path).await?
         }

@@ -17,12 +17,20 @@ MCP handler (e.g. handle_update_task)
 ```
 
 Key types in the chain:
-- `McpEvent` (`src/mcp/mod.rs:24`) — `Refresh` (catch-all full reload), `TaskChanged(TaskId)` / `EpicChanged(EpicId)` (targeted single-row reloads, preferred when the changed entity is known), and `MessageSent { to_task_id }`
+- `McpEvent` (`src/mcp/mod.rs:24`) — `Refresh` (catch-all full reload), `TaskChanged(TaskId)` / `EpicChanged(EpicId)` (targeted single-row reloads, preferred when the changed entity is known)
 - `McpState::notify()` — fire-and-forget send on the channel
 - `TuiRuntime::exec_refresh_from_db()` (`src/runtime/tasks.rs`) — reloads tasks, epics, and usage from DB
 - `TaskMessage::Refresh` (`src/tui/messages/task.rs`) — carries the fresh task list into the App, wrapped as `Message::Task`
 
-The `MessageSent` variant additionally triggers `SystemMessage::MessageReceived(task_id)` (`src/tui/messages/system.rs`), which flashes the target task's card in the TUI.
+Agent-to-agent messaging (task #4098) no longer has an `McpEvent` of its own —
+agents call Claude Code's native `SendMessage` directly, and dispatch observes
+it via the Claude Code hook pipeline rather than through this MCP-server
+notification channel. The observed timestamps
+(`Task.last_peer_message_sent_at`/`last_peer_message_received_at`) ride the
+ordinary DB-refresh path above instead: `detect_task_transition_notifications`
+(`src/tui/update/agent.rs`) diffs them against the previous in-memory row on
+each refresh and flashes `AgentTracking::message_flash_sent`/`message_flash`
+accordingly. See `HookPeerMessageSent` in `docs/specs/agent-health.allium`.
 
 ## MCP State Machines
 

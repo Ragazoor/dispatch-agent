@@ -104,6 +104,8 @@ patch_struct! {
         plain    labels:       &'a [String],
         nullable last_pre_tool_use_at: chrono::DateTime<chrono::Utc>,
         nullable last_notification_at: chrono::DateTime<chrono::Utc>,
+        nullable last_peer_message_sent_at: chrono::DateTime<chrono::Utc>,
+        nullable last_peer_message_received_at: chrono::DateTime<chrono::Utc>,
         nullable wrap_up_mode: WrapUpMode,
         plain    auto_run_plan: bool,
         plain    stop_pending: bool,

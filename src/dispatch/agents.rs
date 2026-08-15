@@ -13,6 +13,21 @@ use super::prompts::{
 };
 use super::worktree::{provision_worktree, rollback_failed_provisioning, BaseRef, StartPoint};
 
+/// The `--name` flag Claude Code's native cross-session messaging addresses
+/// this task's agent by (`ListAgents`/`SendMessage`/`@mention`), e.g.
+/// `--name task-42`. Deterministic and collision-free within dispatch's own
+/// id space, unlike Claude Code's default cwd-derived name — see
+/// `docs/superpowers/specs/2026-08-15-send-message-native-relay-design.md`.
+/// Built from [`build_tmux_window_name`] rather than re-deriving the string,
+/// so the tmux window name and the messaging session name cannot drift apart
+/// — `parse_peer_message_target_name` (`src/service/tasks/crud.rs`) resolves
+/// an incoming `SendMessage`'s `to` field against this same convention.
+/// Leading space included so callers can splice it directly after
+/// [`DISPATCH_PLUGIN_DIR`] in a launch command string.
+fn session_name_flag(task_id: TaskId) -> String {
+    format!(" --name {}", build_tmux_window_name(task_id))
+}
+
 /// Width of the `dispatch agent-tree` companion pane, as a percentage of the
 /// agent window — narrower than [`tmux::split_window_horizontal`]'s 40%
 /// (the board's own split-pane feature), since the agent's own `claude` CLI
@@ -285,9 +300,10 @@ fn dispatch_with_prompt(
     // with a space would need escaping twice to survive both. As `$0` it is one
     // ordinary shell word, quoted once like every other launch site.
     let claude = runner.agent_binaries().claude_quoted();
+    let name_flag = session_name_flag(task.id);
     let claude_cmd = format!(
         "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
-         && \"$0\" {DISPATCH_PLUGIN_DIR}{permission_flag} \"$prompt\"' {claude}"
+         && \"$0\" {DISPATCH_PLUGIN_DIR}{name_flag}{permission_flag} \"$prompt\"' {claude}"
     );
 
     // Anything failing here happens after the worktree and tmux window both
@@ -508,9 +524,10 @@ pub fn resume_agent(
     tmux::ensure_split_hook(runner).context("failed to ensure tmux split hook")?;
 
     let claude = runner.agent_binaries().claude_quoted();
+    let name_flag = session_name_flag(task_id);
     tmux::send_keys(
         &tmux_window,
-        &format!("{claude} {DISPATCH_PLUGIN_DIR} --continue"),
+        &format!("{claude} {DISPATCH_PLUGIN_DIR}{name_flag} --continue"),
         runner,
     )
     .context("failed to send resume keys to tmux window")?;
