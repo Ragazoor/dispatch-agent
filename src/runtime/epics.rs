@@ -259,6 +259,7 @@ impl TuiRuntime {
             // Resolved inside the cycle, after the claim, so a dropped refresh
             // does no DB work.
             known_paths: None,
+            command_timeout: crate::feed::FEED_COMMAND_TIMEOUT,
         };
         let tx = self.msg_tx.clone();
 

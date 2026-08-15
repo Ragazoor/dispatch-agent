@@ -18,7 +18,9 @@ use crate::process::ProcessRunner;
 
 pub(crate) use cycle::{FeedCycle, FeedCycleOutcome};
 pub(crate) use exec::degraded_partial_emission;
-pub(crate) use exec::{degraded_empty_emission, exec_feed_command, resolve_base_branches};
+pub(crate) use exec::{
+    degraded_empty_emission, exec_feed_command, resolve_base_branches, FEED_COMMAND_TIMEOUT,
+};
 pub(crate) use guard::FeedSyncGuard;
 pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget, SyncMode};
 // `pub`, unlike the `pub(crate)` re-exports above: the `verify-feed` CLI in
@@ -338,6 +340,7 @@ impl FeedRunner {
                 epic_id: epic.id,
                 epic_title: epic.title,
                 known_paths: Some(Arc::clone(&known_paths)),
+                command_timeout: FEED_COMMAND_TIMEOUT,
             };
             let notify = self.notify.clone();
 

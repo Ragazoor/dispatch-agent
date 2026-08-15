@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::git::detect_default_branch;
 use crate::process::ProcessRunner;
@@ -40,6 +41,12 @@ impl ProcessRunner for AlwaysFailRunner {
     }
 }
 
+/// Upper bound on how long [`exec_feed_command`]'s child process may run
+/// before it is killed and reaped. See core.allium config `feed_command_timeout`
+/// and feeds.allium `FeedCommandFailure` bucket 7 / `SerialisedFeedCycle`'s
+/// bounded-cost note.
+pub(crate) const FEED_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Maximum number of characters of a feed command's stderr that are logged and
 /// carried on [`FeedOutput`]. A verbose script must not be able to write
 /// unbounded output into `app.log` on every poll.
@@ -72,16 +79,36 @@ pub(crate) async fn exec_feed_command(
     cmd: &str,
     epic_id: i64,
     epic_title: &str,
+    timeout: Duration,
 ) -> Result<FeedOutput, String> {
-    let output = match tokio::process::Command::new("sh")
-        .args(["-c", cmd])
-        .output()
-        .await
-    {
-        Ok(o) => o,
-        Err(err) => {
+    // Bounded so a command that never exits cannot hold its epic's
+    // feed-cycle claim (feeds.allium: SerialisedFeedCycle) for the life of
+    // the process. `run_bounded` (src/process.rs), the repo's one
+    // kill-on-timeout primitive, only covers SYNCHRONOUS `ProcessRunner`
+    // children spawned via `std::process::Command` and so cannot be reused
+    // here directly — `tokio::time::timeout` + `kill_on_drop(true)` is the
+    // async counterpart: dropping the timed-out future drops the `Child`,
+    // and `kill_on_drop` is what turns that drop into a kill (reaped by
+    // tokio's orphan-reaper task) rather than an orphaned process.
+    let result = tokio::time::timeout(
+        timeout,
+        tokio::process::Command::new("sh")
+            .args(["-c", cmd])
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await;
+
+    let output = match result {
+        Ok(Ok(o)) => o,
+        Ok(Err(err)) => {
             let msg = format!("{err:#}");
             tracing::warn!(epic_id, epic_title, "feed: failed to spawn command: {msg}");
+            return Err(msg);
+        }
+        Err(_elapsed) => {
+            let msg = format!("command timed out after {timeout:?}");
+            tracing::warn!(epic_id, epic_title, "feed: {msg}");
             return Err(msg);
         }
     };
@@ -179,6 +206,10 @@ mod tests {
     use super::*;
     use crate::process::{MockProcessRunner, ProcessRunner};
 
+    /// Generous bound for tests that don't care about the deadline itself —
+    /// every command below finishes in milliseconds.
+    const TEST_CMD_TIMEOUT: Duration = Duration::from_secs(5);
+
     struct FixedBranchRunner(std::collections::HashMap<String, String>);
 
     impl FixedBranchRunner {
@@ -256,7 +287,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_feed_command_returns_stdout_on_success() {
-        let out = exec_feed_command("printf 'hello'", 1, "test-epic")
+        let out = exec_feed_command("printf 'hello'", 1, "test-epic", TEST_CMD_TIMEOUT)
             .await
             .expect("zero-exit command must succeed");
         assert_eq!(out.stdout, b"hello".to_vec());
@@ -265,15 +296,20 @@ mod tests {
 
     #[tokio::test]
     async fn exec_feed_command_returns_err_on_nonzero_exit() {
-        let result = exec_feed_command("exit 1", 2, "test-epic").await;
+        let result = exec_feed_command("exit 1", 2, "test-epic", TEST_CMD_TIMEOUT).await;
         assert!(result.is_err(), "non-zero exit must be an error");
     }
 
     #[tokio::test]
     async fn exec_feed_command_err_carries_stderr_of_failed_command() {
-        let err = exec_feed_command("echo 'error msg' >&2; exit 1", 3, "test-epic")
-            .await
-            .expect_err("non-zero exit must be an error");
+        let err = exec_feed_command(
+            "echo 'error msg' >&2; exit 1",
+            3,
+            "test-epic",
+            TEST_CMD_TIMEOUT,
+        )
+        .await
+        .expect_err("non-zero exit must be an error");
         assert!(
             err.contains("error msg"),
             "error must carry the command's stderr, got: {err}"
@@ -282,7 +318,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_feed_command_returns_empty_stdout_on_zero_exit_with_no_output() {
-        let out = exec_feed_command("true", 4, "test-epic")
+        let out = exec_feed_command("true", 4, "test-epic", TEST_CMD_TIMEOUT)
             .await
             .expect("zero-exit command must succeed");
         assert!(out.stdout.is_empty(), "no stdout written");
@@ -298,6 +334,7 @@ mod tests {
             "echo 'Invalid search query' >&2; printf '[]'",
             5,
             "test-epic",
+            TEST_CMD_TIMEOUT,
         )
         .await
         .expect("zero exit must still succeed");
@@ -315,6 +352,7 @@ mod tests {
             "printf '%3000s' '' | tr ' ' x >&2; printf '[]'",
             6,
             "test-epic",
+            TEST_CMD_TIMEOUT,
         )
         .await
         .expect("zero exit must still succeed");
@@ -340,6 +378,7 @@ mod tests {
             "yes é 2>/dev/null | head -c 9000 | tr -d '\\n' >&2; printf '[]'",
             8,
             "test-epic",
+            TEST_CMD_TIMEOUT,
         )
         .await
         .expect("zero exit must still succeed");
@@ -361,6 +400,7 @@ mod tests {
             ),
             9,
             "test-epic",
+            TEST_CMD_TIMEOUT,
         )
         .await
         .expect("zero exit must still succeed");
@@ -372,6 +412,31 @@ mod tests {
         assert!(
             out.stderr.chars().all(|c| c == 'x'),
             "exact-cap stderr must be untruncated content"
+        );
+    }
+
+    // --- exec_feed_command timeout (feeds.allium: FeedCommandFailure bucket 7) ---
+
+    /// A command that never exits must fail within its deadline, not be
+    /// awaited forever. `sleep 30` mirrors the shape already used in
+    /// `src/process.rs`'s `run_bounded_kills_a_child_that_closed_stdout_but_keeps_running`
+    /// test: a single trailing shell command, which `sh` execs into directly
+    /// (no forked grandchild), so killing the spawned process actually stops
+    /// the sleep rather than orphaning it.
+    #[tokio::test]
+    async fn exec_feed_command_returns_err_when_it_exceeds_the_deadline() {
+        let start = std::time::Instant::now();
+        let err = exec_feed_command("sleep 30", 10, "test-epic", Duration::from_millis(100))
+            .await
+            .expect_err("a command that outlives its deadline must fail");
+        assert!(
+            err.contains("timed out"),
+            "error must say the command timed out, got: {err}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "the wait must be bounded by the 100ms deadline, not the 30s sleep; took {:?}",
+            start.elapsed()
         );
     }
 

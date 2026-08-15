@@ -17,6 +17,7 @@
 //! See feeds.allium `SerialisedFeedCycle`.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::guard::FeedSyncGuard;
 use crate::db::TaskStore;
@@ -64,6 +65,11 @@ pub(crate) struct FeedCycle {
     /// path, resolved inside after the claim so a dropped request does no DB
     /// work.
     pub(crate) known_paths: Option<Arc<Vec<String>>>,
+    /// Deadline passed to [`super::exec_feed_command`]. Both production
+    /// callers pass `exec::FEED_COMMAND_TIMEOUT`; tests inject a short value
+    /// so a deliberately-hung command times out fast instead of making the
+    /// suite wait out the real production deadline.
+    pub(crate) command_timeout: Duration,
 }
 
 impl FeedCycle {
@@ -92,13 +98,19 @@ impl FeedCycle {
             return self.fail("epic has no feed command");
         };
 
-        let output =
-            match super::exec_feed_command(&feed_command, self.epic_id.0, &self.epic_title).await {
-                Ok(output) => output,
-                // exec_feed_command logs spawn failures, non-zero exits and
-                // stderr-on-success itself, so this is already in app.log.
-                Err(err) => return FeedCycleOutcome::Failed(err),
-            };
+        let output = match super::exec_feed_command(
+            &feed_command,
+            self.epic_id.0,
+            &self.epic_title,
+            self.command_timeout,
+        )
+        .await
+        {
+            Ok(output) => output,
+            // exec_feed_command logs spawn failures, timeouts, non-zero exits
+            // and stderr-on-success itself, so this is already in app.log.
+            Err(err) => return FeedCycleOutcome::Failed(err),
+        };
 
         let items = match super::parse_feed_items(&output.stdout) {
             Ok(items) => items,
@@ -225,6 +237,7 @@ mod tests {
             epic_id,
             epic_title: "Reviews".to_string(),
             known_paths: None,
+            command_timeout: Duration::from_secs(5),
         }
     }
 
