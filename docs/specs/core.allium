@@ -1373,8 +1373,21 @@ value VisualColumn {
 --
 -- == Where these rules are enforced ==
 --
--- Coverage is partial, and the gaps are listed below rather than left to
--- be assumed. src/tui/tests/rendering.rs carries these tests:
+-- Coverage lives in two files, and which one is not arbitrary. Most of it
+-- is in src/tui/tests/rendering.rs, which renders a board to a buffer and
+-- reads colours back off it — that is the right instrument for a claim
+-- about what reaches the screen. Two of the border tests instead sit
+-- inline in src/tui/ui/kanban/cards.rs, because they exercise
+-- state_border_color, a helper too narrow to re-export and so unreachable
+-- from the tests directory; the repo's convention is that such a helper is
+-- tested in the module that owns it. Each entry below names its home when
+-- it is not rendering.rs, so a reader who searches rendering.rs for border
+-- coverage and comes up short does not conclude it is missing.
+--
+-- Any remaining gaps are listed after the tests rather than left to be
+-- assumed.
+--
+-- In src/tui/tests/rendering.rs:
 --
 --   board_ground_is_uniform_across_columns       uniform neutral ground
 --   focused_column_ground_is_distinct_from_unfocused
@@ -1406,7 +1419,30 @@ value VisualColumn {
 --                                                healthy, so the whole
 --                                                board is one white and
 --                                                neutrals
---   render_v2_task_card_shows_stripe
+--   epic_cards_carry_purple_identity_and_a_bold_title_at_rest
+--                                                a resting epic's stripe is
+--                                                PURPLE and not its
+--                                                column's hue, and its
+--                                                title is bold
+--   selected_epic_frames_in_the_cursor_white_not_purple
+--                                                the selected epic frames
+--                                                white, no frame anywhere
+--                                                is purple, and every frame
+--                                                is white or the neutral
+--   flat_view_epic_breadcrumb_is_purple          the breadcrumb row heading
+--                                                a group of epic-owned
+--                                                tasks renders its title in
+--                                                epic purple
+--   a_card_spends_four_cells_of_its_column_on_chrome
+--                                                rendered content width
+--                                                against column width: the
+--                                                difference is exactly four
+--   render_v2_task_card_shows_stripe             the quarter block ▎ is
+--                                                present and the superseded
+--                                                cursor half block ▌ is
+--                                                absent, so stripe weight
+--                                                no longer moves with the
+--                                                cursor
 --   unfocused_column_header_keeps_its_identity_colour
 --                                                the principle above, on
 --                                                the header label: guards
@@ -1415,6 +1451,15 @@ value VisualColumn {
 --   header_bar_stops_at_the_column_separators    no header fill covers a
 --                                                separator cell, at five
 --                                                terminal widths
+--   select_all_checkbox_fill_is_neutral_in_every_column
+--                                                the cursor is parked on
+--                                                each task-status column's
+--                                                header in turn and the
+--                                                rendered checkbox's fill
+--                                                read back — asserted
+--                                                against a resting card's
+--                                                border, which is what the
+--                                                spec claims the value is
 --   header_fill_is_uniform_across_columns        the fill is the same in
 --                                                every column at a given
 --                                                focus state and carries
@@ -1443,6 +1488,11 @@ value VisualColumn {
 --                                                identity hue, unfocused
 --                                                rules the neutral grey,
 --                                                and no third colour
+--   scroll_indicators_follow_the_column_top_rule the other half of that
+--                                                exception: the focused
+--                                                column's overflow arrow
+--                                                carries its identity hue,
+--                                                an unfocused one's is grey
 --   render_card_message_flash_shows_envelope     the flash's glyph
 --   message_flash_envelope_outlives_the_old_three_second_window
 --                                                the glyph is still drawn
@@ -1462,6 +1512,33 @@ value VisualColumn {
 --                                                non-neutral frame is the
 --                                                cursor's
 --
+-- Inline in src/tui/ui/kanban/cards.rs, against state_border_color:
+--
+--   every_indicator_claims_the_border_its_severity_earns
+--                                                every CardIndicator
+--                                                variant paired with the
+--                                                border it should claim
+--   exactly_four_indicators_are_hard_failures    the counts: four red, two
+--                                                amber, and every variant
+--                                                in {red, amber, none}
+--
+-- Those two are a pair, and neither is redundant. The first walks a list of
+-- variants written out by hand rather than generated — deliberately, for
+-- the same reason state_border_color matches exhaustively: adding a variant
+-- forces a deliberate entry, and if list and match ever disagree, one of
+-- them is a mistake and the test says which. But a per-variant list alone
+-- would still pass if someone moved a variant into the red set and updated
+-- its expected value in the same edit, which is precisely how a state gets
+-- promoted to a hard failure without anyone deciding to. The counts make
+-- that edit visible: it has to change a number that says four.
+--
+-- Dispatching's entry in that list is an explicit "no border", recorded
+-- with its reason — it renders an amber *indicator* while claiming no
+-- border. It is the rule's one judgement-rather-than-category exclusion,
+-- and so the one most likely to be "fixed" by someone who sees the glyph
+-- and takes the missing border for an oversight. An asserted absence is
+-- the only kind that survives that.
+--
 -- card_frame_carries_state_and_the_cursor_outranks_it is the one that
 -- carries the rule, and its shape is the reason. It puts a crashed card, a
 -- blocked card and a healthy card on one board and places the cursor *on
@@ -1478,6 +1555,62 @@ value VisualColumn {
 -- retuned: two asserted at most one card frame is non-neutral, which the
 -- state colours falsify outright, and the third pinned the flash's hue to
 -- its glyph, an obligation retired with the flash's hue.
+--
+-- Three tests in this section have been written wrong first, in the same
+-- way each time, so the pattern is worth naming once: **a test whose
+-- measurement is not confined to the thing it claims to check.** Each
+-- version passed on broken code while reading as coverage, which is the
+-- worst failure a test can have — it does not merely miss the defect, it
+-- certifies its absence. The three ways the confinement slipped:
+--
+--   by metric  each_header_label_keeps_its_column_hue_signature cannot use
+--              colour *distance*, because a dimmed colour is far from the
+--              hue it was dimmed from. The natural measure is the wrong
+--              one, and it fails on correct code.
+--   by source  the epic tests must take PURPLE as a literal, not from the
+--              Review column's identity lookup, even though the two share
+--              the token. Sourcing it from the column encodes the very
+--              conflation the test disproves, and would keep passing if
+--              epics ever began following their column.
+--   by region  flat_view_epic_breadcrumb_is_purple counted purple cells
+--              across the whole buffer at first — and the epic *card* is
+--              purple too, so it measured the card and reported the
+--              breadcrumb. It passed with the breadcrumb drawn in grey.
+--              The fix was to find the row by its `── ` rule prefix and
+--              read only the title cells after it.
+--   by source  select_all_checkbox_fill_is_neutral_in_every_column first
+--     of truth  asserted the rendered fill equalled the accessor the
+--              renderer itself calls. That caught a *hued* mutation but
+--              silently passed a wrong-*neutral* one, because changing the
+--              function moved both sides of the assertion together. It was
+--              restating the implementation, not checking it. The fix was
+--              to assert what the spec claims the value is — the same
+--              neutral as a resting card's border — which is an
+--              independent claim and catches both mutations.
+--
+-- The fourth is the one a careful person is likeliest to write, which is
+-- why it is worth naming separately from the third. Reaching for the
+-- accessor feels like avoiding a magic literal, and that instinct is
+-- normally right. It is wrong here because the accessor is downstream of
+-- the thing under test: an assertion built from it cannot fail for any
+-- change that keeps the renderer and its constant in agreement, which is
+-- most changes. The distinguishing question is whether the right-hand side
+-- is derived from the subject or from the specification — and a spec claim
+-- of the form "X is the same value as Y" should be asserted as exactly
+-- that, against Y, not against whatever X currently reads.
+--
+-- That the accessor had to be re-exported to write the first version, and
+-- the re-export became unnecessary once it was fixed, is itself the signal:
+-- a test that needs new access to production internals is often reaching
+-- for the wrong side of the claim.
+--
+-- The generalisation: before trusting one of these, check that its
+-- measurement can distinguish its subject from everything else that looks
+-- similar — the right metric, sourced independently of the claim, read
+-- from the right region, and compared against the specified value rather
+-- than the implemented one. All four survive mutation testing of the
+-- *code*, because the fault is in the test; the fourth passed a mutation
+-- and was nearly kept.
 --
 -- A fixture hazard the border rule creates, worth knowing before writing
 -- the next one: a card is *healthy* only if the fixture makes it so. Any
@@ -1497,18 +1630,13 @@ value VisualColumn {
 -- replaced fails at 100. A single-width assertion here would have been
 -- worse than none, because it would have read as coverage.
 --
--- each_header_label_keeps_its_column_hue_signature pins the label
--- derivation, and its formulation is deliberate: the property is channel
--- *ranking*, not distance from the source hue. The
--- obvious test — "each label is nearer its own hue than any other
--- column's" — is unsatisfiable, because a dimmed colour is by construction
--- far from the colour it was dimmed from. Measured that way Backlog's
--- dimmed label lands nearer ARCHIVE_STRIPE than BLUE, and Review's nearer
--- BLUE than PURPLE, while both are correctly derived. Ranking is the right
--- fingerprint because it survives linear mixing toward any neutral: BLUE
--- is b > g > r and stays so dimmed or brightened, PURPLE is b > r > g
--- throughout. Anyone reaching for a distance metric here will find it
--- fails on correct code — that is the trap, not a bug.
+-- The "by metric" case above, in detail, because the numbers are what make
+-- it convincing: measured by distance, Backlog's dimmed label lands nearer
+-- ARCHIVE_STRIPE than BLUE, and Review's nearer BLUE than PURPLE, while
+-- both are correctly derived. Channel ranking is the right fingerprint
+-- because it survives linear mixing toward any neutral — BLUE is
+-- b > g > r and stays so dimmed or brightened, PURPLE is b > r > g
+-- throughout.
 --
 -- The superseded three-level tint ladder (unfocused < focused < cursor
 -- card) was replaced rather than retuned, because a selected card no
@@ -1516,29 +1644,30 @@ value VisualColumn {
 --
 -- Not enforced by any test — normative claims above that a reader should
 -- not assume are covered:
---   - Epic cards, entirely: the PURPLE stripe, the unconditionally bold
---     title, and that a selected epic takes the cursor white while a
---     resting one does not ("Epic cards"). No test above renders an epic at
---     all — the four border tests are task-card boards — and because bold
---     is unconditional on an epic, the frame is the only cursor signal an
---     epic card has, which makes this the gap covering the
---     least-substitutable claim in the section.
---   - Two narrower parts of "Card border: cursor and state" that the four
---     tests above do not reach: that the RED set is exactly the four hard
---     failures (only crashed is exercised, so a state wrongly promoted into
---     or dropped out of that set would pass), and that *dispatching* takes
---     no border despite rendering an amber indicator. The second is the
---     more fragile: it is an absence, and an absence is what a renderer
---     drifts into asserting by accident.
---   - The four-cell horizontal chrome total as a number. The inset test
---     pins the margin's width, but nothing asserts the sum the title
---     budget is reduced by.
---   - The scroll indicators' colour, at either focus state.
---     column_top_rule_is_hued_only_while_focused covers the top rule alone.
---     The two share a single colour in the renderer today and so cannot
---     diverge, but that is a property of the current implementation rather
---     than something asserted, and splitting them would be caught by
---     nothing.
+--   - Epic view's enclosing panel tint: that the panel around the columns
+--     is faintly purple as a mode signal, while the column grounds inside
+--     it stay neutral ("Column ground and card surface"). One production
+--     site, no test. It is the last flat area on the board whose colour is
+--     unasserted, and it is the only place purple means *mode* rather than
+--     *epic*, so a regression would not read as obviously wrong to someone
+--     who found it.
+--   - That a cursor or multi-selected *task* card's title is bold
+--     ("Selection"). The epic case is asserted — deliberately, since bold
+--     is unconditional there — but the task case is not. Low consequence
+--     while the frame carries the cursor unambiguously, which is why it is
+--     listed rather than urgent: the spec claims two markers and only one
+--     of them is checked.
+--
+-- Both are style claims, which is the pattern in every gap this list has
+-- held: text is caught by the snapshots, style is caught only by a test
+-- that reads it back. When adding a claim about colour or weight, assume
+-- the snapshots will not cover it.
+--
+-- Every other normative claim in this section is asserted somewhere. That
+-- is a statement about now, not a finished state: a new claim here arrives
+-- with its test, or with a line in this list saying it has none. Neither
+-- is optional, and a short list is only worth having if it is maintained
+-- as carefully as a long one.
 --
 -- Naming tests here couples this spec to them: renaming or deleting one
 -- must update this list. That coupling is deliberate, and

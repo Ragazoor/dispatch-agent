@@ -2321,6 +2321,371 @@ async fn every_card_frame_is_lit_by_the_card_surface() {
     assert!(checked >= 8, "expected both cards' four corners, saw {checked}");
 }
 
+/// The cell holding an epic card's stripe, and the cell holding its title's
+/// first character, on the row that starts with the given `#id` marker.
+///
+/// Located by scanning for the id rather than by fixed coordinates, so the test
+/// does not silently start reading a different card when layout shifts.
+fn epic_card_row(
+    buf: &ratatui::buffer::Buffer,
+    id: &str,
+) -> Option<(ratatui::buffer::Cell, ratatui::buffer::Cell)> {
+    for y in buf.area.top()..buf.area.bottom() {
+        for x in buf.area.left()..buf.area.right() {
+            if buf[(x, y)].symbol() != "\u{258e}" {
+                continue;
+            }
+            // "▎ #10 Epic 10" — the id begins two cells right of the stripe.
+            let after: String = (x + 1..(x + 8).min(buf.area.right()))
+                .map(|xx| buf[(xx, y)].symbol())
+                .collect();
+            if after.trim_start().starts_with(id) {
+                // First title character: past "▎ #10 ".
+                let title_x = x + 2 + id.len() as u16 + 1;
+                return Some((buf[(x, y)].clone(), buf[(title_x, y)].clone()));
+            }
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn epic_cards_carry_purple_identity_and_a_bold_title_at_rest() {
+    // core.allium "Epic cards": an epic is its own identity object. Its stripe is
+    // PURPLE in every column rather than the column's hue, and its title is bold
+    // *unconditionally* — which is why bold cannot be a cursor signal on an epic,
+    // and why the frame is the only cursor cue an epic card has.
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.board.epics = vec![make_epic(10)];
+    // Cursor on the task at row 0, so the epic below it is at rest.
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 0);
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    // The palette PURPLE, written out rather than taken from `column_color(Review)`.
+    // Review happens to share the token, but an epic's purple is its *own*
+    // identity — sourcing it from a column would encode exactly the conflation this
+    // test exists to disprove, and would keep passing if epics started following
+    // their column.
+    const EPIC_PURPLE: Color = Color::Rgb(187, 154, 247);
+
+    let (stripe, title) = epic_card_row(&buf, "#10").expect("expected the epic card to render");
+    assert_eq!(
+        stripe.fg, EPIC_PURPLE,
+        "an epic's stripe is PURPLE — its own identity, never its column's"
+    );
+    assert_ne!(
+        stripe.fg,
+        ui::column_color(TaskStatus::Backlog),
+        "an epic sitting in Backlog must not take Backlog's hue"
+    );
+    assert!(
+        title.modifier.contains(Modifier::BOLD),
+        "a resting epic's title is bold unconditionally, so bold cannot mark the cursor"
+    );
+}
+
+#[tokio::test]
+async fn epic_view_tints_the_enclosing_panel_but_not_the_column_grounds() {
+    // core.allium "Column ground and card surface": inside an epic the *enclosing
+    // panel* is faintly purple as a mode signal — it says "you are inside an epic",
+    // not "this column is purple" — while the column grounds within it stay the
+    // uniform neutral.
+    //
+    // This is the only place purple means *mode* rather than *epic identity*, so a
+    // regression would not read as obviously wrong to whoever found it. Nothing
+    // asserted it: there is one production site and the snapshots carry no style.
+    const PANEL_TINT: Color = Color::Rgb(24, 20, 34);
+
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.board.epics = vec![make_epic(10)];
+    app.board.view_mode = crate::tui::types::ViewMode::Epic {
+        epic_id: crate::models::EpicId(10),
+        selection: crate::tui::types::BoardSelection::new_for_epic(),
+        parent: Box::new(crate::tui::types::ViewMode::Board(
+            crate::tui::types::BoardSelection::new(),
+        )),
+    };
+    let buf = render_to_buffer(&mut app, 160, 30);
+
+    let panel_cells = (buf.area.top()..buf.area.bottom())
+        .flat_map(|y| (buf.area.left()..buf.area.right()).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf[(x, y)].bg == PANEL_TINT)
+        .count();
+    assert!(
+        panel_cells > 0,
+        "epic view must tint its enclosing panel as a mode signal"
+    );
+
+    // ...and the grounds inside it are untouched.
+    let ground = ui::column_bg_color(TaskStatus::Backlog, true);
+    let ground_cells = (buf.area.top()..buf.area.bottom())
+        .flat_map(|y| (buf.area.left()..buf.area.right()).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf[(x, y)].bg == ground)
+        .count();
+    assert!(
+        ground_cells > 0,
+        "the column grounds inside an epic view must stay the uniform neutral, not \
+         take the panel's tint"
+    );
+}
+
+#[tokio::test]
+async fn the_cursor_card_title_is_bold_and_a_resting_one_is_not() {
+    // core.allium "Selection": the cursor is marked by two things — the white frame
+    // and a bold title. Only the frame was asserted. The *epic* bold title is
+    // covered, deliberately, because it is unconditional there; that is what
+    // disguised this omission, since a grep for bold coverage finds a hit.
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Backlog),
+    ]);
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 0);
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    let bold_for = |id: &str| -> bool {
+        for y in buf.area.top()..buf.area.bottom() {
+            for x in buf.area.left()..buf.area.right().saturating_sub(6) {
+                let run: String = (x..x + 6).map(|xx| buf[(xx, y)].symbol()).collect();
+                if run.starts_with(id) {
+                    // Title begins one cell past "#N ".
+                    let tx = x + id.len() as u16 + 1;
+                    return buf[(tx, y)].modifier.contains(Modifier::BOLD);
+                }
+            }
+        }
+        panic!("card {id} did not render");
+    };
+
+    assert!(
+        bold_for("#1"),
+        "the cursor card's title must be bold — it is one of selection's two markers"
+    );
+    assert!(
+        !bold_for("#2"),
+        "a resting card's title must not be bold, or bold says nothing about the cursor"
+    );
+}
+
+#[tokio::test]
+async fn select_all_checkbox_fill_is_neutral_in_every_column() {
+    // core.allium "Column header bar": the fill behind the focused column's
+    // select-all checkbox is a single neutral shared by every column.
+    //
+    // It replaced a per-column *hued* ramp, and a hued checkbox is exactly what the
+    // neutral-fill treatment exists to rule out — so a regression here restores the
+    // thing that was deliberately removed, and does it silently. The header
+    // snapshots cannot catch it: they are text, not style.
+    for (nav, &status) in TaskStatus::ALL.iter().enumerate() {
+        let mut app = App::new(vec![make_task(1, status)]);
+        app.selection_mut().set_column(nav + 1);
+        // Move up off the first row to park the cursor on the column header.
+        app.update(Message::NavigateRow(-1));
+        assert!(
+            app.on_select_all(),
+            "{status:?}: expected the cursor to land on the select-all header"
+        );
+
+        let buf = render_to_buffer(&mut app, 160, 30);
+        let checkbox = (buf.area.left()..buf.area.right())
+            .map(|x| buf[(x, 1)].clone())
+            .find(|c| c.symbol() == "[")
+            .unwrap_or_else(|| panic!("{status:?}: expected a select-all checkbox on the header"));
+
+        // Asserted against `card_border_color`, which is what the spec claims the
+        // value *is* — not against `select_all_highlight_bg`, which is the function
+        // the renderer already calls. Comparing a render to its own source restates
+        // the implementation instead of checking it: change the function and both
+        // sides move together, and the test passes on a value nobody chose.
+        assert_eq!(
+            checkbox.bg,
+            ui::card_border_color(),
+            "{status:?}: the checkbox fill must be the same neutral as a resting \
+             card's border"
+        );
+        for &other in TaskStatus::ALL.iter() {
+            assert_ne!(
+                checkbox.bg,
+                ui::column_color(other),
+                "{status:?}: the checkbox fill must not be any column's identity hue"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_card_spends_four_cells_of_its_column_on_chrome() {
+    // core.allium "Task card frame": two ground margins plus two frame rails, and
+    // every one of those cells comes out of the title budget.
+    //
+    // `cards_are_inset_by_one_cell_of_column_ground` pins the margin's width; this
+    // pins the *total*, which is the number that actually reaches truncation. They
+    // are separate claims: narrowing the rails while widening the margin would keep
+    // the inset test green and silently change what fits on a card.
+    const CHROME: u16 = 4;
+    const SEP_FG: Color = Color::Rgb(41, 46, 66); // palette BORDER
+
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    let buf = render_to_buffer(&mut app, 160, 30);
+
+    // The first column runs from the left edge to the first separator, so the
+    // separator's x *is* that column's width.
+    let probe_y = 15;
+    let col_width = (buf.area.left()..buf.area.right())
+        .find(|&x| {
+            let c = &buf[(x, probe_y)];
+            c.symbol() == "\u{2502}" && c.fg == SEP_FG
+        })
+        .expect("expected a column separator on an empty board row");
+
+    let (cx, cy) = position_of_symbol(&buf, "\u{256d}").expect("expected a framed card");
+    let rx = (cx..buf.area.right())
+        .find(|&x| buf[(x, cy)].symbol() == "\u{256e}")
+        .expect("expected the card's closing corner on the same row");
+
+    let content = rx - cx - 1; // cells strictly between the two rails
+    assert_eq!(
+        content + CHROME,
+        col_width,
+        "a card must spend exactly {CHROME} cells of its {col_width}-cell column on \
+         chrome; content measured {content}"
+    );
+}
+
+#[tokio::test]
+async fn flat_view_epic_breadcrumb_is_purple() {
+    // core.allium "Epic cards": the breadcrumb row heading a group of epic-owned
+    // tasks in flattened view carries epic purple on the same terms as the card
+    // stripe — it is the second surface that claim covers.
+    //
+    // The flat-view snapshots render this row, but `.snap` files are text only and
+    // carry no style, so a breadcrumb that lost its hue would leave every one of
+    // them byte-identical. Nothing was checking the colour until this.
+    const EPIC_PURPLE: Color = Color::Rgb(187, 154, 247);
+
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic(10)];
+    let mut t1 = make_task(1, TaskStatus::Running);
+    t1.epic_id = Some(crate::models::EpicId(10));
+    t1.sort_order = Some(10);
+    app.board.tasks = vec![t1];
+    app.board.flattened = true;
+    app.selection_mut().set_column(2); // Running
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    // Target the breadcrumb row itself. Counting purple anywhere in the buffer is
+    // not enough: the epic *card* is purple too, so such a test passes even with
+    // the breadcrumb drawn in grey — it measures the card and reports the
+    // breadcrumb. Find the row that opens with the "── " rule and read the colour
+    // of the title that follows it.
+    let mut breadcrumb_title_colours: Vec<Color> = Vec::new();
+    'rows: for y in buf.area.top()..buf.area.bottom() {
+        for x in buf.area.left()..buf.area.right().saturating_sub(3) {
+            let is_rule_prefix = buf[(x, y)].symbol() == "\u{2500}"
+                && buf[(x + 1, y)].symbol() == "\u{2500}"
+                && buf[(x + 2, y)].symbol() == " ";
+            if !is_rule_prefix {
+                continue;
+            }
+            let title: String = (x + 3..(x + 10).min(buf.area.right()))
+                .map(|xx| buf[(xx, y)].symbol())
+                .collect();
+            if title.starts_with("Epic 10") {
+                breadcrumb_title_colours = (x + 3..x + 10).map(|xx| buf[(xx, y)].fg).collect();
+                break 'rows;
+            }
+        }
+    }
+
+    assert!(
+        !breadcrumb_title_colours.is_empty(),
+        "expected a \"── Epic 10\" breadcrumb row in the flattened view"
+    );
+    for c in &breadcrumb_title_colours {
+        assert_eq!(
+            *c, EPIC_PURPLE,
+            "the breadcrumb's title must be epic purple, not {c:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn scroll_indicators_follow_the_column_top_rule() {
+    // core.allium's named exception covers the scroll indicators as well as the top
+    // rule: hued while focused, neutral grey while not. They share one colour in
+    // the renderer, but that is an implementation fact rather than an asserted one,
+    // so splitting them would otherwise be caught by nothing.
+    const NEUTRAL_RULE: Color = Color::Rgb(86, 95, 137); // palette MUTED
+
+    // Enough cards in both columns to overflow a short board.
+    let mut tasks = Vec::new();
+    for id in 1..=12 {
+        tasks.push(make_task(id, TaskStatus::Backlog));
+    }
+    for id in 13..=24 {
+        tasks.push(make_task(id, TaskStatus::Running));
+    }
+    let mut app = App::new(tasks);
+    let buf = render_to_buffer(&mut app, 160, 24);
+
+    let mut arrows: Vec<Color> = Vec::new();
+    for y in buf.area.top()..buf.area.bottom() {
+        for x in buf.area.left()..buf.area.right() {
+            let sym = buf[(x, y)].symbol();
+            if sym == "\u{25b2}" || sym == "\u{25bc}" {
+                arrows.push(buf[(x, y)].fg);
+            }
+        }
+    }
+    assert!(
+        arrows.len() >= 2,
+        "expected an overflow indicator in both the focused and an unfocused column, \
+         found {arrows:?}"
+    );
+    // Backlog is focused on a fresh board; Running is not.
+    assert!(
+        arrows.contains(&ui::column_color(TaskStatus::Backlog)),
+        "the focused column's scroll indicator must carry its identity hue, got {arrows:?}"
+    );
+    assert!(
+        arrows.contains(&NEUTRAL_RULE),
+        "an unfocused column's scroll indicator must be neutral grey, got {arrows:?}"
+    );
+}
+
+#[tokio::test]
+async fn selected_epic_frames_in_the_cursor_white_not_purple() {
+    // core.allium "Epic cards": the cursor white applies to epics too, with no
+    // exemption. A purple frame would put Review's own identity hue on a card
+    // frame — the collision the white exists to prevent, surviving on the one card
+    // type that had escaped it.
+    let mut app = make_app_with_epic_selected();
+    let buf = render_to_buffer(&mut app, 120, 30);
+
+    let corners = cells_with_symbol(&buf, "\u{256d}");
+    let purple = ui::column_color(TaskStatus::Review);
+    let cursor = ui::cursor_border_color();
+    let neutral = ui::card_border_color();
+
+    assert!(
+        corners.iter().any(|c| c.fg == cursor),
+        "the selected epic's frame must be the cursor white"
+    );
+    assert!(
+        !corners.iter().any(|c| c.fg == purple),
+        "no card frame may be purple — an epic's identity stays on its stripe and title"
+    );
+    for c in &corners {
+        assert!(
+            c.fg == cursor || c.fg == neutral,
+            "with one epic selected and one healthy task, every frame must be the \
+             cursor white or the neutral; found {:?}",
+            c.fg
+        );
+    }
+}
+
 #[tokio::test]
 async fn card_frame_carries_state_and_the_cursor_outranks_it() {
     // core.allium "Card border: cursor and state". Three claims in one board,
