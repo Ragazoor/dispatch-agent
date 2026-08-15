@@ -14,6 +14,7 @@ use "./core.allium" as core
 
 config {
     active_threshold: Duration = 10.minutes
+    shell_stale_threshold: Duration = 4.hours
 }
 
 ------------------------------------------------------------
@@ -31,6 +32,11 @@ rule ClassifyAgentActivity {
                 task.sub_status = needs_input
             else if task.live_subagents > 0:
                 task.sub_status = active
+            else if task.live_shells > 0:
+                if task.oldest_live_shell_started_at != null and now - task.oldest_live_shell_started_at > config.shell_stale_threshold:
+                    task.sub_status = stale_shell
+                else:
+                    task.sub_status = active
             else if task.last_pre_tool_use_at != null and now - task.last_pre_tool_use_at <= config.active_threshold:
                 task.sub_status = active
             else:
@@ -93,6 +99,20 @@ rule ClassifyAgentActivity {
         -- needs_input: a permission prompt genuinely needs a human even
         -- while subagents churn, so hiding it behind a subagent count would
         -- trade one misreport for a worse one.
+        -- live_shells > 0 sits below live_subagents (a genuinely live
+        -- subagent always wins over an old-looking shell) but above the
+        -- plain time-threshold branch, and is checked against its own,
+        -- much longer config.shell_stale_threshold (4 hours) rather than
+        -- config.active_threshold. This is deliberate: a legitimate dev
+        -- server or long build can run for hours, so exempting live_shells
+        -- from the 10-minute window is the whole point of this design (see
+        -- docs/superpowers/specs/2026-08-15-shell-visibility-design.md) --
+        -- but exempting it *forever* would make a genuinely abandoned shell
+        -- indistinguishable from a healthy one, so past
+        -- shell_stale_threshold the sub-status becomes stale_shell instead
+        -- of active, rendered on the card distinctly from plain stale
+        -- ("shell stale · Xh" vs "stale · Xm") so an operator can tell which
+        -- kind of inactivity they're looking at.
         -- Card label: an Active running task with live_subagents = 0 renders
         -- just "running". A positive count appends the subagent count:
         -- "running · 1 agent" (singular) or "running · N agents" for N > 1
@@ -258,7 +278,7 @@ rule HookStop {
     requires: task.status = running
 
     ensures:
-        if task.live_subagents > 0:
+        if task.live_subagents > 0 or task.live_shells > 0:
             task.stop_pending = true
             task.stop_pending_at = now
         else:
@@ -277,6 +297,22 @@ rule HookStop {
         -- Suppressing it here just defers the same effect: HookSubagentStop
         -- (or one of the other drain points) applies it once the last
         -- subagent drains.
+        --
+        -- live_shells > 0 defers the same way and for the same reason: a
+        -- backgrounded shell (Bash tool with run_in_background = true) keeps
+        -- running after the agent's own turn ends, and flipping to Review
+        -- here would strand that work invisibly, same as the subagent case.
+        -- HookShellStop's drain path (below) applies the deferred Stop once
+        -- the last live shell stops.
+        --
+        -- The real implementation is two separate conditional UPDATE
+        -- statements in one transaction (src/db/queries/tasks.rs::
+        -- try_record_stop), not a single if/else: a "flip" statement gated
+        -- on live_subagents = 0 AND live_shells = 0, and a "defer" statement
+        -- gated on live_subagents > 0 OR live_shells > 0. Both must check
+        -- both counters — widening only one of the two statements leaves the
+        -- other blind to live_shells, silently keeping the exact bug this
+        -- rule exists to fix for the case that statement covers.
         --
         -- The branch is evaluated against the task's committed state as part
         -- of the same atomic write, not against a value read beforehand.
@@ -333,7 +369,7 @@ rule HookSubagentStop {
         not exists core/SubagentEntry{task, agent_id}
         let live = core/SubagentEntries where task = task
         task.live_subagents = live.count
-        if task.live_subagents = 0 and task.stop_pending and task.status = running:
+        if task.live_subagents = 0 and task.live_shells = 0 and task.stop_pending and task.status = running:
             task.status = review
             task.sub_status = core/SubStatus.default_for(review)
             task.last_pre_tool_use_at = null
@@ -351,6 +387,17 @@ rule HookSubagentStop {
         -- is therefore no window in which the count has reached zero but the
         -- flip has not been applied — not even if the hook process dies
         -- partway, since it either commits the whole step or none of it.
+        --
+        -- This drain condition and HookShellStop's (below) both apply the
+        -- SAME deferred Stop through the same underlying predicate (Rust:
+        -- apply_pending_stop_if_drained, src/db/queries/subagents.rs, shared
+        -- by both). That sharing is load-bearing, not incidental: a
+        -- subagent-drain-to-zero must not flip the task while a live shell
+        -- is still outstanding, and vice versa. A later edit that widens one
+        -- caller's condition without widening the shared predicate — or that
+        -- gives shells their own independent copy of this check instead of
+        -- routing through the same one — reintroduces exactly the race this
+        -- note exists to warn against.
         --
         -- Four structural points clear a task's subagent entries. Exactly
         -- one of them runs this drain path; the other three clear without
@@ -378,6 +425,14 @@ rule HookSubagentStop {
         -- All three non-draining points still clear stop_pending
         -- unconditionally, so the bit cannot survive into a later session
         -- and fire a spurious flip.
+        --
+        -- ShellEntry mirrors this same split, but with only THREE structural
+        -- clear points, not four: DetachTmux (draining, same reasoning as
+        -- above), DetectCrashedAgent and DispatchTask (non-draining, same
+        -- reasoning as above). There is no ClearShellsOnSessionStart — see
+        -- ShellEntry's own doc comment in core.allium and HookShellStart/
+        -- HookShellStop below for why a live shell cannot be assumed dead at
+        -- a session boundary the way a subagent can.
         --
         -- Those four points are about the SubagentEntry rows. stop_pending
         -- has one further clear point that touches no rows at all: any
@@ -468,6 +523,118 @@ rule ClearSubagentsOnSessionStart {
         -- share this session id and their eventual SubagentStops become
         -- no-op deletes. fork is excluded because a fork is a different
         -- session and must not wipe the original's count.
+}
+
+-- == Shell Counting ==
+-- Bash (with run_in_background = true) / KillBash / BashOutput PostToolUse
+-- events bracket a backgrounded shell's tracked lifetime. Unlike subagent
+-- counting, there is no SessionStart-driven clear -- see ShellSessionFence's
+-- guidance and ShellEntry's doc comment in core.allium for why.
+
+rule HookShellStart {
+    when: PostToolUse(task, tool_name, run_in_background, shell_id, session_id)
+
+    requires: tool_name = "Bash"
+    requires: run_in_background = true
+
+    ensures:
+        let existing = core/ShellEntry{task, shell_id}
+        if exists existing:
+            existing.session_id = session_id
+        else:
+            core/ShellEntry.created(task: task, shell_id: shell_id, session_id: session_id, started_at: now)
+        let live = core/ShellEntries where task = task
+        task.live_shells = live.count
+        task.oldest_live_shell_started_at = (core/ShellEntries where task = task).min(started_at)
+
+    @guidance
+        -- Fires on PostToolUse, not PreToolUse: the shell_id Claude Code
+        -- assigns to a backgrounded shell does not exist until the Bash call
+        -- returns, so there is nothing to key an entry on any earlier.
+        -- Idempotent for the same reason HookSubagentStart is: a replayed
+        -- start for the same shell_id refreshes session_id in place rather
+        -- than double-counting. Any entry whose session_id differs from the
+        -- incoming one is evicted first — see ShellSessionFence, which fires
+        -- on the same trigger.
+}
+
+rule HookShellStop {
+    when: PostToolUse(task, tool_name, shell_id, session_id, status?)
+
+    requires: tool_name = "KillBash"
+              or (tool_name = "BashOutput" and status != null and status != "running")
+
+    ensures:
+        not exists core/ShellEntry{task, shell_id}
+        let live = core/ShellEntries where task = task
+        task.live_shells = live.count
+        task.oldest_live_shell_started_at = (core/ShellEntries where task = task).min(started_at)
+        if task.live_subagents = 0 and task.live_shells = 0 and task.stop_pending and task.status = running:
+            task.status = review
+            task.sub_status = core/SubStatus.default_for(review)
+            task.last_pre_tool_use_at = null
+            task.last_notification_at = null
+            task.stop_pending = false
+
+    @guidance
+        -- Two distinct trigger shapes, both definitive stop signals: KillBash
+        -- always means the shell is dead; BashOutput means it only when the
+        -- polled status is no longer "running" (completed/failed/killed) —
+        -- a poll that still reports "running" is not a stop event at all and
+        -- this rule does not fire for it.
+        --
+        -- An unrecognised shell_id is a no-op, not a count underflow — same
+        -- reasoning as HookSubagentStop. The drain condition here is the
+        -- SAME shared predicate HookSubagentStop's drain uses (Rust:
+        -- apply_pending_stop_if_drained) — see that rule's guidance for why
+        -- routing both through one shared check, rather than two
+        -- independent copies, is load-bearing.
+        --
+        -- This rule has no non-draining counterpart the way
+        -- HookSubagentStop does (DetectCrashedAgent / DispatchTask clear
+        -- without draining, ClearSubagentsOnSessionStart clears without
+        -- draining) — those three non-draining clear points for ShellEntry
+        -- are documented on HookSubagentStop's guidance above and on
+        -- ShellEntry in core.allium, not as separate rules here, since they
+        -- reuse the exact same clear machinery already described there.
+}
+
+rule ShellSessionFence {
+    when: PostToolUse(task, tool_name, incoming_session_id, run_in_background?, status?)
+
+    requires: (tool_name = "Bash" and run_in_background = true)
+              or tool_name = "KillBash"
+              or (tool_name = "BashOutput" and status != null and status != "running")
+
+    ensures:
+        for entry in core/ShellEntries where task = task and session_id != incoming_session_id:
+            not exists entry
+
+    @guidance
+        -- Mirrors SubagentSessionFence exactly, and is deliberately the ONLY
+        -- session-boundary sweep for ShellEntry — there is no
+        -- ClearShellsOnSessionStart. A subagent cannot survive a session
+        -- boundary at all, so unconditionally clearing on every SessionStart
+        -- is safe for SubagentEntry. A backgrounded shell is an independent
+        -- OS process and CAN survive a `/clear` or `resume` — unconditionally
+        -- clearing ShellEntry on SessionStart would silently drop tracking of
+        -- a shell that outlived the boundary, reproducing this design's
+        -- headline bug via the session boundary instead of via a bare Stop.
+        --
+        -- So ShellEntry relies on fencing alone: the moment ANY new shell
+        -- event (start, kill, or a poll) arrives carrying a new session_id,
+        -- every row from the old session is swept, because a new session_id
+        -- proves the old rows can no longer be validly referenced by this
+        -- session. If no new shell event ever arrives in a later session for
+        -- a task that had live shells before the boundary, those rows are
+        -- NOT swept here — they persist until one of the three real
+        -- structural clear points (DetectCrashedAgent, DetachTmux,
+        -- DispatchTask) reaches them, or indefinitely if none does. This is
+        -- the accepted "Known limitation" tradeoff — see
+        -- docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
+        -- config.shell_stale_threshold (ClassifyAgentActivity) is what keeps
+        -- that indefinite case from rendering identically to a healthy
+        -- long-running shell forever.
 }
 
 rule HookUserPromptSubmit {

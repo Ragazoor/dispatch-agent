@@ -31,7 +31,11 @@ rule DetachTmux {
         for entry in core/SubagentEntries where task = task:
             not exists entry
         task.live_subagents = 0
-        if task.live_subagents = 0 and task.stop_pending and task.status = running:
+        for entry in core/ShellEntries where task = task:
+            not exists entry
+        task.live_shells = 0
+        task.oldest_live_shell_started_at = null
+        if task.live_subagents = 0 and task.live_shells = 0 and task.stop_pending and task.status = running:
             task.status = review
             task.sub_status = core/SubStatus.default_for(review)
             task.last_pre_tool_use_at = null
@@ -58,6 +62,14 @@ rule DetachTmux {
         -- task that had been waiting on them to finish resolves to
         -- Review right here rather than staying stuck in Running with no
         -- agent left to drain it.
+        -- Clears every core/ShellEntry the same way, for the same reason:
+        -- detaching drops the tmux window any backgrounded shell was
+        -- running in, so there is nothing left to eventually report it
+        -- stopped. This is one of ShellEntry's three real structural clear
+        -- points (see agent-health.allium: HookSubagentStop's guidance) —
+        -- without it, a task with a live shell and no subagents would flip
+        -- to Review here checking only live_subagents = 0, reproducing the
+        -- exact bug this design fixes via detach instead of via a bare Stop.
 }
 
 rule BatchDetachTmux {

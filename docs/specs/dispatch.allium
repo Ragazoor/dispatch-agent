@@ -135,6 +135,11 @@ rule DispatchTask {
         for entry in core/SubagentEntries where task = task:
             not exists entry
     ensures: task.live_subagents = 0
+    ensures:
+        for entry in core/ShellEntries where task = task:
+            not exists entry
+    ensures: task.live_shells = 0
+    ensures: task.oldest_live_shell_started_at = null
     ensures: task.stop_pending = false
     ensures: task.worktree = core/Worktree.created(
         path: task.repo_path + "/.worktrees/" + task.id + "-" + slugify(task.title),
@@ -156,6 +161,15 @@ rule DispatchTask {
         -- still matters — otherwise the bit would survive into the new
         -- session and fire a spurious flip the next time a subagent hook
         -- landed on the drain path (see agent-health.allium).
+        --
+        -- Every core/ShellEntry left over from a prior run is cleared the
+        -- same way and for the same reason (a backlog task should never
+        -- carry live shells from before), non-draining, in the same write.
+        -- This is one of ShellEntry's three real structural clear points
+        -- (see agent-health.allium: HookSubagentStop's guidance) — without
+        -- it, a task redispatched after a prior run left a phantom
+        -- ShellEntry behind would start Running while still showing a
+        -- "running · N shells" label for a shell that no longer exists.
         --
         -- == The claim, and precondition timing ==
         -- The backlog precondition is not a read: it is an atomic claim, and it

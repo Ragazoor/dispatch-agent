@@ -31,7 +31,7 @@
 **Interfaces:**
 - Produces: the domain-level vocabulary (`task_shells`/`live_shells`/`ShellEntry`-equivalent rule names) that every later task's code changes implement. No Rust code in this task — pure spec.
 
-- [ ] **Step 1: Add the `task_shells` entity to `docs/specs/core.allium`**
+- [x] **Step 1: Add the `task_shells` entity to `docs/specs/core.allium`**
 
 Find the `Task` entity definition and the `SubagentEntry`/`live_subagents` fields it already documents (`docs/specs/core.allium`). Add a parallel entity and field, e.g.:
 
@@ -51,7 +51,7 @@ And on `Task`, alongside the existing `live_subagents: Int` field, add:
     oldest_live_shell_started_at: Timestamp?
 ```
 
-- [ ] **Step 2: Update `docs/specs/agent-health.allium`'s `HookStop` rule**
+- [x] **Step 2: Update `docs/specs/agent-health.allium`'s `HookStop` rule**
 
 Widen the `ensures` block from:
 
@@ -79,7 +79,7 @@ to:
 
 Add a `@guidance` note explaining the real implementation is two separate conditional `UPDATE` statements (`src/db/queries/tasks.rs::try_record_stop`), both of which must check the widened condition — one caller widening only the defer half would silently leave the flip half unfixed.
 
-- [ ] **Step 3: Add `HookShellStart`/`HookShellStop` rules to `docs/specs/agent-health.allium`**
+- [x] **Step 3: Add `HookShellStart`/`HookShellStop` rules to `docs/specs/agent-health.allium`**
 
 Mirror the shape of `HookSubagentStart`/`HookSubagentStop`, but:
 - `HookShellStart` fires on `Bash` `PostToolUse` with `run_in_background = true` (not `PreToolUse` — the shell_id doesn't exist yet at PreToolUse).
@@ -88,24 +88,24 @@ Mirror the shape of `HookSubagentStart`/`HookSubagentStop`, but:
 - **Unlike** `HookSubagentStop`, there is no `ClearShellsOnSessionStart` rule — document explicitly why (a background shell can survive `/clear`/resume since it's an independent OS process, unlike a subagent; session fencing on the next shell event is the only sweep mechanism, and its absence for a task that never gets another shell event is the accepted "Known limitation").
 - Note the four real structural clear points shells mirror: `DetectCrashedAgent`, `DetachTmux`, and `DispatchTask`'s two claim paths (`ClaimNextBacklogSubtask`/whatever `docs/specs/dispatch.allium` calls the by-id claim) — cite `docs/specs/dispatch.allium` and `docs/specs/split-pane.allium` by name since this rule's guidance references them.
 
-- [ ] **Step 4: Update `ClassifyAgentActivity` in `docs/specs/agent-health.allium`**
+- [x] **Step 4: Update `ClassifyAgentActivity` in `docs/specs/agent-health.allium`**
 
 Add a new `shell_stale_threshold: Duration = 4.hours` to the `config` block (alongside `active_threshold`). Add a new branch: `live_shells > 0` forces `active` unless `now - task.oldest_live_shell_started_at > config.shell_stale_threshold`, in which case a new sub-status `stale_shell` applies. Order this **after** the `live_subagents > 0` check (a genuinely live subagent wins over a stale-looking old shell) and **before** the plain time-threshold branch. Document the `stale_shell` card label convention: `"stale · shell Xh"` or similar, distinct from plain `"stale · Xm"`.
 
-- [ ] **Step 5: Update `DetachTmux` in `docs/specs/split-pane.allium`**
+- [x] **Step 5: Update `DetachTmux` in `docs/specs/split-pane.allium`**
 
 Widen its `ensures` block — currently clears `SubagentEntries` and checks `live_subagents = 0 and stop_pending and status = running` to flip to Review. Add: also clears `ShellEntry` rows and resets `live_shells`/`oldest_live_shell_started_at`, and the flip condition becomes `live_subagents = 0 and live_shells = 0 and stop_pending and status = running`.
 
-- [ ] **Step 6: Update `DispatchTask` in `docs/specs/dispatch.allium`**
+- [x] **Step 6: Update `DispatchTask` in `docs/specs/dispatch.allium`**
 
 Wherever it documents clearing `SubagentEntry`/`live_subagents`/`stop_pending` on claim, add the equivalent `ShellEntry`/`live_shells` clear, non-draining (same reasoning already given there: guards against entries left over from a prior run of the same task).
 
-- [ ] **Step 7: Run `allium check` / `allium analyse` per this repo's convention**
+- [x] **Step 7: Run `allium check` / `allium analyse` per this repo's convention**
 
 Run: `allium check docs/specs/agent-health.allium docs/specs/split-pane.allium docs/specs/dispatch.allium docs/specs/core.allium`
 Expected: no validation errors. Fix any syntax issues before proceeding.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add docs/specs/agent-health.allium docs/specs/split-pane.allium docs/specs/dispatch.allium docs/specs/core.allium

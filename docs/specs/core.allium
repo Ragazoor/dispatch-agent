@@ -235,6 +235,8 @@ entity Task {
     last_pre_tool_use_at: Timestamp?  -- wallclock of the most recent PreToolUse hook; null when the agent has never tooled (or after Stop)
     last_notification_at: Timestamp?  -- wallclock of the most recent Notification hook; null when no notification is pending (or after Stop)
     live_subagents: Integer = 0  -- count of subagents currently executing for this task; a denormalised count of SubagentEntry rows, rewritten alongside every mutation and clear point (see agent-health.allium)
+    live_shells: Integer = 0  -- count of currently-live backgrounded shells (Bash tool with run_in_background = true) for this task; a denormalised count of ShellEntry rows, rewritten alongside every mutation and clear point (see agent-health.allium). Unlike live_subagents, cleared at only three structural points, not four -- see ShellEntry below for why SessionStart is deliberately excluded
+    oldest_live_shell_started_at: Timestamp?  -- started_at of the oldest live ShellEntry row for this task; null when live_shells = 0. Used by ClassifyAgentActivity's shell_stale_threshold check so a genuinely abandoned shell surfaces distinctly from a healthy long-running one
     stop_pending: Boolean = false  -- a Stop hook arrived while subagents were live; flip to review once they drain (see agent-health.allium: HookStop / HookSubagentStop). Cleared by any status write that leaves running — see PendingStopOnlyWhileRunning below
     stop_pending_at: Timestamp?  -- when the Stop that stop_pending defers actually fired (the hook's event time, not its write time). Meaningful only while stop_pending holds; the clear points leave it alone because every reader gates on the bit. HookUserPromptSubmit compares against it to tell a Stop deferred by an earlier turn from one deferred by the turn now starting — see its guidance. Null while the bit is set means the Stop predates the field, and reads as "fired before any prompt"
     pr_learnings_gate_shown_at: Timestamp?  -- set once when the PrLearningsGate fires; null means the gate has never fired for this task
@@ -318,6 +320,13 @@ entity Task {
         live_subagents = (SubagentEntries where task = this).count
     }
 
+    -- live_shells mirrors live_subagents's invariant exactly, over ShellEntry
+    -- instead of SubagentEntry. See ShellEntry below for how its clear points
+    -- differ from SubagentEntry's.
+    invariant LiveShellCountMatchesEntries {
+        live_shells = (ShellEntries where task = this).count
+    }
+
     -- A deferred Stop belongs to the turn the task was running when it
     -- arrived. Only HookStop sets the bit, and it requires status =
     -- running; every status write that leaves running clears it in the
@@ -341,6 +350,34 @@ entity Task {
 entity SubagentEntry {
     task: Task
     agent_id: String
+    session_id: String
+    started_at: Timestamp
+}
+
+-- A live backgrounded shell (Bash tool with run_in_background = true), as
+-- reported by PostToolUse events for Bash/KillBash/BashOutput. The table is
+-- the authority for Task.live_shells/oldest_live_shell_started_at, which are
+-- denormalised and rewritten from it by every mutation and clear point (see
+-- agent-health.allium: HookShellStart / HookShellStop).
+--
+-- Deliberately mirrors SubagentEntry's shape but NOT its full clear-point
+-- set. A subagent cannot survive a session boundary (resume/clear/startup
+-- all mean the prior subagent is provably dead), so SubagentEntry is cleared
+-- unconditionally on every SessionStart in addition to session-fencing. A
+-- backgrounded shell is an independent OS process that CAN survive a
+-- `/clear` or `resume` -- clearing on every SessionStart would silently drop
+-- tracking of a shell that outlived the boundary, reproducing the very bug
+-- this entity exists to fix. So ShellEntry relies on session-fencing alone
+-- (evicting rows whose session_id differs from an incoming shell event) plus
+-- the three real structural clear points also shared with SubagentEntry:
+-- DetectCrashedAgent, DetachTmux, and DispatchTask's claim paths. A task
+-- whose shell never produces another hook event in a new session, and is
+-- never crashed/detached/redispatched, keeps its ShellEntry rows -- see the
+-- "Known limitation" accepted tradeoff in
+-- docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
+entity ShellEntry {
+    task: Task
+    shell_id: String
     session_id: String
     started_at: Timestamp
 }
