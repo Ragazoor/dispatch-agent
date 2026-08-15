@@ -513,6 +513,88 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn hook_forwards_backgrounded_bash_as_shell_start() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("231-bash-bg");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"sess_9","tool_input":{{"command":"npm run dev","run_in_background":true}},"tool_response":{{"shell_id":"bash_1"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-shell 231 start")
+                && log.contains("--shell-id bash_1")
+                && log.contains("--session-id sess_9"),
+            "expected a backgrounded Bash call to forward as hook-shell start; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_does_not_forward_shell_start_for_a_foreground_bash_call() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("232-bash-fg");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"sess_9","tool_input":{{"command":"cargo test"}},"tool_response":{{}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            !log.contains("hook-shell"),
+            "a plain (non-backgrounded) Bash call must not forward as a shell event; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_forwards_kill_bash_as_shell_stop() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("233-killbash");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"KillBash","session_id":"sess_9","tool_input":{{"shell_id":"bash_1"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-shell 233 stop")
+                && log.contains("--shell-id bash_1")
+                && log.contains("--session-id sess_9"),
+            "expected KillBash to forward as hook-shell stop; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_forwards_bash_output_as_shell_stop_only_when_no_longer_running() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("234-bashoutput");
+        let still_running = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"BashOutput","session_id":"sess_9","tool_input":{{"shell_id":"bash_1"}},"tool_response":{{"status":"running"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &still_running);
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            !log.contains("hook-shell"),
+            "a BashOutput poll reporting status=running must not forward a stop; got: {log:?}"
+        );
+
+        let completed = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"BashOutput","session_id":"sess_9","tool_input":{{"shell_id":"bash_1"}},"tool_response":{{"status":"completed"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &completed);
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-shell 234 stop") && log.contains("--shell-id bash_1"),
+            "a BashOutput poll reporting status=completed must forward a stop; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn hook_ignores_subagent_event_without_agent_id() {
         let (_tmp, repo, script_path, observed, path_env) = spawn_hook_harness("223-noid");
         let payload = format!(

@@ -1345,11 +1345,11 @@ git commit -m "feat(4187): dispatch hook-shell CLI subcommand"
 
 **Implementation-time risk (per the design doc — resolve BEFORE writing the parsing logic below):** capture real Claude Code hook payloads for a backgrounded `Bash` call, a `KillBash` call, and a `BashOutput` call, to confirm the exact field names for `tool_input.run_in_background`, the assigned shell_id (likely in `tool_response`, not `tool_input`, for the `Bash` case — the ID doesn't exist until the call returns), `tool_input.shell_id` for `KillBash`/`BashOutput`, and whatever field `BashOutput`'s `tool_response` uses to report status. The field names below (`run_in_background`, `shell_id`, `status`) are the design's best guess, not confirmed — adjust them to match real payloads before trusting the script.
 
-- [ ] **Step 1: Update `docs/superpowers/specs/2026-08-15-shell-visibility-design.md`'s Open Questions section with the confirmed field names once captured, before writing code**
+- [x] **Step 1: Update `docs/superpowers/specs/2026-08-15-shell-visibility-design.md`'s Open Questions section with the confirmed field names once captured, before writing code**
 
 This is a documentation-only step but it's TDD-load-bearing: the tests in Task 9 assert on these exact field names, so get them right here first.
 
-- [ ] **Step 2: Add the Bash/KillBash/BashOutput branches to the `PostToolUse` case**
+- [x] **Step 2: Add the Bash/KillBash/BashOutput branches to the `PostToolUse` case**
 
 In `plugin/hooks/scripts/task-status-hook`, extend the existing `case "$TOOL" in Read|Write|Edit) ... esac` block (inside the `if [[ "$EVENT" == "PostToolUse" ]]` branch) with new cases for shell detection, run *before* or alongside the file-event switch:
 
@@ -1387,12 +1387,12 @@ In `plugin/hooks/scripts/task-status-hook`, extend the existing `case "$TOOL" in
 
 Place this as an additional `case "$TOOL" in ... esac` block alongside (not replacing) the existing `Read|Write|Edit) ... NotebookEdit) ... esac` file-event block — both switches run independently on the same `$TOOL`/`$INPUT`.
 
-- [ ] **Step 3: Run `bash -n` to sanity-check the script parses**
+- [x] **Step 3: Run `bash -n` to sanity-check the script parses**
 
 Run: `bash -n plugin/hooks/scripts/task-status-hook`
 Expected: no syntax errors.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add plugin/hooks/scripts/task-status-hook
@@ -1412,7 +1412,7 @@ git commit -m "feat(4187): forward backgrounded Bash/KillBash/BashOutput to disp
 - Consumes: Task 8's script changes.
 - Produces: regression coverage for the detection logic.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Following `hook_forwards_subagent_start_and_stop` (`src/setup/hooks.rs:474-495`) and `hook_does_not_forward_file_event_for_untracked_tool` (`:420-436`) as exact templates:
 
@@ -1500,7 +1500,7 @@ fn hook_forwards_bash_output_as_shell_stop_only_when_no_longer_running() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 These tests are numbered as Task 9 for review/commit granularity (script-change and script-tests are separately reviewable diffs), but they must be *written and run red* before Task 8's script edit lands, to get genuine TDD red-green rather than a same-commit rubber stamp. Concretely: write this task's Step 1 tests, temporarily stash or skip Task 8's script edit (or simply do these tests' Step 1 and Step 2 before touching the script at all), and confirm:
 
@@ -1509,17 +1509,17 @@ Expected: FAIL — the unmodified script has no Bash/KillBash/BashOutput branche
 
 Then perform Task 8's Step 2 (the script edit) before returning to this task's Step 3.
 
-- [ ] **Step 3: Run tests to verify they pass**
+- [x] **Step 3: Run tests to verify they pass**
 
 Run: same command as Step 2
 Expected: PASS (assuming Task 8's script change is in place)
 
-- [ ] **Step 4: Run the full `src/setup/hooks.rs` suite to confirm no regression**
+- [x] **Step 4: Run the full `src/setup/hooks.rs` suite to confirm no regression**
 
 Run: `cargo test --lib setup::hooks`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/setup/hooks.rs

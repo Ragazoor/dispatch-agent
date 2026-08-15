@@ -55,6 +55,42 @@ case "$EVENT" in
             if [[ -n "$FILE_PATH" ]]; then
                 dispatch hook-file-event "$ID" --tool "$TOOL" --path "$FILE_PATH"
             fi
+
+            # Additive, independent of the file-event switch above: forward
+            # backgrounded-shell lifecycle signals to `dispatch hook-shell`.
+            # See docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
+            SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+            case "$TOOL" in
+                Bash)
+                    RUN_IN_BACKGROUND=$(echo "$INPUT" | jq -r '.tool_input.run_in_background // false')
+                    if [[ "$RUN_IN_BACKGROUND" == "true" ]]; then
+                        # Only PostToolUse, not PreToolUse: the shell_id Claude
+                        # Code assigns doesn't exist until the call returns.
+                        SHELL_ID=$(echo "$INPUT" | jq -r '.tool_response.shell_id // empty')
+                        if [[ -n "$SHELL_ID" ]]; then
+                            dispatch hook-shell "$ID" start --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
+                        fi
+                    fi
+                    ;;
+                KillBash)
+                    SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.shell_id // empty')
+                    if [[ -n "$SHELL_ID" ]]; then
+                        dispatch hook-shell "$ID" stop --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
+                    fi
+                    ;;
+                BashOutput)
+                    # Only a stop signal when the polled shell is no longer
+                    # running (completed/failed/killed) — a poll reporting
+                    # "running" is not a stop event.
+                    STATUS=$(echo "$INPUT" | jq -r '.tool_response.status // empty')
+                    if [[ -n "$STATUS" && "$STATUS" != "running" ]]; then
+                        SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.shell_id // empty')
+                        if [[ -n "$SHELL_ID" ]]; then
+                            dispatch hook-shell "$ID" stop --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
+                        fi
+                    fi
+                    ;;
+            esac
         fi
         ;;
     Stop)               dispatch hook "$ID" stop ;;
