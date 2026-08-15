@@ -587,6 +587,39 @@ async fn record_stop_defers_while_a_subagent_is_live() {
 }
 
 #[tokio::test]
+async fn try_record_stop_defers_when_a_shell_is_live_and_no_subagents_are() {
+    let db = in_memory_db().await;
+    let task = make_task(&db, "t").await;
+    set_running(&db, &task).await;
+    db.db_call({
+        let task_id = task.id;
+        move |conn| {
+            conn.execute(
+                "UPDATE tasks SET live_shells = 1 WHERE id = ?1",
+                rusqlite::params![task_id.0],
+            )
+            .map_err(anyhow::Error::from)
+        }
+    })
+    .await
+    .unwrap();
+
+    let outcome = db.try_record_stop(task.id, Utc::now()).await.unwrap();
+    assert_eq!(
+        outcome,
+        StopOutcome::Deferred,
+        "a live background shell with no subagents must defer the Stop, not flip to Review \
+         -- this is the regression test for #4187's core bug"
+    );
+    let reread = db.get_task(task.id).await.unwrap().unwrap();
+    assert_eq!(
+        reread.status,
+        TaskStatus::Running,
+        "must stay Running, not flip to review"
+    );
+}
+
+#[tokio::test]
 async fn record_stop_is_a_noop_for_a_task_that_is_not_running() {
     let db = in_memory_db().await;
     let task = make_task(&db, "t").await;

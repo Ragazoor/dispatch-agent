@@ -602,12 +602,17 @@ impl super::super::TaskCrud for Database {
             // on `stop_pending`: the arriving Stop is itself the trigger, and a
             // row already carrying a stale bit must still flip (requiring the
             // bit to be clear here would make both statements miss).
+            //
+            // Both `live_subagents = 0` and `live_shells = 0` must hold: a
+            // live background shell defers the flip the same way a live
+            // subagent does (see the `live_shells > 0` branch below), so
+            // this statement must be blind to neither counter.
             let review = TaskStatus::Review;
             let flipped = tx
                 .execute(
                     &format!(
                         "UPDATE tasks {} \
-                         WHERE id = ?3 AND status = ?4 AND live_subagents = 0",
+                         WHERE id = ?3 AND status = ?4 AND live_subagents = 0 AND live_shells = 0",
                         super::STOP_FLIP_SET
                     ),
                     params![
@@ -628,6 +633,13 @@ impl super::super::TaskCrud for Database {
                 // it. `live_subagents > 0` is explicit rather than implied by
                 // the statement above failing, so each reads independently.
                 //
+                // `live_shells > 0` defers for the same reason: a backgrounded
+                // shell (Bash tool with `run_in_background: true`) keeps
+                // running after the agent's own turn ends, and flipping here
+                // would strand that work invisibly in Review. The last
+                // `shell_stop` that drains it applies the deferred Stop (see
+                // `apply_pending_stop_if_drained`, `src/db/queries/mod.rs`).
+                //
                 // `stop_pending_at` records when this Stop *fired*, which is
                 // what `record_user_prompt_submit` orders itself against — see
                 // its comment for why a write-time value would not do.
@@ -636,7 +648,7 @@ impl super::super::TaskCrud for Database {
                         "UPDATE tasks \
                          SET stop_pending = 1, stop_pending_at = ?3, \
                              updated_at = datetime('now') \
-                         WHERE id = ?1 AND status = ?2 AND live_subagents > 0",
+                         WHERE id = ?1 AND status = ?2 AND (live_subagents > 0 OR live_shells > 0)",
                         params![id.0, TaskStatus::Running.as_str(), deferred_at],
                     )
                     .context("Failed to defer stop")?;

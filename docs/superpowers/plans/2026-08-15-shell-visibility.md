@@ -608,7 +608,7 @@ git commit -m "feat(4187): task_shells CRUD, widen the shared drain predicate fo
 - Consumes: `tasks.live_shells` column (Task 2).
 - Produces: the fixed `try_record_stop` — the actual bug fix for this task's headline scenario.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `src/db/tests/subagents.rs`, near the existing `try_record_stop` tests (which use the `set_running(db, task)` helper at line 537-547, built on `TaskPatch`). `live_shells` is **not** exposed via `TaskPatch` — same reasoning as `live_subagents`'s deliberate exclusion (see `src/db/mod.rs`'s doc comment on `TaskPatch`: it's a denormalised count owned exclusively by its query module's transactional writes) — so seed it with a direct `db_call`:
 
@@ -645,12 +645,12 @@ async fn try_record_stop_defers_when_a_shell_is_live_and_no_subagents_are() {
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cargo test --lib try_record_stop_defers_when_a_shell_is_live_and_no_subagents_are`
 Expected: FAIL — `outcome` is `Flipped`, not `Deferred` (the bug this task fixes).
 
-- [ ] **Step 3: Widen both conditional `UPDATE`s in `try_record_stop`**
+- [x] **Step 3: Widen both conditional `UPDATE`s in `try_record_stop`**
 
 ```rust
 async fn try_record_stop(
@@ -687,17 +687,17 @@ async fn try_record_stop(
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --lib try_record_stop_defers_when_a_shell_is_live_and_no_subagents_are`
 Expected: PASS
 
-- [ ] **Step 5: Run existing `try_record_stop`/subagent-focused tests to confirm no regression**
+- [x] **Step 5: Run existing `try_record_stop`/subagent-focused tests to confirm no regression**
 
 Run: `cargo test --lib db::tests::subagents`
 Expected: PASS — a task with `live_shells = 0` (the default) behaves exactly as before.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/db/queries/tasks.rs src/db/tests/subagents.rs
