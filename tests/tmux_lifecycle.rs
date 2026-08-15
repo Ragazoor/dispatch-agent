@@ -554,6 +554,40 @@ fn resume_creates_a_new_window_for_a_worktree_without_one() {
     assert!(fx.server.has_window(&fx.window(TASK_ID)));
 }
 
+/// The stale-field/live-window case this whole change fixes: the worktree's
+/// window is already alive under its deterministic name (e.g. a persist that
+/// never landed, or a race clearing the DB field) even though resume is being
+/// asked to create one. Resume must reattach, not spawn a duplicate.
+#[test]
+fn resume_reattaches_to_a_live_window_without_creating_a_duplicate() {
+    let Some(fx) = setup_or_skip() else { return };
+    let worktree = fx.add_worktree(TASK_ID);
+    let window = fx.bare_agent_window(TASK_ID);
+    fx.clear_stub_log();
+
+    let result = fx.resume(TASK_ID, &worktree);
+
+    assert_eq!(result.tmux_window, window);
+    assert_eq!(
+        fx.server
+            .window_names()
+            .iter()
+            .filter(|n| **n == window)
+            .count(),
+        1,
+        "resume must not create a second window sharing the live one's name"
+    );
+    assert_eq!(
+        fx.server.pane_count(&window),
+        1,
+        "resume must not spawn a companion pane into an already-live window"
+    );
+    assert!(
+        stub_lines(&fx.server).is_empty(),
+        "resume must not launch a fresh claude process into an already-live window"
+    );
+}
+
 /// `--continue` has to reach the agent's own pane, in the worktree. If it landed
 /// in the companion pane or resolved the wrong cwd, resume would silently start
 /// a fresh conversation instead of continuing the task's.

@@ -61,6 +61,11 @@ const LS_REMOTE_UNREACHABLE: i32 = 128;
 /// The stderr a failing `git fetch origin <base>` stands in with.
 const FETCH_FAILURE: &str = "fatal: unable to access 'origin': transient network error";
 
+/// The stderr a `tmux` call stands in with when no server is running — shared
+/// by [`Step::HasWindowQuery`] and [`Step::NewWindow`], since both fail the
+/// same realistic way when there is nothing to connect to.
+const NO_TMUX_SERVER: &str = "no server running on /tmp/tmux-1000/default";
+
 /// `git symbolic-ref refs/remotes/origin/HEAD`'s reply for a repo whose default
 /// branch is `branch` — the form `crate::git::detect_default_branch` parses.
 fn default_branch_ref(branch: &str) -> Vec<u8> {
@@ -87,6 +92,11 @@ fn rev_list_counts(ahead: u32, behind: u32) -> Vec<u8> {
 /// `fetch_origin`); [`DispatchScript::index_of`] reports its first attempt.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Step {
+    /// `tmux list-windows -a -F #{window_name}` — `resume_agent`'s live
+    /// `has_window` check for a stray already-running window under the
+    /// deterministic name, issued before anything else. Resume-only: a fresh
+    /// [`DispatchScript::dispatch`] never issues this.
+    HasWindowQuery,
     /// `git symbolic-ref refs/remotes/origin/HEAD` — only when the caller passed
     /// no base branch, i.e. quick dispatch.
     DetectDefaultBranch,
@@ -130,6 +140,7 @@ impl Step {
         let has = |needle: &str| args.iter().any(|a| a == needle);
         let command_is = |name: &str| args.first().is_some_and(|a| a == name);
         match self {
+            Step::HasWindowQuery => program == "tmux" && command_is("list-windows"),
             Step::DetectDefaultBranch => program == "git" && has("symbolic-ref"),
             Step::PrHeadLookup => program == "gh" && has("view"),
             Step::Fetch => program == "git" && has("fetch"),
@@ -235,6 +246,14 @@ pub(crate) struct DispatchScript {
     /// [`Step::AheadBehind`]. `0` means "no drift", so origin wins.
     local_ahead: u32,
     fresh_worktree: bool,
+    /// Whether this shape is a resume (as opposed to a fresh dispatch) — the
+    /// only shape that issues [`Step::HasWindowQuery`], since the live
+    /// `has_window` check lives in `resume_agent`, not `dispatch_agent`.
+    is_resume: bool,
+    /// Only meaningful when `is_resume`: the window `has_window` looks for is
+    /// already alive, so `resume_agent` short-circuits after the check —
+    /// see [`Self::window_already_alive`].
+    window_already_alive: bool,
     ending: Ending,
 }
 
@@ -253,6 +272,8 @@ impl DispatchScript {
             fetch: FetchOutcome::SucceedsOnAttempt(1),
             local_ahead: 0,
             fresh_worktree: false,
+            is_resume: false,
+            window_already_alive: false,
             ending: Ending::Complete,
         }
     }
@@ -260,7 +281,29 @@ impl DispatchScript {
     /// `resume_agent`'s sequence: the tmux tail only, since resume reuses the
     /// worktree that already exists and touches git not at all.
     pub(crate) fn resume() -> Self {
-        Self::dispatch().no_fetch()
+        let mut script = Self::dispatch().no_fetch();
+        script.is_resume = true;
+        script
+    }
+
+    /// The window `resume_agent`'s `has_window` check looks for (the
+    /// deterministic `task-<id>`, matching every resume test's `TaskId(42)` —
+    /// see `resume_script_matches_a_real_resume`) is already alive. Resume
+    /// then reports success without creating a window, sending keys, or
+    /// spawning a companion pane — so this shape's sequence ends right after
+    /// [`Step::HasWindowQuery`].
+    ///
+    /// # Panics
+    ///
+    /// If called on a non-resume shape — the check this models only exists in
+    /// `resume_agent`.
+    pub(crate) fn window_already_alive(mut self) -> Self {
+        assert!(
+            self.is_resume,
+            "window_already_alive only applies to a resume() shape"
+        );
+        self.window_already_alive = true;
+        self
     }
 
     /// `provision_worktree` called directly: everything up to and including the
@@ -450,6 +493,15 @@ impl DispatchScript {
         if self.fresh_worktree {
             steps.push(Step::WorktreeAdd);
         }
+        if self.is_resume {
+            steps.push(Step::HasWindowQuery);
+            if self.window_already_alive {
+                // Found alive: resume_agent returns immediately, without
+                // creating a window, sending keys, or spawning a companion
+                // pane.
+                return steps;
+            }
+        }
         steps.extend([
             Step::NewWindow,
             Step::SetDispatchDir,
@@ -542,6 +594,16 @@ impl DispatchScript {
                 Step::CompanionSplit => {
                     (None, MockProcessRunner::ok_with_stdout(COMPANION_PANE_ID))
                 }
+                Step::HasWindowQuery => (
+                    None,
+                    if self.window_already_alive {
+                        // Matches TaskId(42) -> "task-42", the id every resume
+                        // test drives (see resume_script_matches_a_real_resume).
+                        MockProcessRunner::ok_with_stdout(b"task-42\n")
+                    } else {
+                        MockProcessRunner::ok()
+                    },
+                ),
                 _ => (None, MockProcessRunner::ok()),
             };
             out.push((delay, response));
@@ -619,12 +681,13 @@ fn pr_head_response(head: PrHead) -> Result<Output> {
 /// real tool says, so an error message a test asserts on stays realistic.
 fn failure_stderr(step: Step) -> &'static str {
     match step {
+        Step::HasWindowQuery => NO_TMUX_SERVER,
         Step::DetectDefaultBranch => "fatal: ref refs/remotes/origin/HEAD is not a symbolic ref",
         Step::PrHeadLookup => "gh: not authenticated",
         Step::Fetch | Step::OriginProbe | Step::LsRemote => FETCH_FAILURE,
         Step::AheadBehind => "fatal: ambiguous argument: unknown revision",
         Step::WorktreeAdd => "fatal: not a git repository",
-        Step::NewWindow => "no server running on /tmp/tmux-1000/default",
+        Step::NewWindow => NO_TMUX_SERVER,
         Step::SetDispatchDir => "can't find window",
         Step::SetSplitHook => "unknown hook",
         Step::SendKeysLiteral | Step::SendKeysEnter => "can't find pane",
@@ -699,6 +762,21 @@ mod tests {
     fn resume_script_matches_a_real_resume() {
         let (dir, _repo_path) = bare_repo();
         let script = DispatchScript::resume();
+        let mock = script.runner();
+
+        resume_agent(TaskId(42), dir.path().to_str().unwrap(), &mock).unwrap();
+
+        script.assert_matches(&mock.recorded_calls());
+    }
+
+    /// The reattach path: a live tmux window already answers to the
+    /// deterministic name, so resume_agent must not create a duplicate — it
+    /// should stop right after the has_window check with no new-window,
+    /// send-keys, or companion-pane calls at all.
+    #[test]
+    fn resume_script_matches_a_real_resume_when_window_already_alive() {
+        let (dir, _repo_path) = bare_repo();
+        let script = DispatchScript::resume().window_already_alive();
         let mock = script.runner();
 
         resume_agent(TaskId(42), dir.path().to_str().unwrap(), &mock).unwrap();
@@ -975,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "should be NewWindow")]
+    #[should_panic(expected = "should be HasWindowQuery")]
     fn assert_matches_rejects_a_reordered_call() {
         let mut calls = recorded_resume_calls();
         calls.swap(0, 1);

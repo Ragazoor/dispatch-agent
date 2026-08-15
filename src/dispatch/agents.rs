@@ -448,6 +448,18 @@ pub async fn fetch_verify_command(
 /// Re-open a tmux window for an existing worktree and resume the most recent
 /// Claude conversation with `claude --continue`.
 ///
+/// `task.tmux_window = null` is a persisted-field precondition, not proof
+/// that no live tmux window exists: the field can go stale (a race, or a
+/// persist that never landed) while the window it used to name survives. So
+/// before creating anything, this checks liveness live against tmux on the
+/// deterministic window name; if a window already answers to it, this
+/// returns immediately without creating a second one, sending keys, or
+/// spawning a companion pane — reattachment then happens the normal way, via
+/// the existing "has a window" branch of Space on the next keypress. A query
+/// failure falls back to the unconditional-create behaviour this function
+/// always had, rather than risking a task left with no live agent behind it.
+/// See `docs/specs/dispatch.allium`'s `ResumeTask` rule.
+///
 /// This function is **synchronous** and should be called via
 /// `tokio::task::spawn_blocking` from async contexts.
 pub fn resume_agent(
@@ -456,6 +468,15 @@ pub fn resume_agent(
     runner: &dyn ProcessRunner,
 ) -> Result<ResumeResult> {
     let tmux_window = build_tmux_window_name(task_id);
+
+    if tmux::has_window(&tmux_window, runner).unwrap_or(false) {
+        tracing::info!(
+            task_id = task_id.0,
+            %tmux_window,
+            "resume found a live tmux window; reattaching instead of duplicating"
+        );
+        return Ok(ResumeResult { tmux_window });
+    }
 
     tmux::new_window(&tmux_window, worktree_path, runner)
         .context("failed to create tmux window for resume")?;

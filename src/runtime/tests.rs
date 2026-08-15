@@ -2054,6 +2054,7 @@ async fn exec_resume_sends_error_on_failure() {
     let db = test_db().await;
     let (tx, mut rx) = mpsc::unbounded_channel();
     let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // tmux list-windows (has_window: not alive)
         MockProcessRunner::fail("no tmux session"), // tmux new-window fails
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;

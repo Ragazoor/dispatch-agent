@@ -1968,15 +1968,22 @@ fn resume_skips_git_issues_tmux_continue() {
 
     let calls = mock.recorded_calls();
     script.assert_matches(&calls);
-    assert_eq!(calls[0].0, "tmux");
-    assert_eq!(calls[0].1[0], "new-window");
-    assert_eq!(calls[1].1[0], "set-option");
-    assert_eq!(calls[2].1[0], "set-hook");
+    let new_window = &calls[script.index_of(Step::NewWindow)];
+    assert_eq!(new_window.0, "tmux");
+    assert_eq!(new_window.1[0], "new-window");
+    assert_eq!(
+        calls[script.index_of(Step::SetDispatchDir)].1[0],
+        "set-option"
+    );
+    assert_eq!(calls[script.index_of(Step::SetSplitHook)].1[0], "set-hook");
     assert!(
         calls.iter().all(|(prog, _)| prog != "git"),
         "resume should make no git calls"
     );
-    assert!(calls[3].1.iter().any(|a| a.contains("--continue")));
+    assert!(calls[script.index_of(Step::SendKeysLiteral)]
+        .1
+        .iter()
+        .any(|a| a.contains("--continue")));
 }
 
 #[test]
@@ -2009,11 +2016,12 @@ fn resume_agent_succeeds_even_if_companion_pane_split_fails() {
     let (_dir, worktree_path) = make_test_repo();
 
     let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                   // tmux new-window
-        MockProcessRunner::ok(),                   // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(),                   // tmux set-hook (after-split-window)
-        MockProcessRunner::ok(),                   // tmux send-keys -l
-        MockProcessRunner::ok(),                   // tmux send-keys Enter
+        MockProcessRunner::ok(), // tmux list-windows (has_window: not alive)
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
+        MockProcessRunner::ok(), // tmux send-keys -l
+        MockProcessRunner::ok(), // tmux send-keys Enter
         MockProcessRunner::fail("no target pane"), // tmux split-window fails
     ]);
 
@@ -2655,7 +2663,7 @@ fn resume_agent_includes_plugin_dir() {
     resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 3, "claude");
+    let send_keys_arg = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
     assert!(
         send_keys_arg.contains("--plugin-dir"),
         "resume_agent should include --plugin-dir, got: {send_keys_arg}"
@@ -2674,10 +2682,6 @@ fn resume_agent_includes_plugin_dir() {
 
 fn dispatch_mock() -> MockProcessRunner {
     DispatchScript::dispatch().runner()
-}
-
-fn resume_mock() -> MockProcessRunner {
-    DispatchScript::resume().runner()
 }
 
 #[test]
@@ -2717,12 +2721,13 @@ fn dispatch_agent_launches_the_runners_dispatch_binary_in_the_companion_pane() {
 #[test]
 fn resume_agent_launches_the_runners_claude_binary() {
     let (_dir, worktree_path) = make_test_repo();
-    let mock = resume_mock().with_agent_binaries(AgentBinaries::stub());
+    let script = DispatchScript::resume();
+    let mock = script.runner().with_agent_binaries(AgentBinaries::stub());
 
     resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
 
     let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 3, "claude");
+    let send_keys_arg = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
     assert!(
         send_keys_arg.starts_with("/stub/bin/claude-stub --plugin-dir"),
         "resume_agent must launch the runner's claude binary, got: {send_keys_arg}"
@@ -3321,10 +3326,12 @@ fn dispatch_agent_propagates_send_keys_failure() {
 
 #[test]
 fn resume_agent_propagates_new_window_failure() {
-    // First call (tmux new-window) fails — error should bubble up.
-    let mock = MockProcessRunner::new(vec![MockProcessRunner::fail(
-        "no server running on /tmp/tmux-1000/default",
-    )]);
+    // First call (tmux list-windows, has_window check) reports no window
+    // alive; second call (tmux new-window) fails — error should bubble up.
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),
+        MockProcessRunner::fail("no server running on /tmp/tmux-1000/default"),
+    ]);
 
     let result = resume_agent(TaskId(42), "/repo/.worktrees/42-fix-bug", &mock);
 
@@ -3336,6 +3343,44 @@ fn resume_agent_propagates_new_window_failure() {
     assert!(
         msg.contains("failed to create tmux window for resume"),
         "expected resume context in error chain, got: {msg}"
+    );
+}
+
+#[test]
+fn resume_agent_reattaches_to_live_window_without_creating_duplicate() {
+    let script = DispatchScript::resume().window_already_alive();
+    let mock = script.runner();
+
+    let result = resume_agent(TaskId(42), "/repo/.worktrees/42-fix-bug", &mock);
+    assert!(
+        result.is_ok(),
+        "resume_agent should succeed by reattaching, not erroring: {result:?}"
+    );
+    assert_eq!(result.unwrap().tmux_window, "task-42");
+
+    script.assert_matches(&mock.recorded_calls());
+}
+
+#[test]
+fn resume_agent_has_window_runner_error_falls_back_to_creating_a_window() {
+    // When runner.run() itself returns Err (e.g. tmux not installed), has_window
+    // propagates the error and resume_agent falls back to its pre-existing
+    // unconditional-create behaviour rather than treating the task as reattached.
+    let mock = MockProcessRunner::new(vec![
+        Err(anyhow::anyhow!("tmux not installed")), // has_window → runner error
+        MockProcessRunner::ok(),                    // tmux new-window
+        MockProcessRunner::ok(),                    // tmux set-option @dispatch_dir
+        MockProcessRunner::ok(),                    // tmux set-hook
+        MockProcessRunner::ok(),                    // tmux send-keys -l
+        MockProcessRunner::ok(),                    // tmux send-keys Enter
+        MockProcessRunner::ok_with_stdout(COMPANION_PANE_ID), // tmux split-window
+        MockProcessRunner::ok(),                    // tmux set-option (companion role)
+    ]);
+
+    let result = resume_agent(TaskId(42), "/repo/.worktrees/42-fix-bug", &mock);
+    assert!(
+        result.is_ok(),
+        "a has_window query failure should fall back to creating a new window: {result:?}"
     );
 }
 

@@ -529,27 +529,54 @@ rule ResumeTask {
     requires: task.worktree != null
     requires: task.tmux_window = null
 
+    -- task.tmux_window = null is a persisted-field precondition, not proof
+    -- that no live tmux window exists: the field can go stale (a race, or a
+    -- persist that never landed) while the window it used to name survives.
+    -- Liveness is therefore re-checked live against tmux on the deterministic
+    -- window name, the same style as OpenMainSession's window_alive check.
+    let window_alive = has_window(name: "task-" + task.id)
+
     ensures: task.tmux_window = core/TmuxWindow.created(name: "task-" + task.id)
     ensures: task.status = running
     ensures: task.sub_status = core/SubStatus.default_for(running)
     ensures: task.last_pre_tool_use_at = now
-    ensures: AgentLaunched(task: task, mode: resume)
+    ensures:
+        if not window_alive:
+            AgentLaunched(task: task, mode: resume)
 
     @guidance
-        -- Resuming reattaches the agent in the existing worktree: it spawns
-        -- a fresh tmux window and moves the task back to running, reusing the
-        -- same ensures as a Running/Review resume regardless of which status
-        -- the task came from. The two preconditions (worktree present, no live
-        -- tmux window) are the invariant that makes a resume safe.
+        -- Resuming reattaches the agent in the existing worktree. When no live
+        -- window is found (the common case), it spawns a fresh tmux window and
+        -- moves the task back to running, reusing the same ensures as a
+        -- Running/Review resume regardless of which status the task came from.
         --
-        -- Resuming from done is safe for the same reason. Moving a task to done
-        -- runs only ConfirmDone's tmux-window teardown (tmux_window = null); it
-        -- never removes the worktree (see rule ConfirmDone in tasks.allium and
-        -- the Task.status graph edge done -> running in core.allium). So a done
-        -- task still satisfies worktree != null and tmux_window = null and can
-        -- be resumed straight back to running like any Running/Review task.
-        -- Reached via Space on a task card with a worktree but no live tmux
-        -- window (see split-pane.allium JumpToAgentWindow, priority 3).
+        -- When a live window IS found under the deterministic name, resume
+        -- does not spawn a second one: AgentLaunched does not fire, so no new
+        -- window is created, no keys are sent, and no new companion pane is
+        -- spawned. task.tmux_window is still (re)pointed at the window so the
+        -- task stops looking detached; reattachment itself then happens the
+        -- normal way, through the existing "has a window" branch of Space (see
+        -- split-pane.allium JumpToAgentWindow, priority 3) on the next
+        -- keypress. Before this check existed, the stale-field case above
+        -- caused AgentLaunched to unconditionally spawn a second window
+        -- sharing the live one's name, and the next targeted tmux operation
+        -- on that name (select-window, send-keys, kill-window — all resolved
+        -- by exact name, see TmuxWindowTargetedExactly) refused as ambiguous.
+        --
+        -- A tmux query failure maps window_alive to false, not true: unlike
+        -- OpenMainSession's fixed-window check (which defaults to alive, so a
+        -- transient hiccup never sends the user to reconfigure), here the safe
+        -- default is the one that reproduces the unconditional-create
+        -- behaviour this rule always had before the check existed, rather
+        -- than risking a task left with no live agent behind it.
+        --
+        -- Resuming from done is safe for the same reason as always. Moving a
+        -- task to done runs only ConfirmDone's tmux-window teardown
+        -- (tmux_window = null); it never removes the worktree (see rule
+        -- ConfirmDone in tasks.allium and the Task.status graph edge
+        -- done -> running in core.allium). So a done task still satisfies
+        -- worktree != null and tmux_window = null and can be resumed straight
+        -- back to running like any Running/Review task.
 }
 
 -- == Retry ==
