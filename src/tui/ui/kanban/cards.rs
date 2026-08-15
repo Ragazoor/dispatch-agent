@@ -186,9 +186,13 @@ fn classify_card_indicator(
 /// The border colour a card's state claims, or `None` if it claims none.
 ///
 /// The card frame carries *state*, not identity (`core.allium`: "Selection" and
-/// "Border as state"). Red is the four hard failures — exactly the states whose
-/// indicator renders a `⚠`, so glyph and border agree by construction rather than
-/// by two lists being kept in step. Amber is the two that want a human's
+/// "Border as state"). Red is the four hard failures — the same states whose
+/// indicator renders a `⚠`. Note that is an agreement between two independent
+/// exhaustive matches over one enum, not a derivation: `render_card_indicator`
+/// picks the glyph, this picks the border, and only
+/// `every_indicator_claims_the_border_its_severity_earns` keeps them in step. A
+/// `CardIndicator::severity()` consumed by both would make it true by
+/// construction. Amber is the two that want a human's
 /// attention without being broken.
 ///
 /// `Dispatching` is deliberately absent despite rendering an amber indicator: it
@@ -211,6 +215,20 @@ fn state_border_color(indicator: &CardIndicator) -> Option<Color> {
         | CardIndicator::ReviewPr { .. }
         | CardIndicator::DoneMerged { .. }
         | CardIndicator::Idle { .. } => None,
+    }
+}
+
+/// The card frame's colour: cursor, then state, then the resting neutral.
+///
+/// Shared by task and epic cards so the precedence is stated once. Epic cards
+/// pass `None` — they carry no `CardIndicator` and so claim no state colour — but
+/// the cursor rule is identical for both, and the point of the cursor white is
+/// that it is the same everywhere.
+fn resolve_frame_color(is_cursor: bool, state: Option<Color>) -> Color {
+    if is_cursor {
+        cursor_border_color()
+    } else {
+        state.unwrap_or_else(card_border_color)
     }
 }
 
@@ -354,7 +372,12 @@ fn frame_card(
     let card_width = (col_width as usize).saturating_sub(CARD_MARGIN * 2);
     let content_width = card_width.saturating_sub(2);
     let style = Style::default().fg(frame_color);
-    let margin = || Span::styled(" ".repeat(CARD_MARGIN), Style::default().bg(ground));
+    // A `&'static str`, not `" ".repeat(CARD_MARGIN)`: the repeat heap-allocates a
+    // fresh String every call, and this closure runs eight times per card — twice
+    // per rail and twice per border — on every frame.
+    const MARGIN_STR: &str = " ";
+    debug_assert_eq!(MARGIN_STR.len(), CARD_MARGIN, "margin literal must match CARD_MARGIN");
+    let margin = || Span::styled(MARGIN_STR, Style::default().bg(ground));
     let horizontal = "\u{2500}".repeat(content_width);
 
     let rail = |inner: Line<'static>| -> Line<'static> {
@@ -462,13 +485,7 @@ pub(super) fn build_task_list_item<'a>(
     //
     // The flash contributes nothing here. It is carried by its fill and its
     // envelope glyph, which are the two things no other card has.
-    let frame_color = if is_cursor {
-        cursor_border_color()
-    } else if let Some(state) = state_border {
-        state
-    } else {
-        card_border_color()
-    };
+    let frame_color = resolve_frame_color(is_cursor, state_border);
     // A flash replaces the card surface for its duration; that differing fill is
     // what keeps it distinguishable from the selection despite sharing the hue.
     //
@@ -585,11 +602,9 @@ pub(super) fn render_epic_item(
     // unconditionally, so the frame is the *only* cursor signal an epic card has.
     // Epics carry no CardIndicator and so claim no state colour; a resting epic
     // frame is neutral like any other.
-    let frame_color = if is_cursor {
-        cursor_border_color()
-    } else {
-        card_border_color()
-    };
+    // Epics carry no CardIndicator, so they claim no state colour — but the
+    // precedence itself is shared, so the rule lives in one place.
+    let frame_color = resolve_frame_color(is_cursor, None);
     ListItem::new(frame_card(
         line1,
         line2,

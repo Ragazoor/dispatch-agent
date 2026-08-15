@@ -1,6 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{SubStatus, TaskId, TaskStatus, TaskTag};
+// Palette constants come from the palette, never retyped as literals here: a
+// hand-copied RGB goes stale silently when the palette moves, which is the exact
+// drift the derived header labels were introduced to stop.
+use crate::tui::ui::palette::{BORDER, MUTED, PURPLE, RED, YELLOW};
 use crossterm::event::KeyCode;
 use ratatui::style::{Color, Modifier};
 use std::time::Instant;
@@ -2367,11 +2371,10 @@ async fn epic_cards_carry_purple_identity_and_a_bold_title_at_rest() {
     // identity — sourcing it from a column would encode exactly the conflation this
     // test exists to disprove, and would keep passing if epics started following
     // their column.
-    const EPIC_PURPLE: Color = Color::Rgb(187, 154, 247);
 
     let (stripe, title) = epic_card_row(&buf, "#10").expect("expected the epic card to render");
     assert_eq!(
-        stripe.fg, EPIC_PURPLE,
+        stripe.fg, PURPLE,
         "an epic's stripe is PURPLE — its own identity, never its column's"
     );
     assert_ne!(
@@ -2524,7 +2527,6 @@ async fn a_card_spends_four_cells_of_its_column_on_chrome() {
     // are separate claims: narrowing the rails while widening the margin would keep
     // the inset test green and silently change what fits on a card.
     const CHROME: u16 = 4;
-    const SEP_FG: Color = Color::Rgb(41, 46, 66); // palette BORDER
 
     let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
     let buf = render_to_buffer(&mut app, 160, 30);
@@ -2535,7 +2537,7 @@ async fn a_card_spends_four_cells_of_its_column_on_chrome() {
     let col_width = (buf.area.left()..buf.area.right())
         .find(|&x| {
             let c = &buf[(x, probe_y)];
-            c.symbol() == "\u{2502}" && c.fg == SEP_FG
+            c.symbol() == "\u{2502}" && c.fg == BORDER
         })
         .expect("expected a column separator on an empty board row");
 
@@ -2562,7 +2564,6 @@ async fn flat_view_epic_breadcrumb_is_purple() {
     // The flat-view snapshots render this row, but `.snap` files are text only and
     // carry no style, so a breadcrumb that lost its hue would leave every one of
     // them byte-identical. Nothing was checking the colour until this.
-    const EPIC_PURPLE: Color = Color::Rgb(187, 154, 247);
 
     let mut app = App::new(vec![]);
     app.board.epics = vec![make_epic(10)];
@@ -2604,7 +2605,7 @@ async fn flat_view_epic_breadcrumb_is_purple() {
     );
     for c in &breadcrumb_title_colours {
         assert_eq!(
-            *c, EPIC_PURPLE,
+            *c, PURPLE,
             "the breadcrumb's title must be epic purple, not {c:?}"
         );
     }
@@ -2616,7 +2617,6 @@ async fn scroll_indicators_follow_the_column_top_rule() {
     // rule: hued while focused, neutral grey while not. They share one colour in
     // the renderer, but that is an implementation fact rather than an asserted one,
     // so splitting them would otherwise be caught by nothing.
-    const NEUTRAL_RULE: Color = Color::Rgb(86, 95, 137); // palette MUTED
 
     // Enough cards in both columns to overflow a short board.
     let mut tasks = Vec::new();
@@ -2649,7 +2649,7 @@ async fn scroll_indicators_follow_the_column_top_rule() {
         "the focused column's scroll indicator must carry its identity hue, got {arrows:?}"
     );
     assert!(
-        arrows.contains(&NEUTRAL_RULE),
+        arrows.contains(&MUTED),
         "an unfocused column's scroll indicator must be neutral grey, got {arrows:?}"
     );
 }
@@ -2694,8 +2694,6 @@ async fn card_frame_carries_state_and_the_cursor_outranks_it() {
     //   - an attention state borders amber,
     //   - and the cursor outranks both, so an unhealthy card that is also the
     //     cursor shows white and reports its state on the indicator line instead.
-    const RED: Color = Color::Rgb(247, 118, 142);
-    const AMBER: Color = Color::Rgb(224, 175, 104);
 
     let mut crashed = make_task(1, TaskStatus::Running);
     crashed.sub_status = SubStatus::Crashed;
@@ -2722,7 +2720,7 @@ async fn card_frame_carries_state_and_the_cursor_outranks_it() {
     assert_eq!(frames.len(), 3, "expected three framed cards, got {frames:?}");
 
     assert!(
-        frames.contains(&AMBER),
+        frames.contains(&YELLOW),
         "the blocked card must border amber; frames were {frames:?}"
     );
     assert!(
@@ -2806,7 +2804,6 @@ async fn column_top_rule_is_hued_only_while_focused() {
     // intensity, and it was entirely unguarded — a change that flattened the
     // focused rule to grey, or gave the unfocused one a dimmed hue, passed either
     // way, in both cases silently erasing or contradicting the exception.
-    const NEUTRAL_RULE: Color = Color::Rgb(86, 95, 137); // palette MUTED
     let mut app = App::new(vec![
         make_task(1, TaskStatus::Backlog),
         make_task(2, TaskStatus::Running),
@@ -2838,13 +2835,13 @@ async fn column_top_rule_is_hued_only_while_focused() {
          the rules on this row are {rules:?}"
     );
     assert!(
-        rules.contains(&NEUTRAL_RULE),
+        rules.contains(&MUTED),
         "an unfocused column's top rule must drop to neutral grey; \
          the rules on this row are {rules:?}"
     );
     for c in &rules {
         assert!(
-            *c == focused_hue || *c == NEUTRAL_RULE,
+            *c == focused_hue || *c == MUTED,
             "a top rule must be either the focused column's hue {focused_hue:?} or the \
              neutral grey; found {c:?}, so another column's hue has leaked into a rule"
         );
@@ -2907,7 +2904,6 @@ async fn header_bar_stops_at_the_column_separators() {
     //
     // Checked at several widths because the drift depends on how the ratio rounding
     // falls, so a single width can happen to line up.
-    const SEP_FG: Color = Color::Rgb(41, 46, 66); // palette BORDER
     let header_fills = [
         ui::column_header_bg(TaskStatus::Backlog, false),
         ui::column_header_bg(TaskStatus::Backlog, true),
@@ -2929,7 +2925,7 @@ async fn header_bar_stops_at_the_column_separators() {
         let sep_xs: Vec<u16> = (buf.area.left()..buf.area.right())
             .filter(|&x| {
                 let c = &buf[(x, probe_y)];
-                c.symbol() == "\u{2502}" && c.fg == SEP_FG
+                c.symbol() == "\u{2502}" && c.fg == BORDER
             })
             .collect();
         assert!(
@@ -3013,13 +3009,7 @@ async fn unfocused_column_header_keeps_its_identity_colour() {
     // core.allium: "the column's identity colour is always visible; focus
     // modulates emphasis only". The superseded behaviour flattened unfocused
     // headers to MUTED grey — that is the regression this guards.
-    const MUTED: Color = Color::Rgb(86, 95, 137);
-    for status in [
-        TaskStatus::Backlog,
-        TaskStatus::Running,
-        TaskStatus::Review,
-        TaskStatus::Done,
-    ] {
+    for &status in TaskStatus::ALL.iter() {
         let fg = ui::column_header_fg(status, false);
         assert_ne!(
             fg, MUTED,
@@ -3033,12 +3023,7 @@ async fn focused_column_header_is_more_emphatic_than_unfocused() {
     // core.allium "Column header bar": the bar, not the ground, is where focus
     // is read as colour intensity. The header fill stays hued at both focus
     // states; the focused one is the brighter fill of the two.
-    for status in [
-        TaskStatus::Backlog,
-        TaskStatus::Running,
-        TaskStatus::Review,
-        TaskStatus::Done,
-    ] {
+    for &status in TaskStatus::ALL.iter() {
         let unfocused = lightness_vs_terminal_bg(ui::column_header_bg(status, false));
         let focused = lightness_vs_terminal_bg(ui::column_header_bg(status, true));
         assert!(

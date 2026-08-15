@@ -23,7 +23,7 @@ use super::input_form::{
     input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
 };
 use super::palette::{
-    header_label_focused, header_label_unfocused, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
+    header_label_focused, header_label_unfocused, mix, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
     BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CURSOR_BORDER, CYAN, FG, GREEN, HEADER_BG,
     HEADER_BG_FOCUSED, MUTED, PURPLE, RED, SELECT_ALL_HIGHLIGHT_BG, YELLOW,
 };
@@ -84,10 +84,12 @@ pub(in crate::tui) fn select_all_highlight_bg() -> Color {
 ///
 /// The `status` parameter is deliberately unused: `core.allium` ("Column ground
 /// and card surface") makes the ground *the same colour in every column* at a
-/// given focus state, so binding it under a leading underscore is what
-/// compiler-enforces that no identity hue can leak back in. It is retained so
-/// call sites read symmetrically and so `board_ground_is_uniform_across_columns`
-/// in `src/tui/tests/rendering.rs` has something to vary.
+/// given focus state. The underscore records that intent — it does not enforce
+/// it, since nothing stops a later edit renaming the binding and matching on it.
+/// What enforces it is `board_ground_is_uniform_across_columns` in
+/// `src/tui/tests/rendering.rs`, which is also why the parameter is retained:
+/// the test needs something to vary, and the signature stays symmetric with
+/// `column_header_fg`, which does use its status.
 ///
 /// Focus raises the ground's lightness without tinting it
 /// (`NeutralRampIsStrictlyAscending`).
@@ -140,9 +142,10 @@ pub(in crate::tui) fn cursor_border_color() -> Color {
 /// per-column darkened wash of the identity colour, tuned to sit on the
 /// per-column tinted grounds that no longer exist.
 ///
-/// `status` is deliberately unused, same as in [`column_bg_color`]: binding it
-/// under a leading underscore is what compiler-enforces that no identity hue
-/// re-enters the fill.
+/// `status` is deliberately unused, same as in [`column_bg_color`]: the
+/// underscore records the intent rather than enforcing it. `header_fill_is_
+/// uniform_across_columns` in `src/tui/tests/rendering.rs` is what actually
+/// catches a hue re-entering the fill.
 pub(in crate::tui) fn column_header_bg(_status: TaskStatus, is_focused: bool) -> Color {
     if is_focused {
         HEADER_BG_FOCUSED
@@ -473,11 +476,10 @@ fn render_summary_segment(frame: &mut Frame, seg: &SummarySegment, area: Rect) {
 /// column's hue.
 fn dim_against(fg: Color, bg: Color) -> Color {
     match (fg, bg) {
-        (Color::Rgb(fr, fg_, fb), Color::Rgb(br, bg_, bb)) => Color::Rgb(
-            ((u16::from(fr) + u16::from(br)) / 2) as u8,
-            ((u16::from(fg_) + u16::from(bg_)) / 2) as u8,
-            ((u16::from(fb) + u16::from(bb)) / 2) as u8,
-        ),
+        // The midpoint, via the palette's blend rather than a second copy of the
+        // arithmetic. Guarded on both being Rgb so the non-Rgb fallback stays a
+        // fallback: `mix` panics on anything else, and a render function must not.
+        (Color::Rgb(..), Color::Rgb(..)) => mix(fg, bg, 50),
         _ => MUTED,
     }
 }
