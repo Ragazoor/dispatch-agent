@@ -1182,7 +1182,29 @@ to:
             );
 ```
 
-In `src/tui/update/agent.rs`'s `tick_sub_status` (line 295-330), change the call at line 304-309 the same way, passing `t.live_shells, t.oldest_live_shell_started_at`.
+In `src/tui/update/agent.rs`'s `tick_sub_status` (line 295-330), the call at lines 304-309 currently reads:
+
+```rust
+                let activity = crate::models::classify_agent_activity(
+                    t.last_pre_tool_use_at,
+                    t.last_notification_at,
+                    t.live_subagents,
+                    now,
+                );
+```
+
+Change it to:
+
+```rust
+                let activity = crate::models::classify_agent_activity(
+                    t.last_pre_tool_use_at,
+                    t.last_notification_at,
+                    t.live_subagents,
+                    t.live_shells,
+                    t.oldest_live_shell_started_at,
+                    now,
+                );
+```
 
 - [ ] **Step 9: Run tests to verify they pass**
 
@@ -1480,8 +1502,12 @@ fn hook_forwards_bash_output_as_shell_stop_only_when_no_longer_running() {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
+These tests are numbered as Task 9 for review/commit granularity (script-change and script-tests are separately reviewable diffs), but they must be *written and run red* before Task 8's script edit lands, to get genuine TDD red-green rather than a same-commit rubber stamp. Concretely: write this task's Step 1 tests, temporarily stash or skip Task 8's script edit (or simply do these tests' Step 1 and Step 2 before touching the script at all), and confirm:
+
 Run: `cargo test --lib hook_forwards_backgrounded_bash_as_shell_start hook_does_not_forward_shell_start_for_a_foreground_bash_call hook_forwards_kill_bash_as_shell_stop hook_forwards_bash_output_as_shell_stop_only_when_no_longer_running`
-Expected: FAIL (script doesn't forward yet, if Task 8 wasn't done first, or PASS if Task 8's script change already landed — this task assumes Task 8 is done; if executing strictly in written order, Task 8's script change already exists by this point, so write these tests BEFORE Task 8's Step 2 if you want genuine red-green-refactor — reorder Task 8 Step 2 and this task's Step 1 as needed, or treat Tasks 8+9 as one combined TDD cycle).
+Expected: FAIL — the unmodified script has no Bash/KillBash/BashOutput branches yet, so none of these forward anything.
+
+Then perform Task 8's Step 2 (the script edit) before returning to this task's Step 3.
 
 - [ ] **Step 3: Run tests to verify they pass**
 
