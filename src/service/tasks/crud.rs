@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::db::{self, CreateTaskRequest, TaskPatch};
 use crate::models::{
     classify_agent_activity, clears_pending_stop, sort_order_for_status_transition, EpicId,
-    HookEventKind, NotificationBehavior, StopOutcome, SubStatus, SubagentEvent, Task, TaskId,
-    TaskStatus, UserPromptOutcome, DEFAULT_BASE_BRANCH,
+    HookEventKind, NotificationBehavior, ShellEvent, StopOutcome, SubStatus, SubagentEvent, Task,
+    TaskId, TaskStatus, UserPromptOutcome, DEFAULT_BASE_BRANCH,
 };
 use crate::service::ServiceError;
 
@@ -866,6 +866,56 @@ impl TaskService {
         Ok(())
     }
 
+    /// Record a shell lifecycle event and, when it drains the last live
+    /// shell for a task carrying a deferred Stop (with no subagent still
+    /// live either), apply that Stop. Mirrors `record_subagent_event`.
+    pub async fn record_shell_event(
+        &self,
+        id: TaskId,
+        event: ShellEvent,
+    ) -> Result<(), ServiceError> {
+        if !self.db.task_exists(id).await? {
+            return Err(Self::task_not_found(id));
+        }
+        let applied_pending_stop = match event {
+            ShellEvent::Start {
+                shell_id,
+                session_id,
+            } => {
+                self.db
+                    .shell_start(id, &shell_id, &session_id, self.clock.now())
+                    .await?;
+                false
+            }
+            ShellEvent::Stop {
+                shell_id,
+                session_id,
+            } => {
+                self.db
+                    .shell_stop(id, &shell_id, &session_id)
+                    .await?
+                    .applied_pending_stop
+            }
+        };
+        if applied_pending_stop {
+            self.recalculate_epic_for_task(id).await;
+        }
+        Ok(())
+    }
+
+    /// Non-draining clear: deletes every `task_shells` row for the task and
+    /// resyncs `live_shells`, without touching status. For
+    /// `DetectCrashedAgent` and `DispatchTask`'s claim functions —
+    /// deliberately NOT called from `SessionStart`. See
+    /// docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
+    pub async fn clear_shells_no_drain(&self, id: TaskId) -> Result<(), ServiceError> {
+        if !self.db.task_exists(id).await? {
+            return Err(Self::task_not_found(id));
+        }
+        self.db.shell_clear_no_drain(id).await?;
+        Ok(())
+    }
+
     /// Mark that the PR-learnings reminder has been shown for this task.
     ///
     /// Returns `true` if this call set the flag (first `gh pr create` →
@@ -907,6 +957,9 @@ impl TaskService {
         // No-drain: a claim moves the task *into* Running; draining a
         // leftover count here would race that with a Review flip.
         self.clear_subagents_no_drain(claimed_id).await?;
+        // Mirrors the subagent clear above, guarding against shell entries
+        // left over from a prior run of this task.
+        self.clear_shells_no_drain(claimed_id).await?;
         self.recalculate_epic(epic_id).await;
         // Re-read rather than mirroring the claim's SET list here: the row is
         // the truth, and hand-copying it silently drifts (the DB also stamps
@@ -945,6 +998,7 @@ impl TaskService {
         // No-drain: a claim moves the task *into* Running; draining a
         // leftover count here would race that with a Review flip.
         self.clear_subagents_no_drain(task_id).await?;
+        self.clear_shells_no_drain(task_id).await?;
         self.recalculate_epic_for_task(task_id).await;
         Ok(true)
     }

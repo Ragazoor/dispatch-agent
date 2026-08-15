@@ -963,7 +963,7 @@ git commit -m "feat(4187): Task.live_shells, ShellEvent/ShellDrain, SubStatus::S
 - Consumes: `Database::shell_start`/`shell_stop`/`shell_clear_no_drain` (Task 3, exposed via the `TaskCrud` trait), `ShellEvent`/`ShellDrain` (Task 5).
 - Produces: `TaskService::record_shell_event(id, ShellEvent) -> Result<(), ServiceError>`, `TaskService::clear_shells_no_drain(id) -> Result<(), ServiceError>` — consumed by Task 7 (CLI).
 
-- [ ] **Step 1: Register the two new methods in the `TaskServiceApi` mock/stub macro**
+- [x] **Step 1: Register the two new methods in the `TaskServiceApi` mock/stub macro**
 
 `src/service/api.rs` generates a `TaskServiceApi` trait (and a `TaskServiceApiStub`) from a macro invocation that lists `TaskService`'s hook-facing methods — `record_subagent_event`/`clear_subagents_no_drain` are declared there at lines 253-267. Add matching entries for the two new methods, in the same macro invocation, right after `clear_subagents_no_drain`:
 
@@ -989,7 +989,7 @@ git commit -m "feat(4187): Task.live_shells, ShellEvent/ShellDrain, SubStatus::S
             ) -> Result<(), $crate::service::ServiceError>;
 ```
 
-- [ ] **Step 2: Write the failing service-layer tests**
+- [x] **Step 2: Write the failing service-layer tests**
 
 Real helpers, verified against `src/service/tasks/tests.rs`: `test_db().await` builds an in-memory DB, `task_svc(&db)` builds a `TaskService`, `create_running_task(&svc, sub_status: SubStatus).await -> TaskId` seeds a Running task, and `svc.get_task(id).await.unwrap()` returns `Task` directly (not `Option<Task>`). Following `detach_clear_drains_and_performs_a_pending_flip` (lines 2987-3018) and `clear_no_drain_voids_a_pending_stop_without_flipping_to_review` (lines 3023-3049) as exact templates:
 
@@ -1064,12 +1064,12 @@ async fn clear_shells_no_drain_zeroes_live_shells_without_touching_status() {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
+- [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test --lib service::tasks::tests::record_shell_event`
 Expected: FAIL to compile — methods don't exist.
 
-- [ ] **Step 4: Add `record_shell_event`/`clear_shells_no_drain` to `TaskService`**
+- [x] **Step 4: Add `record_shell_event`/`clear_shells_no_drain` to `TaskService`**
 
 In `src/service/tasks/crud.rs`, near `record_subagent_event`/`clear_subagents_no_drain`:
 
@@ -1105,7 +1105,7 @@ pub async fn clear_shells_no_drain(&self, id: TaskId) -> Result<(), ServiceError
 }
 ```
 
-- [ ] **Step 5: Wire the two `DispatchTask` claim functions**
+- [x] **Step 5: Wire the two `DispatchTask` claim functions**
 
 In `claim_next_backlog_task` (`src/service/tasks/crud.rs:890-913`), right after the existing `self.clear_subagents_no_drain(claimed_id).await?;`:
 
@@ -1121,7 +1121,7 @@ In `claim_backlog_task` (`:935-948`), same pattern right after its `self.clear_s
         self.clear_shells_no_drain(task_id).await?;
 ```
 
-- [ ] **Step 6: Wire `exec_clear_subagents`'s `NoDrain` branch**
+- [x] **Step 6: Wire `exec_clear_subagents`'s `NoDrain` branch**
 
 In `src/runtime/tasks.rs:206-218`:
 
@@ -1152,7 +1152,7 @@ In `src/runtime/tasks.rs:206-218`:
 
 (`DrainMode` needs `PartialEq` — it already derives `PartialEq, Eq` per Task 5's read of its definition, so `mode == models::DrainMode::NoDrain` compiles as-is.)
 
-- [ ] **Step 7: Wire `handle_agent_crashed`'s in-memory bookkeeping**
+- [x] **Step 7: Wire `handle_agent_crashed`'s in-memory bookkeeping**
 
 In `src/tui/update/agent.rs:453-481`, add alongside the existing `task.live_subagents = 0;`:
 
@@ -1161,7 +1161,7 @@ In `src/tui/update/agent.rs:453-481`, add alongside the existing `task.live_suba
             task.live_shells = 0;
 ```
 
-- [ ] **Step 8: Wire `record_hook_event`'s `PreToolUse` branch and `tick_sub_status` to the new `classify_agent_activity` signature**
+- [x] **Step 8: Wire `record_hook_event`'s `PreToolUse` branch and `tick_sub_status` to the new `classify_agent_activity` signature**
 
 In `src/service/tasks/crud.rs` (`record_hook_event`, around line 733), change:
 
@@ -1206,17 +1206,17 @@ Change it to:
                 );
 ```
 
-- [ ] **Step 9: Run tests to verify they pass**
+- [x] **Step 9: Run tests to verify they pass**
 
 Run: `cargo test --lib service::tasks`
 Expected: PASS
 
-- [ ] **Step 10: Run the full lib suite**
+- [x] **Step 10: Run the full lib suite**
 
 Run: `cargo build --all-targets 2>&1 | tee /tmp/build2.log; grep -E "error" /tmp/build2.log`
 Expected: no errors.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add src/service/tasks/crud.rs src/service/api.rs src/runtime/tasks.rs src/tui/update/agent.rs

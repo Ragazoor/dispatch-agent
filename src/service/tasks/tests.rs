@@ -4,7 +4,8 @@ use std::sync::Arc;
 use super::{CreateTaskParams, ListTasksFilter, TaskService, UpdateTaskParams};
 use crate::db::{self, Database, EpicCrud, EpicRead, TaskRead};
 use crate::models::{
-    EpicId, HookEventKind, NotificationKind, SubStatus, SubagentEvent, TaskId, TaskStatus, TaskTag,
+    EpicId, HookEventKind, NotificationKind, ShellEvent, SubStatus, SubagentEvent, TaskId,
+    TaskStatus, TaskTag,
 };
 use crate::service::epics::{CreateEpicParams, EpicService, UpdateEpicParams};
 use crate::service::{FieldUpdate, ServiceError};
@@ -3048,6 +3049,87 @@ async fn clear_no_drain_voids_a_pending_stop_without_flipping_to_review() {
     );
     assert_eq!(task.live_subagents, 0);
     assert!(!task.stop_pending);
+}
+
+#[tokio::test]
+async fn record_shell_event_start_increments_live_shells() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_shell_event(
+        id,
+        ShellEvent::Start {
+            shell_id: "bash_1".into(),
+            session_id: "sess_1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.live_shells, 1);
+}
+
+#[tokio::test]
+async fn shell_stop_drains_a_deferred_stop_to_review() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_shell_event(
+        id,
+        ShellEvent::Start {
+            shell_id: "bash_1".into(),
+            session_id: "sess_1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    svc.record_hook_event(id, HookEventKind::Stop).await.unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(
+        task.status,
+        TaskStatus::Running,
+        "Stop must defer, not flip, while a shell is live -- #4187's core bug"
+    );
+
+    svc.record_shell_event(
+        id,
+        ShellEvent::Stop {
+            shell_id: "bash_1".into(),
+            session_id: "sess_1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Review);
+}
+
+#[tokio::test]
+async fn clear_shells_no_drain_zeroes_live_shells_without_touching_status() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = create_running_task(&svc, SubStatus::Active).await;
+
+    svc.record_shell_event(
+        id,
+        ShellEvent::Start {
+            shell_id: "bash_1".into(),
+            session_id: "sess_1".into(),
+        },
+    )
+    .await
+    .unwrap();
+
+    svc.clear_shells_no_drain(id).await.unwrap();
+
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.live_shells, 0);
+    assert_eq!(task.status, TaskStatus::Running);
 }
 
 /// The interleaving that used to strand a task: the last `SubagentStop`

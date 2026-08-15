@@ -471,6 +471,8 @@ impl App {
             task.sub_status = SubStatus::Crashed;
             task.tmux_window = None;
             task.live_subagents = 0;
+            task.live_shells = 0;
+            task.oldest_live_shell_started_at = None;
             // Board bookkeeping, mirroring the authoritative DB clear in
             // `clear_subagents_no_drain` (reached via the `ClearSubagents`
             // command below) so the card does not render a pending Stop until

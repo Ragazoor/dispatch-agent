@@ -63,7 +63,7 @@ pub(super) fn shell_start(
     tx.execute(
         "INSERT OR REPLACE INTO task_shells (task_id, shell_id, session_id, started_at) \
          VALUES (?1, ?2, ?3, ?4)",
-        params![task_id, shell_id, session_id, now.to_rfc3339()],
+        params![task_id, shell_id, session_id, super::format_datetime_millis(now)],
     )
     .context("Failed to insert task_shells row")?;
     let count = sync_shell_state(&tx, task_id)?;

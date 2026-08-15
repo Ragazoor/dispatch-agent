@@ -266,6 +266,26 @@ macro_rules! task_service_api {
                 id: $crate::models::TaskId
             ) -> Result<(), $crate::service::ServiceError>;
 
+            /// Record a shell lifecycle event and, when it drains the last
+            /// live shell for a task carrying a deferred Stop (with no
+            /// subagent still live either), apply that Stop. See
+            /// `HookShellStart`/`HookShellStop` in
+            /// `docs/specs/agent-health.allium`.
+            async fn record_shell_event(
+                &self,
+                id: $crate::models::TaskId,
+                event: $crate::models::ShellEvent
+            ) -> Result<(), $crate::service::ServiceError>;
+
+            /// Clear a task's shell entries without draining — for
+            /// `DetectCrashedAgent` and `DispatchTask`'s claim functions.
+            /// Deliberately NOT called from `SessionStart`; see
+            /// `docs/superpowers/specs/2026-08-15-shell-visibility-design.md`.
+            async fn clear_shells_no_drain(
+                &self,
+                id: $crate::models::TaskId
+            ) -> Result<(), $crate::service::ServiceError>;
+
             /// Select and atomically claim the epic's next backlog subtask,
             /// moving it to `Running` before any provisioning happens. Exclusive
             /// under concurrency — see `AutoDispatchNextSubtask` in
