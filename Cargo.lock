@@ -842,6 +842,7 @@ dependencies = [
  "insta",
  "proptest",
  "ratatui",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

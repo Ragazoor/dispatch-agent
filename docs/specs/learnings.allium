@@ -400,6 +400,7 @@ rule RecordLearningViaMcp {
     requires: summary != ""
     requires: scope = user implies scope_ref = null
     requires: scope in {repo, epic, task} implies scope_ref != null
+    requires: not references_internal_code(summary) and not references_internal_code(detail)
 
     ensures: core/Learning.created(
         kind: kind,
@@ -433,7 +434,34 @@ rule RecordLearningViaMcp {
         -- knowledge. It does NOT suggest rate_learning on those entries:
         -- rate_learning requires a prior Retrieval row for (task, learning),
         -- and dedup matches are not necessarily retrievals for this task.
-        -- Source: src/mcp/handlers/learnings.rs.
+        --
+        -- references_internal_code(text) rejects summary/detail containing:
+        --   - a `path.rs::symbol` citation (a Rust file path plus a `::`-qualified
+        --     symbol), or
+        --   - a `Type::method` citation (a PascalCase type plus a `::`-qualified
+        --     method), or
+        --   - a bare snake_case identifier with four or more underscores,
+        --     backticked or not.
+        -- These three shapes mirror three of check-doc-symbols.sh's four
+        -- candidate shapes (pathsym, typesym, bare) — see that script's header
+        -- comment. Unlike that script, this is an unconditional reject, not a
+        -- phantom-existence check: a citation that currently resolves is just
+        -- as exposed to future rot as one that never did, since nothing
+        -- re-validates the knowledge base against the codebase on a schedule.
+        -- The fourth shape (a bare backticked snake_case span) is deliberately
+        -- NOT rejected: this project's MCP tool names (query_learnings,
+        -- wrap_up, exit_session, ...) are backticked snake_case with an
+        -- underscore, and are a stable public interface an agent should be
+        -- able to name in a learning, not the internal-code-detail this check
+        -- exists to keep out.
+        -- There is no escape hatch (unlike check-doc-symbols.sh's
+        -- allow-phantom-symbol: marker): the knowledge base has no human
+        -- review step, so a free-text override embedded in agent-authored
+        -- content would be unenforceable. An agent that needs to cite specific
+        -- code should put it in the Allium spec or a Rust doc comment instead,
+        -- both of which are gated and both of which have an escape hatch.
+        -- Implemented in find_code_citation() / create_learning()
+        -- (src/service/learnings.rs).
 }
 
 rule QueryLearningsViaMcp {

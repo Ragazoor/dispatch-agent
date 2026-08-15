@@ -305,6 +305,59 @@ async fn record_learning_unknown_task_fails() {
     assert_error(&resp, "9999");
 }
 
+// --- record_learning: internal-code citation rejection -----------------------
+
+#[tokio::test]
+async fn record_learning_rejects_code_citation_in_summary() {
+    let state = test_state().await;
+    let task_id = create_task_in_repo(&state, "/repo/foo").await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "record_learning",
+            "arguments": {
+                "task_id": task_id.0,
+                "kind": "convention",
+                "summary": "A step goes in src/feed/cycle.rs::run_feed_cycle.",
+                "scope": "user"
+            }
+        })),
+    )
+    .await;
+    assert_error(&resp, "internal code");
+
+    let learnings = state
+        .db
+        .list_learnings(crate::db::LearningFilter::default())
+        .await
+        .unwrap();
+    assert!(learnings.is_empty(), "rejected learning must not be created");
+}
+
+#[tokio::test]
+async fn record_learning_allows_mcp_tool_name_reference() {
+    let state = test_state().await;
+    let task_id = create_task_in_repo(&state, "/repo/foo").await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "record_learning",
+            "arguments": {
+                "task_id": task_id.0,
+                "kind": "procedural",
+                "summary": "Call `query_learnings` before guessing, not after.",
+                "scope": "user"
+            }
+        })),
+    )
+    .await;
+    assert!(resp.error.is_none(), "unexpected error: {:?}", resp.error);
+}
+
 // --- record_learning: similar-entries echo -----------------------------------
 
 #[tokio::test]

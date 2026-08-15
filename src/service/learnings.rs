@@ -1,4 +1,6 @@
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+use regex::Regex;
 
 use crate::db::{self, CreateLearningRow, LearningFilter};
 use crate::models::{
@@ -10,6 +12,43 @@ use crate::service::embeddings::{
 };
 
 use super::ServiceError;
+
+// ---------------------------------------------------------------------------
+// Internal-code citation detection
+// ---------------------------------------------------------------------------
+
+// Mirrors three of check-doc-symbols.sh's four candidate shapes (pathsym,
+// typesym, bare) — see docs/specs/learnings.allium: RecordLearningViaMcp for
+// why the fourth shape (bare backticked snake_case) is deliberately excluded.
+static PATHSYM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z0-9_./-]+\.rs::[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
+        .expect("PATHSYM_RE must compile")
+});
+
+static TYPESYM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Z][A-Za-z0-9]*(?:::[A-Za-z_][A-Za-z0-9_]*)+").expect("TYPESYM_RE must compile")
+});
+
+// At least four underscores (five word segments) — the same threshold
+// check-doc-symbols.sh measured as the lowest value with zero false positives
+// across the docs/specs/ corpus.
+static BARE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+){4,}").expect("BARE_RE must compile")
+});
+
+/// Detects an internal-code-shaped citation in learning text: a
+/// `path.rs::symbol` reference, a `Type::method` reference, or a long (5+
+/// segment) bare snake_case identifier. Returns the offending substring on a
+/// match. See docs/specs/learnings.allium: RecordLearningViaMcp for the
+/// rationale, including why short backticked identifiers (MCP tool names)
+/// are deliberately not flagged.
+fn find_code_citation(text: &str) -> Option<&str> {
+    PATHSYM_RE
+        .find(text)
+        .or_else(|| TYPESYM_RE.find(text))
+        .or_else(|| BARE_RE.find(text))
+        .map(|m| m.as_str())
+}
 
 // ---------------------------------------------------------------------------
 // QueryLearningsParams
@@ -60,6 +99,26 @@ impl LearningService {
     ) -> Result<LearningId, ServiceError> {
         if params.summary.trim().is_empty() {
             return Err(ServiceError::Validation("summary must not be empty".into()));
+        }
+        if let Some(hit) = find_code_citation(&params.summary) {
+            return Err(ServiceError::Validation(format!(
+                "learning summary cites internal code (`{hit}`) — this rots silently since \
+                 nothing re-checks the knowledge base against the codebase. Describe the \
+                 durable behavior in prose instead, or add the citation to the relevant \
+                 docs/specs/*.allium file or a Rust doc comment, both of which \
+                 check-doc-symbols.sh keeps accurate on every push."
+            )));
+        }
+        if let Some(detail) = &params.detail {
+            if let Some(hit) = find_code_citation(detail) {
+                return Err(ServiceError::Validation(format!(
+                    "learning detail cites internal code (`{hit}`) — this rots silently since \
+                     nothing re-checks the knowledge base against the codebase. Describe the \
+                     durable behavior in prose instead, or add the citation to the relevant \
+                     docs/specs/*.allium file or a Rust doc comment, both of which \
+                     check-doc-symbols.sh keeps accurate on every push."
+                )));
+            }
         }
         match params.scope {
             LearningScope::User => {
@@ -506,5 +565,117 @@ mod learning_tests {
             384 * 4,
             "embedding should be 1536 bytes for 384 f32 values"
         );
+    }
+
+    #[test]
+    fn find_code_citation_rejects_path_rs_symbol() {
+        let hit = super::find_code_citation(
+            "A step that must behave identically on both feed paths goes in \
+             src/feed/cycle.rs::run_feed_cycle.",
+        );
+        assert_eq!(hit, Some("src/feed/cycle.rs::run_feed_cycle"));
+    }
+
+    #[test]
+    fn find_code_citation_rejects_type_method() {
+        let hit = super::find_code_citation("The FeedCycle::run entry point drives both paths.");
+        assert_eq!(hit, Some("FeedCycle::run"));
+    }
+
+    #[test]
+    fn find_code_citation_rejects_long_bare_snake_case() {
+        let hit = super::find_code_citation(
+            "Pinned by exec_trigger_epic_feed_quiet_command_reports_no_stderr today.",
+        );
+        assert_eq!(
+            hit,
+            Some("exec_trigger_epic_feed_quiet_command_reports_no_stderr")
+        );
+    }
+
+    #[test]
+    fn find_code_citation_rejects_long_bare_snake_case_even_backticked() {
+        let hit = super::find_code_citation(
+            "See `exec_trigger_epic_feed_quiet_command_reports_no_stderr` for the case.",
+        );
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn find_code_citation_allows_short_backticked_tool_names() {
+        assert_eq!(
+            super::find_code_citation("Call `query_learnings` before guessing."),
+            None
+        );
+        assert_eq!(
+            super::find_code_citation("Rate it with `rate_learning`, then `wrap_up`."),
+            None
+        );
+    }
+
+    #[test]
+    fn find_code_citation_allows_plain_prose() {
+        assert_eq!(
+            super::find_code_citation(
+                "TaskPatch double-Option means Some(None) clears a field, None leaves it unchanged."
+            ),
+            None
+        );
+        assert_eq!(
+            super::find_code_citation("Feed-cycle logic must live in one shared place."),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn create_learning_rejects_summary_with_code_citation() {
+        let svc = service().await;
+        let err = svc
+            .create_learning(CreateLearningParams {
+                kind: LearningKind::Convention,
+                summary: "A step goes in src/feed/cycle.rs::run_feed_cycle.".to_string(),
+                detail: None,
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: vec![],
+                source_task_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn create_learning_rejects_detail_with_code_citation() {
+        let svc = service().await;
+        let err = svc
+            .create_learning(CreateLearningParams {
+                kind: LearningKind::Convention,
+                summary: "Feed-cycle logic must live in one shared place.".to_string(),
+                detail: Some("See FeedCycle::run for the exact entry point.".to_string()),
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: vec![],
+                source_task_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn create_learning_allows_tool_name_reference() {
+        let svc = service().await;
+        svc.create_learning(CreateLearningParams {
+            kind: LearningKind::Procedural,
+            summary: "Call `query_learnings` before guessing, not after.".to_string(),
+            detail: None,
+            scope: LearningScope::User,
+            scope_ref: None,
+            tags: vec![],
+            source_task_id: None,
+        })
+        .await
+        .unwrap();
     }
 }
