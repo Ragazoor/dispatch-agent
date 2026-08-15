@@ -72,10 +72,11 @@ case "$EVENT" in
             # Additive, independent of the file-event switch above: forward
             # backgrounded-shell lifecycle signals to `dispatch hook-shell`.
             # See docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
-            # SESSION_ID is only extracted for the tools that need it — this
-            # branch runs on every PostToolUse for every tool in every agent
-            # session, so an unconditional jq spawn here would be a needless
-            # subprocess on the hottest path in the codebase.
+            # SESSION_ID and SHELL_ID are only extracted once we already know
+            # a hook-shell call is going out — this branch runs on every
+            # PostToolUse for every tool in every agent session, so a jq spawn
+            # that fires even on the common "still running" poll would be a
+            # needless subprocess on the hottest path in the codebase.
             #
             # Two tool-name generations are matched for the stop/poll signal:
             # KillBash/BashOutput (older Claude Code) and TaskStop/TaskOutput
@@ -89,10 +90,6 @@ case "$EVENT" in
             # (shell_id/KillBash/BashOutput only) meant `hook-shell` was
             # never actually invoked in production.
             case "$TOOL" in
-                Bash|KillBash|BashOutput|TaskStop|TaskOutput)
-                    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty') ;;
-            esac
-            case "$TOOL" in
                 Bash)
                     RUN_IN_BACKGROUND=$(echo "$INPUT" | jq -r '.tool_input.run_in_background // false')
                     if [[ "$RUN_IN_BACKGROUND" == "true" ]]; then
@@ -100,24 +97,26 @@ case "$EVENT" in
                         # assigns doesn't exist until the call returns.
                         SHELL_ID=$(echo "$INPUT" | jq -r '.tool_response.backgroundTaskId // .tool_response.shell_id // empty')
                         if [[ -n "$SHELL_ID" ]]; then
+                            SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
                             dispatch hook-shell "$ID" start --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
                         fi
                     fi
                     ;;
-                KillBash|TaskStop)
-                    SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.task_id // .tool_input.shell_id // empty')
-                    if [[ -n "$SHELL_ID" ]]; then
-                        dispatch hook-shell "$ID" stop --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
+                KillBash|TaskStop|BashOutput|TaskOutput)
+                    # KillBash/TaskStop is always a definitive stop signal.
+                    # BashOutput/TaskOutput is one only when the polled status
+                    # is no longer "running" — a poll reporting "running" (the
+                    # common case) must stop right here, before any further
+                    # jq spawn.
+                    IS_STOP=1
+                    if [[ "$TOOL" == "BashOutput" || "$TOOL" == "TaskOutput" ]]; then
+                        STATUS=$(echo "$INPUT" | jq -r '.tool_response.status // empty')
+                        [[ -n "$STATUS" && "$STATUS" != "running" ]] || IS_STOP=0
                     fi
-                    ;;
-                BashOutput|TaskOutput)
-                    # Only a stop signal when the polled shell is no longer
-                    # running (completed/failed/killed) — a poll reporting
-                    # "running" is not a stop event.
-                    STATUS=$(echo "$INPUT" | jq -r '.tool_response.status // empty')
-                    if [[ -n "$STATUS" && "$STATUS" != "running" ]]; then
+                    if [[ "$IS_STOP" == "1" ]]; then
                         SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.task_id // .tool_input.shell_id // empty')
                         if [[ -n "$SHELL_ID" ]]; then
+                            SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
                             dispatch hook-shell "$ID" stop --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
                         fi
                     fi

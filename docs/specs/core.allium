@@ -358,7 +358,8 @@ entity SubagentEntry {
 }
 
 -- A live backgrounded shell (Bash tool with run_in_background = true), as
--- reported by PostToolUse events for Bash/KillBash/BashOutput. The table is
+-- reported by PostToolUse events for Bash/KillBash|TaskStop/BashOutput|
+-- TaskOutput. The table is
 -- the authority for Task.live_shells/oldest_live_shell_started_at, which are
 -- denormalised and rewritten from it by every mutation and clear point (see
 -- agent-health.allium: HookShellStart / HookShellStop).

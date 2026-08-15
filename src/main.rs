@@ -109,8 +109,9 @@ enum Commands {
         session_id: Option<String>,
     },
     /// Record a Claude Code backgrounded-shell lifecycle event (a Bash tool
-    /// call with `run_in_background: true`, or a KillBash/BashOutput signal
-    /// that it stopped) for a task. Maintains the live-shell count that
+    /// call with `run_in_background: true`, or a KillBash/TaskStop or
+    /// BashOutput/TaskOutput signal that it stopped) for a task. Maintains
+    /// the live-shell count that
     /// defers the Stop-to-Review flip and exempts a task from the normal
     /// staleness threshold; see `docs/specs/agent-health.allium`. Unlike
     /// `HookSubagent`, there is no `clear` action — a shell has no

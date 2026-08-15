@@ -803,7 +803,8 @@ pub enum ShellEvent {
         shell_id: String,
         session_id: String,
     },
-    /// `KillBash`, or `BashOutput` reporting the shell is no longer running.
+    /// `KillBash`/`TaskStop`, or `BashOutput`/`TaskOutput` reporting the
+    /// shell is no longer running.
     Stop {
         shell_id: String,
         session_id: String,
