@@ -204,27 +204,20 @@ impl TuiRuntime {
     /// degrades to a phantom count, which is recoverable, and an error popup on
     /// a background cleanup would be worse than the drift.
     pub(super) async fn exec_clear_subagents(&self, id: models::TaskId, mode: models::DrainMode) {
+        // Drain clears shells for free: subagent_clear is widened at the DB
+        // layer to also touch task_shells in the same transaction. NoDrain
+        // (crash detection) uses the combined clear, which also touches
+        // shells — see `TaskService::clear_structural_no_drain`.
         let result = match mode {
             models::DrainMode::Drain => {
                 self.task_svc
                     .record_subagent_event(id, models::SubagentEvent::Clear)
                     .await
             }
-            models::DrainMode::NoDrain => self.task_svc.clear_subagents_no_drain(id).await,
+            models::DrainMode::NoDrain => self.task_svc.clear_structural_no_drain(id).await,
         };
         if let Err(e) = result {
-            tracing::warn!(task_id = id.0, error = %e, "failed to clear subagent entries");
-        }
-        // Shells: the Drain branch above clears them for free (subagent_clear
-        // is widened at the DB layer to also touch task_shells in the same
-        // transaction). NoDrain (crash detection) needs its own call, since
-        // clear_subagents_no_drain is also reached by SessionStart, which
-        // must NOT clear shells — see
-        // docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
-        if mode == models::DrainMode::NoDrain {
-            if let Err(e) = self.task_svc.clear_shells_no_drain(id).await {
-                tracing::warn!(task_id = id.0, error = %e, "failed to clear shell entries");
-            }
+            tracing::warn!(task_id = id.0, error = %e, "failed to clear subagent/shell entries");
         }
     }
 

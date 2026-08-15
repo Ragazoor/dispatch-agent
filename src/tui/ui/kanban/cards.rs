@@ -261,6 +261,17 @@ const DISPATCHING_SPINNER: [&str; 10] = [
     "\u{2807}", "\u{280F}",
 ];
 
+/// `"N {singular}"` / `"N {plural}"`, or `None` at zero (the card omits the
+/// suffix entirely rather than rendering e.g. "running · 0 agents"). Shared
+/// by the running card's subagent and shell counts.
+fn count_suffix(n: u32, singular: &str, plural: &str) -> Option<String> {
+    match n {
+        0 => None,
+        1 => Some(format!("1 {singular}")),
+        n => Some(format!("{n} {plural}")),
+    }
+}
+
 fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'static> {
     let (label, color) = match indicator {
         CardIndicator::Dispatching { spinner_frame } => {
@@ -291,15 +302,14 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
         CardIndicator::Blocked => ("\u{25c9} blocked".to_string(), YELLOW),
         CardIndicator::Running { subagents, shells } => {
             let icon = status_icon(TaskStatus::Running);
-            let mut label = match subagents {
-                0 => format!("{icon} running"),
-                1 => format!("{icon} running \u{00b7} 1 agent"),
-                n => format!("{icon} running \u{00b7} {n} agents"),
-            };
-            match shells {
-                0 => {}
-                1 => label.push_str(" \u{00b7} 1 shell"),
-                n => label.push_str(&format!(" \u{00b7} {n} shells")),
+            let mut label = format!("{icon} running");
+            if let Some(suffix) = count_suffix(subagents, "agent", "agents") {
+                label.push_str(" \u{00b7} ");
+                label.push_str(&suffix);
+            }
+            if let Some(suffix) = count_suffix(shells, "shell", "shells") {
+                label.push_str(" \u{00b7} ");
+                label.push_str(&suffix);
             }
             (label, CYAN)
         }

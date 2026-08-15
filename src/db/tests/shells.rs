@@ -2,12 +2,6 @@
 use super::*;
 use chrono::Utc;
 
-async fn make_task(db: &Database, title: &str) -> Task {
-    create_task_returning(db, title, "desc", "/repo", None, TaskStatus::Backlog)
-        .await
-        .unwrap()
-}
-
 #[tokio::test]
 async fn start_then_stop_returns_to_zero() {
     let db = in_memory_db().await;

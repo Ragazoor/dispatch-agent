@@ -59,7 +59,14 @@ case "$EVENT" in
             # Additive, independent of the file-event switch above: forward
             # backgrounded-shell lifecycle signals to `dispatch hook-shell`.
             # See docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
-            SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+            # SESSION_ID is only extracted for the three tools that need it —
+            # this branch runs on every PostToolUse for every tool in every
+            # agent session, so an unconditional jq spawn here would be a
+            # needless subprocess on the hottest path in the codebase.
+            case "$TOOL" in
+                Bash|KillBash|BashOutput)
+                    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty') ;;
+            esac
             case "$TOOL" in
                 Bash)
                     RUN_IN_BACKGROUND=$(echo "$INPUT" | jq -r '.tool_input.run_in_background // false')

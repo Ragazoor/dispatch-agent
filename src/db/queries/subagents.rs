@@ -143,22 +143,23 @@ pub(super) fn subagent_clear(conn: &mut Connection, task_id: i64) -> Result<Suba
         params![task_id],
     )
     .context("Failed to clear task_shells rows")?;
+    // Resync live_shells here, not in finish_drain: this is the only draining
+    // call site that ever touches task_shells (plain subagent_stop never
+    // does), so folding it into the shared tail would pay for a recount on
+    // every ordinary SubagentStop for no reason.
+    super::shells::sync_shell_state(&tx, task_id)?;
     finish_drain(tx, task_id, "subagent_clear")
 }
 
-/// Recount both live-subagent and live-shell state, apply any drained Stop,
-/// and commit — the shared tail of every draining mutation.
+/// Recount live-subagent state, apply any drained Stop, and commit — the
+/// shared tail of every draining mutation.
 ///
-/// Held in one place deliberately: "the counts and the flip commit together"
+/// Held in one place deliberately: "the count and the flip commit together"
 /// is the invariant that makes the stranded `Running` + `stop_pending` +
 /// both-counters-zero state unreachable, and stating it twice is how a later
-/// edit fixes one caller and silently leaves the other racy. Always resyncs
-/// `live_shells` too, even for a call site (like plain `subagent_stop`) that
-/// didn't touch `task_shells` — a harmless no-op recount that keeps both
-/// counters guaranteed-fresh before the shared predicate below reads either.
+/// edit fixes one caller and silently leaves the other racy.
 fn finish_drain(tx: rusqlite::Transaction<'_>, task_id: i64, what: &str) -> Result<SubagentDrain> {
     let live = sync_count(&tx, task_id)?;
-    super::shells::sync_shell_state(&tx, task_id)?;
     let applied_pending_stop = super::apply_pending_stop_if_drained(&tx, task_id)?;
     tx.commit()
         .with_context(|| format!("Failed to commit {what} transaction"))?;

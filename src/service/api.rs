@@ -286,6 +286,15 @@ macro_rules! task_service_api {
                 id: $crate::models::TaskId
             ) -> Result<(), $crate::service::ServiceError>;
 
+            /// Both non-draining clears in one call — subagents and shells.
+            /// Every no-drain caller wants both except `SessionStart`, which
+            /// calls `clear_subagents_no_drain` alone; see
+            /// `docs/superpowers/specs/2026-08-15-shell-visibility-design.md`.
+            async fn clear_structural_no_drain(
+                &self,
+                id: $crate::models::TaskId
+            ) -> Result<(), $crate::service::ServiceError>;
+
             /// Select and atomically claim the epic's next backlog subtask,
             /// moving it to `Running` before any provisioning happens. Exclusive
             /// under concurrency — see `AutoDispatchNextSubtask` in

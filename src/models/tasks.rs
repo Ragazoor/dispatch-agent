@@ -882,13 +882,11 @@ pub struct SubagentDrain {
     pub applied_pending_stop: bool,
 }
 
-/// Result of a shell mutation that can drain the last live shell. Mirrors
-/// [`SubagentDrain`] exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShellDrain {
-    pub live: i64,
-    pub applied_pending_stop: bool,
-}
+/// Result of a shell mutation that can drain the last live shell. Identical
+/// in shape to [`SubagentDrain`] (both are just `{ live, applied_pending_stop }`),
+/// so this is an alias rather than a hand-duplicated struct — a field added
+/// to one automatically applies to the other, since they're the same type.
+pub type ShellDrain = SubagentDrain;
 
 /// The `notification_type` field on Claude Code's `Notification` hook payload,
 /// forwarded by `task-status-hook` as the `--kind` argument. The agent-view-only

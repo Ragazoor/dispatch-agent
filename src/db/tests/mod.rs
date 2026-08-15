@@ -59,3 +59,12 @@ pub(super) async fn create_task_returning(
         .await?
         .ok_or_else(|| anyhow::anyhow!("Task {id} vanished after insert"))
 }
+
+/// Create a backlog task and unwrap, for tests that don't care about
+/// [`create_task_returning`]'s `Result`. Shared by `subagents` and `shells`,
+/// which otherwise each declared an identical private copy.
+pub(super) async fn make_task(db: &Database, title: &str) -> Task {
+    create_task_returning(db, title, "desc", "/repo", None, TaskStatus::Backlog)
+        .await
+        .unwrap()
+}

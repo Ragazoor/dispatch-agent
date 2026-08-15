@@ -916,6 +916,21 @@ impl TaskService {
         Ok(())
     }
 
+    /// Both non-draining clears in one call. Every no-drain caller wants both
+    /// halves except `SessionStart` (`cmd_hook_subagent`'s `clear` action),
+    /// which deliberately calls [`Self::clear_subagents_no_drain`] alone —
+    /// see the session-fencing section of
+    /// docs/superpowers/specs/2026-08-15-shell-visibility-design.md for why
+    /// shells don't get a SessionStart-driven clear. Using this combined
+    /// method everywhere else means a future no-drain call site gets both
+    /// clears by construction, rather than needing to remember to call two
+    /// separate methods.
+    pub async fn clear_structural_no_drain(&self, id: TaskId) -> Result<(), ServiceError> {
+        self.clear_subagents_no_drain(id).await?;
+        self.clear_shells_no_drain(id).await?;
+        Ok(())
+    }
+
     /// Mark that the PR-learnings reminder has been shown for this task.
     ///
     /// Returns `true` if this call set the flag (first `gh pr create` →
@@ -955,11 +970,10 @@ impl TaskService {
             return Ok(None);
         };
         // No-drain: a claim moves the task *into* Running; draining a
-        // leftover count here would race that with a Review flip.
-        self.clear_subagents_no_drain(claimed_id).await?;
-        // Mirrors the subagent clear above, guarding against shell entries
-        // left over from a prior run of this task.
-        self.clear_shells_no_drain(claimed_id).await?;
+        // leftover count here would race that with a Review flip. Both
+        // halves: guards against subagent/shell entries left over from a
+        // prior run of this task.
+        self.clear_structural_no_drain(claimed_id).await?;
         self.recalculate_epic(epic_id).await;
         // Re-read rather than mirroring the claim's SET list here: the row is
         // the truth, and hand-copying it silently drifts (the DB also stamps
@@ -997,8 +1011,7 @@ impl TaskService {
         }
         // No-drain: a claim moves the task *into* Running; draining a
         // leftover count here would race that with a Review flip.
-        self.clear_subagents_no_drain(task_id).await?;
-        self.clear_shells_no_drain(task_id).await?;
+        self.clear_structural_no_drain(task_id).await?;
         self.recalculate_epic_for_task(task_id).await;
         Ok(true)
     }
