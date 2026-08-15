@@ -1537,7 +1537,7 @@ git commit -m "test(4187): cover Bash/KillBash/BashOutput forwarding to hook-she
 - Consumes: `Task.live_shells`, `SubStatus::StaleShell` (Task 5).
 - Produces: the visible feature — "running · N shells" label and a distinct stale-shell indicator.
 
-- [ ] **Step 1: Write the failing inline unit tests**
+- [x] **Step 1: Write the failing inline unit tests**
 
 `cards.rs`'s own `mod tests` (starting line 497) already has everything needed: `make_task(id, status)` (a plain sync helper, no DB), `App::new(vec![...])`, and a `label_of(indicator: CardIndicator) -> String` helper (line 635-641) that renders and flattens the label text — reuse it rather than re-deriving the span extraction. Following `running_card_shows_subagent_count`/`running_card_uses_the_singular_for_one_subagent`/`running_card_omits_the_suffix_at_zero` (lines 643-663) as exact templates:
 
@@ -1590,12 +1590,12 @@ fn running_label_omits_shell_suffix_at_zero() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --lib tui::ui::kanban::cards`
 Expected: FAIL to compile — `CardIndicator::Running` doesn't have a `shells` field yet, `StaleShell` variant doesn't exist. This will also break five EXISTING tests that construct `CardIndicator::Running { subagents: N }` without a `shells` field (lines 592, 631, 645, 651, 658) — fixed in Step 3a below, in the same commit.
 
-- [ ] **Step 3: Extend `CardIndicator`**
+- [x] **Step 3: Extend `CardIndicator`**
 
 ```rust
 enum CardIndicator {
@@ -1615,7 +1615,7 @@ enum CardIndicator {
 }
 ```
 
-- [ ] **Step 3a: Fix the five existing `CardIndicator::Running` construction sites broken by the new field**
+- [x] **Step 3a: Fix the five existing `CardIndicator::Running` construction sites broken by the new field**
 
 At lines 592, 631, 645, 651, and 658 (pre-Task-10 line numbers — re-`grep -n "CardIndicator::Running"` after Step 3 to get current numbers), each currently reads `CardIndicator::Running { subagents: N }`. Add `, shells: 0` to each, e.g. line 592 becomes:
 
@@ -1631,7 +1631,7 @@ and line 645 becomes:
 
 Do this for all five sites — none of them are testing shell behavior, so `shells: 0` preserves their original intent exactly.
 
-- [ ] **Step 4: Add the `StaleShell` branch to `classify_card_indicator`, right after the plain `Stale` check**
+- [x] **Step 4: Add the `StaleShell` branch to `classify_card_indicator`, right after the plain `Stale` check**
 
 ```rust
     if task.sub_status == SubStatus::Stale {
@@ -1657,7 +1657,7 @@ Do this for all five sites — none of them are testing shell behavior, so `shel
     }
 ```
 
-- [ ] **Step 5: Update `render_card_indicator`**
+- [x] **Step 5: Update `render_card_indicator`**
 
 ```rust
         CardIndicator::Stale { inactive_mins } => {
@@ -1691,12 +1691,12 @@ Do this for all five sites — none of them are testing shell behavior, so `shel
         }
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `cargo test --lib tui::ui::kanban::cards`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/tui/ui/kanban/cards.rs
