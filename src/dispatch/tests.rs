@@ -242,8 +242,9 @@ fn build_prompt_mentions_wrap_up_skill() {
 #[test]
 fn build_prompt_without_plan_includes_wrap_up_universally() {
     // wrap_up_instruction is universal across every dispatched-agent prompt
-    // — no-plan agents may end by attaching a plan and need the same finalise
-    // step (commit/finalise) as implementing agents.
+    // — no-plan agents must implement the plan they attach before calling
+    // /wrap-up, and need the same finalise step (commit/finalise) as any
+    // other implementing agent.
     let prompt = build_prompt(
         TaskId(7),
         "Title",
@@ -254,7 +255,7 @@ fn build_prompt_without_plan_includes_wrap_up_universally() {
     );
     assert!(
         prompt.contains("/wrap-up"),
-        "no-plan prompt should mention /wrap-up (universal, covers plan-attach finish)"
+        "no-plan prompt should mention /wrap-up (universal, reached after implementing)"
     );
 }
 
@@ -837,10 +838,8 @@ fn wrap_up_instruction_universal_wording() {
         "wrap_up_instruction should reference the /wrap-up skill"
     );
     assert!(
-        text.contains("attaching a plan")
-            || text.contains("creating work packages")
-            || text.contains("your work is done"),
-        "wrap_up_instruction should describe the universal trigger (plan attach / work-packages / impl), got: {text}"
+        text.contains("finishing implementation") || text.contains("creating work packages"),
+        "wrap_up_instruction should describe the universal trigger (impl / work-packages), got: {text}"
     );
 }
 

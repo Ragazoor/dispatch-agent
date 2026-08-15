@@ -197,20 +197,33 @@ and call update_task to attach it."
 }
 
 /// Dispatch instruction for no-plan tasks: conditionally suggests brainstorming
-/// based on agent judgment of task description clarity.
+/// based on agent judgment of task description clarity. Framed as an
+/// intermediate step, not a stopping point; `Research`/`Dependabot`/`PrReview`
+/// never reach this addendum (see `DispatchMode::for_task` and
+/// `TaskTag::is_review`), so no per-tag branch is needed here. Carries the
+/// same epic-decomposition carve-out as `wrap_up_instruction` so the two
+/// stay consistent about what counts as done.
 pub(super) fn plan_or_brainstorm_instruction() -> &'static str {
     "Use /brainstorming to design the solution if the task description is vague or \
 underspecified. Otherwise write an implementation plan directly, save it to docs/plans/ \
-and call update_task to attach it."
+and call update_task to attach it. Attaching the plan is not the end of the task — \
+implement it in this same session (or, for an epic-decomposition task, create work \
+packages for its subtasks instead), following the TDD instruction below, and verify \
+your work before wrapping up."
 }
 
 /// Wrap-up instruction shared by every dispatched task agent. Wording is
-/// intentionally universal — the same line covers attaching a plan,
-/// creating work packages on an epic, and finishing implementation.
+/// intentionally universal, but no longer treats attaching a plan as an
+/// independently sufficient stopping point: it must be followed by
+/// implementation in the same session. Creating work packages on an epic
+/// remains a legitimate terminal state for a decomposition task, since that
+/// task's job is delegation, not implementation.
 pub(super) fn wrap_up_instruction() -> &'static str {
-    "When your work is done — attaching a plan, creating work packages, \
-or finishing implementation — use the /wrap-up skill to commit any \
-remaining changes and finalise the task."
+    "Writing or attaching a plan for your own task is not a stopping point on \
+its own — implement it in the same session first. When your work is done — \
+finishing implementation, or (for an epic-decomposition task) creating work \
+packages for its subtasks — use the /wrap-up skill to commit any remaining \
+changes and finalise the task."
 }
 
 /// Allium spec instruction — shared across all agents that may touch domain behaviour.
@@ -837,6 +850,73 @@ mod tests {
         assert!(
             text.contains("Shall I proceed with implementation?"),
             "default (auto_run_plan: false) must keep asking, got: {text}"
+        );
+    }
+
+    #[test]
+    fn plan_or_brainstorm_instruction_frames_plan_as_intermediate_step() {
+        let text = plan_or_brainstorm_instruction();
+        assert!(
+            text.contains("not the end of the task"),
+            "plan_or_brainstorm_instruction should make clear attaching a plan \
+doesn't finish the task, got: {text}"
+        );
+        assert!(
+            text.contains("implement it"),
+            "plan_or_brainstorm_instruction should instruct the agent to implement \
+after attaching the plan, got: {text}"
+        );
+    }
+
+    #[test]
+    fn no_plan_addendum_instructs_implementation_for_every_working_tag() {
+        // plan_or_brainstorm_instruction is reused verbatim for every tag that
+        // reaches it with no plan — Bug, Feature, Chore, Fix, and no tag.
+        // Research never reaches this addendum with no plan (DispatchMode
+        // diverts it to build_research_prompt instead), so no per-tag branch
+        // is needed here.
+        for tag in [
+            None,
+            Some(TaskTag::Bug),
+            Some(TaskTag::Feature),
+            Some(TaskTag::Chore),
+            Some(TaskTag::Fix),
+        ] {
+            let ctx = PromptContext {
+                tag,
+                ..PromptContext::default()
+            };
+            let text = build_prompt(TaskId(1), "Task", "Desc", None, None, &ctx);
+            assert!(
+                text.contains("not the end of the task"),
+                "tag {tag:?}: no-plan prompt should instruct implementation to \
+follow plan-attach, got: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_up_instruction_no_longer_treats_plan_attach_as_sufficient() {
+        // The bug this guards: prose that lists "attaching a plan" alongside
+        // "finishing implementation" as equally valid stopping points reads
+        // as permission to stop at a plan for bug/feature/chore/fix tasks
+        // (see task #4188). The instruction may still mention plan-attach,
+        // but only while explicitly saying it isn't sufficient on its own.
+        let text = wrap_up_instruction();
+        assert!(
+            text.contains("not a stopping point"),
+            "wrap_up_instruction should say attaching a plan alone is not a \
+stopping point, got: {text}"
+        );
+        assert!(
+            text.contains("finishing implementation"),
+            "wrap_up_instruction should still name finishing implementation as \
+a valid stopping point, got: {text}"
+        );
+        assert!(
+            text.contains("creating work packages"),
+            "wrap_up_instruction should still allow work-package creation as a \
+stopping point for epic-decomposition tasks, got: {text}"
         );
     }
 

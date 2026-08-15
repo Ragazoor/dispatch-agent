@@ -439,7 +439,27 @@ rule DispatchTask {
         --   * has_plan = false: preamble "Your task is:" and the addendum
         --     is plan_or_brainstorm_instruction (conditional: if vague
         --     use /brainstorming, else write the plan directly under
-        --     docs/plans/ and attach via update_task).
+        --     docs/plans/ and attach via update_task). The addendum is
+        --     explicit that attaching the plan is not the end of the task:
+        --     implementation (TDD) must follow in the same session, not a
+        --     separate dispatch — except for an epic-decomposition task,
+        --     for which creating work packages for its subtasks is named as
+        --     the alternative (mirroring wrap_up_instruction's carve-out
+        --     below; there is no tag or field that identifies such a task,
+        --     so both instructions name the exception in prose rather than
+        --     branching on task state). This wording is otherwise NOT
+        --     tag-conditional — Bug, Feature, Chore, Fix, and no-tag all
+        --     reach this same addendum and all imply working code. Research
+        --     is excluded without a branch here: DispatchResearchTask
+        --     already diverts a no-plan research-tagged task to
+        --     build_research_prompt before build_prompt's addendum is ever
+        --     selected (see "only when the task has no plan" above), and
+        --     Dependabot/PrReview are overridden with their own review
+        --     addenda regardless of plan state (see the exceptions below).
+        --     This closes a gap where a bug/feature/chore-tagged agent read
+        --     "write and attach a plan" plus the (then-universal) wrap-up
+        --     wording as license to stop at a plan-only state instead of
+        --     implementing it.
         --   * has_plan = true and task.auto_run_plan = false (default):
         --     preamble "Your task is:" and the addendum references the
         --     plan path with a "review and ask permission before
@@ -459,9 +479,14 @@ rule DispatchTask {
         -- the kanban board, not for prompt context (it would invite the
         -- agent to over-fit on labels rather than the description).
         -- wrap_up_instruction is shared by every dispatched agent so the
-        -- whole task lifecycle terminates the same way regardless of
-        -- mode (the wording covers plan-attach, work-package-creation,
-        -- and implementation completion).
+        -- whole task lifecycle terminates the same way regardless of mode.
+        -- It explicitly rules out plan-attach as a standalone stopping
+        -- point ("not a stopping point on its own — implement it in the
+        -- same session first"); the two stopping points it names are
+        -- finishing implementation and, for an epic-decomposition task
+        -- only, creating work packages for its subtasks (that task's job
+        -- is delegation, not implementation, so stopping there is
+        -- legitimate).
         -- DispatchResearchTask is an exception to the unified trailing
         -- block: its prompt includes only {mcp_tools_instruction} and
         -- omits tdd, allium, learning_tools, and wrap_up. The research agent

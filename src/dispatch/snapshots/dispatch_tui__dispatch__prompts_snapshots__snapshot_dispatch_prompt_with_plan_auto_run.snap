@@ -19,4 +19,4 @@ The dispatch MCP tools are available — use them to query and update this task 
 
 Knowledge base: when anything is unclear, call `query_learnings` to check the knowledge base before guessing or asking. When you act on a surfaced learning, call `rate_learning` (`helped` or `wrong`); use `/learnings` to record useful findings. Use `delete_learning` to remove stale or incorrect entries by ID.
 
-When your work is done — attaching a plan, creating work packages, or finishing implementation — use the /wrap-up skill to commit any remaining changes and finalise the task.
+Writing or attaching a plan for your own task is not a stopping point on its own — implement it in the same session first. When your work is done — finishing implementation, or (for an epic-decomposition task) creating work packages for its subtasks — use the /wrap-up skill to commit any remaining changes and finalise the task.
