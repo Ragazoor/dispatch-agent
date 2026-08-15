@@ -26,6 +26,7 @@ pub(crate) const ARCHIVE_STRIPE: Color = Color::Rgb(72, 82, 120);
 pub(super) const BOARD_GROUND: Color = Color::Rgb(22, 22, 30); // #16161e
 pub(super) const BOARD_GROUND_FOCUSED: Color = Color::Rgb(28, 28, 38); // #1c1c26
 pub(super) const CARD_SURFACE: Color = Color::Rgb(36, 40, 59); // #24283b
+
 // A resting card's frame. Neutral by design — the frame carries state,
 // and a healthy card has none to report.
 pub(super) const CARD_BORDER: Color = Color::Rgb(59, 66, 97); // #3b4261

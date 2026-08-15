@@ -24,8 +24,8 @@ use super::input_form::{
 };
 use super::palette::{
     header_label_focused, header_label_unfocused, mix, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
-    BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CURSOR_BORDER, CYAN, FG, GREEN, HEADER_BG,
-    HEADER_BG_FOCUSED, MUTED, PURPLE, RED, SELECT_ALL_HIGHLIGHT_BG, YELLOW,
+    BOARD_GROUND_FOCUSED, BORDER, CARD_BORDER, CARD_SURFACE, CURSOR_BORDER, CYAN, FG, GREEN,
+    HEADER_BG, HEADER_BG_FOCUSED, MUTED, PURPLE, RED, SELECT_ALL_HIGHLIGHT_BG, YELLOW,
 };
 use super::shared::{push_hint_spans, render_top_indicators, rounded_block};
 use super::todos::render_todos;
@@ -349,7 +349,10 @@ fn render_summary(frame: &mut Frame, app: &App, layout: &ColumnLayout, area: Rec
     // The split interleaves content and separator columns; take the even indices,
     // exactly as `compute_columns_data` does for the board. The separator cells on
     // this row are left unpainted, so a header bar ends where its column ends.
-    let col_segments: Vec<Rect> = (0..all_areas.len()).step_by(2).map(|i| all_areas[i]).collect();
+    let col_segments: Vec<Rect> = (0..all_areas.len())
+        .step_by(2)
+        .map(|i| all_areas[i])
+        .collect();
 
     let segments = build_summary_segments(app, layout, sel);
 

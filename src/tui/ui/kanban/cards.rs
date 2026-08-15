@@ -376,7 +376,11 @@ fn frame_card(
     // fresh String every call, and this closure runs eight times per card — twice
     // per rail and twice per border — on every frame.
     const MARGIN_STR: &str = " ";
-    debug_assert_eq!(MARGIN_STR.len(), CARD_MARGIN, "margin literal must match CARD_MARGIN");
+    debug_assert_eq!(
+        MARGIN_STR.len(),
+        CARD_MARGIN,
+        "margin literal must match CARD_MARGIN"
+    );
     let margin = || Span::styled(MARGIN_STR, Style::default().bg(ground));
     let horizontal = "\u{2500}".repeat(content_width);
 
@@ -500,13 +504,7 @@ pub(super) fn build_task_list_item<'a>(
     } else {
         card_surface_color()
     };
-    let mut item = ListItem::new(frame_card(
-        line1,
-        line2,
-        col_width,
-        frame_color,
-        ctx.ground,
-    ));
+    let mut item = ListItem::new(frame_card(line1, line2, col_width, frame_color, ctx.ground));
 
     // Base style for the whole card, so the frame rows inherit the surface and
     // the card reads as one lit object. Margin spans override back to ground.
@@ -605,14 +603,8 @@ pub(super) fn render_epic_item(
     // Epics carry no CardIndicator, so they claim no state colour — but the
     // precedence itself is shared, so the rule lives in one place.
     let frame_color = resolve_frame_color(is_cursor, None);
-    ListItem::new(frame_card(
-        line1,
-        line2,
-        col_width,
-        frame_color,
-        ctx.ground,
-    ))
-    .style(Style::default().bg(card_surface_color()).fg(FG))
+    ListItem::new(frame_card(line1, line2, col_width, frame_color, ctx.ground))
+        .style(Style::default().bg(card_surface_color()).fg(FG))
 }
 
 #[cfg(test)]
@@ -635,7 +627,11 @@ mod tests {
             // renderer, so without this a state quietly promoted into or dropped
             // out of the set would pass every other test.
             (CardIndicator::Unprovisioned, Some(RED), "unprovisioned"),
-            (CardIndicator::AutoDispatchFailed, Some(RED), "auto-dispatch failed"),
+            (
+                CardIndicator::AutoDispatchFailed,
+                Some(RED),
+                "auto-dispatch failed",
+            ),
             (CardIndicator::Conflict, Some(RED), "rebase conflict"),
             (CardIndicator::Crashed, Some(RED), "crashed"),
             // The two attention states.
@@ -716,7 +712,10 @@ mod tests {
         let red = all.iter().filter(|(_, c, _)| *c == Some(RED)).count();
         let amber = all.iter().filter(|(_, c, _)| *c == Some(YELLOW)).count();
         let none = all.iter().filter(|(_, c, _)| c.is_none()).count();
-        assert_eq!(red, 4, "the hard-failure set must have exactly four members");
+        assert_eq!(
+            red, 4,
+            "the hard-failure set must have exactly four members"
+        );
         assert_eq!(amber, 2, "the attention set must have exactly two members");
         assert_eq!(
             red + amber + none,

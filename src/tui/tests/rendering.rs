@@ -2322,7 +2322,10 @@ async fn every_card_frame_is_lit_by_the_card_surface() {
             checked += 1;
         }
     }
-    assert!(checked >= 8, "expected both cards' four corners, saw {checked}");
+    assert!(
+        checked >= 8,
+        "expected both cards' four corners, saw {checked}"
+    );
 }
 
 /// The cell holding an epic card's stripe, and the cell holding its title's
@@ -2717,7 +2720,11 @@ async fn card_frame_carries_state_and_the_cursor_outranks_it() {
         .iter()
         .map(|c| c.fg)
         .collect();
-    assert_eq!(frames.len(), 3, "expected three framed cards, got {frames:?}");
+    assert_eq!(
+        frames.len(),
+        3,
+        "expected three framed cards, got {frames:?}"
+    );
 
     assert!(
         frames.contains(&YELLOW),
