@@ -20,7 +20,11 @@ pub enum SplitCommand {
         task_id: TaskId,
         new_window: String,
         old_pane_id: Option<String>,
-        old_window: Option<String>,
+        /// `(window_name, worktree_path)` of the outgoing pinned task, if any.
+        /// The two travel together — both come from the same task and are
+        /// only ever known or unknown together — so this is one field rather
+        /// than two independently-optional ones.
+        old_task: Option<(String, String)>,
     },
     FocusPane {
         pane_id: String,

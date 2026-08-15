@@ -449,11 +449,22 @@ rule SwapSplitPane {
         --
         -- == IMPLEMENTED: companion-pane resync ==
         -- `exec_swap_split_pane` (src/runtime/split.rs) uses `swap-pane` to
-        -- atomically exchange pane *content* between the previously-pinned
-        -- task's pane and the new task's pane 0 — panes keep their window
-        -- membership; only the running process each one displays changes.
-        -- It then renames the window (formerly the new task's) to the old
-        -- task's window name. Neither step touches the window's other panes: a
+        -- atomically exchange the previously-pinned task's pane and the new
+        -- task's pane 0. `swap-pane` moves *pane objects* between windows —
+        -- each pane keeps its own pane ID and running process, but which
+        -- window it belongs to (and so which layout slot it occupies) is
+        -- exactly what gets exchanged; it is the *window* that keeps its
+        -- identity (its name, its position in the session), not the pane
+        -- that started there. A pane ID resolved before the swap therefore
+        -- names a pane in the *other* window afterwards — measured directly
+        -- fixing this rule's own `@dispatch_dir` rewrite below, where
+        -- targeting by the pre-swap pane ID silently wrote the option onto
+        -- the wrong window and was only caught by the real-tmux test in
+        -- tests/tmux_lifecycle.rs, never by the MockProcessRunner argv-shape
+        -- tests (which do not model this semantic at all). `exec_swap_split_pane`
+        -- then renames the window (formerly the new task's, now holding the
+        -- old task's pane) to the old task's window name. Neither step
+        -- touches the window's other panes: a
         -- renamed window's agent-tree companion pane (docs/specs/agent-tree.allium),
         -- if any, keeps running `dispatch agent-tree <new_task_id>` under a
         -- window now named (and considered to belong to) the old task —
@@ -475,6 +486,33 @@ rule SwapSplitPane {
         -- window, companion pane included, so nothing is left to desync.
         -- Resolves agent-tree.allium's ToggleVsSplitPaneInteraction open
         -- question for the swap half of the gap.
+        --
+        -- == IMPLEMENTED: @dispatch_dir rewrite ==
+        -- The rename above fixes which task the resync targets, but not where
+        -- its companion starts: renaming a window never touches its window
+        -- options, so `@dispatch_dir` (see AgentWindowSplitStartsInTaskWorktree
+        -- below) still names the *incoming* task's worktree immediately after
+        -- the rename. Left alone, `resync_agent_tree_pane`'s read of
+        -- `@dispatch_dir` would race that staleness — sometimes observing it,
+        -- sometimes not, depending on unrelated timing — rather than being
+        -- reliably wrong or reliably right. `swap_task_window_into_pane`
+        -- (src/dispatch/split_panes.rs) closes this by rewriting
+        -- `@dispatch_dir` to the outgoing task's own worktree — via
+        -- `tmux::set_window_dispatch_dir` — immediately after the rename and
+        -- before calling `resync_agent_tree_pane`, so the read is never racing
+        -- anything: the correct value is written, synchronously, on the same
+        -- thread, before it is ever read back. Targeted by the window's *new
+        -- name*, not by any pane ID resolved earlier in the swap — see the
+        -- companion-pane-resync guidance above for why a pre-swap pane ID
+        -- would name the wrong window here. The outgoing task's worktree
+        -- path is threaded in from the TUI's own in-memory task list
+        -- (`App::handle_swap_split_pane`, src/tui/update/split_pane.rs) rather
+        -- than queried fresh — the same `find_task` lookup that already
+        -- resolves the outgoing window's name resolves its worktree too, so no
+        -- new database access is added to the dispatch/tmux layer. Best-effort
+        -- like the resync itself: a failed rewrite is logged, never
+        -- propagated, since the swap's pane exchange and rename have already
+        -- succeeded by this point.
 }
 
 -- == Splits Inside an Agent Window Start in the Task's Worktree ==
@@ -518,7 +556,9 @@ rule AgentWindowSplitStartsInTaskWorktree {
         --
         -- Mechanism, in two tiers. Each agent window carries its worktree path
         -- in a per-window tmux user option, @dispatch_dir, set when the window
-        -- is created.
+        -- is created. A rename alone never changes it — that is what SwapSplitPane's
+        -- "== IMPLEMENTED: @dispatch_dir rewrite ==" guidance above rewrites it
+        -- for, so this invariant keeps holding across a swap's rename too.
         --
         --   1. Splits dispatch makes itself (the agent-tree companion pane) pass
         --      `split-window -c <worktree>`, so those panes are correct by

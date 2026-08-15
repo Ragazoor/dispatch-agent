@@ -2966,40 +2966,63 @@ async fn exec_swap_split_pane_renames_old_task_window() {
         MockProcessRunner::new(vec![
             MockProcessRunner::ok(), // swap-pane
             MockProcessRunner::ok(), // rename-window (old task had a window)
+            MockProcessRunner::ok(), // set-option -w: rewrite @dispatch_dir to task 2's worktree
             // resync: list-panes finds the companion. It is still running the
             // *incoming* task's tree (3), which is exactly why it is stale — the
             // lookup matches on the binary and subcommand, not the id.
             MockProcessRunner::ok_with_stdout(b"%10 \n%11 agent_tree\n"),
             MockProcessRunner::ok(), // resync: kill-pane %11
-            MockProcessRunner::ok_with_stdout(b"/wt\n"), // resync: show-options @dispatch_dir
+            MockProcessRunner::ok_with_stdout(b"/repo/.worktrees/2-some-task\n"), // resync: show-options @dispatch_dir
             MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
-            MockProcessRunner::ok(), // resync: set-option, the new pane's role
+            MockProcessRunner::ok(),                     // resync: set-option, the new pane's role
         ])
         .with_windows(&["task-3", "task-2"]),
     );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-    rt.exec_swap_split_pane(TaskId(3), "task-3", Some("%2"), Some("task-2"))
-        .await
-        .unwrap();
+    rt.exec_swap_split_pane(
+        TaskId(3),
+        "task-3",
+        Some("%2"),
+        Some(("task-2", "/repo/.worktrees/2-some-task")),
+    )
+    .await
+    .unwrap();
     let calls = mock.recorded_calls();
     // 2nd call should be rename-window, not kill-window
     assert!(calls[1].1.contains(&"rename-window".to_string()));
     // The rename *target* is the resolved pane ID; the new name stays a name.
     assert!(calls[1].1.contains(&mock.pane_id_of("task-3")));
     assert!(calls[1].1.contains(&"task-2".to_string()));
+    // 3rd call: @dispatch_dir is rewritten to the outgoing task's worktree —
+    // targeted by the *new* name ("task-2"), not the pane ID resolved in step
+    // 1: swap-pane moves pane objects between windows, so that pane ID no
+    // longer identifies anything in this window post-swap — only the window's
+    // new name does. Without this rewrite the resync's start directory still
+    // names task 3's worktree, since a rename never touches window options.
+    assert_eq!(
+        calls[2].1,
+        vec![
+            "set-option",
+            "-w",
+            "-t",
+            &mock.pane_id_of("task-2"),
+            "@dispatch_dir",
+            "/repo/.worktrees/2-some-task",
+        ]
+    );
     // Companion pane resync: the renamed window's stale companion (still
     // showing the incoming task's tree) is killed and replaced with one for
     // the correct (old) task.
-    assert!(calls[2].1.contains(&"list-panes".to_string()));
-    assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%11"]);
-    assert!(calls[5].1.contains(&"split-window".to_string()));
-    assert!(calls[5].1.contains(&"2".to_string()));
+    assert!(calls[3].1.contains(&"list-panes".to_string()));
+    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%11"]);
+    assert!(calls[6].1.contains(&"split-window".to_string()));
+    assert!(calls[6].1.contains(&"2".to_string()));
     // …and the respawned pane is marked, or the resynced window would read as
     // companion-less to the next toggle.
-    assert!(calls[6].1.contains(&"set-option".to_string()));
+    assert!(calls[7].1.contains(&"set-option".to_string()));
     // No further call — focus must NOT be transferred
-    assert_eq!(calls.len(), 7, "select-pane must not be called after swap");
+    assert_eq!(calls.len(), 8, "select-pane must not be called after swap");
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
         .unwrap()

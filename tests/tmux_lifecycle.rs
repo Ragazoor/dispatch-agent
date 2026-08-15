@@ -249,9 +249,11 @@ impl Fixture {
     }
 
     /// Swap `into_window`'s task into the already-pinned `pane`, renaming the
-    /// displaced window back to `old_window`.
-    fn swap(&self, into_window: &str, pane: &str, old_window: Option<&str>) -> String {
-        dispatch::swap_task_window_into_pane(into_window, pane, old_window, &self.server.runner())
+    /// displaced window back to `old_task`'s window name and rewriting its
+    /// `@dispatch_dir` to `old_task`'s worktree — `(window_name,
+    /// worktree_path)` of the outgoing task, when it has one.
+    fn swap(&self, into_window: &str, pane: &str, old_task: Option<(&str, &str)>) -> String {
+        dispatch::swap_task_window_into_pane(into_window, pane, old_task, &self.server.runner())
             .expect("swap_task_window_into_pane")
     }
 
@@ -665,7 +667,7 @@ fn pin_of_a_task_without_a_companion_pane_joins_cleanly() {
 fn swap_replaces_the_pinned_task_and_resyncs_the_companion() {
     let Some(fx) = setup_or_skip() else { return };
     let (a, b) = (TASK_ID, TASK_ID + 1);
-    fx.dispatch(a);
+    let dispatched_a = fx.dispatch(a);
     fx.dispatch(b);
     fx.await_companion(b);
 
@@ -673,30 +675,24 @@ fn swap_replaces_the_pinned_task_and_resyncs_the_companion() {
     let pinned = fx.pin(&fx.window(a));
     fx.clear_stub_log();
 
-    fx.swap(&fx.window(b), &pinned, Some(&fx.window(a)));
+    fx.swap(
+        &fx.window(b),
+        &pinned,
+        Some((&fx.window(a), &dispatched_a.worktree_path)),
+    );
 
     // The window holding the outgoing content is renamed to A, and its companion
     // must be relaunched for A. Polls, because the resync kills and re-splits
     // asynchronously relative to the call returning.
     let companion = fx.await_companion(a);
-    // KNOWN GAP, pinned deliberately. The resync path holds only a window name,
-    // so it takes the split's start directory from that window's @dispatch_dir —
-    // but `swap-pane` exchanges *panes* while @dispatch_dir is a *window* option,
-    // so the renamed window still advertises the incoming task's worktree. The
-    // companion therefore starts in B's worktree while rendering A's tree.
-    //
-    // Harmless as it stands: `dispatch agent-tree` resolves its root from the DB
-    // by task id (src/cli/agent_tree.rs) and never reads cwd. It is not harmless
-    // for a *user* split in that window, which split-pane.allium's
-    // AgentWindowSplitStartsInTaskWorktree says must land in A's worktree and
-    // which this staleness sends to B's. That predates the -c/respawn rework —
-    // the old `cd` hook read the same stale option — and fixing it means
-    // rewriting @dispatch_dir at swap time, which needs the DB.
-    //
-    // Flip this to `{a}-some-task` when that is fixed.
+    // `swap_task_window_into_pane` rewrites the renamed window's @dispatch_dir
+    // to A's worktree immediately after the rename and before resyncing — see
+    // docs/specs/split-pane.allium's SwapSplitPane — so the resync's start
+    // directory reflects the window's new identity rather than racing whatever
+    // @dispatch_dir happened to hold from when the window was still task B's.
     assert!(
-        canonical(&companion.cwd).ends_with(&format!("{b}-some-task")),
-        "expected the known-stale @dispatch_dir (task {b}'s worktree), got: {:?}",
+        canonical(&companion.cwd).ends_with(&format!("{a}-some-task")),
+        "expected the companion to start in A's own worktree, got: {:?}",
         companion.cwd
     );
     assert!(
@@ -719,14 +715,18 @@ fn swap_works_when_pane_base_index_is_1() {
     fx.server
         .tmux_ok(&["set-option", "-g", "pane-base-index", "1"]);
     let (a, b) = (TASK_ID, TASK_ID + 1);
-    fx.dispatch(a);
+    let dispatched_a = fx.dispatch(a);
     fx.dispatch(b);
     fx.await_companion(b);
 
     let pinned = fx.pin(&fx.window(a));
 
     // Panics with "can't find pane: 0" if the swap source is ever an index again.
-    fx.swap(&fx.window(b), &pinned, Some(&fx.window(a)));
+    fx.swap(
+        &fx.window(b),
+        &pinned,
+        Some((&fx.window(a), &dispatched_a.worktree_path)),
+    );
 }
 
 #[test]

@@ -231,11 +231,12 @@ fn space_on_non_pinned_task_in_split_mode_swaps_it_in() {
             Command::Split(crate::tui::commands::SplitCommand::Swap {
                 task_id,
                 new_window,
-                old_window,
+                old_task,
                 ..
             }) if *task_id == TaskId(4)
                 && new_window == "task-4"
-                && old_window.as_deref() == Some("task-3")
+                && old_task.as_ref().map(|(w, wt)| (w.as_str(), wt.as_str()))
+                    == Some(("task-3", "/repo/.worktrees/3-task-3"))
         )),
         "expected Swap for non-pinned task, got {cmds:?}"
     );

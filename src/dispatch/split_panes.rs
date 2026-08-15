@@ -76,14 +76,24 @@ pub fn join_task_window_into_pane(
 
 /// Swap `new_window`'s agent pane into `right_pane` (the currently pinned pane),
 /// then dispose of the standalone window now holding the previous occupant:
-/// renamed back to `old_window` when the outgoing pane belonged to a task,
-/// killed outright when it did not.
+/// renamed back to the outgoing task's window when `old_task` is given, killed
+/// outright when it is not.
+///
+/// `old_task`, when the outgoing pane belonged to a task, is `(window_name,
+/// worktree_path)` — the two travel together because they name the same task
+/// and are only ever known or unknown together, never independently; a tuple
+/// keeps "window known, worktree unknown" unrepresentable rather than guarded
+/// at runtime. The worktree half rewrites the renamed window's `@dispatch_dir`
+/// (see the call site below) so the companion resync reads a value that
+/// matches the window's new identity rather than the incoming task's, which is
+/// what the window option still says immediately after a rename (rename-window
+/// does not touch window options).
 ///
 /// Returns the pane id of the task swapped in.
 pub fn swap_task_window_into_pane(
     new_window: &str,
     right_pane: &str,
-    old_window: Option<&str>,
+    old_task: Option<(&str, &str)>,
     runner: &dyn ProcessRunner,
 ) -> Result<String> {
     // 1. Resolve the incoming task's pane before swapping.
@@ -101,9 +111,28 @@ pub fn swap_task_window_into_pane(
     tmux::swap_pane(&new_pane_id, right_pane, runner).context("swap pane failed")?;
 
     // 3. Rename or kill the standalone window that now holds the old content.
-    match old_window {
-        Some(old_name) => {
+    match old_task {
+        Some((old_name, old_worktree)) => {
             tmux::rename_window(new_window, old_name, runner).context("rename window failed")?;
+            // The renamed window's @dispatch_dir still names the incoming
+            // task's worktree — a rename does not touch window options, only
+            // the window's name. Rewrite it to the outgoing task's worktree
+            // before resyncing, so the resync's read of @dispatch_dir (below)
+            // reflects the window's new identity instead of racing whatever
+            // was there before. Targeted by `old_name` (the window's new
+            // name), not `new_pane_id`: swap-pane moves pane *objects* between
+            // windows (`new_pane_id` now lives wherever `right_pane` used to
+            // be, not in this window any more), so only the window name still
+            // identifies the right target here. Best-effort like the resync
+            // itself: the swap and rename have already succeeded by this
+            // point, so a failure here is logged, never propagated.
+            if let Err(e) = tmux::set_window_dispatch_dir(old_name, old_worktree, runner) {
+                tracing::warn!(
+                    window = old_name,
+                    error = %e,
+                    "failed to rewrite @dispatch_dir after swap; companion may resync into the wrong worktree"
+                );
+            }
             // swap-pane exchanged only the agent panes — the renamed window's
             // companion pane (if any) still renders the previous occupant's
             // tree. Resync it to the task the window's new name implies.

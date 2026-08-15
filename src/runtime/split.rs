@@ -206,13 +206,13 @@ impl TuiRuntime {
         task_id: TaskId,
         new_window: &str,
         old_pane_id: Option<&str>,
-        old_window: Option<&str>,
+        old_task: Option<(&str, &str)>,
     ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
         let runner = Arc::clone(&self.runner);
         let new_window = new_window.to_owned();
         let old_pane_id = old_pane_id.map(str::to_owned);
-        let old_window = old_window.map(str::to_owned);
+        let old_task = old_task.map(|(window, worktree)| (window.to_owned(), worktree.to_owned()));
 
         tokio::task::spawn_blocking(move || {
             let Some(right_pane) = old_pane_id else {
@@ -222,7 +222,9 @@ impl TuiRuntime {
             match dispatch::swap_task_window_into_pane(
                 &new_window,
                 &right_pane,
-                old_window.as_deref(),
+                old_task
+                    .as_ref()
+                    .map(|(window, worktree)| (window.as_str(), worktree.as_str())),
                 &*runner,
             ) {
                 Ok(new_pane_id) => {

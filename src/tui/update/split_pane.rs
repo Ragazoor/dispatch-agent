@@ -45,17 +45,17 @@ impl App {
             None => return vec![],
         };
         let old_pane_id = self.board.split.right_pane_id.clone();
-        let old_window = self
+        let old_task = self
             .board
             .split
             .pinned_task_id
             .and_then(|id| self.find_task(id))
-            .and_then(|t| t.tmux_window.clone());
+            .and_then(|t| t.tmux_window.clone().zip(t.worktree.clone()));
         vec![Command::Split(crate::tui::commands::SplitCommand::Swap {
             task_id,
             new_window,
             old_pane_id,
-            old_window,
+            old_task,
         })]
     }
 

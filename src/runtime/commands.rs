@@ -108,13 +108,17 @@ fn dispatch_split(
             task_id,
             new_window,
             old_pane_id,
-            old_window,
-        } => drop(rt.exec_swap_split_pane(
-            task_id,
-            &new_window,
-            old_pane_id.as_deref(),
-            old_window.as_deref(),
-        )),
+            old_task,
+        } => drop(
+            rt.exec_swap_split_pane(
+                task_id,
+                &new_window,
+                old_pane_id.as_deref(),
+                old_task
+                    .as_ref()
+                    .map(|(window, worktree)| (window.as_str(), worktree.as_str())),
+            ),
+        ),
         FocusPane { pane_id } => drop(rt.exec_focus_split_pane(pane_id)),
         CheckPaneExists { pane_id } => drop(rt.exec_check_split_pane(&pane_id)),
         RespawnPane { pane_id } => drop(rt.exec_respawn_split_pane(&pane_id)),
