@@ -122,8 +122,11 @@ enum Commands {
         /// Action: start | stop
         action: String,
         /// Shell identifier — the id Claude Code assigns a backgrounded
-        /// shell, from `tool_response.shell_id` (Bash) or
-        /// `tool_input.shell_id` (KillBash/BashOutput).
+        /// shell. Current Claude Code sends this as
+        /// `tool_response.backgroundTaskId` (Bash) or `tool_input.task_id`
+        /// (TaskStop/TaskOutput); older Claude Code used
+        /// `tool_response.shell_id` (Bash) or `tool_input.shell_id`
+        /// (KillBash/BashOutput) — the hook script falls back across both.
         #[arg(long = "shell-id")]
         shell_id: Option<String>,
         /// Session identifier from the payload's `session_id` field. Used to

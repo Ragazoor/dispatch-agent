@@ -673,6 +673,81 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn hook_forwards_backgrounded_bash_as_shell_start_via_background_task_id() {
+        // Real Claude Code payload for a backgrounded Bash call carries the
+        // id under `tool_response.backgroundTaskId`, not `tool_response.shell_id`
+        // (verified against a live hook invocation, not assumed from docs —
+        // see #4197). The hook must accept this real field name.
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("241-bash-bg-real");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"Bash","session_id":"sess_9","tool_input":{{"command":"npm run dev","run_in_background":true}},"tool_response":{{"stdout":"","stderr":"","backgroundTaskId":"bash_1"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-shell 241 start")
+                && log.contains("--shell-id bash_1")
+                && log.contains("--session-id sess_9"),
+            "expected a backgrounded Bash call's real backgroundTaskId field to forward as hook-shell start; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_forwards_task_stop_as_shell_stop() {
+        // The current Claude Code CLI names the background-task-kill tool
+        // `TaskStop`, not `KillBash` (verified live — see #4197), carrying
+        // the id as `tool_input.task_id`.
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("242-taskstop");
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"TaskStop","session_id":"sess_9","tool_input":{{"task_id":"bash_1"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-shell 242 stop")
+                && log.contains("--shell-id bash_1")
+                && log.contains("--session-id sess_9"),
+            "expected TaskStop to forward as hook-shell stop; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hook_forwards_task_output_as_shell_stop_only_when_no_longer_running() {
+        // The current Claude Code CLI names the background-task-poll tool
+        // `TaskOutput`, not `BashOutput` (verified live — see #4197),
+        // carrying the id as `tool_input.task_id`.
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("243-taskoutput");
+        let still_running = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"TaskOutput","session_id":"sess_9","tool_input":{{"task_id":"bash_1"}},"tool_response":{{"status":"running"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &still_running);
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            !log.contains("hook-shell"),
+            "a TaskOutput poll reporting status=running must not forward a stop; got: {log:?}"
+        );
+
+        let completed = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"TaskOutput","session_id":"sess_9","tool_input":{{"task_id":"bash_1"}},"tool_response":{{"status":"completed"}}}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &completed);
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook-shell 243 stop") && log.contains("--shell-id bash_1"),
+            "a TaskOutput poll reporting status=completed must forward a stop; got: {log:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn hook_ignores_subagent_event_without_agent_id() {
         let (_tmp, repo, script_path, observed, path_env) = spawn_hook_harness("223-noid");
         let payload = format!(

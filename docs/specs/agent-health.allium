@@ -526,10 +526,25 @@ rule ClearSubagentsOnSessionStart {
 }
 
 -- == Shell Counting ==
--- Bash (with run_in_background = true) / KillBash / BashOutput PostToolUse
--- events bracket a backgrounded shell's tracked lifetime. Unlike subagent
--- counting, there is no SessionStart-driven clear -- see ShellSessionFence's
--- guidance and ShellEntry's doc comment in core.allium for why.
+-- Bash (with run_in_background = true) / KillBash|TaskStop / BashOutput|
+-- TaskOutput PostToolUse events bracket a backgrounded shell's tracked
+-- lifetime. Unlike subagent counting, there is no SessionStart-driven clear
+-- -- see ShellSessionFence's guidance and ShellEntry's doc comment in
+-- core.allium for why.
+--
+-- @guidance
+--     KillBash/BashOutput and TaskStop/TaskOutput are two tool-name
+--     generations for the same stop/poll signal -- the current Claude Code
+--     CLI generalised background-task management beyond Bash shells and
+--     renamed the tools accordingly. Both are matched because either can be
+--     live depending on the CLI version. The id field itself also moved:
+--     the hook script resolves `tool_response.backgroundTaskId` (current)
+--     before falling back to `tool_response.shell_id` (older) for start, and
+--     `tool_input.task_id` (current) before `tool_input.shell_id` (older)
+--     for stop/poll -- verified against a live hook payload (#4197), not
+--     assumed from docs. The original implementation assumed shell_id/
+--     KillBash/BashOutput only, which meant `dispatch hook-shell` was never
+--     actually invoked against the current CLI in production.
 
 rule HookShellStart {
     when: PostToolUse(task, tool_name, run_in_background, shell_id, session_id)
@@ -561,8 +576,9 @@ rule HookShellStart {
 rule HookShellStop {
     when: PostToolUse(task, tool_name, shell_id, session_id, status?)
 
-    requires: tool_name = "KillBash"
-              or (tool_name = "BashOutput" and status != null and status != "running")
+    requires: tool_name = "KillBash" or tool_name = "TaskStop"
+              or ((tool_name = "BashOutput" or tool_name = "TaskOutput")
+                  and status != null and status != "running")
 
     ensures:
         not exists core/ShellEntry{task, shell_id}
@@ -577,11 +593,12 @@ rule HookShellStop {
             task.stop_pending = false
 
     @guidance
-        -- Two distinct trigger shapes, both definitive stop signals: KillBash
-        -- always means the shell is dead; BashOutput means it only when the
-        -- polled status is no longer "running" (completed/failed/killed) —
-        -- a poll that still reports "running" is not a stop event at all and
-        -- this rule does not fire for it.
+        -- Two distinct trigger shapes, both definitive stop signals:
+        -- KillBash/TaskStop always means the shell is dead; BashOutput/
+        -- TaskOutput means it only when the polled status is no longer
+        -- "running" (completed/failed/killed) — a poll that still reports
+        -- "running" is not a stop event at all and this rule does not fire
+        -- for it.
         --
         -- An unrecognised shell_id is a no-op, not a count underflow — same
         -- reasoning as HookSubagentStop. The drain condition here is the
@@ -603,8 +620,9 @@ rule ShellSessionFence {
     when: PostToolUse(task, tool_name, incoming_session_id, run_in_background?, status?)
 
     requires: (tool_name = "Bash" and run_in_background = true)
-              or tool_name = "KillBash"
-              or (tool_name = "BashOutput" and status != null and status != "running")
+              or tool_name = "KillBash" or tool_name = "TaskStop"
+              or ((tool_name = "BashOutput" or tool_name = "TaskOutput")
+                  and status != null and status != "running")
 
     ensures:
         for entry in core/ShellEntries where task = task and session_id != incoming_session_id:

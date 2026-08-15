@@ -72,39 +72,51 @@ case "$EVENT" in
             # Additive, independent of the file-event switch above: forward
             # backgrounded-shell lifecycle signals to `dispatch hook-shell`.
             # See docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
-            # SESSION_ID is only extracted for the three tools that need it —
-            # this branch runs on every PostToolUse for every tool in every
-            # agent session, so an unconditional jq spawn here would be a
-            # needless subprocess on the hottest path in the codebase.
+            # SESSION_ID is only extracted for the tools that need it — this
+            # branch runs on every PostToolUse for every tool in every agent
+            # session, so an unconditional jq spawn here would be a needless
+            # subprocess on the hottest path in the codebase.
+            #
+            # Two tool-name generations are matched for the stop/poll signal:
+            # KillBash/BashOutput (older Claude Code) and TaskStop/TaskOutput
+            # (current Claude Code, which generalised background-task
+            # management beyond just Bash shells). Likewise the id field
+            # itself moved — `tool_response.backgroundTaskId` (current) vs
+            # `tool_response.shell_id` (older) for Bash-start, and
+            # `tool_input.task_id` (current) vs `tool_input.shell_id`
+            # (older) for stop/poll. Verified against a live hook payload,
+            # not assumed from docs — see #4197: the original assumption
+            # (shell_id/KillBash/BashOutput only) meant `hook-shell` was
+            # never actually invoked in production.
             case "$TOOL" in
-                Bash|KillBash|BashOutput)
+                Bash|KillBash|BashOutput|TaskStop|TaskOutput)
                     SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty') ;;
             esac
             case "$TOOL" in
                 Bash)
                     RUN_IN_BACKGROUND=$(echo "$INPUT" | jq -r '.tool_input.run_in_background // false')
                     if [[ "$RUN_IN_BACKGROUND" == "true" ]]; then
-                        # Only PostToolUse, not PreToolUse: the shell_id Claude
-                        # Code assigns doesn't exist until the call returns.
-                        SHELL_ID=$(echo "$INPUT" | jq -r '.tool_response.shell_id // empty')
+                        # Only PostToolUse, not PreToolUse: the id Claude Code
+                        # assigns doesn't exist until the call returns.
+                        SHELL_ID=$(echo "$INPUT" | jq -r '.tool_response.backgroundTaskId // .tool_response.shell_id // empty')
                         if [[ -n "$SHELL_ID" ]]; then
                             dispatch hook-shell "$ID" start --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
                         fi
                     fi
                     ;;
-                KillBash)
-                    SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.shell_id // empty')
+                KillBash|TaskStop)
+                    SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.task_id // .tool_input.shell_id // empty')
                     if [[ -n "$SHELL_ID" ]]; then
                         dispatch hook-shell "$ID" stop --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
                     fi
                     ;;
-                BashOutput)
+                BashOutput|TaskOutput)
                     # Only a stop signal when the polled shell is no longer
                     # running (completed/failed/killed) — a poll reporting
                     # "running" is not a stop event.
                     STATUS=$(echo "$INPUT" | jq -r '.tool_response.status // empty')
                     if [[ -n "$STATUS" && "$STATUS" != "running" ]]; then
-                        SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.shell_id // empty')
+                        SHELL_ID=$(echo "$INPUT" | jq -r '.tool_input.task_id // .tool_input.shell_id // empty')
                         if [[ -n "$SHELL_ID" ]]; then
                             dispatch hook-shell "$ID" stop --shell-id "$SHELL_ID" --session-id "$SESSION_ID"
                         fi
