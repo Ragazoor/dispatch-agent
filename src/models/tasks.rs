@@ -42,6 +42,15 @@ impl TaskStatus {
         TaskStatus::Archived,
     ];
 
+    /// Statuses settable through the `update_task` MCP tool. Excludes `done`
+    /// and `archived` — enforced by `requires: status != done` / `!=
+    /// archived` in `UpdateTaskViaMcp` (mcp-task-tools.allium), not just
+    /// hidden from the schema: agents manage running work, humans mark
+    /// completion. Kept as its own const (rather than a hand-written schema
+    /// literal) so an MCP schema derived from it can't drift from this list.
+    pub const MCP_UPDATABLE: &'static [TaskStatus] =
+        &[TaskStatus::Backlog, TaskStatus::Running, TaskStatus::Review];
+
     pub const COLUMN_COUNT: usize = Self::ALL.len();
 
     /// Advance to the next status (wraps at Done -> Done).
@@ -167,6 +176,26 @@ impl SubStatus {
         SubStatus::NeedsInput,
         SubStatus::Stale,
         SubStatus::StaleShell,
+        SubStatus::Crashed,
+        SubStatus::Conflict,
+        SubStatus::AwaitingReview,
+        SubStatus::ChangesRequested,
+        SubStatus::Approved,
+    ];
+
+    /// Sub-statuses advertised by the `update_task` MCP tool's schema.
+    /// Excludes `stale_shell`: a system-derived activity classification (see
+    /// `ClassifyAgentActivity`), not a value an agent should choose to set.
+    /// Advertisement-only — the handler still accepts `stale_shell` if a
+    /// caller sends it anyway, same as any other `SubStatus` valid for the
+    /// effective status (mcp-task-tools.allium: `UpdateTaskViaMcp`). Kept as
+    /// its own const (rather than a hand-written schema literal) so the
+    /// advertised set can't silently drop a variant it should include.
+    pub const MCP_ADVERTISED: &'static [SubStatus] = &[
+        SubStatus::None,
+        SubStatus::Active,
+        SubStatus::NeedsInput,
+        SubStatus::Stale,
         SubStatus::Crashed,
         SubStatus::Conflict,
         SubStatus::AwaitingReview,

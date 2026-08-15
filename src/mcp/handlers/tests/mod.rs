@@ -549,47 +549,19 @@ fn wrap_up_action_all_has_every_variant() {
     assert_eq!(crate::mcp::handlers::tasks::WrapUpAction::ALL.len(), 3);
 }
 
-/// Most schema `"enum"` arrays in the registry are derived directly from a
-/// Rust enum's `::ALL` const, so they cannot drift from it. Two fields are
-/// deliberate exceptions — `update_task.status` excludes `done` (not
-/// settable via MCP; see the field's description) and `update_task.sub_status`
-/// excludes `stale_shell` (a system-derived activity classification, not
-/// agent-settable) — so they stay hand-written literals rather than deriving
-/// from `TaskStatus::ALL`/`SubStatus::ALL`. This asserts every string in
-/// those two literals still round-trips through the backing enum's own
-/// parser, catching a typo without requiring a hand-maintained expected-list.
+/// `update_task.status` and `update_task.sub_status` are the two schema
+/// fields that deliberately advertise a SUBSET of their backing enum
+/// (status excludes `done`/`archived`; sub_status excludes the
+/// system-derived `stale_shell`) rather than the full `::ALL`. Each subset
+/// is its own named const — `TaskStatus::MCP_UPDATABLE` /
+/// `SubStatus::MCP_ADVERTISED` — derived in the schema exactly like every
+/// full-set field, so a variant silently missing from either (not just a
+/// typo in an already-present string) fails here instead of just not being
+/// advertised.
 #[test]
-fn subset_enum_fields_round_trip_through_their_rust_enum() {
-    type Case = (&'static str, &'static str, fn(&str) -> bool);
-
-    let defs = tool_definitions();
-    let tools = defs["tools"].as_array().unwrap();
-
-    let cases: &[Case] = &[
-        ("update_task", "status", |s| s.parse::<TaskStatus>().is_ok()),
-        ("update_task", "sub_status", |s| {
-            s.parse::<SubStatus>().is_ok()
-        }),
-    ];
-
-    for (tool_name, field, parses) in cases {
-        let tool = tools
-            .iter()
-            .find(|t| t["name"] == *tool_name)
-            .unwrap_or_else(|| panic!("{tool_name} tool must be registered"));
-        let values = tool["inputSchema"]["properties"][field]["enum"]
-            .as_array()
-            .unwrap_or_else(|| panic!("{tool_name}.{field} must have an enum array"));
-        for v in values {
-            let s = v
-                .as_str()
-                .unwrap_or_else(|| panic!("{tool_name}.{field} enum value must be a string"));
-            assert!(
-                parses(s),
-                "{tool_name}.{field}: {s:?} does not round-trip through its Rust enum's parser"
-            );
-        }
-    }
+fn subset_enum_consts_have_every_intended_variant() {
+    assert_eq!(TaskStatus::MCP_UPDATABLE.len(), 3);
+    assert_eq!(SubStatus::MCP_ADVERTISED.len(), 9);
 }
 
 /// Every MCP arg struct carries `#[serde(deny_unknown_fields)]`, so a stray or
