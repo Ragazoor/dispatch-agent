@@ -1714,7 +1714,7 @@ git commit -m "feat(4187): render running · N shells and a distinct shell-stale
 - Consumes: Task 10's card rendering.
 - Produces: locked visual regression coverage.
 
-- [ ] **Step 1: Write the new snapshot tests**
+- [x] **Step 1: Write the new snapshot tests**
 
 Following `snapshot_card_running_with_subagents` (`src/tui/tests/snapshots.rs:295-306`) exactly:
 
@@ -1762,26 +1762,26 @@ fn snapshot_card_stale_shell() {
 }
 ```
 
-- [ ] **Step 2: Run tests to generate `.snap.new` files**
+- [x] **Step 2: Run tests to generate `.snap.new` files**
 
 Run: `cargo test tui::tests::snapshots::snapshot_card_running_with_shells tui::tests::snapshots::snapshot_card_running_with_subagents_and_shells tui::tests::snapshots::snapshot_card_stale_shell`
 Expected: FAIL (no baseline snapshot exists yet) — this produces `.snap.new` files under `src/tui/tests/snapshots/`.
 
-- [ ] **Step 3: Review and accept the new snapshots**
+- [x] **Step 3: Review and accept the new snapshots**
 
 Run: `INSTA_UPDATE=always cargo test tui::tests::snapshots::snapshot_card_running_with_shells tui::tests::snapshots::snapshot_card_running_with_subagents_and_shells tui::tests::snapshots::snapshot_card_stale_shell`
 Then manually inspect the accepted `.snap` files under `src/tui/tests/snapshots/` to confirm the rendered text matches what Task 10 intended (e.g. `running · 2 shells`, `running · 1 agent · 1 shell`, `shell stale · 5h`).
 
-- [ ] **Step 4: Clean up any stray `.snap.new` files**
+- [x] **Step 4: Clean up any stray `.snap.new` files**
 
 Run: `rm -f src/tui/tests/snapshots/*.snap.new`
 
-- [ ] **Step 5: Run the full snapshot suite to confirm no unrelated regressions**
+- [x] **Step 5: Run the full snapshot suite to confirm no unrelated regressions**
 
 Run: `cargo test tui::tests::snapshots`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/tui/tests/snapshots.rs src/tui/tests/snapshots/

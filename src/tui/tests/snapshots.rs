@@ -305,6 +305,48 @@ fn snapshot_card_running_with_subagents() {
     insta::assert_snapshot!(rendered);
 }
 
+/// Locks the live-shell-count suffix on a running card's second line.
+#[test]
+fn snapshot_card_running_with_shells() {
+    let mut t = make_task(1, TaskStatus::Running);
+    t.title = "running with shells".to_string();
+    t.live_shells = 2;
+
+    let mut app = App::new(vec![t]);
+    app.spinner_tick = 0;
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}
+
+/// Locks composed subagent + shell suffixes.
+#[test]
+fn snapshot_card_running_with_subagents_and_shells() {
+    let mut t = make_task(1, TaskStatus::Running);
+    t.title = "running with both".to_string();
+    t.live_subagents = 1;
+    t.live_shells = 1;
+
+    let mut app = App::new(vec![t]);
+    app.spinner_tick = 0;
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}
+
+/// Locks the shell-stale card indicator.
+#[test]
+fn snapshot_card_stale_shell() {
+    let mut t = make_task(1, TaskStatus::Running);
+    t.title = "abandoned shell".to_string();
+    t.sub_status = crate::models::SubStatus::StaleShell;
+    t.live_shells = 1;
+    t.oldest_live_shell_started_at = Some(chrono::Utc::now() - chrono::Duration::hours(5));
+
+    let mut app = App::new(vec![t]);
+    app.spinner_tick = 0;
+    let rendered = render_to_string(&mut app, 120, 40);
+    insta::assert_snapshot!(rendered);
+}
+
 #[test]
 fn snapshot_input_epic_title_form() {
     use super::super::types::{EpicDraft, InputMode};
