@@ -402,6 +402,10 @@ It is not boilerplate. It handles three OS hazards that a fresh implementation t
 
 Two properties are load-bearing and easy to break while "tidying" the wait. It waits on **stdout's EOF**, not on a poll timer, so a child that finishes early is noticed immediately — one of its callers is the statusline decorator, which runs on Claude Code's sub-second debounce, and a poll interval there is latency on every redraw. And the wait for *exit* that follows is bounded by the same deadline (paced by `EXIT_POLL_STEP`), because a child that closes stdout and keeps running would otherwise slip past the first bound into an unbounded wait. A child abandoned at the deadline yields an error and nothing else — output it had already produced is dropped with it, which for the statusline decorator is a spec guarantee (`ChainedCommandIsBounded` in `docs/specs/dispatch.allium`), not an implementation detail.
 
+## One quoting layer per launch site
+
+The agent launchers do not hardcode `claude` / `dispatch`: they read them from `ProcessRunner::agent_binaries()` (`src/process.rs`), which defaults to those bare names. That is the seam `tests/tmux_harness/mod.rs` uses to point them at stubs — never `PATH` manipulation. Interpolate via `claude_quoted()`, and keep every launch site at **one** quoting layer: `dispatch_with_prompt` passes the binary as bash's `$0` after its single-quoted script body precisely so it does not sit under two.
+
 ## `MockProcessRunner` vs a real tmux server
 
 Two test styles cover tmux, and they prove different things. Picking the wrong one is not a style preference — it is how a broken command stays green.
@@ -524,3 +528,11 @@ Two properties are load-bearing and easy to break:
 Escape hatch, for deliberate references to removed code and to external-crate names: an `allow-phantom-symbol: <why>` comment on the offending line or the line directly above, mirroring `allow-test-sleep:`. In a Rust doc block the marker is a plain `//` line interleaved between `///` lines.
 
 Two surfaces are deliberately unguarded. `docs/plans/`, `docs/superpowers/`, and `docs/research/` are dated artifacts that describe code as it stood then. And **bare (un-backticked) identifiers in Allium `--` comments are not scanned** — doing so would catch #3806's `dispatch.allium` phantom, but measured 37 hits for 1 real finding. A checker that cries wolf gets bypassed, so that one stays uncaught by design; see `docs/plans/3807-check-doc-symbols.md`.
+
+### `file:NN` vs `path::symbol` citations
+
+A `file:NN` citation is only **bounds-checked**: `check-doc-paths.sh` confirms the file has at least that many lines, never that the line still holds what the doc says. Inserting lines into a cited file silently shifts every citation below the insertion point and the hook stays green — prefer the `path::symbol` form (`src/feed/exec.rs::exec_feed_command`), which at least cannot be shifted by an unrelated edit.
+
+`path::symbol` is the **best-verified** citation form, and since #4097 it is checked strictly: `check-doc-symbols.sh` requires every `::` segment to occur in the cited file, so naming a real symbol that lives somewhere else is caught too. That is what closes the spec-first hole — #4091 specified `src/feed/cycle.rs::run_feed_cycle` <!-- allow-phantom-symbol: naming the rot this paragraph describes; the real symbol is FeedCycle::run --> and shipped as `FeedCycle::run` through two commits, green the whole way. The same pass now also checks `Type::method` citations (the deleted-`FeedJob` shape) and bare snake_case names of five or more words in specs and docs (the stale-test-name shape from #3989), backticked or not.
+
+What is still not caught, and still needs a `grep` when you rename or delete something: a bare **PascalCase** type name with no `::` (indistinguishable from an Allium block name), a bare snake_case name of four words or fewer (below the noise floor — see the threshold note in the script), and any `file:NN` line number, which remains bounds-only. A `Type::method` check is also a *phantom* check, not a path check: it confirms both halves exist somewhere, not that the method hangs off that type.
