@@ -513,9 +513,12 @@ rule SerialisedFeedCycle {
     -- other cycle's writes landed, so the claim spans the exec too. It also
     -- halves the upstream API spend of a double refresh.
     --
-    -- Dropping rather than queueing: the exec is an unbounded child process, so
-    -- a queue behind a slow or hung command has no bound. Dropping caps
-    -- in-flight work per epic at one cycle.
+    -- Dropping rather than queueing: even with the exec bounded at
+    -- feed_command_timeout (core.allium config), a queue behind a slow or
+    -- hung command grows unboundedly with the number of dropped requests
+    -- (N requests deep is N * feed_command_timeout deep). Dropping caps
+    -- in-flight work per epic at one cycle regardless of how many requests
+    -- arrive while it runs.
     --
     -- == Scope: this closes the feed-vs-feed race ONLY ==
     --
@@ -1946,7 +1949,8 @@ rule ManualFeedTrigger {
     -- no-op. Note the honest limit of the reassurance it gives: it means "a
     -- cycle is running", not "fresh data is arriving imminently" — if that
     -- in-flight cycle is stuck on a hung command, every subsequent "r" keeps
-    -- reporting this and the feed never advances (SerialisedFeedCycle's ACCEPTED
+    -- reporting this for up to feed_command_timeout (core.allium config)
+    -- before the feed recovers on its own (SerialisedFeedCycle's BOUNDED
     -- COST).
     --
     -- There is no zero-item stderr hint on the success line. #3900 had
