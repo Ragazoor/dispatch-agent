@@ -210,6 +210,8 @@ Every seam's signature list lives in exactly one place: a `macro_rules!` *spec* 
 
 **Adding or changing a method** means editing one signature list. Types there are fully qualified (`$crate::models::TaskId`, …) because `macro_rules!` resolves type paths at the *call site*, and mocks in other modules invoke the same spec macro.
 
+**Removing a method is not symmetric with adding one — delete it from the spec macro's list in the same change, not just the inherent method.** `service_api_delegate!`'s body is `$Concrete::$method(self, …)`, a UFCS call. If the inherent method is deleted from `impl TaskService` but the entry stays in the spec macro's list, that UFCS call no longer has an inherent method to bind to — but the trait method the same macro invocation is generating *is* in scope in `api.rs`, so Rust silently resolves the call to itself. The result compiles cleanly (`cargo build --lib` shows no error) and only diverges at runtime, as unbounded recursion the first time anything calls it. Caught here only because a stale test call site (`svc.validate_send_message(...)`) produced a "method not found on `TaskService`, but the trait provides it" compiler hint — which is the signal to check the spec macro's list next, not just the inherent `impl` block.
+
 **Writing a mock**: implement the `*ServiceApiStub` trait, override only the methods the test exercises, then bridge it onto the real seam:
 
 ```rust
