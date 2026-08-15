@@ -145,6 +145,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (82, migrate_v82_resolve_stranded_pending_stops),
     (83, migrate_v83_add_stop_pending_at),
     (84, migrate_v84_drop_tips_state), // drops table created in v36
+    (85, migrate_v85_create_task_shells),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1312,6 +1313,36 @@ pub(super) fn migrate_v83_add_stop_pending_at(conn: &Connection) -> Result<()> {
 pub(super) fn migrate_v84_drop_tips_state(conn: &Connection) -> Result<()> {
     conn.execute_batch("DROP TABLE IF EXISTS tips_state")
         .context("Failed to drop tips_state (migration v84)")
+}
+
+/// Tracks live backgrounded shells (Bash tool with `run_in_background: true`)
+/// per task, mirroring `task_subagents`/`live_subagents` (migration v81). See
+/// docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
+pub(super) fn migrate_v85_create_task_shells(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_shells (
+             task_id    INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+             shell_id   TEXT    NOT NULL,
+             session_id TEXT    NOT NULL,
+             started_at TEXT    NOT NULL,
+             PRIMARY KEY (task_id, shell_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_task_shells_task
+             ON task_shells(task_id);",
+    )
+    .context("Failed to create task_shells (migration v85)")?;
+
+    if !column_exists(conn, "tasks", "live_shells") {
+        conn.execute_batch(
+            "ALTER TABLE tasks ADD COLUMN live_shells INTEGER NOT NULL DEFAULT 0",
+        )
+        .context("Failed to add tasks.live_shells (migration v85)")?;
+    }
+    if !column_exists(conn, "tasks", "oldest_live_shell_started_at") {
+        conn.execute_batch("ALTER TABLE tasks ADD COLUMN oldest_live_shell_started_at TEXT")
+            .context("Failed to add tasks.oldest_live_shell_started_at (migration v85)")?;
+    }
+    Ok(())
 }
 
 pub(super) fn migrate_v42_drop_epic_tag(conn: &Connection) -> Result<()> {

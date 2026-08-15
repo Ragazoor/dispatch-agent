@@ -124,7 +124,7 @@ git commit -m "spec(4187): add task_shells/live_shells to the Allium domain spec
 - Consumes: nothing from prior tasks (pure schema).
 - Produces: `task_shells(task_id, shell_id, session_id, started_at)` table, `tasks.live_shells INTEGER NOT NULL DEFAULT 0`, `tasks.oldest_live_shell_started_at TEXT` (nullable) — read by every later task.
 
-- [ ] **Step 1: Write the failing migration test**
+- [x] **Step 1: Write the failing migration test**
 
 In `src/db/tests/migrations.rs`, following the exact shape of `migration_81_creates_task_subagents_and_columns` (lines 64-93):
 
@@ -161,12 +161,12 @@ async fn migration_85_creates_task_shells_and_columns() {
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cargo test --lib migration_85_creates_task_shells_and_columns`
 Expected: FAIL — table/columns don't exist yet.
 
-- [ ] **Step 3: Add the migration function**
+- [x] **Step 3: Add the migration function**
 
 In `src/db/migrations.rs`, following `migrate_v81_create_task_subagents`'s exact shape:
 
@@ -198,12 +198,12 @@ Register it in the `MIGRATIONS` array (the tail currently ends `(84, migrate_v84
     (85, migrate_v85_create_task_shells),
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test --lib migration_85_creates_task_shells_and_columns`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/db/migrations.rs src/db/tests/migrations.rs

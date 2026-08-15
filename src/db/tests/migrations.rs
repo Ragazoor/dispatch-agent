@@ -92,6 +92,37 @@ async fn migration_81_creates_task_subagents_and_columns() {
     );
 }
 
+#[tokio::test]
+async fn migration_85_creates_task_shells_and_columns() {
+    let db = in_memory_db().await;
+    let has = db
+        .db_call(|conn| {
+            let table: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_shells'",
+                [],
+                |r| r.get(0),
+            )?;
+            let live: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='live_shells'",
+                [],
+                |r| r.get(0),
+            )?;
+            let oldest: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name='oldest_live_shell_started_at'",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((table, live, oldest))
+        })
+        .await
+        .expect("query schema");
+    assert_eq!(
+        has,
+        (1, 1, 1),
+        "migration 85 must create task_shells and both tasks columns"
+    );
+}
+
 /// v82 is the one-shot replacement for the retired tick reconciler: a database
 /// written by the older read-then-write code can still hold a task stranded in
 /// `Running` + `stop_pending` + `live_subagents = 0`, and with the reconciler
