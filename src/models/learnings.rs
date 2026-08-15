@@ -18,6 +18,15 @@ pub enum LearningKind {
 }
 
 impl LearningKind {
+    pub const ALL: &'static [LearningKind] = &[
+        LearningKind::Pitfall,
+        LearningKind::Convention,
+        LearningKind::Preference,
+        LearningKind::ToolRecommendation,
+        LearningKind::Procedural,
+        LearningKind::Landscape,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             LearningKind::Pitfall => "pitfall",
@@ -76,6 +85,13 @@ pub enum LearningScope {
 }
 
 impl LearningScope {
+    pub const ALL: &'static [LearningScope] = &[
+        LearningScope::User,
+        LearningScope::Repo,
+        LearningScope::Epic,
+        LearningScope::Task,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             LearningScope::User => "user",

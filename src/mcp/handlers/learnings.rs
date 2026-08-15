@@ -263,7 +263,7 @@ pub(super) async fn handle_rate_learning(
         Ok(()) => {
             let note = match parsed.verdict {
                 LearningVerdict::Helped => "recorded as helped (upvoted)",
-                LearningVerdict::Wrong => "recorded as wrong (downvoted)",
+                LearningVerdict::Wrong => "recorded as wrong (downvoted; no review step)",
             };
             JsonRpcResponse::ok(
                 id,
