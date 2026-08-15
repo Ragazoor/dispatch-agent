@@ -305,48 +305,6 @@ async fn record_learning_unknown_task_fails() {
     assert_error(&resp, "9999");
 }
 
-// --- record_learning: schema/enum parity with Rust enums ----------------------
-
-#[test]
-fn record_learning_scope_and_kind_enums_match_the_rust_enums() {
-    let defs = tool_definitions();
-    let tools = defs["tools"].as_array().unwrap();
-    let record_learning = tools
-        .iter()
-        .find(|t| t["name"] == "record_learning")
-        .expect("record_learning tool must be registered");
-
-    let scope_enum: Vec<&str> = record_learning["inputSchema"]["properties"]["scope"]["enum"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    let expected_scopes: Vec<&str> = crate::models::LearningScope::ALL
-        .iter()
-        .map(|s| s.as_str())
-        .collect();
-    assert_eq!(
-        scope_enum, expected_scopes,
-        "record_learning's advertised scope enum must match LearningScope's variants exactly"
-    );
-
-    let kind_enum: Vec<&str> = record_learning["inputSchema"]["properties"]["kind"]["enum"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    let expected_kinds: Vec<&str> = crate::models::LearningKind::ALL
-        .iter()
-        .map(|k| k.as_str())
-        .collect();
-    assert_eq!(
-        kind_enum, expected_kinds,
-        "record_learning's advertised kind enum must match LearningKind's variants exactly"
-    );
-}
-
 // --- record_learning: internal-code citation rejection -----------------------
 
 #[tokio::test]

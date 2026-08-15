@@ -258,13 +258,20 @@ for needed in 'docs/specs' 'CLAUDE.md' 'src'; do
     fi
 done
 
-# --- The default scan list must also cover the learnings skill (#4152). ----
+# --- The default scan list must also cover the learnings skill (#4152), and
+# actually catch a phantom there — not just grep the checker's own source for
+# the path string, the way the loop above does for its three surfaces. ----
 # Only this one file, not the full plugin/skills/*/SKILL.md glob: the glob
 # also matches plugin/skills/allium-loop/SKILL.md, which describes its own
 # local state-file schema in prose (field names with no backing Rust/Allium
 # declaration) and would false-positive — see follow-up task #4195.
-if ! grep -q 'plugin/skills/learnings/SKILL.md' "$CHECKER"; then
-    echo "FAIL: check-doc-symbols.sh does not scan plugin/skills/learnings/SKILL.md" >&2
+mkdir -p "$WORKDIR/plugin/skills/learnings"
+printf 'Call `ghost_kb_function` before doing anything.\n' >"$WORKDIR/plugin/skills/learnings/SKILL.md"
+out="$(cd "$WORKDIR" && bash "$CHECKER" 2>&1)" || true
+rm -f "$WORKDIR/plugin/skills/learnings/SKILL.md"
+if ! grep -q 'ghost_kb_function' <<<"$out"; then
+    echo "FAIL: default scan does not catch a phantom in plugin/skills/learnings/SKILL.md" >&2
+    echo "  output: $out" >&2
     failures=$((failures + 1))
 fi
 

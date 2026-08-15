@@ -380,7 +380,7 @@ the resulting URL to exit_session (not to wrap_up).",
                 "kind": {
                     "type": "string",
                     "description": "Category: pitfall, convention, preference, tool_recommendation, procedural, or landscape",
-                    "enum": ["pitfall", "convention", "preference", "tool_recommendation", "procedural", "landscape"]
+                    "enum": crate::models::LearningKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>()
                 },
                 "summary": {
                     "type": "string",
@@ -389,7 +389,7 @@ the resulting URL to exit_session (not to wrap_up).",
                 "scope": {
                     "type": "string",
                     "description": "Scope this learning applies to: user (global), repo, epic, or task",
-                    "enum": ["user", "repo", "epic", "task"]
+                    "enum": crate::models::LearningScope::ALL.iter().map(|s| s.as_str()).collect::<Vec<_>>()
                 },
                 "detail": {
                     "type": "string",

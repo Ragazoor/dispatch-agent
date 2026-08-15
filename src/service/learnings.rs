@@ -52,6 +52,21 @@ fn find_code_citation(text: &str) -> Option<&str> {
         .map(|m| m.as_str())
 }
 
+/// Rejects `field` (the "summary" or "detail" text of a learning) if it
+/// contains an internal-code citation. See [`find_code_citation`].
+fn reject_code_citation(field: &str, text: &str) -> Result<(), ServiceError> {
+    if let Some(hit) = find_code_citation(text) {
+        return Err(ServiceError::Validation(format!(
+            "learning {field} cites internal code (`{hit}`) — this rots silently since \
+             nothing re-checks the knowledge base against the codebase. Describe the \
+             durable behavior in prose instead, or add the citation to the relevant \
+             docs/specs/*.allium file or a Rust doc comment, both of which \
+             check-doc-symbols.sh keeps accurate on every push."
+        )));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // QueryLearningsParams
 // ---------------------------------------------------------------------------
@@ -102,25 +117,9 @@ impl LearningService {
         if params.summary.trim().is_empty() {
             return Err(ServiceError::Validation("summary must not be empty".into()));
         }
-        if let Some(hit) = find_code_citation(&params.summary) {
-            return Err(ServiceError::Validation(format!(
-                "learning summary cites internal code (`{hit}`) — this rots silently since \
-                 nothing re-checks the knowledge base against the codebase. Describe the \
-                 durable behavior in prose instead, or add the citation to the relevant \
-                 docs/specs/*.allium file or a Rust doc comment, both of which \
-                 check-doc-symbols.sh keeps accurate on every push."
-            )));
-        }
+        reject_code_citation("summary", &params.summary)?;
         if let Some(detail) = &params.detail {
-            if let Some(hit) = find_code_citation(detail) {
-                return Err(ServiceError::Validation(format!(
-                    "learning detail cites internal code (`{hit}`) — this rots silently since \
-                     nothing re-checks the knowledge base against the codebase. Describe the \
-                     durable behavior in prose instead, or add the citation to the relevant \
-                     docs/specs/*.allium file or a Rust doc comment, both of which \
-                     check-doc-symbols.sh keeps accurate on every push."
-                )));
-            }
+            reject_code_citation("detail", detail)?;
         }
         match params.scope {
             LearningScope::User => {
