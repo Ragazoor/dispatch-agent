@@ -532,12 +532,17 @@ impl App {
     ///
     /// It toggles rather than clears: from a column that is not fully selected it
     /// *selects* (`SelectAllColumn` in `docs/specs/tasks.allium`), exactly as `a`
-    /// does. The `clear_select_all` telemetry label predates that and describes
-    /// only one of the two outcomes; it is left alone because renaming a usage key
-    /// splits its recorded history, which is not worth a naming fix.
+    /// does. It therefore records the same `select_all` action as `a` and is told
+    /// apart by the recorded key, per the convention on `key_event` — two bindings
+    /// for one action share an action name.
+    ///
+    /// allow-phantom-symbol: the superseded label is the subject of the next line.
+    /// `clear_select_all` both misdescribed the behaviour — it clears only when the
+    /// column is already fully selected — and broke that convention by inventing a
+    /// second action name for one action.
     fn handle_key_enter_normal(&mut self) -> Vec<Command> {
         if self.selection().on_select_all {
-            return self.dispatch_keyed(Message::SelectAllColumn, "clear_select_all", "Enter");
+            return self.dispatch_keyed(Message::SelectAllColumn, "select_all", "Enter");
         }
         if let Some(task) = self.selected_task() {
             let id = task.id;

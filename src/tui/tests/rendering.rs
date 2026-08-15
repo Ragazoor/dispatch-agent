@@ -2355,6 +2355,96 @@ async fn only_the_selected_card_has_a_hued_frame() {
 }
 
 #[tokio::test]
+async fn column_top_rule_is_hued_only_while_focused() {
+    // core.allium's named exception under "Focus is intensity, not
+    // colour-vs-absence": the column's top rule and its scroll indicators take the
+    // identity hue while focused and drop to a flat neutral grey while not. That is
+    // the one place on the board where hue signals focus by presence rather than
+    // intensity, and it was entirely unguarded — a change that flattened the
+    // focused rule to grey, or gave the unfocused one a dimmed hue, passed either
+    // way, in both cases silently erasing or contradicting the exception.
+    const NEUTRAL_RULE: Color = Color::Rgb(86, 95, 137); // palette MUTED
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Running),
+        make_task(3, TaskStatus::Review),
+    ]);
+    let buf = render_to_buffer(&mut app, 160, 30);
+
+    // Row 0 is the indicator bar, row 1 the summary; the board's first row is the
+    // columns' TOP borders.
+    // Collect the *distinct* colours: a rule spans dozens of cells, so reporting
+    // every one of them buries the answer in a wall of repeats.
+    let mut rules: Vec<Color> = Vec::new();
+    for x in buf.area.left()..buf.area.right() {
+        let cell = &buf[(x, 2)];
+        if cell.symbol() == "\u{2500}" && !rules.contains(&cell.fg) {
+            rules.push(cell.fg);
+        }
+    }
+    assert!(
+        !rules.is_empty(),
+        "expected column top rules on the board's first row"
+    );
+
+    // Backlog is the focused column on a fresh board.
+    let focused_hue = ui::column_color(TaskStatus::Backlog);
+    assert!(
+        rules.contains(&focused_hue),
+        "the focused column's top rule must carry its identity hue {focused_hue:?}; \
+         the rules on this row are {rules:?}"
+    );
+    assert!(
+        rules.contains(&NEUTRAL_RULE),
+        "an unfocused column's top rule must drop to neutral grey; \
+         the rules on this row are {rules:?}"
+    );
+    for c in &rules {
+        assert!(
+            *c == focused_hue || *c == NEUTRAL_RULE,
+            "a top rule must be either the focused column's hue {focused_hue:?} or the \
+             neutral grey; found {c:?}, so another column's hue has leaked into a rule"
+        );
+    }
+}
+
+#[tokio::test]
+async fn no_unfocused_column_leaks_a_hued_card_frame() {
+    // The cross-column companion to `only_the_selected_card_has_a_hued_frame`,
+    // which renders one column and so cannot see a hue appearing in another. Across
+    // a board with cards in every column, exactly one frame may be non-neutral —
+    // the cursor's — and it must be its own column's hue.
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Backlog),
+        make_task(2, TaskStatus::Backlog),
+        make_task(3, TaskStatus::Running),
+        make_task(4, TaskStatus::Review),
+        make_task(5, TaskStatus::Done),
+    ]);
+    let buf = render_to_buffer(&mut app, 160, 30);
+
+    let neutral = ui::card_border_color();
+    let corners = cells_with_symbol(&buf, "\u{256d}");
+    assert!(corners.len() >= 5, "expected a card in every column");
+
+    let hued: Vec<Color> = corners
+        .iter()
+        .map(|c| c.fg)
+        .filter(|fg| *fg != neutral)
+        .collect();
+    assert_eq!(
+        hued.len(),
+        1,
+        "exactly one card frame on the whole board may be hued; found {hued:?}"
+    );
+    assert_eq!(
+        hued[0],
+        ui::column_color(TaskStatus::Backlog),
+        "the one hued frame must be the cursor's, in the focused column"
+    );
+}
+
+#[tokio::test]
 async fn header_bar_stops_at_the_column_separators() {
     // The header bar must span exactly its own column. It used to be laid out by a
     // *different* constraint set than the board — the summary row divided the width

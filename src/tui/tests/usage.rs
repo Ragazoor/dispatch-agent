@@ -217,13 +217,16 @@ fn space_records_an_activation_that_only_reports_it_cannot_proceed() {
 }
 
 #[test]
-fn enter_records_clearing_select_all() {
+fn enter_on_the_header_records_select_all() {
     let mut app = make_app();
     app.selection_mut().set_column(1);
-    // Navigate up from row 0 onto the select-all toggle, then select.
+    // Navigate up from row 0 onto the select-all cursor position, then select.
     app.update(Message::NavigateRow(-1));
     app.update(Message::SelectAllColumn);
-    assert_records(&mut app, KeyCode::Enter, "clear_select_all", "Enter");
+    // Same `select_all` action as `a`, told apart by the recorded key — two
+    // bindings for one action share an action name (see `key_event`). Enter here
+    // toggles, so `clear_select_all` described only one of its two outcomes.
+    assert_records(&mut app, KeyCode::Enter, "select_all", "Enter");
 }
 
 // ── task detail overlay ──────────────────────────────────────────────────────

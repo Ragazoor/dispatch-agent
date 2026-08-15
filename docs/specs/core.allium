@@ -1328,7 +1328,12 @@ value VisualColumn {
 --   cards_are_inset_by_one_cell_of_column_ground margin width, its ground
 --                                                colour, and the lit rail
 --                                                inside it
---   only_the_selected_card_has_a_hued_frame
+--   only_the_selected_card_has_a_hued_frame      within one column
+--   no_unfocused_column_leaks_a_hued_card_frame  across all four: cards in
+--                                                every column, exactly one
+--                                                non-neutral frame on the
+--                                                whole board, and it is the
+--                                                cursor's own column hue
 --   render_v2_task_card_shows_stripe
 --   unfocused_column_header_keeps_its_identity_colour
 --                                                the principle above, on
@@ -1361,25 +1366,11 @@ value VisualColumn {
 --                                                each keeps the channel
 --                                                *ranking* of its source
 --                                                at both focus states
---
--- The separator test checks five widths on purpose. Whether a misaligned
--- header row is visible at all depends on how the division rounds at that
--- particular width, so one width can coincidentally line up and hide the
--- defect entirely — at 120 columns it very nearly does, while the code this
--- replaced fails at 100. A single-width assertion here would have been
--- worse than none, because it would have read as coverage.
---
--- That last one pins the derivation, and its formulation is deliberate:
--- the property is channel *ranking*, not distance from the source hue. The
--- obvious test — "each label is nearer its own hue than any other
--- column's" — is unsatisfiable, because a dimmed colour is by construction
--- far from the colour it was dimmed from. Measured that way Backlog's
--- dimmed label lands nearer ARCHIVE_STRIPE than BLUE, and Review's nearer
--- BLUE than PURPLE, while both are correctly derived. Ranking is the right
--- fingerprint because it survives linear mixing toward any neutral: BLUE
--- is b > g > r and stays so dimmed or brightened, PURPLE is b > r > g
--- throughout. Anyone reaching for a distance metric here will find it
--- fails on correct code — that is the trap, not a bug.
+--   column_top_rule_is_hued_only_while_focused   the named exception:
+--                                                focused rule carries the
+--                                                identity hue, unfocused
+--                                                rules the neutral grey,
+--                                                and no third colour
 --   render_card_message_flash_shows_envelope     the flash's glyph
 --   message_flash_envelope_outlives_the_old_three_second_window
 --                                                the glyph is still drawn
@@ -1393,6 +1384,41 @@ value VisualColumn {
 --                                                read one duration, so they
 --                                                cannot disagree about
 --                                                whether a flash is live
+--   message_flash_hue_and_envelope_expire_together
+--                                                the co-terminality the
+--                                                "Message flash" exception
+--                                                rests on: hued frames are
+--                                                counted either side of the
+--                                                threshold (two inside, one
+--                                                past) alongside the glyph's
+--                                                presence and absence
+--
+-- That last test puts the flash on a *non-cursor* card, and that is the
+-- load-bearing part of its fixture rather than an incidental choice: on the
+-- cursor card the frame would be hued whether or not the flash contributed
+-- anything, so only a non-cursor card makes the flash's own contribution to
+-- the frame colour readable at all. Moving the flash onto the cursor card
+-- would leave the test passing while measuring nothing.
+--
+-- The separator test checks five widths on purpose. Whether a misaligned
+-- header row is visible at all depends on how the division rounds at that
+-- particular width, so one width can coincidentally line up and hide the
+-- defect entirely — at 120 columns it very nearly does, while the code this
+-- replaced fails at 100. A single-width assertion here would have been
+-- worse than none, because it would have read as coverage.
+--
+-- each_header_label_keeps_its_column_hue_signature pins the label
+-- derivation, and its formulation is deliberate: the property is channel
+-- *ranking*, not distance from the source hue. The
+-- obvious test — "each label is nearer its own hue than any other
+-- column's" — is unsatisfiable, because a dimmed colour is by construction
+-- far from the colour it was dimmed from. Measured that way Backlog's
+-- dimmed label lands nearer ARCHIVE_STRIPE than BLUE, and Review's nearer
+-- BLUE than PURPLE, while both are correctly derived. Ranking is the right
+-- fingerprint because it survives linear mixing toward any neutral: BLUE
+-- is b > g > r and stays so dimmed or brightened, PURPLE is b > r > g
+-- throughout. Anyone reaching for a distance metric here will find it
+-- fails on correct code — that is the trap, not a bug.
 --
 -- The superseded three-level tint ladder (unfocused < focused < cursor
 -- card) was replaced rather than retuned, because a selected card no
@@ -1400,28 +1426,22 @@ value VisualColumn {
 --
 -- Not enforced by any test — normative claims above that a reader should
 -- not assume are covered:
---   - Epic cards: the PURPLE stripe and selected frame in every column,
---     and the unconditionally bold title ("Epic cards").
+--   - Epic cards, entirely: the PURPLE stripe, the unconditionally bold
+--     title, and the selected frame in *both* directions — that a selected
+--     epic takes PURPLE and that a resting epic does not ("Epic cards").
+--     The cross-column frame test above renders no epic, so it does not
+--     reach any of this; and because bold is unconditional on an epic, the
+--     frame is the only cursor signal an epic card has, which makes this
+--     the gap covering the least-substitutable claim in the section.
 --   - The four-cell horizontal chrome total as a number. The inset test
 --     pins the margin's width, but nothing asserts the sum the title
 --     budget is reduced by.
---   - Cross-column exclusivity of the hued card frame.
---     only_the_selected_card_has_a_hued_frame renders Backlog tasks only,
---     so it cannot catch a hued frame appearing in another column, nor an
---     epic's purple frame.
---   - That the flash's hued frame and its envelope are co-terminous. The
---     tests above pin the *glyph* against the TTL on both sides, but none
---     of them looks at the frame's colour, so a change that expired the
---     hue and the glyph at different times would pass. That is the one
---     property the "Message flash" resolution rests on, and it is the
---     least guarded thing in this section.
---   - The top rule's and scroll indicators' colour at *either* focus
---     state: neither that they take the identity hue while focused nor
---     that they drop to grey while unfocused. The named exception in
---     "Focus is intensity, not colour-vs-absence" is therefore entirely
---     unguarded, and the header-label test above does not cover it — a
---     change that flattened the focused rule to grey, or that gave the
---     unfocused rule a dimmed hue, would pass the suite either way.
+--   - The scroll indicators' colour, at either focus state.
+--     column_top_rule_is_hued_only_while_focused covers the top rule alone.
+--     The two share a single colour in the renderer today and so cannot
+--     diverge, but that is a property of the current implementation rather
+--     than something asserted, and splitting them would be caught by
+--     nothing.
 --
 -- Naming tests here couples this spec to them: renaming or deleting one
 -- must update this list. That coupling is deliberate, and
