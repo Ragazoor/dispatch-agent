@@ -724,7 +724,7 @@ fn editor_result_task_edit_returns_finalize_command() {
     let mut app = App::new(vec![task.clone()]);
     let cmds = app.update(Message::Editor(
         crate::tui::messages::EditorMessage::Result {
-            kind: EditKind::TaskEdit(task),
+            kind: EditKind::TaskEdit(Box::new(task)),
             outcome: EditorOutcome::Saved("--- TITLE ---\nNew\n".into()),
         },
     ));

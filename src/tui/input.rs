@@ -272,7 +272,7 @@ impl App {
                 {
                     vec![
                         Command::Editor(crate::tui::commands::EditorCommand::PopOut(
-                            crate::tui::types::EditKind::TaskEdit(task),
+                            crate::tui::types::EditKind::TaskEdit(Box::new(task)),
                         )),
                         key_event("edit_archived", &label),
                     ]

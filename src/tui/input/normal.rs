@@ -561,7 +561,7 @@ impl App {
             Some(ColumnItem::Task(task)) => {
                 vec![Command::Editor(
                     crate::tui::commands::EditorCommand::PopOut(
-                        crate::tui::types::EditKind::TaskEdit(task.clone()),
+                        crate::tui::types::EditKind::TaskEdit(Box::new(task.clone())),
                     ),
                 )]
             }

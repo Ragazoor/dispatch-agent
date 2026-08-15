@@ -61,7 +61,10 @@ impl std::str::FromStr for RepoFilterMode {
 #[derive(Debug, Clone)]
 pub enum EditKind {
     /// Full task editor (title/description/repo_path/status/plan/tag/base_branch).
-    TaskEdit(Task),
+    /// Boxed: `Task` has grown large enough (peer-message + live-shell
+    /// tracking fields) that clippy's `large_enum_variant` flags the
+    /// unboxed size difference against `EpicEdit`/`Description`.
+    TaskEdit(Box<Task>),
     /// Full epic editor (title/description/repo_path).
     EpicEdit(Epic),
     /// Description-only editor used during task/epic creation.

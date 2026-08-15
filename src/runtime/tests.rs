@@ -5561,7 +5561,9 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::Editor(EditorCommand::PopOut(crate::tui::EditKind::TaskEdit(task))),
+            Command::Editor(EditorCommand::PopOut(crate::tui::EditKind::TaskEdit(
+                Box::new(task),
+            ))),
         )
         .await;
 
@@ -5592,7 +5594,7 @@ mod command_dispatch {
             &rt,
             &mut app,
             Command::Editor(EditorCommand::FinalizeResult {
-                kind: crate::tui::EditKind::TaskEdit(task.clone()),
+                kind: crate::tui::EditKind::TaskEdit(Box::new(task.clone())),
                 outcome: crate::tui::EditorOutcome::Saved(edited.into()),
             }),
         )

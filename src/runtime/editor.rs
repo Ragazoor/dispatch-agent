@@ -290,7 +290,7 @@ impl TuiRuntime {
         outcome: EditorOutcome,
     ) -> Vec<Command> {
         match kind {
-            EditKind::TaskEdit(task) => self.finalize_task_edit(app, task, outcome).await,
+            EditKind::TaskEdit(task) => self.finalize_task_edit(app, *task, outcome).await,
             EditKind::EpicEdit(epic) => self.finalize_epic_edit(app, epic, outcome).await,
             EditKind::Description { .. } => {
                 tracing::warn!("FinalizeEditorResult received Description kind; ignoring");
@@ -868,7 +868,7 @@ mod tests {
 
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Saved(edited_text.into()),
         )
         .await;
@@ -907,7 +907,7 @@ mod tests {
 
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Saved(edited_text.into()),
         )
         .await;
@@ -954,7 +954,7 @@ mod tests {
         let edited_text = "--- TITLE ---\n\n--- URL ---\n\n--- URL_TYPE ---\n\n";
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Saved(edited_text.into()),
         )
         .await;
@@ -987,7 +987,7 @@ mod tests {
         let edited_text = "--- TITLE ---\n\n--- PLAN ---\n\n";
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Saved(edited_text.into()),
         )
         .await;
@@ -1026,7 +1026,7 @@ mod tests {
         let edited_text = "--- TITLE ---\n\n--- TAG ---\n\n";
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Saved(edited_text.into()),
         )
         .await;
@@ -1073,7 +1073,7 @@ mod tests {
 
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Saved(edited_text.into()),
         )
         .await;
@@ -1115,7 +1115,7 @@ mod tests {
 
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Saved(edited_text.into()),
         )
         .await;
@@ -1146,7 +1146,7 @@ mod tests {
 
         rt.exec_finalize_editor_result(
             &mut app,
-            EditKind::TaskEdit(task.clone()),
+            EditKind::TaskEdit(Box::new(task.clone())),
             EditorOutcome::Cancelled,
         )
         .await;
