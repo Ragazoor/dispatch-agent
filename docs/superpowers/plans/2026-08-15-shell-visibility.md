@@ -227,7 +227,7 @@ git commit -m "feat(4187): add task_shells table and tasks.live_shells/oldest_li
 - Consumes: `task_shells` table + `tasks.live_shells`/`oldest_live_shell_started_at` columns (Task 2), `crate::models::ShellDrain` (Task 5 — **do Task 5 before this task**, since `ShellDrain` is a model type this task's function signatures return).
 - Produces: `Database::shell_start(&self, id: TaskId, shell_id: &str, session_id: &str, now: DateTime<Utc>) -> Result<i64>`, `Database::shell_stop(&self, id: TaskId, shell_id: &str, session_id: &str) -> Result<ShellDrain>`, `Database::shell_clear_no_drain(&self, id: TaskId) -> Result<()>` (all via the `TaskCrud` trait) — consumed by Task 6's service layer.
 
-- [ ] **Step 1: Write the failing CRUD tests in `src/db/tests/shells.rs`**
+- [x] **Step 1: Write the failing CRUD tests in `src/db/tests/shells.rs`**
 
 Register the module first: in `src/db/tests/mod.rs`, add `mod shells;` alongside the existing `mod subagents;` (line 10). Then, following `src/db/tests/subagents.rs` verbatim (its `make_task` helper, its `in_memory_db()`/`create_task_returning` usage, its exact assertion style):
 
@@ -346,12 +346,12 @@ async fn shell_stop_does_not_drain_while_a_subagent_is_still_live() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test --lib db::tests::shells`
 Expected: FAIL to compile — `Database::shell_start`/`shell_stop` don't exist yet.
 
-- [ ] **Step 3: Move `apply_pending_stop_if_drained` to `src/db/queries/mod.rs` and widen it**
+- [x] **Step 3: Move `apply_pending_stop_if_drained` to `src/db/queries/mod.rs` and widen it**
 
 In `src/db/queries/subagents.rs`, delete the `apply_pending_stop_if_drained` function (currently private, right after the module doc comment). In `src/db/queries/mod.rs`, add it (near `STOP_FLIP_SET`, which it uses):
 
@@ -411,7 +411,7 @@ pub(super) fn subagent_clear(conn: &mut Connection, task_id: i64) -> Result<Suba
 
 Do **NOT** widen `subagent_clear_and_void_pending_stop` — it is shared by `SessionStart`'s CLI clear action (which must NOT clear shells, per the design's session-fencing section) and `DispatchTask`'s two claim functions (which SHOULD clear shells, handled separately in Task 6 via an explicit additional call).
 
-- [ ] **Step 4: Write `src/db/queries/shells.rs`**
+- [x] **Step 4: Write `src/db/queries/shells.rs`**
 
 ```rust
 //! `task_shells` CRUD — the storage half of the live background-shell count.
@@ -515,7 +515,7 @@ pub(super) fn shell_clear_no_drain(conn: &mut Connection, task_id: i64) -> Resul
 
 Register the module in `src/db/queries/mod.rs`: add `pub(super) mod shells;` alongside the existing `pub(super) mod subagents;`.
 
-- [ ] **Step 5: Add the `TaskCrud` trait methods**
+- [x] **Step 5: Add the `TaskCrud` trait methods**
 
 In `src/db/mod.rs`, add to the `TaskCrud` trait (alongside `subagent_start`/`subagent_stop`/`subagent_clear`/`subagent_clear_and_void_pending_stop` at lines 223-260):
 
@@ -579,17 +579,17 @@ In `src/db/queries/tasks.rs`, add the impls (alongside `subagent_start`/`subagen
     }
 ```
 
-- [ ] **Step 6: Run tests to verify they pass**
+- [x] **Step 6: Run tests to verify they pass**
 
 Run: `cargo test --lib db::tests::shells`
 Expected: PASS (6 tests)
 
-- [ ] **Step 7: Run the existing subagent tests to confirm no regression**
+- [x] **Step 7: Run the existing subagent tests to confirm no regression**
 
 Run: `cargo test --lib db::tests::subagents`
 Expected: PASS — the widened `finish_drain`/`subagent_clear` must not break existing subagent-only behavior (a task with no `task_shells` rows syncs `live_shells = 0`/`oldest_live_shell_started_at = NULL`, which is a no-op against the existing predicate since `live_shells = 0` was already the default).
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add src/db/queries/shells.rs src/db/queries/mod.rs src/db/queries/subagents.rs src/db/mod.rs src/db/queries/tasks.rs src/db/tests/shells.rs src/db/tests/mod.rs

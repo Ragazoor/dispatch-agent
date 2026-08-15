@@ -4,7 +4,8 @@ use rusqlite::{params, OptionalExtension};
 use crate::set_field;
 
 use crate::models::{
-    EpicId, FeedItem, StopOutcome, SubStatus, SubagentDrain, TaskId, TaskStatus, UserPromptOutcome,
+    EpicId, FeedItem, ShellDrain, StopOutcome, SubStatus, SubagentDrain, TaskId, TaskStatus,
+    UserPromptOutcome,
     WrapUpMode,
 };
 
@@ -553,6 +554,31 @@ impl super::super::TaskCrud for Database {
 
     async fn subagent_clear_and_void_pending_stop(&self, id: TaskId) -> Result<()> {
         self.db_call(move |conn| super::subagents::subagent_clear_and_void_pending_stop(conn, id.0))
+            .await
+    }
+
+    async fn shell_start(
+        &self,
+        id: TaskId,
+        shell_id: &str,
+        session_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<i64> {
+        let shell_id = shell_id.to_string();
+        let session_id = session_id.to_string();
+        self.db_call(move |conn| super::shells::shell_start(conn, id.0, &shell_id, &session_id, now))
+            .await
+    }
+
+    async fn shell_stop(&self, id: TaskId, shell_id: &str, session_id: &str) -> Result<ShellDrain> {
+        let shell_id = shell_id.to_string();
+        let session_id = session_id.to_string();
+        self.db_call(move |conn| super::shells::shell_stop(conn, id.0, &shell_id, &session_id))
+            .await
+    }
+
+    async fn shell_clear_no_drain(&self, id: TaskId) -> Result<()> {
+        self.db_call(move |conn| super::shells::shell_clear_no_drain(conn, id.0))
             .await
     }
 

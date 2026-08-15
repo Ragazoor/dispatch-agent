@@ -146,6 +146,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (83, migrate_v83_add_stop_pending_at),
     (84, migrate_v84_drop_tips_state), // drops table created in v36
     (85, migrate_v85_create_task_shells),
+    (86, migrate_v86_allow_stale_shell),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1341,6 +1342,125 @@ pub(super) fn migrate_v85_create_task_shells(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "tasks", "oldest_live_shell_started_at") {
         conn.execute_batch("ALTER TABLE tasks ADD COLUMN oldest_live_shell_started_at TEXT")
             .context("Failed to add tasks.oldest_live_shell_started_at (migration v85)")?;
+    }
+    Ok(())
+}
+
+/// Adds `'stale_shell'` to the tasks table's `(status, sub_status)` CHECK
+/// constraint's `running` branch, so `SubStatus::StaleShell` can actually be
+/// persisted. SQLite cannot alter an existing CHECK constraint in place, so
+/// this rebuilds the table the same way `migrate_v30_allow_conflict_for_review`
+/// did for the same reason.
+///
+/// Unlike that migration, the column list, types, defaults, and the
+/// indexes/triggers to recreate are all discovered at runtime via
+/// `pragma_table_info`/`sqlite_master`, rather than hardcoded. A hardcoded
+/// full column list broke several migration tests that deliberately replay
+/// only a partial migration history against a synthetic seed schema (e.g.
+/// `migration_v38_feed_epic_columns`, `migration_v52_adds_verify_command_to_repo_paths`)
+/// — those tables never had `worktree`/`tag`/`url`/etc. added, since those
+/// columns' migrations predate the synthetic seed's starting point. Reading
+/// the actual current columns makes this migration correct against whatever
+/// subset of the schema actually exists, real or synthetic.
+pub(super) fn migrate_v86_allow_stale_shell(conn: &Connection) -> Result<()> {
+    struct ColumnDef {
+        name: String,
+        decl_type: String,
+        notnull: bool,
+        dflt_value: Option<String>,
+        pk: bool,
+    }
+
+    let mut columns = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('tasks')",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ColumnDef {
+                name: r.get(0)?,
+                decl_type: r.get(1)?,
+                notnull: r.get::<_, i64>(2)? != 0,
+                dflt_value: r.get(3)?,
+                pk: r.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        for row in rows {
+            columns.push(row?);
+        }
+    }
+
+    let column_defs: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            let mut def = format!("{} {}", c.name, c.decl_type);
+            if c.pk {
+                def.push_str(" PRIMARY KEY");
+            } else if c.notnull {
+                def.push_str(" NOT NULL");
+            }
+            if let Some(dflt) = &c.dflt_value {
+                // Always parenthesized: `pragma_table_info` strips the outer
+                // parens SQLite requires around a non-constant default
+                // expression (e.g. `datetime('now')`), so re-adding them
+                // unconditionally is the only way to get both literals and
+                // expressions to splice back in as valid syntax.
+                def.push_str(&format!(" DEFAULT ({dflt})"));
+            }
+            // The only foreign key on `tasks` today. `pragma_table_info`
+            // doesn't report FK constraints (that's `pragma_foreign_key_list`),
+            // so it's reattached by name rather than introspected generically.
+            if c.name == "epic_id" {
+                def.push_str(" REFERENCES epics(id)");
+            }
+            def
+        })
+        .collect();
+    let column_list = columns
+        .iter()
+        .map(|c| c.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    // Existing indexes/triggers on `tasks`, captured verbatim so they can be
+    // replayed after the rebuild — `DROP TABLE` implicitly drops everything
+    // attached to it, and a synthetic/partial schema may not have all of
+    // today's indexes/triggers, so replay only what actually existed.
+    let mut extra_sql = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT sql FROM sqlite_master \
+             WHERE tbl_name = 'tasks' AND type IN ('index', 'trigger') AND sql IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for row in rows {
+            extra_sql.push(row?);
+        }
+    }
+
+    conn.execute_batch(&format!(
+        "CREATE TABLE tasks_new (\n    {},\n    CHECK (\n        \
+             (status = 'backlog'  AND sub_status = 'none') OR\n        \
+             (status = 'running'  AND sub_status IN ('active','needs_input','stale','stale_shell','crashed','conflict')) OR\n        \
+             (status = 'review'   AND sub_status IN ('awaiting_review','changes_requested','approved','conflict')) OR\n        \
+             (status = 'done'     AND sub_status = 'none') OR\n        \
+             (status = 'archived' AND sub_status = 'none')\n    )\n);",
+        column_defs.join(",\n    ")
+    ))
+    .context("Failed to create tasks_new (migration v86)")?;
+
+    conn.execute_batch(&format!(
+        "INSERT INTO tasks_new ({column_list}) SELECT {column_list} FROM tasks;"
+    ))
+    .context("Failed to copy tasks rows into tasks_new (migration v86)")?;
+
+    conn.execute_batch("DROP TABLE tasks; ALTER TABLE tasks_new RENAME TO tasks;")
+        .context("Failed to swap tasks_new into tasks (migration v86)")?;
+
+    for sql in &extra_sql {
+        conn.execute_batch(sql).with_context(|| {
+            format!("Failed to recreate a tasks index/trigger (migration v86): {sql}")
+        })?;
     }
     Ok(())
 }

@@ -9,8 +9,8 @@ use std::path::Path;
 
 use crate::models::{
     Epic, EpicId, FeedItem, Learning, LearningId, LearningKind, LearningRetrieval, LearningScope,
-    LearningStatus, LearningVerdict, RetrievalSource, StopOutcome, SubStatus, SubagentDrain, Task,
-    TaskId, TaskStatus, TaskTag, Todo, TodoId, UserPromptOutcome, WrapUpMode,
+    LearningStatus, LearningVerdict, RetrievalSource, ShellDrain, StopOutcome, SubStatus,
+    SubagentDrain, Task, TaskId, TaskStatus, TaskTag, Todo, TodoId, UserPromptOutcome, WrapUpMode,
 };
 
 /// Number of decode soft-fails since process start: unknown enum values that
@@ -258,6 +258,27 @@ pub trait TaskCrud: TaskRead {
     /// later session and fire a spurious flip. See
     /// `ClearSubagentsOnSessionStart` in `docs/specs/agent-health.allium`.
     async fn subagent_clear_and_void_pending_stop(&self, id: TaskId) -> Result<()>;
+    /// Record a live background shell starting for `id` (a Bash tool call
+    /// with `run_in_background: true`). Rows belonging to any session other
+    /// than `session_id` are evicted first — see the session-fencing section
+    /// of `docs/superpowers/specs/2026-08-15-shell-visibility-design.md` for
+    /// why shells use fencing alone, with no SessionStart-driven clear.
+    /// Returns the resulting live count.
+    async fn shell_start(
+        &self,
+        id: TaskId,
+        shell_id: &str,
+        session_id: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<i64>;
+    /// Record a live background shell stopping for `id`. If this drains the
+    /// last shell of a task carrying a deferred `Stop` (and no subagent is
+    /// still live), the flip to `Review` is applied in the same transaction.
+    async fn shell_stop(&self, id: TaskId, shell_id: &str, session_id: &str) -> Result<ShellDrain>;
+    /// Remove every live-shell row for `id` and zero `live_shells`, without
+    /// draining. For `DetectCrashedAgent` and `DispatchTask`'s claim
+    /// functions — deliberately NOT called from `SessionStart`.
+    async fn shell_clear_no_drain(&self, id: TaskId) -> Result<()>;
     /// Apply the `Stop` hook to `id`, deciding against the row's committed
     /// state rather than a prior read.
     ///

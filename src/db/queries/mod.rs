@@ -1,6 +1,7 @@
 mod epics;
 mod learnings;
 mod settings;
+pub(super) mod shells;
 pub(super) mod subagents;
 mod tasks;
 mod todos;
@@ -128,6 +129,46 @@ pub(super) const TASK_COLUMNS: &str =
 pub(super) const STOP_FLIP_SET: &str = "SET status = ?1, sub_status = ?2, \
      last_pre_tool_use_at = NULL, last_notification_at = NULL, \
      stop_pending = 0, updated_at = datetime('now')";
+
+/// Apply a `Stop` that was withheld while subagents or shells were live, if
+/// this write is the one that drained the last of BOTH.
+///
+/// **Must be called inside the transaction that wrote the count it just
+/// changed.** That is the whole point: recomputing the count and applying
+/// the deferred flip commit together, so there is no window in which the
+/// count has reached zero but the flip has not landed.
+///
+/// Shared by every drain path — `subagents::finish_drain` (subagent-stop and
+/// the `DetachTmux` subagent-clear) and `shells::shell_stop` — deliberately a
+/// single function, not one copy per counter. A subagent-drain-to-zero must
+/// not flip the task while a live shell is still outstanding, and vice versa;
+/// giving each counter its own independent copy of this check would let a
+/// later edit widen one caller's condition without widening the other,
+/// silently reintroducing that race. See the "shared drain predicate"
+/// finding in docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
+pub(super) fn apply_pending_stop_if_drained(
+    tx: &rusqlite::Connection,
+    task_id: i64,
+) -> Result<bool> {
+    let review = TaskStatus::Review;
+    let rows = tx
+        .execute(
+            &format!(
+                "UPDATE tasks {} \
+                 WHERE id = ?3 AND status = ?4 AND stop_pending = 1 \
+                   AND live_subagents = 0 AND live_shells = 0",
+                STOP_FLIP_SET
+            ),
+            rusqlite::params![
+                review.as_str(),
+                SubStatus::default_for(review).as_str(),
+                task_id,
+                TaskStatus::Running.as_str(),
+            ],
+        )
+        .context("Failed to apply pending stop")?;
+    Ok(rows == 1)
+}
 
 /// Column list shared by all epic SELECT queries. Pair with `row_to_epic`.
 /// Order must match the field reads in `row_to_epic`.

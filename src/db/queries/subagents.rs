@@ -14,42 +14,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 
-use crate::models::{SubStatus, SubagentDrain, TaskStatus};
-
-/// Apply a `Stop` that was withheld while subagents were live, if this write is
-/// the one that drained the last of them.
-///
-/// **Must be called inside the transaction that wrote the count.** That is the
-/// whole point: recomputing `live_subagents` and applying the deferred flip
-/// commit together, so there is no window in which the count has reached zero
-/// but the flip has not landed. A hook process killed partway therefore cannot
-/// leave the task in `Running` + `stop_pending` + `live_subagents = 0` with no
-/// hook left to resolve it — the state a tick reconciler used to sweep up.
-///
-/// Conditional on all three predicates in the same statement rather than a
-/// prior read, so it is safe under any interleaving of hook processes: if a new
-/// subagent started, or another process already applied the flip, the `WHERE`
-/// simply matches nothing. Returns whether it applied.
-fn apply_pending_stop_if_drained(tx: &Connection, task_id: i64) -> Result<bool> {
-    let review = TaskStatus::Review;
-    let rows = tx
-        .execute(
-            &format!(
-                "UPDATE tasks {} \
-                 WHERE id = ?3 AND status = ?4 AND stop_pending = 1 \
-                   AND live_subagents = 0",
-                super::STOP_FLIP_SET
-            ),
-            params![
-                review.as_str(),
-                SubStatus::default_for(review).as_str(),
-                task_id,
-                TaskStatus::Running.as_str(),
-            ],
-        )
-        .context("Failed to apply pending stop")?;
-    Ok(rows == 1)
-}
+use crate::models::SubagentDrain;
 
 /// Recompute `tasks.live_subagents` from `task_subagents` and return it.
 fn sync_count(conn: &Connection, task_id: i64) -> Result<i64> {
@@ -156,6 +121,14 @@ pub(super) fn subagent_clear_and_void_pending_stop(
 /// Clear every entry and, if that drained a task carrying a deferred Stop,
 /// apply it. Reached only from detach, whose rule owns no status of its own —
 /// see `DetachTmux` in `docs/specs/split-pane.allium`.
+///
+/// Also clears `task_shells` in the same transaction: `DetachTmux` drops the
+/// tmux window any backgrounded shell was running in too, so there is nothing
+/// left to eventually report it stopped. Without this, a task with a live
+/// shell and no subagents would flip to Review here checking only
+/// `live_subagents = 0`, reproducing the bug this design fixes via detach
+/// instead of via a bare Stop. See
+/// docs/superpowers/specs/2026-08-15-shell-visibility-design.md.
 pub(super) fn subagent_clear(conn: &mut Connection, task_id: i64) -> Result<SubagentDrain> {
     let tx = conn
         .unchecked_transaction()
@@ -165,19 +138,28 @@ pub(super) fn subagent_clear(conn: &mut Connection, task_id: i64) -> Result<Suba
         params![task_id],
     )
     .context("Failed to clear task_subagents rows")?;
+    tx.execute(
+        "DELETE FROM task_shells WHERE task_id = ?1",
+        params![task_id],
+    )
+    .context("Failed to clear task_shells rows")?;
     finish_drain(tx, task_id, "subagent_clear")
 }
 
-/// Recount, apply any drained Stop, and commit — the shared tail of every
-/// draining mutation.
+/// Recount both live-subagent and live-shell state, apply any drained Stop,
+/// and commit — the shared tail of every draining mutation.
 ///
-/// Held in one place deliberately: "the count and the flip commit together" is
-/// the invariant that makes the stranded `Running` + `stop_pending` +
-/// `live_subagents = 0` state unreachable, and stating it twice is how a later
-/// edit fixes one caller and silently leaves the other racy.
+/// Held in one place deliberately: "the counts and the flip commit together"
+/// is the invariant that makes the stranded `Running` + `stop_pending` +
+/// both-counters-zero state unreachable, and stating it twice is how a later
+/// edit fixes one caller and silently leaves the other racy. Always resyncs
+/// `live_shells` too, even for a call site (like plain `subagent_stop`) that
+/// didn't touch `task_shells` — a harmless no-op recount that keeps both
+/// counters guaranteed-fresh before the shared predicate below reads either.
 fn finish_drain(tx: rusqlite::Transaction<'_>, task_id: i64, what: &str) -> Result<SubagentDrain> {
     let live = sync_count(&tx, task_id)?;
-    let applied_pending_stop = apply_pending_stop_if_drained(&tx, task_id)?;
+    super::shells::sync_shell_state(&tx, task_id)?;
+    let applied_pending_stop = super::apply_pending_stop_if_drained(&tx, task_id)?;
     tx.commit()
         .with_context(|| format!("Failed to commit {what} transaction"))?;
     Ok(SubagentDrain {
