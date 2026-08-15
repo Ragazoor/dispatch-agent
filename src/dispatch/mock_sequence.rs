@@ -552,7 +552,12 @@ impl DispatchScript {
 
     /// One `(delay, response)` pair per step, in order. Only `Fetch` ever carries
     /// a delay (see [`Self::fetch_times_out`]).
-    fn responses(&self) -> Vec<(Option<Duration>, Result<Output>)> {
+    /// `pub(crate)` so a test can append its own trailing responses after an
+    /// `Ending::FailsAt` shape — e.g. the rollback calls a provisioning
+    /// failure now triggers, which this script has no vocabulary to model
+    /// itself. See `dispatch_agent_propagates_tmux_new_window_failure` for
+    /// the pattern.
+    pub(crate) fn responses(&self) -> Vec<(Option<Duration>, Result<Output>)> {
         let steps = self.steps();
         let failing_last = matches!(self.ending, Ending::FailsAt(_));
         let mut fetch_attempt = 0;

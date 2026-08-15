@@ -470,12 +470,24 @@ pub(super) fn provision_worktree(
         );
     }
 
-    tmux::new_window(&tmux_window, &worktree_path, runner)
-        .context("failed to create tmux window")?;
-
-    tmux::set_window_dispatch_dir(&tmux_window, &worktree_path, runner)
-        .context("failed to set tmux window dispatch dir")?;
-    tmux::ensure_split_hook(runner).context("failed to ensure tmux split hook")?;
+    let post_add: Result<()> = (|| {
+        tmux::new_window(&tmux_window, &worktree_path, runner)
+            .context("failed to create tmux window")?;
+        tmux::set_window_dispatch_dir(&tmux_window, &worktree_path, runner)
+            .context("failed to set tmux window dispatch dir")?;
+        tmux::ensure_split_hook(runner).context("failed to ensure tmux split hook")?;
+        Ok(())
+    })();
+    if let Err(e) = post_add {
+        rollback_failed_provisioning(
+            &repo_path,
+            &worktree_path,
+            &tmux_window,
+            reused_worktree,
+            runner,
+        );
+        return Err(e);
+    }
 
     tracing::info!(
         task_id = task.id.0,
@@ -595,6 +607,40 @@ fn remove_worktree_and_branch(
     }
 
     Ok(())
+}
+
+/// Best-effort teardown of what this dispatch attempt has created, once a
+/// later step in the same attempt has failed: the tmux window it opened (a
+/// window is created fresh on every attempt, so always a candidate), and —
+/// only when the worktree itself was freshly created rather than reused —
+/// the worktree and its branch.
+///
+/// Delegates to [`teardown_task`], the one implementation of
+/// kill-window-then-remove-worktree ordering (see its own doc comment and
+/// #4096), rather than re-deciding that order here.
+///
+/// Never removes a REUSED worktree — see the "Provisioning-failure rollback"
+/// guidance in docs/specs/dispatch.allium: it predates this attempt and this
+/// flow did not create it, so it is never a candidate for removal here.
+/// Teardown failure is logged, never propagated: the caller already has the
+/// real provisioning error to report, and a cleanup failure on top of that
+/// would only obscure it.
+pub(super) fn rollback_failed_provisioning(
+    repo_path: &str,
+    worktree_path: &str,
+    tmux_window: &str,
+    reused_worktree: bool,
+    runner: &dyn ProcessRunner,
+) {
+    let worktree_arg = (!reused_worktree).then_some(worktree_path);
+    if let Err(e) = teardown_task(repo_path, worktree_arg, Some(tmux_window), runner) {
+        tracing::warn!(
+            worktree_path,
+            tmux_window,
+            error = %e,
+            "failed to roll back a failed dispatch"
+        );
+    }
 }
 
 /// Extract the branch name from a worktree path (its last path component).

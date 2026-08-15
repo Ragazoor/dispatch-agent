@@ -11,7 +11,7 @@ use super::prompts::{
     build_tmux_window_name, compose_prompt_head, parse_tmux_window_task_id, select_preamble,
     EpicContext, LearningInjections, PromptContext, DISPATCH_PLUGIN_DIR,
 };
-use super::worktree::{provision_worktree, BaseRef, StartPoint};
+use super::worktree::{provision_worktree, rollback_failed_provisioning, BaseRef, StartPoint};
 
 /// Width of the `dispatch agent-tree` companion pane, as a percentage of the
 /// agent window — narrower than [`tmux::split_window_horizontal`]'s 40%
@@ -275,8 +275,6 @@ fn dispatch_with_prompt(
          {prompt}"
     );
     let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
-    fs::write(&prompt_file, &full_prompt)
-        .with_context(|| format!("failed to write {prompt_file}"))?;
     let permission_flag = match permission_mode {
         Some(mode) => format!(" --permission-mode {mode}"),
         None => String::new(),
@@ -291,8 +289,30 @@ fn dispatch_with_prompt(
         "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
          && \"$0\" {DISPATCH_PLUGIN_DIR}{permission_flag} \"$prompt\"' {claude}"
     );
-    tmux::send_keys(&provision.tmux_window, &claude_cmd, runner)
-        .context("failed to send keys to tmux window")?;
+
+    // Anything failing here happens after the worktree and tmux window both
+    // exist — a fresh worktree (this attempt's own `git worktree add`) and the
+    // window this same provisioning call just opened must both be rolled back
+    // so a re-dispatch of the same task takes the fresh path again, not the
+    // reuse path with its weaker fetch guarantee. A reused worktree predates
+    // this attempt and is never touched — see rollback_failed_provisioning.
+    let launch: Result<()> = (|| {
+        fs::write(&prompt_file, &full_prompt)
+            .with_context(|| format!("failed to write {prompt_file}"))?;
+        tmux::send_keys(&provision.tmux_window, &claude_cmd, runner)
+            .context("failed to send keys to tmux window")?;
+        Ok(())
+    })();
+    if let Err(e) = launch {
+        rollback_failed_provisioning(
+            &repo_path,
+            &provision.worktree_path,
+            &provision.tmux_window,
+            provision.reused_worktree,
+            runner,
+        );
+        return Err(e);
+    }
 
     spawn_agent_tree_pane(
         &provision.tmux_window,

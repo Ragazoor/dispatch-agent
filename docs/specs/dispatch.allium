@@ -215,6 +215,42 @@ rule DispatchTask {
         -- released would drag the winner's task back to backlog mid-provision
         -- (LostClaimReported on the DispatchingFeedback surface).
         --
+        -- == Provisioning-failure rollback ==
+        -- "Dispatchable exactly as before" is a claim about disk state (and
+        -- tmux state), not just the task row, and it only holds if a failed
+        -- dispatch leaves no trace of what it created. So: once `git worktree
+        -- add` has created a FRESH worktree for this attempt, any later
+        -- failure in the same dispatch — opening the tmux window, setting its
+        -- dispatch dir, installing the split hook, writing `.claude-prompt`,
+        -- or sending the launch keystroke — rolls back everything this
+        -- attempt created before the error propagates, via the same
+        -- kill-window-then-remove-worktree teardown used elsewhere (see
+        -- TaskTeardown in tasks.allium): the tmux window this attempt opened
+        -- (killed if present — a window is opened fresh on every attempt,
+        -- reused worktree or not, so it is always a candidate), then
+        -- `git worktree remove --force` on the path, then a best-effort
+        -- `git branch -D` on the branch it created. All of it is best-effort —
+        -- a rollback failure is logged, never surfacing over the original
+        -- provisioning error, since the operator needs to know why the
+        -- dispatch failed, not that cleanup afterward also failed.
+        -- Without this, a re-dispatch of the same task would silently take
+        -- the REUSED path (the orphaned directory still exists), which is a
+        -- different, weaker code path than the one "exactly as before" implies
+        -- — the fetch downgrades from Required to BestEffort, and an edited
+        -- title changes the slug and orphans the directory permanently.
+        --
+        -- The worktree-and-branch half of this rollback applies ONLY to a
+        -- worktree created fresh during THIS attempt. A REUSED worktree (its
+        -- directory already existed before `git worktree add` was even
+        -- considered) is never removed on failure, no matter which later step
+        -- fails: it predates this dispatch, may hold another attempt's state,
+        -- and this flow did not create it. The reuse path's failure surface
+        -- is covered separately — an unreachable origin on reuse downgrades to
+        -- a "Note: ..." warning (see the fetch-policy rules above), never a
+        -- removal. The tmux-window half of the rollback is unconditional on
+        -- reuse — the window itself is never reused, so it is always rolled
+        -- back on failure regardless of whether the worktree was.
+        --
         -- == Repo-trust pre-gate ==
         -- Every launch of a worktree agent from the TUI is gated on Claude
         -- Code trusting the repo: an untrusted repo makes the freshly created

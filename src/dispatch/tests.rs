@@ -104,6 +104,15 @@ pub(super) fn make_task(repo_path: &str) -> Task {
     }
 }
 
+/// A `git worktree remove` call, if the mock recorded one.
+fn worktree_remove_call(calls: &[(String, Vec<String>)]) -> Option<&(String, Vec<String>)> {
+    calls.iter().find(|(prog, args)| {
+        prog == "git"
+            && args.contains(&"worktree".to_string())
+            && args.contains(&"remove".to_string())
+    })
+}
+
 fn find_call_arg(calls: &[(String, Vec<String>)], call_idx: usize, pattern: &str) -> String {
     calls[call_idx]
         .1
@@ -1098,11 +1107,16 @@ fn dispatch_pr_review_task_bases_worktree_on_pr_head_branch() {
         MockProcessRunner::ok(), // tmux new-window
         MockProcessRunner::ok(), // tmux set-option
         MockProcessRunner::ok(), // tmux set-hook
+        MockProcessRunner::ok(), // tmux list-windows (rollback's window-kill check)
+        MockProcessRunner::ok(), // git worktree remove --force (fresh-worktree rollback)
+        MockProcessRunner::ok(), // git branch -D (fresh-worktree rollback)
     ]);
 
     let task = pr_review_task(&repo_path);
     // Prompt write fails (mock didn't create the worktree dir) — that's fine, the
-    // git calls we assert on were recorded during provisioning beforehand.
+    // git calls we assert on were recorded during provisioning beforehand. The
+    // failure then rolls the fresh worktree back, hence the two trailing
+    // responses above.
     let _ = dispatch_agent(&task, &mock, None, &LearningInjections::default());
 
     let calls = mock.recorded_calls();
@@ -1132,11 +1146,16 @@ fn dispatch_pr_review_task_never_measures_the_pr_head_branch() {
         MockProcessRunner::ok(),                                  // tmux new-window
         MockProcessRunner::ok(),                                  // tmux set-option
         MockProcessRunner::ok(),                                  // tmux set-hook
+        MockProcessRunner::ok(), // tmux list-windows (rollback's window-kill check)
+        MockProcessRunner::ok(), // git worktree remove --force (fresh-worktree rollback)
+        MockProcessRunner::ok(), // git branch -D (fresh-worktree rollback)
     ]);
 
     let task = pr_review_task(&repo_path);
     // Prompt write fails (mock didn't create the worktree dir) — that's fine, the
-    // calls we assert on were recorded during provisioning beforehand.
+    // calls we assert on were recorded during provisioning beforehand. The
+    // failure then rolls the fresh worktree back, hence the two trailing
+    // responses above.
     let _ = dispatch_agent(&task, &mock, None, &LearningInjections::default());
 
     let calls = mock.recorded_calls();
@@ -1232,7 +1251,7 @@ fn dispatch_prompt_has_no_warning_when_fetch_succeeds() {
 fn dispatch_non_review_task_skips_gh_and_bases_worktree_on_origin() {
     let (_dir, repo_path) = make_test_repo();
 
-    let script = DispatchScript::provision().fresh_worktree();
+    let script = DispatchScript::dispatch().fresh_worktree();
     let mock = script.runner();
 
     // make_task has tag None / url None — a plain implementation task.
@@ -1253,7 +1272,7 @@ fn dispatch_review_task_pr_resolution_failure_falls_back_to_base() {
 
     // An unresolvable PR leaves the dispatch on `BaseRef::Branch`, so the
     // ahead/behind measurement *does* run — unlike the PrHead::Branch shapes.
-    let script = DispatchScript::provision()
+    let script = DispatchScript::dispatch()
         .pr_head(PrHead::Unresolvable)
         .fresh_worktree();
     let mock = script.runner();
@@ -1272,7 +1291,7 @@ fn dispatch_review_task_pr_resolution_failure_falls_back_to_base() {
 fn dispatch_review_task_fork_pr_falls_back_to_base() {
     let (_dir, repo_path) = make_test_repo();
 
-    let script = DispatchScript::provision()
+    let script = DispatchScript::dispatch()
         .pr_head(PrHead::Fork("patch-1"))
         .fresh_worktree();
     let mock = script.runner();
@@ -2817,6 +2836,47 @@ fn provision_worktree_git_add_fails_returns_error() {
     assert!(result.is_err(), "git worktree add failure should propagate");
 }
 
+#[test]
+fn provision_worktree_rolls_back_the_worktree_when_a_later_step_fails() {
+    let (_dir, repo_path) = make_test_repo();
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),                      // git worktree add
+        MockProcessRunner::fail("no server running"), // tmux new-window
+        MockProcessRunner::ok(), // tmux list-windows (rollback's window-kill check)
+        MockProcessRunner::ok(), // git worktree remove --force (rollback)
+        MockProcessRunner::ok(), // git branch -D (rollback)
+    ]);
+    let task = make_task(&repo_path);
+    let result = provision_worktree(&task, &mock, None, SUBPROCESS_TIMEOUT);
+    assert!(result.is_err(), "tmux failure must abort provisioning");
+    let calls = mock.recorded_calls();
+    assert!(
+        worktree_remove_call(&calls).is_some(),
+        "the created worktree must be removed on the failure path, got: {calls:?}"
+    );
+}
+
+#[test]
+fn provision_worktree_does_not_remove_a_reused_worktree_on_failure() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    // Reuse path: `git worktree add` is skipped entirely, so the only call
+    // before the failure is `tmux new-window`. The rollback still checks the
+    // window it just tried to open (a window is never reused), hence the
+    // trailing response.
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::fail("no server running"), // tmux new-window
+        MockProcessRunner::ok(),                      // tmux list-windows (window-kill check)
+    ]);
+    let task = make_task(&repo_path);
+    let result = provision_worktree(&task, &mock, None, SUBPROCESS_TIMEOUT);
+    assert!(result.is_err(), "tmux failure must abort provisioning");
+    let calls = mock.recorded_calls();
+    assert!(
+        worktree_remove_call(&calls).is_none(),
+        "a reused (pre-existing) worktree must never be removed on failure, got: {calls:?}"
+    );
+}
+
 // --- teardown_task edge cases ---
 
 #[test]
@@ -3284,9 +3344,13 @@ fn dispatch_agent_opens_tmux_window_in_worktree_not_parent_repo() {
 #[test]
 fn dispatch_agent_propagates_tmux_new_window_failure() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
-    let mock = DispatchScript::dispatch()
-        .fails_at(Step::NewWindow)
-        .runner();
+    let script = DispatchScript::dispatch().fails_at(Step::NewWindow);
+    // The script's own queue ends at the NewWindow failure; the rollback that
+    // failure now triggers still checks (and would kill) the window it just
+    // tried to open, so one more response is needed for that check.
+    let mut responses = script.responses();
+    responses.push((None, MockProcessRunner::ok()));
+    let mock = MockProcessRunner::new_with_delays(responses);
     let task = make_task(&repo_path);
     let result = dispatch_agent(&task, &mock, None, &LearningInjections::default());
 
@@ -3299,14 +3363,23 @@ fn dispatch_agent_propagates_tmux_new_window_failure() {
         msg.contains("failed to create tmux window"),
         "expected new-window context in error chain, got: {msg}"
     );
+    let calls = mock.recorded_calls();
+    assert!(
+        worktree_remove_call(&calls).is_none(),
+        "a reused (pre-existing) worktree must never be removed on failure, got: {calls:?}"
+    );
 }
 
 #[test]
 fn dispatch_agent_propagates_send_keys_failure() {
     let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
-    let mock = DispatchScript::dispatch()
-        .fails_at(Step::SendKeysLiteral)
-        .runner();
+    let script = DispatchScript::dispatch().fails_at(Step::SendKeysLiteral);
+    // See dispatch_agent_propagates_tmux_new_window_failure: the rollback the
+    // send-keys failure now triggers checks the (already-open) tmux window,
+    // one call the script's own queue doesn't otherwise account for.
+    let mut responses = script.responses();
+    responses.push((None, MockProcessRunner::ok()));
+    let mock = MockProcessRunner::new_with_delays(responses);
     let task = make_task(&repo_path);
     let result = dispatch_agent(&task, &mock, None, &LearningInjections::default());
 
@@ -3318,6 +3391,35 @@ fn dispatch_agent_propagates_send_keys_failure() {
     assert!(
         msg.contains("failed to send keys to tmux window"),
         "expected send-keys context in error chain, got: {msg}"
+    );
+    let calls = mock.recorded_calls();
+    assert!(
+        worktree_remove_call(&calls).is_none(),
+        "a reused (pre-existing) worktree must never be removed on failure, got: {calls:?}"
+    );
+}
+
+// A fresh (not pre-existing) worktree whose provisioning fully succeeds but
+// whose post-provisioning `.claude-prompt` write then fails, because the
+// mock never actually created the directory `git worktree add` claims to
+// have created — see KB #351. That mismatch is exactly the "fresh path,
+// later step fails" scenario the rollback exists for, and it falls out of
+// the mock naturally: no faking required.
+#[test]
+fn dispatch_agent_rolls_back_a_fresh_worktree_when_the_prompt_write_fails() {
+    let (_dir, repo_path) = make_test_repo();
+    let mock = DispatchScript::dispatch().fresh_worktree().runner();
+    let task = make_task(&repo_path);
+    let result = dispatch_agent(&task, &mock, None, &LearningInjections::default());
+
+    assert!(
+        result.is_err(),
+        "the prompt write should fail against a directory that was never really created"
+    );
+    let calls = mock.recorded_calls();
+    assert!(
+        worktree_remove_call(&calls).is_some(),
+        "a fresh worktree must be rolled back when a later step fails, got: {calls:?}"
     );
 }
 
