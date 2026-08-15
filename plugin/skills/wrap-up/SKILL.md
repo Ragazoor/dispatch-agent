@@ -195,7 +195,7 @@ rate_learning(learning_id=<id>, task_id=<id>, verdict="helped")
 ```
 
 - `verdict="helped"` — the entry was relevant and you applied it (upvotes it).
-- `verdict="wrong"` — the entry was misleading, outdated, or contradicts current code (routes an approved entry to `needs_review` for human curation).
+- `verdict="wrong"` — the entry was misleading, outdated, or contradicts current code (downvotes it; may go negative). There is no `needs_review` state or human curation step — if it's clearly wrong, delete it with `delete_learning` instead of just downvoting.
 
 Only entries surfaced to you this task can be rated. There is no separate "unused" verdict — simply don't rate entries you didn't act on. `wrap_up` does not accept verdicts; rate through `rate_learning`.
 

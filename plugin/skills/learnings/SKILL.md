@@ -19,7 +19,7 @@ rate_learning(learning_id=<id>, task_id=<your task id>, verdict="helped")
 ```
 
 - `verdict="helped"` — the entry applied and was useful (upvotes it).
-- `verdict="wrong"` — the entry misled you or is inaccurate (routes an approved entry to human review).
+- `verdict="wrong"` — the entry misled you or is inaccurate (downvotes it; may go negative). This does not change its status or route it for human review — there is no review step. If it's clearly wrong rather than just unhelpful, delete it instead (see below).
 
 Do this at the moment you act on it, not deferred to wrap-up. You can only rate entries that were surfaced to you this task.
 
@@ -49,6 +49,7 @@ Before finishing a task, ask: *Did I discover anything non-obvious that a future
 - Debugging solutions where the fix is in the commit
 - Things too specific to generalise — if it won't apply to other tasks, skip it
 - How you fixed a specific problem — that's in the code and commit message
+- Generic language/library idioms that would apply to any codebase (e.g. "use an enum instead of a string sentinel," "clone the Arc once, not per branch") — if it's not tied to a specific type, module, or convention in *this* repo, it's not repo-scoped knowledge
 
 ### Picking a kind
 
@@ -67,7 +68,6 @@ Before finishing a task, ask: *Did I discover anything non-obvious that a future
 |-------|----------|-------------|
 | `user` | Personal workflow preference, applies to all work | omit |
 | `repo` | Codebase-wide convention or landscape entry | omit (auto-derived) |
-| `project` | Applies to all tasks in this project | omit (auto-derived) |
 | `epic` | Shared design decision for this epic only | omit (auto-derived) |
 | `task` | One-off note; not auto-injected into future prompts | omit (auto-derived) |
 

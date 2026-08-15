@@ -388,8 +388,8 @@ the resulting URL to exit_session (not to wrap_up).",
                 },
                 "scope": {
                     "type": "string",
-                    "description": "Scope this learning applies to: user (global), repo, project, epic, or task",
-                    "enum": ["user", "repo", "project", "epic", "task"]
+                    "description": "Scope this learning applies to: user (global), repo, epic, or task",
+                    "enum": ["user", "repo", "epic", "task"]
                 },
                 "detail": {
                     "type": "string",
@@ -437,7 +437,8 @@ the resulting URL to exit_session (not to wrap_up).",
     async "rate_learning" => learnings::handle_rate_learning,
         "Give feedback on a knowledge base entry that was surfaced to you this task. \
 Call any time you act on a retrieved learning. 'helped' upvotes it (a usefulness signal that \
-boosts ranking); 'wrong' flags an approved entry for human review. You can only rate a learning \
+boosts ranking); 'wrong' downvotes it (may go negative) — this does not change the entry's \
+status or route it for review; there is no human curation step. You can only rate a learning \
 that was surfaced to you (injected into your prompt or returned by query_learnings).",
         {
             "type": "object",
