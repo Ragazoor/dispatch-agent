@@ -310,4 +310,90 @@ mod tests {
              reviews_parent epic"
         );
     }
+
+    /// #4150: exec_feed_command has a deadline. A command that never exits
+    /// must fail within it AND release the epic's claim so the NEXT cycle
+    /// proceeds — proving only that one call returned is not enough (see
+    /// feeds.allium SerialisedFeedCycle's bounded-cost note). Reuses the
+    /// FIFO shape from
+    /// `src/runtime/tests.rs::manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight`:
+    /// `cat <fifo>` blocks forever because nothing ever opens the write end,
+    /// so the hang is genuine, not a timed sleep that would end on its own.
+    #[tokio::test]
+    async fn a_hung_command_times_out_and_the_epic_recovers_on_the_next_cycle() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Feed", "", None).await.unwrap();
+
+        let fifo = std::env::temp_dir().join(format!("dispatch_feed_timeout_{}", epic.id.0));
+        let _ = std::fs::remove_file(&fifo);
+        let mkfifo = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(mkfifo.success(), "mkfifo failed for {}", fifo.display());
+
+        // Never written to: this command hangs forever until killed.
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new().feed_command(Some(format!("cat {}", fifo.display()).as_str())),
+        )
+        .await
+        .unwrap();
+
+        let guard = Arc::new(FeedSyncGuard::default());
+        let hung_cycle = FeedCycle {
+            db: db.clone(),
+            runner: Arc::new(AlwaysFailRunner),
+            guard: guard.clone(),
+            epic_id: epic.id,
+            epic_title: "Feed".to_string(),
+            known_paths: None,
+            command_timeout: Duration::from_millis(100),
+        };
+
+        let err = match hung_cycle.run().await {
+            FeedCycleOutcome::Failed(err) => err,
+            FeedCycleOutcome::Synced { count, .. } => {
+                panic!("a hung command must not sync, but {count} item(s) were synced")
+            }
+            FeedCycleOutcome::Busy => panic!("nothing else claimed the epic"),
+        };
+        assert!(
+            err.contains("timed out"),
+            "a hung command must fail as a timeout, got: {err}"
+        );
+
+        // The claim must be free again immediately after `run()` returns —
+        // scoped so this probing claim is dropped before the next real cycle.
+        {
+            let probe = guard.try_claim(epic.id);
+            assert!(
+                probe.is_some(),
+                "a timed-out cycle must release its claim, not hold the epic forever"
+            );
+        }
+
+        // The real proof: point the epic at a fast, successful command and
+        // run a FRESH cycle. If the claim (or anything else) were still
+        // wedged, this would come back Busy or Failed instead of Synced.
+        db.patch_epic(epic.id, &EpicPatch::new().feed_command(Some("echo '[]'")))
+            .await
+            .unwrap();
+        let recovered_cycle = FeedCycle {
+            db,
+            runner: Arc::new(AlwaysFailRunner),
+            guard,
+            epic_id: epic.id,
+            epic_title: "Feed".to_string(),
+            known_paths: None,
+            command_timeout: Duration::from_secs(5),
+        };
+        let outcome = recovered_cycle.run().await;
+        assert!(
+            matches!(outcome, FeedCycleOutcome::Synced { .. }),
+            "the epic must recover and sync on the next cycle after a timeout, got a non-Synced outcome"
+        );
+
+        let _ = std::fs::remove_file(&fifo);
+    }
 }
