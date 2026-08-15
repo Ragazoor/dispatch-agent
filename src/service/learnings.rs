@@ -39,6 +39,7 @@ static BARE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// Detects an internal-code-shaped citation in learning text: a
+// allow-phantom-symbol: describes the citation shape itself, not a real reference
 /// `path.rs::symbol` reference, a `Type::method` reference, or a long (5+
 /// segment) bare snake_case identifier. Returns the offending substring on a
 /// match. See docs/specs/learnings.allium: RecordLearningViaMcp for the

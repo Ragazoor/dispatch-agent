@@ -436,6 +436,7 @@ rule RecordLearningViaMcp {
         -- and dedup matches are not necessarily retrievals for this task.
         --
         -- references_internal_code(text) rejects summary/detail containing:
+        -- allow-phantom-symbol: describes the citation shape itself, not a real reference
         --   - a `path.rs::symbol` citation (a Rust file path plus a `::`-qualified
         --     symbol), or
         --   - a `Type::method` citation (a PascalCase type plus a `::`-qualified

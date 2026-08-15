@@ -922,6 +922,7 @@ mod tests {
 
     /// The "Do NOT record" list must name the internal-code-citation failure
     /// mode explicitly (task #4152 — learning #401 carried a stale
+    // allow-phantom-symbol: the actual stale citation learning #401 carried
     /// `src/feed/cycle.rs::run_feed_cycle` citation that no gate ever caught).
     /// Scoped to that one section: the rest of the skill mentions plenty of
     /// backticked identifiers (tool names) that would make a whole-document
