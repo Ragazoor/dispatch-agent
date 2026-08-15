@@ -699,6 +699,65 @@ async fn hook_subagent_start_then_stop_round_trips() {
     );
 }
 
+#[tokio::test]
+async fn hook_shell_start_then_stop_round_trips() {
+    let db = NamedTempFile::new().unwrap();
+    let db_path = db.path().to_str().unwrap();
+    let id = seed_running_task(db.path(), "Shell Test", SubStatus::Active).await;
+
+    let out = binary()
+        .args([
+            "--db",
+            db_path,
+            "hook-shell",
+            &id.0.to_string(),
+            "start",
+            "--shell-id",
+            "bash_1",
+            "--session-id",
+            "s1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = Database::open(db.path()).await.unwrap();
+    let task = conn.get_task(id).await.unwrap().unwrap();
+    assert_eq!(task.live_shells, 1, "expected live_shells to be 1 after start");
+    drop(conn);
+
+    let out = binary()
+        .args([
+            "--db",
+            db_path,
+            "hook-shell",
+            &id.0.to_string(),
+            "stop",
+            "--shell-id",
+            "bash_1",
+            "--session-id",
+            "s1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let conn = Database::open(db.path()).await.unwrap();
+    let task = conn.get_task(id).await.unwrap().unwrap();
+    assert_eq!(
+        task.live_shells, 0,
+        "expected live_shells to be 0 after the matching stop"
+    );
+}
+
 /// `SessionStart` (the only producer of `hook-subagent … clear`) must void a
 /// stale pending Stop, not apply it. A resume in particular keeps the task
 /// Running deliberately — `handle_retry_resume` launches `claude --continue`

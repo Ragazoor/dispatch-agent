@@ -108,6 +108,29 @@ enum Commands {
         #[arg(long = "session-id")]
         session_id: Option<String>,
     },
+    /// Record a Claude Code backgrounded-shell lifecycle event (a Bash tool
+    /// call with `run_in_background: true`, or a KillBash/BashOutput signal
+    /// that it stopped) for a task. Maintains the live-shell count that
+    /// defers the Stop-to-Review flip and exempts a task from the normal
+    /// staleness threshold; see `docs/specs/agent-health.allium`. Unlike
+    /// `HookSubagent`, there is no `clear` action — a shell has no
+    /// SessionStart-driven clear, only session fencing (see
+    /// docs/superpowers/specs/2026-08-15-shell-visibility-design.md).
+    HookShell {
+        /// Task ID
+        id: i64,
+        /// Action: start | stop
+        action: String,
+        /// Shell identifier — the id Claude Code assigns a backgrounded
+        /// shell, from `tool_response.shell_id` (Bash) or
+        /// `tool_input.shell_id` (KillBash/BashOutput).
+        #[arg(long = "shell-id")]
+        shell_id: Option<String>,
+        /// Session identifier from the payload's `session_id` field. Used to
+        /// fence entries left behind by a dead session.
+        #[arg(long = "session-id")]
+        session_id: Option<String>,
+    },
     /// Append a file-touch event (Read/Write/Edit/NotebookEdit) to a task's
     /// file-events JSONL log (see `docs/specs/agent-tree.allium`). Deliberately
     /// independent of `Hook`/`HookEventKind` — this command never touches
@@ -411,6 +434,35 @@ async fn cmd_hook_subagent(
         Some(event) => svc.record_subagent_event(models::TaskId(id), event).await,
         None => svc.clear_subagents_no_drain(models::TaskId(id)).await,
     };
+    report_hook_outcome(id, outcome)
+}
+
+async fn cmd_hook_shell(
+    db: &std::path::Path,
+    id: i64,
+    action: String,
+    shell_id: Option<String>,
+    session_id: Option<String>,
+) -> Result<()> {
+    // A start/stop with no shell_id/session_id carries no information — the
+    // shell hook already guards this, but a bare CLI call must not panic or
+    // half-write.
+    let (Some(shell_id), Some(session_id)) = (shell_id, session_id) else {
+        return Ok(());
+    };
+    let event = match action.as_str() {
+        "start" => models::ShellEvent::Start {
+            shell_id,
+            session_id,
+        },
+        "stop" => models::ShellEvent::Stop {
+            shell_id,
+            session_id,
+        },
+        other => anyhow::bail!("Invalid shell action: {other}. Valid: start, stop"),
+    };
+    let svc = open_hook_service(db).await?;
+    let outcome = svc.record_shell_event(models::TaskId(id), event).await;
     report_hook_outcome(id, outcome)
 }
 
@@ -842,6 +894,12 @@ async fn run_async(db: &std::path::Path, command: Commands) -> Result<()> {
             agent_id,
             session_id,
         } => cmd_hook_subagent(db, id, action, agent_id, session_id).await?,
+        Commands::HookShell {
+            id,
+            action,
+            shell_id,
+            session_id,
+        } => cmd_hook_shell(db, id, action, shell_id, session_id).await?,
         Commands::HookFileEvent { id, tool, path } => {
             cmd_hook_file_event(db, id, tool, path).await?
         }

@@ -1234,7 +1234,7 @@ git commit -m "feat(4187): wire live_shells through record_hook_event, tick_sub_
 - Consumes: `TaskService::record_shell_event` (Task 6).
 - Produces: `dispatch hook-shell <id> <start|stop> --shell-id <id> --session-id <id>` — consumed by Task 8 (hook script).
 
-- [ ] **Step 1: Write the failing CLI test**
+- [x] **Step 1: Write the failing CLI test**
 
 `tests/cli.rs` already covers `hook-subagent` as a full-binary integration test (search `// hook-subagent`, lines 628-700) using `binary()` (spawns the compiled `dispatch` binary), `seed_running_task(db.path(), title, sub_status)`, and `Database::open(db.path())` to re-read state. Add an analogous `// hook-shell` section following `hook_subagent_start_then_stop_round_trips` (lines 640-700) exactly:
 
@@ -1274,12 +1274,12 @@ async fn hook_shell_start_then_stop_round_trips() {
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cargo test --test cli hook_shell_start_then_stop_round_trips`
 Expected: FAIL — subcommand doesn't exist.
 
-- [ ] **Step 3: Add the `HookShell` clap variant**
+- [x] **Step 3: Add the `HookShell` clap variant**
 
 In `src/main.rs`, alongside `Hook`/`HookSubagent`/`HookFileEvent`:
 
@@ -1294,7 +1294,7 @@ In `src/main.rs`, alongside `Hook`/`HookSubagent`/`HookFileEvent`:
     },
 ```
 
-- [ ] **Step 4: Add `cmd_hook_shell`**
+- [x] **Step 4: Add `cmd_hook_shell`**
 
 ```rust
 async fn cmd_hook_shell(
@@ -1320,12 +1320,12 @@ async fn cmd_hook_shell(
 
 Wire the match arm dispatching to it, following the existing `HookSubagent { .. } => cmd_hook_subagent(...)` pattern.
 
-- [ ] **Step 5: Run test to verify it passes**
+- [x] **Step 5: Run test to verify it passes**
 
 Run: the test from Step 1
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/main.rs
