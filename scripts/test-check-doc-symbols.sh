@@ -258,6 +258,16 @@ for needed in 'docs/specs' 'CLAUDE.md' 'src'; do
     fi
 done
 
+# --- The default scan list must also cover the learnings skill (#4152). ----
+# Only this one file, not the full plugin/skills/*/SKILL.md glob: the glob
+# also matches plugin/skills/allium-loop/SKILL.md, which describes its own
+# local state-file schema in prose (field names with no backing Rust/Allium
+# declaration) and would false-positive — see follow-up task #4195.
+if ! grep -q 'plugin/skills/learnings/SKILL.md' "$CHECKER"; then
+    echo "FAIL: check-doc-symbols.sh does not scan plugin/skills/learnings/SKILL.md" >&2
+    failures=$((failures + 1))
+fi
+
 if ((failures > 0)); then
     echo "test-check-doc-symbols: $failures assertion(s) failed" >&2
     exit 1

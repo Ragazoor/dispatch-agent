@@ -63,6 +63,10 @@ else
     shopt -s nullglob
     TARGETS+=(docs/*.md docs/specs/*.allium)
     shopt -u nullglob
+    # Only this one skill file, not the full plugin/skills/*/SKILL.md glob —
+    # see the comment on the same line in test-check-doc-symbols.sh (#4152 /
+    # follow-up #4195).
+    [[ -f plugin/skills/learnings/SKILL.md ]] && TARGETS+=(plugin/skills/learnings/SKILL.md)
     mapfile -t -O "${#TARGETS[@]}" TARGETS < <(find src -name '*.rs' 2>/dev/null)
 fi
 
