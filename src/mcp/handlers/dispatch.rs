@@ -130,12 +130,12 @@ mcp_tools! {
                 "url_type": {
                     "type": "string",
                     "description": "Type of the url: 'pr' (pull request — enables PR polling/merge), 'security_alert', 'issue', or 'other'. Required when url is set.",
-                    "enum": ["pr", "security_alert", "issue", "other"]
+                    "enum": crate::models::UrlType::ALL.iter().map(|u| u.as_str()).collect::<Vec<_>>()
                 },
                 "tag": {
                     "type": "string",
                     "description": "Task tag: bug, feature, chore, pr-review, research, fix, or dependabot. Controls dispatch behavior. The dependabot tag is intended for feed scripts only — TUI users cannot select it from the tag picker.",
-                    "enum": ["bug", "feature", "chore", "pr-review", "research", "fix", "dependabot"]
+                    "enum": crate::models::TaskTag::ALL.iter().map(|t| t.as_str()).collect::<Vec<_>>()
                 },
                 "sub_status": {
                     "type": "string",
@@ -153,7 +153,7 @@ mcp_tools! {
                 "wrap_up_mode": {
                     "type": ["string", "null"],
                     "description": "Pre-set the wrap-up action for this task: 'rebase' (rebase onto base_branch), 'pr' (create a PR), or 'done' (mark done immediately). Pass null to clear.",
-                    "enum": ["rebase", "pr", "done", null]
+                    "enum": crate::models::WrapUpMode::ALL.iter().map(|m| Some(m.as_str())).chain(std::iter::once(None)).collect::<Vec<Option<&str>>>()
                 },
                 "auto_run_plan": {
                     "type": "boolean",
@@ -208,7 +208,7 @@ mcp_tools! {
                 "tag": {
                     "type": "string",
                     "description": "Task tag: bug, feature, chore, pr-review, research, fix, or dependabot. Controls dispatch behavior. The dependabot tag is intended for feed scripts only — TUI users cannot select it from the tag picker.",
-                    "enum": ["bug", "feature", "chore", "pr-review", "research", "fix", "dependabot"]
+                    "enum": crate::models::TaskTag::ALL.iter().map(|t| t.as_str()).collect::<Vec<_>>()
                 },
                 "base_branch": {
                     "type": "string",
@@ -217,7 +217,7 @@ mcp_tools! {
                 "wrap_up_mode": {
                     "type": "string",
                     "description": "Pre-set the wrap-up action for this task: 'rebase' (rebase onto base_branch), 'pr' (create a PR), or 'done' (mark done immediately).",
-                    "enum": ["rebase", "pr", "done"]
+                    "enum": crate::models::WrapUpMode::ALL.iter().map(|m| m.as_str()).collect::<Vec<_>>()
                 },
                 "auto_run_plan": {
                     "type": "boolean",
@@ -235,8 +235,8 @@ mcp_tools! {
                 "status": {
                     "description": "Filter by status. Single string or array of strings.",
                     "oneOf": [
-                        { "type": "string", "enum": ["backlog", "running", "review", "done", "archived"] },
-                        { "type": "array", "items": { "type": "string", "enum": ["backlog", "running", "review", "done", "archived"] } }
+                        { "type": "string", "enum": crate::models::TaskStatus::ALL_INCLUDING_ARCHIVED.iter().map(|s| s.as_str()).collect::<Vec<_>>() },
+                        { "type": "array", "items": { "type": "string", "enum": crate::models::TaskStatus::ALL_INCLUDING_ARCHIVED.iter().map(|s| s.as_str()).collect::<Vec<_>>() } }
                     ]
                 },
                 "epic_id": {
@@ -286,7 +286,7 @@ mcp_tools! {
                 "epic_id": { "type": "integer", "description": "The epic ID" },
                 "title": { "type": "string", "description": "New title" },
                 "description": { "type": "string", "description": "New description" },
-                "status": { "type": "string", "description": "New status: backlog, running, review, or done", "enum": ["backlog", "running", "review", "done"] },
+                "status": { "type": "string", "description": "New status: backlog, running, review, or done", "enum": crate::models::TaskStatus::ALL.iter().map(|s| s.as_str()).collect::<Vec<_>>() },
                 "plan_path": { "type": "string", "description": "Path to the plan file" },
                 "sort_order": { "type": "integer", "description": "Display order within column (lower values appear first)" },
                 "feed_command": { "type": ["string", "null"], "description": "Shell command that emits JSON FeedItems to populate tasks. Pass null to clear." },
@@ -314,7 +314,7 @@ the resulting URL to exit_session (not to wrap_up).",
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["rebase", "done", "pr"],
+                    "enum": crate::mcp::WrapUpAction::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
                     "description": "'rebase' — rebase onto base_branch and fast-forward it. 'done' — no git ops. 'pr' — no git ops; agent has already run gh pr create. All three return an exit token; the task stays in its current status until exit_session closes it."
                 }
             },
@@ -441,7 +441,7 @@ into your prompt or returned by query_learnings).",
                 },
                 "verdict": {
                     "type": "string",
-                    "enum": ["helped", "wrong"],
+                    "enum": crate::models::LearningVerdict::ALL.iter().map(|v| v.as_str()).collect::<Vec<_>>(),
                     "description": "'helped' — the entry applied and was useful (upvotes it). 'wrong' — the entry misled you or is inaccurate (downvotes it; may go negative). Neither changes the entry's status."
                 }
             },
@@ -525,7 +525,7 @@ tell the user the task still needs closing by hand.",
                 },
                 "action": {
                     "type": "string",
-                    "enum": ["rebase", "done", "pr"],
+                    "enum": crate::mcp::WrapUpAction::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
                     "description": "Must match the action passed to wrap_up for this token."
                 },
                 "pr_url": {
@@ -578,12 +578,12 @@ tell the user the task still needs closing by hand.",
                 "category": {
                     "type": "string",
                     "description": "Filter by category: 'keybinding' or 'mcp_tool'",
-                    "enum": ["keybinding", "mcp_tool"]
+                    "enum": crate::models::UsageCategory::ALL.iter().map(|c| c.as_str()).collect::<Vec<_>>()
                 },
                 "actor": {
                     "type": "string",
                     "description": "Filter by actor: 'human' or 'agent'",
-                    "enum": ["human", "agent"]
+                    "enum": crate::models::UsageActor::ALL.iter().map(|a| a.as_str()).collect::<Vec<_>>()
                 },
                 "since": {
                     "type": "string",

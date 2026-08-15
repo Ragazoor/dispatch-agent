@@ -15,6 +15,13 @@ pub enum UrlType {
 }
 
 impl UrlType {
+    pub const ALL: &'static [UrlType] = &[
+        UrlType::Pr,
+        UrlType::SecurityAlert,
+        UrlType::Issue,
+        UrlType::Other,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             UrlType::Pr => "pr",

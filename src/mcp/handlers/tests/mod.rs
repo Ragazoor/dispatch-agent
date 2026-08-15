@@ -541,6 +541,49 @@ async fn tool_schemas_have_consistent_required_fields() {
     }
 }
 
+/// Most schema `"enum"` arrays in the registry are derived directly from a
+/// Rust enum's `::ALL` const, so they cannot drift from it. Two fields are
+/// deliberate exceptions — `update_task.status` excludes `done` (not
+/// settable via MCP; see the field's description) and `update_task.sub_status`
+/// excludes `stale_shell` (a system-derived activity classification, not
+/// agent-settable) — so they stay hand-written literals rather than deriving
+/// from `TaskStatus::ALL`/`SubStatus::ALL`. This asserts every string in
+/// those two literals still round-trips through the backing enum's own
+/// parser, catching a typo without requiring a hand-maintained expected-list.
+#[test]
+fn subset_enum_fields_round_trip_through_their_rust_enum() {
+    type Case = (&'static str, &'static str, fn(&str) -> bool);
+
+    let defs = tool_definitions();
+    let tools = defs["tools"].as_array().unwrap();
+
+    let cases: &[Case] = &[
+        ("update_task", "status", |s| s.parse::<TaskStatus>().is_ok()),
+        ("update_task", "sub_status", |s| {
+            s.parse::<SubStatus>().is_ok()
+        }),
+    ];
+
+    for (tool_name, field, parses) in cases {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == *tool_name)
+            .unwrap_or_else(|| panic!("{tool_name} tool must be registered"));
+        let values = tool["inputSchema"]["properties"][field]["enum"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{tool_name}.{field} must have an enum array"));
+        for v in values {
+            let s = v
+                .as_str()
+                .unwrap_or_else(|| panic!("{tool_name}.{field} enum value must be a string"));
+            assert!(
+                parses(s),
+                "{tool_name}.{field}: {s:?} does not round-trip through its Rust enum's parser"
+            );
+        }
+    }
+}
+
 /// Every MCP arg struct carries `#[serde(deny_unknown_fields)]`, so a stray or
 /// stale argument (like the discarded `repo_path` on `create_epic`) surfaces
 /// as a JSON-RPC error instead of being silently dropped. This exercises every

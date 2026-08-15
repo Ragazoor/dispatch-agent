@@ -5,6 +5,8 @@ pub enum UsageCategory {
 }
 
 impl UsageCategory {
+    pub const ALL: &'static [UsageCategory] = &[UsageCategory::Keybinding, UsageCategory::McpTool];
+
     pub fn as_str(self) -> &'static str {
         match self {
             UsageCategory::Keybinding => "keybinding",
@@ -34,6 +36,8 @@ pub enum UsageActor {
 }
 
 impl UsageActor {
+    pub const ALL: &'static [UsageActor] = &[UsageActor::Human, UsageActor::Agent];
+
     pub fn as_str(self) -> &'static str {
         match self {
             UsageActor::Human => "human",

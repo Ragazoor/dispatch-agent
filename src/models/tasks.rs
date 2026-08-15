@@ -30,6 +30,18 @@ impl TaskStatus {
         TaskStatus::Done,
     ];
 
+    /// Every `TaskStatus` variant, including `Archived` — unlike [`Self::ALL`],
+    /// which is deliberately just the four kanban columns. Used where a
+    /// filter genuinely needs to match any status a task can hold (e.g.
+    /// `list_tasks`), not just the columns the board renders.
+    pub const ALL_INCLUDING_ARCHIVED: &'static [TaskStatus] = &[
+        TaskStatus::Backlog,
+        TaskStatus::Running,
+        TaskStatus::Review,
+        TaskStatus::Done,
+        TaskStatus::Archived,
+    ];
+
     pub const COLUMN_COUNT: usize = Self::ALL.len();
 
     /// Advance to the next status (wraps at Done -> Done).
@@ -526,6 +538,16 @@ pub enum TaskTag {
 }
 
 impl TaskTag {
+    pub const ALL: &'static [TaskTag] = &[
+        TaskTag::Bug,
+        TaskTag::Feature,
+        TaskTag::Chore,
+        TaskTag::PrReview,
+        TaskTag::Research,
+        TaskTag::Fix,
+        TaskTag::Dependabot,
+    ];
+
     pub fn short_label(&self) -> &'static str {
         match self {
             TaskTag::Bug => "bug",
@@ -566,6 +588,10 @@ pub enum WrapUpMode {
     Rebase,
     Pr,
     Done,
+}
+
+impl WrapUpMode {
+    pub const ALL: &'static [WrapUpMode] = &[WrapUpMode::Rebase, WrapUpMode::Pr, WrapUpMode::Done];
 }
 
 define_str_enum!(WrapUpMode, "wrap-up mode" {

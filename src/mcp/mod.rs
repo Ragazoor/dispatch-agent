@@ -97,6 +97,9 @@ pub(crate) enum WrapUpAction {
 }
 
 impl WrapUpAction {
+    pub(crate) const ALL: &'static [WrapUpAction] =
+        &[WrapUpAction::Rebase, WrapUpAction::Done, WrapUpAction::Pr];
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             WrapUpAction::Rebase => "rebase",

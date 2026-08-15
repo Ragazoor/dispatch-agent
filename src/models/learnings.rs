@@ -190,6 +190,8 @@ pub enum LearningVerdict {
 }
 
 impl LearningVerdict {
+    pub const ALL: &'static [LearningVerdict] = &[LearningVerdict::Helped, LearningVerdict::Wrong];
+
     pub fn as_str(self) -> &'static str {
         match self {
             LearningVerdict::Helped => "helped",
