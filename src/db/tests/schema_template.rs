@@ -20,12 +20,10 @@ fn schema_objects(conn: &Connection) -> Vec<(String, String, String)> {
              ORDER BY type, name",
         )
         .unwrap();
-    let rows = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
         .unwrap()
         .map(|r| r.unwrap())
-        .collect();
-    rows
+        .collect()
 }
 
 fn user_version(conn: &Connection) -> i64 {

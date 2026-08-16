@@ -954,12 +954,7 @@ impl Database {
         // an in-memory database is always brand new, so the two are equivalent
         // and the clone is ~1700x cheaper. See
         // [`init_schema_from_template_sync`].
-        conn.call(|c| {
-            init_schema_from_template_sync(c)
-                .map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))))
-        })
-        .await
-        .map_err(unwrap_anyhow)?;
+        Self::init_schema_from_template(&conn).await?;
         Ok(Database {
             conn,
             read_pool: Self::empty_read_pool(),
@@ -1050,14 +1045,7 @@ impl Database {
                 "slow db_call"
             );
         }
-        match result {
-            Ok(value) => Ok(value),
-            Err(tokio_rusqlite::Error::Other(other)) => match other.downcast::<AnyhowErr>() {
-                Ok(boxed) => Err(boxed.0),
-                Err(other) => Err(anyhow::anyhow!(other.to_string())),
-            },
-            Err(e) => Err(anyhow::Error::from(e)),
-        }
+        result.map_err(unwrap_anyhow)
     }
 
     /// Run a synchronous closure against the writer connection from an async
@@ -1137,6 +1125,18 @@ impl Database {
     async fn init_schema(conn: &tokio_rusqlite::Connection) -> Result<()> {
         conn.call(|c| {
             init_schema_sync(c).map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))))
+        })
+        .await
+        .map_err(unwrap_anyhow)
+    }
+
+    /// [`init_schema`](Self::init_schema)'s counterpart for a database known to
+    /// be brand new: clones the schema template instead of migrating. See
+    /// [`init_schema_from_template_sync`].
+    async fn init_schema_from_template(conn: &tokio_rusqlite::Connection) -> Result<()> {
+        conn.call(|c| {
+            init_schema_from_template_sync(c)
+                .map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))))
         })
         .await
         .map_err(unwrap_anyhow)
