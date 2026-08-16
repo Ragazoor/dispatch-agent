@@ -3234,6 +3234,128 @@ fn research_agent_prompt_is_correct() {
     );
 }
 
+/// `pipeline_agent` is a *fresh* dispatch, not a resume: a scheduled tick must
+/// start a new conversation, never `claude --continue` into a stale one.
+#[test]
+fn pipeline_agent_launches_a_fresh_claude_not_a_continue() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    let mut task = make_task(&repo_path);
+    task.pinned_branch = Some("staging".to_string());
+
+    pipeline_agent(&task, &mock).unwrap();
+
+    // Indexed lookup would be wrong here: a pinned base skips the
+    // ahead/behind measurement, so send-keys does not sit at a fixed offset.
+    let calls = mock.recorded_calls();
+    let send_keys_arg = calls
+        .iter()
+        .find(|(prog, args)| prog == "tmux" && args.first().is_some_and(|a| a == "send-keys"))
+        .and_then(|(_, args)| args.iter().find(|a| a.contains("claude")))
+        .expect("tmux send-keys launching claude")
+        .clone();
+    assert!(
+        !send_keys_arg.contains("--continue"),
+        "a scheduled tick needs a fresh prompt, not a resumed conversation: {send_keys_arg}"
+    );
+    assert!(
+        send_keys_arg.contains("prompt=$(cat .claude-prompt)"),
+        "pipeline_agent should use the shared fresh-launch shape: {send_keys_arg}"
+    );
+}
+
+/// `pipeline_agent` selects `BaseRef::Pinned`, not `BaseRef::Branch`.
+///
+/// Asserted through the reuse path's observable consequences rather than the
+/// `git worktree add` argv: the fresh-provision branch is unreachable under
+/// `MockProcessRunner`, because pre-creating the directory (needed for the
+/// `.claude-prompt` write to succeed) is exactly what forces the reuse path.
+/// `provision_worktree_with_pinned_branch_checks_out_the_literal_branch`
+/// covers the argv itself.
+#[test]
+fn pipeline_agent_selects_the_pinned_base_ref() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    let mut task = make_task(&repo_path);
+    task.pinned_branch = Some("staging".to_string());
+
+    pipeline_agent(&task, &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    let (_, fetch_args) = calls
+        .iter()
+        .find(|(prog, args)| prog == "git" && args.contains(&"fetch".to_string()))
+        .expect("git fetch call");
+    assert!(
+        fetch_args.contains(&"staging".to_string()),
+        "the pinned branch is what gets fetched, not base_branch: {fetch_args:?}"
+    );
+    // Only `BaseRef::Branch` measures local-vs-origin. Its absence is what
+    // distinguishes Pinned from the ordinary base-branch path.
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.contains(&"rev-list".to_string())),
+        "a pinned base must never be measured against a local ref: {calls:?}"
+    );
+}
+
+/// `pinned_branch` outranks a resolved PR head. The two are never both set in
+/// practice, but pinning is the more specific configuration, so it wins.
+#[test]
+fn pinned_branch_outranks_a_pr_head_branch() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    let mut task = make_task(&repo_path);
+    task.pinned_branch = Some("staging".to_string());
+    task.tag = Some(crate::models::TaskTag::PrReview);
+    task.url = Some(crate::models::TaskUrl::new(
+        "https://github.com/org/repo/pull/7".to_string(),
+        crate::models::UrlType::Pr,
+    ));
+
+    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+
+    let calls = mock.recorded_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|(prog, args)| prog == "gh" && args.contains(&"pr".to_string())),
+        "a pinned task must not resolve a PR head branch at all: {calls:?}"
+    );
+}
+
+/// The pipeline prompt names the branch and the merge-back target, and points
+/// the agent at the verify command rather than restating a suite name.
+#[test]
+fn pipeline_agent_prompt_names_the_branch_and_base() {
+    let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    let mut task = make_task(&repo_path);
+    task.pinned_branch = Some("staging".to_string());
+
+    pipeline_agent(&task, &mock).unwrap();
+
+    let prompt = read_prompt(&worktree_dir);
+    assert_worktree_confinement(&prompt);
+    assert!(
+        prompt.contains("staging"),
+        "pipeline prompt must name the tracked branch: {prompt}"
+    );
+    assert!(
+        prompt.contains(&task.base_branch),
+        "pipeline prompt must name the merge target: {prompt}"
+    );
+    assert!(
+        prompt.contains("Verify command"),
+        "pipeline prompt must point at get_task's verify command line: {prompt}"
+    );
+}
+
 #[test]
 fn quick_dispatch_agent_prompt_includes_worktree_confinement() {
     let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
