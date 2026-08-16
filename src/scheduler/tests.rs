@@ -219,6 +219,52 @@ async fn tick_ignores_unscheduled_tasks() {
     assert!(mock.recorded_calls().is_empty());
 }
 
+/// `last_scheduled_check_at` is stamped on *every* look, not only the ones
+/// that reach a decision. The persisted stamp is the cold-start gate, so a
+/// path that skips it leaves the task reading as overdue after a restart.
+///
+/// Covers the outcomes reachable without faking a DB error: the skip, and a
+/// dispatch that failed to provision.
+#[tokio::test]
+async fn every_outcome_stamps_last_scheduled_check_at() {
+    // Skip: branch unchanged.
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let skipped = seed_scheduled_task(&db, Some("abc123")).await;
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok(),
+        MockProcessRunner::ok_with_stdout(b"abc123\n"),
+    ]));
+    let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock);
+    scheduler.tick().await;
+    scheduler.join_spawned_jobs().await;
+    assert!(
+        db.get_task(skipped)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_scheduled_check_at
+            .is_some(),
+        "the skip path must stamp"
+    );
+
+    // Dispatch that failed to provision (`/repo` does not exist).
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let failed = seed_scheduled_task(&db, None).await;
+    let mock = Arc::new(MockProcessRunner::new(vec![]));
+    let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock);
+    scheduler.tick().await;
+    scheduler.join_spawned_jobs().await;
+    assert!(
+        db.get_task(failed)
+            .await
+            .unwrap()
+            .unwrap()
+            .last_scheduled_check_at
+            .is_some(),
+        "a failed dispatch must stamp too"
+    );
+}
+
 /// A task with a live agent is not idle, so it is not eligible — otherwise
 /// every tick would pile a second agent onto a running one.
 #[tokio::test]

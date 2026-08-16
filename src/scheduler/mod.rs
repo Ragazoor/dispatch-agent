@@ -253,6 +253,12 @@ impl SchedulerRunner {
             }
             Err(err) => {
                 tracing::warn!(task_id = task_id.0, "scheduler: claim failed: {err:#}");
+                // Still a look, so it is still stamped — the spec's
+                // last_scheduled_check_at postcondition is unconditional. The
+                // in-process gate already paced this tick; without the stamp
+                // only a restart would notice, by treating the task as
+                // overdue on the persisted value.
+                Self::stamp_checked(&*db, task_id).await;
                 return;
             }
         }

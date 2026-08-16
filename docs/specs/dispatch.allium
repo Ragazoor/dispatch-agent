@@ -702,6 +702,15 @@ rule DispatchScheduledTask {
         -- "stuck" state, no backoff, and no separate retry rule: it falls out
         -- of only ever recording success.
         --
+        -- NOT YET LIVE: nothing writes last_processed_sha today. The writer is
+        -- RecordPipelineProgress, which fires on BranchMerged and therefore
+        -- depends on wrap_up(action = merge) existing. Until it lands, the
+        -- field stays null for every task, branch_changed is permanently true,
+        -- and a scheduled pinned task redispatches every interval instead of
+        -- skipping — the rule is correct, but its central optimisation is
+        -- inert. The rest of the rule (the claim, the gate, the fresh
+        -- dispatch) is live.
+        --
         -- == Elapsed-time gate ==
         -- The gate is evaluated against last_scheduled_check_at, which is
         -- stamped on every look — dispatch and skip alike — so a skipping
