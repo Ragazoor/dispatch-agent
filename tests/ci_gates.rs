@@ -44,10 +44,13 @@ fn ci_workflow_mirrors_every_pre_push_gate_script() {
     let hook = repo_file(".githooks/pre-push");
     let ci = repo_file(".github/workflows/ci.yml");
 
+    // A floor on the extractor itself: if the scan silently matched nothing,
+    // the loop below would vacuously pass and the parity guard would be dead.
+    // `tests/githooks.rs` is what pins the exact script names.
     let scripts = gate_scripts(&hook);
     assert!(
-        scripts.len() >= 5,
-        "expected the pre-push hook to run at least the five known gate scripts, found {scripts:?}"
+        scripts.len() >= 7,
+        "expected the pre-push hook to run at least the seven known gate scripts, found {scripts:?}"
     );
 
     for script in &scripts {
@@ -62,8 +65,16 @@ fn ci_workflow_mirrors_every_pre_push_gate_script() {
 #[test]
 fn ci_coverage_job_runs_tarpaulin_once() {
     let ci = repo_file(".github/workflows/ci.yml");
+    // Count `run:` steps only. A whole-file scan would also count the flag
+    // named in a YAML comment, so explaining the rule in prose would break it.
     // `cargo install cargo-tarpaulin` has a hyphen, so it does not match.
-    let runs = ci.matches("cargo tarpaulin").count();
+    let runs = ci
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            (t.starts_with("run:") || t.starts_with("- run:")) && t.contains("cargo tarpaulin")
+        })
+        .count();
     assert_eq!(
         runs, 1,
         "expected exactly one `cargo tarpaulin` invocation in CI, found {runs} — \
