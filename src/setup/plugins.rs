@@ -845,6 +845,27 @@ mod tests {
     }
 
     #[test]
+    fn decompose_review_skill_does_not_pass_repo_path_to_create_epic() {
+        // Epics carry no repo_path — create_epic rejects the field outright
+        // ("unknown field `repo_path`"). Step 6's subtasks are where the repo
+        // path belongs, so this assertion is scoped to the Step 5 section:
+        // a whole-document check would trip over Step 6's legitimate uses.
+        let content = skill_body("decompose-review");
+        let step5 = content
+            .split("## Step 5: Create Epic")
+            .nth(1)
+            .expect("decompose-review skill must have a 'Step 5: Create Epic' section")
+            .split("## Step 6")
+            .next()
+            .expect("split always yields at least one element");
+        assert!(
+            !step5.contains("`repo_path`:"),
+            "decompose-review must not tell the agent to pass repo_path to \
+             create_epic — the tool rejects it (found in Step 5: {step5:?})"
+        );
+    }
+
+    #[test]
     fn summarize_skill_does_not_claim_unconditional_finality() {
         // wrap-up invokes summarize mid-flow, in its closing sequence: after
         // retro and before wrap_up/exit_session. An unconditional "this is
