@@ -1705,6 +1705,18 @@ pub(super) fn migrate_v88_add_scheduling_fields(conn: &Connection) -> Result<()>
                 .with_context(|| format!("migration v88: add {column}"))?;
         }
     }
+    // Partial index for `list_scheduled_tasks`, which the scheduler runs every
+    // couple of seconds. Without it the only usable index is `idx_tasks_status`,
+    // and `status IN ('backlog', 'done')` selects the two largest buckets on any
+    // real board — so the scan would grow with accumulated done tasks and
+    // almost always return nothing. Partial on the opt-in column, so it stays
+    // the size of the scheduled-task count (typically zero) and costs nothing
+    // to maintain for every task that never opts in.
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_scheduled ON tasks(status) \
+         WHERE schedule_interval_secs IS NOT NULL",
+    )
+    .context("migration v88: add idx_tasks_scheduled")?;
     Ok(())
 }
 

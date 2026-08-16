@@ -468,6 +468,8 @@ pub(super) fn build_pipeline_prompt(
     title: &str,
     pinned_branch: Option<&str>,
     base_branch: &str,
+    epic: Option<&EpicContext>,
+    ctx: &PromptContext<'_>,
 ) -> String {
     let branch = pinned_branch.unwrap_or("this task's own branch");
     let addendum = format!(
@@ -481,12 +483,12 @@ pub(super) fn build_pipeline_prompt(
          If the branch is already green, say so and close the session without inventing work."
     );
 
-    let block = task_block(task_id, title, "", None);
+    let block = task_block(task_id, title, "", epic);
     render_task_prompt(
         "You are a pipeline agent.",
         IntroSpacing::BlankLine,
         &block,
-        &PromptContext::default(),
+        ctx,
         &addendum,
         mcp_tools_instruction(),
     )

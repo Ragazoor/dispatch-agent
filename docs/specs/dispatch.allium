@@ -679,10 +679,12 @@ rule DispatchScheduledTask {
         -- == The skip is the feature ==
         -- When a pinned branch has not moved, NOTHING is dispatched: no
         -- worktree, no tmux window, no agent, only the
-        -- last_scheduled_check_at stamp. An idle pipeline therefore costs one
-        -- `git fetch` per interval rather than a full run of the repo's
-        -- verify command. That is the whole reason the rule gates on the
-        -- branch tip rather than redispatching on a plain timer.
+        -- last_scheduled_check_at stamp. The tip is read straight off the
+        -- remote rather than fetched first, so an idle pipeline costs one
+        -- network round trip per interval — no object transfer, no local ref
+        -- write — rather than a full run of the repo's verify command. That is
+        -- the whole reason the rule gates on the branch tip rather than
+        -- redispatching on a plain timer.
         --
         -- A branch whose tip cannot be measured (origin unreachable, the ref
         -- missing, the read failing) counts as CHANGED, not unchanged.
@@ -727,6 +729,16 @@ rule DispatchScheduledTask {
         -- ResumeTask's continuation of the previous session's conversation. A
         -- tick is new work on new commits; resuming would hand the agent a
         -- stale conversation about the last run's commits.
+        --
+        -- == One dispatch sequence, not two ==
+        -- Only the gate, the branch probe and the last_scheduled_check_at
+        -- stamp are the scheduler's own. Claim -> provision -> record where
+        -- the agent landed -> release on failure is the same sequence
+        -- DispatchTask performs, and it is performed by the same code: this
+        -- rule differs from DispatchTask only in WHICH rows its claim accepts,
+        -- so a second implementation of the sequence would mean
+        -- DispatchClaimExclusive was asserted in two places and could drift in
+        -- one of them.
 }
 
 rule ResumeTask {

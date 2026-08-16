@@ -3244,7 +3244,7 @@ fn pipeline_agent_launches_a_fresh_claude_not_a_continue() {
     let mut task = make_task(&repo_path);
     task.pinned_branch = Some("staging".to_string());
 
-    pipeline_agent(&task, &mock).unwrap();
+    pipeline_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
 
     // Indexed lookup would be wrong here: a pinned base skips the
     // ahead/behind measurement, so send-keys does not sit at a fixed offset.
@@ -3281,7 +3281,7 @@ fn pipeline_agent_selects_the_pinned_base_ref() {
     let mut task = make_task(&repo_path);
     task.pinned_branch = Some("staging".to_string());
 
-    pipeline_agent(&task, &mock).unwrap();
+    pipeline_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
 
     let calls = mock.recorded_calls();
     let (_, fetch_args) = calls
@@ -3338,7 +3338,7 @@ fn pipeline_agent_prompt_names_the_branch_and_base() {
     let mut task = make_task(&repo_path);
     task.pinned_branch = Some("staging".to_string());
 
-    pipeline_agent(&task, &mock).unwrap();
+    pipeline_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
 
     let prompt = read_prompt(&worktree_dir);
     assert_worktree_confinement(&prompt);

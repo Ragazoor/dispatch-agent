@@ -4091,9 +4091,12 @@ fn migration_v88_adds_scheduling_fields_to_tasks() {
 fn migration_v88_is_idempotent() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
+        // `status` is present because the real table has carried it since long
+        // before v88, and the partial index is built over it.
         "CREATE TABLE tasks (
              id INTEGER PRIMARY KEY,
              title TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog',
              schedule_interval_secs INTEGER,
              pinned_branch TEXT,
              last_processed_sha TEXT,
@@ -4102,5 +4105,8 @@ fn migration_v88_is_idempotent() {
     )
     .unwrap();
 
+    // Twice: both the ALTERs and the index creation must be no-ops the second
+    // time (the index is what the first run leaves behind).
+    crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
     crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
 }

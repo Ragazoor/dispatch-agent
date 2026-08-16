@@ -1009,6 +1009,46 @@ impl TaskService {
         Ok(true)
     }
 
+    /// [`Self::claim_backlog_task`]'s counterpart for `DispatchScheduledTask`
+    /// (`docs/specs/dispatch.allium`), taken by [`crate::scheduler::SchedulerRunner`].
+    ///
+    /// Differs from its twin only in which rows it will accept — scheduled
+    /// dispatch is the one caller that may also start from `done` — and it
+    /// deliberately does not widen the shared claim to get there. Everything
+    /// after the conditional write is identical, and that is the point of
+    /// routing through here rather than calling the DB directly: a *recurring*
+    /// task is the one most likely to carry stale subagent/shell counters from
+    /// its previous run, so the no-drain structural clear matters more here
+    /// than anywhere else.
+    pub async fn claim_scheduled_task(&self, task_id: TaskId) -> Result<bool, ServiceError> {
+        if !self
+            .db
+            .try_claim_scheduled_task(task_id, self.clock.now())
+            .await?
+        {
+            return Ok(false);
+        }
+        self.clear_structural_no_drain(task_id).await?;
+        self.recalculate_epic_for_task(task_id).await;
+        Ok(true)
+    }
+
+    /// Record that the scheduler looked at this task, dispatch or skip alike.
+    ///
+    /// The one scheduler write with no dispatch-seam equivalent: it is pacing
+    /// bookkeeping rather than part of the claim/provision sequence, so it sits
+    /// around [`Self::dispatch`] rather than inside it. Carries no epic
+    /// recalculation — the stamp cannot change a task's status.
+    pub async fn stamp_scheduled_check(&self, task_id: TaskId) -> Result<(), ServiceError> {
+        self.db
+            .patch_task(
+                task_id,
+                &TaskPatch::new().last_scheduled_check_at(Some(self.clock.now())),
+            )
+            .await
+            .map_err(ServiceError::from)
+    }
+
     /// Undo a claim on a subtask that was never provisioned, returning it to
     /// `Backlog` with the claim's activity stamp cleared.
     ///

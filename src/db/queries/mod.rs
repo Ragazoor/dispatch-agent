@@ -118,6 +118,23 @@ pub(super) const TASK_COLUMNS: &str =
      live_shells, oldest_live_shell_started_at, \
      schedule_interval_secs, pinned_branch, last_processed_sha, last_scheduled_check_at";
 
+/// The `SET` list every pre-provisioning claim applies — the one definition of
+/// what "a claim writes". Shared by all three claim statements
+/// (`try_claim_next_backlog_task`, `try_claim_backlog_task`,
+/// `try_claim_scheduled_task`), which differ only in their `WHERE`.
+///
+/// Binds `?1` = status, `?2` = sub_status, `?3` = the seeded
+/// `last_pre_tool_use_at`; the caller supplies `?4` onward in its own `WHERE`.
+/// That split is deliberate and matches [`STOP_FLIP_SET`] below: what a claim
+/// *writes* is one decision, and which rows it will accept is a different one
+/// per caller — widening a `WHERE` must never silently widen the others.
+///
+/// The three used to carry hand-copied copies of this string, kept in step by
+/// comments alone; the third copy arriving with scheduled dispatch is what
+/// made that worth fixing.
+pub(super) const CLAIM_SET: &str = "SET status = ?1, sub_status = ?2, \
+     last_pre_tool_use_at = ?3, updated_at = datetime('now')";
+
 /// The `SET` list that applies a `Stop` — the one definition of what "the task
 /// finished its turn" writes. Shared by the two statements that can apply it:
 /// the immediate flip in `try_record_stop` and the drain in

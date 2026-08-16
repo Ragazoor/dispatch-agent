@@ -25,6 +25,41 @@ pub fn detect_default_branch(repo_path: &str, runner: &dyn ProcessRunner) -> Str
     "main".to_string()
 }
 
+/// The SHA `origin/<branch>` currently points at, asked of the remote directly.
+///
+/// `git ls-remote` rather than a fetch-then-`rev-parse` pair: the caller
+/// ([`crate::scheduler::SchedulerRunner`]) wants only the tip, and this answers
+/// in one subprocess with one network round trip, transferring no objects and
+/// writing nothing to the local repo. That matters because it runs on the
+/// scheduler's idle path — the case the whole skip-if-unchanged design exists
+/// to make cheap.
+///
+/// `None` on any failure: unreachable origin, no such branch, unparseable
+/// output. Callers must read that as "could not measure", never as "unchanged"
+/// — see `DispatchScheduledTask`'s guidance in `docs/specs/dispatch.allium`.
+pub fn remote_branch_sha(
+    repo_path: &str,
+    branch: &str,
+    runner: &dyn ProcessRunner,
+) -> Option<String> {
+    let repo_path = crate::models::expand_tilde(repo_path);
+    let output = runner
+        .run_with_timeout(
+            "git",
+            &["-C", &repo_path, "ls-remote", "origin", branch],
+            SUBPROCESS_TIMEOUT,
+        )
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    // "<sha>\trefs/heads/<branch>" — first field of the first line. An empty
+    // stdout (no matching ref) yields None via the `next()`.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let sha = stdout.lines().next()?.split_whitespace().next()?;
+    (!sha.is_empty()).then(|| sha.to_string())
+}
+
 /// Whether the repo has an `origin` remote configured.
 ///
 /// Three outcomes, not two: `Ok(true)` and `Ok(false)` are the probe's own

@@ -501,20 +501,26 @@ impl TuiRuntime {
 
         // Build TuiRuntime.
         let (msg_tx, msg_rx) = mpsc::unbounded_channel::<Message>();
-        let scheduler_runner = crate::scheduler::SchedulerRunner::new(
-            database.clone(),
-            feed_notify_tx.clone(),
-            runner.clone(),
-        );
         let feed_runner =
-            crate::feed::FeedRunner::new(database.clone(), feed_notify_tx, runner.clone());
+            crate::feed::FeedRunner::new(database.clone(), feed_notify_tx.clone(), runner.clone());
         let feed_invalidate_tx = Some(feed_runner.epic_invalidate_tx());
         let feed_sync_guard = feed_runner.sync_guard();
+        let task_svc = Arc::new(crate::service::TaskService::new(
+            database.clone(),
+            runner.clone(),
+        ));
+        // Shares the runtime's own `task_svc`, deliberately: scheduled dispatch
+        // goes through the same seam as every other entry point, so it must
+        // also go through the same claim.
+        let scheduler_runner = crate::scheduler::SchedulerRunner::new(
+            database.clone(),
+            Arc::clone(&task_svc),
+            emb_svc.clone(),
+            feed_notify_tx,
+            runner.clone(),
+        );
         let runtime = TuiRuntime {
-            task_svc: Arc::new(crate::service::TaskService::new(
-                database.clone(),
-                runner.clone(),
-            )),
+            task_svc,
             epic_svc: Arc::new(crate::service::EpicService::new(database.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(database.clone())),
             learning_svc: Arc::new(crate::service::LearningService::new(

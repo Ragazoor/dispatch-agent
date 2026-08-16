@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use super::*;
-use crate::db::{CreateTaskRequest, Database, TaskCrud, TaskRead};
-use crate::models::TaskStatus;
+use crate::db::{CreateTaskRequest, Database, TaskCrud, TaskPatch};
+use crate::models::{TaskId, TaskStatus};
 use crate::process::MockProcessRunner;
 
 /// A scheduled, pinned task sitting idle in `done` — the steady state of a
@@ -41,11 +41,14 @@ fn make_runner(
     mock: Arc<dyn ProcessRunner>,
 ) -> (SchedulerRunner, mpsc::UnboundedReceiver<McpEvent>) {
     let (tx, rx) = mpsc::unbounded_channel();
-    (SchedulerRunner::new(db, tx, mock), rx)
+    let store: Arc<dyn crate::db::TaskStore> = Arc::clone(&db) as Arc<dyn crate::db::TaskStore>;
+    let task_svc = Arc::new(TaskService::new(store, Arc::clone(&mock)));
+    let emb_svc = EmbeddingService::new_noop();
+    (SchedulerRunner::new(db, task_svc, emb_svc, tx, mock), rx)
 }
 
 /// The whole point of the feature: when `origin/<pinned_branch>` still points at
-/// `last_processed_sha`, the tick costs one fetch and one rev-parse — no
+/// `last_processed_sha`, the tick costs one `ls-remote` — no fetch, no
 /// worktree, no tmux window, no agent.
 #[tokio::test]
 async fn tick_skips_dispatch_when_pinned_branch_unchanged() {
@@ -53,8 +56,8 @@ async fn tick_skips_dispatch_when_pinned_branch_unchanged() {
     let task_id = seed_scheduled_task(&db, Some("abc123")).await;
 
     let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),                        // git fetch origin staging
-        MockProcessRunner::ok_with_stdout(b"abc123\n"), // git rev-parse origin/staging
+        // git ls-remote origin staging
+        MockProcessRunner::ok_with_stdout(b"abc123\trefs/heads/staging\n"),
     ]));
     let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock.clone());
 
@@ -64,8 +67,14 @@ async fn tick_skips_dispatch_when_pinned_branch_unchanged() {
     let calls = mock.recorded_calls();
     assert_eq!(
         calls.len(),
-        2,
-        "an unchanged branch costs exactly the fetch and the rev-parse: {calls:?}"
+        1,
+        "an unchanged branch costs exactly one ls-remote: {calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.contains(&"fetch".to_string())),
+        "the idle path must not fetch objects: {calls:?}"
     );
     assert!(
         !calls
@@ -94,8 +103,8 @@ async fn tick_dispatches_when_pinned_branch_changed() {
     let task_id = seed_scheduled_task(&db, Some("abc123")).await;
 
     let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // git fetch origin staging (probe)
-        MockProcessRunner::ok_with_stdout(b"def456\n"), // rev-parse — moved
+        // git ls-remote origin staging — moved
+        MockProcessRunner::ok_with_stdout(b"def456\trefs/heads/staging\n"),
     ]));
     let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock.clone());
 
@@ -106,7 +115,7 @@ async fn tick_dispatches_when_pinned_branch_changed() {
     assert!(
         calls
             .iter()
-            .any(|(_, args)| args.contains(&"rev-parse".to_string())),
+            .any(|(_, args)| args.contains(&"ls-remote".to_string())),
         "the branch must actually be probed: {calls:?}"
     );
 
@@ -130,14 +139,10 @@ async fn tick_dispatches_when_never_processed() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let task_id = seed_scheduled_task(&db, None).await;
 
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),
-        MockProcessRunner::ok(),
-        MockProcessRunner::ok(),
-        MockProcessRunner::ok(),
-        MockProcessRunner::ok(),
-        MockProcessRunner::ok(),
-    ]));
+    // Empty queue: `/repo` does not exist, so `pipeline_agent` bails before
+    // running any subprocess. Padding the queue would imply an expectation
+    // this test does not have.
+    let mock = Arc::new(MockProcessRunner::new(vec![]));
     let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock.clone());
 
     scheduler.tick().await;
@@ -147,7 +152,7 @@ async fn tick_dispatches_when_never_processed() {
     assert!(
         !calls
             .iter()
-            .any(|(_, args)| args.contains(&"rev-parse".to_string())),
+            .any(|(_, args)| args.contains(&"ls-remote".to_string())),
         "with no last_processed_sha there is nothing to compare, so no probe: {calls:?}"
     );
     let task = db.get_task(task_id).await.unwrap().unwrap();
@@ -219,49 +224,72 @@ async fn tick_ignores_unscheduled_tasks() {
     assert!(mock.recorded_calls().is_empty());
 }
 
-/// `last_scheduled_check_at` is stamped on *every* look, not only the ones
-/// that reach a decision. The persisted stamp is the cold-start gate, so a
-/// path that skips it leaves the task reading as overdue after a restart.
+/// The stamp is written by `tick` itself, before any per-task work is spawned
+/// — not by the outcome. That ordering is what stops two ticks two seconds
+/// apart from both probing the same branch, and it is why no outcome arm has
+/// to remember to stamp.
 ///
-/// Covers the outcomes reachable without faking a DB error: the skip, and a
-/// dispatch that failed to provision.
+/// Asserted between `tick` and `join_spawned_jobs`, so the spawned job
+/// provably has not run yet.
 #[tokio::test]
-async fn every_outcome_stamps_last_scheduled_check_at() {
-    // Skip: branch unchanged.
+async fn tick_stamps_before_spawning_the_work() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let skipped = seed_scheduled_task(&db, Some("abc123")).await;
+    let task_id = seed_scheduled_task(&db, Some("abc123")).await;
     let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(),
-        MockProcessRunner::ok_with_stdout(b"abc123\n"),
+        MockProcessRunner::ok_with_stdout(b"abc123\trefs/heads/staging\n"),
     ]));
-    let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock);
+    let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock.clone());
+
     scheduler.tick().await;
-    scheduler.join_spawned_jobs().await;
+
     assert!(
-        db.get_task(skipped)
+        mock.recorded_calls().is_empty(),
+        "the probe belongs to the spawned job, which has not been awaited yet"
+    );
+    assert!(
+        db.get_task(task_id)
             .await
             .unwrap()
             .unwrap()
             .last_scheduled_check_at
             .is_some(),
-        "the skip path must stamp"
+        "tick must stamp before spawning, so the next tick is gated"
     );
 
-    // Dispatch that failed to provision (`/repo` does not exist).
+    scheduler.join_spawned_jobs().await;
+}
+
+/// A second tick arriving before the first has finished must not look again:
+/// the stamp `tick` already wrote is what gates it.
+#[tokio::test]
+async fn a_second_tick_does_not_reprobe_a_task_it_just_stamped() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let failed = seed_scheduled_task(&db, None).await;
-    let mock = Arc::new(MockProcessRunner::new(vec![]));
-    let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock);
+    let task_id = seed_scheduled_task(&db, Some("abc123")).await;
+    // A long interval, so the stamp the first tick writes gates the second.
+    db.patch_task(
+        task_id,
+        &TaskPatch::new().schedule_interval_secs(Some(3600)),
+    )
+    .await
+    .unwrap();
+
+    let mock = Arc::new(MockProcessRunner::new(vec![
+        MockProcessRunner::ok_with_stdout(b"abc123\trefs/heads/staging\n"),
+    ]));
+    let (mut scheduler, _rx) = make_runner(Arc::clone(&db), mock.clone());
+
     scheduler.tick().await;
     scheduler.join_spawned_jobs().await;
-    assert!(
-        db.get_task(failed)
-            .await
-            .unwrap()
-            .unwrap()
-            .last_scheduled_check_at
-            .is_some(),
-        "a failed dispatch must stamp too"
+    let after_first = mock.recorded_calls().len();
+
+    scheduler.tick().await;
+    scheduler.join_spawned_jobs().await;
+
+    assert_eq!(
+        mock.recorded_calls().len(),
+        after_first,
+        "the second tick is not due and must run nothing: {:?}",
+        mock.recorded_calls()
     );
 }
 

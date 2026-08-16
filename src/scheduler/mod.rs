@@ -8,26 +8,34 @@
 //! The point of the whole thing is the *skip*. A pinned-branch task compares
 //! `origin/<pinned_branch>`'s tip against `last_processed_sha` and, when they
 //! match, does nothing but stamp `last_scheduled_check_at`. An idle pipeline
-//! therefore costs one `git fetch` per interval — no worktree, no tmux window,
-//! no agent.
+//! therefore costs one `git ls-remote` per interval — no fetch, no worktree, no
+//! tmux window, no agent.
 //!
 //! Retry falls out of that for free, because `last_processed_sha` is written
 //! only on a *successful* promotion (subtask #4205's `wrap_up(action="merge")`,
 //! not yet landed). A tick whose agent got stuck leaves the SHA stale, so the
 //! next tick still sees the branch as unprocessed and runs again. There is no
 //! backoff state to keep.
+//!
+//! What this module deliberately does *not* own is the dispatch sequence
+//! itself. Claim → provision → record where the agent landed → release on
+//! failure lives once, in [`crate::service::TaskService::dispatch`]; the
+//! scheduler reaches it through [`DispatchClaim::TakeScheduled`] rather than
+//! re-deriving it. Only the gate, the branch probe, and the
+//! `last_scheduled_check_at` stamp are this module's own.
 
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use chrono::Utc;
 use tokio::sync::mpsc;
 
-use crate::db::{TaskPatch, TaskStore};
+use crate::db::TaskRead;
 use crate::mcp::McpEvent;
-use crate::models::{Task, TaskId};
-use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
+use crate::models::{DispatchMode, Task};
+use crate::process::ProcessRunner;
+use crate::service::embeddings::EmbeddingService;
+use crate::service::{DispatchClaim, DispatchRequest, TaskService};
 
 /// Poll interval for the background scheduler task.
 ///
@@ -38,74 +46,15 @@ use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 /// to 600s is examined every couple of seconds and acted on every ten minutes.
 const SCHEDULER_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-/// `origin/<branch>`'s tip, with a fetch first so the answer is current.
-///
-/// Both subprocesses are bounded, like every other git call on a poll path: a
-/// hung fetch would otherwise pin a tokio task forever. Returns `None` on any
-/// failure — unreachable origin, missing branch, unparseable output — and a
-/// `None` deliberately reads as "cannot prove nothing changed", so the caller
-/// dispatches rather than skipping. Skipping on a failed measurement is the one
-/// outcome that would silently stall a pipeline.
-fn fetch_and_resolve_sha(
-    repo_path: &str,
-    branch: &str,
-    runner: &dyn ProcessRunner,
-) -> Option<String> {
-    let repo_path = crate::models::expand_tilde(repo_path);
-    let fetch = runner
-        .run_with_timeout(
-            "git",
-            &["-C", &repo_path, "fetch", "origin", branch],
-            SUBPROCESS_TIMEOUT,
-        )
-        .ok()?;
-    if !fetch.status.success() {
-        tracing::warn!(
-            repo_path,
-            branch,
-            "scheduler: could not fetch origin; treating the branch as changed"
-        );
-        return None;
-    }
-
-    let remote_ref = format!("origin/{branch}");
-    let output = runner
-        .run_with_timeout(
-            "git",
-            &["-C", &repo_path, "rev-parse", &remote_ref],
-            SUBPROCESS_TIMEOUT,
-        )
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if sha.is_empty() {
-        return None;
-    }
-    Some(sha)
-}
-
 /// Background poll loop for scheduled tasks.
-///
-/// Holds a write-capable [`TaskStore`], which makes it a sanctioned
-/// direct-mutation consumer alongside `FeedRunner` — see "Sanctioned
-/// direct-mutation consumers" in `docs/conventions.md`. It owns its own
-/// invariant (a scheduled task is claimed before it is provisioned and released
-/// if provisioning fails) and has no service handle to route through.
 pub struct SchedulerRunner {
-    db: Arc<dyn TaskStore>,
+    /// Read handle for the eligibility query. Every *write* goes through
+    /// `task_svc`, so this stays the narrow read surface.
+    db: Arc<dyn TaskRead>,
+    task_svc: Arc<TaskService>,
+    emb_svc: Arc<EmbeddingService>,
     notify: mpsc::UnboundedSender<McpEvent>,
     runner: Arc<dyn ProcessRunner>,
-    /// When each task was last *looked at* by this process.
-    ///
-    /// Inserted before the per-task work is spawned, which is what keeps two
-    /// ticks two seconds apart from both dispatching: the DB stamp is written
-    /// inside the spawned task, far too late to gate the next tick. The
-    /// persisted `last_scheduled_check_at` is the cold-start fallback (see
-    /// [`Self::is_due`]) so a restart does not redispatch every scheduled task
-    /// at once.
-    last_check: HashMap<TaskId, Instant>,
     /// Test-only join handles for the jobs spawned by `tick`, mirroring
     /// `FeedRunner::spawned`. Production fires and forgets; tests need a
     /// deterministic completion signal because sleeping is banned by
@@ -116,21 +65,24 @@ pub struct SchedulerRunner {
 
 impl SchedulerRunner {
     pub fn new(
-        db: Arc<dyn TaskStore>,
+        db: Arc<dyn TaskRead>,
+        task_svc: Arc<TaskService>,
+        emb_svc: Arc<EmbeddingService>,
         notify: mpsc::UnboundedSender<McpEvent>,
         runner: Arc<dyn ProcessRunner>,
     ) -> Self {
         Self {
             db,
+            task_svc,
+            emb_svc,
             notify,
             runner,
-            last_check: HashMap::new(),
             #[cfg(test)]
             spawned: Vec::new(),
         }
     }
 
-    /// Spawns as an independent background task so a slow git fetch or a live
+    /// Spawns as an independent background task so a slow git probe or a live
     /// dispatch can't freeze the UI.
     pub fn start(self) {
         tokio::spawn(async move {
@@ -152,25 +104,6 @@ impl SchedulerRunner {
         }
     }
 
-    /// Whether `task` is due, given its interval.
-    ///
-    /// Prefers this process's own observation; falls back to the persisted
-    /// stamp on the first look after a restart. A stamp in the future (clock
-    /// skew) reads as not-due rather than as overdue — waiting is recoverable,
-    /// a redispatch storm is not.
-    fn is_due(&self, task: &Task, interval: Duration) -> bool {
-        match self.last_check.get(&task.id) {
-            Some(seen) => seen.elapsed() >= interval,
-            None => match task.last_scheduled_check_at {
-                Some(at) => (Utc::now() - at)
-                    .to_std()
-                    .is_ok_and(|elapsed| elapsed >= interval),
-                // Never checked: due immediately.
-                None => true,
-            },
-        }
-    }
-
     pub async fn tick(&mut self) {
         let tasks = match self.db.list_scheduled_tasks().await {
             Ok(t) => t,
@@ -180,148 +113,126 @@ impl SchedulerRunner {
             }
         };
 
-        // Forget tasks that are no longer schedulable, so the map cannot grow
-        // without bound across a long-running session. A task that becomes
-        // eligible again is simply due on its next appearance.
-        let eligible: std::collections::HashSet<TaskId> = tasks.iter().map(|t| t.id).collect();
-        self.last_check.retain(|id, _| eligible.contains(id));
-
         for task in tasks {
             // `list_scheduled_tasks` already filtered on NOT NULL, so this is
             // just the unwrap. A non-positive interval means "every tick".
             let Some(secs) = task.schedule_interval_secs else {
                 continue;
             };
-            let interval = Duration::from_secs(secs.max(0) as u64);
-
-            if !self.is_due(&task, interval) {
+            if !is_due(&task, Duration::from_secs(secs.max(0) as u64)) {
                 continue;
             }
-            self.last_check.insert(task.id, Instant::now());
 
-            let db = Arc::clone(&self.db);
+            // Stamped here, before the work is spawned, which is what stops two
+            // ticks two seconds apart from both probing the same task: the
+            // persisted stamp is the only gate, so it has to be written while
+            // the loop still owns the decision. (The claim inside `dispatch` is
+            // what makes a double *dispatch* impossible regardless; this just
+            // avoids the wasted probe.) Awaited in the loop deliberately — it
+            // only runs for a task that is actually due, which is rare by
+            // construction.
+            if let Err(err) = self.task_svc.stamp_scheduled_check(task.id).await {
+                tracing::warn!(
+                    task_id = task.id.0,
+                    "scheduler: failed to stamp last_scheduled_check_at: {err:#}"
+                );
+                // Skip rather than press on: without the stamp the next tick
+                // would look again immediately, so dispatching here risks a
+                // tight redispatch loop against a database that is already
+                // failing.
+                continue;
+            }
+
+            let task_svc = Arc::clone(&self.task_svc);
+            let emb_svc = Arc::clone(&self.emb_svc);
             let runner = Arc::clone(&self.runner);
             let notify = self.notify.clone();
-            // Spawned, so neither the fetch nor the dispatch blocks the loop.
             let _handle = tokio::spawn(async move {
-                Self::check_and_dispatch(db, runner, notify, task).await;
+                Self::check_and_dispatch(task_svc, emb_svc, runner, notify, task).await;
             });
             #[cfg(test)]
             self.spawned.push(_handle);
         }
     }
 
-    /// One scheduled task's turn: measure, then either skip or dispatch.
+    /// One scheduled task's turn: probe the pinned branch, then either skip or
+    /// hand the task to the dispatch seam.
     async fn check_and_dispatch(
-        db: Arc<dyn TaskStore>,
+        task_svc: Arc<TaskService>,
+        emb_svc: Arc<EmbeddingService>,
         runner: Arc<dyn ProcessRunner>,
         notify: mpsc::UnboundedSender<McpEvent>,
         task: Task,
     ) {
         let task_id = task.id;
 
-        if let (Some(pinned), Some(last)) =
-            (task.pinned_branch.clone(), task.last_processed_sha.clone())
-        {
+        if let (Some(pinned), Some(last)) = (
+            task.pinned_branch.as_deref(),
+            task.last_processed_sha.as_deref(),
+        ) {
             let repo_path = task.repo_path.clone();
+            let pinned = pinned.to_string();
             let probe_runner = Arc::clone(&runner);
             let current = tokio::task::spawn_blocking(move || {
-                fetch_and_resolve_sha(&repo_path, &pinned, &*probe_runner)
+                crate::git::remote_branch_sha(&repo_path, &pinned, &*probe_runner)
             })
             .await
             .unwrap_or(None);
 
-            if current.as_deref() == Some(last.as_str()) {
+            if current.as_deref() == Some(last) {
                 tracing::debug!(
                     task_id = task_id.0,
                     "scheduler: pinned branch unchanged; skipping dispatch"
                 );
-                Self::stamp_checked(&*db, task_id).await;
                 return;
             }
         }
         // No pinned branch (a plain cron-like task), never processed, or the
         // branch moved — all three dispatch.
 
-        match db.try_claim_scheduled_task(task_id, Utc::now()).await {
-            Ok(true) => {}
-            Ok(false) => {
-                // Someone else took it, or it stopped being idle between the
-                // listing and now. Nothing was written, so nothing is owed.
-                Self::stamp_checked(&*db, task_id).await;
-                return;
-            }
-            Err(err) => {
-                tracing::warn!(task_id = task_id.0, "scheduler: claim failed: {err:#}");
-                // Still a look, so it is still stamped — the spec's
-                // last_scheduled_check_at postcondition is unconditional. The
-                // in-process gate already paced this tick; without the stamp
-                // only a restart would notice, by treating the task as
-                // overdue on the persisted value.
-                Self::stamp_checked(&*db, task_id).await;
-                return;
-            }
-        }
+        let outcome = task_svc
+            .dispatch(DispatchRequest {
+                task,
+                mode: DispatchMode::Pipeline,
+                emb_svc,
+                epic_ctx: None,
+                claim: DispatchClaim::TakeScheduled,
+            })
+            .await;
 
-        let dispatch_runner = Arc::clone(&runner);
-        let launched = tokio::task::spawn_blocking(move || {
-            crate::dispatch::pipeline_agent(&task, &*dispatch_runner)
-        })
-        .await;
-
-        match launched {
-            Ok(Ok(result)) => {
-                // Record where the agent landed. Without this the next tick
-                // would see `tmux_window IS NULL` and dispatch a second agent
-                // into the same worktree.
-                let patch = TaskPatch::new()
-                    .worktree(Some(result.worktree_path.as_str()))
-                    .tmux_window(Some(result.tmux_window.as_str()))
-                    .last_scheduled_check_at(Some(Utc::now()));
-                if let Err(err) = db.patch_task(task_id, &patch).await {
-                    tracing::warn!(
-                        task_id = task_id.0,
-                        "scheduler: failed to record worktree/tmux_window: {err:#}"
-                    );
-                }
+        match outcome {
+            crate::service::DispatchOutcome::Launched(_) => {
                 tracing::info!(task_id = task_id.0, "scheduler: dispatched");
+                let _ = notify.send(McpEvent::TaskChanged(task_id));
             }
-            Ok(Err(err)) => {
-                tracing::warn!(task_id = task_id.0, "scheduler: dispatch failed: {err:#}");
-                Self::release_claim(&*db, task_id).await;
-                Self::stamp_checked(&*db, task_id).await;
+            // The task stopped being idle between the listing and the claim.
+            // Nothing was written and nothing is owed.
+            crate::service::DispatchOutcome::ClaimLost => {}
+            crate::service::DispatchOutcome::ClaimFailed(err) => {
+                tracing::warn!(task_id = task_id.0, "scheduler: claim failed: {err}");
             }
-            Err(err) => {
-                tracing::warn!(
-                    task_id = task_id.0,
-                    "scheduler: dispatch worker died: {err}"
-                );
-                Self::release_claim(&*db, task_id).await;
-                Self::stamp_checked(&*db, task_id).await;
+            // `dispatch` has already released the claim.
+            crate::service::DispatchOutcome::Failed(reason) => {
+                tracing::warn!(task_id = task_id.0, "scheduler: dispatch failed: {reason}");
+                let _ = notify.send(McpEvent::TaskChanged(task_id));
             }
-        }
-
-        let _ = notify.send(McpEvent::TaskChanged(task_id));
-    }
-
-    async fn stamp_checked(db: &dyn TaskStore, task_id: TaskId) {
-        let patch = TaskPatch::new().last_scheduled_check_at(Some(Utc::now()));
-        if let Err(err) = db.patch_task(task_id, &patch).await {
-            tracing::warn!(
-                task_id = task_id.0,
-                "scheduler: failed to stamp last_scheduled_check_at: {err:#}"
-            );
         }
     }
+}
 
-    async fn release_claim(db: &dyn TaskStore, task_id: TaskId) {
-        match db.try_release_backlog_claim(task_id).await {
-            Ok(true) | Ok(false) => {}
-            Err(err) => tracing::warn!(
-                task_id = task_id.0,
-                "scheduler: failed to release claim: {err:#}"
-            ),
-        }
+/// Whether `task` is due, given its interval.
+///
+/// Reads the persisted stamp only — `tick` writes it before spawning any work,
+/// so it paces this process as well as surviving a restart. A stamp in the
+/// future (clock skew) reads as not-yet-due rather than overdue: waiting is
+/// recoverable, a redispatch storm is not.
+fn is_due(task: &Task, interval: Duration) -> bool {
+    match task.last_scheduled_check_at {
+        Some(at) => (Utc::now() - at)
+            .to_std()
+            .is_ok_and(|elapsed| elapsed >= interval),
+        // Never checked: due immediately.
+        None => true,
     }
 }
 

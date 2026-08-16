@@ -32,6 +32,14 @@ use super::crud::TaskService;
 pub enum DispatchClaim {
     /// Take the pre-provisioning claim as the first step of this call.
     Take,
+    /// Take the *scheduled* claim ([`TaskService::claim_scheduled_task`])
+    /// instead of the backlog one. Its own arm rather than a flag on `Take`
+    /// because it accepts a different set of rows — `done` as well as
+    /// `backlog` — and `DispatchTask`'s backlog-only precondition must not be
+    /// widened to reach it (`docs/specs/dispatch.allium`). Carries the same
+    /// obligation as `Take`: this call owns the claim and owes the release if
+    /// provisioning fails. Used only by [`crate::scheduler::SchedulerRunner`].
+    TakeScheduled,
     /// The caller already holds the claim for this task.
     Held,
 }
@@ -109,8 +117,13 @@ impl TaskService {
         } = req;
         let task_id = task.id;
 
-        if claim == DispatchClaim::Take {
-            match self.claim_backlog_task(task_id).await {
+        let taken = match claim {
+            DispatchClaim::Take => Some(self.claim_backlog_task(task_id).await),
+            DispatchClaim::TakeScheduled => Some(self.claim_scheduled_task(task_id).await),
+            DispatchClaim::Held => None,
+        };
+        if let Some(result) = taken {
+            match result {
                 Ok(true) => {}
                 Ok(false) => return DispatchOutcome::ClaimLost,
                 Err(e) => return DispatchOutcome::ClaimFailed(e),

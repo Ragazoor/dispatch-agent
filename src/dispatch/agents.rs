@@ -443,15 +443,33 @@ pub fn quick_dispatch_agent(
 ///
 /// The pinned branch, when set, reaches `provision_worktree` through
 /// `dispatch_with_prompt`'s base-ref match, so no argument is threaded here.
-pub fn pipeline_agent(task: &Task, runner: &dyn ProcessRunner) -> Result<DispatchResult> {
+///
+/// Takes `injections` for the same reason `dispatch_agent` does: reached
+/// through `run_agent_for_mode`, the dispatch prologue has already run the
+/// retrieval and *recorded* it, so dropping the result here would both waste
+/// the inference and tell the knowledge base a learning was surfaced to an
+/// agent that never saw it. A pipeline agent fixing a broken branch wants the
+/// repo's pitfalls as much as any other.
+pub fn pipeline_agent(
+    task: &Task,
+    runner: &dyn ProcessRunner,
+    epic: Option<&EpicContext>,
+    injections: &LearningInjections<'_>,
+) -> Result<DispatchResult> {
     dispatch_with_prompt(
         task,
         || {
+            let ctx = PromptContext {
+                learnings: injections.clone(),
+                ..PromptContext::default()
+            };
             build_pipeline_prompt(
                 task.id,
                 &task.title,
                 task.pinned_branch.as_deref(),
                 &task.base_branch,
+                epic,
+                &ctx,
             )
         },
         runner,
@@ -479,6 +497,9 @@ pub fn run_agent_for_mode(
             dispatch_agent(task, runner, epic_ctx.as_ref(), &injections)
         }
         crate::models::DispatchMode::Research => research_agent(task, runner, epic_ctx.as_ref()),
+        crate::models::DispatchMode::Pipeline => {
+            pipeline_agent(task, runner, epic_ctx.as_ref(), &injections)
+        }
     }
 }
 

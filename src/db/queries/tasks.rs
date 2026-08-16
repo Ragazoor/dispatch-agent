@@ -785,18 +785,19 @@ impl super::super::TaskCrud for Database {
         let now = super::format_datetime(now);
         self.db_call(move |conn| {
             let running = TaskStatus::Running;
+            let claim_set = super::CLAIM_SET;
             // The subquery carries the whole selection rule, so the row this
             // updates is chosen and claimed in the same statement.
             let claimed = conn
                 .query_row(
-                    "UPDATE tasks \
-                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
-                         updated_at = datetime('now') \
-                     WHERE id = (SELECT id FROM tasks \
-                                  WHERE epic_id = ?4 AND status = ?5 \
-                                  ORDER BY COALESCE(sort_order, id), id \
-                                  LIMIT 1) \
-                     RETURNING id",
+                    &format!(
+                        "UPDATE tasks {claim_set} \
+                         WHERE id = (SELECT id FROM tasks \
+                                      WHERE epic_id = ?4 AND status = ?5 \
+                                      ORDER BY COALESCE(sort_order, id), id \
+                                      LIMIT 1) \
+                         RETURNING id"
+                    ),
                     params![
                         running.as_str(),
                         SubStatus::default_for(running).as_str(),
@@ -821,16 +822,13 @@ impl super::super::TaskCrud for Database {
         let now = super::format_datetime(now);
         self.db_call(move |conn| {
             let running = TaskStatus::Running;
-            // Same SET list as `try_claim_next_backlog_task` above — deliberately,
-            // so "what a claim writes" has one definition — with the ordering
-            // subquery replaced by the caller's id. One statement, so the claim
-            // either applies whole or not at all.
+            let claim_set = super::CLAIM_SET;
+            // `CLAIM_SET`, with the ordering subquery replaced by the caller's
+            // id. One statement, so the claim either applies whole or not at
+            // all.
             let rows = conn
                 .execute(
-                    "UPDATE tasks \
-                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
-                         updated_at = datetime('now') \
-                     WHERE id = ?4 AND status = ?5",
+                    &format!("UPDATE tasks {claim_set} WHERE id = ?4 AND status = ?5"),
                     params![
                         running.as_str(),
                         SubStatus::default_for(running).as_str(),
@@ -853,19 +851,20 @@ impl super::super::TaskCrud for Database {
         let now = super::format_datetime(now);
         self.db_call(move |conn| {
             let running = TaskStatus::Running;
-            // Same SET list as `try_claim_backlog_task`; only the WHERE differs.
-            // Every precondition of `DispatchScheduledTask` that a concurrent
-            // writer could invalidate is in this one statement, so the claim is
-            // the serialisation point — a second tick arriving mid-provision
-            // finds `status = running` and loses.
+            let claim_set = super::CLAIM_SET;
+            // `CLAIM_SET` again; only the WHERE differs. Every precondition of
+            // `DispatchScheduledTask` that a concurrent writer could
+            // invalidate is in this one statement, so the claim is the
+            // serialisation point — a second tick arriving mid-provision finds
+            // `status = running` and loses.
             let rows = conn
                 .execute(
-                    "UPDATE tasks \
-                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
-                         updated_at = datetime('now') \
-                     WHERE id = ?4 AND status IN (?5, ?6) \
-                       AND tmux_window IS NULL \
-                       AND schedule_interval_secs IS NOT NULL",
+                    &format!(
+                        "UPDATE tasks {claim_set} \
+                         WHERE id = ?4 AND status IN (?5, ?6) \
+                           AND tmux_window IS NULL \
+                           AND schedule_interval_secs IS NOT NULL"
+                    ),
                     params![
                         running.as_str(),
                         SubStatus::default_for(running).as_str(),

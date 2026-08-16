@@ -292,10 +292,16 @@ pub(super) enum BaseRef<'a> {
     PrHead(&'a str),
     /// A branch the task pins its worktree to (`Task.pinned_branch`), checked
     /// out *literally* rather than used as a start point for a derived
-    /// `<id>-<slug>` branch. Always `origin/<branch>`, never compared against
-    /// local — a pinned branch is by construction long-lived and shared (the
-    /// staging-pipeline case), so a stale local copy of the same name would
-    /// silently poison the checkout, exactly as for [`BaseRef::PrHead`].
+    /// `<id>-<slug>` branch.
+    ///
+    /// Unlike the other two variants, the resolved [`StartPoint`] does **not**
+    /// decide what gets checked out here — `git worktree add <path> <branch>`
+    /// takes the branch by name, and git resolves it locally (creating it from
+    /// `origin/<branch>` if it does not exist yet). The start point only sets
+    /// the rebase preamble's target, and it prefers `origin/<branch>` for the
+    /// same reason [`BaseRef::PrHead`] does: a pinned branch is by construction
+    /// long-lived and shared, so pointing the preamble at the local copy would
+    /// be a rebase onto the very branch that is checked out.
     ///
     /// Constructed by `dispatch::agents::dispatch_with_prompt` whenever the
     /// task carries a `pinned_branch`.
@@ -381,10 +387,18 @@ pub(super) fn provision_worktree(
                 (Some(sp), None)
             }
             FetchOutcome::NoOriginRef(warning) => match base_ref {
-                // A base branch has no other candidate ref: local `<base>` is
-                // the only thing that exists, so falling back to it (with a
-                // `Note:` the agent can see) is the right call.
-                BaseRef::Branch(b) => (
+                // Neither has another candidate ref, and for both, local
+                // `<base>` is the only thing that exists — so falling back to
+                // it (with a `Note:` the agent can see) is the right call.
+                //
+                // For `Branch` that is the whole story. For `Pinned` it is
+                // safe for a further reason: the branch is checked out *by
+                // name*, so `git worktree add <path> <branch>` resolves it
+                // locally regardless of what this measurement says. All this
+                // decides is the preamble's rebase target — there is no
+                // wrong-code-silently-checked-out hazard to guard against,
+                // which is exactly what separates it from `PrHead` below.
+                BaseRef::Branch(b) | BaseRef::Pinned(b) => (
                     Some(StartPoint::Local {
                         base: b.to_string(),
                     }),
@@ -398,18 +412,6 @@ pub(super) fn provision_worktree(
                 BaseRef::PrHead(b) => anyhow::bail!(
                     "origin has no branch {b}; refusing to base a PR review on a local branch \
                      of the same name"
-                ),
-                // Unlike a PR head, a pinned branch is checked out *by name* —
-                // `git worktree add <path> <branch>` resolves it locally
-                // regardless of what this measurement says, so there is no
-                // wrong-code-silently-checked-out hazard to guard against. All
-                // this decides is the preamble's rebase target, and with no
-                // origin ref, local `<branch>` is the only honest answer.
-                BaseRef::Pinned(b) => (
-                    Some(StartPoint::Local {
-                        base: b.to_string(),
-                    }),
-                    Some(warning),
                 ),
             },
             // Reuse path only. Nothing is being created from this ref, so the

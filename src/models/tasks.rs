@@ -554,6 +554,10 @@ where
 pub enum DispatchMode {
     Dispatch,
     Research,
+    /// A scheduled pipeline tick. Never returned by [`DispatchMode::for_task`]
+    /// — it is not a property of the task's tag or plan, it is the scheduler
+    /// choosing it explicitly (the same way the retry path picks its mode).
+    Pipeline,
 }
 
 impl DispatchMode {
@@ -561,6 +565,7 @@ impl DispatchMode {
         match self {
             DispatchMode::Dispatch => "Dispatch",
             DispatchMode::Research => "Research",
+            DispatchMode::Pipeline => "Pipeline",
         }
     }
 
