@@ -695,6 +695,55 @@ config {
 }
 
 ------------------------------------------------------------
+-- Interval literals
+------------------------------------------------------------
+
+-- == How a human types an interval ==
+--
+-- Every user-facing surface that accepts a poll/redispatch cadence takes the
+-- SAME literal grammar, so "10m" means the same thing wherever it is typed.
+-- One grammar, stated once here, because two spellings of ten minutes in one
+-- application is a bug waiting to be filed.
+--
+-- Grammar (case-insensitive, surrounding whitespace ignored):
+--
+--   <digits>          -- bare seconds:  "600"  -> 600
+--   <digits>s         -- seconds:       "600s" -> 600
+--   <digits>m         -- minutes:       "10m"  -> 600
+--   <digits>h         -- hours:         "2h"   -> 7200
+--   <digits>d         -- days:          "1d"   -> 86400
+--
+-- Accepted only if the digits parse AND the resulting seconds count is
+-- STRICTLY POSITIVE. Everything else is a parse failure: a bare suffix ("m"),
+-- a negative ("-5"), zero in any unit ("0", "0m"), a fractional value
+-- ("1.5h"), a compound ("1h30m"), or any other text. Zero is rejected rather
+-- than treated as "off" because every surface already spells "off" as the
+-- empty value, and a zero-second cadence would busy-loop the scheduler.
+--
+-- A bare integer is seconds, and NOT because seconds are the friendly unit —
+-- because that is what every stored column holds (Task.schedule_interval_secs,
+-- Epic.feed_interval_secs) and what the pre-suffix surfaces already accepted.
+-- Keeping the bare form meaning seconds is what makes suffix support purely
+-- additive: no value a user typed before changes meaning.
+--
+-- Surfaces bound by this grammar:
+--   - tasks.allium: CreateTask's schedule step (TUI creation form)
+--   - tasks.allium: EditTask's SCHEDULE_INTERVAL_SECS section
+--   - epics.allium: EditEpic's FEED_INTERVAL_SECS section
+--
+-- NOT bound by it: the MCP/CLI surfaces, which take a JSON integer of seconds
+-- and never a string. The grammar is for humans typing into a field.
+--
+-- == How an interval is displayed back ==
+--
+-- Stored values are seconds, and the editor sections WRITE seconds back
+-- (unsuffixed), so an editor round-trip is lossless and unambiguous even
+-- though "10m" was accepted on the way in. Only rendered indicators — where
+-- space is tight and precision is not the point — humanise: the largest whole
+-- unit that divides the value exactly, else seconds ("600" -> "10m",
+-- "7200" -> "2h", "650" -> "650s").
+
+------------------------------------------------------------
 -- VisualColumn
 ------------------------------------------------------------
 
@@ -1385,6 +1434,35 @@ value VisualColumn {
 -- losing the card's outer boundary, the second by losing board breadth.
 -- The trade is recorded here so that it is read rather than
 -- rediscovered.
+--
+-- == Scheduled badge ==
+--
+-- A task with schedule_interval_secs set carries a badge on its card's second
+-- line: a clock glyph and the humanised cadence (⏱ 10m), in the same muted
+-- chip style as Task.labels and rendered immediately before them. A task with
+-- no schedule_interval_secs carries no badge at all — this is the ONLY thing
+-- on the card that distinguishes a scheduled task from an ordinary one, since
+-- a scheduled task sits idle in backlog between redispatches and is otherwise
+-- pixel-identical to a task nobody has touched.
+--
+-- The cadence is humanised per "Interval literals" above (600 -> "10m").
+-- pinned_branch gets no badge of its own: it is not a recurring behaviour a
+-- glancing reader needs warning about, and a second chip on a line already
+-- carrying the indicator plus labels would cost title-adjacent width. Like
+-- base_branch and wrap_up_mode -- the other per-task settings the board does
+-- not render -- it is read and written in the task editor
+-- (tasks.allium: EditTask), which is the surface for a task's configuration.
+--
+-- Deliberately a chip and NOT a CardIndicator variant, even though the
+-- indicator is the card's other second-line vocabulary. The indicator is a
+-- single classification of the task's CURRENT lifecycle state, and every
+-- variant of it must answer "Card border: cursor and state" — is this
+-- alarming? Being scheduled is neither a lifecycle state nor alarming: it is
+-- a standing property that coexists with running, review, stale and idle
+-- alike. Folding it into the indicator would force it to displace whichever
+-- state the card is actually in, which is exactly backwards — the badge is
+-- most useful on an idle backlog card, and must not hide "⚠ crashed" on a
+-- scheduled task whose last run died.
 --
 -- == Message flash ==
 --

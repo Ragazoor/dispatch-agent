@@ -50,9 +50,15 @@ rule EditEpic {
     -- value. For feed_command and feed_interval_secs, an empty field
     -- clears the value (sets it to null) — this is how feeds are turned
     -- off from the editor.
-    -- FEED_INTERVAL_SECS follows the same parse rule as EditTask's enum-ish
-    -- sections: an empty section and an unparseable (non-numeric) section
-    -- are treated identically — the section yields no value, so the field
+    -- FEED_INTERVAL_SECS accepts the shared interval-literal grammar
+    -- (core.allium: "How a human types an interval"), so "10m" and "600" are
+    -- the same edit. It is written back as bare seconds, so a suffixed value
+    -- reappears unsuffixed on the next open. The bare-integer form has always
+    -- meant seconds here and still does, which is what makes suffix support
+    -- purely additive for every feed epic configured before it existed.
+    -- FEED_INTERVAL_SECS otherwise follows the same parse rule as EditTask's
+    -- enum-ish sections: an empty section and an unparseable section are
+    -- treated identically — the section yields no value, so the field
     -- is cleared. Unparseable input additionally records a parse error, and
     -- all accumulated errors are surfaced together as a status message
     -- ("Edit accepted with parse errors — ..."); the edit is still applied.
