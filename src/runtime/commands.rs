@@ -74,13 +74,7 @@ pub(super) async fn dispatch(
         RecordUsageEvent(event) => {
             let db = Arc::clone(&rt.database);
             tokio::spawn(async move {
-                // Logged, never discarded: keybinding-telemetry pruning reads the
-                // *absence* of a count as "unused", so a silently dropped write
-                // makes a used binding look prunable. See "Intentional `let _ =`"
-                // in docs/conventions.md.
-                if let Err(e) = db.record_usage_event(&event).await {
-                    tracing::warn!(error = %e, "failed to record usage event");
-                }
+                crate::service::record_usage_event_logged(db.as_ref(), &event).await;
             });
             vec![]
         }

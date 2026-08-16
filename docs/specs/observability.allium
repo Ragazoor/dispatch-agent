@@ -228,6 +228,33 @@ rule TrajectoryWriteFailureIsSilent {
         -- subscriber; it has no entity representation in this spec.
 }
 
+rule UsageWriteFailureIsSilent {
+    -- Feature-usage writes are best-effort in the same sense trajectory
+    -- writes are: the failure must not propagate to the keypress handler or
+    -- the MCP handler that triggered it, and must not be retried. It must,
+    -- however, be reported to the log. Discarding the write's error outright
+    -- would make a lost count indistinguishable from a feature nobody used —
+    -- and since pruning reads the absence of a count as "unused", that
+    -- silence can retire a binding that is in daily use.
+    when: FeatureUsageWriteFailed(event, error)
+
+    ensures: UsageWriteWarning(event: event, error: error)
+
+    @guidance
+        -- Both fire-and-forget call sites — the TUI's RecordUsageEvent
+        -- command and the MCP handler's post-dispatch recording — route
+        -- through one helper, src/service/usage.rs::record_usage_event_logged,
+        -- rather than each writing its own error branch. The helper awaits
+        -- the write and, on error, emits a warn-level line (target "usage")
+        -- carrying the event's category, its action, and the error message;
+        -- the action is what makes the warning attributable to a specific
+        -- counter. The helper does not spawn: callers keep ownership of the
+        -- fire-and-forget shape, so the write stays off the critical path
+        -- and no caller newly awaits telemetry.
+        -- UsageWriteWarning is observable via the standard tracing
+        -- subscriber; it has no entity representation in this spec.
+}
+
 -- == Feature usage recording ==
 
 rule KeypressRecordsFeatureUsage {
@@ -287,9 +314,10 @@ rule KeypressRecordsFeatureUsage {
         -- a field that also drives a candidate list, and the submit or cancel
         -- that closes it.
         -- Recording is best-effort and off the critical path: the event is
-        -- written asynchronously and a failed write is neither retried nor
-        -- reported. A dropped event costs one count; blocking the key
-        -- handler on the database would cost the user their keystroke.
+        -- written asynchronously and a failed write is not retried, though it
+        -- is logged — see UsageWriteFailureIsSilent. A dropped event costs one
+        -- count; blocking the key handler on the database would cost the user
+        -- their keystroke.
         -- Agent-driven MCP tool calls record into the same log under the
         -- mcp_tool category, so the two are queried together but never
         -- conflated: category and actor both separate them.

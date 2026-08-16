@@ -627,14 +627,16 @@ pub async fn handle_mcp(
                     let tool = tool_name.to_string();
                     let bg_done = state.test_hooks.bg_write_done_tx.clone();
                     tokio::spawn(async move {
-                        let _ = db
-                            .record_usage_event(&crate::models::UsageEvent {
+                        crate::service::record_usage_event_logged(
+                            db.as_ref(),
+                            &crate::models::UsageEvent {
                                 category: crate::models::UsageCategory::McpTool,
                                 action: tool,
                                 detail: None,
                                 actor,
-                            })
-                            .await;
+                            },
+                        )
+                        .await;
                         if let Some(tx) = &bg_done {
                             let _ = tx.send(crate::mcp::BackgroundWrite::Usage);
                         }

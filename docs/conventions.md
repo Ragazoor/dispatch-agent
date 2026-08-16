@@ -328,6 +328,8 @@ Because the record is one more `Command` in the returned vec, a test that assert
 
 **Do not use it to discard a DB write's `Result`.** A second write that completes an entity (e.g. the follow-up `patch_epic` in `EpicService::create_epic` that applies `sort_order` / `feed_command` / `feed_interval_secs`) is part of the operation, not a "non-critical" extra: swallowing its error returns a success the caller can't trust. Propagate with `?`, and re-read (or otherwise refresh) so the returned entity reflects the write rather than the pre-patch insert result.
 
+**A fire-and-forget write is not an exception either.** Telemetry is the tempting case: the caller genuinely does not want to await the write or propagate its failure, so `let _ = db.record_usage_event(&event).await` inside a `tokio::spawn` looks harmless. It isn't — pruning passes read the *absence* of a usage count as "unused", so a swallowed write can retire a binding that is in daily use. Detached does not mean unobserved: log the error and keep the spawn. Both usage-recording sites go through `src/service/usage.rs::record_usage_event_logged`, which awaits the write and warns on `Err` while leaving the spawn to the caller. See `UsageWriteFailureIsSilent` in `docs/specs/observability.allium`.
+
 If you see `let _ =` and are unsure whether it's intentional, check the surrounding comment or commit message. Add a comment when adding a new one.
 
 ## `#[allow(dead_code)]`
