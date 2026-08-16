@@ -122,12 +122,18 @@ jobs:
       # paid for the suite twice to render the same numbers in a second format.
       #
       # `--fail-under` is what makes this job a gate rather than a report. The
-      # floor sits below the measured figure on purpose (88.54% when it was set,
-      # 2026-08-16): it catches a regression that drops several points, not the
-      # normal drift of a single file. Raise it deliberately, never automatically
-      # to whatever today's run happens to score.
+      # floor sits below the measured figure on purpose (90.28% when it was set,
+      # 2026-08-16): it catches a regression that drops a couple of points, not
+      # the normal drift of a single file. Raise it deliberately, never
+      # automatically to whatever today's run happens to score.
+      #
+      # `--engine llvm` is pinned because the floor is calibrated against it.
+      # The default (`Auto`) engine measured 88.54% on the same tree the llvm
+      # engine scored 90.28% — a ~1.8-point difference in instrumentation, not
+      # in the code. Leaving the engine to the default would leave a floor of 88
+      # half a point of slack and fail on noise.
       - name: Run coverage
-        run: cargo tarpaulin --target x86_64-unknown-linux-gnu --out xml --out stdout --output-dir coverage/ --fail-under 85
+        run: cargo tarpaulin --engine llvm --target x86_64-unknown-linux-gnu --out xml --out stdout --output-dir coverage/ --fail-under 88
 
       # `if: always()` so the report still uploads when the floor trips — that is
       # exactly the run whose per-file numbers someone needs to read.

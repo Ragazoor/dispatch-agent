@@ -1,5 +1,11 @@
 /target
 /.worktrees
+# tarpaulin output: `--output-dir coverage/` (the CI invocation), the default
+# drop point for a local `--out Html` run, and the raw profiles the llvm engine
+# leaves behind (build scripts drop one in the repo root, not under target/).
+/coverage
+/tarpaulin-report.html
+*.profraw
 .superpowers/
 .claude-prompt
 .claude-messages/

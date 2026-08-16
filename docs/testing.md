@@ -156,8 +156,10 @@ Tests must never sleep on the wall clock — not to "wait for" `spawn_blocking` 
 
 ## Coverage
 
-CI's `coverage` job runs `cargo tarpaulin --out xml --out stdout --fail-under 85` (`--out Html` locally). It is **gated**: coverage below the floor fails the job. Each tarpaulin invocation re-runs the whole suite, so both output formats come from one run — don't add a second invocation to render another format.
+CI's `coverage` job runs `cargo tarpaulin --engine llvm --out xml --out stdout --fail-under 88` (`--out Html` locally). It is **gated**: coverage below the floor fails the job. Each tarpaulin invocation re-runs the whole suite, so both output formats come from one run — don't add a second invocation to render another format.
 
-The floor is 85, deliberately below the measured figure (88.54%, 13529/15280 lines, when the floor was set on 2026-08-16). It is a regression tripwire, not a target: raise it by hand when a step-change in coverage makes the headroom pointless, never automatically to whatever the last run scored. Don't chase 100% on render-heavy code or `src/setup/`'s OS-interaction branches (hooks, filesystem writes) — a single file below the average is not by itself a problem.
+**The engine is part of the measurement.** On the same tree, `--engine llvm` scored 90.28% (14846/16445 lines) and the default `Auto` engine 88.54% — a ~1.8-point instrumentation difference with no code change behind it. The floor is calibrated against llvm, which is why CI pins it; quote the engine whenever you quote a number, and don't compare a local default-engine run against the CI floor.
+
+The floor is 88, deliberately ~2 points below the measured figure (90.28%, 2026-08-16). It is a regression tripwire, not a target: raise it by hand when a step-change in coverage makes the headroom pointless, never automatically to whatever the last run scored. Don't chase 100% on render-heavy code or `src/setup/`'s OS-interaction branches (hooks, filesystem writes) — a single file below the average is not by itself a problem.
 
 Coverage is not in the pre-push hook; every *other* CI gate is, and `tests/ci_gates.rs` asserts the hook's script list and the workflow's stay in sync.
