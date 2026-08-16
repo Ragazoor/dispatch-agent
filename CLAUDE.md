@@ -34,13 +34,17 @@ been rewritten since you read it.
 
 ### First-time setup
 
-A fresh clone must point git at the tracked hooks once: `git config core.hooksPath .githooks`. Nothing does this for you, and until it is run the whole gate below is silently inert. Don't add hooks to `.git/hooks/` directly — that directory is untracked and shared across all worktrees, so changes there aren't version-controlled or reviewed.
+A fresh clone must point git at the tracked hooks once: `git config core.hooksPath .githooks`. Nothing does this for you, and until it is run the whole gate below is silently inert locally — CI runs the same checks (see "CI" below), so skipping the setup costs you the fast local feedback, not the enforcement. Don't add hooks to `.git/hooks/` directly — that directory is untracked and shared across all worktrees, so changes there aren't version-controlled or reviewed.
 
 The pre-push hook (`.githooks/pre-push`) runs, in order: `cargo fmt`, `cargo clippy --all-targets -- -D warnings` (no `--fix`), `./scripts/check-doc-paths.sh` + its self-test (validates every path and `file:NN` citation in `CLAUDE.md`/`docs/*.md`/`docs/specs/*.allium`, excluding the dated `docs/plans/`, `docs/superpowers/`, `docs/research/`), `./scripts/check-doc-symbols.sh` + its self-test (rejects citations — backticked identifiers, `path.rs::symbol`, `Type::method`, bare snake_case names of five-plus words — that no longer resolve; annotate a deliberate exception with `allow-phantom-symbol: <why>` on the citing line or the one directly above), `./scripts/check-no-test-sleep.sh` + its self-test, and `bash ./scripts/test-fetch-reviews.sh`. Run `cargo test` separately before pushing — it is not part of the hook.
 
 **That `cargo fmt` step has no `--check`.** Pushing reformats your working tree in place, so a push can leave you with unstaged changes you did not make. Run `cargo fmt` yourself before committing and the step becomes a no-op.
 
 Prefer `path::symbol` citations (`src/feed/exec.rs::exec_feed_command`) over `file:NN` line numbers in docs: a line number is only bounds-checked (confirmed to exist, never that it still says what the doc claims), while a symbol is checked against the real file. See "`file:NN` vs `path::symbol` citations" in `docs/conventions.md` for what each checker does and doesn't catch.
+
+### CI
+
+`.github/workflows/ci.yml` runs five jobs: Test, Clippy, Format, Coverage, and **Gate scripts** — the last mirrors every `scripts/*.sh` check the pre-push hook runs, in the same order. The two lists are kept in sync by `tests/ci_gates.rs`, which fails if the hook gains a script CI does not run. Coverage is a gate, not a report: tarpaulin runs once, emits both the XML artifact and the stdout summary, and fails the job under the floor (see [docs/testing.md](docs/testing.md)).
 
 ## Running & Debugging Locally
 

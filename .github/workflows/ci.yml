@@ -116,17 +116,27 @@ jobs:
       - name: Install cargo-tarpaulin
         run: cargo install cargo-tarpaulin
 
+      # One tarpaulin run, two outputs. This used to be two invocations — one
+      # for the XML artifact, a second `--skip-clean` pass purely to print the
+      # summary — and each invocation re-runs the entire test suite, so the job
+      # paid for the suite twice to render the same numbers in a second format.
+      #
+      # `--fail-under` is what makes this job a gate rather than a report. The
+      # floor sits below the measured figure on purpose (88.54% when it was set,
+      # 2026-08-16): it catches a regression that drops several points, not the
+      # normal drift of a single file. Raise it deliberately, never automatically
+      # to whatever today's run happens to score.
       - name: Run coverage
-        run: cargo tarpaulin --target x86_64-unknown-linux-gnu --out xml --output-dir coverage/
+        run: cargo tarpaulin --target x86_64-unknown-linux-gnu --out xml --out stdout --output-dir coverage/ --fail-under 85
 
+      # `if: always()` so the report still uploads when the floor trips — that is
+      # exactly the run whose per-file numbers someone needs to read.
       - name: Upload coverage artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: coverage/cobertura.xml
-
-      - name: Coverage summary
-        run: cargo tarpaulin --target x86_64-unknown-linux-gnu --out stdout --skip-clean
 
   fmt:
     name: Format
@@ -142,14 +152,39 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-  doc-paths:
-    name: Check CLAUDE.md paths
+  # The same gate scripts, in the same order, as `.githooks/pre-push`. The hook
+  # is inert until a clone runs `git config core.hooksPath .githooks` and any
+  # push can bypass it with `--no-verify`, so CI is the only place these are
+  # guaranteed to run. `tests/ci_gates.rs` asserts the two lists stay in sync:
+  # a script added to the hook fails that test until it is added here too.
+  #
+  # Every one of these is a shell script over the checkout — no toolchain, no
+  # cargo cache — so they share a single runner rather than a job each.
+  gates:
+    name: Gate scripts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate path references in CLAUDE.md
+      - name: Validate path references in docs
         run: ./scripts/check-doc-paths.sh
 
       - name: Self-test the doc-path checker
         run: bash ./scripts/test-check-doc-paths.sh
+
+      - name: Validate symbol citations in docs
+        run: ./scripts/check-doc-symbols.sh
+
+      - name: Self-test the doc-symbol checker
+        run: bash ./scripts/test-check-doc-symbols.sh
+
+      - name: Reject wall-clock waits in test code
+        run: ./scripts/check-no-test-sleep.sh
+
+      - name: Self-test the no-test-sleep checker
+        run: bash ./scripts/test-check-no-test-sleep.sh
+
+      # fetch-reviews.sh feeds the review board; its self-test drives it against
+      # a stub `gh`, so it needs no network and no credentials.
+      - name: Self-test the fetch-reviews feed script
+        run: bash ./scripts/test-fetch-reviews.sh

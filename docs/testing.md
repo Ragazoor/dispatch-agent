@@ -24,8 +24,9 @@ cargo test --test tmux_editor_pane        # real tmux: agent-tree editor pane, t
 ```
 
 That is a **selection**, not the full inventory — `tests/` also holds
-`active_health.rs`, `caller_identity.rs`, `dispatch_status_lifecycle.rs`,
-`feed_sync.rs`, `githooks.rs`, `managed_feeds.rs`, `task_watchers.rs`,
+`active_health.rs`, `caller_identity.rs`, `ci_gates.rs`,
+`dispatch_status_lifecycle.rs`, `feed_sync.rs`, `githooks.rs`,
+`managed_feeds.rs`, `task_watchers.rs`,
 `tmux_send_message_pane_state.rs`, `trajectory.rs`, and `verify_command.rs`.
 `ls tests/` is the authority; this list is a shortcut for the targets you reach
 for most.
@@ -155,4 +156,8 @@ Tests must never sleep on the wall clock — not to "wait for" `spawn_blocking` 
 
 ## Coverage
 
-`cargo tarpaulin --out xml` runs in CI's `coverage` job (`--out Html` locally) — informational only, not gated, not in the pre-push hook. Line coverage sits around 85% as a rough, undated snapshot. Don't chase 100% on render-heavy code or `src/setup/`'s OS-interaction branches (hooks, filesystem writes) — a single file below the average is not by itself a problem.
+CI's `coverage` job runs `cargo tarpaulin --out xml --out stdout --fail-under 85` (`--out Html` locally). It is **gated**: coverage below the floor fails the job. Each tarpaulin invocation re-runs the whole suite, so both output formats come from one run — don't add a second invocation to render another format.
+
+The floor is 85, deliberately below the measured figure (88.54%, 13529/15280 lines, when the floor was set on 2026-08-16). It is a regression tripwire, not a target: raise it by hand when a step-change in coverage makes the headroom pointless, never automatically to whatever the last run scored. Don't chase 100% on render-heavy code or `src/setup/`'s OS-interaction branches (hooks, filesystem writes) — a single file below the average is not by itself a problem.
+
+Coverage is not in the pre-push hook; every *other* CI gate is, and `tests/ci_gates.rs` asserts the hook's script list and the workflow's stay in sync.
