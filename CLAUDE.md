@@ -16,6 +16,8 @@ cargo run -- tui
 
 **The full suite needs `tmux` on `PATH`.** Without it the `tmux_*` targets print `skipping: tmux not available on PATH` and pass, so a green local run isn't proof they ran.
 
+**Under the sandbox those targets fail rather than skip.** `tmux` *is* on `PATH`, so the skip never fires; the harness starts a server, the sandbox blocks the unix socket, and every test in the target dies with `error connecting to /tmp/tmux-<uid>/… (Operation not permitted)`. `cargo test` then stops at that target — `tests/tmux_editor_pane.rs` is an early one — leaving the six later targets unrun. That is the sandbox, not your change: re-run with the sandbox disabled, and add `--no-fail-fast` so one blocked target can't hide the rest.
+
 **Don't pipe `cargo test` into `tail`/`head`/`grep`.** A pipeline's exit code is the last command's, so a failing suite reads as a clean pass. Redirect instead: `cargo test > /tmp/t.txt 2>&1; echo $?`.
 
 **`apply-seccomp: unshare(CLONE_NEWUSER): Invalid argument` is the sandbox, not your command.** A plain `grep`/`ls`/`cargo` can die with that string and no output. It names neither the sandbox nor a path, and it fires intermittently on commands that are otherwise perfectly sandbox-safe — retry, or re-run with the sandbox disabled, but don't go hunting for what you touched. Redirect targets need the same care: bare `/tmp` is not writable and `$TMPDIR` isn't reliably expanded, so `mkdir -p /tmp/claude-1000/<something>` first.

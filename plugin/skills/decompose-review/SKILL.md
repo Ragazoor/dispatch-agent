@@ -104,6 +104,8 @@ Create the plan directory:
 mkdir -p docs/plans/review-<YYYY-MM-DD>
 ```
 
+**If that directory already exists, do not write into it** — a second review on the same day would interleave its work packages with the first's and renumber nothing. Add a distinguishing suffix instead (`review-<YYYY-MM-DD>-followup`, `-security`, …) and use it consistently for every path below. Say which directory you used when you report results in Step 7.
+
 For each confirmed work package (in severity order):
 
 ### 6a. Write the plan file
