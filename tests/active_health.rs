@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
-use dispatch_tui::db::{self, Database};
+use dispatch_tui::db::Database;
 use dispatch_tui::models::{HookEventKind, SubStatus, TaskStatus};
 use dispatch_tui::service::{CreateTaskParams, FixedClock, TaskService, UpdateTaskParams};
 
 #[tokio::test]
 async fn hook_event_flow_drives_sub_status_and_lifecycle() {
-    let db: Arc<dyn db::TaskAndEpicStore> = Arc::new(Database::open_in_memory().await.unwrap());
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
     // Inject a manually-advanced clock so hook-event timestamps land in distinct
     // seconds deterministically — no wall-clock sleeps. Timestamps persist at
     // one-second resolution, so each step below advances the clock by ≥1s.

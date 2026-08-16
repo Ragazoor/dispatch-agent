@@ -610,7 +610,8 @@ mod tests {
     };
     use std::sync::Arc;
 
-    async fn store() -> Arc<dyn crate::db::TaskAndEpicStore> {
+    /// `TaskStore` because `TaskService` takes it; upcasts for `EpicService`.
+    async fn store() -> Arc<dyn crate::db::TaskStore> {
         Arc::new(Database::open_in_memory().await.unwrap())
     }
 

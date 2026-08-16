@@ -40,8 +40,7 @@ fn task_svc_with_runner(
     db: &Arc<dyn db::TaskStore>,
     runner: Arc<dyn crate::process::ProcessRunner>,
 ) -> TaskService {
-    let d: Arc<dyn db::TaskAndEpicStore> = db.clone();
-    TaskService::new(d, runner)
+    TaskService::new(db.clone(), runner)
 }
 
 fn make_task_params(repo_path: &str) -> CreateTaskParams {
@@ -3918,10 +3917,7 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
     // needs_prior=true) and the DB returns an error when reading the task back,
     // the error should propagate rather than being silently swallowed as None.
     let db = Arc::new(Database::open_in_memory().await.unwrap());
-    let svc = TaskService::new(
-        db.clone() as Arc<dyn db::TaskAndEpicStore>,
-        crate::process::MockProcessRunner::unused(),
-    );
+    let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
 
     // Create a task that we'll corrupt so get_task fails
     let id = svc
@@ -4491,16 +4487,10 @@ mod dispatch_seam {
         (task_svc_with_runner(db, runner), task, dir)
     }
 
-    fn request(
-        db: &Arc<dyn db::TaskStore>,
-        task: Task,
-        mode: DispatchMode,
-        claim: DispatchClaim,
-    ) -> DispatchRequest {
+    fn request(task: Task, mode: DispatchMode, claim: DispatchClaim) -> DispatchRequest {
         DispatchRequest {
             task,
             mode,
-            db: db.clone() as Arc<dyn crate::db::TaskReadStore>,
             emb_svc: crate::service::embeddings::EmbeddingService::new_test(),
             epic_ctx: None,
             claim,
@@ -4517,12 +4507,7 @@ mod dispatch_seam {
         let id = task.id;
 
         let outcome = svc
-            .dispatch(request(
-                &db,
-                task,
-                DispatchMode::Dispatch,
-                DispatchClaim::Take,
-            ))
+            .dispatch(request(task, DispatchMode::Dispatch, DispatchClaim::Take))
             .await;
 
         let DispatchOutcome::Launched(result) = outcome else {
@@ -4562,12 +4547,7 @@ mod dispatch_seam {
         let id = task.id;
 
         let outcome = svc
-            .dispatch(request(
-                &db,
-                task,
-                DispatchMode::Dispatch,
-                DispatchClaim::Take,
-            ))
+            .dispatch(request(task, DispatchMode::Dispatch, DispatchClaim::Take))
             .await;
 
         assert!(
@@ -4592,12 +4572,7 @@ mod dispatch_seam {
         assert!(svc.claim_backlog_task(task.id).await.unwrap());
 
         let outcome = svc
-            .dispatch(request(
-                &db,
-                task,
-                DispatchMode::Dispatch,
-                DispatchClaim::Take,
-            ))
+            .dispatch(request(task, DispatchMode::Dispatch, DispatchClaim::Take))
             .await;
 
         assert!(
@@ -4622,24 +4597,13 @@ mod dispatch_seam {
 
         let (s1, s2) = (svc.clone(), svc.clone());
         let (t1, t2) = (task.clone(), task);
-        let (db1, db2) = (db.clone(), db.clone());
         let h1 = tokio::spawn(async move {
-            s1.dispatch(request(
-                &db1,
-                t1,
-                DispatchMode::Dispatch,
-                DispatchClaim::Take,
-            ))
-            .await
+            s1.dispatch(request(t1, DispatchMode::Dispatch, DispatchClaim::Take))
+                .await
         });
         let h2 = tokio::spawn(async move {
-            s2.dispatch(request(
-                &db2,
-                t2,
-                DispatchMode::Dispatch,
-                DispatchClaim::Take,
-            ))
-            .await
+            s2.dispatch(request(t2, DispatchMode::Dispatch, DispatchClaim::Take))
+                .await
         });
         let (a, b) = (h1.await.unwrap(), h2.await.unwrap());
 
@@ -4674,12 +4638,7 @@ mod dispatch_seam {
         assert!(svc.claim_backlog_task(task.id).await.unwrap());
 
         let outcome = svc
-            .dispatch(request(
-                &db,
-                task,
-                DispatchMode::Dispatch,
-                DispatchClaim::Held,
-            ))
+            .dispatch(request(task, DispatchMode::Dispatch, DispatchClaim::Held))
             .await;
 
         assert!(
@@ -4698,12 +4657,7 @@ mod dispatch_seam {
         let (svc, task, _dir) = fixture(&db, runner.clone()).await;
 
         let outcome = svc
-            .dispatch(request(
-                &db,
-                task,
-                DispatchMode::Research,
-                DispatchClaim::Take,
-            ))
+            .dispatch(request(task, DispatchMode::Research, DispatchClaim::Take))
             .await;
 
         assert!(
@@ -4717,6 +4671,41 @@ mod dispatch_seam {
                 .contains("--permission-mode plan"),
             "research mode must launch with plan permissions: {:?}",
             runner.recorded_calls()
+        );
+    }
+
+    /// With `epic_ctx: None` the seam resolves the epic banner itself, through
+    /// the service's own handle — the request carries no database to read from.
+    ///
+    /// What this asserts is the banner reaching the launched prompt via
+    /// `TaskService::dispatch`; that a caller *cannot* aim the reads at some
+    /// other database is enforced by `DispatchRequest` having no `db` field,
+    /// not by anything observable here.
+    #[tokio::test]
+    async fn dispatch_reads_the_epic_banner_from_the_services_own_handle() {
+        let db = test_db().await;
+        let runner = DispatchScript::dispatch().shared_runner();
+        let (svc, task, _dir) = fixture(&db, runner.clone()).await;
+        let epic = make_epic(&epic_svc(&db), "Own-handle epic").await;
+        svc.update_task(UpdateTaskParams::for_task(task.id).epic_id(epic.id))
+            .await
+            .unwrap();
+        // Re-read so the row handed to the seam carries the epic link; with
+        // `epic_ctx: None` the banner is the prologue's own read.
+        let task = svc.get_task(task.id).await.unwrap();
+
+        let outcome = svc
+            .dispatch(request(task, DispatchMode::Dispatch, DispatchClaim::Take))
+            .await;
+
+        let DispatchOutcome::Launched(result) = outcome else {
+            panic!("expected Launched, got {outcome:?}");
+        };
+        let prompt =
+            std::fs::read_to_string(format!("{}/.claude-prompt", result.worktree_path)).unwrap();
+        assert!(
+            prompt.contains("Own-handle epic"),
+            "prompt must carry the epic banner the prologue read for itself: {prompt}"
         );
     }
 }

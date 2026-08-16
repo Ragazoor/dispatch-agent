@@ -186,7 +186,7 @@ a field; they are not redundant with the destructuring.
 
 | Consumer | Holds |
 |----------|-------|
-| `TaskService` | `Arc<dyn TaskAndEpicStore>` (write) |
+| `TaskService` | `Arc<dyn TaskStore>` (write + read — its dispatch prologue needs the read bundle; see below) |
 | `EpicService` | `Arc<dyn TaskAndEpicStore>` (write) |
 | `McpState`, `TuiRuntime` | `Arc<dyn TaskReadStore>` (no task/epic mutations — see caveat below) |
 | `FeedRunner`, `TuiRuntime::feed_db` | `Arc<dyn TaskStore>` (write — sanctioned feed-mutation consumers) |
@@ -250,7 +250,7 @@ How the seam works:
 
 - `TaskCrud: TaskRead` and `EpicCrud: EpicRead` — each CRUD trait splits into a read super-trait plus the mutating methods. `Database` implements both halves.
 - `TaskReadStore: TaskRead + EpicRead + SettingsStore + LearningStore + LearningRetrievalStore + UsageStore`, and `TaskStore: … + TaskReadStore`, so a write-capable `Arc<dyn TaskStore>` upcasts to `Arc<dyn TaskReadStore>` for free at construction.
-- Services keep their write handles (`TaskService` holds `Arc<dyn TaskAndEpicStore>`, `EpicService` holds the same), built from the still-write-capable `Arc<Database>` / `deps.db`.
+- Services keep their write handles (`TaskService` holds `Arc<dyn TaskStore>`, `EpicService` holds `Arc<dyn TaskAndEpicStore>`), built from the still-write-capable `Arc<Database>` / `deps.db`.
 
 Settings/learning/usage writes remain reachable through `TaskReadStore` on purpose: they carry no cross-entity invariant, so sealing them would add churn without protecting anything.
 
@@ -304,7 +304,7 @@ Both closures receive a `&mut rusqlite::Connection`, must be `Send + 'static`, a
 
 Every `*Store` trait method is `async fn` and uses whichever entry point matches its access pattern — `db_call_read` for pure reads (`TaskRead`, `EpicRead`, `SettingsStore`, `LearningStore`, `LearningRetrievalStore`, `TodoStore`, `UsageStore`), `db_call` for anything that mutates. Callers `.await` each store call the same way regardless of which one it uses underneath.
 
-**The trait bundles do not nest the way the names suggest.** `TaskAndEpicStore` is `TaskCrud + EpicCrud` and is emphatically *not* a supertrait of `TaskReadStore`, which adds `SettingsStore + LearningStore + LearningRetrievalStore + UsageStore` on top of `TaskRead + EpicRead`. So a handle typed `Arc<dyn TaskAndEpicStore>` — which is what `TaskService` holds — cannot be coerced to `&dyn TaskReadStore`, and "the write store obviously covers the reads" is false. Only `TaskStore` bundles everything. Check the bounds in `src/db/mod.rs` before designing against an assumed hierarchy: this is what makes `TaskService::dispatch` take the read handle as a parameter rather than reuse its own.
+**The trait bundles do not nest the way the names suggest.** `TaskAndEpicStore` is `TaskCrud + EpicCrud` and is emphatically *not* a supertrait of `TaskReadStore`, which adds `SettingsStore + LearningStore + LearningRetrievalStore + UsageStore` on top of `TaskRead + EpicRead`. So a handle typed `Arc<dyn TaskAndEpicStore>` — which is what `EpicService` holds — cannot be coerced to `&dyn TaskReadStore`, and "the write store obviously covers the reads" is false. Only `TaskStore` bundles everything. Check the bounds in `src/db/mod.rs` before designing against an assumed hierarchy: this is why `TaskService`, whose `dispatch` prologue reads the settings/learning surface, holds `Arc<dyn TaskStore>` rather than the narrower write bundle its CRUD methods alone would need.
 
 ## Inline-mutation boundary
 

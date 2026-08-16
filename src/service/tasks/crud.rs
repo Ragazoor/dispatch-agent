@@ -115,7 +115,15 @@ pub struct ClosedSession {
 }
 
 pub struct TaskService {
-    pub db: Arc<dyn db::TaskAndEpicStore>,
+    /// The wide bundle, not the `TaskAndEpicStore` the CRUD methods alone would
+    /// need: [`dispatch`](Self::dispatch) runs the dispatch prologue, which
+    /// reads the whole [`TaskReadStore`](db::TaskReadStore) surface (epic
+    /// banner, learning injections and their retrieval records). `TaskStore` is
+    /// `TaskAndEpicStore` plus that read bundle, so it is still the narrowest
+    /// handle covering what this service actually calls — and one handle is
+    /// what keeps the prologue's reads and the service's writes on the same
+    /// database by construction.
+    pub db: Arc<dyn db::TaskStore>,
     clock: Arc<dyn crate::service::Clock>,
     pub(super) runner: Arc<dyn crate::process::ProcessRunner>,
 }
@@ -128,10 +136,7 @@ impl TaskService {
     /// Tests pass [`MockProcessRunner::unused`](crate::process::MockProcessRunner::unused);
     /// production says so by name via
     /// [`new_with_real_runner`](Self::new_with_real_runner).
-    pub fn new(
-        db: Arc<dyn db::TaskAndEpicStore>,
-        runner: Arc<dyn crate::process::ProcessRunner>,
-    ) -> Self {
+    pub fn new(db: Arc<dyn db::TaskStore>, runner: Arc<dyn crate::process::ProcessRunner>) -> Self {
         Self {
             db,
             clock: Arc::new(crate::service::SystemClock),
@@ -141,7 +146,7 @@ impl TaskService {
 
     /// Construct a `TaskService` that shells out for real. Named so that the
     /// non-hermetic choice is visible at the call site; see [`new`](Self::new).
-    pub fn new_with_real_runner(db: Arc<dyn db::TaskAndEpicStore>) -> Self {
+    pub fn new_with_real_runner(db: Arc<dyn db::TaskStore>) -> Self {
         Self::new(db, Arc::new(crate::process::RealProcessRunner))
     }
 

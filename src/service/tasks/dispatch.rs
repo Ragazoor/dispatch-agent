@@ -36,14 +36,19 @@ pub enum DispatchClaim {
     Held,
 }
 
-/// Everything [`TaskService::dispatch`] needs that the service cannot read for
-/// itself.
+/// What a caller brings to [`TaskService::dispatch`]: the row, how to launch
+/// it, who owns the claim, and the two collaborators the service does not hold.
 ///
-/// `db` and `emb_svc` are passed in rather than held on `TaskService` because
-/// the service's own handle is a task/epic **write** store, and embeddings live
-/// with the learning service. Making them explicit parameters keeps the
-/// dependency visible at each call site instead of hiding it behind an
-/// optional field that could silently be unset.
+/// No read handle: the prologue reads through `TaskService`'s own
+/// [`db`](TaskService::db), so *within this seam* the reads cannot be aimed at
+/// one database while the claim and the worktree write land in another. That
+/// scoping is literal — the TUI's `exec_dispatch_agent`/`exec_quick_dispatch`
+/// (`src/runtime/tasks.rs`) do not come through here and still run the prologue
+/// against their own `TaskReadStore`.
+///
+/// `emb_svc` does stay a per-call parameter: embeddings live with the learning
+/// service, and `EmbeddingService::new_noop` spawns an OS thread that a
+/// constructor argument would start in every fixture that never dispatches.
 pub struct DispatchRequest {
     /// The task to provision. Must be the claimed row (`Held`) or a `Backlog`
     /// row this call will claim (`Take`).
@@ -51,13 +56,12 @@ pub struct DispatchRequest {
     /// Which agent to launch. MCP callers derive it with
     /// [`DispatchMode::for_task`]; the TUI carries the operator's choice.
     pub mode: DispatchMode,
-    /// Read handle for the dispatch prologue (epic banner, learning injections).
-    pub db: Arc<dyn crate::db::TaskReadStore>,
     /// Embedding service backing the learning injections.
     pub emb_svc: Arc<crate::service::embeddings::EmbeddingService>,
     /// Pre-resolved epic banner, for a caller that already holds the epic row
     /// (the chain reads it to check `auto_dispatch`). `None` means "read it
-    /// from `db`" — which is also what a task with no epic resolves to, so
+    /// from the service's own handle" — which is also what a task with no epic
+    /// resolves to, so
     /// leaving it unset is always correct, just one read slower.
     pub epic_ctx: Option<dispatch::EpicContext>,
     /// Whether this call takes the claim or the caller already holds it.
@@ -99,7 +103,6 @@ impl TaskService {
         let DispatchRequest {
             task,
             mode,
-            db,
             emb_svc,
             epic_ctx,
             claim,
@@ -118,9 +121,9 @@ impl TaskService {
         // it happens before the task is handed to the blocking pool.
         let inputs = match epic_ctx {
             Some(ctx) => {
-                dispatch::prepare_inputs_with_epic_ctx(&*db, &task, &emb_svc, Some(ctx)).await
+                dispatch::prepare_inputs_with_epic_ctx(&*self.db, &task, &emb_svc, Some(ctx)).await
             }
-            None => dispatch::prepare_inputs(&*db, &task, &emb_svc).await,
+            None => dispatch::prepare_inputs(&*self.db, &task, &emb_svc).await,
         };
 
         let runner = Arc::clone(&self.runner);

@@ -72,7 +72,6 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
     let request = DispatchRequest {
         mode: DispatchMode::for_task(&next_task),
         task: next_task,
-        db: state.db.clone(),
         emb_svc: state.embedding_service.clone(),
         epic_ctx,
         // `claim_next_backlog_task` above both selected and claimed this row.
@@ -166,7 +165,6 @@ pub(crate) async fn handle_dispatch_task(
         .dispatch(DispatchRequest {
             mode: DispatchMode::for_task(&task),
             task,
-            db: state.db.clone(),
             emb_svc: state.embedding_service.clone(),
             epic_ctx: None,
             claim: DispatchClaim::Take,
