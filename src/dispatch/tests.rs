@@ -1305,6 +1305,130 @@ fn provision_worktree_never_measures_a_pr_head_branch() {
     );
 }
 
+/// A pinned-branch task checks out the branch *literally*: no `-B`, no
+/// `<id>-<slug>` branch name anywhere in the argv. The worktree path stays
+/// task-id-keyed, so two pinned tasks still cannot collide on disk.
+#[test]
+fn provision_worktree_with_pinned_branch_checks_out_the_literal_branch() {
+    let (_dir, repo_path) = make_test_repo();
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin staging
+        MockProcessRunner::ok(), // git worktree add <path> staging
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option
+        MockProcessRunner::ok(), // tmux set-hook
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Pinned("staging")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
+
+    let calls = mock.recorded_calls();
+    let (_, add_args) = calls
+        .iter()
+        .find(|(prog, args)| prog == "git" && args.contains(&"worktree".to_string()))
+        .expect("git worktree add call");
+    assert!(
+        !add_args.contains(&"-B".to_string()),
+        "a pinned branch must be checked out, never created from a derived name: {add_args:?}"
+    );
+    // The path legitimately contains the slug; what must not appear is the
+    // slug used as a *branch name* — a bare `42-fix-bug` argument.
+    assert!(
+        !add_args.iter().any(|a| a == "42-fix-bug"),
+        "no id-slug branch may appear in a pinned worktree add: {add_args:?}"
+    );
+    assert_eq!(
+        add_args.last().map(String::as_str),
+        Some("staging"),
+        "the literal pinned branch is the checkout target: {add_args:?}"
+    );
+
+    // The path is still keyed by task id — only the branch inside it differs.
+    assert_eq!(
+        result.worktree_path,
+        format!("{repo_path}/.worktrees/42-fix-bug")
+    );
+}
+
+/// Like `BaseRef::PrHead`, a pinned branch is never measured against a local
+/// ref of the same name: `staging` is a shared branch, and a stale local copy
+/// would silently poison the worktree.
+#[test]
+fn provision_worktree_never_measures_a_pinned_branch() {
+    let (_dir, repo_path) = make_test_repo();
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin staging
+        MockProcessRunner::ok(), // git worktree add
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option
+        MockProcessRunner::ok(), // tmux set-hook
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Pinned("staging")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
+
+    let calls = mock.recorded_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.contains(&"rev-list".to_string())),
+        "a pinned branch must never be compared against a local ref: {calls:?}"
+    );
+    assert_eq!(
+        result.start_point,
+        Some(StartPoint::Remote {
+            base: "staging".to_string()
+        })
+    );
+}
+
+/// A scheduled pinned task provisions on every tick, and every tick after the
+/// first reuses the directory. `git worktree add` must not run again — a second
+/// checkout of the same branch would fail outright.
+#[test]
+fn provision_worktree_with_pinned_branch_skips_add_on_reuse() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+
+    let mock = MockProcessRunner::new(vec![
+        MockProcessRunner::ok(), // git fetch origin staging (best-effort)
+        MockProcessRunner::ok(), // tmux new-window
+        MockProcessRunner::ok(), // tmux set-option
+        MockProcessRunner::ok(), // tmux set-hook
+    ]);
+
+    let task = make_task(&repo_path);
+    let result = provision_worktree(
+        &task,
+        &mock,
+        Some(BaseRef::Pinned("staging")),
+        SUBPROCESS_TIMEOUT,
+    )
+    .unwrap();
+
+    assert!(result.reused_worktree);
+    let calls = mock.recorded_calls();
+    assert!(
+        !calls
+            .iter()
+            .any(|(_, args)| args.contains(&"worktree".to_string())),
+        "reusing a pinned worktree must not re-run worktree add: {calls:?}"
+    );
+}
+
 #[test]
 fn provision_worktree_creates_new_when_dir_missing() {
     let (_dir, repo_path) = make_test_repo();

@@ -290,12 +290,22 @@ pub(super) enum BaseRef<'a> {
     /// review task resolves a PR head branch. Exercised directly by
     /// `provision_worktree_never_measures_a_pr_head_branch`.
     PrHead(&'a str),
+    /// A branch the task pins its worktree to (`Task.pinned_branch`), checked
+    /// out *literally* rather than used as a start point for a derived
+    /// `<id>-<slug>` branch. Always `origin/<branch>`, never compared against
+    /// local — a pinned branch is by construction long-lived and shared (the
+    /// staging-pipeline case), so a stale local copy of the same name would
+    /// silently poison the checkout, exactly as for [`BaseRef::PrHead`].
+    ///
+    /// Constructed by `dispatch::agents::dispatch_with_prompt` whenever the
+    /// task carries a `pinned_branch`.
+    Pinned(&'a str),
 }
 
 impl BaseRef<'_> {
     fn name(&self) -> &str {
         match self {
-            BaseRef::Branch(b) | BaseRef::PrHead(b) => b,
+            BaseRef::Branch(b) | BaseRef::PrHead(b) | BaseRef::Pinned(b) => b,
         }
     }
 }
@@ -363,7 +373,7 @@ pub(super) fn provision_worktree(
         {
             FetchOutcome::Fetched => {
                 let sp = match base_ref {
-                    BaseRef::PrHead(b) => StartPoint::Remote {
+                    BaseRef::PrHead(b) | BaseRef::Pinned(b) => StartPoint::Remote {
                         base: b.to_string(),
                     },
                     BaseRef::Branch(b) => select_start_point(runner, &repo_path, b),
@@ -389,6 +399,18 @@ pub(super) fn provision_worktree(
                     "origin has no branch {b}; refusing to base a PR review on a local branch \
                      of the same name"
                 ),
+                // Unlike a PR head, a pinned branch is checked out *by name* —
+                // `git worktree add <path> <branch>` resolves it locally
+                // regardless of what this measurement says, so there is no
+                // wrong-code-silently-checked-out hazard to guard against. All
+                // this decides is the preamble's rebase target, and with no
+                // origin ref, local `<branch>` is the only honest answer.
+                BaseRef::Pinned(b) => (
+                    Some(StartPoint::Local {
+                        base: b.to_string(),
+                    }),
+                    Some(warning),
+                ),
             },
             // Reuse path only. Nothing is being created from this ref, so the
             // choice only sets the preamble's rebase target.
@@ -409,7 +431,12 @@ pub(super) fn provision_worktree(
                 // pinned to the origin ref is both safe and honest: if the
                 // preamble's rebase cannot reach it, the agent sees that
                 // directly, and the `Note:` explains why.
-                BaseRef::PrHead(b) => (
+                // A pinned worktree's own checked-out branch IS `<branch>`, so
+                // pointing the preamble at local `<branch>` would be a rebase
+                // onto itself. `origin/<branch>` stays the target even
+                // unrefreshed; if the rebase cannot reach it the agent sees
+                // that directly, and the `Note:` explains why.
+                BaseRef::PrHead(b) | BaseRef::Pinned(b) => (
                     Some(StartPoint::Remote {
                         base: b.to_string(),
                     }),
@@ -433,17 +460,23 @@ pub(super) fn provision_worktree(
         fs::create_dir_all(format!("{repo_path}/.worktrees"))
             .context("failed to create .worktrees directory")?;
 
-        let mut args = vec![
-            "-C",
-            &repo_path,
-            "worktree",
-            "add",
-            &worktree_path,
-            "-B",
-            &worktree_name,
-        ];
-        if let Some(sp) = start_ref.as_deref() {
-            args.push(sp);
+        let mut args = vec!["-C", &repo_path, "worktree", "add", &worktree_path];
+        match base {
+            // A pinned branch is checked out by name, with no `-B` and no start
+            // point: the branch already exists and must keep its identity —
+            // it is a long-lived, shared branch other worktrees may be based
+            // on. `-B <worktree_name> <start>` would instead create (or reset)
+            // a disposable `<id>-<slug>` branch, which is exactly what pinning
+            // exists to avoid. Git's DWIM creates the local branch from
+            // `origin/<branch>` when it does not exist yet.
+            Some(BaseRef::Pinned(branch)) => args.push(branch),
+            _ => {
+                args.push("-B");
+                args.push(&worktree_name);
+                if let Some(sp) = start_ref.as_deref() {
+                    args.push(sp);
+                }
+            }
         }
         let output = runner
             .run_with_timeout("git", &args, timeout)
