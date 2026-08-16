@@ -38,7 +38,7 @@
 #     for 1 real finding — a 97% false-positive rate. A checker that cries wolf
 #     gets bypassed. #4097 recovered most of the value by raising the bar to
 #     four underscores, which is where the corpus goes quiet; see the `bare`
-#     note below and docs/plans/3807-check-doc-symbols.md.
+#     note below and docs/plans/archive/2026-07-31-3807-check-doc-symbols.md.
 #   - bare PascalCase with no `::`. Allium block names (EpicStatusRecalculation,
 #     WorktreeReleaseIsGated, …) live only in `--` prose and are indistinguish-
 #     able from type names: ~60 hits, 0 real findings.

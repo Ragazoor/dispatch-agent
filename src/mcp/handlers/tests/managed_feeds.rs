@@ -204,7 +204,7 @@ async fn set_provisions_managed_epics() {
 /// `docs/specs/feeds.allium`), so without this notification a feed enabled here
 /// on a previously feed-less instance is provisioned but never polled — stranded
 /// until an unrelated `EpicChanged` or a restart. Since the TUI `C`-key save path
-/// was removed (docs/plans/3809-keybinding-pruning-implementation.md §6) this is
+/// was removed (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §6) this is
 /// the only path that can enable a feed, so it is the only thing holding that
 /// invariant up. Guards the runtime-side half at
 /// `src/runtime/tests.rs::mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed`.

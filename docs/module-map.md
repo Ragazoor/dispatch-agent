@@ -10,7 +10,7 @@ to look.
 |------|---------------|
 | `src/main.rs` | CLI entry point (clap), subcommand dispatch (`tui`, `setup`, `verify-feed`, `repo`, …), global `--db` flag, `app.log` tracing subscriber |
 | `src/lib.rs` | Crate root, public module re-exports, `DEFAULT_PORT`, `default_db_path()` |
-| `src/cli/mod.rs` | CLI submodule declarations (`agent_tree`, `caller_headers`) |
+| `src/cli/mod.rs` | CLI submodule declarations (`agent_tree`, `caller_headers`, `statusline`) |
 | `src/cli/caller_headers.rs` | `dispatch caller-headers` — pure CWD→identity-header resolver used as Claude Code's `headersHelper`, so an agent's MCP calls carry `X-Caller-Task-Id`. No DB, no network, no async |
 | `src/cli/agent_tree.rs` | `dispatch agent-tree <task_id>` — standalone ratatui companion-pane renderer, deliberately not part of the board TUI's `App`/message loop. Converts subtask 3's `agent_tree::TreeNode` into `tui_tree_widget` items with `[Modified]`/`[Read]` badges (`build_tree_items`), tracks manual expand/collapse across redraws so only newly-touched directories auto-open (`RenderState`), maps one key press onto that view state in a terminal-free `handle_key` (vim motions and arrows as aliases; it takes the tree so expand/toggle can be guarded on directories — the widget's own `open()` has no leaf guard), and `run()` polls the task's file-events JSONL on a 1-second timer (see `docs/specs/agent-tree.allium`'s `AgentTreeCompanionPane` surface) |
 | `src/cli/statusline.rs` | `dispatch statusline` decorator: records the subscription rate-limit windows from Claude Code's statusLine hook payload to a snapshot file, then runs the user's previous statusLine command and prints its output verbatim. Never fails (always exits 0) and never opens the database — see the module doc comment |
@@ -28,7 +28,8 @@ to look.
 | `src/tui/text_caret.rs` | Pure single-line caret mechanics (`insert`, `delete_before`, `move_left`, `word_left`, `byte_offset`, …) shared by every text `InputMode` — see the caret convention in `docs/conventions.md` |
 | `src/tui/ui/mod.rs` | Rendering entry point — re-exports `render()`, thin dispatcher |
 | `src/tui/ui/kanban/` | Kanban board rendering: `mod.rs` entry, `cards.rs`, `columns.rs`, `status_bar.rs`, `tests.rs`, `popups/` overlays (`help.rs`, `error.rs`, `task_detail.rs`, `reparent_epic.rs`, `repo_filter.rs`) |
-| `src/tui/ui/shared.rs` | Cross-board helpers: `refresh_status`, `truncate`, `fair_truncate_segments`, `push_hint_spans`, `caret_line` |
+| `src/tui/ui/shared.rs` | Cross-board helpers: `refresh_status`, `truncate`, `fair_truncate_segments`, `push_hint_spans`, `caret_line`, plus the two `pub(in crate::tui::ui)` render helpers `staleness_color` (staleness → colour) and `feed_role_label` (`FeedRole` → kebab-case badge text). Those two are unreachable from `src/tui/tests/`, so their tests live inline here |
+| `src/tui/ui/budget.rs` | Subscription rate-limit indicator: `budget_spans` renders the 5-hour/7-day windows from a `BudgetSnapshot` into status-bar spans — colour by threshold, countdown to reset, dimmed with an age suffix when the snapshot is stale, and graceful degradation (drop countdowns, then the 7-day window, then everything) as the available width shrinks. `pub(in crate::tui::ui)`, so its tests are inline |
 | `src/tui/ui/palette.rs` | Tokyo Night color palette constants |
 | `src/tui/ui/{input_form,todos}.rs` | Overlay renderers (input forms, TODO overlay) |
 | `src/tui/types.rs` | `Message`, `Command`, `ViewMode`, `InputMode`, `LayoutCache`, `AgentTracking` enums and structs |

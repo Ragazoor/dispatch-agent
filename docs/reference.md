@@ -110,19 +110,64 @@ Press `Space` on a Backlog task:
 
 The agent reports progress via the MCP server running on `localhost:3142`. When it finishes, it moves the task to Review. Closing a tmux window does **not** delete the worktree — press `Space` again on a Running task to resume (or, if the window is still alive, `Space` jumps to it).
 
-## CLI Usage
+## Running & Debugging Locally
 
 ```bash
-# Start the TUI (must be inside a tmux session)
-dispatch tui
+cargo run -- tui                                  # requires a running tmux server
+cargo run -- --db /tmp/scratch.db tui             # throwaway DB — never point a dev run at your real one
+RUST_LOG=dispatch_tui=debug cargo run -- tui      # then tail the log file (see below)
+```
 
-# CLI — used by agents and hooks
-dispatch plan <task-id> <plan-path>
+- **A tmux server must already be running.** `dispatch tui` drives tmux for every
+  window/pane operation and does no preflight — start a session (or run the TUI
+  from inside one) before launching it.
+- **DB location**: `$XDG_DATA_HOME/dispatch/tasks.db`, else `~/.local/share/dispatch/tasks.db` (`default_db_path()` in `src/lib.rs`). Override with the global `--db` flag or `DISPATCH_DB`. To reset, delete the file — the schema is rebuilt from `MIGRATIONS` on next open.
+- **Logs do not go to stderr.** `cmd_tui` installs a `tracing_subscriber` that appends to `app.log` **next to the database file** (`init_app_log_subscriber` in `src/main.rs`), because stderr belongs to the TUI. Watch it with `tail -f ~/.local/share/dispatch/app.log`. The floor is `INFO`; `RUST_LOG` (crate name `dispatch_tui`) raises it.
+- **MCP port**: `DEFAULT_PORT = 3142` (`src/lib.rs`), override with `--port` on `tui`/`setup` or `DISPATCH_PORT`.
+- **Exercising MCP by hand**: see `docs/mcp.md`. Identity comes from headers, and **exactly one** of the two must be set (`src/mcp/identity.rs::from_headers`, applied by the `src/mcp/middleware.rs` middleware). A bare `curl` sends neither, so it resolves to `IdentityError::Missing` and any handler that requires authorization rejects it. Send `-H 'X-Caller-Task-Id: <id>'` to act as that task's agent, or `-H 'X-Caller-Kind: session'` to act as the human session; sending both is a `Conflict`.
+
+## CLI Usage
+
+Every subcommand `dispatch` defines (`Commands` in `src/main.rs`). Most exist for
+hooks and agents rather than for humans.
+
+```bash
+# Board
+dispatch tui [--port <port>]                     # start the TUI (needs a running tmux server)
+
+# Tasks — the only task subcommand; creating, listing and updating are MCP-only
+dispatch plan <id> <plan-path>                   # attach a plan file to an existing task
+
+# Install / remove the Claude Code integration
+dispatch setup [--port <port>] [-y]
+dispatch uninstall [-y] [--purge]                # --purge also deletes the DB and logs
+
+# Claude Code hook receivers (wired by `dispatch setup`; not meant to be run by hand)
+dispatch hook <id> <kind> [--kind <notification-kind>]
+dispatch hook-subagent <id> <start|stop|clear> [--agent-id <id>] [--session-id <id>]
+dispatch hook-shell <id> <start|stop> [--shell-id <id>] [--session-id <id>]
+dispatch hook-peer-message <id> --target <session> --body <text>
+dispatch hook-file-event <id> --tool <Read|Write|Edit|NotebookEdit> --path <path>
+dispatch pr-gate <id>                            # PreToolUse gate on the first `gh pr create`
+dispatch caller-headers                          # headersHelper: $PWD → X-Caller-* headers
+
+# Agent-tree companion pane
+dispatch agent-tree <task-id>                    # standalone file-tree renderer for one agent
+dispatch toggle-agent-tree-pane <window>         # bound to a tmux key; not for manual use
 
 # statusLine decorator (wired into ~/.claude/dispatch-statusline.json by
 # `dispatch setup`) — records rate-limit windows, then chains to the
 # previous statusLine command
 dispatch statusline --snapshot <path> [--chain <command>]
+
+# Feeds
+dispatch verify-feed '<command>'                 # run a feed command and validate its JSON
+
+# Per-repo settings
+dispatch repo set-verify <path> <command>        # set the repo's verify command
+dispatch repo clear-verify <path>
+dispatch repo list                               # known repo paths + their verify commands
+dispatch prune-repo-paths                        # forget repo paths that no longer exist
 
 # Local-first repo sync (see docs/specs/repo-sync.allium)
 dispatch repo status [--no-fetch]   # one drift row per saved repo path; read-only
@@ -243,6 +288,28 @@ are dropped with a warning rather than failing the whole feed.
 > consistent: a just-reviewed PR can still match `review-requested:@me` for a
 > poll cycle or two. Routing is correct once the signals settle, so a bucket
 > move may lag the real-world action briefly. This is expected, not a bug.
+
+## External Dependencies
+
+Required on `PATH` at runtime, with **no startup preflight** — nothing checks
+binary availability, so a missing binary surfaces as a failed shell command
+mid-operation:
+
+- **tmux** (`src/tmux.rs`) — every window/pane operation. Also a **test** dependency: the `tmux_*` integration targets need it (see `docs/testing.md`).
+- **git** (`src/git.rs`, `src/dispatch/worktree.rs`, `src/dispatch/finish.rs`) — worktrees, rebase, branch detection.
+- **gh** (`src/dispatch/mod.rs`, and the `scripts/fetch-*.sh` feed commands) — PR status and feed data. Network calls.
+- **claude** — spawned inside the tmux window by `src/dispatch/agents.rs` as `claude --plugin-dir ~/.claude/plugins/local/dispatch --settings ~/.claude/dispatch-statusline.json …`. Both flags are always present and both are load-bearing: the plugin dir is installed by `cargo run -- setup`, and a **missing settings file aborts `claude` outright**, so `runtime::bootstrap` recreates it best-effort at TUI startup (generated by `src/setup/statusline.rs`; it is never `~/.claude/settings.json`).
+
+The agent launchers read `claude`/`dispatch` from `ProcessRunner::agent_binaries`
+(`src/process.rs`) rather than hardcoding them — see "One quoting layer per
+launch site" in `docs/conventions.md` before touching a launch site.
+
+That same generated settings file also enables Claude Code's sandbox mode for
+every dispatched agent (`sandbox.enabled: true` plus a credential-directory
+read-deny list — see `SandboxedAgentExecution` in `docs/specs/dispatch.allium`).
+On Linux/WSL2 this needs `bubblewrap` and `socat` on `PATH`
+(`sudo dnf install bubblewrap socat` on Fedora); if either is missing, Claude
+Code warns and falls back to running unsandboxed rather than failing to start.
 
 ## Setup
 

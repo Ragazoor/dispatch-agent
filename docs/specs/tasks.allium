@@ -620,7 +620,7 @@ rule MoveTaskToEpic {
 -- operator can retry the teardown by deleting the archived task again. Without
 -- it, a transient git failure permanently strands a worktree that nothing in
 -- the system references — the mechanism investigated in
--- docs/plans/2026-08-11-3897-worktree-cleanup-investigation.md.
+-- docs/plans/archive/2026-08-11-3897-worktree-cleanup-investigation.md.
 --
 -- Two paths are deliberately exempt from (c), and both still owe (a) and (b):
 -- RetryFresh (its own postcondition clears the pointer, and the immediate

@@ -1387,7 +1387,7 @@ async fn cleanup_fixture_owning(
 /// The row keeps its pointer so the leftover directory stays reachable from the
 /// board, and the failure is reported. `WorktreeReleaseIsGated` in
 /// docs/specs/tasks.allium; the silent-orphan mechanism from
-/// docs/plans/2026-08-11-3897-worktree-cleanup-investigation.md §3.
+/// docs/plans/archive/2026-08-11-3897-worktree-cleanup-investigation.md §3.
 #[tokio::test]
 async fn exec_cleanup_failure_keeps_the_worktree_pointer() {
     let worktree = "/repo/.worktrees/1-doomed";
@@ -2559,7 +2559,7 @@ async fn exec_persist_epic_writes_back_leaving_done_sort_order_clear_immediately
 }
 
 /// Regression for learning #162, ported from the retired TUI `[C]` save path
-/// (docs/plans/3809-keybinding-pruning-implementation.md §6): a freshly-enabled
+/// (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §6): a freshly-enabled
 /// feed on a previously feed-less instance must become pollable after
 /// `set_managed_feed_config` notifies the runtime, not stay stranded behind the
 /// FeedRunner's `any_feed_cmds == Some(false)` short-circuit until an unrelated

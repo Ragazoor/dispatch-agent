@@ -1242,7 +1242,7 @@ rule RoleRoutedFeedSync {
         -- src/dispatch/mod.rs::repo_name_from_url and memoised in an
         -- in-memory (role_sub_epic_id, repo_name) -> repo_group_epic_id cache
         -- for the duration of one sync; a create failure falls back to
-        -- role_target. can_auto_group is src/models/epics.rs:37 (group_by_repo
+        -- role_target. can_auto_group is src/models/epics.rs::can_auto_group (group_by_repo
         -- && feed_command.is_none()).
         -- The subtree delete is
         -- src/db/queries/tasks.rs::delete_stale_subtree_feed_tasks, ONE level
@@ -1332,7 +1332,7 @@ rule RoleRoutedFeedSync {
         -- The existing-task lookup
         -- that decides
         -- move-vs-insert is
-        -- src/feed/ingest/role_routed.rs:131::build_existing_task_index: it
+        -- src/feed/ingest/role_routed.rs::build_existing_task_index: it
         -- scans the parent FIRST (lowest priority), then each role sub-epic's
         -- children (repo-group grandchildren), then the role sub-epics
         -- themselves LAST — so external_id identity is global across all three
@@ -1343,7 +1343,7 @@ rule RoleRoutedFeedSync {
         -- db.set_task_epic_id (epic_id +
         -- updated_at only) THEN db.patch_task(fields). role_sub_epic is
         -- ensure_role_sub_epic (idempotent, matched by feed_role). Recalculation
-        -- is src/feed/ingest/role_routed.rs:169::recalculate_subtree: repo-group
+        -- is src/feed/ingest/role_routed.rs::recalculate_subtree: repo-group
         -- sub-epics first (bottom-up), then role sub-epics, then the parent.
         -- Coverage:
         -- src/feed/ingest/tests.rs (move preserves in-flight worktree/status;

@@ -17,7 +17,7 @@ MCP handler (e.g. handle_update_task)
 ```
 
 Key types in the chain:
-- `McpEvent` (`src/mcp/mod.rs:24`) — `Refresh` (catch-all full reload), `TaskChanged(TaskId)` / `EpicChanged(EpicId)` (targeted single-row reloads, preferred when the changed entity is known)
+- `McpEvent` (`src/mcp/mod.rs::McpEvent`) — `Refresh` (catch-all full reload), `TaskChanged(TaskId)` / `EpicChanged(EpicId)` (targeted single-row reloads, preferred when the changed entity is known)
 - `McpState::notify()` — fire-and-forget send on the channel
 - `TuiRuntime::exec_refresh_from_db()` (`src/runtime/tasks.rs`) — reloads tasks, epics, and usage from DB
 - `TaskMessage::Refresh` (`src/tui/messages/task.rs`) — carries the fresh task list into the App, wrapped as `Message::Task`

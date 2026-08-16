@@ -1900,7 +1900,7 @@ fn typing_resets_repo_cursor_to_zero() {
 }
 
 /// The retired startup tips popup used to sit in front of the board and swallow
-/// exactly these six keys (`docs/plans/3809-keybinding-pruning-implementation.md`
+/// exactly these six keys (`docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md`
 /// §2). Nothing may intercept them on a freshly started app again: each one has
 /// to reach its board handler on the very first keypress.
 #[test]

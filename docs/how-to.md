@@ -2,7 +2,7 @@
 
 ## Adding a New MCP Tool
 
-The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch arm, and `TOOL_NAMES` all expand from the `mcp_tools!` macro's single declarative list (`src/mcp/handlers/dispatch.rs:39`) — do not hand-edit any of the three, and read the macro's doc comment before adding an entry.
+The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch arm, and `TOOL_NAMES` all expand from the `mcp_tools!` macro's single declarative list (`src/mcp/handlers/dispatch.rs::mcp_tools`) — do not hand-edit any of the three, and read the macro's doc comment before adding an entry.
 
 1. **Add the argument struct** next to its siblings — task tools in `src/mcp/handlers/tasks/mod.rs`, other domains in their own handler module. Derive `Deserialize`, and annotate every integer field with a flexible deserializer from `src/mcp/handlers/types.rs`, since Claude Code may send integers as strings: `deserialize_flexible_id` / `deserialize_optional_flexible_id` / `deserialize_nullable_flexible_id` for entity ids (the field's type is the newtype itself — `TaskId`, `EpicId`, `LearningId` — never a bare `i64`), and the `*_flexible_i64` trio for genuine integers like `sort_order` or `limit`. Parse enum-valued fields into their model type at the boundary too (`status`, `tag`, `sub_status`, `url_type`) rather than carrying a `String` inward.
 
@@ -22,7 +22,7 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
    }
    ```
 
-   Reads may go through `state.db`. **Mutations must not** — task and epic writes go through `state.task_svc` / `state.epic_svc` (`TaskServiceApi` / `EpicServiceApi`), because the service layer owns invariants like epic-status recalculation. `McpState.db` is typed `Arc<dyn db::TaskReadStore>` (`src/mcp/mod.rs:95`), so `state.db.patch_task(…)` is a **compile error**, locked in by a `compile_fail` doctest at `src/db/mod.rs:621`. <!-- allow-phantom-symbol: compile_fail is a rustdoc attribute, not our symbol --> Map service errors with `service_err_to_response`, and call `state.notify()` after a successful mutation so the TUI refreshes. See the [service mutation boundary](conventions.md#service-layer-is-the-mutation-boundary).
+   Reads may go through `state.db`. **Mutations must not** — task and epic writes go through `state.task_svc` / `state.epic_svc` (`TaskServiceApi` / `EpicServiceApi`), because the service layer owns invariants like epic-status recalculation. `McpState.db` is typed `Arc<dyn db::TaskReadStore>` (`src/mcp/mod.rs::McpState`), so `state.db.patch_task(…)` is a **compile error**, locked in by a `compile_fail` doctest on `src/db/mod.rs::TaskReadStore`. <!-- allow-phantom-symbol: compile_fail is a rustdoc attribute, not our symbol --> Map service errors with `service_err_to_response`, and call `state.notify()` after a successful mutation so the TUI refreshes. See the [service mutation boundary](conventions.md#service-layer-is-the-mutation-boundary).
 
 3. **Register the tool** by adding one entry to the `mcp_tools!` list in `src/mcp/handlers/dispatch.rs`: the `sync`/`async` kind, the tool name, the handler path, the description string, and the JSON input schema.
 
@@ -101,7 +101,7 @@ Adding a fully integrated entity involves five layers. Work through them in orde
 
 3. **DB trait and queries** (`src/db/mod.rs`, `src/db/queries/`):
    - Define a narrow sub-trait (e.g., `trait NewEntityCrud`) with CRUD methods. Follow the [trait-narrowing convention](conventions.md#db-trait-narrowing--take-the-narrowest-sub-trait-you-need).
-   - Add `NewEntityCrud` as a supertrait of the store the holders actually carry. `McpState` and `TuiRuntime` hold `Arc<dyn TaskReadStore>` (`src/mcp/mod.rs:95`), so a **read** trait belongs on `TaskReadStore`; a **mutating** trait belongs on `TaskStore` and stays out of `TaskReadStore` — that split is what makes bypassing the service layer a compile error.
+   - Add `NewEntityCrud` as a supertrait of the store the holders actually carry. `McpState` and `TuiRuntime` hold `Arc<dyn TaskReadStore>` (`src/mcp/mod.rs::McpState`), so a **read** trait belongs on `TaskReadStore`; a **mutating** trait belongs on `TaskStore` and stays out of `TaskReadStore` — that split is what makes bypassing the service layer a compile error.
    - Implement `impl NewEntityCrud for Database` under `src/db/queries/` (a new file per domain, wired into `src/db/queries/mod.rs`). Writes go through `self.db_call(|conn| …)`, pure reads through `self.db_call_read(|conn| …)`; there is no `self.conn()` accessor. See the [`db_call` / `db_call_read` convention](conventions.md#db-access--db_call--db_call_read).
    - Define a `NewEntityPatch` builder struct with `Option<Option<T>>` for nullable fields; implement the `UPDATE` query.
    - Write a corresponding `NewEntityFilter` if list queries need filtering.
@@ -120,6 +120,14 @@ Adding a fully integrated entity involves five layers. Work through them in orde
 ## Adding a Database Migration
 
 Migrations live in `src/db/migrations.rs` as standalone functions. We do **not** squash migrations — see the module-level doc comment in `src/db/migrations.rs` for the policy.
+
+**The guarded form below is mandatory for every new migration.** `src/db/migrations.rs`
+still contains older sites that swallow the result with a bare
+`let _ = conn.execute_batch(…)`. Those are **frozen history**: they have already
+run against every live database, so changing them now would be a no-op at best
+and a schema divergence at worst. Do not copy the pattern into anything new —
+propagate the error (`?`) and guard on the columns your statement touches, as
+described in steps 1 and 4.
 
 1. **Write the migration function**: `fn migrate_vN_description(conn: &Connection) -> Result<()>` in `src/db/migrations.rs`. Use `ALTER TABLE` for additive changes; for destructive changes (column removal, constraint changes), create a new table, copy data, drop old, rename. **Do not** wrap the body in its own `BEGIN`/`COMMIT` or toggle `PRAGMA foreign_keys` — `apply_pending_migrations` (`src/db/mod.rs`) already runs the whole function inside one `BEGIN IMMEDIATE` transaction with FK checks toggled off around it (needed for table-rebuild migrations, harmless otherwise); an inner `BEGIN` would error ("cannot start a transaction within a transaction") and an inner FK toggle would silently no-op. If a migration genuinely needs a statement SQLite refuses to run inside a transaction (e.g. `VACUUM` — see `migrate_v71_create_backup`), split that step into its own function and call it from `init_schema_sync` before `apply_pending_migrations`, gated on `current_version < N`, rather than from inside the migration body.
 

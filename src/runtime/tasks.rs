@@ -786,7 +786,7 @@ impl TuiRuntime {
                         // The only durable record of a failed teardown. Without it
                         // a leftover worktree cannot be attributed to anything
                         // after the fact — see
-                        // docs/plans/2026-08-11-3897-worktree-cleanup-investigation.md.
+                        // docs/plans/archive/2026-08-11-3897-worktree-cleanup-investigation.md.
                         tracing::error!(
                             task_id = id.0,
                             worktree_path = %worktree,

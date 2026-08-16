@@ -173,7 +173,7 @@ a field; they are not redundant with the destructuring.
 
 ## DB trait narrowing — take the narrowest sub-trait you need
 
-`TaskStore` (`src/db/mod.rs:570`) is a supertrait of `TaskAndEpicStore + TaskReadStore + SettingsStore + LearningStore + LearningRetrievalStore + UsageStore`. New consumers should hold the narrowest sub-trait they actually call:
+`TaskStore` (`src/db/mod.rs::TaskStore`) is a supertrait of `TaskAndEpicStore + TaskReadStore + SettingsStore + LearningStore + LearningRetrievalStore + UsageStore`. New consumers should hold the narrowest sub-trait they actually call:
 
 | Consumer | Holds |
 |----------|-------|
@@ -368,10 +368,10 @@ Two consequences for tests. `stop_pending_at` is stored at millisecond resolutio
 
 ## Reparenting an epic — three guards, no immutability
 
-`parent_epic_id` **is** mutable: `EpicPatch` declares it `nullable` (`src/db/mod.rs:130`), `patch_epic` writes it (`src/db/queries/epics.rs:241`), `EpicService::update_epic` implements reparent-and-detach (`src/service/epics.rs:292`), and the TUI has a reparent picker (`src/tui/ui/kanban/popups/reparent_epic.rs`). Route reparenting through the service — it owns three guards a bare `patch_epic` skips:
+`parent_epic_id` **is** mutable: `EpicPatch` declares it `nullable` (`src/db/mod.rs::EpicPatch`), `patch_epic` writes it (`src/db/queries/epics.rs::patch_epic`), `EpicService::update_epic` implements reparent-and-detach (`src/service/epics.rs::update_epic`), and the TUI has a reparent picker (`src/tui/ui/kanban/popups/reparent_epic.rs`). Route reparenting through the service — it owns three guards a bare `patch_epic` skips:
 
-1. **Cycle detection** — `check_no_cycle` (`src/service/epics.rs:313`) walks the proposed parent's ancestor chain and rejects with `ServiceError::Validation` if the epic being moved appears in it (self-parent included).
-2. **RepoGroup guard** (`src/service/epics.rs:282`) — an auto-created `EpicOrigin::RepoGroup` sub-epic cannot be reparented *or* detached to root; either would orphan it outside its grouping root.
+1. **Cycle detection** — `check_no_cycle` (`src/service/epics.rs::check_no_cycle`) walks the proposed parent's ancestor chain and rejects with `ServiceError::Validation` if the epic being moved appears in it (self-parent included).
+2. **RepoGroup guard** (in `src/service/epics.rs::update_epic`) — an auto-created `EpicOrigin::RepoGroup` sub-epic cannot be reparented *or* detached to root; either would orphan it outside its grouping root.
 3. **DB `CHECK (parent_epic_id != id)`** (migration v35) — defence-in-depth against a row becoming its own parent, alongside the visited-set guard in `recalculate_epic_status_inner`.
 
 `UpdateEpicParams.parent_epic_id` is an `Option<Option<EpicId>>`: `None` leaves the parent alone, `Some(Some(id))` reparents, `Some(None)` detaches to root.
@@ -442,7 +442,7 @@ The general rule: **mutate the fix and confirm the test fails.** A real-tmux tes
 
 ### Writing a mock tmux test: `MockProcessRunner`'s window-lookup policy
 
-Every `tmux::` helper that takes a window *name* first resolves it to a pane ID via `window_target` (`src/tmux.rs`) — an extra `list-panes` call, because tmux prefix-matches a bare `-t <name>`. `MockProcessRunner` therefore carries a `WindowLookup` policy (`src/process.rs:289`) deciding how that lookup is answered, and the default is **not** "from the response queue":
+Every `tmux::` helper that takes a window *name* first resolves it to a pane ID via `window_target` (`src/tmux.rs`) — an extra `list-panes` call, because tmux prefix-matches a bare `-t <name>`. `MockProcessRunner` therefore carries a `WindowLookup` policy (`src/process.rs::WindowLookup`) deciding how that lookup is answered, and the default is **not** "from the response queue":
 
 | Policy | How the lookup is answered | When to use |
 |---|---|---|
@@ -529,6 +529,17 @@ Use whichever of these fits the thing you're waiting on:
 
 - **An injected threshold when the behaviour under test is "did this take longer than X".** Don't sleep past the real threshold, and don't assume a trivial closure beats it either — a loaded CI box can push a no-op `db_call` past 200 ms, so asserting the *absence* of a slow-call warning is just as load-sensitive as asserting its presence. `Database::set_slow_call_threshold` (`#[cfg(test)]`, per-instance so parallel tests don't race) pins `SLOW_DB_CALL_THRESHOLD` for one `Database`: `Duration::ZERO` forces the warning, an hour forbids it. See `src/db/tests/async_handle.rs`.
 
+## Tag system
+
+Tags (`src/models/tasks.rs::TaskTag`): `Bug`, `Feature`, `Chore`, `PrReview`, `Research`, `Fix`, `Dependabot`. Most are **kanban labels only**.
+
+Exactly two mechanisms read the tag:
+
+- `src/models/tasks.rs::DispatchMode::for_task` — `Research`, and only `Research`, and only when the task has no plan, routes to the read-only research agent (`build_research_prompt`). Everything else, plan or no plan, routes to `Dispatch`. There are only two `DispatchMode` variants.
+- `src/models/tasks.rs::TaskTag::is_review` — true for `PrReview | Dependabot`. Inside the unified `src/dispatch/prompts.rs::build_prompt` this swaps in a review addendum from `src/dispatch/prompts/pr-review.md` or `dependabot.md`, skips the plan/implement instructions in favour of a trimmed trailing block, and — when the task carries a PR URL — bases the worktree on the PR's head branch instead of the repo's base branch, soft-falling back to the base branch if that can't be resolved (`src/dispatch/agents.rs::pr_head_branch`).
+
+`Bug`, `Feature`, `Chore`, and `Fix` change nothing but the card badge.
+
 ## No phantom symbol references in docs
 
 `./scripts/check-doc-symbols.sh` (pre-push) rejects a backticked snake_case identifier that occurs **nowhere in the code**. It covers `CLAUDE.md`, the topic files under `docs/`, `docs/specs/*.allium`, and the doc comments (`///`, `//!`) in `src/**/*.rs`. It exists because `check-doc-paths.sh` validates paths but never symbol names, which is how two phantom function names survived until #3806 removed them by hand.
@@ -542,7 +553,7 @@ Two properties are load-bearing and easy to break:
 
 Escape hatch, for deliberate references to removed code and to external-crate names: an `allow-phantom-symbol: <why>` comment on the offending line or the line directly above, mirroring `allow-test-sleep:`. In a Rust doc block the marker is a plain `//` line interleaved between `///` lines.
 
-Two surfaces are deliberately unguarded. `docs/plans/`, `docs/superpowers/`, and `docs/research/` are dated artifacts that describe code as it stood then. And **bare (un-backticked) identifiers in Allium `--` comments are not scanned** — doing so would catch #3806's `dispatch.allium` phantom, but measured 37 hits for 1 real finding. A checker that cries wolf gets bypassed, so that one stays uncaught by design; see `docs/plans/3807-check-doc-symbols.md`.
+Two surfaces are deliberately unguarded. `docs/plans/`, `docs/superpowers/`, and `docs/research/` are dated artifacts that describe code as it stood then. And **bare (un-backticked) identifiers in Allium `--` comments are not scanned** — doing so would catch #3806's `dispatch.allium` phantom, but measured 37 hits for 1 real finding. A checker that cries wolf gets bypassed, so that one stays uncaught by design; see `docs/plans/archive/2026-07-31-3807-check-doc-symbols.md`.
 
 ### `file:NN` vs `path::symbol` citations
 

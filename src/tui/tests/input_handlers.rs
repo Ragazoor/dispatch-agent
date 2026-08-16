@@ -2286,7 +2286,7 @@ fn handle_key_normal_board_unknown_key_is_noop() {
 }
 
 /// `I` used to open the knowledge-base overlay, removed in
-/// docs/plans/3809-keybinding-pruning-implementation.md §3. It is now unbound:
+/// docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §3. It is now unbound:
 /// no match arm, so it must fall through exactly like any unknown key. Learnings
 /// are curated via MCP only.
 #[test]
@@ -2299,7 +2299,7 @@ fn handle_key_normal_board_learnings_key_is_unbound() {
 }
 
 /// `C` used to open the managed-feed config popup, removed in
-/// docs/plans/3809-keybinding-pruning-implementation.md §6. It is now unbound:
+/// docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §6. It is now unbound:
 /// no match arm, so it must fall through exactly like any unknown key. The four
 /// managed-feed settings are configured via MCP only
 /// (`set_managed_feed_config` / `get_managed_feed_config`).

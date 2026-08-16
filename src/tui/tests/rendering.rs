@@ -159,7 +159,7 @@ async fn action_hints_no_task() {
 }
 
 /// The `[I] learnings` footer hint went with the overlay
-/// (docs/plans/3809-keybinding-pruning-implementation.md §3) — the footer must
+/// (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §3) — the footer must
 /// not advertise a key that no longer has a handler.
 #[tokio::test]
 async fn action_hints_no_longer_advertises_learnings_key() {
@@ -548,7 +548,7 @@ async fn render_help_overlay_shows_tmux_global_bindings() {
 }
 
 /// The `[C] feed config` help line went with the popup
-/// (docs/plans/3809-keybinding-pruning-implementation.md §6) — the help overlay
+/// (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §6) — the help overlay
 /// must not teach a key that no longer has a handler.
 #[tokio::test]
 async fn render_help_overlay_no_longer_teaches_feed_config_key() {
@@ -684,7 +684,7 @@ fn board_normal_source_keys() -> std::collections::BTreeSet<String> {
 }
 
 /// The help overlay must teach exactly the keymap that exists
-/// (docs/plans/3809-keybinding-pruning-implementation.md §7, hardened by
+/// (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §7, hardened by
 /// task #3986).
 ///
 /// This is **bidirectional** on purpose. The predecessor pinned a fixed list

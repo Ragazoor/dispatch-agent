@@ -185,7 +185,7 @@ fn p_uppercase_key_opens_todos() {
 }
 
 // ---------------------------------------------------------------------------
-// `W` removal (docs/plans/3813-keybinding-pruning-implementation.md §1):
+// `W` removal (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §1):
 // the board's wrap-up entry point is gone. Wrap-up is agent-driven only,
 // through the MCP `wrap_up` tool — never through a TUI key.
 // ---------------------------------------------------------------------------
