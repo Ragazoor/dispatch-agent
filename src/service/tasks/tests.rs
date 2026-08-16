@@ -4717,3 +4717,331 @@ mod watchers {
         assert!(db.list_watchers_of(target).await.unwrap().is_empty());
     }
 }
+
+// ---------------------------------------------------------------------------
+// The dispatch orchestration seam
+// ---------------------------------------------------------------------------
+//
+// These are the invariants the three hand-written copies of this flow each
+// asserted separately — `DispatchClaimExclusive` and the release-on-failure
+// unwind in `docs/specs/dispatch.allium`. They are asserted once here, against
+// the seam every entry point now goes through.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod dispatch_seam {
+    use super::*;
+    use crate::dispatch::mock_sequence::{DispatchScript, Step};
+    use crate::models::{DispatchMode, Task};
+    use crate::process::MockProcessRunner;
+    use crate::service::{DispatchClaim, DispatchOutcome, DispatchRequest};
+
+    /// A `Backlog` task rooted at a fresh temp repo, plus a service wired to
+    /// `runner`. The tempdir is returned so the caller keeps it alive.
+    async fn fixture(
+        db: &Arc<dyn db::TaskStore>,
+        runner: Arc<dyn crate::process::ProcessRunner>,
+    ) -> (TaskService, Task, tempfile::TempDir) {
+        let bootstrap = task_svc(db);
+        let id = bootstrap
+            .create_task(make_task_params("/placeholder"))
+            .await
+            .unwrap();
+        let mut task = bootstrap.get_task(id).await.unwrap();
+        // Pre-creating `.worktrees/<id>-<slug>` is what puts provisioning on
+        // the reuse branch `DispatchScript::dispatch` describes.
+        let slug = format!("{}-{}", task.id.0, crate::models::slugify(&task.title));
+        let (dir, repo_path, _) = crate::dispatch::tests::make_test_repo_with_worktree(&slug);
+        bootstrap
+            .update_task(UpdateTaskParams::for_task(id).repo_path(repo_path.clone()))
+            .await
+            .unwrap();
+        task.repo_path = repo_path;
+        (task_svc_with_runner(db, runner), task, dir)
+    }
+
+    fn request(
+        db: &Arc<dyn db::TaskStore>,
+        task: Task,
+        mode: DispatchMode,
+        claim: DispatchClaim,
+    ) -> DispatchRequest {
+        DispatchRequest {
+            task,
+            mode,
+            db: db.clone() as Arc<dyn crate::db::TaskReadStore>,
+            emb_svc: crate::service::embeddings::EmbeddingService::new_test(),
+            epic_ctx: None,
+            claim,
+        }
+    }
+
+    /// The happy path: the seam claims, provisions, and records where the agent
+    /// landed, so the caller never writes `worktree`/`tmux_window` itself.
+    #[tokio::test]
+    async fn dispatch_claims_provisions_and_records_the_agent_location() {
+        let db = test_db().await;
+        let runner = DispatchScript::dispatch().shared_runner();
+        let (svc, task, _dir) = fixture(&db, runner.clone()).await;
+        let id = task.id;
+
+        let outcome = svc
+            .dispatch(request(
+                &db,
+                task,
+                DispatchMode::Dispatch,
+                DispatchClaim::Take,
+            ))
+            .await;
+
+        let DispatchOutcome::Launched(result) = outcome else {
+            panic!("expected Launched, got {outcome:?}");
+        };
+        let stored = svc.get_task(id).await.unwrap();
+        assert_eq!(stored.status, TaskStatus::Running);
+        assert_eq!(
+            stored.worktree.as_deref(),
+            Some(result.worktree_path.as_str())
+        );
+        assert_eq!(
+            stored.tmux_window.as_deref(),
+            Some(result.tmux_window.as_str())
+        );
+        // The `Dispatch` half of the mode routing: the standard agent is the
+        // one that restricts nothing. Its `Research` twin is the next test.
+        assert!(
+            !runner
+                .flattened_calls()
+                .join("\n")
+                .contains("--permission-mode"),
+            "standard dispatch must not restrict permissions: {:?}",
+            runner.recorded_calls()
+        );
+    }
+
+    /// A dispatch that fails after winning the claim owes the release: the task
+    /// must be dispatchable again, exactly as it was before the attempt.
+    #[tokio::test]
+    async fn dispatch_releases_the_claim_when_provisioning_fails() {
+        let db = test_db().await;
+        let runner = DispatchScript::dispatch()
+            .fails_at(Step::NewWindow)
+            .shared_runner();
+        let (svc, task, _dir) = fixture(&db, runner).await;
+        let id = task.id;
+
+        let outcome = svc
+            .dispatch(request(
+                &db,
+                task,
+                DispatchMode::Dispatch,
+                DispatchClaim::Take,
+            ))
+            .await;
+
+        assert!(
+            matches!(outcome, DispatchOutcome::Failed(_)),
+            "expected Failed, got {outcome:?}"
+        );
+        let stored = svc.get_task(id).await.unwrap();
+        assert_eq!(stored.status, TaskStatus::Backlog);
+        assert!(stored.worktree.is_none());
+        assert!(stored.tmux_window.is_none());
+    }
+
+    /// `DispatchClaimExclusive`: a task that is no longer in backlog is reported
+    /// as a lost claim and — the part that matters — nothing is provisioned for
+    /// it, so the winner's worktree is never cut twice.
+    #[tokio::test]
+    async fn dispatch_reports_a_lost_claim_and_provisions_nothing() {
+        let db = test_db().await;
+        let runner = Arc::new(MockProcessRunner::new(vec![]));
+        let (svc, task, _dir) = fixture(&db, runner.clone()).await;
+        // Something else got there first.
+        assert!(svc.claim_backlog_task(task.id).await.unwrap());
+
+        let outcome = svc
+            .dispatch(request(
+                &db,
+                task,
+                DispatchMode::Dispatch,
+                DispatchClaim::Take,
+            ))
+            .await;
+
+        assert!(
+            matches!(outcome, DispatchOutcome::ClaimLost),
+            "expected ClaimLost, got {outcome:?}"
+        );
+        assert!(
+            runner.recorded_calls().is_empty(),
+            "a lost claim must provision nothing: {:?}",
+            runner.recorded_calls()
+        );
+    }
+
+    /// The same exclusion under real concurrency: two callers race the seam and
+    /// exactly one launches.
+    #[tokio::test]
+    async fn two_concurrent_dispatches_launch_exactly_one_agent() {
+        let db = test_db().await;
+        let runner = DispatchScript::dispatch().shared_runner();
+        let (svc, task, _dir) = fixture(&db, runner).await;
+        let svc = Arc::new(svc);
+
+        let (s1, s2) = (svc.clone(), svc.clone());
+        let (t1, t2) = (task.clone(), task);
+        let (db1, db2) = (db.clone(), db.clone());
+        let h1 = tokio::spawn(async move {
+            s1.dispatch(request(
+                &db1,
+                t1,
+                DispatchMode::Dispatch,
+                DispatchClaim::Take,
+            ))
+            .await
+        });
+        let h2 = tokio::spawn(async move {
+            s2.dispatch(request(
+                &db2,
+                t2,
+                DispatchMode::Dispatch,
+                DispatchClaim::Take,
+            ))
+            .await
+        });
+        let (a, b) = (h1.await.unwrap(), h2.await.unwrap());
+
+        let outcomes = [&a, &b];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| matches!(o, DispatchOutcome::Launched(_)))
+                .count(),
+            1,
+            "exactly one caller may provision: {a:?} / {b:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| matches!(o, DispatchOutcome::ClaimLost))
+                .count(),
+            1,
+            "the other must see a lost claim: {a:?} / {b:?}"
+        );
+    }
+
+    /// `DispatchClaim::Held` is for the epic chain, whose
+    /// `claim_next_backlog_task` both selected and claimed the row: the seam
+    /// must not try to claim it a second time (which would lose, since the task
+    /// is already Running) and must dispatch it.
+    #[tokio::test]
+    async fn dispatch_with_a_held_claim_does_not_reclaim() {
+        let db = test_db().await;
+        let runner = DispatchScript::dispatch().shared_runner();
+        let (svc, task, _dir) = fixture(&db, runner).await;
+        assert!(svc.claim_backlog_task(task.id).await.unwrap());
+
+        let outcome = svc
+            .dispatch(request(
+                &db,
+                task,
+                DispatchMode::Dispatch,
+                DispatchClaim::Held,
+            ))
+            .await;
+
+        assert!(
+            matches!(outcome, DispatchOutcome::Launched(_)),
+            "expected Launched, got {outcome:?}"
+        );
+    }
+
+    /// Mode routing, the match that used to be written out twice: `Research`
+    /// launches the read-only research agent, the only one that passes
+    /// `--permission-mode plan`.
+    #[tokio::test]
+    async fn research_mode_launches_the_read_only_research_agent() {
+        let db = test_db().await;
+        let runner = DispatchScript::dispatch().shared_runner();
+        let (svc, task, _dir) = fixture(&db, runner.clone()).await;
+
+        let outcome = svc
+            .dispatch(request(
+                &db,
+                task,
+                DispatchMode::Research,
+                DispatchClaim::Take,
+            ))
+            .await;
+
+        assert!(
+            matches!(outcome, DispatchOutcome::Launched(_)),
+            "expected Launched, got {outcome:?}"
+        );
+        assert!(
+            runner
+                .flattened_calls()
+                .join("\n")
+                .contains("--permission-mode plan"),
+            "research mode must launch with plan permissions: {:?}",
+            runner.recorded_calls()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The wrap-up rebase seam
+// ---------------------------------------------------------------------------
+//
+// Only the two arms the MCP handler cannot reach. `WrapUpRebase`'s `Conflict`
+// sub_status maintenance (docs/specs/pr-workflow.allium) already has end-to-end
+// coverage through the handler — `wrap_up_rebase_conflict_sets_conflict_substatus`
+// and `wrap_up_rebase_clears_conflict_substatus_on_non_conflict_error` in
+// `src/mcp/handlers/tests/tasks/dispatch.rs` — and moving that logic behind the
+// seam did not change what they assert, so they are not duplicated here.
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod wrap_up_rebase_seam {
+    use super::*;
+    use crate::process::MockProcessRunner;
+    use crate::service::WrapUpRebaseOutcome;
+
+    /// A worktree path that names no branch is rejected before any git command
+    /// runs — the request is unanswerable, not a failed rebase.
+    #[tokio::test]
+    async fn an_underivable_branch_is_reported_without_running_git() {
+        let db = test_db().await;
+        let runner = Arc::new(MockProcessRunner::new(vec![]));
+        let svc = task_svc_with_runner(&db, runner.clone());
+        let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+        svc.update_task(
+            UpdateTaskParams::for_task(id)
+                .status(TaskStatus::Running)
+                // A root path has no final component, so no branch name.
+                .worktree(FieldUpdate::Set("/".to_string())),
+        )
+        .await
+        .unwrap();
+        let task = svc.get_task(id).await.unwrap();
+
+        let outcome = svc.wrap_up_rebase(task).await;
+
+        assert!(
+            matches!(outcome, WrapUpRebaseOutcome::UnderivableBranch { .. }),
+            "expected UnderivableBranch, got {outcome:?}"
+        );
+        assert!(runner.recorded_calls().is_empty());
+    }
+
+    /// Defence in depth: a task with no worktree must be reported, not panic.
+    #[tokio::test]
+    async fn a_task_without_a_worktree_is_reported_not_panicked() {
+        let db = test_db().await;
+        let svc = task_svc(&db);
+        let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+        let task = svc.get_task(id).await.unwrap();
+
+        assert!(matches!(
+            svc.wrap_up_rebase(task).await,
+            WrapUpRebaseOutcome::MissingWorktree
+        ));
+    }
+}

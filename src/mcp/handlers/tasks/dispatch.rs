@@ -9,22 +9,7 @@ use super::{
     parse_args, service_err_to_response, DispatchTaskArgs, JsonRpcResponse, INTERNAL_ERROR,
     INVALID_PARAMS,
 };
-use crate::service::{FieldUpdate, UpdateTaskParams};
-
-fn do_dispatch(
-    task: &crate::models::Task,
-    runner: &dyn crate::process::ProcessRunner,
-    inputs: dispatch::DispatchInputs,
-) -> anyhow::Result<crate::models::DispatchResult> {
-    let dispatch::DispatchInputs { epic_ctx, injected } = inputs;
-    let injections = dispatch::LearningInjections::from(injected.as_slice());
-    match DispatchMode::for_task(task) {
-        DispatchMode::Dispatch => {
-            dispatch::dispatch_agent(task, runner, epic_ctx.as_ref(), &injections)
-        }
-        DispatchMode::Research => dispatch::research_agent(task, runner, epic_ctx.as_ref()),
-    }
-}
+use crate::service::{DispatchClaim, DispatchOutcome, DispatchRequest};
 
 /// Dispatches the next backlog subtask of `epic_id`, if any. Returns
 /// `Some((id, title))` when a dispatch was started, `None` when the chain
@@ -75,7 +60,7 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
 
     let next_id = next_task.id;
     let next_title = next_task.title.clone();
-    // Read before the task is moved into the blocking dispatch.
+    // Read before the task is moved into the dispatch request.
     let repo_path = next_task.repo_path.clone();
     // The epic row is already in hand, so skip `EpicContext::from_db`'s
     // re-read. The claim selects only from this epic's subtasks, so the
@@ -84,62 +69,39 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
         epic_id,
         epic_title: epic.title,
     });
-    let db = state.db.clone();
+    let request = DispatchRequest {
+        mode: DispatchMode::for_task(&next_task),
+        task: next_task,
+        db: state.db.clone(),
+        emb_svc: state.embedding_service.clone(),
+        epic_ctx,
+        // `claim_next_backlog_task` above both selected and claimed this row.
+        claim: DispatchClaim::Held,
+    };
     let task_svc = state.task_svc.clone();
-    let runner = state.runner.clone();
     let notify_tx = state.notify_tx.clone();
-    let embedding_service = state.embedding_service.clone();
 
     tokio::spawn(async move {
-        // The prologue runs a local embedding inference and several writes; keep
-        // it off the caller's request path — `exit_session` only needs the id and
-        // title, both already known.
-        let inputs =
-            dispatch::prepare_inputs_with_epic_ctx(&*db, &next_task, &embedding_service, epic_ctx)
-                .await;
+        // The seam's prologue runs a local embedding inference and several
+        // writes; keep it off the caller's request path — `exit_session` only
+        // needs the id and title, both already known.
+        let outcome = task_svc.dispatch(request).await;
 
-        let result =
-            tokio::task::spawn_blocking(move || do_dispatch(&next_task, &*runner, inputs)).await;
-
-        let mut launched = false;
+        let launched = matches!(outcome, DispatchOutcome::Launched(_));
         // Why the chain stopped, when it stopped after claiming. Reported to the
         // board below (SurfaceAutoDispatchFailure in docs/specs/epics.allium) —
         // logging alone leaves a stalled epic indistinguishable from a finished
         // one.
-        let mut failure: Option<String> = None;
-        match result {
-            Ok(Ok(dispatch_result)) => {
-                launched = true;
-                // The claim already applied Running and seeded
-                // last_pre_tool_use_at, so this patch only records where the
-                // agent actually landed.
-                let params = UpdateTaskParams::for_task(next_id)
-                    .worktree(FieldUpdate::Set(dispatch_result.worktree_path))
-                    .tmux_window(FieldUpdate::Set(dispatch_result.tmux_window));
-                if let Err(e) = task_svc.update_task(params).await {
-                    tracing::warn!(
-                        task_id = next_id.0,
-                        "auto_dispatch_next: failed to update task: {e}"
-                    );
-                }
-            }
-            Ok(Err(e)) => {
-                tracing::warn!(
-                    task_id = next_id.0,
-                    "auto_dispatch_next: dispatch failed: {e:#}"
-                );
-                failure = Some(format!("{e:#}"));
-                release_claim(&*task_svc, next_id).await;
-            }
-            Err(e) => {
-                tracing::warn!(
-                    task_id = next_id.0,
-                    "auto_dispatch_next: blocking task panicked: {e}"
-                );
-                failure = Some(format!("dispatch worker died: {e}"));
-                release_claim(&*task_svc, next_id).await;
-            }
-        }
+        let failure = match outcome {
+            DispatchOutcome::Launched(_) => None,
+            DispatchOutcome::Failed(reason) => Some(reason),
+            // Unreachable — the chain passes `DispatchClaim::Held`, so the
+            // seam's claim block never runs — and reported as nothing even if
+            // that changed: `SurfaceAutoDispatchFailure` scopes the claim stops
+            // out of itself because they fail before a subtask is selected, so
+            // neither can supply the task the rule marks.
+            DispatchOutcome::ClaimLost | DispatchOutcome::ClaimFailed(_) => None,
+        };
 
         if let Some(tx) = notify_tx {
             // Sent ahead of the row reloads: the stall is the fact this attempt
@@ -167,26 +129,6 @@ pub(in crate::mcp::handlers) async fn auto_dispatch_next(
     Some((next_id, next_title))
 }
 
-/// Return a claimed-but-unprovisioned task to `Backlog` so a failed dispatch
-/// leaves it dispatchable exactly as it was before the attempt.
-///
-/// Shared by the chain and `handle_dispatch_task`, which both claim ahead of
-/// provisioning and so both owe the release on failure. Delegates to
-/// [`crate::service::TaskServiceApi::release_claim`], which is conditional on
-/// the task still being claimed-and-unprovisioned — provisioning can take a
-/// `git fetch`'s worth of wall time, and an unconditional revert would stomp
-/// anything that touched the task meanwhile.
-async fn release_claim(task_svc: &dyn crate::service::TaskServiceApi, task_id: TaskId) {
-    match task_svc.release_claim(task_id).await {
-        Ok(true) => {}
-        Ok(false) => tracing::info!(
-            task_id = task_id.0,
-            "release_claim: claim already released or task moved on; left as-is"
-        ),
-        Err(e) => tracing::warn!(task_id = task_id.0, "release_claim: failed: {e}"),
-    }
-}
-
 pub(crate) async fn handle_dispatch_task(
     state: &McpState,
     id: Option<Value>,
@@ -210,46 +152,29 @@ pub(crate) async fn handle_dispatch_task(
         Err(e) => return JsonRpcResponse::err(id, INTERNAL_ERROR, format!("db error: {e:#}")),
     };
 
-    // Claim before provisioning. The backlog guard is the claim itself, not the
-    // status read above: a read-then-provision guard leaves a window in which a
-    // concurrent chain or TUI dispatch takes the same task and both provision it
-    // (DispatchClaimExclusive in `docs/specs/dispatch.allium`).
-    // Neither a lost nor an errored claim releases: the claim is a single
-    // statement, so it holds nothing to unwind, and the row it failed to take
-    // belongs to whoever did take it.
-    match state.task_svc.claim_backlog_task(task_id).await {
-        Ok(true) => {}
-        Ok(false) => return not_in_backlog_response(state, id, task_id).await,
-        Err(e) => return service_err_to_response(id, e),
-    }
-
-    let db = state.db.clone();
-    let runner = state.runner.clone();
     let epic_id = task.epic_id;
-    // Read before the task is moved into the blocking dispatch.
+    // Read before the task is moved into the dispatch request.
     let repo_path = task.repo_path.clone();
 
-    let inputs = dispatch::prepare_inputs(&*db, &task, &state.embedding_service).await;
-    let result = tokio::task::spawn_blocking(move || do_dispatch(&task, &*runner, inputs)).await;
+    // The claim, the provisioning and the release-on-failure unwind all live in
+    // the seam. The backlog guard is the claim, not the status read above: a
+    // read-then-provision guard leaves a window in which a concurrent chain or
+    // TUI dispatch takes the same task and both provision it
+    // (DispatchClaimExclusive in `docs/specs/dispatch.allium`).
+    let outcome = state
+        .task_svc
+        .dispatch(DispatchRequest {
+            mode: DispatchMode::for_task(&task),
+            task,
+            db: state.db.clone(),
+            emb_svc: state.embedding_service.clone(),
+            epic_ctx: None,
+            claim: DispatchClaim::Take,
+        })
+        .await;
 
-    match result {
-        Ok(Ok(dr)) => {
-            // The claim already applied Running and seeded
-            // last_pre_tool_use_at, so this patch only records where the agent
-            // actually landed.
-            let response_text = format!(
-                "dispatched task #{} — worktree: {}, tmux: {}",
-                task_id.0, dr.worktree_path, dr.tmux_window
-            );
-            let params = UpdateTaskParams::for_task(task_id)
-                .worktree(FieldUpdate::Set(dr.worktree_path))
-                .tmux_window(FieldUpdate::Set(dr.tmux_window));
-            if let Err(e) = state.task_svc.update_task(params).await {
-                tracing::warn!(
-                    task_id = task_id.0,
-                    "dispatch_task: failed to update task: {e}"
-                );
-            }
+    match outcome {
+        DispatchOutcome::Launched(dr) => {
             // RefreshRepoSyncStateAfterDispatch: this call provisioned a worktree
             // and fetched origin/<base>, so the board's drift measurement for the
             // repository is stale. Only the success arm notifies — a failed
@@ -261,16 +186,16 @@ pub(crate) async fn handle_dispatch_task(
             }
             JsonRpcResponse::ok(
                 id,
-                json!({"content": [{"type": "text", "text": response_text}]}),
+                json!({"content": [{"type": "text", "text": format!(
+                    "dispatched task #{} — worktree: {}, tmux: {}",
+                    task_id.0, dr.worktree_path, dr.tmux_window
+                )}]}),
             )
         }
-        Ok(Err(e)) => {
-            release_claim(&*state.task_svc, task_id).await;
-            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("dispatch failed: {e:#}"))
-        }
-        Err(e) => {
-            release_claim(&*state.task_svc, task_id).await;
-            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("dispatch join error: {e}"))
+        DispatchOutcome::ClaimLost => not_in_backlog_response(state, id, task_id).await,
+        DispatchOutcome::ClaimFailed(e) => service_err_to_response(id, e),
+        DispatchOutcome::Failed(reason) => {
+            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("dispatch failed: {reason}"))
         }
     }
 }

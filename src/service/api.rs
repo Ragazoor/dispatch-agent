@@ -317,6 +317,39 @@ macro_rules! task_service_api {
                 task_id: $crate::models::TaskId
             ) -> Result<bool, $crate::service::ServiceError>;
 
+            /// Provision a task and launch its agent: claim (per
+            /// `DispatchClaim`) → dispatch prologue → `DispatchMode` match →
+            /// blocking provision → record the worktree/tmux window →
+            /// release the claim on failure.
+            ///
+            /// The dispatch orchestration seam. Both MCP entry points —
+            /// `dispatch_task` and the epic chain — take all of it, so
+            /// `DispatchClaimExclusive` and the release-on-failure unwind
+            /// (`docs/specs/dispatch.allium`) are asserted here once instead
+            /// of in each. The TUI runtime deliberately does not: it shares
+            /// the claim, the prologue and the mode match but owns its own
+            /// persist and release — see `TuiRuntime::exec_dispatch_agent`.
+            /// Never `Err`: the failure modes are distinct outcomes and only
+            /// some of them owe a release.
+            async fn dispatch(
+                &self,
+                request: $crate::service::DispatchRequest
+            ) -> $crate::service::DispatchOutcome;
+
+            /// Rebase a wrapping task's branch onto its base branch, clearing
+            /// the `Conflict` sub_status before and re-setting it on a
+            /// conflict. `WrapUpRebase` in `docs/specs/pr-workflow.allium`.
+            /// Never `Err`; the caller shapes the outcome into its response.
+            async fn wrap_up_rebase(
+                &self,
+                task: $crate::models::Task
+            ) -> $crate::service::WrapUpRebaseOutcome;
+
+            /// Kill the tmux window a closed session left behind. Keeps the
+            /// only tmux call the MCP layer needs behind the service boundary
+            /// — see `ExitSession` in `docs/specs/pr-workflow.allium`.
+            async fn kill_session_window(&self, window: String) -> ();
+
             /// Undo an unprovisioned claim, returning the subtask to `Backlog`.
             /// Conditional on the task still being claimed-and-unprovisioned;
             /// returns whether it applied.

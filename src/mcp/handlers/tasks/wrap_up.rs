@@ -3,8 +3,8 @@ use serde_json::{json, Value};
 use crate::dispatch;
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
-use crate::models::{SubStatus, Task, TaskId};
-use crate::service::UpdateTaskParams;
+use crate::models::{Task, TaskId};
+use crate::service::WrapUpRebaseOutcome;
 
 use super::{
     fetch_caller_task, parse_args, service_err_to_response, ExitSessionArgs, JsonRpcResponse,
@@ -73,7 +73,7 @@ async fn issue_wrap_up_token(
 
 /// Checks the task is wrappable, returning the JSON-RPC error response to
 /// return immediately if not. The worktree/branch pair is only needed by the
-/// rebase path, so it is resolved separately in `finish_wrap_up_rebase`.
+/// rebase path, so it is resolved behind the service seam rather than here.
 async fn validate_wrap_up_request(
     state: &McpState,
     id: &Option<Value>,
@@ -84,35 +84,6 @@ async fn validate_wrap_up_request(
         .validate_wrap_up(task_id)
         .await
         .map_err(|e| service_err_to_response(id.clone(), e))
-}
-
-/// Resolves the worktree/branch pair the rebase path needs from an
-/// already-validated task.
-fn resolve_rebase_target(
-    id: &Option<Value>,
-    task: &Task,
-) -> Result<(String, String), JsonRpcResponse> {
-    // Defence in depth: `validate_wrap_up` (via `is_wrappable`) guarantees the
-    // worktree is `Some` today, but a future change to the validator could
-    // silently break that contract. Returning an internal JSON-RPC error keeps
-    // a violation from panicking the runtime.
-    let worktree = task.worktree.clone().ok_or_else(|| {
-        JsonRpcResponse::err(
-            id.clone(),
-            INTERNAL_ERROR,
-            "internal: validate_wrap_up returned task without worktree".to_string(),
-        )
-    })?;
-
-    let branch = dispatch::branch_from_worktree(&worktree).ok_or_else(|| {
-        JsonRpcResponse::err(
-            id.clone(),
-            INVALID_PARAMS,
-            format!("Cannot derive branch from worktree: {worktree}"),
-        )
-    })?;
-
-    Ok((worktree, branch))
 }
 
 /// Finishes the two no-rebase actions (`done`, `pr`), which only differ in a
@@ -152,61 +123,24 @@ async fn finish_wrap_up_simple(
     )
 }
 
-/// Optimistically clears a `Conflict` sub_status before rebasing, so the task
-/// is no longer visually flagged while the rebase runs (`WrapUpRebase` in
-/// `docs/specs/pr-workflow.allium`).
-async fn clear_conflict_sub_status_if_set(state: &McpState, task: &Task) {
-    if task.sub_status == SubStatus::Conflict {
-        let clear =
-            UpdateTaskParams::for_task(task.id).sub_status(SubStatus::default_for(task.status));
-        if let Err(e) = state.task_svc.update_task(clear).await {
-            tracing::warn!(
-                task_id = task.id.0,
-                "wrap_up: failed to clear conflict sub_status: {e}"
-            );
-        }
-    }
-}
-
+/// Shapes the outcome of the service-owned rebase (`WrapUpRebase` in
+/// `docs/specs/pr-workflow.allium`) into a JSON-RPC response. The git work, the
+/// `Conflict` sub_status maintenance and the failure taxonomy all live in
+/// [`crate::service::TaskServiceApi::wrap_up_rebase`]; what is left here is
+/// which error code each outcome earns, which notifications it fires, and the
+/// response prose.
 async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) -> JsonRpcResponse {
-    let (worktree, branch) = match resolve_rebase_target(&id, &task) {
-        Ok(t) => t,
-        Err(resp) => return resp,
-    };
     let task_id = task.id;
     let repo_path = task.repo_path.clone();
-    let base_branch = task.base_branch.clone();
-    let runner = state.runner.clone();
 
-    clear_conflict_sub_status_if_set(state, &task).await;
-
-    let rebase_result = match tokio::task::spawn_blocking(move || {
-        tracing::info!(task_id = task_id.0, %branch, "MCP wrap_up rebase starting");
-        dispatch::finish_task(
-            &dispatch::FinishContext {
-                repo_path: &repo_path,
-                worktree: &worktree,
-                branch: &branch,
-                base_branch: &base_branch,
-                timeout: crate::process::SUBPROCESS_TIMEOUT,
-            },
-            &*runner,
-        )
-    })
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return JsonRpcResponse::err(id, INTERNAL_ERROR, format!("internal error: {e}")),
-    };
-
-    match rebase_result {
-        Ok(()) => {
+    match state.task_svc.wrap_up_rebase(task).await {
+        WrapUpRebaseOutcome::Rebased => {
             state.notify_task_changed(task_id);
             // Local base provably just moved ahead of origin, and the refs are
             // already current — RefreshRepoSyncStateAfterRebase.
-            state.notify_branch_rebased(&task.repo_path);
+            state.notify_branch_rebased(&repo_path);
             let (verify_line, token, exit_line) =
-                issue_wrap_up_token(state, task_id, &task.repo_path, WrapUpAction::Rebase).await;
+                issue_wrap_up_token(state, task_id, &repo_path, WrapUpAction::Rebase).await;
             JsonRpcResponse::ok(
                 id,
                 json!({"content": [{"type": "text", "text": format!(
@@ -218,18 +152,26 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
                 )}]}),
             )
         }
-        Err(e) => {
-            if matches!(e, dispatch::FinishError::RebaseConflict { .. }) {
-                let patch = UpdateTaskParams::for_task(task_id).sub_status(SubStatus::Conflict);
-                if let Err(e) = state.task_svc.update_task(patch).await {
-                    tracing::warn!(
-                        task_id = task_id.0,
-                        "wrap_up: failed to set conflict sub_status: {e}"
-                    );
-                }
-            }
+        // Defence in depth: `validate_wrap_up` (via `is_wrappable`) guarantees
+        // the worktree is `Some` today, but a future change to the validator
+        // could silently break that contract. An internal JSON-RPC error keeps
+        // a violation from panicking the runtime.
+        WrapUpRebaseOutcome::MissingWorktree => JsonRpcResponse::err(
+            id,
+            INTERNAL_ERROR,
+            "internal: validate_wrap_up returned task without worktree".to_string(),
+        ),
+        WrapUpRebaseOutcome::UnderivableBranch { worktree } => JsonRpcResponse::err(
+            id,
+            INVALID_PARAMS,
+            format!("Cannot derive branch from worktree: {worktree}"),
+        ),
+        WrapUpRebaseOutcome::Failed { message } => {
             state.notify_task_changed(task_id);
-            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("wrap_up failed: {e}"))
+            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("wrap_up failed: {message}"))
+        }
+        WrapUpRebaseOutcome::WorkerDied(e) => {
+            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("internal error: {e}"))
         }
     }
 }
@@ -393,11 +335,11 @@ pub(crate) async fn handle_exit_session(
     // unconditional. The window comes from the close itself, not from the
     // pre-read task: it is the row the close actually cleared.
     let tmux_window = closed.window;
-    let runner = state.runner.clone();
+    let task_svc = state.task_svc.clone();
     let bg_done = state.test_hooks.bg_write_done_tx.clone();
-    tokio::task::spawn_blocking(move || {
-        if let Some(window) = &tmux_window {
-            let _ = crate::tmux::kill_window(window, &*runner);
+    tokio::spawn(async move {
+        if let Some(window) = tmux_window {
+            task_svc.kill_session_window(window).await;
         }
         if let Some(tx) = &bg_done {
             let _ = tx.send(crate::mcp::BackgroundWrite::KillWindow);

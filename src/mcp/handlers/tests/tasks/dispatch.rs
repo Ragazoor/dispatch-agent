@@ -687,22 +687,28 @@ impl crate::service::TaskServiceApiStub for FailingCloseTaskService {
 
 crate::task_service_api!(service_api_stub_bridge, FailingCloseTaskService);
 
-/// A task service whose `claim_backlog_task` always loses the claim, standing in
+/// A task service whose dispatch seam always reports a lost claim, standing in
 /// for another dispatch entry point having taken the task a moment earlier.
 ///
 /// Every other method keeps the panicking `TaskServiceApiStub` default on
 /// purpose: that is what makes `dispatch_task_lost_claim_provisions_nothing`
-/// discriminating. A handler that checked the status instead of claiming would
-/// provision the task and then hit the unmocked `update_task`.
+/// discriminating. A handler that read the status and provisioned itself,
+/// rather than handing the whole sequence to the seam, would hit the unmocked
+/// `update_task`.
+///
+/// That the *claim itself* is exclusive and provisions nothing when lost is
+/// asserted against the real seam in
+/// `service::tasks::tests::dispatch_seam::dispatch_reports_a_lost_claim_and_provisions_nothing`;
+/// what is under test here is only the response the handler shapes from it.
 struct LostClaimTaskService;
 
 #[async_trait::async_trait]
 impl crate::service::TaskServiceApiStub for LostClaimTaskService {
-    async fn claim_backlog_task(
+    async fn dispatch(
         &self,
-        _task_id: crate::models::TaskId,
-    ) -> Result<bool, crate::service::ServiceError> {
-        Ok(false)
+        _request: crate::service::DispatchRequest,
+    ) -> crate::service::DispatchOutcome {
+        crate::service::DispatchOutcome::ClaimLost
     }
 }
 

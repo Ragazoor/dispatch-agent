@@ -20,8 +20,9 @@ pub use managed_feeds::{
     write_managed_feed_settings, ManagedFeedSettings, ManagedFeedSettingsPatch,
 };
 pub use tasks::{
-    CloseSessionOutcome, ClosedSession, CreateTaskParams, ListTasksFilter, SubscribeOutcome,
-    TaskService, UpdateTaskParams, UpdateTaskResult,
+    CloseSessionOutcome, ClosedSession, CreateTaskParams, DispatchClaim, DispatchOutcome,
+    DispatchRequest, ListTasksFilter, SubscribeOutcome, TaskService, UpdateTaskParams,
+    UpdateTaskResult, WrapUpRebaseOutcome,
 };
 pub use todos::{TodoService, TodoUpdate};
 

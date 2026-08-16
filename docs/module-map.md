@@ -44,6 +44,8 @@ to look.
 | `src/service/mod.rs` | Service module root: `ServiceError`, `FieldUpdate`, `UrlUpdate`, re-exports of all sub-module types |
 | `src/service/tasks/mod.rs` | `TaskService` — task business logic |
 | `src/service/tasks/{crud,params,validators}.rs` | Task CRUD methods, `*Params` request types, validation helpers |
+| `src/service/tasks/dispatch.rs` | `TaskService::dispatch` — the dispatch orchestration seam: claim (`DispatchClaim`) → prologue → `DispatchMode` match → blocking provision → record worktree/tmux → release the claim on failure. Both MCP entry points (`dispatch_task`, the epic chain) take all of it; the TUI runtime shares only the claim, the prologue and the mode match, and owns its own persist/release — its `exec_dispatch_agent` says why |
+| `src/service/tasks/wrap_up.rs` | `TaskService::wrap_up_rebase` (the `WrapUpRebase` git work plus its `Conflict` sub_status maintenance) and `kill_session_window` (the tmux teardown `ExitSession` owes) — both moved out of the MCP transport |
 | `src/service/tasks/watchers.rs` | Task-watcher subscriptions: `subscribe`/`unsubscribe` plus the completion notice fired when a watched task reaches `Done`/`Archived` or is deleted (see `docs/specs/task-watchers.allium`) |
 | `src/service/epics.rs` | `EpicService`, `UpdateEpicParams`, `CreateEpicParams` — epic business logic, including reparenting with cycle detection |
 | `src/service/learnings.rs` | `LearningService`, `CreateLearningParams` — learning business logic (curated exclusively via MCP; no TUI-facing update/reject/archive path) |

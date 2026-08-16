@@ -138,8 +138,12 @@ pub struct McpState {
     pub learning_svc: Arc<dyn LearningServiceApi>,
     /// When set, MCP sends events after mutations to trigger TUI updates.
     pub notify_tx: Option<mpsc::UnboundedSender<McpEvent>>,
-    /// Process runner shared with TuiRuntime for executing git/tmux operations.
-    pub runner: Arc<dyn ProcessRunner>,
+    // Deliberately no `runner`: no handler shells out. Every subprocess a
+    // handler used to reach for — the dispatch provisioning, the wrap-up
+    // rebase, the session-close tmux teardown — now happens behind
+    // `TaskServiceApi`, which owns the runner `McpDeps` supplies. Keeping the
+    // field would let the next handler quietly reach past the service layer
+    // again; its absence makes that a compile error.
     /// Embedding service used for RAG-based query_learnings and for computing
     /// embeddings when a learning is recorded via MCP.
     pub embedding_service: Arc<EmbeddingService>,
@@ -187,7 +191,6 @@ impl McpState {
             epic_svc,
             learning_svc,
             notify_tx,
-            runner: deps.runner,
             embedding_service: deps.embedding_service,
             exit_tokens: Arc::new(RwLock::new(HashMap::new())),
             data_dir: deps.data_dir,

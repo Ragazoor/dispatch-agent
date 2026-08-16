@@ -982,6 +982,55 @@ async fn exec_dispatch_sends_dispatched_message() {
     );
 }
 
+/// Mode routing at the board's entry point. The `DispatchMode` match lives once
+/// (`dispatch::run_agent_for_mode`) and the service seam takes it too, so this
+/// is the assertion that the board reaches the *same* match: `Research` must
+/// launch the read-only research agent, the only one that passes
+/// `--permission-mode plan`. Its twin at the seam is
+/// `service::tasks::tests::dispatch_seam::research_mode_launches_the_read_only_research_agent`.
+#[tokio::test]
+async fn exec_dispatch_agent_routes_research_mode_to_the_research_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().to_str().unwrap();
+    std::fs::create_dir_all(format!("{repo}/.worktrees/1-test-task")).unwrap();
+
+    let db = test_db().await;
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mock = DispatchScript::dispatch().shared_runner();
+    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+    let task = create_task_returning(
+        &*db,
+        "Test Task",
+        "desc",
+        repo,
+        None,
+        models::TaskStatus::Backlog,
+    )
+    .await
+    .unwrap();
+    rt.exec_dispatch_agent(task, models::DispatchMode::Research)
+        .await;
+
+    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(
+            msg,
+            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+        ),
+        "Expected Dispatched, got: {msg:?}"
+    );
+
+    let argv = mock.flattened_calls().join("\n");
+    assert!(
+        argv.contains("--permission-mode plan"),
+        "research mode must launch with plan permissions: {argv}"
+    );
+}
+
 /// A lost claim must stop the dispatch dead, before any provisioning command
 /// runs, and report the failure so the spinner drains (`LostClaimReported` in
 /// docs/specs/dispatch.allium).

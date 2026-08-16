@@ -24,7 +24,8 @@ pub use agents::{
     agent_tree_pane_id, companion_pane_ids, create_main_session, dispatch_agent,
     fetch_verify_command, is_wrappable, main_session_window_alive, prepare_inputs,
     prepare_inputs_with_epic_ctx, quick_dispatch_agent, research_agent, resume_agent,
-    resync_agent_tree_pane, toggle_agent_tree_pane, DispatchInputs, MAIN_SESSION_WINDOW,
+    resync_agent_tree_pane, run_agent_for_mode, toggle_agent_tree_pane, DispatchInputs,
+    MAIN_SESSION_WINDOW,
 };
 pub use finish::{finish_task, FinishContext, FinishError};
 pub use prompts::{build_and_record_injections, EpicContext, LearningInjections};
@@ -238,5 +239,8 @@ pub fn resolve_repo_path(github_repo: &str, known_paths: &[String]) -> Option<St
 
 #[cfg(test)]
 mod prompts_snapshots;
+/// `pub(crate)` only so the shared fixture builders in here
+/// (`make_test_repo_with_worktree`) can be reached from other modules' tests
+/// instead of being copied into them.
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

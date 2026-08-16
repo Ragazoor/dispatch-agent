@@ -354,6 +354,22 @@ impl TuiRuntime {
     ///
     /// A lost claim reports `DispatchAbandoned` plus an error naming why, so the
     /// spinner never outlives the attempt.
+    ///
+    /// # Why this is not [`crate::service::TaskServiceApi::dispatch`]
+    ///
+    /// The seam next door owns claim → prepare → provision → *record the
+    /// worktree/tmux window* → release-on-failure, and the two MCP entry points
+    /// take all of it. The board cannot take the last two steps: it applies the
+    /// dispatch to its in-memory card first (`handle_dispatched`) and persists
+    /// from that copy, and it releases a failed claim through
+    /// `TaskMessage::DispatchFailed` so the spinner and the release drain
+    /// together. Taking the seam's writes as well would mean two writers for the
+    /// same two columns and a release fired from both sides.
+    ///
+    /// What it *does* share is everything that can silently drift: the claim
+    /// ([`Self::claim_for_dispatch`] → `claim_backlog_task`), the prologue
+    /// ([`dispatch::prepare_inputs`]) and the `DispatchMode` match
+    /// ([`dispatch::run_agent_for_mode`]).
     pub(super) async fn exec_dispatch_agent(&self, task: models::Task, mode: models::DispatchMode) {
         if !self.claim_for_dispatch(task.id).await {
             return;
@@ -366,21 +382,12 @@ impl TuiRuntime {
         // Spawn a background task so the TUI command loop is never blocked
         // waiting for the embedding thread (which may be busy computing embeddings).
         tokio::spawn(async move {
-            let dispatch::DispatchInputs { epic_ctx, injected } =
-                dispatch::prepare_inputs(&*db, &task, &emb_svc).await;
+            let inputs = dispatch::prepare_inputs(&*db, &task, &emb_svc).await;
             let label = mode.label();
             let id = task.id;
             tracing::info!(task_id = id.0, label, "dispatching");
             run_blocking_dispatch(id, label, false, msg_tx, move || {
-                let injections = dispatch::LearningInjections::from(injected.as_slice());
-                match mode {
-                    models::DispatchMode::Dispatch => {
-                        dispatch::dispatch_agent(&task, &*runner, epic_ctx.as_ref(), &injections)
-                    }
-                    models::DispatchMode::Research => {
-                        dispatch::research_agent(&task, &*runner, epic_ctx.as_ref())
-                    }
-                }
+                dispatch::run_agent_for_mode(&task, mode, &*runner, inputs)
             });
         });
     }

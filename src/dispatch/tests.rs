@@ -132,7 +132,14 @@ fn make_test_repo() -> (tempfile::TempDir, String) {
     (dir, path)
 }
 
-pub(super) fn make_test_repo_with_worktree(
+/// A temp repo with `.worktrees/<slug>` already created, which is what puts
+/// `provision_worktree` on its reuse branch.
+///
+/// `pub(crate)` rather than `pub(super)`: the service-layer dispatch-seam tests
+/// need the same precondition, and a second copy of it would mean the day
+/// `.worktrees/` moves, one of the two silently starts exercising the
+/// fresh-worktree branch instead.
+pub(crate) fn make_test_repo_with_worktree(
     slug: &str,
 ) -> (tempfile::TempDir, String, std::path::PathBuf) {
     let (dir, repo_path) = make_test_repo();

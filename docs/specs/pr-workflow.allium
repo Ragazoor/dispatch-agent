@@ -209,7 +209,10 @@ rule WrapUpRebase {
         -- Optimistically clears conflict sub_status before attempting the
         -- rebase, so the task is no longer visually flagged while the
         -- rebase runs in the background.
-        -- Steps (all via finish_task in dispatch.rs):
+        -- Steps (all via finish_task in src/dispatch/finish.rs, driven from
+        -- the task service's wrap-up rebase rather than from the MCP
+        -- handler, which shapes the outcome into a response and nothing
+        -- more):
         --   1. Verify the repo root is on task.base_branch; abort if not.
         --   2. Check the repo root's working tree is clean (`git status
         --      --porcelain`). If it has uncommitted changes, abort with

@@ -423,6 +423,28 @@ pub fn quick_dispatch_agent(
     )
 }
 
+/// Launch the agent [`DispatchMode`](crate::models::DispatchMode) selects,
+/// consuming the prologue's [`DispatchInputs`].
+///
+/// The one place that match lives. It used to be written out once in the MCP
+/// handler and once in the TUI runtime's blocking closure, which is how the two
+/// could have drifted into launching different agents for the same mode.
+pub fn run_agent_for_mode(
+    task: &Task,
+    mode: crate::models::DispatchMode,
+    runner: &dyn ProcessRunner,
+    inputs: DispatchInputs,
+) -> Result<DispatchResult> {
+    let DispatchInputs { epic_ctx, injected } = inputs;
+    let injections = LearningInjections::from(injected.as_slice());
+    match mode {
+        crate::models::DispatchMode::Dispatch => {
+            dispatch_agent(task, runner, epic_ctx.as_ref(), &injections)
+        }
+        crate::models::DispatchMode::Research => research_agent(task, runner, epic_ctx.as_ref()),
+    }
+}
+
 /// The two per-task reads every dispatch entry point performs before it can
 /// build a prompt: the epic banner, and the learnings to inject (recording each
 /// retrieval as it goes).
