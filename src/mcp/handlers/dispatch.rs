@@ -17,7 +17,9 @@ use super::epics;
 use super::learnings;
 use super::managed_feeds;
 use super::tasks;
-use super::types::{tool_error, JsonRpcRequest, JsonRpcResponse};
+use super::types::{
+    tool_error, JsonRpcRequest, JsonRpcResponse, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
+};
 
 /// MCP protocol version this server speaks natively.
 const SERVER_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -68,7 +70,7 @@ macro_rules! mcp_tools {
                 $(
                     $name => mcp_tools!(@call $kind, $handler, state, id, identity, args),
                 )+
-                other => JsonRpcResponse::err(id, -32602, format!("Unknown tool: {other}")),
+                other => JsonRpcResponse::err(id, INVALID_PARAMS, format!("Unknown tool: {other}")),
             }
         }
 
@@ -92,7 +94,10 @@ macro_rules! mcp_tools {
 // `&'static str`s twice.
 // ---------------------------------------------------------------------------
 
-fn task_tag_enum_values() -> Vec<&'static str> {
+// `pub(super)` because the `update_task` schema is generated from the
+// `mcp_args!` field list in `tasks::mod` and calls this from there. The helper
+// stays here with its siblings rather than following its caller.
+pub(super) fn task_tag_enum_values() -> Vec<&'static str> {
     crate::models::TaskTag::ALL
         .iter()
         .map(|t| t.as_str())
@@ -120,77 +125,8 @@ fn task_status_enum_values_including_archived() -> Vec<&'static str> {
 mcp_tools! {
     async "update_task" => tasks::handle_update_task,
         "Update a task's status, sub_status, title, description, repo_path, plan, and/or PR fields. At least one field besides task_id must be provided.",
-        {
-            "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "integer",
-                    "description": "The task ID"
-                },
-                "status": {
-                    "type": "string",
-                    "description": "New status: backlog, running, or review. Setting done is not allowed via MCP — ask the human operator to move the task to done from the TUI.",
-                    "enum": crate::models::TaskStatus::MCP_UPDATABLE.iter().map(|s| s.as_str()).collect::<Vec<_>>()
-                },
-                "plan_path": {
-                    "type": "string",
-                    "description": "Absolute file path to the implementation plan"
-                },
-                "title": {
-                    "type": "string",
-                    "description": "New title for the task"
-                },
-                "description": {
-                    "type": "string",
-                    "description": "New description for the task"
-                },
-                "repo_path": {
-                    "type": "string",
-                    "description": "New repository path for the task"
-                },
-                "sort_order": {
-                    "type": "integer",
-                    "description": "Display order within column (lower values appear first)"
-                },
-                "url": {
-                    "type": "string",
-                    "description": "URL associated with this task (PR, issue, security alert, or other link). Pass an empty string to clear it. When set to a non-empty value, url_type is required."
-                },
-                "url_type": {
-                    "type": "string",
-                    "description": "Type of the url: 'pr' (pull request — enables PR polling/merge), 'security_alert', 'issue', or 'other'. Required when url is set.",
-                    "enum": crate::models::UrlType::ALL.iter().map(|u| u.as_str()).collect::<Vec<_>>()
-                },
-                "tag": {
-                    "type": "string",
-                    "description": "Task tag: bug, feature, chore, pr-review, research, fix, or dependabot. Controls dispatch behavior. The dependabot tag is intended for feed scripts only — TUI users cannot select it from the tag picker.",
-                    "enum": task_tag_enum_values()
-                },
-                "sub_status": {
-                    "type": "string",
-                    "description": "Sub-status within the current status column. Running: active, needs_input, stale, crashed. Review: awaiting_review, changes_requested, approved. Must be valid for the task's current (or new) status.",
-                    "enum": crate::models::SubStatus::MCP_ADVERTISED.iter().map(|s| s.as_str()).collect::<Vec<_>>()
-                },
-                "epic_id": {
-                    "type": "integer",
-                    "description": "Link this task to an epic by ID"
-                },
-                "base_branch": {
-                    "type": "string",
-                    "description": "The base branch for rebase and PR operations (e.g. 'main', 'develop'). Defaults to 'main' if not specified."
-                },
-                "wrap_up_mode": {
-                    "type": ["string", "null"],
-                    "description": "Pre-set the wrap-up action for this task: 'rebase' (rebase onto base_branch), 'pr' (create a PR), or 'done' (mark done immediately). Pass null to clear.",
-                    "enum": crate::models::WrapUpMode::ALL.iter().map(|m| Some(m.as_str())).chain(std::iter::once(None)).collect::<Vec<Option<&str>>>()
-                },
-                "auto_run_plan": {
-                    "type": "boolean",
-                    "description": "When true and the task has a plan_path, the dispatched agent implements the plan immediately instead of asking for confirmation first."
-                }
-            },
-            "required": ["task_id"]
-        };
+        // Generated from the `mcp_args!` field list in `tasks::mod`.
+        (tasks::update_task_schema());
 
     async "get_task" => tasks::handle_get_task,
         "Get details about a task",
@@ -646,7 +582,7 @@ pub async fn handle_mcp(
         "tools/list" => JsonRpcResponse::ok(id, tool_definitions()),
 
         "tools/call" => match identity_result.as_ref() {
-            Err(e) => JsonRpcResponse::err(id, -32600, e.to_string()),
+            Err(e) => JsonRpcResponse::err(id, INVALID_REQUEST, e.to_string()),
             Ok(identity) => {
                 let params = req.params.unwrap_or(Value::Null);
                 let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
@@ -715,7 +651,7 @@ pub async fn handle_mcp(
             }
         },
 
-        other => JsonRpcResponse::err(id, -32601, format!("Method not found: {other}")),
+        other => JsonRpcResponse::err(id, METHOD_NOT_FOUND, format!("Method not found: {other}")),
     };
 
     (StatusCode::OK, Json(response)).into_response()

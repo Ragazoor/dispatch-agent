@@ -9,7 +9,7 @@ use crate::models::{
 };
 
 use super::types::{
-    deserialize_flexible_i64, deserialize_optional_flexible_i64, fetch_caller_task, parse_args,
+    deserialize_flexible_id, deserialize_optional_flexible_i64, fetch_caller_task, parse_args,
     service_err_to_response, JsonRpcResponse,
 };
 
@@ -20,8 +20,8 @@ use super::types::{
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RecordLearningArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) task_id: TaskId,
     pub(super) kind: LearningKind,
     pub(super) summary: String,
     pub(super) scope: LearningScope,
@@ -36,8 +36,8 @@ pub(super) struct RecordLearningArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct QueryLearningsArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) task_id: TaskId,
     /// Optional semantic query string. When omitted, task title + description
     /// are used as the query text fed into the embedding model.
     #[serde(default)]
@@ -53,18 +53,18 @@ pub(super) struct QueryLearningsArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RateLearningArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) learning_id: i64,
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) learning_id: LearningId,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) task_id: TaskId,
     pub(super) verdict: LearningVerdict,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DeleteLearningArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) learning_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) learning_id: LearningId,
 }
 
 // ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ pub(super) async fn handle_record_learning(
         Err(e) => return e,
     };
 
-    let task_id = crate::models::TaskId(parsed.task_id);
+    let task_id = parsed.task_id;
     let task = match fetch_caller_task(&*state.db, &id, task_id).await {
         Ok(t) => t,
         Err(resp) => return resp,
@@ -185,7 +185,7 @@ pub(super) async fn handle_query_learnings(
         Err(e) => return e,
     };
 
-    let task_id = crate::models::TaskId(parsed.task_id);
+    let task_id = parsed.task_id;
     let limit = parsed.limit.unwrap_or(50).min(50) as usize;
 
     let ranked = match state
@@ -245,19 +245,15 @@ pub(super) async fn handle_rate_learning(
     };
 
     tracing::info!(
-        task_id = parsed.task_id,
-        learning_id = parsed.learning_id,
+        task_id = parsed.task_id.0,
+        learning_id = parsed.learning_id.0,
         verdict = parsed.verdict.as_str(),
         "MCP rate_learning"
     );
 
-    let task_id = TaskId(parsed.task_id);
     match state
         .learning_svc
-        .apply_verdicts(
-            task_id,
-            vec![(LearningId(parsed.learning_id), parsed.verdict)],
-        )
+        .apply_verdicts(parsed.task_id, vec![(parsed.learning_id, parsed.verdict)])
         .await
     {
         Ok(()) => {
@@ -270,7 +266,7 @@ pub(super) async fn handle_rate_learning(
                 json!({
                     "content": [{
                         "type": "text",
-                        "text": format!("Learning {} {note}.", parsed.learning_id)
+                        "text": format!("Learning {} {note}.", parsed.learning_id.0)
                     }]
                 }),
             )
@@ -290,7 +286,7 @@ pub(super) async fn handle_delete_learning(
         Err(e) => return e,
     };
 
-    let learning_id = LearningId(parsed.learning_id);
+    let learning_id = parsed.learning_id;
 
     tracing::info!(learning_id = learning_id.0, "MCP delete_learning");
 

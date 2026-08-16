@@ -4,6 +4,36 @@ use serde_json::Value;
 use crate::models::{TaskStatus, WrapUpMode};
 
 // ---------------------------------------------------------------------------
+// JSON-RPC error codes
+//
+// The four pre-defined codes from the JSON-RPC 2.0 spec (§5.1), plus this
+// server's one application-defined code. Named so a handler reads as "this is
+// an invalid-params failure" rather than as a bare magic number, and so the
+// wire values live in exactly one place.
+// ---------------------------------------------------------------------------
+
+/// JSON-RPC 2.0 §5.1 — the request is not a valid Request object.
+pub(super) const INVALID_REQUEST: i32 = -32600;
+
+/// JSON-RPC 2.0 §5.1 — the method does not exist.
+pub(super) const METHOD_NOT_FOUND: i32 = -32601;
+
+/// JSON-RPC 2.0 §5.1 — invalid method parameters. The workhorse code: every
+/// caller-fixable argument failure at this boundary uses it.
+pub(super) const INVALID_PARAMS: i32 = -32602;
+
+/// JSON-RPC 2.0 §5.1 — internal server error. Reserved for failures the caller
+/// cannot fix by changing the request.
+pub(super) const INTERNAL_ERROR: i32 = -32603;
+
+/// Application-defined JSON-RPC error code for "entity not found", distinct
+/// from [`INVALID_PARAMS`]. Reserved server-error range per the JSON-RPC 2.0
+/// spec (`-32000` to `-32099`). Without this split, a caller cannot distinguish
+/// "you sent garbage" from "the entity is gone" without string-matching the
+/// message.
+pub(super) const NOT_FOUND_CODE: i32 = -32001;
+
+// ---------------------------------------------------------------------------
 // JSON-RPC request / response types
 // ---------------------------------------------------------------------------
 
@@ -213,6 +243,81 @@ where
     deserializer.deserialize_option(NullableFlexI64)
 }
 
+// ---------------------------------------------------------------------------
+// Typed-id deserializers
+//
+// The three `*_flexible_i64` deserializers above, lifted to any `From<i64>`
+// newtype (`TaskId`, `EpicId`, `LearningId`). Args structs name the newtype
+// directly so the compiler — not review — catches a swapped pair of adjacent
+// ids. The wire format is unchanged: these newtypes are transparent over
+// `i64`, and the same flexible int-or-string acceptance applies.
+// ---------------------------------------------------------------------------
+
+pub(super) fn deserialize_flexible_id<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: From<i64>,
+{
+    deserialize_flexible_i64(deserializer).map(T::from)
+}
+
+pub(super) fn deserialize_optional_flexible_id<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: From<i64>,
+{
+    deserialize_optional_flexible_i64(deserializer).map(|v| v.map(T::from))
+}
+
+pub(super) fn deserialize_nullable_flexible_id<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: From<i64>,
+{
+    deserialize_nullable_flexible_i64(deserializer).map(|v| v.map(|inner| inner.map(T::from)))
+}
+
+// ---------------------------------------------------------------------------
+// UrlType boundary parser
+// ---------------------------------------------------------------------------
+
+/// Parse `url_type` into [`crate::models::UrlType`] at the JSON-RPC boundary,
+/// like `status`/`tag`/`sub_status` already are, instead of carrying a
+/// `String` to be re-parsed at the point of use.
+///
+/// A hand-written deserializer rather than the derived one so the rejection
+/// message still names the field and lists the accepted values — serde's
+/// `unknown variant` text carries neither.
+pub(super) fn deserialize_optional_url_type<'de, D>(
+    deserializer: D,
+) -> Result<Option<crate::models::UrlType>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+    let raw = Option::<String>::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(s) => crate::models::UrlType::parse(&s).map(Some).ok_or_else(|| {
+            // Accepted values come from UrlType::ALL, the same source the
+            // schema's `"enum"` folds, so a new variant can't leave this
+            // message lying.
+            let accepted = crate::models::UrlType::ALL
+                .iter()
+                .map(|u| u.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            D::Error::custom(format!(
+                "unknown url_type '{s}' (expected one of: {accepted})"
+            ))
+        }),
+    }
+}
+
 /// Nullable WrapUpMode deserializer for `Option<Option<WrapUpMode>>` fields.
 /// Used with `#[serde(default)]` to distinguish absent (→ outer None),
 /// JSON null (→ Some(None) = clear), and a value (→ Some(Some(m)) = set).
@@ -297,20 +402,18 @@ pub(super) fn parse_args<T: serde::de::DeserializeOwned>(
     id: &Option<Value>,
     args: Value,
 ) -> Result<T, JsonRpcResponse> {
-    serde_json::from_value(args)
-        .map_err(|e| JsonRpcResponse::err(id.clone(), -32602, format!("Invalid arguments: {e}")))
+    serde_json::from_value(args).map_err(|e| {
+        JsonRpcResponse::err(
+            id.clone(),
+            INVALID_PARAMS,
+            format!("Invalid arguments: {e}"),
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
 // Caller task lookup helper
 // ---------------------------------------------------------------------------
-
-/// Application-defined JSON-RPC error code for "entity not found", distinct
-/// from `-32602` (Invalid params). Reserved server-error range per the
-/// JSON-RPC 2.0 spec (`-32000` to `-32099`). Without this split, a caller
-/// cannot distinguish "you sent garbage" from "the entity is gone" without
-/// string-matching the message.
-pub(super) const NOT_FOUND_CODE: i32 = -32001;
 
 /// Fetch the task identified by `caller_id` from the DB, mapping errors to
 /// JSON-RPC responses. Used by handlers that resolve the caller task for
@@ -329,7 +432,7 @@ pub(super) async fn fetch_caller_task(
         )),
         Err(e) => Err(JsonRpcResponse::err(
             id.clone(),
-            -32603,
+            INTERNAL_ERROR,
             format!("Database error: {e}"),
         )),
     }
@@ -345,9 +448,9 @@ pub(super) fn service_err_to_response(
 ) -> JsonRpcResponse {
     use crate::service::ServiceError;
     match err {
-        ServiceError::Validation(msg) => JsonRpcResponse::err(id, -32602, msg),
+        ServiceError::Validation(msg) => JsonRpcResponse::err(id, INVALID_PARAMS, msg),
         ServiceError::NotFound(msg) => JsonRpcResponse::err(id, NOT_FOUND_CODE, msg),
-        ServiceError::Internal(e) => JsonRpcResponse::err(id, -32603, e.to_string()),
+        ServiceError::Internal(e) => JsonRpcResponse::err(id, INTERNAL_ERROR, e.to_string()),
     }
 }
 
@@ -531,6 +634,105 @@ mod fetch_caller_task_tests {
         let err = err_resp.error.unwrap();
         assert_eq!(err.code, super::NOT_FOUND_CODE);
         assert!(err.message.contains("99999"), "got: {}", err.message);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod error_code_tests {
+    /// The named constants are a readability change only — the wire values are
+    /// the JSON-RPC 2.0 §5.1 numbers and clients match on them, so pinning them
+    /// here turns a rename-and-retype slip into a test failure rather than a
+    /// silently different error code.
+    #[test]
+    fn named_codes_match_the_json_rpc_spec_values() {
+        assert_eq!(super::INVALID_REQUEST, -32600);
+        assert_eq!(super::METHOD_NOT_FOUND, -32601);
+        assert_eq!(super::INVALID_PARAMS, -32602);
+        assert_eq!(super::INTERNAL_ERROR, -32603);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod typed_id_tests {
+    use super::{
+        deserialize_flexible_id, deserialize_nullable_flexible_id,
+        deserialize_optional_flexible_id, deserialize_optional_url_type,
+    };
+    use crate::models::{EpicId, TaskId, UrlType};
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct Ids {
+        #[serde(deserialize_with = "deserialize_flexible_id")]
+        task_id: TaskId,
+        #[serde(default, deserialize_with = "deserialize_optional_flexible_id")]
+        epic_id: Option<EpicId>,
+        #[serde(default, deserialize_with = "deserialize_nullable_flexible_id")]
+        parent_epic_id: Option<Option<EpicId>>,
+    }
+
+    /// Typed ids keep the flexible int-or-string acceptance the raw `i64`
+    /// deserializers had — Claude Code sends either encoding.
+    #[test]
+    fn typed_ids_accept_both_integer_and_string_encodings() {
+        let from_int: Ids =
+            serde_json::from_value(json!({"task_id": 7, "epic_id": 3, "parent_epic_id": 9}))
+                .unwrap();
+        let from_str: Ids =
+            serde_json::from_value(json!({"task_id": "7", "epic_id": "3", "parent_epic_id": "9"}))
+                .unwrap();
+        assert_eq!(from_int, from_str);
+        assert_eq!(from_int.task_id, TaskId(7));
+        assert_eq!(from_int.epic_id, Some(EpicId(3)));
+        assert_eq!(from_int.parent_epic_id, Some(Some(EpicId(9))));
+    }
+
+    /// The nullable form keeps its three-way distinction after the newtype
+    /// lift: absent is not the same as an explicit `null`.
+    #[test]
+    fn nullable_typed_id_distinguishes_absent_from_null() {
+        let absent: Ids = serde_json::from_value(json!({"task_id": 1})).unwrap();
+        assert_eq!(absent.parent_epic_id, None);
+        assert_eq!(absent.epic_id, None);
+
+        let null: Ids =
+            serde_json::from_value(json!({"task_id": 1, "parent_epic_id": null})).unwrap();
+        assert_eq!(null.parent_epic_id, Some(None));
+    }
+
+    /// Wire format is unchanged: these are transparent newtypes, so a typed id
+    /// serialises to the same bare integer a raw `i64` did.
+    #[test]
+    fn typed_ids_serialise_as_bare_integers() {
+        assert_eq!(serde_json::to_value(TaskId(42)).unwrap(), json!(42));
+        assert_eq!(serde_json::to_value(EpicId(-1)).unwrap(), json!(-1));
+    }
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct WithUrlType {
+        #[serde(default, deserialize_with = "deserialize_optional_url_type")]
+        url_type: Option<UrlType>,
+    }
+
+    #[test]
+    fn url_type_parses_at_the_boundary() {
+        let parsed: WithUrlType = serde_json::from_value(json!({"url_type": "pr"})).unwrap();
+        assert_eq!(parsed.url_type, Some(UrlType::Pr));
+        let absent: WithUrlType = serde_json::from_value(json!({})).unwrap();
+        assert_eq!(absent.url_type, None);
+    }
+
+    /// The rejection message must still name the field and the accepted set —
+    /// serde's derived `unknown variant` text carries neither.
+    #[test]
+    fn unknown_url_type_names_the_field_and_accepted_values() {
+        let err = serde_json::from_value::<WithUrlType>(json!({"url_type": "bogus"})).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("url_type"), "got: {msg}");
+        assert!(msg.contains("security_alert"), "got: {msg}");
     }
 }
 

@@ -4,7 +4,9 @@
 
 The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch arm, and `TOOL_NAMES` all expand from the `mcp_tools!` macro's single declarative list (`src/mcp/handlers/dispatch.rs:39`) — do not hand-edit any of the three, and read the macro's doc comment before adding an entry.
 
-1. **Add the argument struct** next to its siblings — task tools in `src/mcp/handlers/tasks/mod.rs`, other domains in their own handler module. Derive `Deserialize`, and annotate every integer field with `#[serde(deserialize_with = "deserialize_flexible_i64")]` (from `src/mcp/handlers/types.rs`) since Claude Code may send them as strings.
+1. **Add the argument struct** next to its siblings — task tools in `src/mcp/handlers/tasks/mod.rs`, other domains in their own handler module. Derive `Deserialize`, and annotate every integer field with a flexible deserializer from `src/mcp/handlers/types.rs`, since Claude Code may send integers as strings: `deserialize_flexible_id` / `deserialize_optional_flexible_id` / `deserialize_nullable_flexible_id` for entity ids (the field's type is the newtype itself — `TaskId`, `EpicId`, `LearningId` — never a bare `i64`), and the `*_flexible_i64` trio for genuine integers like `sort_order` or `limit`. Parse enum-valued fields into their model type at the boundary too (`status`, `tag`, `sub_status`, `url_type`) rather than carrying a `String` inward.
+
+   Build errors, not JSON-RPC errors, are the goal here: an args struct's field types are the only thing standing between a mistyped handler and a `-32602` the caller only sees at run time.
 
 2. **Define the handler** in the module matching the tool's domain (`src/mcp/handlers/tasks/crud.rs`, `tasks/dispatch.rs`, `tasks/wrap_up.rs`, `tasks/watch.rs`, `epics.rs`, `learnings.rs`, `managed_feeds.rs`). The signature is fixed by the macro:
 
@@ -36,7 +38,13 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
        };
    ```
 
-4. **Write tests** in `src/mcp/handlers/tests/` (the file matching the tool's domain) using the helpers from `src/mcp/handlers/tests/mod.rs`. The canonical pattern:
+   Use named error-code constants (`INVALID_PARAMS`, `INTERNAL_ERROR`, `INVALID_REQUEST`, `METHOD_NOT_FOUND`, `NOT_FOUND_CODE` — all in `src/mcp/handlers/types.rs`) in the handler rather than bare `-32602`/`-32603` literals. Where the failure is already a `ServiceError`, route it through `service_err_to_response` instead of hand-picking a code.
+
+4. **Consider generating the boundary instead.** For a tool with a large, growing field set, declare it once with `mcp_args!` (`src/mcp/handlers/args.rs`) rather than hand-writing the struct, the schema and the mapping separately. One field list expands to the `Deserialize` struct, the tool's input schema (a `fn` you reference from `mcp_tools!` as `(tasks::update_task_schema())`), the arg→params mapping, and the `FIELD_NAMES`/`manual_fields()` introspection the parity tests derive from. `update_task` — fifteen fields — is the worked example; read the macro's module docs for the grammar and for when `[manual]` is the right mode.
+
+   The macro only fits a tool whose service params type has chained setters, since every mode emits `params = params.setter(…)`. `UpdateTaskParams` qualifies; `UpdateEpicParams` and `CreateTaskParams` are built by struct literal, so converting those tools needs a service-layer builder or a new struct-literal mode first — a design step, not a rename.
+
+5. **Write tests** in `src/mcp/handlers/tests/` (the file matching the tool's domain) using the helpers from `src/mcp/handlers/tests/mod.rs`. The canonical pattern:
 
    ```rust
    // For tools that only read state — use test_state():

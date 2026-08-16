@@ -5,7 +5,10 @@ use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
 use crate::models::{DispatchMode, EpicId, TaskId};
 
-use super::{parse_args, service_err_to_response, DispatchTaskArgs, JsonRpcResponse};
+use super::{
+    parse_args, service_err_to_response, DispatchTaskArgs, JsonRpcResponse, INTERNAL_ERROR,
+    INVALID_PARAMS,
+};
 use crate::service::{FieldUpdate, UpdateTaskParams};
 
 fn do_dispatch(
@@ -194,7 +197,7 @@ pub(crate) async fn handle_dispatch_task(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    let task_id = crate::models::TaskId(parsed.task_id);
+    let task_id = parsed.task_id;
 
     let task = match state.db.get_task(task_id).await {
         Ok(Some(t)) => t,
@@ -204,7 +207,7 @@ pub(crate) async fn handle_dispatch_task(
                 crate::service::ServiceError::NotFound(format!("task #{} not found", task_id.0)),
             )
         }
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("db error: {e:#}")),
+        Err(e) => return JsonRpcResponse::err(id, INTERNAL_ERROR, format!("db error: {e:#}")),
     };
 
     // Claim before provisioning. The backlog guard is the claim itself, not the
@@ -263,11 +266,11 @@ pub(crate) async fn handle_dispatch_task(
         }
         Ok(Err(e)) => {
             release_claim(&*state.task_svc, task_id).await;
-            JsonRpcResponse::err(id, -32603, format!("dispatch failed: {e:#}"))
+            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("dispatch failed: {e:#}"))
         }
         Err(e) => {
             release_claim(&*state.task_svc, task_id).await;
-            JsonRpcResponse::err(id, -32603, format!("dispatch join error: {e}"))
+            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("dispatch join error: {e}"))
         }
     }
 }
@@ -291,11 +294,11 @@ async fn not_in_backlog_response(
                 crate::service::ServiceError::NotFound(format!("task #{} not found", task_id.0)),
             )
         }
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("db error: {e:#}")),
+        Err(e) => return JsonRpcResponse::err(id, INTERNAL_ERROR, format!("db error: {e:#}")),
     };
     JsonRpcResponse::err(
         id,
-        -32602,
+        INVALID_PARAMS,
         format!("task #{} is not in backlog (current: {current})", task_id.0),
     )
 }

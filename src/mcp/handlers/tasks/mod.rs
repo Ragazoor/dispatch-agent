@@ -3,13 +3,15 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::mcp::McpState;
-use crate::models::{EpicId, SubStatus, Task, TaskStatus, TaskTag, WrapUpMode};
+use crate::models::{EpicId, SubStatus, Task, TaskId, TaskStatus, TaskTag, UrlType, WrapUpMode};
+use crate::service::{FieldUpdate, UpdateTaskParams};
 
 // Promoted to pub(super) so sub-modules can `use super::{parse_args, ...}`
 pub(super) use super::types::{
-    deserialize_flexible_i64, deserialize_nullable_flexible_i64, deserialize_nullable_wrap_up_mode,
-    deserialize_optional_flexible_i64, fetch_caller_task, parse_args, service_err_to_response,
-    JsonRpcResponse, StatusFilter,
+    deserialize_flexible_id, deserialize_nullable_flexible_id, deserialize_nullable_wrap_up_mode,
+    deserialize_optional_flexible_i64, deserialize_optional_flexible_id,
+    deserialize_optional_url_type, fetch_caller_task, parse_args, service_err_to_response,
+    JsonRpcResponse, StatusFilter, INTERNAL_ERROR, INVALID_PARAMS,
 };
 
 mod crud;
@@ -33,46 +35,126 @@ pub(super) use wrap_up::{handle_exit_session, handle_wrap_up};
 // Typed argument structs (JSON-RPC layer)
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct UpdateTaskArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+mcp_args! {
+    /// Arguments for the `update_task` MCP tool.
+    ///
+    /// The task-field set is declared exactly once, here: the struct, the
+    /// tool's JSON input schema (`update_task_schema`, wired into `mcp_tools!`)
+    /// and the arg→[`UpdateTaskParams`] mapping (`apply_to_params`) all expand
+    /// from this list. Adding a field means adding one line.
+    ///
+    /// `url` and `url_type` are `[manual]` because they validate as a pair —
+    /// a non-empty `url` requires a `url_type`, and an empty `url` clears
+    /// instead of setting. `task_id` is `[manual]` because it is consumed
+    /// constructing the builder rather than applied to it.
+    pub(super) struct UpdateTaskArgs;
+    schema fn update_task_schema;
+    apply fn apply_to_params(UpdateTaskParams);
+
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    required task_id: TaskId = [manual] {
+        "type": "integer",
+        "description": "The task ID"
+    };
+
     #[serde(default)]
-    pub(super) status: Option<TaskStatus>,
+    optional status: Option<TaskStatus> = [set(status)] {
+        "type": "string",
+        "description": "New status: backlog, running, or review. Setting done is not allowed via MCP — ask the human operator to move the task to done from the TUI.",
+        "enum": crate::models::TaskStatus::MCP_UPDATABLE.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+    };
+
     #[serde(default)]
-    pub(super) plan_path: Option<String>,
+    optional plan_path: Option<String> = [set(plan_path, FieldUpdate::Set)] {
+        "type": "string",
+        "description": "Absolute file path to the implementation plan"
+    };
+
     #[serde(default)]
-    pub(super) title: Option<String>,
+    optional title: Option<String> = [set(title)] {
+        "type": "string",
+        "description": "New title for the task"
+    };
+
     #[serde(default)]
-    pub(super) description: Option<String>,
+    optional description: Option<String> = [set(description)] {
+        "type": "string",
+        "description": "New description for the task"
+    };
+
     #[serde(default)]
-    pub(super) repo_path: Option<String>,
+    optional repo_path: Option<String> = [set(repo_path)] {
+        "type": "string",
+        "description": "New repository path for the task"
+    };
+
     #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
-    pub(super) sort_order: Option<i64>,
+    optional sort_order: Option<i64> = [set(sort_order)] {
+        "type": "integer",
+        "description": "Display order within column (lower values appear first)"
+    };
+
     #[serde(default)]
-    pub(super) url: Option<String>,
+    optional url: Option<String> = [manual] {
+        "type": "string",
+        "description": "URL associated with this task (PR, issue, security alert, or other link). Pass an empty string to clear it. When set to a non-empty value, url_type is required."
+    };
+
+    #[serde(default, deserialize_with = "deserialize_optional_url_type")]
+    optional url_type: Option<UrlType> = [manual] {
+        "type": "string",
+        "description": "Type of the url: 'pr' (pull request — enables PR polling/merge), 'security_alert', 'issue', or 'other'. Required when url is set.",
+        "enum": crate::models::UrlType::ALL.iter().map(|u| u.as_str()).collect::<Vec<_>>()
+    };
+
+    // MCP tag semantics: absent = leave untouched, present = set. There is no
+    // clear-via-MCP, so the inner `Some` is unconditional — the setter's
+    // `Some(None)` (clear) is unreachable from this boundary.
     #[serde(default)]
-    pub(super) url_type: Option<String>,
+    optional tag: Option<TaskTag> = [set(tag, |t| Some(Some(t)))] {
+        "type": "string",
+        "description": "Task tag: bug, feature, chore, pr-review, research, fix, or dependabot. Controls dispatch behavior. The dependabot tag is intended for feed scripts only — TUI users cannot select it from the tag picker.",
+        "enum": super::dispatch::task_tag_enum_values()
+    };
+
     #[serde(default)]
-    pub(super) tag: Option<TaskTag>,
+    optional sub_status: Option<SubStatus> = [set(sub_status)] {
+        "type": "string",
+        "description": "Sub-status within the current status column. Running: active, needs_input, stale, crashed. Review: awaiting_review, changes_requested, approved. Must be valid for the task's current (or new) status.",
+        "enum": crate::models::SubStatus::MCP_ADVERTISED.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+    };
+
+    #[serde(default, deserialize_with = "deserialize_optional_flexible_id")]
+    optional epic_id: Option<EpicId> = [set(epic_id)] {
+        "type": "integer",
+        "description": "Link this task to an epic by ID"
+    };
+
     #[serde(default)]
-    pub(super) sub_status: Option<SubStatus>,
-    #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
-    pub(super) epic_id: Option<i64>,
-    #[serde(default)]
-    pub(super) base_branch: Option<String>,
+    optional base_branch: Option<String> = [set_some(base_branch)] {
+        "type": "string",
+        "description": "The base branch for rebase and PR operations (e.g. 'main', 'develop'). Defaults to 'main' if not specified."
+    };
+
     #[serde(default, deserialize_with = "deserialize_nullable_wrap_up_mode")]
-    pub(super) wrap_up_mode: Option<Option<WrapUpMode>>,
+    optional wrap_up_mode: Option<Option<WrapUpMode>> = [set(wrap_up_mode)] {
+        "type": ["string", "null"],
+        "description": "Pre-set the wrap-up action for this task: 'rebase' (rebase onto base_branch), 'pr' (create a PR), or 'done' (mark done immediately). Pass null to clear.",
+        "enum": crate::models::WrapUpMode::ALL.iter().map(|m| Some(m.as_str())).chain(std::iter::once(None)).collect::<Vec<Option<&str>>>()
+    };
+
     #[serde(default)]
-    pub(super) auto_run_plan: Option<bool>,
+    optional auto_run_plan: Option<bool> = [set(auto_run_plan)] {
+        "type": "boolean",
+        "description": "When true and the task has a plan_path, the dispatched agent implements the plan immediately instead of asking for confirmation first."
+    };
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GetTaskArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) task_id: TaskId,
 }
 
 #[derive(Deserialize)]
@@ -80,8 +162,8 @@ pub(super) struct GetTaskArgs {
 pub(super) struct ListTasksArgs {
     #[serde(default)]
     pub(super) status: Option<StatusFilter>,
-    #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
-    pub(super) epic_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_flexible_id")]
+    pub(super) epic_id: Option<EpicId>,
     #[serde(default)]
     pub(super) repo_paths: Option<Vec<String>>,
 }
@@ -97,8 +179,8 @@ pub(super) struct CreateTaskWithEpicArgs {
     /// Double-Option distinguishes "absent" (→ outer None: inherit from
     /// CallerIdentity if Task) from "explicit null" (→ Some(None): clear /
     /// no epic).
-    #[serde(default, deserialize_with = "deserialize_nullable_flexible_i64")]
-    pub(super) epic_id: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "deserialize_nullable_flexible_id")]
+    pub(super) epic_id: Option<Option<EpicId>>,
     #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
     pub(super) sort_order: Option<i64>,
     #[serde(default)]
@@ -120,16 +202,16 @@ pub(super) use crate::mcp::WrapUpAction;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WrapUpArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) task_id: TaskId,
     pub(super) action: WrapUpAction,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ExitSessionArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) task_id: TaskId,
     #[serde(default)]
     pub(super) token: Option<String>,
     #[serde(default)]
@@ -148,26 +230,26 @@ pub(super) struct SetVerifyCommandArgs {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SubscribeToTaskArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) watcher_task_id: i64,
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) target_task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) watcher_task_id: TaskId,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) target_task_id: TaskId,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct UnsubscribeFromTaskArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) watcher_task_id: i64,
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) target_task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) watcher_task_id: TaskId,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) target_task_id: TaskId,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DispatchTaskArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) task_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) task_id: TaskId,
 }
 
 #[derive(Deserialize)]

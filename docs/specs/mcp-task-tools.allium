@@ -36,10 +36,15 @@ rule UpdateTaskViaMcp {
     -- together; the handler rejects inconsistent combinations before any
     -- mutation occurs.
     --   • A non-empty url REQUIRES url_type (an unaccompanied url is rejected).
-    --   • An unknown url_type (not one of UrlType's literals) is rejected.
+    --   • An unknown url_type (not one of UrlType's literals) is rejected —
+    --     whether or not url is present. url_type is parsed into its enum at
+    --     the JSON-RPC boundary, like status, tag and sub_status, so a bad
+    --     literal fails argument decoding before this rule is reached and is
+    --     never silently ignored on a url-less call.
+    requires: url_type = null or url_type_is_valid(url_type)
     requires:
         if url != null and url != "":
-            url_type != null and url_type_is_valid(url_type)
+            url_type != null
 
     -- Cannot set status to done or archived via MCP. This restriction
     -- is enforced at the MCP handler boundary, not in the service layer.
@@ -153,7 +158,8 @@ rule UpdateTaskViaMcp {
         -- UpdateTaskParams.
         -- The typed url is carried by two params: `url` (the string) and
         -- `url_type` (one of pr | security_alert | issue | other). A non-empty
-        -- `url` REQUIRES `url_type`; an unknown `url_type` is rejected. An
+        -- `url` REQUIRES `url_type`; an unknown `url_type` is rejected
+        -- unconditionally, at argument decoding. An
         -- empty-string `url` clears task.url and its type (maps to
         -- FieldUpdate::Clear); any non-empty `url` sets task.url to a
         -- core/TaskUrl{url, url_type} value.

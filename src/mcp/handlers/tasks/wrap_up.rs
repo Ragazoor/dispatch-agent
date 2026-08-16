@@ -8,7 +8,7 @@ use crate::service::UpdateTaskParams;
 
 use super::{
     fetch_caller_task, parse_args, service_err_to_response, ExitSessionArgs, JsonRpcResponse,
-    WrapUpAction, WrapUpArgs,
+    WrapUpAction, WrapUpArgs, INTERNAL_ERROR, INVALID_PARAMS,
 };
 
 const ERR_NO_TOKEN: &str = "no exit token — call wrap_up first";
@@ -77,11 +77,11 @@ async fn issue_wrap_up_token(
 async fn validate_wrap_up_request(
     state: &McpState,
     id: &Option<Value>,
-    task_id: i64,
+    task_id: TaskId,
 ) -> Result<Task, JsonRpcResponse> {
     state
         .task_svc
-        .validate_wrap_up(TaskId(task_id))
+        .validate_wrap_up(task_id)
         .await
         .map_err(|e| service_err_to_response(id.clone(), e))
 }
@@ -99,7 +99,7 @@ fn resolve_rebase_target(
     let worktree = task.worktree.clone().ok_or_else(|| {
         JsonRpcResponse::err(
             id.clone(),
-            -32603,
+            INTERNAL_ERROR,
             "internal: validate_wrap_up returned task without worktree".to_string(),
         )
     })?;
@@ -107,7 +107,7 @@ fn resolve_rebase_target(
     let branch = dispatch::branch_from_worktree(&worktree).ok_or_else(|| {
         JsonRpcResponse::err(
             id.clone(),
-            -32602,
+            INVALID_PARAMS,
             format!("Cannot derive branch from worktree: {worktree}"),
         )
     })?;
@@ -196,7 +196,7 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
     .await
     {
         Ok(r) => r,
-        Err(e) => return JsonRpcResponse::err(id, -32603, format!("internal error: {e}")),
+        Err(e) => return JsonRpcResponse::err(id, INTERNAL_ERROR, format!("internal error: {e}")),
     };
 
     match rebase_result {
@@ -229,7 +229,7 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
                 }
             }
             state.notify_task_changed(task_id);
-            JsonRpcResponse::err(id, -32603, format!("wrap_up failed: {e}"))
+            JsonRpcResponse::err(id, INTERNAL_ERROR, format!("wrap_up failed: {e}"))
         }
     }
 }
@@ -244,7 +244,7 @@ pub(crate) async fn handle_wrap_up(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    tracing::info!(task_id = parsed.task_id, action = ?parsed.action, "MCP wrap_up");
+    tracing::info!(task_id = parsed.task_id.0, action = ?parsed.action, "MCP wrap_up");
 
     let task = match validate_wrap_up_request(state, &id, parsed.task_id).await {
         Ok(t) => t,
@@ -269,7 +269,7 @@ pub(crate) async fn handle_exit_session(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    let task_id = TaskId(parsed.task_id);
+    let task_id = parsed.task_id;
 
     let task = match fetch_caller_task(&*state.db, &id, task_id).await {
         Ok(t) => t,
@@ -278,7 +278,7 @@ pub(crate) async fn handle_exit_session(
 
     let token = match parsed.token {
         Some(t) => t,
-        None => return JsonRpcResponse::err(id, -32602, ERR_NO_TOKEN),
+        None => return JsonRpcResponse::err(id, INVALID_PARAMS, ERR_NO_TOKEN),
     };
 
     // Single call: no more reflect-then-close two-phase dance — the mandatory
@@ -289,9 +289,9 @@ pub(crate) async fn handle_exit_session(
     let (action, pr_url) = {
         let mut map = state.exit_tokens.write().unwrap_or_else(|e| e.into_inner());
         let stored_action = match map.get(&task_id) {
-            None => return JsonRpcResponse::err(id, -32602, ERR_NO_TOKEN),
+            None => return JsonRpcResponse::err(id, INVALID_PARAMS, ERR_NO_TOKEN),
             Some(et) if et.token != token => {
-                return JsonRpcResponse::err(id, -32602, "invalid exit token")
+                return JsonRpcResponse::err(id, INVALID_PARAMS, "invalid exit token")
             }
             Some(et) => et.action,
         };
@@ -300,7 +300,7 @@ pub(crate) async fn handle_exit_session(
             None => {
                 return JsonRpcResponse::err(
                     id,
-                    -32602,
+                    INVALID_PARAMS,
                     "action is required — pass the same action used in wrap_up",
                 )
             }
@@ -308,7 +308,7 @@ pub(crate) async fn handle_exit_session(
         if action != stored_action {
             return JsonRpcResponse::err(
                 id,
-                -32602,
+                INVALID_PARAMS,
                 format!(
                     "exit token was issued for wrap_up(action=\"{}\"), but exit_session was called \
                     with action=\"{}\"",
@@ -320,8 +320,8 @@ pub(crate) async fn handle_exit_session(
         if task.tmux_window.is_none() {
             return JsonRpcResponse::err(
                 id,
-                -32602,
-                format!("task #{} has no active session", parsed.task_id),
+                INVALID_PARAMS,
+                format!("task #{} has no active session", task_id.0),
             );
         }
         let pr_url = if action == WrapUpAction::Pr {
@@ -329,7 +329,7 @@ pub(crate) async fn handle_exit_session(
                 Some(u) => Some(u),
                 None => return JsonRpcResponse::err(
                     id,
-                    -32602,
+                    INVALID_PARAMS,
                     "pr_url is required for action 'pr' — pass the URL returned by `gh pr create`",
                 ),
             }

@@ -2,7 +2,6 @@ use serde_json::{json, Value};
 
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
-use crate::models::TaskId;
 use crate::service::SubscribeOutcome;
 
 use super::{
@@ -23,10 +22,7 @@ pub(crate) async fn handle_subscribe_to_task(
 
     match state
         .task_svc
-        .subscribe_to_task(
-            TaskId(parsed.watcher_task_id),
-            TaskId(parsed.target_task_id),
-        )
+        .subscribe_to_task(parsed.watcher_task_id, parsed.target_task_id)
         .await
     {
         Ok(SubscribeOutcome::AlreadyFinished(status)) => JsonRpcResponse::ok(
@@ -60,10 +56,7 @@ pub(crate) async fn handle_unsubscribe_from_task(
 
     match state
         .task_svc
-        .unsubscribe_from_task(
-            TaskId(parsed.watcher_task_id),
-            TaskId(parsed.target_task_id),
-        )
+        .unsubscribe_from_task(parsed.watcher_task_id, parsed.target_task_id)
         .await
     {
         Ok(()) => JsonRpcResponse::ok(

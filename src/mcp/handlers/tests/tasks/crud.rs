@@ -1,6 +1,159 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+// -- update_task boundary parity ---------------------------------------------
+//
+// These guard the `mcp_args!` generation itself (see `src/mcp/handlers/args.rs`
+// for what it emits and why): that the schema is well-formed, that every name it
+// advertises is one the parser accepts, and that every advertised field still
+// reaches the service params.
+
+fn update_task_schema() -> serde_json::Value {
+    crate::mcp::handlers::tasks::update_task_schema()
+}
+
+/// The advertised property set is exactly the struct's field set. A schema
+/// property the struct does not have would be a runtime `-32602` on the first
+/// agent that believed the schema.
+#[test]
+fn update_task_schema_properties_match_the_args_struct() {
+    let schema = update_task_schema();
+    let mut advertised: Vec<&str> = schema["properties"]
+        .as_object()
+        .expect("properties must be an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    advertised.sort_unstable();
+
+    let mut declared: Vec<&str> = crate::mcp::handlers::tasks::UpdateTaskArgs::FIELD_NAMES.to_vec();
+    declared.sort_unstable();
+
+    assert_eq!(advertised, declared);
+}
+
+/// Every advertised field name is one `deny_unknown_fields` accepts. This is
+/// the leg that used to fail at runtime: a schema/struct name mismatch was a
+/// `-32602 Invalid arguments` rather than a build or test failure.
+#[test]
+fn every_advertised_update_task_field_is_accepted_by_the_parser() {
+    let schema = update_task_schema();
+    let properties = schema["properties"].as_object().unwrap();
+
+    // One representative valid value per JSON type the schema advertises. The
+    // point is name acceptance, not value validation, so enums use their first
+    // advertised member.
+    for (name, spec) in properties {
+        let value = match spec.get("enum").and_then(|e| e.as_array()) {
+            Some(members) => members
+                .iter()
+                .find(|m| !m.is_null())
+                .expect("an enum must advertise at least one non-null member")
+                .clone(),
+            None => match spec["type"].as_str() {
+                Some("integer") => json!(1),
+                Some("boolean") => json!(true),
+                Some("string") => json!("x"),
+                other => panic!("field {name} has unhandled schema type {other:?}"),
+            },
+        };
+        let args = json!({ "task_id": 1, (name.as_str()): value });
+        let parsed = serde_json::from_value::<crate::mcp::handlers::tasks::UpdateTaskArgs>(args);
+        assert!(
+            parsed.is_ok(),
+            "schema advertises {name} but the args struct rejects it: {:?}",
+            parsed.err()
+        );
+    }
+}
+
+/// `task_id` must stay the only required field — every other one is a no-op
+/// when absent, so it is the only one the tool cannot work without.
+/// (`tool_schemas_have_consistent_required_fields` in `tests/mod.rs` already
+/// checks registry-wide that `required` names real properties.)
+#[test]
+fn update_task_schema_required_list_is_task_id_only() {
+    assert_eq!(update_task_schema()["required"], json!(["task_id"]));
+}
+
+/// Every property carries a description — the schema is the only documentation
+/// an agent sees for these fields.
+#[test]
+fn every_update_task_property_is_documented() {
+    for (name, spec) in update_task_schema()["properties"].as_object().unwrap() {
+        assert!(
+            spec.get("description")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| !d.is_empty()),
+            "field {name} has no description"
+        );
+    }
+}
+
+/// The mapping leg: sending every advertised field in one call must report
+/// every corresponding params field as updated. A field present in the struct
+/// and the schema but dropped on the way to `UpdateTaskParams` would be
+/// silently ignored — the failure mode this whole boundary exists to prevent.
+#[tokio::test]
+async fn update_task_maps_every_advertised_field_to_params() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+    let epic = state.db_write().create_epic("E", "", None).await.unwrap();
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": {
+                "task_id": task_id.0,
+                "status": "running",
+                "plan_path": "/plans/p.md",
+                "title": "new title",
+                "description": "new description",
+                "repo_path": "/repo",
+                "sort_order": 3,
+                "url": "https://github.com/org/repo/pull/1",
+                "url_type": "pr",
+                "tag": "bug",
+                "sub_status": "active",
+                "epic_id": epic.id.0,
+                "base_branch": "develop",
+                "wrap_up_mode": "pr",
+                "auto_run_plan": true,
+            }
+        })),
+    )
+    .await;
+
+    let text = resp.result.as_ref().unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Only the `[manual]` fields are exempt, and the exemption set is derived
+    // from the macro rather than hand-listed — so declaring a new `[manual]`
+    // field cannot quietly widen what this test forgives.
+    let manual = crate::mcp::handlers::tasks::UpdateTaskArgs::manual_fields();
+    for field in crate::mcp::handlers::tasks::UpdateTaskArgs::FIELD_NAMES {
+        if manual.contains(field) {
+            continue;
+        }
+        assert!(
+            text.contains(field),
+            "update_task did not report {field} as updated: {text}"
+        );
+    }
+
+    // `url` is `[manual]` but the handler does map it, so assert it explicitly
+    // rather than letting the exemption above cover for a regression there.
+    // (`url_type` has no params field of its own — it folds into `url`.)
+    assert!(
+        text.contains("url"),
+        "update_task did not report url as updated: {text}"
+    );
+}
+
 // -- update_task tests -------------------------------------------------------
 
 #[tokio::test]
@@ -875,6 +1028,31 @@ async fn update_task_rejects_unknown_url_type() {
             "arguments": {
                 "task_id": task_id.0,
                 "url": "https://x/y",
+                "url_type": "bogus"
+            }
+        })),
+    )
+    .await;
+    assert_error(&resp, "url_type");
+}
+
+/// `url_type` is parsed into its enum at the JSON-RPC boundary, like `status`,
+/// `tag` and `sub_status` — so a bad literal is rejected on its own, not only
+/// when a `url` happens to accompany it. Previously it was carried inward as a
+/// `String` and only validated on the url-setting path, where a url-less call
+/// with a typo'd `url_type` succeeded silently.
+#[tokio::test]
+async fn update_task_rejects_unknown_url_type_even_without_a_url() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": {
+                "task_id": task_id.0,
+                "title": "t",
                 "url_type": "bogus"
             }
         })),

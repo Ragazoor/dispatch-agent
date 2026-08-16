@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
 
-use super::{parse_args, JsonRpcResponse, SetVerifyCommandArgs};
+use super::{parse_args, JsonRpcResponse, SetVerifyCommandArgs, INTERNAL_ERROR, INVALID_PARAMS};
 
 pub(crate) async fn handle_set_verify_command(
     state: &McpState,
@@ -25,7 +25,7 @@ pub(crate) async fn handle_set_verify_command(
         .as_deref()
         .is_some_and(|c| c.contains('\n') || c.contains('\r'))
     {
-        return JsonRpcResponse::err(id, -32602, "command must be a single line");
+        return JsonRpcResponse::err(id, INVALID_PARAMS, "command must be a single line");
     }
     match state
         .db
@@ -39,6 +39,10 @@ pub(crate) async fn handle_set_verify_command(
             };
             JsonRpcResponse::ok(id, json!({"content": [{"type": "text", "text": msg}]}))
         }
-        Err(e) => JsonRpcResponse::err(id, -32603, format!("failed to set verify command: {e}")),
+        Err(e) => JsonRpcResponse::err(
+            id,
+            INTERNAL_ERROR,
+            format!("failed to set verify command: {e}"),
+        ),
     }
 }

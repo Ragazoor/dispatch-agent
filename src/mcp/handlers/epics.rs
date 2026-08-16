@@ -7,8 +7,9 @@ use crate::models::{EpicId, TaskStatus};
 use crate::service::{CreateEpicParams, ServiceError, UpdateEpicParams};
 
 use super::types::{
-    deserialize_flexible_i64, deserialize_nullable_flexible_i64, deserialize_nullable_string,
-    deserialize_optional_flexible_i64, parse_args, service_err_to_response, JsonRpcResponse,
+    deserialize_flexible_id, deserialize_nullable_flexible_i64, deserialize_nullable_flexible_id,
+    deserialize_nullable_string, deserialize_optional_flexible_i64,
+    deserialize_optional_flexible_id, parse_args, service_err_to_response, JsonRpcResponse,
 };
 
 // ---------------------------------------------------------------------------
@@ -23,22 +24,22 @@ pub(super) struct CreateEpicArgs {
     pub(super) description: String,
     #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
     pub(super) sort_order: Option<i64>,
-    #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
-    pub(super) parent_epic_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_flexible_id")]
+    pub(super) parent_epic_id: Option<EpicId>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GetEpicArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) epic_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) epic_id: EpicId,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct UpdateEpicArgs {
-    #[serde(deserialize_with = "deserialize_flexible_i64")]
-    pub(super) epic_id: i64,
+    #[serde(deserialize_with = "deserialize_flexible_id")]
+    pub(super) epic_id: EpicId,
     #[serde(default)]
     pub(super) title: Option<String>,
     #[serde(default)]
@@ -55,8 +56,8 @@ pub(super) struct UpdateEpicArgs {
     pub(super) feed_interval_secs: Option<Option<i64>>,
     #[serde(default)]
     pub(super) group_by_repo: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_nullable_flexible_i64")]
-    pub(super) parent_epic_id: Option<Option<i64>>,
+    #[serde(default, deserialize_with = "deserialize_nullable_flexible_id")]
+    pub(super) parent_epic_id: Option<Option<EpicId>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ pub(super) async fn handle_create_epic(
             title: parsed.title,
             description: parsed.description,
             sort_order: parsed.sort_order,
-            parent_epic_id: parsed.parent_epic_id.map(EpicId),
+            parent_epic_id: parsed.parent_epic_id,
             feed_command: None,
             feed_interval_secs: None,
         })
@@ -108,13 +109,9 @@ pub(super) async fn handle_get_epic(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    tracing::info!(epic_id = parsed.epic_id, "MCP get_epic");
+    tracing::info!(epic_id = parsed.epic_id.0, "MCP get_epic");
 
-    match state
-        .epic_svc
-        .get_epic_with_progress(EpicId(parsed.epic_id))
-        .await
-    {
+    match state.epic_svc.get_epic_with_progress(parsed.epic_id).await {
         Ok((epic, done_count, total)) => {
             let mut text = format!(
                 "Epic {id}: {title}\nDescription: {desc}\nStatus: {status}",
@@ -200,7 +197,7 @@ pub(super) async fn handle_update_epic(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    tracing::info!(epic_id = parsed.epic_id, "MCP update_epic");
+    tracing::info!(epic_id = parsed.epic_id.0, "MCP update_epic");
 
     // MCP-specific restriction: agents cannot set epic status to archived
     if matches!(parsed.status, Some(TaskStatus::Archived)) {
@@ -213,7 +210,7 @@ pub(super) async fn handle_update_epic(
     }
 
     let params = UpdateEpicParams {
-        epic_id: EpicId(parsed.epic_id),
+        epic_id: parsed.epic_id,
         title: parsed.title,
         description: parsed.description,
         status: parsed.status,
@@ -226,7 +223,7 @@ pub(super) async fn handle_update_epic(
         }),
         feed_interval_secs: parsed.feed_interval_secs,
         group_by_repo: parsed.group_by_repo,
-        parent_epic_id: parsed.parent_epic_id.map(|o| o.map(EpicId)),
+        parent_epic_id: parsed.parent_epic_id,
     };
     let field_names: Vec<String> = params
         .updated_field_names()

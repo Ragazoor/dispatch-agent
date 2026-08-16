@@ -4,14 +4,14 @@ use serde_json::{json, Value};
 
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
-use crate::models::{EpicId, TaskId, TaskStatus};
+use crate::models::TaskStatus;
 use crate::service::{
-    CreateTaskParams, FieldUpdate, ListTasksFilter, ServiceError, UpdateTaskParams, UrlUpdate,
+    CreateTaskParams, ListTasksFilter, ServiceError, UpdateTaskParams, UrlUpdate,
 };
 
 use super::{
     fetch_caller_task, parse_args, service_err_to_response, CreateTaskWithEpicArgs, GetTaskArgs,
-    JsonRpcResponse, ListTasksArgs, QueryUsageArgs, StatusFilter, UpdateTaskArgs,
+    JsonRpcResponse, ListTasksArgs, QueryUsageArgs, StatusFilter, UpdateTaskArgs, INVALID_PARAMS,
 };
 
 pub(crate) async fn handle_update_task(
@@ -20,11 +20,12 @@ pub(crate) async fn handle_update_task(
     _identity: &CallerIdentity,
     args: Value,
 ) -> JsonRpcResponse {
-    let parsed = match parse_args::<UpdateTaskArgs>(&id, args) {
+    let mut parsed = match parse_args::<UpdateTaskArgs>(&id, args) {
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    tracing::info!(task_id = parsed.task_id, status = ?parsed.status, "MCP update_task");
+    let task_id = parsed.task_id;
+    tracing::info!(task_id = task_id.0, status = ?parsed.status, "MCP update_task");
 
     // MCP-specific restriction: agents cannot set status to done or archived
     if matches!(parsed.status, Some(TaskStatus::Done | TaskStatus::Archived)) {
@@ -36,36 +37,19 @@ pub(crate) async fn handle_update_task(
         );
     }
 
-    // MCP tag semantics: absent = leave untouched, present = set. There is no
-    // clear-via-MCP, so map `Some(t)` to `Some(Some(t))` and `None` to `None`.
-    let mut params = UpdateTaskParams::for_task(TaskId(parsed.task_id))
-        .tag(parsed.tag.map(Some))
-        .base_branch(parsed.base_branch);
-    if let Some(status) = parsed.status {
-        params = params.status(status);
-    }
-    if let Some(plan_path) = parsed.plan_path {
-        params = params.plan_path(FieldUpdate::Set(plan_path));
-    }
-    if let Some(title) = parsed.title {
-        params = params.title(title);
-    }
-    if let Some(description) = parsed.description {
-        params = params.description(description);
-    }
-    if let Some(repo_path) = parsed.repo_path {
-        params = params.repo_path(repo_path);
-    }
-    if let Some(sort_order) = parsed.sort_order {
-        params = params.sort_order(sort_order);
-    }
-    match parsed.url {
+    let mut params = UpdateTaskParams::for_task(task_id);
+
+    // `url`/`url_type` are the two `[manual]` fields of `UpdateTaskArgs`: they
+    // validate as a pair rather than mapping to one setter each, so they are
+    // taken out here and everything else is folded in by the generated
+    // `apply_to_params` below.
+    match parsed.url.take() {
         // Empty string clears the URL (legacy clear convention).
         Some(ref u) if u.is_empty() => {
             params = params.url(UrlUpdate::Clear);
         }
         Some(u) => {
-            let type_str = match parsed.url_type {
+            let url_type = match parsed.url_type.take() {
                 Some(t) => t,
                 None => {
                     return service_err_to_response(
@@ -76,38 +60,17 @@ pub(crate) async fn handle_update_task(
                     )
                 }
             };
-            let url_type = match crate::models::UrlType::parse(&type_str) {
-                Some(t) => t,
-                None => {
-                    return service_err_to_response(
-                        id,
-                        ServiceError::Validation(format!(
-                            "unknown url_type '{type_str}' (expected one of: pr, security_alert, issue, other)"
-                        )),
-                    )
-                }
-            };
             params = params.url(UrlUpdate::Set(crate::models::TaskUrl::new(u, url_type)));
         }
         None => {}
     }
-    if let Some(sub_status) = parsed.sub_status {
-        params = params.sub_status(sub_status);
-    }
-    if let Some(epic_id) = parsed.epic_id {
-        params = params.epic_id(EpicId(epic_id));
-    }
-    if let Some(mode) = parsed.wrap_up_mode {
-        params = params.wrap_up_mode(mode);
-    }
-    if let Some(value) = parsed.auto_run_plan {
-        params = params.auto_run_plan(value);
-    }
+
+    let params = parsed.apply_to_params(params);
     let fields_display = params.updated_field_names().join(", ");
 
     match state.task_svc.update_task(params).await {
         Ok(result) => {
-            state.notify_task_changed(TaskId(parsed.task_id));
+            state.notify_task_changed(task_id);
             let nudge = if result.was_pr_finalisation {
                 super::reflection_nudge(&*state.db).await
             } else {
@@ -146,11 +109,11 @@ pub(crate) async fn handle_create_task(
                 Err(resp) => return resp,
             };
             match parsed.epic_id {
-                Some(inner) => inner.map(EpicId),
+                Some(inner) => inner,
                 None => caller.epic_id,
             }
         }
-        CallerIdentity::Session => parsed.epic_id.and_then(|inner| inner.map(EpicId)),
+        CallerIdentity::Session => parsed.epic_id.flatten(),
     };
 
     match state
@@ -190,9 +153,9 @@ pub(crate) async fn handle_get_task(
         Ok(a) => a,
         Err(resp) => return resp,
     };
-    tracing::info!(task_id = parsed.task_id, "MCP get_task");
+    tracing::info!(task_id = parsed.task_id.0, "MCP get_task");
 
-    match state.task_svc.get_task(TaskId(parsed.task_id)).await {
+    match state.task_svc.get_task(parsed.task_id).await {
         Ok(task) => {
             let (epic_titles, verify_command) = tokio::join!(
                 super::build_epic_titles(state),
@@ -236,7 +199,7 @@ pub(crate) async fn handle_list_tasks(
         CallerIdentity::Session => (None, None),
     };
 
-    let epic_id = parsed.epic_id.map(EpicId).or(derived_epic_id);
+    let epic_id = parsed.epic_id.or(derived_epic_id);
 
     match state
         .task_svc
@@ -318,18 +281,18 @@ pub(crate) async fn handle_query_usage(
     // empty result set when the caller mistypes a filter.
     if let Some(ref c) = args.category {
         if crate::models::UsageCategory::parse(c).is_none() {
-            return JsonRpcResponse::err(id, -32602, format!("unknown category: {c}"));
+            return JsonRpcResponse::err(id, INVALID_PARAMS, format!("unknown category: {c}"));
         }
     }
     if let Some(ref a) = args.actor {
         if crate::models::UsageActor::parse(a).is_none() {
-            return JsonRpcResponse::err(id, -32602, format!("unknown actor: {a}"));
+            return JsonRpcResponse::err(id, INVALID_PARAMS, format!("unknown actor: {a}"));
         }
     }
 
     let since = match args.since.as_deref().map(parse_usage_since) {
         Some(Ok(dt)) => Some(dt),
-        Some(Err(msg)) => return JsonRpcResponse::err(id, -32602, msg),
+        Some(Err(msg)) => return JsonRpcResponse::err(id, INVALID_PARAMS, msg),
         None => None,
     };
 

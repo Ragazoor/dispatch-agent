@@ -1,3 +1,8 @@
+// Declared first and `#[macro_use]`d: `macro_rules!` scope is textual, so
+// `mcp_args!` must be in scope before the modules that invoke it.
+#[macro_use]
+mod args;
+
 mod dispatch;
 mod epics;
 mod learnings;
