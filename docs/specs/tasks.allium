@@ -1041,8 +1041,7 @@ rule EditTask {
         -- The exemption includes `archived`, which the graph marks
         -- terminal: the archive view binds the same editor key, so an
         -- archived task can be edited back to backlog, running, review
-        -- or done. The CLI path (`dispatch update <id> <status>`) is
-        -- exempt on the same terms.
+        -- or done.
         -- Sub_status is auto-reset to the default for the new status
         -- when status changes, per the SubStatusAutoreset invariant.
         -- The editor opens in a separate tmux window; tmux focus

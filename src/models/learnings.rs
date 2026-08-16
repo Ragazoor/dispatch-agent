@@ -38,17 +38,6 @@ impl LearningKind {
         }
     }
 
-    pub fn display_label(self) -> &'static str {
-        match self {
-            LearningKind::Pitfall => "Pitfall",
-            LearningKind::Convention => "Convention",
-            LearningKind::Preference => "Preference",
-            LearningKind::ToolRecommendation => "Tool recommendation",
-            LearningKind::Procedural => "Procedural",
-            LearningKind::Landscape => "Landscape",
-        }
-    }
-
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "pitfall" => Some(LearningKind::Pitfall),

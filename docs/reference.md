@@ -117,8 +117,6 @@ The agent reports progress via the MCP server running on `localhost:3142`. When 
 dispatch tui
 
 # CLI — used by agents and hooks
-dispatch update <task-id> <status>
-dispatch list [--status <status>]
 dispatch plan <task-id> <plan-path>
 
 # statusLine decorator (wired into ~/.claude/dispatch-statusline.json by
@@ -136,8 +134,9 @@ reports whatever the local refs say. A repository that cannot be measured shows
 `unknown` rather than any ahead/behind figure — it is never reported as clean.
 `repo sync` attempts every target and exits non-zero if any of them failed.
 
-Tasks are created via the MCP `create_task` tool — there is no CLI
-subcommand for task creation.
+Tasks are created and mutated via the MCP tools (`create_task`,
+`update_task`) — there is no CLI subcommand for creating, listing or
+updating a task.
 
 ## Configuration
 

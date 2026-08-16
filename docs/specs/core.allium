@@ -272,14 +272,12 @@ entity Task {
         terminal: archived
     }
     -- This graph governs the move-based status changes only (MoveTask,
-    -- ConfirmDone, Archive, dispatch/PR-driven transitions). Three
+    -- ConfirmDone, Archive, dispatch/PR-driven transitions). Two
     -- operator paths are intentionally exempt from it:
     --   - EditTask, the tmux task editor (see tasks.allium: EditTask) —
     --     reachable from the archive view as well as the main board. May
     --     set any TaskStatus from any other, including moving a task
     --     back out of the terminal `archived` state.
-    --   - `dispatch update <id> <status>`, the CLI operator path
-    --     (see task-watchers.allium). Same unrestricted range.
     --   - MCP `update_task` (see mcp-task-tools.allium:
     --     UpdateTaskViaMcp), the agent path. Partially restricted: it
     --     refuses `done` and `archived` as TARGET statuses, but applies
@@ -288,8 +286,8 @@ entity Task {
     --     `backlog -> review` and `done -> backlog` — none declared
     --     above — and can also leave the terminal `archived` state for
     --     backlog/running/review, since only the target is checked.
-    -- All three are deliberate escape hatches — manual correction for
-    -- the first two, re-opening or re-queueing work for the third — not
+    -- Both are deliberate escape hatches — manual correction for the
+    -- first, re-opening or re-queueing work for the second — not
     -- edges of the lifecycle, so they are not declared above. Every
     -- other status change, whether automatic or a keyboard move, does
     -- obey the graph.

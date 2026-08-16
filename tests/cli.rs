@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! Integration tests for the CLI commands (list, update, plan, verify-feed).
+//! Integration tests for the CLI commands (plan, hook-*, verify-feed, repo).
 //!
 //! Each test spins up a fresh temp-file DB and invokes the compiled binary
 //! via `std::process::Command`. Task creation is no longer exposed via the
@@ -27,9 +27,8 @@ fn make_plan_file(title: &str, goal: &str) -> NamedTempFile {
     f
 }
 
-/// Seed a backlog task directly via the DB API so we can drive the
-/// `update` / `list` / `plan` subcommands without the (removed) `create`
-/// subcommand.
+/// Seed a backlog task directly via the DB API so we can drive the `plan`
+/// and `hook-*` subcommands without the (removed) `create` subcommand.
 async fn seed_task(db_path: &Path, title: &str) -> TaskId {
     let db = Database::open(db_path).await.unwrap();
     db.create_task(CreateTaskRequest {
@@ -50,142 +49,52 @@ async fn seed_task(db_path: &Path, title: &str) -> TaskId {
 }
 
 // ---------------------------------------------------------------------------
-// list
+// Removed subcommands
+//
+// `create`, `list` and `update` were CLI task-mutation surfaces. Tasks are
+// created and mutated via MCP; the installed Claude Code hooks forward to the
+// dedicated `hook-*` subcommands. Each must now be rejected by clap outright,
+// so a stale hook script or muscle-memory invocation fails loudly instead of
+// silently doing something.
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn list_empty_db() {
-    let db = NamedTempFile::new().unwrap();
+/// A `--db` path that deliberately does not exist. Every assertion in this
+/// section is about clap rejecting argv *before* anything opens a database, so
+/// pointing at a path no `Database::open` could succeed on makes that claim
+/// structural rather than merely asserted — and saves the tests a temp file
+/// none of them ever reads.
+const UNOPENABLE_DB: &str = "/nonexistent-dir/dispatch-test.db";
+
+/// Assert `subcommand` is not a recognised `dispatch` subcommand.
+fn assert_subcommand_removed(subcommand: &str) {
     let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "list"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("No tasks found."),
-        "Expected 'No tasks found.', got: {stdout}"
-    );
-}
-
-#[tokio::test]
-async fn list_unknown_status_fails() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args([
-            "--db",
-            db.path().to_str().unwrap(),
-            "list",
-            "--status",
-            "bogus",
-        ])
-        .output()
-        .unwrap();
-    assert!(!out.status.success(), "Expected failure for unknown status");
-}
-
-#[tokio::test]
-async fn list_filter_by_status() {
-    let db = NamedTempFile::new().unwrap();
-    let db_path = db.path().to_str().unwrap();
-    seed_task(db.path(), "Filter Test").await;
-
-    // list --status backlog -> shows the task
-    let out = binary()
-        .args(["--db", db_path, "list", "--status", "backlog"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("Filter Test"),
-        "Expected task in backlog list, got: {stdout}"
-    );
-
-    // list --status running -> empty
-    let out = binary()
-        .args(["--db", db_path, "list", "--status", "running"])
-        .output()
-        .unwrap();
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("No tasks found."),
-        "Expected no running tasks, got: {stdout}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// create subcommand removed (tasks are created via MCP only)
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn create_subcommand_removed() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "create"])
+        .args(["--db", UNOPENABLE_DB, subcommand])
         .output()
         .unwrap();
     assert!(
         !out.status.success(),
-        "create must no longer be a recognised subcommand"
+        "{subcommand} must no longer be a recognised subcommand"
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("unrecognized subcommand") || stderr.contains("invalid value"),
-        "expected clap rejection, got stderr: {stderr}"
+        "expected clap rejection for {subcommand}, got stderr: {stderr}"
     );
 }
 
-// ---------------------------------------------------------------------------
-// update
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn update_changes_status() {
-    let db = NamedTempFile::new().unwrap();
-    let db_path = db.path().to_str().unwrap();
-    let id = seed_task(db.path(), "Update Test").await;
-
-    // Update to running
-    let out = binary()
-        .args(["--db", db_path, "update", &id.0.to_string(), "running"])
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains(&format!("Task {} updated to running", id.0)),
-        "Expected update confirmation, got: {stdout}"
-    );
-
-    // Verify via list
-    let out = binary()
-        .args(["--db", db_path, "list", "--status", "running"])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("Update Test"),
-        "Expected task in running list, got: {stdout}"
-    );
+#[test]
+fn create_subcommand_removed() {
+    assert_subcommand_removed("create");
 }
 
-#[tokio::test]
-async fn update_unknown_status_fails() {
-    let db = NamedTempFile::new().unwrap();
-    let db_path = db.path().to_str().unwrap();
-    let id = seed_task(db.path(), "Error Test").await;
+#[test]
+fn list_subcommand_removed() {
+    assert_subcommand_removed("list");
+}
 
-    let out = binary()
-        .args(["--db", db_path, "update", &id.0.to_string(), "bogus-status"])
-        .output()
-        .unwrap();
-    assert!(!out.status.success(), "Expected failure for unknown status");
+#[test]
+fn update_subcommand_removed() {
+    assert_subcommand_removed("update");
 }
 
 // ---------------------------------------------------------------------------
@@ -281,40 +190,14 @@ async fn plan_nonexistent_file_fails() {
 // re-introduction has to opt back in deliberately.
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn fetch_reviews_subcommand_removed() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "fetch-reviews"])
-        .output()
-        .unwrap();
-    assert!(
-        !out.status.success(),
-        "fetch-reviews must no longer be a recognised subcommand"
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("unrecognized subcommand") || stderr.contains("invalid value"),
-        "expected clap rejection, got stderr: {stderr}"
-    );
+#[test]
+fn fetch_reviews_subcommand_removed() {
+    assert_subcommand_removed("fetch-reviews");
 }
 
-#[tokio::test]
-async fn fetch_security_subcommand_removed() {
-    let db = NamedTempFile::new().unwrap();
-    let out = binary()
-        .args(["--db", db.path().to_str().unwrap(), "fetch-security"])
-        .output()
-        .unwrap();
-    assert!(
-        !out.status.success(),
-        "fetch-security must no longer be a recognised subcommand"
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("unrecognized subcommand") || stderr.contains("invalid value"),
-        "expected clap rejection, got stderr: {stderr}"
-    );
+#[test]
+fn fetch_security_subcommand_removed() {
+    assert_subcommand_removed("fetch-security");
 }
 
 // ---------------------------------------------------------------------------
@@ -872,20 +755,44 @@ async fn hook_subagent_missing_agent_id_is_a_silent_noop() {
     );
 }
 
-#[tokio::test]
-async fn hook_subagent_unknown_action_fails() {
-    let db = NamedTempFile::new().unwrap();
-    let db_path = db.path().to_str().unwrap();
-    let id = seed_running_task(db.path(), "Subagent Bad Action", SubStatus::Active).await;
-
+/// Assert `subcommand` rejects `bogus` as its action argument with clap's own
+/// invalid-value message, and that the message enumerates `valid`.
+///
+/// The action is parsed at the boundary by clap (`ValueEnum`), not by a
+/// hand-rolled `match` inside the handler, so this happens before any database
+/// is opened — hence [`UNOPENABLE_DB`].
+fn assert_action_rejected_by_clap(subcommand: &str, bogus: &str, valid: &[&str]) {
     let out = binary()
-        .args(["--db", db_path, "hook-subagent", &id.0.to_string(), "bogus"])
+        .args(["--db", UNOPENABLE_DB, subcommand, "1", bogus])
         .output()
         .unwrap();
     assert!(
         !out.status.success(),
-        "expected failure for an unrecognised action"
+        "{subcommand} must reject `{bogus}` as an action"
     );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("invalid value") && stderr.contains("possible values"),
+        "expected clap's invalid-value message, got stderr: {stderr}"
+    );
+    for v in valid {
+        assert!(
+            stderr.contains(v),
+            "clap must list `{v}` as a possible value, got stderr: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn hook_subagent_unknown_action_is_rejected_by_clap() {
+    assert_action_rejected_by_clap("hook-subagent", "bogus", &["start", "stop", "clear"]);
+}
+
+/// `clear` is a valid `hook-subagent` action but must not be one here — a
+/// backgrounded shell has no SessionStart-driven clear, only session fencing.
+#[test]
+fn hook_shell_unknown_action_is_rejected_by_clap() {
+    assert_action_rejected_by_clap("hook-shell", "clear", &["start", "stop"]);
 }
 
 // ---------------------------------------------------------------------------

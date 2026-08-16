@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
-use dispatch_tui::db::{SettingsStore, TaskRead};
+use dispatch_tui::db::SettingsStore;
 use dispatch_tui::models::expand_tilde;
 use dispatch_tui::tui::ui::truncate;
 use dispatch_tui::{db, dispatch, models, runtime, service};
@@ -29,28 +29,6 @@ enum Commands {
         /// MCP server port
         #[arg(long, env = "DISPATCH_PORT", default_value_t = dispatch_tui::DEFAULT_PORT)]
         port: u16,
-    },
-    /// Update a task's status
-    Update {
-        /// Task ID
-        id: i64,
-        /// New status
-        status: String,
-        /// Only update if current status matches this value
-        #[arg(long)]
-        only_if: Option<String>,
-        /// Set the sub-status (e.g. active, needs_input, stale, crashed, awaiting_review)
-        #[arg(long)]
-        sub_status: Option<String>,
-        /// Mark the task as needing human input (deprecated, use --sub-status needs_input)
-        #[arg(long)]
-        needs_input: bool,
-    },
-    /// List tasks
-    List {
-        /// Filter by status
-        #[arg(long)]
-        status: Option<String>,
     },
     /// Attach a plan file to an existing task
     Plan {
@@ -87,6 +65,12 @@ enum Commands {
         /// (e.g. permission_prompt, auth_success, elicitation_complete). Only
         /// meaningful for the `notification` event; ignored otherwise. Absent
         /// or unrecognised values fall back to the `needs_input` behaviour.
+        ///
+        /// Deliberately NOT a `ValueEnum` like the `hook-subagent`/`hook-shell`
+        /// actions: that graceful degradation is load-bearing (see
+        /// [`models::NotificationKind::parse`] and `agent-health.allium`), so a
+        /// notification subtype Claude Code adds later must reach the fallback
+        /// path rather than make clap exit 2 inside a fire-and-forget hook.
         #[arg(long = "kind")]
         notification_kind: Option<String>,
     },
@@ -97,8 +81,9 @@ enum Commands {
     HookSubagent {
         /// Task ID
         id: i64,
-        /// Action: start | stop | clear
-        action: String,
+        /// What happened to the subagent
+        #[arg(value_enum)]
+        action: SubagentAction,
         /// Subagent identifier from the payload's `agent_id` field. Required
         /// for start and stop; ignored for clear.
         #[arg(long = "agent-id")]
@@ -120,8 +105,9 @@ enum Commands {
     HookShell {
         /// Task ID
         id: i64,
-        /// Action: start | stop
-        action: String,
+        /// What happened to the backgrounded shell
+        #[arg(value_enum)]
+        action: ShellAction,
         /// Shell identifier — the id Claude Code assigns a backgrounded
         /// shell. Current Claude Code sends this as
         /// `tool_response.backgroundTaskId` (Bash) or `tool_input.task_id`
@@ -254,10 +240,29 @@ enum RepoAction {
     },
 }
 
-fn parse_status(s: &str) -> anyhow::Result<models::TaskStatus> {
-    models::TaskStatus::parse(s).ok_or_else(|| {
-        anyhow::anyhow!("Unknown status: {s}. Valid values: backlog, running, review, done")
-    })
+/// `dispatch hook-subagent <id> <action>`'s action, parsed at the boundary by
+/// clap so `--help` enumerates the valid values and an unrecognised one is
+/// rejected before any database is opened.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum SubagentAction {
+    /// SubagentStart
+    Start,
+    /// SubagentStop
+    Stop,
+    /// SessionStart — drop every entry for the task without draining a
+    /// deferred Stop.
+    Clear,
+}
+
+/// `dispatch hook-shell <id> <action>`'s action. Deliberately has no `clear`:
+/// a backgrounded shell has no SessionStart-driven clear, only session
+/// fencing.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum ShellAction {
+    /// A Bash call with `run_in_background: true`
+    Start,
+    /// KillBash/TaskStop, or a BashOutput/TaskOutput signalling completion
+    Stop,
 }
 
 fn default_db_path() -> PathBuf {
@@ -291,51 +296,6 @@ async fn cmd_tui(db: &std::path::Path, port: u16) -> Result<()> {
     let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
     init_app_log_subscriber(data_dir)?;
     runtime::run_tui(db, port).await
-}
-
-async fn cmd_update(
-    db: &std::path::Path,
-    id: i64,
-    status: String,
-    only_if: Option<String>,
-    sub_status: Option<String>,
-    needs_input: bool,
-) -> Result<()> {
-    let new_status = parse_status(&status)?;
-    let database = db::Database::open(db).await?;
-    let task_id = models::TaskId(id);
-    let resolved_sub_status = if let Some(ref ss) = sub_status {
-        Some(
-            models::SubStatus::parse(ss)
-                .ok_or_else(|| anyhow::anyhow!("Invalid sub-status: {}", ss))?,
-        )
-    } else if needs_input {
-        Some(models::SubStatus::NeedsInput)
-    } else {
-        None
-    };
-    let only_if_status = only_if.as_deref().map(parse_status).transpose()?;
-    let svc = service::TaskService::new_with_real_runner(std::sync::Arc::new(database));
-    match svc
-        .cli_update_task(task_id, new_status, only_if_status, resolved_sub_status)
-        .await
-    {
-        Ok(true) => println!("Task {} updated to {}", id, status),
-        Ok(false) => println!(
-            "Task {} not updated (status is not {})",
-            id,
-            only_if.as_deref().unwrap_or("?")
-        ),
-        // Same silent-skip contract as the hook commands (see
-        // `report_hook_outcome`), matched on the typed variant rather than the
-        // message text — `cli_update_task` returns a `ServiceError`, so there is
-        // no reason for this to break when a message is reworded.
-        Err(service::ServiceError::NotFound(_)) => {
-            eprintln!("Task {} not found, skipping", id);
-        }
-        Err(e) => return Err(e.into()),
-    }
-    Ok(())
 }
 
 async fn cmd_pr_gate(db: &std::path::Path, id: i64) -> Result<()> {
@@ -426,7 +386,7 @@ async fn cmd_hook(
 async fn cmd_hook_subagent(
     db: &std::path::Path,
     id: i64,
-    action: String,
+    action: SubagentAction,
     agent_id: Option<String>,
     session_id: Option<String>,
 ) -> Result<()> {
@@ -443,25 +403,23 @@ async fn cmd_hook_subagent(
     // (`SubagentEvent::Clear`) is reached only from detach, whose rule owns no
     // status of its own. See `ClearSubagentsOnSessionStart` in
     // `docs/specs/agent-health.allium`.
-    let event = match action.as_str() {
-        "clear" => None,
-        "start" | "stop" => {
+    let event = match action {
+        SubagentAction::Clear => None,
+        SubagentAction::Start | SubagentAction::Stop => {
             let (Some(agent_id), Some(session_id)) = (agent_id, session_id) else {
                 return Ok(());
             };
-            if action == "start" {
-                Some(models::SubagentEvent::Start {
+            Some(match action {
+                SubagentAction::Start => models::SubagentEvent::Start {
                     agent_id,
                     session_id,
-                })
-            } else {
-                Some(models::SubagentEvent::Stop {
+                },
+                _ => models::SubagentEvent::Stop {
                     agent_id,
                     session_id,
-                })
-            }
+                },
+            })
         }
-        other => anyhow::bail!("Invalid subagent action: {other}. Valid: start, stop, clear"),
     };
     let (svc, _data_dir) = open_hook_service(db).await?;
     let outcome = match event {
@@ -505,7 +463,7 @@ async fn cmd_hook_peer_message(
 async fn cmd_hook_shell(
     db: &std::path::Path,
     id: i64,
-    action: String,
+    action: ShellAction,
     shell_id: Option<String>,
     session_id: Option<String>,
 ) -> Result<()> {
@@ -515,16 +473,15 @@ async fn cmd_hook_shell(
     let (Some(shell_id), Some(session_id)) = (shell_id, session_id) else {
         return Ok(());
     };
-    let event = match action.as_str() {
-        "start" => models::ShellEvent::Start {
+    let event = match action {
+        ShellAction::Start => models::ShellEvent::Start {
             shell_id,
             session_id,
         },
-        "stop" => models::ShellEvent::Stop {
+        ShellAction::Stop => models::ShellEvent::Stop {
             shell_id,
             session_id,
         },
-        other => anyhow::bail!("Invalid shell action: {other}. Valid: start, stop"),
     };
     let (svc, _data_dir) = open_hook_service(db).await?;
     let outcome = svc.record_shell_event(models::TaskId(id), event).await;
@@ -551,31 +508,6 @@ async fn cmd_agent_tree(db: &std::path::Path, task_id: i64) -> Result<()> {
     let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
     let _ = init_app_log_subscriber(data_dir);
     dispatch_tui::cli::agent_tree::run(db, task_id).await
-}
-
-async fn cmd_list(db: &std::path::Path, status: Option<String>) -> Result<()> {
-    let database = db::Database::open(db).await?;
-    let tasks = match status {
-        Some(s) => {
-            let filter = parse_status(&s)?;
-            database.list_by_status(filter).await?
-        }
-        None => database.list_all().await?,
-    };
-    if tasks.is_empty() {
-        println!("No tasks found.");
-    } else {
-        for task in tasks {
-            println!(
-                "[{}] {} - {} ({})",
-                task.id,
-                task.title,
-                task.status.as_str(),
-                task.repo_path
-            );
-        }
-    }
-    Ok(())
 }
 
 /// Initialise a `tracing_subscriber` writing to **stderr**, for `verify-feed`.
@@ -941,13 +873,6 @@ fn main() -> Result<()> {
 async fn run_async(db: &std::path::Path, command: Commands) -> Result<()> {
     match command {
         Commands::Tui { port } => cmd_tui(db, port).await?,
-        Commands::Update {
-            id,
-            status,
-            only_if,
-            sub_status,
-            needs_input,
-        } => cmd_update(db, id, status, only_if, sub_status, needs_input).await?,
         Commands::Hook {
             id,
             kind,
@@ -973,7 +898,6 @@ async fn run_async(db: &std::path::Path, command: Commands) -> Result<()> {
         }
         Commands::AgentTree { task_id } => cmd_agent_tree(db, task_id).await?,
         Commands::PrGate { id } => cmd_pr_gate(db, id).await?,
-        Commands::List { status } => cmd_list(db, status).await?,
         Commands::Setup { port, yes } => {
             dispatch_tui::setup::run_setup(port, yes, db).await?;
         }

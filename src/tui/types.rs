@@ -668,17 +668,6 @@ impl BoardSelection {
             *self.list_states[col - 1].offset_mut() = 0;
         }
     }
-
-    /// List item index for `ListState` scrolling.
-    /// Returns `None` when the cursor is on the select-all toggle (header),
-    /// since no list item should be selected in that case.
-    pub fn list_state_index(&self, col: usize) -> Option<usize> {
-        if self.on_select_all {
-            None
-        } else {
-            Some(self.row(col))
-        }
-    }
 }
 
 impl Default for BoardSelection {

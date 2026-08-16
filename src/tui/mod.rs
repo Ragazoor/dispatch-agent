@@ -746,9 +746,6 @@ impl App {
     pub fn split_focused(&self) -> bool {
         self.board.split.focused
     }
-    pub fn split_pinned_task_id(&self) -> Option<TaskId> {
-        self.board.split.pinned_task_id
-    }
     pub fn status_message(&self) -> Option<&str> {
         self.status.message.as_deref()
     }

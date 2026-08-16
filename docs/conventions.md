@@ -251,7 +251,7 @@ Settings/learning/usage writes remain reachable through `TaskReadStore` on purpo
 - `TuiRuntime::feed_db` — a write handle reserved for the manual `exec_trigger_epic_feed` path (the TUI's version of a feed tick).
 - Startup / CLI paths (`runtime::bootstrap`, `src/setup/`, `src/main.rs`) — use a concrete `&Database` / `Arc<Database>` before the read-only narrowing applies.
 
-  The sanction is a fallback for startup wiring, **not** a licence for CLI subcommands to skip the service. CLI handlers that mutate tasks route through `TaskService` like their siblings: `cmd_update` → `cli_update_task`, `cmd_hook` → `record_hook_event`, `cmd_pr_gate` → `mark_pr_learnings_gate_shown`, and `cmd_plan` → `attach_plan`. When adding a new `cmd_*` that writes a task/epic, add (or reuse) a `TaskService`/`EpicService` method rather than calling `Database::patch_task` on the concrete handle.
+  The sanction is a fallback for startup wiring, **not** a licence for CLI subcommands to skip the service. CLI handlers that mutate tasks route through `TaskService` like their siblings: `cmd_hook` → `record_hook_event`, `cmd_pr_gate` → `mark_pr_learnings_gate_shown`, and `cmd_plan` → `attach_plan`. When adding a new `cmd_*` that writes a task/epic, add (or reuse) a `TaskService`/`EpicService` method rather than calling `Database::patch_task` on the concrete handle.
 
 Tests seed fixtures via the `#[cfg(test)]` write accessors `McpState::db_write()` / `TuiRuntime::db_write()`, which are invisible to production handler code.
 

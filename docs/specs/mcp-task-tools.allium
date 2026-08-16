@@ -549,8 +549,6 @@ rule AttachPlanViaCli {
 --   • `dispatch tui [--port]` — primary entry point launching the TUI
 --     (src/main.rs Commands::Tui). --port also reads the DISPATCH_PORT env
 --     var and defaults to core/config.mcp_port.
---   • `dispatch list [--status <status>]` — diagnostic listing of tasks,
---     optionally filtered by status (src/main.rs Commands::List). Read-only.
 --   • `dispatch setup [--port] [--yes]` — writes the Claude Code MCP
 --     configuration (see CreateTaskViaMcp guidance for the headersHelper it
 --     installs).
@@ -565,11 +563,16 @@ rule AttachPlanViaCli {
 --     when it does not exist yet.
 --   • `dispatch prune-repo-paths` — drops core/SavedRepoPath rows whose path
 --     no longer exists on the filesystem. Operator-only housekeeping.
---   • `dispatch update <id> <status> ...` — see HookNotification in agent-health.allium.
 --   • `dispatch hook <id> <kind> [--kind K]` — see HookNotification in agent-health.allium.
 --   • `dispatch pr-gate <id>` — see PrLearningsGate in pr-workflow.allium.
 --   • `dispatch caller-headers` — see CreateTaskViaMcp guidance.
 --   • `dispatch verify-feed <command>` — see VerifyFeed in feeds.allium.
+--
+-- There is deliberately NO CLI surface for listing tasks or changing a
+-- task's status. The `dispatch list` and `dispatch update` subcommands were
+-- removed once the installed Claude Code hooks moved to the dedicated
+-- `hook-*` subcommands and agents moved to the MCP tools; the board and the
+-- MCP tools are the only surfaces for reading and mutating task state.
 
 -- == MCP Wrap-Up and Exit Tools ==
 

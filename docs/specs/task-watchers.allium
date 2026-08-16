@@ -145,9 +145,10 @@ rule NotifyWatchersOnFinish {
         -- Hook points, per the feature design: TaskServiceApi::update_task
         -- (the TUI/MCP path: ConfirmDone, PR-merge/close, Archive,
         -- exit_session) and TaskServiceApi::cli_update_task (the
-        -- `dispatch update <id> <status>` CLI path) both call this after
-        -- their db.patch_task write succeeds. See the known-limitation note
-        -- below for the one status-writing path that does NOT reach here.
+        -- unrestricted conditional status write, which no longer has a CLI
+        -- caller — `dispatch update` was removed) both call this after their
+        -- db.patch_task write succeeds. See the known-limitation note below
+        -- for the one status-writing path that does NOT reach here.
 }
 
 -- == Known Limitation: Feed-Synced Auto-Completion Bypasses Notification ==
@@ -161,9 +162,8 @@ rule NotifyWatchersOnFinish {
 -- Consequence: when a feed-synced task is auto-completed via that path, a
 -- task watching it via subscribe_to_task will NOT trigger a notification —
 -- DetectTaskDone/DetectTaskArchived above only observe transitions produced
--- through TaskService's own write paths. Only the TUI/MCP/CLI-driven paths
--- (ConfirmDone, PR-merge/close, exit_session, Archive, `dispatch update`)
--- trigger notification.
+-- through TaskService's own write paths. Only the TUI/MCP-driven paths
+-- (ConfirmDone, PR-merge/close, exit_session, Archive) trigger notification.
 --
 -- This is a deliberate, documented limitation of this feature, not an
 -- oversight: closing it would mean routing FeedRunner's writes back through

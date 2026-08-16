@@ -466,9 +466,14 @@ impl TaskService {
         self.notify_watchers_if_finished(prior, new_status).await;
     }
 
-    /// Updates a task status from a CLI subcommand (human operator path).
+    /// Updates a task status on the human-operator path.
     ///
-    /// **Caller:** `src/main.rs` CLI subcommands (`dispatch update`, etc.).
+    /// **Caller:** none in production today — the `dispatch update` subcommand
+    /// that used to call this was removed once the installed hooks moved to
+    /// the dedicated `hook-*` subcommands and agents moved to the MCP tools.
+    /// It stays on the [`TaskServiceApi`](crate::service::TaskServiceApi) seam
+    /// as the unrestricted, conditional status write, and is exercised by the
+    /// epic-recalculation tests.
     ///
     /// **Differences from [`update_task`](Self::update_task):**
     /// - Can transition to any status including `Done` and `Archived`.
