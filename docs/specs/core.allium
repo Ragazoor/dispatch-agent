@@ -248,6 +248,10 @@ entity Task {
                                     -- has-plan addendum skips asking the dispatched
                                     -- agent to confirm before implementing (see
                                     -- dispatch.allium's build_prompt guidance)
+    schedule_interval_secs: Integer?  -- cadence at which this task is redispatched while idle; null (the default) means not scheduled and the scheduler never looks at it. See dispatch.allium: DispatchScheduledTask
+    pinned_branch: String?  -- an EXISTING branch this task's worktree checks out literally, instead of the disposable "<id>-<slug>" branch. Independent of schedule_interval_secs -- either may be set without the other, though the staging-pipeline case sets both. See dispatch.allium: PinnedWorktreeBranchIsNeverDerived
+    last_processed_sha: String?  -- pinned_branch's tip as of the last SUCCESSFUL promotion; null means nothing has been promoted yet. Written only on success, never speculatively -- that is what makes retry need no state of its own (see DispatchScheduledTask's guidance)
+    last_scheduled_check_at: Timestamp?  -- wallclock of the scheduler's last look at this task, whether or not it dispatched. Drives the elapsed-time gate, mirroring Epic.last_run for feeds
     created_at: Timestamp
     updated_at: Timestamp
 

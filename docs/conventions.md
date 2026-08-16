@@ -257,6 +257,7 @@ Settings/learning/usage writes remain reachable through `TaskReadStore` on purpo
 **Sanctioned direct-mutation consumers** (they manage their own invariants and hold a write-capable handle, exactly like the feed subsystem):
 
 - `FeedRunner` (`src/feed/`) — holds its own `Arc<dyn TaskStore>` and calls `recalculate_epic_status` itself.
+- `SchedulerRunner` (`src/scheduler/`) — the same shape, for scheduled redispatch. Its invariant is the claim/release pair around provisioning (`try_claim_scheduled_task` → `pipeline_agent` → record worktree, or release), which is why it holds a write handle rather than routing through `TaskService`.
 - `TuiRuntime::feed_db` — a write handle reserved for the manual `exec_trigger_epic_feed` path (the TUI's version of a feed tick).
 - Startup / CLI paths (`runtime::bootstrap`, `src/setup/`, `src/main.rs`) — use a concrete `&Database` / `Arc<Database>` before the read-only narrowing applies.
 

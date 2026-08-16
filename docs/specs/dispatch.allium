@@ -616,6 +616,110 @@ rule DispatchResearchTask {
         -- the standard wrap-up flow.
 }
 
+-- == Scheduled dispatch ==
+
+rule DispatchScheduledTask {
+    when: SchedulerTick(task)
+
+    requires: task.schedule_interval_secs != null
+    -- Idle: no live agent, and in a status a fresh run may start from.
+    -- done -> running is already a valid edge (see ResumeTask and the
+    -- Task.status graph in core.allium).
+    requires: task.status in {backlog, done}
+    requires: task.tmux_window = null
+    requires: elapsed_since(task.last_scheduled_check_at) >= task.schedule_interval_secs
+
+    -- Whether anything has landed on the pinned branch since the last
+    -- successful promotion. Unmeasurable reads as changed, never as
+    -- unchanged -- see the guidance.
+    let branch_changed = task.pinned_branch = null
+                         or task.last_processed_sha = null
+                         or origin_tip(branch: task.pinned_branch) != task.last_processed_sha
+
+    ensures: task.last_scheduled_check_at = now
+    ensures:
+        if branch_changed:
+            task.status = running
+    ensures:
+        if branch_changed:
+            task.sub_status = core/SubStatus.default_for(running)
+    ensures:
+        if branch_changed:
+            task.last_pre_tool_use_at = now
+    ensures:
+        if branch_changed:
+            task.worktree = core/Worktree.created(
+                path: task.repo_path + "/.worktrees/" + task.id + "-" + slugify(task.title),
+                branch: task.pinned_branch ?? task.id + "-" + slugify(task.title)
+            )
+    ensures:
+        if branch_changed:
+            task.tmux_window = core/TmuxWindow.created(name: "task-" + task.id)
+    ensures:
+        if branch_changed:
+            AgentLaunched(task: task, mode: pipeline)
+
+    @guidance
+        -- == Why a new rule rather than a looser DispatchTask ==
+        -- DispatchTask's `status = backlog` precondition is unchanged and must
+        -- stay so: it is the claim every other entry point shares
+        -- (DispatchClaimExclusive). Scheduled dispatch is the one caller that
+        -- may also start from done, so it gets its own claim rather than
+        -- widening that one — otherwise every entry point would inherit the
+        -- ability to redispatch a finished task.
+        --
+        -- Like DispatchTask's, this rule's preconditions are not reads: they
+        -- are a single conditional write, applied before provisioning, over
+        -- the whole precondition (scheduled, idle, no window). Two ticks
+        -- arriving together therefore cannot both dispatch. On a provisioning
+        -- failure the claim is released the same way, which returns the task
+        -- to backlog — so a scheduled task that started from done and failed
+        -- lands in backlog, visible on the board and still eligible next tick.
+        --
+        -- == The skip is the feature ==
+        -- When a pinned branch has not moved, NOTHING is dispatched: no
+        -- worktree, no tmux window, no agent, only the
+        -- last_scheduled_check_at stamp. An idle pipeline therefore costs one
+        -- `git fetch` per interval rather than a full run of the repo's
+        -- verify command. That is the whole reason the rule gates on the
+        -- branch tip rather than redispatching on a plain timer.
+        --
+        -- A branch whose tip cannot be measured (origin unreachable, the ref
+        -- missing, the read failing) counts as CHANGED, not unchanged.
+        -- Skipping on a failed measurement is the one outcome that would
+        -- stall a pipeline silently and indefinitely; a redundant run is
+        -- cheap by comparison.
+        --
+        -- A task with no pinned_branch has no branch to diff, so it simply
+        -- redispatches every interval, like a cron job.
+        --
+        -- == Retry needs no state ==
+        -- last_processed_sha moves only on a SUCCESSFUL promotion, never
+        -- speculatively. So a tick that fixed everything and promoted leaves
+        -- the next tick with nothing to do, while a tick whose agent got
+        -- stuck and never completed leaves the SHA stale — so the next tick
+        -- still sees the branch as unprocessed and runs again. No "paused" or
+        -- "stuck" state, no backoff, and no separate retry rule: it falls out
+        -- of only ever recording success.
+        --
+        -- == Elapsed-time gate ==
+        -- The gate is evaluated against last_scheduled_check_at, which is
+        -- stamped on every look — dispatch and skip alike — so a skipping
+        -- pipeline still paces itself. In-process the most recent observation
+        -- wins, so that a second tick arriving before the first has finished
+        -- writing its stamp does not dispatch again; the persisted value is
+        -- what a restart falls back to, so a restart does not redispatch every
+        -- scheduled task at once. A stamp in the future (clock skew) reads as
+        -- not-yet-due rather than overdue: waiting is recoverable, a
+        -- redispatch storm is not.
+        --
+        -- == Not a resume ==
+        -- The launch is a FRESH dispatch with a newly built prompt, not
+        -- ResumeTask's continuation of the previous session's conversation. A
+        -- tick is new work on new commits; resuming would hand the agent a
+        -- stale conversation about the last run's commits.
+}
+
 rule ResumeTask {
     when: ResumeTask(task)
 
@@ -1652,6 +1756,27 @@ surface SandboxedAgentExecution {
 -- backlog -> running transition is a conditional claim taken before
 -- provisioning rather than a status read followed by a status write. The losing
 -- caller provisions nothing; see DispatchTask for what each entry point reports.
+
+-- PinnedWorktreeBranchIsNeverDerived: a task with pinned_branch set checks that
+-- branch out literally. No "<id>-<slug>" branch is created for it, and the
+-- pinned branch is never reset to a start point — only checked out. This is
+-- what makes pinning safe for a long-lived, shared branch: unlike the
+-- disposable per-task branch, nobody may rewrite it, because other worktrees
+-- and other people depend on its SHAs.
+--
+-- The worktree PATH is unaffected and stays keyed by task id
+-- (<repo>/.worktrees/<id>-<slug>), so WorktreeIsNeverShared (tasks.allium)
+-- continues to hold: two pinned tasks on the same branch would still get
+-- distinct directories. What they could not do is both be checked out on that
+-- branch at once — git refuses a second worktree on an already-checked-out
+-- branch — which surfaces as an ordinary provisioning failure.
+--
+-- Like a PR head branch, a pinned branch is never resolved against a local ref
+-- of the same name when deciding what the worktree is based on: a stale local
+-- copy of a shared branch would silently poison it. The one exception is a
+-- branch origin does not have at all, where the local branch is the only thing
+-- that exists — and unlike the PR-review case that is not a hazard, because the
+-- checkout resolves the branch by name locally either way.
 
 -- TmuxWindowTargetedExactly: every tmux operation aimed at a named window acts
 -- on that window or fails. It never acts on a different window. This covers all
