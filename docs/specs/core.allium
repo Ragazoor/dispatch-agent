@@ -1958,6 +1958,36 @@ value FlattenedView {
 --   row (cursor position 0, Space to toggle).
 --   The filter is session-scoped and does not persist across app restarts.
 
+-- == Repo Filter Overlay Layout ==
+
+-- repo_filter_overlay_layout:
+--   The [f] overlay is a centred popup whose content rows are, top to bottom:
+--   a header block (the preset section, if any presets exist, and the "Active
+--   sessions only" toggle row), the repo list, and a footer block (the
+--   preset-name input row in that mode, plus the help rows — two of them in
+--   browse mode, one in each of the three confirm/input modes).
+--
+--   Invariant: the footer is never clipped. Every row the overlay draws is
+--   reserved by the height budget that sized the popup, including the
+--   "↑ N more" / "↓ N more" markers that bracket a scrolling repo list. The
+--   markers are content rows, not free decoration: they are paid for out of
+--   the same budget as the repo rows, so a scrolling list shows fewer repos
+--   rather than pushing the help rows off the bottom of the box.
+--
+--   Sizing the marker rows is circular — whether a marker appears depends on
+--   the scroll offset, which depends on how many repos are visible, which
+--   depends on how many marker rows were reserved. It is settled as a fixed
+--   point over the reservation, smallest first: the overlay reserves the
+--   fewest marker rows (0, then 1, then 2) whose resulting window draws no
+--   more markers than were reserved. Reserving both always satisfies that, so
+--   the settle terminates; preferring smaller reservations means that at
+--   either end of a long list, where only one marker is drawn, the spare row
+--   goes to a repo instead of staying blank.
+--
+--   On a board so short that the popup's chrome alone fills the content area,
+--   the repo list keeps a one-row floor and the markers are dropped: the row
+--   under the cursor is worth more than a count of the rows that did not fit.
+
 -- == Board Search Filter ==
 
 -- board_search_filter:

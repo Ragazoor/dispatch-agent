@@ -3290,35 +3290,59 @@ async fn every_overlay_survives_a_board_shorter_than_its_own_minimum() {
 /// overlay supports and asserts the footer's last row is on screen, which is
 /// what a budget too small would clip. A layout tallied by hand (the `+7`/`+5`
 /// literals this replaced) had nothing pinning it to the rows actually drawn.
+///
+/// The scrolling cases are the second half of the budget: the `↑ N more` /
+/// `↓ N more` markers are content rows too, and the cursor positions below put
+/// the window at the top (down-marker only), the middle (both) and the bottom
+/// (up-marker only) of a list far longer than the popup.
 #[tokio::test]
 async fn repo_filter_renders_its_whole_footer_in_every_mode() {
     use crate::tui::messages::RepoFilterMessage;
 
-    // Enough repos that the list competes with the footer for rows.
-    let repos: Vec<String> = (0..12).map(|i| format!("/repos/r{i}")).collect();
+    // (repo count, board height, repo cursor) — the first fits without
+    // scrolling; the rest scroll, exercising each marker combination.
+    let scenarios = [(12, 24, 0), (40, 20, 0), (40, 20, 20), (40, 20, 40)];
 
-    for (mode, expected_footer) in [
-        (crate::tui::InputMode::RepoFilter, "close"),
-        (crate::tui::InputMode::InputPresetName, "save"),
-        (crate::tui::InputMode::ConfirmDeletePreset, "delete preset"),
-        (crate::tui::InputMode::ConfirmDeleteRepoPath, "cancel"),
-    ] {
-        let mut app = App::new(vec![]);
-        app.board.repo_paths = repos.clone();
-        app.update(Message::RepoFilter(RepoFilterMessage::Start));
-        app.input.mode = mode.clone();
+    for (repo_count, board_height, repo_cursor) in scenarios {
+        let repos: Vec<String> = (0..repo_count).map(|i| format!("/repos/r{i}")).collect();
 
-        let buf = render_to_buffer(&mut app, 100, 24);
-        assert!(
-            buffer_contains(&buf, expected_footer),
-            "footer text {expected_footer:?} was clipped in {mode:?} — the layout \
-             budget disagrees with the rows the overlay renders"
-        );
-        // The bottom border must also survive: a footer that fits but a border
-        // that doesn't means the popup is one row taller than it budgeted.
-        assert!(
-            buffer_contains(&buf, "\u{255a}"),
-            "the overlay's bottom-left corner should be drawn in {mode:?}"
-        );
+        // Match the overlay's own footer wording, not a bare verb — the board's
+        // hint bar sits outside the popup and would satisfy a loose needle even
+        // when the overlay's last row was clipped clean off.
+        for (mode, expected_footer) in [
+            (crate::tui::InputMode::RepoFilter, "[q/Esc] close"),
+            (crate::tui::InputMode::InputPresetName, "[Enter] save"),
+            (
+                crate::tui::InputMode::ConfirmDeletePreset,
+                "[A-Z] delete preset",
+            ),
+            (
+                crate::tui::InputMode::ConfirmDeleteRepoPath,
+                "n/Esc: cancel",
+            ),
+        ] {
+            let mut app = App::new(vec![]);
+            app.board.repo_paths = repos.clone();
+            app.update(Message::RepoFilter(RepoFilterMessage::Start));
+            app.input.mode = mode.clone();
+            app.input.repo_cursor = repo_cursor;
+
+            let case = format!(
+                "{mode:?} with {repo_count} repos on a {board_height}-row board, \
+                 cursor at {repo_cursor}"
+            );
+            let buf = render_to_buffer(&mut app, 100, board_height);
+            assert!(
+                buffer_contains(&buf, expected_footer),
+                "footer text {expected_footer:?} was clipped in {case} — the layout \
+                 budget disagrees with the rows the overlay renders"
+            );
+            // The bottom border must also survive: a footer that fits but a border
+            // that doesn't means the popup is one row taller than it budgeted.
+            assert!(
+                buffer_contains(&buf, "\u{255a}"),
+                "the overlay's bottom-left corner should be drawn in {case}"
+            );
+        }
     }
 }

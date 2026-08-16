@@ -20,6 +20,9 @@ const BORDER_ROWS: usize = 2;
 /// Shortest popup worth drawing, when the board has the room for it.
 const MIN_POPUP_HEIGHT: u16 = 8;
 
+/// The most marker rows the repo list can add: "↑ N more" and "↓ N more".
+const MAX_MARKER_ROWS: usize = 2;
+
 /// Everything the overlay's geometry needs, derived once.
 struct RepoFilterLayout {
     popup_area: Rect,
@@ -27,6 +30,10 @@ struct RepoFilterLayout {
     visible_repos: usize,
     /// Index of the first repo shown.
     scroll: usize,
+    /// Whether the "↑ N more" marker row is drawn above the list.
+    show_scroll_up: bool,
+    /// Whether the "↓ N more" marker row is drawn below the list.
+    show_scroll_down: bool,
 }
 
 /// Derive the overlay's popup rect and its scrolling repo window.
@@ -38,6 +45,12 @@ struct RepoFilterLayout {
 /// apart, and neither can drift from what the overlay actually draws. The two
 /// hand-counted literals this replaced (`+7` and `+5`, budgeted from opposite
 /// directions with nothing checking they agreed) were exactly that hazard.
+///
+/// The rows left over after `non_repo_rows` are the list's whole budget, and
+/// the scroll markers come out of it too — see [`settle_repo_window`], which
+/// also decides whether each marker is drawn at all. Deriving that here rather
+/// than in [`append_repo_list`] is what keeps the footer on screen: a marker the
+/// renderer added on its own would be a row nothing had reserved.
 ///
 /// `repo_cursor` is the cursor's index into the repo list — the toggle row is
 /// not a repo, so callers pass `cursor - 1`.
@@ -59,13 +72,73 @@ fn repo_filter_layout(
     let popup_width = (area.width * 70 / 100).clamp(30, 60);
 
     let content_height = popup_height.saturating_sub(BORDER_ROWS as u16) as usize;
-    let visible_repos = visible_rows(content_height, non_repo_rows);
+    let budget = content_height.saturating_sub(non_repo_rows);
+    let window = settle_repo_window(budget, repo_count, repo_cursor);
 
     RepoFilterLayout {
         popup_area: centered_rect(area, popup_width, popup_height),
-        visible_repos,
-        scroll: scroll_offset(repo_cursor, repo_count, visible_repos),
+        visible_repos: window.visible,
+        scroll: window.scroll,
+        show_scroll_up: window.up,
+        show_scroll_down: window.down,
     }
+}
+
+/// The repo list's window: the rows it shows and the markers bracketing them.
+struct RepoWindow {
+    visible: usize,
+    scroll: usize,
+    up: bool,
+    down: bool,
+}
+
+impl RepoWindow {
+    fn markers(&self) -> usize {
+        usize::from(self.up) + usize::from(self.down)
+    }
+}
+
+/// Settle the repo window against its own scroll markers.
+///
+/// The `↑ N more` / `↓ N more` rows are content like any other, so they have to
+/// come out of `budget` — but sizing them is circular: whether a marker appears
+/// depends on the scroll offset, which depends on how many repos are visible,
+/// which depends on how many marker rows were reserved.
+///
+/// Resolved as a fixed point over the reservation, smallest first: take the
+/// first `reserved` whose window draws no more markers than it set aside, so
+/// `visible + markers <= budget` holds. Reserving both markers always passes
+/// that test — there are only two — so the search terminates, and it is the
+/// fallback. Trying smaller reservations first matters: at either end of a long
+/// list only one marker draws, and settling on one keeps a repo row that a
+/// blanket two-row reservation would have spent on nothing.
+fn settle_repo_window(budget: usize, repo_count: usize, repo_cursor: usize) -> RepoWindow {
+    let window_for = |reserved: usize| {
+        let visible = visible_rows(budget, reserved);
+        let scroll = scroll_offset(repo_cursor, repo_count, visible);
+        RepoWindow {
+            visible,
+            scroll,
+            up: scroll > 0,
+            down: repo_count > scroll + visible,
+        }
+    };
+
+    let mut window = (0..MAX_MARKER_ROWS)
+        .map(|reserved| (reserved, window_for(reserved)))
+        .find(|(reserved, candidate)| candidate.markers() <= *reserved)
+        .map(|(_, candidate)| candidate)
+        .unwrap_or_else(|| window_for(MAX_MARKER_ROWS));
+
+    // `visible_rows` floors at one row, so on a board whose chrome already eats
+    // the whole budget the repo row alone overflows and no reservation can
+    // help. Drop the markers there rather than pile two more rows on top: the
+    // repo the cursor is on is the more useful of the three.
+    if window.visible + window.markers() > budget {
+        window.up = false;
+        window.down = false;
+    }
+    window
 }
 
 pub(in crate::tui::ui::kanban) fn render_repo_filter_overlay(
@@ -174,7 +247,7 @@ fn append_repo_list<'a>(
     let repo_cursor = cursor.saturating_sub(1);
     let broken_style = Style::default().fg(MUTED);
 
-    if layout.scroll > 0 {
+    if layout.show_scroll_up {
         lines.push(Line::from(Span::styled(
             format!("  ↑ {} more", layout.scroll),
             styles.note,
@@ -221,12 +294,14 @@ fn append_repo_list<'a>(
         }
     }
     // Counted from the same accessor the loop above iterates, so the "N more"
-    // tail can never disagree with the rows actually drawn.
-    let remaining = app
-        .repo_paths()
-        .len()
-        .saturating_sub(layout.scroll + layout.visible_repos);
-    if remaining > 0 {
+    // tail can never disagree with the rows actually drawn. Whether the row is
+    // drawn at all is the layout's call, not a second derivation here: the
+    // marker rows come out of the same budget the footer does.
+    if layout.show_scroll_down {
+        let remaining = app
+            .repo_paths()
+            .len()
+            .saturating_sub(layout.scroll + layout.visible_repos);
         lines.push(Line::from(Span::styled(
             format!("  ↓ {} more", remaining),
             styles.note,
@@ -388,9 +463,62 @@ mod tests {
     fn window_scrolls_to_keep_the_repo_cursor_visible() {
         let area = Rect::new(0, 0, 100, 20);
         let l = repo_filter_layout(area, 40, 5, 39);
-        // Content height 14, minus the 5 non-repo rows → 9 visible repos.
-        assert_eq!(l.visible_repos, 9);
-        assert_eq!(l.scroll, 40 - 9);
+        // Content height 14, minus the 5 non-repo rows → a 9-row budget. The
+        // cursor sits on the last repo, so only the "↑ more" marker draws;
+        // one row of the budget pays for it and 8 repos fit.
+        assert_eq!(l.visible_repos, 8);
+        assert_eq!(l.scroll, 40 - 8);
+        assert!(l.show_scroll_up);
+        assert!(!l.show_scroll_down);
+    }
+
+    /// The bug this module's layout exists to prevent: the scroll markers are
+    /// content rows like any other, so `visible_repos` plus whichever markers
+    /// the layout reports must fit the row budget the popup reserved. Before
+    /// the fixed-point settle, a scrolling list drew both markers on top of a
+    /// budget that had reserved neither, and the footer fell off the bottom.
+    #[test]
+    fn scroll_markers_stay_inside_the_row_budget() {
+        for board_height in [16, 20, 24, 40] {
+            let area = Rect::new(0, 0, 100, board_height);
+            for non_repo_rows in [5, 6, 7] {
+                for repo_cursor in 0..40 {
+                    let l = repo_filter_layout(area, 40, non_repo_rows, repo_cursor);
+                    let budget = (l.popup_area.height as usize)
+                        .saturating_sub(BORDER_ROWS)
+                        .saturating_sub(non_repo_rows);
+                    let drawn = l.visible_repos
+                        + usize::from(l.show_scroll_up)
+                        + usize::from(l.show_scroll_down);
+                    assert!(
+                        drawn <= budget.max(1),
+                        "board_height={board_height} non_repo_rows={non_repo_rows} \
+                         repo_cursor={repo_cursor}: drew {drawn} rows into a {budget}-row budget"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The markers the layout reports are the markers the window implies —
+    /// the renderer trusts these flags instead of re-deriving the condition.
+    #[test]
+    fn marker_flags_match_the_settled_window() {
+        let area = Rect::new(0, 0, 100, 20);
+        for repo_cursor in 0..40 {
+            let l = repo_filter_layout(area, 40, 5, repo_cursor);
+            assert_eq!(l.show_scroll_up, l.scroll > 0);
+            assert_eq!(l.show_scroll_down, 40 > l.scroll + l.visible_repos);
+        }
+    }
+
+    /// A list that fits pays nothing for markers it will not draw.
+    #[test]
+    fn a_list_that_fits_reserves_no_marker_rows() {
+        let l = repo_filter_layout(ROOMY, 12, 5, 0);
+        assert_eq!(l.visible_repos, 12);
+        assert!(!l.show_scroll_up);
+        assert!(!l.show_scroll_down);
     }
 
     #[test]
