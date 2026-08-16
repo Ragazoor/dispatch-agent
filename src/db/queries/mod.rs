@@ -115,7 +115,8 @@ pub(super) const TASK_COLUMNS: &str =
      created_at, updated_at, labels, last_pre_tool_use_at, last_notification_at, \
      last_peer_message_sent_at, last_peer_message_received_at, \
      wrap_up_mode, auto_run_plan, live_subagents, stop_pending, \
-     live_shells, oldest_live_shell_started_at";
+     live_shells, oldest_live_shell_started_at, \
+     schedule_interval_secs, pinned_branch, last_processed_sha, last_scheduled_check_at";
 
 /// The `SET` list that applies a `Stop` — the one definition of what "the task
 /// finished its turn" writes. Shared by the two statements that can apply it:
@@ -238,6 +239,10 @@ pub(super) fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         stop_pending: row.get("stop_pending")?,
         live_shells: row.get("live_shells")?,
         oldest_live_shell_started_at: read_optional_datetime(row, "oldest_live_shell_started_at")?,
+        schedule_interval_secs: row.get("schedule_interval_secs")?,
+        pinned_branch: row.get("pinned_branch")?,
+        last_processed_sha: row.get("last_processed_sha")?,
+        last_scheduled_check_at: read_optional_datetime(row, "last_scheduled_check_at")?,
     })
 }
 

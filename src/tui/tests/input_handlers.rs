@@ -36,6 +36,10 @@ fn task_created_adds_to_list() {
         stop_pending: false,
         live_shells: 0,
         oldest_live_shell_started_at: None,
+        schedule_interval_secs: None,
+        pinned_branch: None,
+        last_processed_sha: None,
+        last_scheduled_check_at: None,
     };
     let mut app = App::new(vec![]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
@@ -721,6 +725,10 @@ fn editor_result_task_edit_returns_finalize_command() {
         stop_pending: false,
         live_shells: 0,
         oldest_live_shell_started_at: None,
+        schedule_interval_secs: None,
+        pinned_branch: None,
+        last_processed_sha: None,
+        last_scheduled_check_at: None,
     };
     let mut app = App::new(vec![task.clone()]);
     let cmds = app.update(Message::Editor(

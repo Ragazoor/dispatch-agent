@@ -4030,3 +4030,71 @@ async fn v79_backfills_sort_order_for_done_tasks_and_epics() {
     assert_eq!(epic_rows[1].0, "epic-not-done");
     assert_eq!(epic_rows[1].1, None);
 }
+
+/// The four scheduling columns land as nullable, so every pre-existing row
+/// reads back as "not scheduled, not pinned, never processed, never checked".
+#[test]
+fn migration_v88_adds_scheduling_fields_to_tasks() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog'
+         );
+         INSERT INTO tasks(title) VALUES('pre-existing');",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
+
+    let columns: Vec<(String, String, i64)> = conn
+        .prepare("SELECT name, type, \"notnull\" FROM pragma_table_info('tasks')")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    for (name, ty) in [
+        ("schedule_interval_secs", "INTEGER"),
+        ("pinned_branch", "TEXT"),
+        ("last_processed_sha", "TEXT"),
+        ("last_scheduled_check_at", "TEXT"),
+    ] {
+        let col = columns
+            .iter()
+            .find(|(n, _, _)| n == name)
+            .unwrap_or_else(|| panic!("{name} must be added by migration v88"));
+        assert_eq!(col.1, ty, "{name} type");
+        assert_eq!(col.2, 0, "{name} must be nullable");
+    }
+
+    let row: (Option<i64>, Option<String>, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT schedule_interval_secs, pinned_branch, last_processed_sha, \
+             last_scheduled_check_at FROM tasks",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(row, (None, None, None, None), "existing rows stay unscheduled");
+}
+
+#[test]
+fn migration_v88_is_idempotent() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             schedule_interval_secs INTEGER,
+             pinned_branch TEXT,
+             last_processed_sha TEXT,
+             last_scheduled_check_at TEXT
+         );",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
+}

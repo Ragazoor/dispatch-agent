@@ -114,6 +114,10 @@ pub(in crate::tui) fn make_task(id: i64, status: TaskStatus) -> Task {
         stop_pending: false,
         live_shells: 0,
         oldest_live_shell_started_at: None,
+        schedule_interval_secs: None,
+        pinned_branch: None,
+        last_processed_sha: None,
+        last_scheduled_check_at: None,
     }
 }
 

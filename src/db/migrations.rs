@@ -148,6 +148,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (85, migrate_v85_create_task_shells),
     (86, migrate_v86_allow_stale_shell),
     (87, migrate_v87_add_peer_message_columns),
+    (88, migrate_v88_add_scheduling_fields),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1671,6 +1672,38 @@ fn migrate_v87_add_peer_message_columns(conn: &Connection) -> Result<()> {
             [],
         )
         .context("migration v87: add last_peer_message_received_at")?;
+    }
+    Ok(())
+}
+
+/// The generic scheduling primitive (task #4203). All four columns are
+/// nullable and null-by-default, so a task that never opts in behaves exactly
+/// as before:
+///
+/// - `schedule_interval_secs` — cadence at which `SchedulerRunner` redispatches
+///   this task while it is idle. Null means "not scheduled".
+/// - `pinned_branch` — an EXISTING branch the task's worktree checks out
+///   literally, instead of the usual disposable `<id>-<slug>` branch. Drives
+///   [`crate::dispatch::worktree::BaseRef::Pinned`].
+/// - `last_processed_sha` — `pinned_branch`'s tip as of the last *successful*
+///   promotion. Only ever written on success, which is what makes retry fall
+///   out for free: a tick that never completed leaves this stale, so the next
+///   tick still sees the branch as unprocessed.
+/// - `last_scheduled_check_at` — wallclock of the scheduler's last look at this
+///   task, dispatch or skip alike. Mirrors `Epic.last_run` for feeds.
+///
+/// See `docs/superpowers/specs/2026-08-16-staging-pipeline-scheduled-agents-design.md`.
+pub(super) fn migrate_v88_add_scheduling_fields(conn: &Connection) -> Result<()> {
+    for (column, ty) in [
+        ("schedule_interval_secs", "INTEGER"),
+        ("pinned_branch", "TEXT"),
+        ("last_processed_sha", "TEXT"),
+        ("last_scheduled_check_at", "TEXT"),
+    ] {
+        if !column_exists(conn, "tasks", column) {
+            conn.execute(&format!("ALTER TABLE tasks ADD COLUMN {column} {ty}"), [])
+                .with_context(|| format!("migration v88: add {column}"))?;
+        }
     }
     Ok(())
 }
