@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Canonical timeout for long-running subprocesses (git fetch, worktree add).
-/// Matches `DISPATCH_WATCHDOG_TIMEOUT` in `src/tui/mod.rs` — both kept in sync at 120s.
+/// `DISPATCH_WATCHDOG_TIMEOUT` (`src/tui/mod.rs`) derives its budget from
+/// this times `PROVISION_MAX_SUBPROCESS_CALLS` (`src/dispatch/worktree.rs`),
+/// not a 1:1 mirror — see that constant's doc comment (#4201).
 pub(crate) const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------

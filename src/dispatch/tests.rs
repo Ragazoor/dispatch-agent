@@ -6,7 +6,9 @@ use super::prompts::{
     reused_rebase_preamble, task_block, tdd_instruction, wrap_up_instruction, EpicContext,
     LearningInjections, PromptContext,
 };
-use super::worktree::{provision_worktree, BaseRef, StartPoint, FETCH_MAX_ATTEMPTS};
+use super::worktree::{
+    provision_worktree, BaseRef, StartPoint, FETCH_MAX_ATTEMPTS, PROVISION_MAX_SUBPROCESS_CALLS,
+};
 use super::*;
 
 use crate::models::{EpicId, Task, TaskId, TaskStatus};
@@ -1683,6 +1685,32 @@ fn provision_worktree_retries_fetch_before_falling_back() {
     assert!(
         result.fetch_warning.is_none(),
         "no warning expected when fetch eventually succeeds"
+    );
+}
+
+/// `PROVISION_MAX_SUBPROCESS_CALLS` (`src/dispatch/worktree.rs`) is what
+/// `DISPATCH_WATCHDOG_TIMEOUT` (`src/tui/mod.rs`) derives its budget from —
+/// see #4201. Pin it to the real worst-case shape (a fetch that only
+/// succeeds on its last allowed attempt) via `DispatchScript`'s own
+/// step-counting, rather than trusting a hand-maintained literal: if
+/// `fetch_origin`'s retry/classify logic ever grows another call, this fails
+/// instead of silently under-sizing the watchdog again.
+///
+/// `index_of(Step::WorktreeAdd) + 1` counts only up through the last
+/// `SUBPROCESS_TIMEOUT`-bounded call in the sequence — it says nothing about
+/// (and doesn't need to, since `PROVISION_MAX_SUBPROCESS_CALLS` doesn't cover
+/// them either) the unbounded tmux tail that follows worktree add.
+#[test]
+fn provision_max_subprocess_calls_matches_the_worst_case_shape() {
+    let script = DispatchScript::provision()
+        .fresh_worktree()
+        .fetch_succeeds_on_attempt(FETCH_MAX_ATTEMPTS);
+
+    assert_eq!(
+        script.index_of(Step::WorktreeAdd) + 1,
+        PROVISION_MAX_SUBPROCESS_CALLS as usize,
+        "PROVISION_MAX_SUBPROCESS_CALLS must match the real worst-case number \
+         of SUBPROCESS_TIMEOUT-bounded calls provision_worktree can issue"
     );
 }
 

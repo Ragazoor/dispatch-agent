@@ -1132,12 +1132,40 @@ surface DispatchingFeedback {
         -- watchdog timeout).
 
     @guarantee DispatchingTimeout
-        -- A task that remains in `dispatching` for more than 120 seconds is
-        -- removed by the next Tick and a "dispatch timed out" failure is
-        -- raised as an error popup — naming the task when one expired, and
-        -- reporting the count when several expire on the same tick.
-        -- Defence-in-depth against a stuck dispatch worker (e.g. an agent
-        -- panic that escapes catch_unwind).
+        -- A task that remains in `dispatching` for longer than the watchdog
+        -- deadline is removed by the next Tick and a "dispatch timed out"
+        -- failure is raised as an error popup — naming the task when one
+        -- expired, and reporting the count when several expire on the same
+        -- tick. Defence-in-depth against a stuck dispatch worker (e.g. an
+        -- agent panic that escapes catch_unwind).
+        --
+        -- The deadline is SUBPROCESS_TIMEOUT * PROVISION_MAX_SUBPROCESS_CALLS
+        -- (120s * 7 = 840s / 14 minutes at current values), not a 1:1 mirror
+        -- of SUBPROCESS_TIMEOUT (#4201's fix). fetch_origin's retry budget
+        -- under FetchPolicy::Required can issue up to
+        -- PROVISION_MAX_SUBPROCESS_CALLS sequential SUBPROCESS_TIMEOUT-bounded
+        -- subprocess calls before a fresh dispatch succeeds or gives up (fetch
+        -- attempts, classify_fetch_failure's two probes, the ahead/behind
+        -- measurement, and git worktree add), and a watchdog sized for a
+        -- single call could trip while the worker was still legitimately
+        -- retrying within policy — the same class of spurious "timed out"
+        -- popup this guarantee exists to avoid. Widening the deadline is a
+        -- deliberate trade against detection latency: it does not change
+        -- worker behaviour (see DispatchingTimeout's own "this surface is a
+        -- UI backstop" below), only how long a genuinely stuck worker sits
+        -- silently before the user sees anything.
+        --
+        -- This guarantee does not cover every subprocess call reachable from
+        -- a dispatch: detect_default_branch and pr_head_branch (resolved
+        -- before provision_worktree runs) and three tmux calls inside
+        -- provision_worktree's own post-add step are not bounded by
+        -- run_with_timeout at all in production, so they are outside what
+        -- PROVISION_MAX_SUBPROCESS_CALLS accounts for. That does not defeat
+        -- this watchdog — its check is wall-clock elapsed time since the task
+        -- entered `dispatching`, independent of which subprocess is stuck —
+        -- but a hang in one of those calls is a resource leak (a parked
+        -- spawn_blocking thread) this guarantee does not reclaim, tracked
+        -- separately from #4201.
         --
         -- The timeout does NOT release the claim, and that is deliberate.
         -- Exceeding the deadline means "slow", not "dead" — a fetch over a slow

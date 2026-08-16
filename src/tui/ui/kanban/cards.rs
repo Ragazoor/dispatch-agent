@@ -905,7 +905,10 @@ mod tests {
     fn stale_claim_flips_to_unprovisioned() {
         let now = Utc::now();
         let mut task = make_unprovisioned_task(1, TaskStatus::Running);
-        task.last_pre_tool_use_at = Some(now - chrono::Duration::seconds(120));
+        task.last_pre_tool_use_at = Some(
+            now - chrono::Duration::seconds(crate::tui::DISPATCH_WATCHDOG_TIMEOUT.as_secs() as i64)
+                - chrono::Duration::seconds(1),
+        );
         let app = App::new(vec![task.clone()]);
         assert_eq!(
             classify_card_indicator(&task, task.status, &app, now),

@@ -18,6 +18,23 @@ use super::stderr_str;
 /// budget instead of mirroring the number — a mirrored `3` silently queues the
 /// wrong response count the moment this changes.
 pub(super) const FETCH_MAX_ATTEMPTS: u32 = 3;
+
+/// Worst-case number of subprocess calls `provision_worktree` can issue
+/// sequentially while provisioning a fresh, branch-based worktree, each
+/// independently bounded by `SUBPROCESS_TIMEOUT`. Worst case is a fetch that
+/// only succeeds on its last allowed attempt: `FETCH_MAX_ATTEMPTS` fetch
+/// attempts, + 2 for `classify_fetch_failure`'s probes (fired once, after the
+/// first failed attempt), + 1 for `select_start_point`'s ahead/behind
+/// measurement, + 1 for the final `git worktree add`. Exercised by
+/// `provision_worktree_retries_fetch_before_falling_back`, whose `calls[6]`
+/// is that worktree-add call (indices 0-6, 7 calls total).
+///
+/// `pub(crate)` (via the re-export in `src/dispatch/mod.rs`) so
+/// `DISPATCH_WATCHDOG_TIMEOUT` (`src/tui/mod.rs`) can derive its budget from
+/// this instead of mirroring the number by hand — see `FETCH_MAX_ATTEMPTS`'s
+/// own doc comment for why mirroring is the hazard this avoids (#4201).
+pub(crate) const PROVISION_MAX_SUBPROCESS_CALLS: u32 = FETCH_MAX_ATTEMPTS + 4;
+
 // Zero delay under `cfg(test)` so the retry tests below don't spend real
 // wall-clock time sleeping — flagged by adversarial review of this plan,
 // which pointed out a fixed 500ms delay would cost ~1s of real sleep per

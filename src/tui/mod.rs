@@ -84,9 +84,25 @@ pub(crate) const STALE_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60)
 pub(in crate::tui) const TITLE_DISPLAY_LENGTH: usize = 30;
 
 /// Maximum time a task may remain in the `dispatching` set before the watchdog
-/// force-fails it. Defence-in-depth against a stuck dispatch worker. Matches
-/// `SUBPROCESS_TIMEOUT` in `src/process.rs` — both kept in sync at 120s.
-pub(in crate::tui) const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(120);
+/// force-fails it. Defence-in-depth against a stuck dispatch worker.
+///
+/// Sized off `provision_worktree`'s real worst-case sequential subprocess
+/// time, not a 1:1 mirror of `SUBPROCESS_TIMEOUT` (`src/process.rs`) — that
+/// 1:1 relationship was itself the bug (#4201): `fetch_origin`'s retry budget
+/// under `FetchPolicy::Required` can issue up to `PROVISION_MAX_SUBPROCESS_CALLS`
+/// (`src/dispatch/worktree.rs`) sequential `SUBPROCESS_TIMEOUT`-bounded calls
+/// before a fresh dispatch succeeds or gives up, so a watchdog sized for one
+/// call could trip while the worker was still legitimately retrying within
+/// policy. At current values this is `120s * 7 = 840s` (14 minutes) — a
+/// deliberate trade-off, not incidental: it does not change worker behaviour
+/// (the dispatch worker runs on a detached thread the watchdog never cancels
+/// either way — see `DispatchingTimeout` in `docs/specs/dispatch.allium`),
+/// only how long a *genuinely* stuck worker sits silently before the user
+/// sees anything.
+pub(in crate::tui) const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(
+    crate::process::SUBPROCESS_TIMEOUT.as_secs()
+        * crate::dispatch::PROVISION_MAX_SUBPROCESS_CALLS as u64,
+);
 
 /// Number of braille spinner frames for the per-card "dispatching…" indicator.
 /// Must match the length of `DISPATCHING_SPINNER` in `kanban.rs`.

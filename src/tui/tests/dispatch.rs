@@ -1398,9 +1398,29 @@ fn dispatch_claim_lost_clears_the_spinner_without_releasing() {
     );
 }
 
+/// `DISPATCH_WATCHDOG_TIMEOUT` must be derived from `provision_worktree`'s
+/// real worst-case subprocess budget (#4201), not mirror `SUBPROCESS_TIMEOUT`
+/// 1:1 — the old 1:1 relationship is exactly the bug: a fetch legitimately
+/// retrying within `FetchPolicy::Required`'s budget could still exceed a
+/// watchdog sized for a single subprocess call.
+#[test]
+fn dispatch_watchdog_timeout_matches_provision_worst_case() {
+    assert_eq!(
+        crate::tui::DISPATCH_WATCHDOG_TIMEOUT,
+        crate::process::SUBPROCESS_TIMEOUT * crate::dispatch::PROVISION_MAX_SUBPROCESS_CALLS,
+        "the watchdog must be sized off SUBPROCESS_TIMEOUT * PROVISION_MAX_SUBPROCESS_CALLS"
+    );
+    assert!(
+        crate::tui::DISPATCH_WATCHDOG_TIMEOUT > crate::process::SUBPROCESS_TIMEOUT,
+        "a 1:1 mirror is the bug #4201 fixed: fetch_origin's retry budget under \
+         FetchPolicy::Required can issue several SUBPROCESS_TIMEOUT-bounded calls \
+         before a fresh dispatch succeeds or gives up"
+    );
+}
+
 /// The watchdog must NOT release, even though it drains `dispatching`.
 ///
-/// "Slower than 60s" is not "dead" — a `git fetch` on a slow network outlives the
+/// "Slower than the deadline" is not "dead" — a `git fetch` on a slow network outlives the
 /// deadline with its worker perfectly alive. Releasing would return the task to
 /// Backlog mid-provision and let a second dispatch land on the same branch, which
 /// is the double-provisioning `DispatchClaimExclusive` rules out. The watchdog
