@@ -86,72 +86,6 @@ async fn list_all() {
 }
 
 #[tokio::test]
-async fn list_by_status() {
-    let db = in_memory_db().await;
-    let id1 = db
-        .create_task(CreateTaskRequest {
-            title: "Task A",
-            description: "desc",
-            repo_path: "/a",
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    let id2 = db
-        .create_task(CreateTaskRequest {
-            title: "Task B",
-            description: "desc",
-            repo_path: "/b",
-            plan: None,
-            status: TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    db.create_task(CreateTaskRequest {
-        title: "Task C",
-        description: "desc",
-        repo_path: "/c",
-        plan: None,
-        status: TaskStatus::Backlog,
-        base_branch: "main",
-        epic_id: None,
-        sort_order: None,
-        tag: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-    })
-    .await
-    .unwrap();
-
-    db.patch_task(id1, &TaskPatch::new().status(TaskStatus::Running))
-        .await
-        .unwrap();
-    db.patch_task(id2, &TaskPatch::new().status(TaskStatus::Running))
-        .await
-        .unwrap();
-
-    let running = db.list_by_status(TaskStatus::Running).await.unwrap();
-    assert_eq!(running.len(), 2);
-
-    let backlog = db.list_by_status(TaskStatus::Backlog).await.unwrap();
-    assert_eq!(backlog.len(), 1);
-    assert_eq!(backlog[0].title, "Task C");
-}
-
-#[tokio::test]
 async fn get_nonexistent() {
     let db = in_memory_db().await;
     let result = db.get_task(TaskId(9999)).await.unwrap();
@@ -859,79 +793,6 @@ async fn patch_task_status_change_resets_sub_status_in_db() {
 }
 
 #[tokio::test]
-async fn update_status_if_matching() {
-    let db = in_memory_db().await;
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "Task",
-            description: "desc",
-            repo_path: "/repo",
-            plan: None,
-            status: TaskStatus::Running,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    let updated = db
-        .update_status_if(id, TaskStatus::Review, TaskStatus::Running)
-        .await
-        .unwrap();
-    assert!(updated, "should update when current status matches");
-
-    let task = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Review);
-}
-
-#[tokio::test]
-async fn update_status_if_not_matching() {
-    let db = in_memory_db().await;
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "Task",
-            description: "desc",
-            repo_path: "/repo",
-            plan: None,
-            status: TaskStatus::Done,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-
-    let updated = db
-        .update_status_if(id, TaskStatus::Review, TaskStatus::Running)
-        .await
-        .unwrap();
-    assert!(
-        !updated,
-        "should not update when current status doesn't match"
-    );
-
-    let task = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Done, "status should be unchanged");
-}
-
-#[tokio::test]
-async fn update_status_if_nonexistent() {
-    let db = in_memory_db().await;
-    let updated = db
-        .update_status_if(TaskId(9999), TaskStatus::Review, TaskStatus::Running)
-        .await
-        .unwrap();
-    assert!(!updated, "should return false for nonexistent task");
-}
-
-#[tokio::test]
 async fn task_roundtrip_with_pr_fields() {
     let db = in_memory_db().await;
     let id = db
@@ -1201,73 +1062,6 @@ async fn create_task_with_epic_sort_tag_single_insert() {
     assert_eq!(task.epic_id, Some(epic.id));
     assert_eq!(task.sort_order, Some(7));
     assert_eq!(task.tag, Some(TaskTag::Bug));
-}
-
-#[tokio::test]
-async fn update_status_if_resets_sub_status_to_default() {
-    let db = in_memory_db().await;
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "T",
-            description: "d",
-            repo_path: "/r",
-            plan: None,
-            status: TaskStatus::Running,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Stale))
-        .await
-        .unwrap();
-
-    let updated = db
-        .update_status_if(id, TaskStatus::Review, TaskStatus::Running)
-        .await
-        .unwrap();
-    assert!(updated, "should have updated");
-
-    let task = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(task.status, TaskStatus::Review);
-    assert_eq!(task.sub_status, SubStatus::AwaitingReview); // default for review
-}
-
-#[tokio::test]
-async fn update_status_if_leaves_sub_status_unchanged_when_condition_fails() {
-    let db = in_memory_db().await;
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "T",
-            description: "d",
-            repo_path: "/r",
-            plan: None,
-            status: TaskStatus::Running,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-        })
-        .await
-        .unwrap();
-    db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::Active))
-        .await
-        .unwrap();
-
-    let updated = db
-        .update_status_if(id, TaskStatus::Review, TaskStatus::Backlog)
-        .await
-        .unwrap();
-    assert!(!updated, "condition was wrong, should not have updated");
-
-    let task = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(task.sub_status, SubStatus::Active); // unchanged
 }
 
 #[tokio::test]
@@ -4230,6 +4024,9 @@ async fn db_with_undecodable_status_row() -> (Database, TaskId) {
 
 #[tokio::test]
 async fn list_all_skips_row_with_unrecognised_status() {
+    // Covers the skip-and-warn behaviour for every bulk task read: they all
+    // funnel their `query_map` iterator through the same `collect_decodable`
+    // row decoder (see "Bulk reads skip and warn" in docs/conventions.md).
     let (db, good_id) = db_with_undecodable_status_row().await;
     let before = crate::db::decode_fallback_count();
 
@@ -4246,16 +4043,6 @@ async fn list_all_skips_row_with_unrecognised_status() {
     assert!(
         crate::db::decode_fallback_count() > before,
         "skipping a row must bump the decode-fallback counter"
-    );
-}
-
-#[tokio::test]
-async fn list_by_status_skips_row_with_unrecognised_status() {
-    let (db, good_id) = db_with_undecodable_status_row().await;
-    let tasks = db.list_by_status(TaskStatus::Backlog).await.unwrap();
-    assert_eq!(
-        tasks.iter().map(|t| t.id).collect::<Vec<_>>(),
-        vec![good_id]
     );
 }
 

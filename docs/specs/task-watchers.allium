@@ -142,22 +142,23 @@ rule NotifyWatchersOnFinish {
         -- subscriptions targeting this task are cleared unconditionally —
         -- cleanup does not wait on, or depend on, whether delivery actually
         -- reached a live tmux session.
-        -- Hook points, per the feature design: TaskServiceApi::update_task
-        -- (the TUI/MCP path: ConfirmDone, PR-merge/close, Archive,
-        -- exit_session) and TaskServiceApi::cli_update_task (the
-        -- unrestricted conditional status write, which no longer has a CLI
-        -- caller — `dispatch update` was removed) both call this after their
-        -- db.patch_task write succeeds. See the known-limitation note below
-        -- for the one status-writing path that does NOT reach here.
+        -- Hook point: TaskServiceApi::update_task (the TUI/MCP path:
+        -- ConfirmDone, PR-merge/close, Archive, exit_session) calls this
+        -- after its db.patch_task write succeeds. It is the service's only
+        -- status-writing path — the second hook point that used to exist
+        -- alongside it, the unrestricted conditional write behind the removed
+        -- `dispatch update` subcommand, has itself been deleted. See the
+        -- known-limitation note below for the one status-writing path that
+        -- does NOT reach here.
 }
 
 -- == Known Limitation: Feed-Synced Auto-Completion Bypasses Notification ==
 --
 -- FeedRunner (src/feed/mod.rs) writes task status directly via its own
--- sanctioned DB write handle, bypassing TaskService::update_task and
--- cli_update_task entirely — a pre-existing, sanctioned mutation-boundary
--- exception in this repo (see the service mutation-boundary docs), not
--- something this feature introduces.
+-- sanctioned DB write handle, bypassing TaskService::update_task entirely —
+-- a pre-existing, sanctioned mutation-boundary exception in this repo (see
+-- the service mutation-boundary docs), not something this feature
+-- introduces.
 --
 -- Consequence: when a feed-synced task is auto-completed via that path, a
 -- task watching it via subscribe_to_task will NOT trigger a notification —

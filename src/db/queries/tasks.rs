@@ -242,23 +242,6 @@ impl super::super::TaskRead for Database {
         .await
     }
 
-    async fn list_by_status(&self, status: TaskStatus) -> Result<Vec<crate::models::Task>> {
-        self.db_call_read(move |conn| {
-            let mut stmt = conn
-                .prepare_cached(
-                    &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE status = ?1 ORDER BY COALESCE(sort_order, id) ASC, id ASC"),
-                )
-                .context("Failed to prepare list_by_status")?;
-            let rows = stmt
-                .query_map(params![status.as_str()], row_to_task)
-                .context("Failed to query tasks by status")?;
-            let tasks =
-                collect_decodable(rows, "tasks").context("Failed to collect tasks by status")?;
-            Ok(tasks)
-        })
-        .await
-    }
-
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<crate::models::Task>> {
         let plan = plan.to_string();
         self.db_call_read(move |conn| {
@@ -310,31 +293,6 @@ impl super::super::TaskCrud for Database {
             )
             .context("Failed to insert task")?;
             Ok(TaskId(conn.last_insert_rowid()))
-        })
-        .await
-    }
-
-    /// Writes `status` and `sub_status` only. It does NOT apply the rules a
-    /// status transition derives from the prior status (the Done sort_order rank
-    /// and the leaving-Running `stop_pending` clear) — its one caller,
-    /// `TaskService::cli_update_task`, follows up with a patch that does. A
-    /// second caller must do the same, or `PendingStopOnlyWhileRunning`
-    /// (`docs/specs/core.allium`) can be violated from here.
-    async fn update_status_if(
-        &self,
-        id: TaskId,
-        new_status: TaskStatus,
-        expected: TaskStatus,
-    ) -> Result<bool> {
-        self.db_call(move |conn| {
-            let default_sub = SubStatus::default_for(new_status);
-            let rows = conn
-                .execute(
-                    "UPDATE tasks SET status = ?1, sub_status = ?2, updated_at = datetime('now') WHERE id = ?3 AND status = ?4",
-                    params![new_status.as_str(), default_sub.as_str(), id.0, expected.as_str()],
-                )
-                .context("Failed to conditional-update status")?;
-            Ok(rows > 0)
         })
         .await
     }

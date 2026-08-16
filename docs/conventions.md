@@ -81,7 +81,7 @@ Schema enum values may be added in a migration before all rows are upgraded. Nev
 
 **Row level — the decode-failure policy.** Which reads tolerate an undecodable row is deliberate, not incidental:
 
-- **Bulk reads skip and warn.** `list_all`, `list_by_status`, `list_epics`, `list_root_epics`, `list_sub_epics`, `list_tasks_for_epic`, and `list_all_tasks_with_epic_id` run their `query_map` iterator through `collect_decodable` (`src/db/queries/mod.rs`), which drops each undecodable row with a `tracing::warn!` and keeps the rest. One corrupt row degrades the board instead of blanking it — before this, a single unparseable `status` made `list_all` return `Err` and the TUI rendered an empty board.
+- **Bulk reads skip and warn.** `list_all`, `list_epics`, `list_root_epics`, `list_sub_epics`, `list_tasks_for_epic`, and `list_all_tasks_with_epic_id` run their `query_map` iterator through `collect_decodable` (`src/db/queries/mod.rs`), which drops each undecodable row with a `tracing::warn!` and keeps the rest. One corrupt row degrades the board instead of blanking it — before this, a single unparseable `status` made `list_all` return `Err` and the TUI rendered an empty board.
 - **Single-entity reads fail loudly.** `get_task`, `get_epic`, and `find_task_by_plan` return the decode error: the caller asked for that specific row, so silently answering "not found" would be a lie. This is also how a corrupt row stays diagnosable once the bulk read has stopped surfacing it.
 - **Only decode errors are skippable.** `collect_decodable` propagates anything that is not a row-content failure — a `SqliteFailure` (I/O error, interrupt) mid-iteration would otherwise silently truncate a healthy result set, and an `InvalidColumnName` would hide a mismatch between `TASK_COLUMNS` and `row_to_task`.
 
@@ -143,9 +143,9 @@ The service layer bridges the two patterns before writing a patch: `FieldUpdate:
 most call sites (`TaskPatch::new().status(s)` needs no annotation) but it blocks the obvious
 way to share patch-building between two branches: a closure `|p: TaskPatch| -> TaskPatch`
 cannot name the higher-ranked lifetime and fails to compile with "lifetime may not live long
-enough". Either build one patch up front and add the branch-specific fields conditionally
-(what `cli_update_task` in `src/service/tasks/crud.rs` does), or use a free function with an
-explicit `<'a>` — as `with_status_transition` in the same file does.
+enough". Either build one patch up front and add the branch-specific fields conditionally, or
+use a free function with an explicit `<'a>` — as `with_status_transition` in
+`src/service/tasks/crud.rs` does.
 
 ### OwnedTaskPatch (and OwnedCreateTaskRequest)
 

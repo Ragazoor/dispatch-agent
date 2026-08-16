@@ -164,8 +164,10 @@ impl TaskService {
     /// epic_id, sort_order, tag, status). Calls `recalculate_epic_for_task`
     /// whenever `params.status` is set.
     ///
-    /// Use [`cli_update_task`](Self::cli_update_task) for CLI subcommands
-    /// that need to archive tasks.
+    /// This is the only status-writing path on the service: it can transition
+    /// to any status including `Done` and `Archived`. The restriction against
+    /// agents completing their own tasks lives at the MCP handler layer, not
+    /// here — the TUI needs the unrestricted surface.
     pub async fn update_task(
         &self,
         params: UpdateTaskParams,
@@ -445,9 +447,9 @@ impl TaskService {
 
     /// After a status-affecting write, notify watchers if `new_status` is a
     /// finishing status (`Done`/`Archived`) the write actually transitioned
-    /// into. Shared by `update_task` and `cli_update_task` so both callers
-    /// funnel through one call with one ordering relative to epic
-    /// recalculation, instead of each re-deriving this check. `prior` is the
+    /// into. Shared by `update_task` and `close_session` so both callers funnel
+    /// through one call with one ordering relative to epic recalculation,
+    /// instead of each re-deriving this check. `prior` is the
     /// task as fetched before the write — pass `None` when the caller didn't
     /// need to fetch it (this no-ops immediately in that case, since a
     /// finishing transition always requires `prior` to have been fetched).
@@ -464,77 +466,6 @@ impl TaskService {
         }
         let Some(prior) = prior else { return };
         self.notify_watchers_if_finished(prior, new_status).await;
-    }
-
-    /// Updates a task status on the human-operator path.
-    ///
-    /// **Caller:** none in production today — the `dispatch update` subcommand
-    /// that used to call this was removed once the installed hooks moved to
-    /// the dedicated `hook-*` subcommands and agents moved to the MCP tools.
-    /// It stays on the [`TaskServiceApi`](crate::service::TaskServiceApi) seam
-    /// as the unrestricted, conditional status write, and is exercised by the
-    /// epic-recalculation tests.
-    ///
-    /// **Differences from [`update_task`](Self::update_task):**
-    /// - Can transition to any status including `Done` and `Archived`.
-    /// - Supports conditional update: `only_if` skips the write if the current
-    ///   status doesn't match, returning `Ok(false)` instead of an error.
-    /// - Accepts only status + sub_status — not the full field builder.
-    ///
-    /// Use `update_task` for agent/MCP call sites that must not complete tasks.
-    pub async fn cli_update_task(
-        &self,
-        task_id: TaskId,
-        new_status: TaskStatus,
-        only_if: Option<TaskStatus>,
-        sub_status: Option<SubStatus>,
-    ) -> Result<bool, ServiceError> {
-        // Always fetched (not just for finishing statuses): needed to
-        // detect a transition away from Done regardless of what the new
-        // status is, per sort_order_for_status_transition.
-        let prior = self.db.get_task(task_id).await?;
-
-        // One patch for both branches: the caller's sub_status plus everything
-        // the transition derives from the prior status. `status` rides along
-        // only when there is no `only_if` — the conditional branch writes it
-        // through `update_status_if` instead, as its compare-and-set.
-        //
-        // The prior status these rules read is the one the fetch above saw, not
-        // the one `update_status_if` matched; the two agree whenever the
-        // conditional write went through, since it only writes when the current
-        // status equals `expected`.
-        let mut patch = TaskPatch::new();
-        if only_if.is_none() {
-            patch = patch.status(new_status);
-        }
-        if let Some(ss) = sub_status {
-            patch = patch.sub_status(ss);
-        }
-        if let Some(p) = prior.as_ref() {
-            patch = with_status_transition(patch, p.status, new_status, self.clock.now());
-        }
-
-        let updated = if let Some(expected) = only_if {
-            let changed = self
-                .db
-                .update_status_if(task_id, new_status, expected)
-                .await?;
-            if changed && patch.has_changes() {
-                self.db.patch_task(task_id, &patch).await?;
-            }
-            changed
-        } else {
-            self.db.patch_task(task_id, &patch).await?;
-            true
-        };
-
-        if updated {
-            self.notify_watchers_after_status_write(prior.as_ref(), Some(new_status))
-                .await;
-            self.recalculate_epic_for_task(task_id).await;
-        }
-
-        Ok(updated)
     }
 
     /// Attach a plan file (by absolute path) to a task. Used by the `plan`

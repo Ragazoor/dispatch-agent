@@ -3254,42 +3254,18 @@ async fn update_task_staying_in_running_keeps_stop_pending() {
 }
 
 #[tokio::test]
-async fn cli_update_task_moving_out_of_running_clears_stop_pending() {
+async fn update_task_to_done_clears_stop_pending() {
     let db = test_db().await;
     let svc = task_svc(&db);
 
+    // Done is not in update_task_moving_out_of_running_clears_stop_pending's
+    // loop (that one covers Review/Backlog), and it is the transition the
+    // finishing-status write path takes.
     let id = running_task_with_a_deferred_stop(&svc).await;
-    svc.cli_update_task(id, TaskStatus::Done, None, None)
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
         .await
         .unwrap();
     assert!(!svc.get_task(id).await.unwrap().stop_pending);
-
-    // The conditional (`only_if`) branch takes a different write path.
-    let id = running_task_with_a_deferred_stop(&svc).await;
-    assert!(svc
-        .cli_update_task(id, TaskStatus::Review, Some(TaskStatus::Running), None)
-        .await
-        .unwrap());
-    assert!(!svc.get_task(id).await.unwrap().stop_pending);
-}
-
-#[tokio::test]
-async fn cli_update_task_skipped_by_only_if_keeps_stop_pending() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = running_task_with_a_deferred_stop(&svc).await;
-
-    assert!(!svc
-        .cli_update_task(id, TaskStatus::Review, Some(TaskStatus::Backlog), None)
-        .await
-        .unwrap());
-
-    let task = svc.get_task(id).await.unwrap();
-    assert_eq!(task.status, TaskStatus::Running);
-    assert!(
-        task.stop_pending,
-        "a write that did not happen must not clear the bit"
-    );
 }
 
 #[tokio::test]
@@ -3774,217 +3750,6 @@ mod property_tests {
             );
         }
     }
-}
-
-// -- cli_update_task -------------------------------------------------------
-
-#[tokio::test]
-async fn cli_update_task_updates_status_unconditionally() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    let updated = svc
-        .cli_update_task(id, TaskStatus::Running, None, None)
-        .await
-        .unwrap();
-
-    assert!(updated);
-    assert_eq!(svc.get_task(id).await.unwrap().status, TaskStatus::Running);
-}
-
-#[tokio::test]
-async fn cli_update_task_entering_done_sets_sort_order() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    svc.cli_update_task(id, TaskStatus::Done, None, None)
-        .await
-        .unwrap();
-
-    let task = svc.get_task(id).await.unwrap();
-    assert!(
-        task.sort_order.is_some_and(|so| so < 0),
-        "expected a negative sort_order on entering Done, got {:?}",
-        task.sort_order
-    );
-}
-
-#[tokio::test]
-async fn cli_update_task_leaving_done_clears_sort_order() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    svc.cli_update_task(id, TaskStatus::Done, None, None)
-        .await
-        .unwrap();
-    assert!(svc.get_task(id).await.unwrap().sort_order.is_some());
-
-    svc.cli_update_task(id, TaskStatus::Backlog, None, None)
-        .await
-        .unwrap();
-
-    assert_eq!(svc.get_task(id).await.unwrap().sort_order, None);
-}
-
-#[tokio::test]
-async fn cli_update_task_only_if_not_matching_does_not_touch_sort_order() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    // Precondition doesn't match (task is Backlog, not Running) — the
-    // conditional write must be a full no-op, including sort_order.
-    let updated = svc
-        .cli_update_task(id, TaskStatus::Done, Some(TaskStatus::Running), None)
-        .await
-        .unwrap();
-
-    assert!(!updated);
-    assert_eq!(svc.get_task(id).await.unwrap().sort_order, None);
-}
-
-#[tokio::test]
-async fn cli_update_task_only_if_matching_entering_done_sets_sort_order() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    let updated = svc
-        .cli_update_task(id, TaskStatus::Done, Some(TaskStatus::Backlog), None)
-        .await
-        .unwrap();
-
-    assert!(updated);
-    assert!(svc
-        .get_task(id)
-        .await
-        .unwrap()
-        .sort_order
-        .is_some_and(|so| so < 0));
-}
-
-#[tokio::test]
-async fn cli_update_task_with_only_if_matching_returns_true_and_updates() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    let updated = svc
-        .cli_update_task(id, TaskStatus::Running, Some(TaskStatus::Backlog), None)
-        .await
-        .unwrap();
-
-    assert!(updated);
-    assert_eq!(svc.get_task(id).await.unwrap().status, TaskStatus::Running);
-}
-
-#[tokio::test]
-async fn cli_update_task_with_only_if_not_matching_returns_false_and_preserves_status() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    let updated = svc
-        .cli_update_task(id, TaskStatus::Done, Some(TaskStatus::Running), None)
-        .await
-        .unwrap();
-
-    assert!(!updated);
-    assert_eq!(svc.get_task(id).await.unwrap().status, TaskStatus::Backlog);
-}
-
-#[tokio::test]
-async fn cli_update_task_unconditional_sets_sub_status() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    svc.cli_update_task(id, TaskStatus::Running, None, Some(SubStatus::Active))
-        .await
-        .unwrap();
-
-    let task = svc.get_task(id).await.unwrap();
-    assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.sub_status, SubStatus::Active);
-}
-
-#[tokio::test]
-async fn cli_update_task_conditional_sets_sub_status_when_matching() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    svc.cli_update_task(
-        id,
-        TaskStatus::Running,
-        Some(TaskStatus::Backlog),
-        Some(SubStatus::Active),
-    )
-    .await
-    .unwrap();
-
-    let task = svc.get_task(id).await.unwrap();
-    assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.sub_status, SubStatus::Active);
-}
-
-#[tokio::test]
-async fn cli_update_task_conditional_does_not_apply_sub_status_when_not_matching() {
-    let db = test_db().await;
-    let svc = task_svc(&db);
-    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
-
-    svc.cli_update_task(
-        id,
-        TaskStatus::Done,
-        Some(TaskStatus::Running),
-        Some(SubStatus::Active),
-    )
-    .await
-    .unwrap();
-
-    let task = svc.get_task(id).await.unwrap();
-    assert_eq!(task.status, TaskStatus::Backlog);
-    assert_eq!(task.sub_status, SubStatus::None);
-}
-
-#[tokio::test]
-async fn cli_update_task_recalculates_parent_epic() {
-    let db = test_db().await;
-    let tsvc = task_svc(&db);
-    let esvc = epic_svc(&db);
-
-    let epic = esvc
-        .create_epic(CreateEpicParams {
-            title: "E".into(),
-            description: "".into(),
-            sort_order: None,
-            parent_epic_id: None,
-            feed_command: None,
-            feed_interval_secs: None,
-        })
-        .await
-        .unwrap();
-
-    let id = tsvc
-        .create_task(CreateTaskParams {
-            epic_id: Some(epic.id),
-            ..make_task_params("/repo")
-        })
-        .await
-        .unwrap();
-
-    tsvc.cli_update_task(id, TaskStatus::Done, None, None)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        esvc.get_epic(epic.id).await.unwrap().status,
-        TaskStatus::Done
-    );
 }
 
 // -- validate_wrap_up ------------------------------------------------------
@@ -4558,38 +4323,6 @@ mod watchers {
     }
 
     #[tokio::test]
-    async fn cli_update_task_to_done_notifies_watcher() {
-        let tmp = tempfile::tempdir().unwrap();
-        let worktree = tmp.path().to_str().unwrap().to_string();
-        let db = test_db().await;
-        let runner: Arc<dyn crate::process::ProcessRunner> =
-            Arc::new(crate::process::MockProcessRunner::new(vec![
-                crate::process::MockProcessRunner::ok_with_stdout(READY_PANE_STDOUT),
-                crate::process::MockProcessRunner::ok(),
-                crate::process::MockProcessRunner::ok(),
-            ]));
-        let svc = task_svc_with_runner(&db, runner);
-
-        let watcher = svc.create_task(make_task_params("/repo")).await.unwrap();
-        db.patch_task(
-            watcher,
-            &db::TaskPatch::new()
-                .worktree(Some(&worktree))
-                .tmux_window(Some("task-watcher")),
-        )
-        .await
-        .unwrap();
-        let target = svc.create_task(make_task_params("/repo")).await.unwrap();
-        svc.subscribe_to_task(watcher, target).await.unwrap();
-
-        svc.cli_update_task(target, TaskStatus::Done, None, None)
-            .await
-            .unwrap();
-
-        assert!(db.list_watchers_of(target).await.unwrap().is_empty());
-    }
-
-    #[tokio::test]
     async fn delete_task_notifies_watchers_of_deletion() {
         let tmp = tempfile::tempdir().unwrap();
         let worktree = tmp.path().to_str().unwrap().to_string();
@@ -4639,7 +4372,7 @@ mod watchers {
     async fn delete_task_does_not_notify_watcher_when_target_already_finished_via_bypassed_write() {
         // Characterization test for the previously-masked gap: FeedRunner
         // writes task status directly via its own DB write handle, bypassing
-        // TaskService::update_task/cli_update_task entirely — so a
+        // TaskService::update_task entirely — so a
         // feed-synced task that auto-completes never gets its watcher rows
         // cleared by notify_watchers_if_finished. If that already-Done task
         // is later deleted through TaskService::delete_task, the watcher

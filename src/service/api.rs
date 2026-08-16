@@ -178,14 +178,6 @@ macro_rules! task_service_api {
                 new_epic: Option<$crate::models::EpicId>
             ) -> Result<(), $crate::service::ServiceError>;
 
-            async fn cli_update_task(
-                &self,
-                task_id: $crate::models::TaskId,
-                new_status: $crate::models::TaskStatus,
-                only_if: Option<$crate::models::TaskStatus>,
-                sub_status: Option<$crate::models::SubStatus>
-            ) -> Result<bool, $crate::service::ServiceError>;
-
             async fn create_task(
                 &self,
                 params: $crate::service::CreateTaskParams

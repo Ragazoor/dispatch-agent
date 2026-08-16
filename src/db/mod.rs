@@ -188,7 +188,6 @@ pub trait TaskRead: Send + Sync {
     /// column and discard the result.
     async fn task_exists(&self, id: TaskId) -> Result<bool>;
     async fn list_all(&self) -> Result<Vec<Task>>;
-    async fn list_by_status(&self, status: TaskStatus) -> Result<Vec<Task>>;
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
     /// Return the cumulative INSERT/UPDATE/DELETE count for this connection since
     /// it was opened. Cheap watermark: if the value is the same as the last
@@ -202,13 +201,6 @@ pub trait TaskRead: Send + Sync {
 #[async_trait::async_trait]
 pub trait TaskCrud: TaskRead {
     async fn create_task(&self, req: CreateTaskRequest<'_>) -> Result<TaskId>;
-    /// Update status only if current status matches `expected`. Returns true if updated.
-    async fn update_status_if(
-        &self,
-        id: TaskId,
-        new_status: TaskStatus,
-        expected: TaskStatus,
-    ) -> Result<bool>;
     async fn delete_task(&self, id: TaskId) -> Result<()>;
     async fn patch_task(&self, id: TaskId, patch: &TaskPatch<'_>) -> Result<()>;
     /// Atomically set `pr_learnings_gate_shown_at` to now if it is currently null.

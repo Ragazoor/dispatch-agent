@@ -600,8 +600,8 @@ async fn recalculate_epic_status_mixed_review_running_leaves_epic_in_backlog() {
 }
 
 #[tokio::test]
-async fn cli_update_conditional_task_to_review_leaves_epic_in_backlog() {
-    use crate::service::TaskService;
+async fn update_task_to_review_leaves_epic_in_backlog() {
+    use crate::service::{TaskService, UpdateTaskParams};
 
     let db = std::sync::Arc::new(in_memory_db().await);
     let epic = db.create_epic("E", "", None).await.unwrap();
@@ -611,19 +611,17 @@ async fn cli_update_conditional_task_to_review_leaves_epic_in_backlog() {
     db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
 
     let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
-    let updated = svc
-        .cli_update_task(task.id, TaskStatus::Review, Some(TaskStatus::Running), None)
+    svc.update_task(UpdateTaskParams::for_task(task.id).status(TaskStatus::Review))
         .await
         .unwrap();
-    assert!(updated);
 
     let epic = db.get_epic(epic.id).await.unwrap().unwrap();
     assert_eq!(epic.status, TaskStatus::Backlog);
 }
 
 #[tokio::test]
-async fn cli_update_unconditional_task_to_running_leaves_epic_in_backlog() {
-    use crate::service::TaskService;
+async fn update_task_to_running_leaves_epic_in_backlog() {
+    use crate::service::{TaskService, UpdateTaskParams};
 
     let db = std::sync::Arc::new(in_memory_db().await);
     let epic = db.create_epic("E", "", None).await.unwrap();
@@ -633,19 +631,17 @@ async fn cli_update_unconditional_task_to_running_leaves_epic_in_backlog() {
     db.set_task_epic_id(task.id, Some(epic.id)).await.unwrap();
 
     let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
-    let updated = svc
-        .cli_update_task(task.id, TaskStatus::Running, None, None)
+    svc.update_task(UpdateTaskParams::for_task(task.id).status(TaskStatus::Running))
         .await
         .unwrap();
-    assert!(updated);
 
     let epic = db.get_epic(epic.id).await.unwrap().unwrap();
     assert_eq!(epic.status, TaskStatus::Backlog);
 }
 
 #[tokio::test]
-async fn cli_update_epic_stays_backlog_when_review_task_completes() {
-    use crate::service::TaskService;
+async fn epic_stays_backlog_when_review_task_completes() {
+    use crate::service::{TaskService, UpdateTaskParams};
 
     let db = std::sync::Arc::new(in_memory_db().await);
     let epic = db.create_epic("E", "", None).await.unwrap();
@@ -665,7 +661,7 @@ async fn cli_update_epic_stays_backlog_when_review_task_completes() {
     );
 
     let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
-    svc.cli_update_task(t2.id, TaskStatus::Done, Some(TaskStatus::Review), None)
+    svc.update_task(UpdateTaskParams::for_task(t2.id).status(TaskStatus::Done))
         .await
         .unwrap();
 
@@ -674,8 +670,8 @@ async fn cli_update_epic_stays_backlog_when_review_task_completes() {
 }
 
 #[tokio::test]
-async fn cli_update_with_substatus_keeps_task_running_and_epic_in_backlog() {
-    use crate::service::TaskService;
+async fn update_task_with_substatus_keeps_task_running_and_epic_in_backlog() {
+    use crate::service::{TaskService, UpdateTaskParams};
 
     let db = std::sync::Arc::new(in_memory_db().await);
     let epic = db.create_epic("E", "", None).await.unwrap();
@@ -686,11 +682,10 @@ async fn cli_update_with_substatus_keeps_task_running_and_epic_in_backlog() {
     db.recalculate_epic_status(epic.id).await.unwrap();
 
     let svc = TaskService::new(db.clone(), crate::process::MockProcessRunner::unused());
-    svc.cli_update_task(
-        task.id,
-        TaskStatus::Running,
-        Some(TaskStatus::Running),
-        Some(SubStatus::NeedsInput),
+    svc.update_task(
+        UpdateTaskParams::for_task(task.id)
+            .status(TaskStatus::Running)
+            .sub_status(SubStatus::NeedsInput),
     )
     .await
     .unwrap();
