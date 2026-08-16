@@ -546,6 +546,51 @@ fn wrap_up_mode_picker_records_selection_default_and_cancel() {
 }
 
 #[test]
+fn schedule_gate_records_selection_default_and_cancel() {
+    let mut app = app_in_mode(InputMode::InputScheduleGate);
+    assert_records(
+        &mut app,
+        KeyCode::Char('s'),
+        "schedule_gate_picker_select",
+        "s",
+    );
+
+    let mut app = app_in_mode(InputMode::InputScheduleGate);
+    assert_records(
+        &mut app,
+        KeyCode::Enter,
+        "schedule_gate_picker_default",
+        "Enter",
+    );
+
+    let mut app = app_in_mode(InputMode::InputScheduleGate);
+    assert_records(&mut app, KeyCode::Esc, "schedule_gate_picker_cancel", "Esc");
+
+    // A character the gate does not recognise records nothing and leaves the
+    // prompt open — the shared char-picker contract.
+    let mut app = app_in_mode(InputMode::InputScheduleGate);
+    assert_silent(&mut app, KeyCode::Char('z'));
+}
+
+/// The two configure steps are text fields, so typing is data entry: only the
+/// commit and the cancel are recorded (the shared TextInputField contract).
+#[test]
+fn the_schedule_configure_steps_record_only_commit_and_cancel() {
+    for mode in [
+        InputMode::InputScheduleInterval,
+        InputMode::InputPinnedBranch,
+    ] {
+        let mut app = app_in_mode(mode.clone());
+        assert_silent(&mut app, KeyCode::Char('6'));
+        assert_silent(&mut app, KeyCode::Backspace);
+        assert_records(&mut app, KeyCode::Enter, "submit_input", "Enter");
+
+        let mut app = app_in_mode(mode);
+        assert_records(&mut app, KeyCode::Esc, "cancel_input", "Esc");
+    }
+}
+
+#[test]
 fn quick_dispatch_picker_records_navigation_select_and_cancel() {
     let mut app = app_in_mode(InputMode::QuickDispatch);
     assert_records(

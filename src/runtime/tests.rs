@@ -773,8 +773,13 @@ async fn finish_task_creation_emits_save_repo_path_and_save_base_branch() {
     app.update(Message::Input(
         crate::tui::messages::InputMessage::SubmitBaseBranch("develop".to_string()),
     ));
-    let cmds = app.update(Message::Input(
+    app.update(Message::Input(
         crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
+    ));
+    // The schedule gate is the form's last step; declining it is what commits
+    // the creation (tasks.allium: CreateTask, "The schedule step").
+    let cmds = app.update(Message::Input(
+        crate::tui::messages::InputMessage::SubmitScheduleGate(false),
     ));
 
     assert!(
@@ -815,6 +820,8 @@ async fn exec_quick_dispatch_does_not_record_base_branch_history() {
             tag: None,
             base_branch: "main".into(),
             wrap_up_mode: None,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         },
         None,
     )
@@ -1866,6 +1873,8 @@ async fn exec_quick_dispatch_creates_task_and_dispatches() {
             tag: None,
             base_branch: "main".into(),
             wrap_up_mode: None,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         },
         None,
     )
@@ -1922,6 +1931,8 @@ async fn exec_quick_dispatch_sets_base_branch_to_repo_default() {
             // base_branch from the repo's `origin/HEAD`.
             base_branch: "main".into(),
             wrap_up_mode: None,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         },
         None,
     )
@@ -1960,6 +1971,8 @@ async fn exec_quick_dispatch_with_epic_dispatches_successfully() {
             tag: None,
             base_branch: "main".into(),
             wrap_up_mode: None,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         },
         Some(epic.id),
     )
@@ -2003,6 +2016,8 @@ async fn exec_quick_dispatch_sends_error_on_failure() {
             tag: None,
             base_branch: "main".into(),
             wrap_up_mode: None,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         },
         None,
     )
@@ -2042,6 +2057,8 @@ async fn exec_quick_dispatch_failure_sends_dispatch_failed_and_error() {
             tag: None,
             base_branch: "main".into(),
             wrap_up_mode: None,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         },
         None,
     )

@@ -376,6 +376,14 @@ mod tests {
                 "auto_run_plan",
                 UpdateTaskParams::for_task(TaskId(1)).auto_run_plan(true),
             ),
+            (
+                "schedule_interval_secs",
+                UpdateTaskParams::for_task(TaskId(1)).schedule_interval_secs(Some(600)),
+            ),
+            (
+                "pinned_branch",
+                UpdateTaskParams::for_task(TaskId(1)).pinned_branch(Some("staging".to_string())),
+            ),
         ];
         for (expected, params) in &cases {
             assert!(

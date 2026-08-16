@@ -5,6 +5,16 @@ use crate::models::{TaskTag, WrapUpMode};
 use super::super::types::*;
 use super::super::{filtered_repos, has_new_repo_option, App, PendingAction};
 
+/// Prompts for the creation form's schedule tail. Declared once and read by
+/// the status bar, the in-panel form renderer and the handlers below, so the
+/// three cannot advertise three different key sets for one step — the drift
+/// the tag picker's hint text already demonstrates (tasks.allium: CreateTask).
+pub(in crate::tui) const SCHEDULE_GATE_PROMPT: &str = "Schedule: [Enter] none  [s] configure";
+pub(in crate::tui) const SCHEDULE_INTERVAL_PROMPT: &str =
+    "Schedule interval (600, 10m, 2h, 1d; [Enter] none): ";
+pub(in crate::tui) const PINNED_BRANCH_PROMPT: &str =
+    "Pinned branch ([Enter] normal per-task branch): ";
+
 impl App {
     pub(in crate::tui) fn handle_copy_task(&mut self) -> Vec<Command> {
         let task = match self.selected_task() {
@@ -62,6 +72,8 @@ impl App {
                 tag: None,
                 base_branch: "main".to_string(),
                 wrap_up_mode: None,
+                schedule_interval_secs: None,
+                pinned_branch: None,
             });
             self.input.mode = InputMode::InputTag;
             self.set_status(
@@ -150,13 +162,76 @@ impl App {
         if let (Some(ref mut draft), Some(m)) = (self.input.task_draft.as_mut(), mode) {
             draft.wrap_up_mode = Some(m);
         }
-        let repo_path = self
-            .input
+        self.input.clear_buffer();
+        self.input.mode = InputMode::InputScheduleGate;
+        self.set_status(SCHEDULE_GATE_PROMPT.to_string());
+        vec![]
+    }
+
+    /// The gate's answer: `false` (Enter) creates the task straight away with
+    /// neither scheduling field set — the common path, and the reason the two
+    /// text steps are gated at all. `true` (`s`) opens them.
+    pub(in crate::tui) fn handle_submit_schedule_gate(&mut self, configure: bool) -> Vec<Command> {
+        if !configure {
+            let repo_path = self.draft_repo_path();
+            return self.finish_task_creation(repo_path);
+        }
+        self.input.clear_buffer();
+        self.input.mode = InputMode::InputScheduleInterval;
+        self.set_status(SCHEDULE_INTERVAL_PROMPT.to_string());
+        vec![]
+    }
+
+    /// Parse the typed cadence and advance to the pinned-branch step.
+    ///
+    /// The one form step that can refuse to advance on non-empty input. An
+    /// unparseable value leaves the mode and the buffer untouched so it can be
+    /// corrected in place, because this value drives a background loop the
+    /// user will not be watching — coercing or dropping it would schedule
+    /// something other than what was asked for (tasks.allium: CreateTask).
+    pub(in crate::tui) fn handle_submit_schedule_interval(
+        &mut self,
+        value: String,
+    ) -> Vec<Command> {
+        if !value.is_empty() {
+            match crate::models::parse_interval_secs(&value) {
+                Some(secs) => {
+                    if let Some(ref mut draft) = self.input.task_draft {
+                        draft.schedule_interval_secs = Some(secs);
+                    }
+                }
+                None => {
+                    self.set_status(format!(
+                        "Not a valid interval: {value:?} — try 600, 10m, 2h or 1d ([Enter] to skip)"
+                    ));
+                    return vec![];
+                }
+            }
+        }
+        self.input.clear_buffer();
+        self.input.mode = InputMode::InputPinnedBranch;
+        self.set_status(PINNED_BRANCH_PROMPT.to_string());
+        vec![]
+    }
+
+    /// The form's terminal step. The branch name is taken literally, with no
+    /// existence check — see tasks.allium: CreateTask for why that check
+    /// cannot usefully happen here.
+    pub(in crate::tui) fn handle_submit_pinned_branch(&mut self, value: String) -> Vec<Command> {
+        if let Some(ref mut draft) = self.input.task_draft {
+            draft.pinned_branch = (!value.is_empty()).then_some(value);
+        }
+        self.input.clear_buffer();
+        let repo_path = self.draft_repo_path();
+        self.finish_task_creation(repo_path)
+    }
+
+    fn draft_repo_path(&self) -> String {
+        self.input
             .task_draft
             .as_ref()
             .map(|d| d.repo_path.clone())
-            .unwrap_or_default();
-        self.finish_task_creation(repo_path)
+            .unwrap_or_default()
     }
 
     pub(in crate::tui) fn handle_submit_tag(&mut self, tag: Option<TaskTag>) -> Vec<Command> {

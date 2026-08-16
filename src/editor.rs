@@ -84,6 +84,13 @@ pub struct EditorFields {
     /// "infer from the url, or preserve the prior type if the url is unchanged"
     /// at apply time.
     pub url_type: Option<crate::models::UrlType>,
+    /// Parsed cadence in seconds, or `None` if the section was empty or its
+    /// content failed the interval grammar. Both mean "unschedule" at apply
+    /// time; only the second records an error. Mirrors
+    /// [`EpicEditorFields::feed_interval_secs`].
+    pub schedule_interval_secs: Option<i64>,
+    /// Raw branch name. Empty means "unpin".
+    pub pinned_branch: String,
     pub errors: Vec<EditorParseError>,
 }
 
@@ -180,14 +187,21 @@ fn parse_section<T>(
     }
 }
 
+/// The message an interval section shows when its content fails
+/// [`crate::models::parse_interval_secs`]. One wording for both sections, so
+/// the two cannot drift into describing the same grammar differently.
+fn interval_parse_failure_message(raw: &str) -> String {
+    format!("not a valid interval: {raw:?} (expected e.g. 600, 10m, 2h, 1d)")
+}
+
 pub fn parse_epic_editor_output(input: &str) -> EpicEditorFields {
     let mut s = parse_sections(input);
     let mut errors = Vec::new();
     let feed_interval_secs = parse_section(
         s.remove("FEED_INTERVAL_SECS").unwrap_or_default(),
         "FEED_INTERVAL_SECS",
-        |raw| raw.parse::<i64>().ok(),
-        |raw| format!("not a valid integer: {raw:?}"),
+        crate::models::parse_interval_secs,
+        interval_parse_failure_message,
         &mut errors,
     );
     EpicEditorFields {
@@ -205,6 +219,11 @@ pub fn format_editor_content(task: &Task) -> String {
     let wrap_up_mode = task.wrap_up_mode.map(|m| m.as_str()).unwrap_or("");
     let url = task.url.as_ref().map(|u| u.url.as_str()).unwrap_or("");
     let url_type = task.url.as_ref().map(|u| u.url_type.as_str()).unwrap_or("");
+    let schedule_interval_secs = task
+        .schedule_interval_secs
+        .map(|n| n.to_string())
+        .unwrap_or_default();
+    let pinned_branch = task.pinned_branch.as_deref().unwrap_or("");
     format!(
         "--- TITLE ---\n{title}\n\
          --- DESCRIPTION ---\n{description}\n\
@@ -215,12 +234,19 @@ pub fn format_editor_content(task: &Task) -> String {
          --- BASE_BRANCH ---\n{base_branch}\n\
          --- WRAP_UP_MODE ---\n{wrap_up_mode}\n\
          --- URL ---\n{url}\n\
-         --- URL_TYPE ---\n{url_type}\n",
+         --- URL_TYPE ---\n{url_type}\n\
+         --- SCHEDULE_INTERVAL_SECS ---\n{schedule_interval_secs}\n\
+         --- PINNED_BRANCH ---\n{pinned_branch}\n",
         title = task.title,
         description = task.description,
         repo_path = task.repo_path,
         status = task.status.as_str(),
         base_branch = task.base_branch,
+        // Bare seconds, never the humanised form: this value is read straight
+        // back by `parse_editor_content`, and re-rendering the user's own
+        // spelling ("10m") would mean storing it. See tasks.allium: EditTask.
+        schedule_interval_secs = schedule_interval_secs,
+        pinned_branch = pinned_branch,
     )
 }
 
@@ -236,11 +262,12 @@ pub fn format_editor_content(task: &Task) -> String {
 ///   invalid/empty input falls back to the prior status.
 /// - **`base_branch`**: `Option<String>` where `None` = keep the prior value
 ///   (the column is non-nullable, so it is never cleared from the editor).
-/// - **Clearable fields** (`plan_path`, `tag`, `wrap_up_mode`): the editor
+/// - **Clearable fields** (`plan_path`, `tag`, `wrap_up_mode`,
+///   `schedule_interval_secs`, `pinned_branch`): the editor
 ///   always states a definite intent (the section is always present), so an
 ///   empty section means *clear* and a filled section means *set*. `plan_path`
-///   uses [`FieldUpdate`] (`Set`/`Clear`); `tag`/`wrap_up_mode` use `Option`
-///   where `None` = clear.
+///   uses [`FieldUpdate`] (`Set`/`Clear`); the rest use `Option` where
+///   `None` = clear.
 /// - **`url`**: `Option<`[`UrlUpdate`](crate::service::UrlUpdate)`>` — `None`
 ///   leaves the field untouched (the edited url equals the prior url, a no-op);
 ///   `Some(Set/Clear)` is forwarded to the service only when it differs.
@@ -263,6 +290,12 @@ pub struct TaskEditApplied {
     /// prior task to decide whether a DB write is needed), so callers get
     /// the true post-edit value even when `url` itself is `None` (no-op diff).
     pub resolved_url: Option<crate::models::TaskUrl>,
+    /// Post-edit cadence: `None` = unschedule. Not a delta — unlike `url`,
+    /// this is forwarded unconditionally, because "no change" and "clear" are
+    /// the same write here and the column is cheap to restate.
+    pub schedule_interval_secs: Option<i64>,
+    /// Post-edit pinned branch: `None` = unpin.
+    pub pinned_branch: Option<String>,
 }
 
 /// Resolve the desired `Option<TaskUrl>` from the parsed URL string and
@@ -332,6 +365,16 @@ pub fn apply_task_editor_fields(task: &Task, fields: EditorFields) -> TaskEditAp
     } else {
         Some(crate::service::UrlUpdate::Clear)
     };
+    // Clearable scheduling pair: an empty (or unparseable) section unschedules
+    // / unpins. `pinned_branch` is a plain string section, so empty is the
+    // clear; `schedule_interval_secs` already arrives as `Option` from the
+    // interval grammar.
+    let schedule_interval_secs = fields.schedule_interval_secs;
+    let pinned_branch = if fields.pinned_branch.is_empty() {
+        None
+    } else {
+        Some(fields.pinned_branch)
+    };
     let resolved_plan_path = plan_path.as_option().map(str::to_string);
     TaskEditApplied {
         title,
@@ -345,6 +388,8 @@ pub fn apply_task_editor_fields(task: &Task, fields: EditorFields) -> TaskEditAp
         wrap_up_mode,
         url,
         resolved_url: desired_url,
+        schedule_interval_secs,
+        pinned_branch,
     }
 }
 
@@ -412,6 +457,14 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
         &mut errors,
     );
 
+    let schedule_interval_secs = parse_section(
+        s.remove("SCHEDULE_INTERVAL_SECS").unwrap_or_default(),
+        "SCHEDULE_INTERVAL_SECS",
+        crate::models::parse_interval_secs,
+        interval_parse_failure_message,
+        &mut errors,
+    );
+
     EditorFields {
         title: s.remove("TITLE").unwrap_or_default(),
         description: s.remove("DESCRIPTION").unwrap_or_default(),
@@ -423,6 +476,8 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
         wrap_up_mode,
         url: s.remove("URL").unwrap_or_default(),
         url_type,
+        schedule_interval_secs,
+        pinned_branch: s.remove("PINNED_BRANCH").unwrap_or_default(),
         errors,
     }
 }
@@ -1209,7 +1264,187 @@ mod tests {
         );
     }
 
+    // --- SCHEDULE_INTERVAL_SECS / PINNED_BRANCH ---------------------------
+
+    /// The pair a scheduled task is configured with, out and back in.
+    #[test]
+    fn task_editor_round_trips_schedule_interval_and_pinned_branch() {
+        let mut task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
+        task.schedule_interval_secs = Some(600);
+        task.pinned_branch = Some("staging".into());
+
+        let content = format_editor_content(&task);
+        assert!(content.contains("--- SCHEDULE_INTERVAL_SECS ---"));
+        assert!(content.contains("--- PINNED_BRANCH ---"));
+
+        let sections = parse_sections(&content);
+        assert_eq!(
+            sections.get("SCHEDULE_INTERVAL_SECS").map(String::as_str),
+            Some("600"),
+            "the section must hold bare seconds, not a humanised form"
+        );
+        assert_eq!(
+            sections.get("PINNED_BRANCH").map(String::as_str),
+            Some("staging")
+        );
+
+        let fields = parse_editor_content(&content);
+        assert_eq!(fields.schedule_interval_secs, Some(600));
+        assert_eq!(fields.pinned_branch, "staging");
+        assert!(fields.errors.is_empty());
+    }
+
+    /// An unscheduled task still emits both sections — always-present sections
+    /// are what make "empty means clear" a statable intent rather than an
+    /// absence.
+    #[test]
+    fn task_editor_emits_both_sections_empty_for_an_unscheduled_task() {
+        let task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
+        let content = format_editor_content(&task);
+        let sections = parse_sections(&content);
+        assert_eq!(
+            sections.get("SCHEDULE_INTERVAL_SECS").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(sections.get("PINNED_BRANCH").map(String::as_str), Some(""));
+    }
+
+    /// Emptying the section is the only way to unschedule from the editor.
+    #[test]
+    fn task_editor_clears_schedule_interval_when_section_emptied() {
+        let mut task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
+        task.schedule_interval_secs = Some(600);
+        let content = format_editor_content(&task);
+        let cleared = content.replace("600", "");
+
+        let fields = parse_editor_content(&cleared);
+        assert_eq!(fields.schedule_interval_secs, None);
+        assert!(
+            fields.errors.is_empty(),
+            "an emptied section is a deliberate clear, not a parse failure"
+        );
+
+        let applied = apply_task_editor_fields(&task, fields);
+        assert_eq!(applied.schedule_interval_secs, None);
+    }
+
+    #[test]
+    fn task_editor_clears_pinned_branch_when_section_emptied() {
+        let mut task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
+        task.pinned_branch = Some("staging".into());
+        let content = format_editor_content(&task);
+        let cleared = content.replace("staging", "");
+
+        let fields = parse_editor_content(&cleared);
+        let applied = apply_task_editor_fields(&task, fields);
+        assert_eq!(applied.pinned_branch, None);
+    }
+
+    /// The shared interval grammar reaches this section: "10m" is the same
+    /// edit as "600".
+    #[test]
+    fn task_editor_schedule_interval_accepts_a_suffixed_literal() {
+        let input = "--- TITLE ---\nT\n--- SCHEDULE_INTERVAL_SECS ---\n10m\n";
+        let parsed = parse_editor_content(input);
+        assert_eq!(parsed.schedule_interval_secs, Some(600));
+        assert!(parsed.errors.is_empty());
+    }
+
+    /// Unparseable input records an error AND clears — the sharp edge of the
+    /// clear-on-empty convention, stated in tasks.allium's EditTask guidance.
+    /// It is not silent: the error is surfaced as a status message.
+    #[test]
+    fn task_editor_invalid_schedule_interval_records_error_and_clears() {
+        let mut task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
+        task.schedule_interval_secs = Some(600);
+        let input = "--- TITLE ---\nT\n--- SCHEDULE_INTERVAL_SECS ---\nnot-a-number\n";
+
+        let mut parsed = parse_editor_content(input);
+        assert_eq!(parsed.schedule_interval_secs, None);
+        assert_eq!(parsed.errors.len(), 1);
+        assert_eq!(parsed.errors[0].field, "SCHEDULE_INTERVAL_SECS");
+
+        parsed.errors.clear();
+        let applied = apply_task_editor_fields(&task, parsed);
+        assert_eq!(applied.schedule_interval_secs, None);
+    }
+
+    /// Zero is refused by the grammar, so it reaches the field as a parse
+    /// error rather than as a zero-second cadence the scheduler would spin on.
+    #[test]
+    fn task_editor_rejects_a_zero_schedule_interval() {
+        let input = "--- TITLE ---\nT\n--- SCHEDULE_INTERVAL_SECS ---\n0\n";
+        let parsed = parse_editor_content(input);
+        assert_eq!(parsed.schedule_interval_secs, None);
+        assert_eq!(parsed.errors.len(), 1);
+        assert_eq!(parsed.errors[0].field, "SCHEDULE_INTERVAL_SECS");
+    }
+
+    /// Every other field keeps its prior value when only the schedule pair is
+    /// touched — the guard against a new section stomping a neighbour.
+    #[test]
+    fn task_editor_scheduling_an_existing_task_leaves_its_other_fields_alone() {
+        let mut task = make_task("T", "D", "/repo", TaskStatus::Running, Some("p.md"));
+        task.tag = Some(crate::models::TaskTag::Chore);
+        task.base_branch = "develop".into();
+        let content = format_editor_content(&task);
+        let scheduled = content.replace(
+            "--- SCHEDULE_INTERVAL_SECS ---\n",
+            "--- SCHEDULE_INTERVAL_SECS ---\n2h\n",
+        );
+
+        let applied = apply_task_editor_fields(&task, parse_editor_content(&scheduled));
+        assert_eq!(applied.schedule_interval_secs, Some(7200));
+        assert_eq!(applied.title, "T");
+        assert_eq!(applied.description, "D");
+        assert_eq!(applied.status, TaskStatus::Running);
+        assert_eq!(applied.tag, Some(crate::models::TaskTag::Chore));
+        assert_eq!(applied.base_branch, Some("develop".to_string()));
+        assert_eq!(applied.resolved_plan_path, Some("p.md".to_string()));
+    }
+
+    /// The whole point of the pair: a full open-edit-save cycle that changes
+    /// nothing must leave a scheduled task scheduled.
+    #[test]
+    fn task_editor_untouched_roundtrip_preserves_a_scheduled_task() {
+        let mut task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
+        task.schedule_interval_secs = Some(600);
+        task.pinned_branch = Some("staging".into());
+        let content = format_editor_content(&task);
+        let applied = apply_task_editor_fields(&task, parse_editor_content(&content));
+        assert_eq!(applied.schedule_interval_secs, Some(600));
+        assert_eq!(applied.pinned_branch, Some("staging".to_string()));
+    }
+
     // --- apply_epic_editor_fields -----------------------------------------
+
+    /// The shared grammar reaches the epic's feed section too (the user asked
+    /// for it alongside the task one). The bare-integer form is unchanged, so
+    /// every feed epic configured before suffixes existed still parses.
+    #[test]
+    fn epic_editor_feed_interval_accepts_a_suffixed_literal() {
+        let input = "--- TITLE ---\nT\n--- FEED_INTERVAL_SECS ---\n10m\n";
+        let parsed = parse_epic_editor_output(input);
+        assert_eq!(parsed.feed_interval_secs, Some(600));
+        assert!(parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn epic_editor_feed_interval_still_reads_a_bare_integer_as_seconds() {
+        let input = "--- TITLE ---\nT\n--- FEED_INTERVAL_SECS ---\n300\n";
+        let parsed = parse_epic_editor_output(input);
+        assert_eq!(parsed.feed_interval_secs, Some(300));
+        assert!(parsed.errors.is_empty());
+    }
+
+    #[test]
+    fn epic_editor_feed_interval_rejects_zero() {
+        let input = "--- TITLE ---\nT\n--- FEED_INTERVAL_SECS ---\n0\n";
+        let parsed = parse_epic_editor_output(input);
+        assert_eq!(parsed.feed_interval_secs, None);
+        assert_eq!(parsed.errors.len(), 1);
+        assert_eq!(parsed.errors[0].field, "FEED_INTERVAL_SECS");
+    }
 
     #[test]
     fn apply_epic_editor_fields_roundtrip() {

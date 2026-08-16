@@ -31,6 +31,11 @@ impl App {
             }
             t.wrap_up_mode = edit.wrap_up_mode;
             t.url = edit.url;
+            // Keeps the card's scheduled badge in step with the edit that just
+            // landed, rather than waiting for the next DB refresh to reveal
+            // that the task was scheduled or unscheduled.
+            t.schedule_interval_secs = edit.schedule_interval_secs;
+            t.pinned_branch = edit.pinned_branch;
             t.updated_at = chrono::Utc::now();
         }
         self.sync_board_selection();
@@ -71,6 +76,11 @@ impl App {
                     tag: None,
                     base_branch: DEFAULT_BASE_BRANCH.to_string(),
                     wrap_up_mode: None,
+                    // Quick dispatch runs no form, so it cannot answer the
+                    // schedule gate: an immediate one-shot agent is the
+                    // opposite of a recurring one.
+                    schedule_interval_secs: None,
+                    pinned_branch: None,
                 },
                 epic_id,
             },

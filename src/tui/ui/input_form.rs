@@ -303,12 +303,10 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
     lines
 }
 
-pub(in crate::tui) fn input_wrap_up_mode_lines(
-    app: &App,
-    completed: Style,
-    active: Style,
-    hint: Style,
-) -> Vec<Line<'static>> {
+/// The steps answered before the wrap-up picker, restated above whichever step
+/// is active. Shared by the whole tail of the creation form so the four
+/// summary lines are written once rather than once per step.
+fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
     let draft = app.input.task_draft.as_ref();
     let title = draft.map(|d| d.title.clone()).unwrap_or_default();
     let tag = draft
@@ -327,13 +325,105 @@ pub(in crate::tui) fn input_wrap_up_mode_lines(
             format!("  Base branch: {base_branch}"),
             completed,
         )),
-        Line::from(Span::styled(
-            "  Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip",
-            active,
-        )),
-        Line::from(""),
-        Line::from(Span::styled("  [Esc] cancel", hint)),
     ]
+}
+
+/// The wrap-up answer as a settled summary line, for the steps after it.
+fn answered_wrap_up_line(app: &App, completed: Style) -> Line<'static> {
+    let wrap_up = app
+        .input
+        .task_draft
+        .as_ref()
+        .and_then(|d| d.wrap_up_mode)
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_else(|| "none".to_string());
+    Line::from(Span::styled(format!("  Wrap-up: {wrap_up}"), completed))
+}
+
+pub(in crate::tui) fn input_wrap_up_mode_lines(
+    app: &App,
+    completed: Style,
+    active: Style,
+    hint: Style,
+) -> Vec<Line<'static>> {
+    let mut lines = answered_step_lines(app, completed);
+    lines.push(Line::from(Span::styled(
+        "  Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip",
+        active,
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  [Esc] cancel", hint)));
+    lines
+}
+
+/// The gate: one keypress deciding whether the two scheduling fields are
+/// configured at all. Enter is the common answer, so it is listed first.
+pub(in crate::tui) fn input_schedule_gate_lines(
+    app: &App,
+    completed: Style,
+    active: Style,
+    hint: Style,
+) -> Vec<Line<'static>> {
+    let mut lines = answered_step_lines(app, completed);
+    lines.push(answered_wrap_up_line(app, completed));
+    lines.push(Line::from(Span::styled(
+        format!("  {}", crate::tui::update::SCHEDULE_GATE_PROMPT),
+        active,
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  [Esc] cancel", hint)));
+    lines
+}
+
+pub(in crate::tui) fn input_schedule_interval_lines<'a>(
+    app: &'a App,
+    area: Rect,
+    completed: Style,
+    active: Style,
+    hint: Style,
+) -> Vec<Line<'a>> {
+    let mut lines = answered_step_lines(app, completed);
+    lines.push(answered_wrap_up_line(app, completed));
+    lines.push(caret_field(
+        &format!("  {}", crate::tui::update::SCHEDULE_INTERVAL_PROMPT),
+        app,
+        area,
+        active,
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  [Esc] cancel", hint)));
+    lines
+}
+
+pub(in crate::tui) fn input_pinned_branch_lines<'a>(
+    app: &'a App,
+    area: Rect,
+    completed: Style,
+    active: Style,
+    hint: Style,
+) -> Vec<Line<'a>> {
+    let mut lines = answered_step_lines(app, completed);
+    lines.push(answered_wrap_up_line(app, completed));
+    let interval = app
+        .input
+        .task_draft
+        .as_ref()
+        .and_then(|d| d.schedule_interval_secs)
+        .map(crate::models::format_interval_secs)
+        .unwrap_or_else(|| "none".to_string());
+    lines.push(Line::from(Span::styled(
+        format!("  Schedule: {interval}"),
+        completed,
+    )));
+    lines.push(caret_field(
+        &format!("  {}", crate::tui::update::PINNED_BRANCH_PROMPT),
+        app,
+        area,
+        active,
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  [Esc] cancel", hint)));
+    lines
 }
 
 fn repo_picker_lines<'a>(

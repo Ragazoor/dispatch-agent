@@ -289,6 +289,17 @@ pub enum InputMode {
     },
     InputBaseBranch,
     InputWrapUpMode,
+    /// The creation form's last step: a single-keypress gate deciding whether
+    /// the two scheduling fields are configured at all (Enter = no, `s` =
+    /// yes). Gated rather than unconditional because scheduling is rare and
+    /// creation is frequent — see tasks.allium: CreateTask, "The schedule
+    /// step".
+    InputScheduleGate,
+    /// Free-text cadence, reached only via the gate's `s`. Takes the shared
+    /// interval literal (core.allium: "Interval literals").
+    InputScheduleInterval,
+    /// Free-text branch name, reached only via the gate's `s`.
+    InputPinnedBranch,
     MainSessionDir,
     /// In-view title input for adding or editing a personal TODO item.
     TodoTitle,
@@ -338,6 +349,14 @@ pub struct TaskDraft {
     pub tag: Option<TaskTag>,
     pub base_branch: String,
     pub wrap_up_mode: Option<WrapUpMode>,
+    /// Redispatch cadence in seconds; `None` (the default) = not scheduled.
+    /// Set only via the creation form's gated schedule step, so a draft that
+    /// never visits it is indistinguishable from every draft built before the
+    /// field existed.
+    pub schedule_interval_secs: Option<i64>,
+    /// Existing branch the worktree checks out literally; `None` = the
+    /// ordinary disposable per-task branch.
+    pub pinned_branch: Option<String>,
 }
 
 impl Default for TaskDraft {
@@ -349,6 +368,8 @@ impl Default for TaskDraft {
             tag: None,
             base_branch: DEFAULT_BASE_BRANCH.to_string(),
             wrap_up_mode: None,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         }
     }
 }
@@ -600,6 +621,11 @@ pub struct TaskEdit {
     /// Resolved post-edit url value (not a delta): `Some` to set, `None` to
     /// clear or leave absent. Applied directly to the in-memory task snapshot.
     pub url: Option<crate::models::TaskUrl>,
+    /// Post-edit cadence: `None` = unscheduled. Carried so the card's
+    /// scheduled badge updates with the edit rather than at the next refresh.
+    pub schedule_interval_secs: Option<i64>,
+    /// Post-edit pinned branch: `None` = unpinned.
+    pub pinned_branch: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

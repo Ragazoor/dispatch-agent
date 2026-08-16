@@ -218,6 +218,15 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::InputWrapUpMode => {
             hint_text(app, "Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip", YELLOW)
         }
+        InputMode::InputScheduleGate => {
+            hint_text(app, crate::tui::update::SCHEDULE_GATE_PROMPT, YELLOW)
+        }
+        InputMode::InputScheduleInterval => {
+            hint_text(app, crate::tui::update::SCHEDULE_INTERVAL_PROMPT, YELLOW)
+        }
+        InputMode::InputPinnedBranch => {
+            hint_text(app, crate::tui::update::PINNED_BRANCH_PROMPT, YELLOW)
+        }
         InputMode::MainSessionDir => {
             let line = crate::tui::ui::caret_field_line(
                 area.width,

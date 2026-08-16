@@ -149,6 +149,8 @@ impl App {
                 | InputMode::InputEpicTitle
                 | InputMode::InputEpicDescription
                 | InputMode::InputBaseBranch
+                | InputMode::InputScheduleInterval
+                | InputMode::InputPinnedBranch
                 | InputMode::MainSessionDir
                 | InputMode::TodoTitle
                 | InputMode::TodoQuickAdd => self.handle_key_text_input(key),
@@ -169,6 +171,7 @@ impl App {
                 InputMode::ConfirmDeleteRepoPath => self.handle_key_confirm_delete_repo_path(key),
                 InputMode::ConfirmQuit => self.handle_key_confirm_quit(key),
                 InputMode::InputWrapUpMode => self.handle_key_wrap_up_mode(key),
+                InputMode::InputScheduleGate => self.handle_key_schedule_gate(key),
                 InputMode::ReparentEpic(_) => self.handle_key_reparent_epic(key),
                 InputMode::ConfirmReparentEpic { .. } => self.handle_key_confirm_reparent_epic(key),
                 InputMode::MoveTaskToEpic(_) => self.handle_key_move_task_to_epic(key),
@@ -603,6 +606,12 @@ impl App {
             InputMode::InputBaseBranch => self.update(Message::Input(
                 crate::tui::messages::InputMessage::SubmitBaseBranch(value),
             )),
+            InputMode::InputScheduleInterval => self.update(Message::Input(
+                crate::tui::messages::InputMessage::SubmitScheduleInterval(value),
+            )),
+            InputMode::InputPinnedBranch => self.update(Message::Input(
+                crate::tui::messages::InputMessage::SubmitPinnedBranch(value),
+            )),
             InputMode::MainSessionDir => self.update(Message::MainSession(
                 crate::tui::messages::MainSessionMessage::SubmitDir(value),
             )),
@@ -679,6 +688,21 @@ impl App {
                 Some(Message::Input(InputMessage::SubmitWrapUpMode(Some(mode))))
             },
             Message::Input(InputMessage::SubmitWrapUpMode(None)),
+            Message::Input(InputMessage::CancelInput),
+        )
+    }
+
+    /// The creation form's schedule gate. `s` opens the two configure steps;
+    /// Enter (the default) creates the task with neither field set; any other
+    /// key is ignored and the gate stays open, exactly as the tag and wrap-up
+    /// pickers behave.
+    pub(in crate::tui) fn handle_key_schedule_gate(&mut self, key: KeyEvent) -> Vec<Command> {
+        use crate::tui::messages::InputMessage;
+        self.handle_char_picker(
+            key,
+            "schedule_gate_picker",
+            |c| (c == 's').then_some(Message::Input(InputMessage::SubmitScheduleGate(true))),
+            Message::Input(InputMessage::SubmitScheduleGate(false)),
             Message::Input(InputMessage::CancelInput),
         )
     }

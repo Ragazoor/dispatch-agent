@@ -17,6 +17,7 @@
 //! - [`usage`] — usage events
 //! - [`budget`] — Claude subscription rate-limit windows
 //! - [`columns`] — `VisualColumn` kanban board layout
+//! - [`interval`] — the interval literal (`10m`, `600`) every cadence field takes
 //! - [`url`] — typed task URLs
 
 // `define_id_newtype!` is `#[macro_export]`ed (crate root); consuming modules
@@ -57,6 +58,9 @@ pub use budget::*;
 
 mod columns;
 pub use columns::VisualColumn;
+
+mod interval;
+pub use interval::{format_interval_secs, parse_interval_secs};
 
 mod url;
 pub use url::{TaskUrl, UrlType};

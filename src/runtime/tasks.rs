@@ -85,10 +85,10 @@ impl TuiRuntime {
             base_branch: Some(draft.base_branch),
             wrap_up_mode: draft.wrap_up_mode,
             auto_run_plan: false,
-            // The TUI has no scheduling surface yet — subtask #4204 adds the
-            // draft fields that fill these in.
-            schedule_interval_secs: None,
-            pinned_branch: None,
+            // Both null unless the creation form's schedule gate was answered
+            // with "s" (tasks.allium: CreateTask, "The schedule step").
+            schedule_interval_secs: draft.schedule_interval_secs,
+            pinned_branch: draft.pinned_branch,
         };
         if let Some(task) = self.create_task(app, params).await {
             app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
