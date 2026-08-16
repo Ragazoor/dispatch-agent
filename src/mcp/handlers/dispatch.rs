@@ -94,11 +94,17 @@ macro_rules! mcp_tools {
 // ---------------------------------------------------------------------------
 
 fn task_tag_enum_values() -> Vec<&'static str> {
-    crate::models::TaskTag::ALL.iter().map(|t| t.as_str()).collect()
+    crate::models::TaskTag::ALL
+        .iter()
+        .map(|t| t.as_str())
+        .collect()
 }
 
 fn wrap_up_action_enum_values() -> Vec<&'static str> {
-    crate::mcp::WrapUpAction::ALL.iter().map(|a| a.as_str()).collect()
+    crate::mcp::WrapUpAction::ALL
+        .iter()
+        .map(|a| a.as_str())
+        .collect()
 }
 
 fn task_status_enum_values_including_archived() -> Vec<&'static str> {
