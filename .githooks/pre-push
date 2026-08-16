@@ -22,5 +22,8 @@ bash ./scripts/test-check-doc-symbols.sh
 echo "no-test-sleep..."
 ./scripts/check-no-test-sleep.sh
 
+echo "no-test-sleep self-test..."
+bash ./scripts/test-check-no-test-sleep.sh
+
 echo "fetch-reviews..."
 bash ./scripts/test-fetch-reviews.sh

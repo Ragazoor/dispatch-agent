@@ -845,21 +845,28 @@ mod tests {
     /// placed on *output* alone into an unbounded wait. The deadline covers the
     /// exit too. See docs/specs/dispatch.allium: StatusLineDecorator
     /// (`@guarantee ChainedCommandIsBounded`).
+    ///
+    /// `run_bounded` is synchronous, so the bound is expressed by running it on
+    /// its own thread and waiting on its completion signal rather than by
+    /// asserting on measured elapsed time — see "Bounding a wait is not the
+    /// same as asserting on one" in docs/conventions.md.
     #[test]
     fn run_bounded_kills_a_child_that_closed_stdout_but_keeps_running() {
-        let start = std::time::Instant::now();
-        let result = run_bounded(
-            "sh",
-            &["-c", "exec 1>&- ; sleep 30"],
-            None,
-            Duration::from_millis(100),
-        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_bounded(
+                "sh",
+                &["-c", "exec 1>&- ; sleep 30"],
+                None,
+                Duration::from_millis(100),
+            );
+            let _ = tx.send(result);
+        });
+
+        let result = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the wait for the child to exit must be bounded by the 100ms deadline");
         assert!(result.is_err(), "expected a timeout error, got {result:?}");
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "the wait for the child to exit must be bounded, took {:?}",
-            start.elapsed()
-        );
     }
 
     #[test]

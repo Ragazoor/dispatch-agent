@@ -396,24 +396,24 @@ mod tests {
         (FeedRunner::new(db, tx, runner), rx)
     }
 
+    /// `tick()` hands a slow feed command to a background task; it must not
+    /// await the command itself. The bound is an outer `timeout` rather than an
+    /// assertion on measured elapsed time — 5s is far above what a handful of
+    /// in-memory DB round-trips cost even on a loaded machine, and far below
+    /// the 30s a `tick()` that awaited the command inline would take.
     #[tokio::test]
     async fn tick_does_not_block_event_loop() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
         let epic = db.create_epic("Slow Epic", "", None).await.unwrap();
-        db.patch_epic(epic.id, &EpicPatch::new().feed_command(Some("sleep 5")))
+        db.patch_epic(epic.id, &EpicPatch::new().feed_command(Some("sleep 30")))
             .await
             .unwrap();
 
         let (mut runner, _rx) = make_runner(db.clone());
 
-        let start = std::time::Instant::now();
-        runner.tick().await;
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed < Duration::from_millis(500),
-            "tick() blocked for {elapsed:?}"
-        );
+        tokio::time::timeout(Duration::from_secs(5), runner.tick())
+            .await
+            .expect("tick() must dispatch the feed command, not await it");
     }
 
     #[tokio::test]
@@ -1372,30 +1372,12 @@ mod tests {
         assert_eq!(total_feed, 1, "exactly one feed task across the subtree");
     }
 
-    #[tokio::test]
-    async fn start_returns_immediately_without_blocking() {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
-        let epic = db.create_epic("Slow Epic", "", None).await.unwrap();
-        // A command that would block for 5 seconds if awaited inline.
-        db.patch_epic(epic.id, &EpicPatch::new().feed_command(Some("sleep 5")))
-            .await
-            .unwrap();
-
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let proc_runner: Arc<dyn ProcessRunner> =
-            Arc::new(crate::process::MockProcessRunner::new(vec![]));
-        let runner = FeedRunner::new(db as Arc<dyn crate::db::TaskStore>, tx, proc_runner);
-
-        let before = std::time::Instant::now();
-        runner.start(); // must return immediately — it just spawns a task
-        let elapsed = before.elapsed();
-
-        assert!(
-            elapsed < std::time::Duration::from_millis(50),
-            "start() took {elapsed:?}, expected <50ms — it must not block"
-        );
-    }
-
+    /// The loop `start()` spawns really does poll and run the feed command.
+    ///
+    /// This is deliberately the whole of `start()`'s coverage: `start()` is a
+    /// synchronous `fn` whose body is a bare `tokio::spawn`, so "does not await
+    /// the poll loop" is a type-level property with no runtime signal to assert
+    /// on. See "No `tokio::time::sleep` in tests" in docs/conventions.md.
     #[tokio::test]
     async fn start_background_task_eventually_runs_feed_command() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());

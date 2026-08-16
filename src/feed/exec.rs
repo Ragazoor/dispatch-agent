@@ -423,20 +423,23 @@ mod tests {
     /// test: a single trailing shell command, which `sh` execs into directly
     /// (no forked grandchild), so killing the spawned process actually stops
     /// the sleep rather than orphaning it.
+    ///
+    /// The bound is an outer `timeout` rather than an assertion on measured
+    /// elapsed time, sized to sit between the honoured and unhonoured paths —
+    /// see "Bounding a wait is not the same as asserting on one" in
+    /// docs/conventions.md.
     #[tokio::test]
     async fn exec_feed_command_returns_err_when_it_exceeds_the_deadline() {
-        let start = std::time::Instant::now();
-        let err = exec_feed_command("sleep 30", 10, "test-epic", Duration::from_millis(100))
-            .await
-            .expect_err("a command that outlives its deadline must fail");
+        let err = tokio::time::timeout(
+            Duration::from_secs(5),
+            exec_feed_command("sleep 30", 10, "test-epic", Duration::from_millis(100)),
+        )
+        .await
+        .expect("the wait must be bounded by the 100ms deadline, not the 30s sleep")
+        .expect_err("a command that outlives its deadline must fail");
         assert!(
             err.contains("timed out"),
             "error must say the command timed out, got: {err}"
-        );
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "the wait must be bounded by the 100ms deadline, not the 30s sleep; took {:?}",
-            start.elapsed()
         );
     }
 

@@ -435,18 +435,20 @@ pub fn read_now(path: &Path) -> String {
 /// Poll `f` until it yields a value or [`DELIVERY_DEADLINE`] expires.
 ///
 /// Bounded `std::thread::sleep`, which is the right tool for waiting on
-/// asynchronous tmux delivery. `scripts/check-no-test-sleep.sh` bans
-/// `std::thread::sleep` in test code too, so the call below carries the
-/// script's `allow-test-sleep:` marker — a deadline-bounded poll step is the
-/// one shape that check exempts. `f` is evaluated before the first sleep, so an
-/// already-satisfied condition costs nothing, and only the failure path pays
-/// the deadline in full.
+/// asynchronous tmux delivery. `scripts/check-no-test-sleep.sh` bans both
+/// `std::thread::sleep` and `Instant::elapsed()` in test code, so the two calls
+/// below carry the script's `allow-test-sleep:` marker — a deadline-bounded
+/// poll step is the one shape that check exempts. `f` is evaluated before the
+/// first sleep, so an already-satisfied condition costs nothing, and only the
+/// failure path pays the deadline in full. Neither call is a timing assertion:
+/// the test's verdict comes from `f`, never from how long the poll took.
 pub fn poll_for<T>(mut f: impl FnMut() -> Option<T>) -> Option<T> {
     let start = Instant::now();
     loop {
         if let Some(value) = f() {
             return Some(value);
         }
+        // allow-test-sleep: deadline bound on the poll loop, not a timing assertion
         if start.elapsed() >= DELIVERY_DEADLINE {
             return None;
         }
