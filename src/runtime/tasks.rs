@@ -155,7 +155,7 @@ impl TuiRuntime {
         let runner = Arc::clone(&self.runner);
 
         // Spawn a background task so the TUI command loop is never blocked
-        // waiting for the embedding thread (which may be busy with index_repo).
+        // waiting for the embedding thread (which may be busy computing embeddings).
         tokio::spawn(async move {
             let inputs = dispatch::prepare_inputs(&*db, &task, &emb_svc).await;
             run_quick_dispatch(task, runner, inputs, msg_tx);
@@ -364,7 +364,7 @@ impl TuiRuntime {
         let runner = Arc::clone(&self.runner);
 
         // Spawn a background task so the TUI command loop is never blocked
-        // waiting for the embedding thread (which may be busy with index_repo).
+        // waiting for the embedding thread (which may be busy computing embeddings).
         tokio::spawn(async move {
             let dispatch::DispatchInputs { epic_ctx, injected } =
                 dispatch::prepare_inputs(&*db, &task, &emb_svc).await;

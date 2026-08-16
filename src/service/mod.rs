@@ -5,7 +5,6 @@ pub mod epics;
 mod grouping;
 pub mod learnings;
 pub mod managed_feeds;
-pub mod repo_index;
 pub mod tasks;
 pub mod todos;
 

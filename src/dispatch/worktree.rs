@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use std::fs;
-use std::path::Path;
 use std::time::Duration;
 
 use crate::models::{expand_tilde, slugify, Task};
@@ -10,13 +9,6 @@ use crate::tmux;
 use super::git_output::WORKTREE_ALREADY_REMOVED;
 use super::prompts::build_tmux_window_name;
 use super::stderr_str;
-
-/// Directory inside a repo where dispatch stores artefacts (e.g. `rag.db` for semantic search).
-/// Created on demand when actively used, not for every dispatched worktree.
-/// Added to `.gitignore` when first created so agents cannot accidentally stage it.
-pub(crate) const DISPATCH_DIR: &str = ".dispatch";
-const GITIGNORE_FILE: &str = ".gitignore";
-const DISPATCH_GITIGNORE_LINE: &str = ".dispatch/";
 
 /// Bounded retry budget for `git fetch origin <base>` during worktree
 /// provisioning. Smooths over transient failures (e.g. ref-lock contention
@@ -34,38 +26,6 @@ pub(super) const FETCH_MAX_ATTEMPTS: u32 = 3;
 const FETCH_RETRY_DELAY: Duration = Duration::from_millis(500);
 #[cfg(test)]
 const FETCH_RETRY_DELAY: Duration = Duration::from_millis(0);
-
-/// Ensure `<worktree>/.dispatch/` exists and that `<worktree>/.gitignore`
-/// contains an entry for it. Idempotent: safe to call repeatedly.
-pub(crate) fn ensure_dispatch_dir_and_gitignore(worktree: &Path) -> Result<()> {
-    let dispatch_dir = worktree.join(DISPATCH_DIR);
-    fs::create_dir_all(&dispatch_dir)
-        .with_context(|| format!("failed to create {}", dispatch_dir.display()))?;
-
-    let gitignore_path = worktree.join(GITIGNORE_FILE);
-    let existing = match fs::read_to_string(&gitignore_path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", gitignore_path.display()));
-        }
-    };
-    if existing
-        .lines()
-        .any(|l| l.trim() == DISPATCH_GITIGNORE_LINE)
-    {
-        return Ok(());
-    }
-
-    let mut updated = existing;
-    if !updated.is_empty() && !updated.ends_with('\n') {
-        updated.push('\n');
-    }
-    updated.push_str(DISPATCH_GITIGNORE_LINE);
-    updated.push('\n');
-    fs::write(&gitignore_path, updated)
-        .with_context(|| format!("failed to write {}", gitignore_path.display()))
-}
 
 /// Which ref a worktree branch was created from — and therefore what the agent
 /// should rebase onto if it ever needs to.
@@ -664,69 +624,6 @@ pub fn validate_repo_path(path: &str) -> Result<String, String> {
         return Err(format!("Not a directory: {expanded}"));
     }
     Ok(expanded)
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod gitignore_tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn provision_worktree_creates_dispatch_dir() {
-        let dir = tempdir().expect("tempdir");
-        ensure_dispatch_dir_and_gitignore(dir.path()).expect("ok");
-        assert!(dir.path().join(".dispatch").is_dir());
-    }
-
-    #[test]
-    fn provision_worktree_appends_dispatch_to_gitignore() {
-        let dir = tempdir().expect("tempdir");
-        ensure_dispatch_dir_and_gitignore(dir.path()).expect("ok");
-        let contents = fs::read_to_string(dir.path().join(".gitignore")).expect("read");
-        assert_eq!(
-            contents.matches(".dispatch/").count(),
-            1,
-            ".dispatch/ should appear exactly once: {contents:?}"
-        );
-    }
-
-    #[test]
-    fn provision_worktree_gitignore_idempotent_when_already_present() {
-        let dir = tempdir().expect("tempdir");
-        let gi = dir.path().join(".gitignore");
-        fs::write(&gi, "target/\n.dispatch/\nnode_modules/\n").expect("seed");
-        let before = fs::read_to_string(&gi).expect("read");
-        ensure_dispatch_dir_and_gitignore(dir.path()).expect("ok");
-        let after = fs::read_to_string(&gi).expect("read");
-        assert_eq!(before, after, ".gitignore should be unchanged");
-    }
-
-    #[test]
-    fn provision_worktree_gitignore_preserves_prior_entries() {
-        let dir = tempdir().expect("tempdir");
-        let gi = dir.path().join(".gitignore");
-        fs::write(&gi, "target/\n.env\n").expect("seed");
-        ensure_dispatch_dir_and_gitignore(dir.path()).expect("ok");
-        let after = fs::read_to_string(&gi).expect("read");
-        assert!(after.contains("target/"));
-        assert!(after.contains(".env"));
-        assert!(after.contains(".dispatch/"));
-    }
-
-    #[test]
-    fn provision_worktree_gitignore_handles_missing_trailing_newline() {
-        let dir = tempdir().expect("tempdir");
-        let gi = dir.path().join(".gitignore");
-        fs::write(&gi, "target/").expect("seed"); // no trailing \n
-        ensure_dispatch_dir_and_gitignore(dir.path()).expect("ok");
-        let after = fs::read_to_string(&gi).expect("read");
-        assert!(
-            after.contains("target/\n"),
-            "target/ retained on its own line"
-        );
-        assert!(after.ends_with(".dispatch/\n"));
-    }
 }
 
 #[cfg(test)]

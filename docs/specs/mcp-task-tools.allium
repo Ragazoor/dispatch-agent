@@ -6,8 +6,7 @@
 --        set-verify-command) and the CLI plan-attachment surface.
 -- Excludes: Task lifecycle (see tasks.allium); dispatch/retry (see dispatch.allium);
 --           MCP epic tools (see epics.allium); learnings tools (see learnings.allium);
---           repo indexing / semantic search (see repo-rag.allium); the
---           task-watcher domain rules underlying subscribe_to_task/
+--           the task-watcher domain rules underlying subscribe_to_task/
 --           unsubscribe_from_task (see task-watchers.allium); agent-to-agent
 --           messaging, which is no longer a dispatch MCP tool — see
 --           HookPeerMessageSent in agent-health.allium.

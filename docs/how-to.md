@@ -6,7 +6,7 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
 
 1. **Add the argument struct** next to its siblings — task tools in `src/mcp/handlers/tasks/mod.rs`, other domains in their own handler module. Derive `Deserialize`, and annotate every integer field with `#[serde(deserialize_with = "deserialize_flexible_i64")]` (from `src/mcp/handlers/types.rs`) since Claude Code may send them as strings.
 
-2. **Define the handler** in the module matching the tool's domain (`src/mcp/handlers/tasks/crud.rs`, `tasks/dispatch.rs`, `tasks/wrap_up.rs`, `tasks/watch.rs`, `epics.rs`, `learnings.rs`, `managed_feeds.rs`, `repo_rag.rs`). The signature is fixed by the macro:
+2. **Define the handler** in the module matching the tool's domain (`src/mcp/handlers/tasks/crud.rs`, `tasks/dispatch.rs`, `tasks/wrap_up.rs`, `tasks/watch.rs`, `epics.rs`, `learnings.rs`, `managed_feeds.rs`). The signature is fixed by the macro:
 
    ```rust
    pub(crate) async fn handle_my_tool(
@@ -63,6 +63,15 @@ The registry is **generated**. `tool_definitions()`, the `tools/call` dispatch a
    ```
 
    Never use `tokio::time::sleep` in handler tests — the pre-push hook rejects it. See the "No `tokio::time::sleep` in tests" section of `docs/conventions.md` for the full rationale.
+
+## Removing an MCP Tool
+
+Reverse the steps above, but note that one test does **not** self-heal from the `mcp_tools!` macro like `tools_list_returns_tools` does: `every_tool_with_args_rejects_unknown_field` (`src/mcp/handlers/tests/mod.rs`) hand-lists every tool name in its `payloads`/`no_arg_tools` arrays. Deleting a tool's macro entry without also deleting its line there fails that test's `covered == all_tools` assertion at run time, not at compile time — `cargo build`/`cargo clippy` stay green.
+
+1. Delete the `mcp_tools!` entry in `src/mcp/handlers/dispatch.rs` and the handler function/module.
+2. Delete the tool's entry from `every_tool_with_args_rejects_unknown_field`'s `payloads` (or `no_arg_tools`) list.
+3. Delete the tool's dedicated test file/module, and any doc references (`docs/module-map.md`, `CLAUDE.md`, relevant `docs/specs/*.allium`).
+4. Run the full `cargo test` suite — grepping for the tool name is not enough to catch every reference; this hardcoded list is the proof.
 
 ## Adding a New TUI View/Mode
 

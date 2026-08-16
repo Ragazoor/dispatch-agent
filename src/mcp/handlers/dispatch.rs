@@ -16,7 +16,6 @@ use chrono::Utc;
 use super::epics;
 use super::learnings;
 use super::managed_feeds;
-use super::repo_rag;
 use super::tasks;
 use super::types::{tool_error, JsonRpcRequest, JsonRpcResponse};
 
@@ -564,40 +563,6 @@ tell the user the task still needs closing by hand.",
                 }
             },
             "required": ["task_id", "token", "action"]
-        };
-
-    async "index_repo" => repo_rag::handle_index_repo,
-        "Index (or re-index) source files (.md, .rs, .allium) in a repository for semantic search. Creates .dispatch/rag.db in the repo. Indexes up to 50 files per call — if files_remaining > 0, call again until it reaches 0. Safe to re-run; only changed files are re-embedded. Omit repo_path to use the calling task's repo (derived from caller identity).",
-        {
-            "type": "object",
-            "properties": {
-                "repo_path": {
-                    "type": "string",
-                    "description": "Absolute path to the repository root. Omit to use the calling task's repo_path."
-                }
-            },
-            "required": []
-        };
-
-    async "search_docs" => repo_rag::handle_search_docs,
-        "Semantic search over indexed source files (.md, .rs, .allium) in a repository. Returns ranked chunks with file path and score. Returns empty results (not an error) when the repo has not been indexed yet — call index_repo first. Omit repo_path to use the calling task's repo.",
-        {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Natural language search query"
-                },
-                "repo_path": {
-                    "type": "string",
-                    "description": "Absolute path to the repository root. Omit to use the calling task's repo_path."
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum results to return (default 5, max 20)"
-                }
-            },
-            "required": ["query"]
         };
 
     async "query_usage" => tasks::handle_query_usage,

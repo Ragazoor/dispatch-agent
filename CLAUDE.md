@@ -173,7 +173,6 @@ The Allium specs in `docs/specs/` are the **source of truth** for domain and int
 - `learnings.allium` — knowledge base rules and MCP learning tools
 - `feeds.allium` — programmable feed epics (the feed pipeline that upserts tasks from external commands)
 - `todo.allium` — personal TODO overlay (lightweight checklist, separate from the kanban board)
-- `repo-rag.allium` — per-repo semantic search: indexing and RAG-based doc search
 - `observability.allium` — trajectory persistence (per-task audit log of MCP tool calls) and slow-db-call latency warnings
 - `repo-sync.allium` — local-first repo sync: ahead/behind drift measurement, the sync operation and its typed failure vocabulary, and the surfaces that expose them
 
@@ -185,7 +184,6 @@ The `dispatch` MCP server exposes more than task creation. Worth knowing by name
 
 - **Knowledge base** — relevant learnings are already injected into your prompt at dispatch time ("Validated knowledge for this task" above); rate each one you act on with `rate_learning` (`helped`/`wrong`). Call `query_learnings` yourself for anything not already surfaced, and `record_learning` to capture a new pitfall/convention/tip. See `learnings.allium`.
 - **Your own task** — `get_task` / `update_task` to read or mutate the task you're running as (title, description, status, plan, tag).
-- **Repo search** — `search_docs` for semantic search over an indexed repo; `index_repo` to build the index if missing. See `repo-rag.allium`.
 - **Finishing** — `wrap_up` + `exit_session` to close out a session (see the `/wrap-up` skill). `exit_session` chains the epic's next backlog subtask automatically when `auto_dispatch` is on; there is no tool for you to call.
 
 `create_task`/`create_epic` matter mainly to orchestrating agents decomposing work, not to an agent executing a single dispatched task. Full tool list and schemas: call `tools/list`, or see `docs/specs/mcp-task-tools.allium`.
@@ -239,7 +237,6 @@ This file is intentionally slim — it is loaded into every agent's context. Rea
 Subsystem entry points (no dedicated doc page — read the source):
 
 - `src/feed/mod.rs` — feed system: `FeedRunner` poll loop, exec/parse/ingest pipeline that upserts tasks from external commands (see also `docs/module-map.md`)
-- `src/service/repo_index/` (`mod.rs` orchestration + `scan.rs`/`chunking.rs`/`embed.rs`/`search.rs`), `src/service/embeddings.rs`, `src/mcp/handlers/repo_rag.rs` — repo indexing / embeddings / RAG: `index_repo` and `search_docs` MCP tools for semantic doc search
 - `src/cli/` — CLI subcommand implementations (`agent_tree`, `caller_headers`)
 - `src/mcp/trajectory.rs` — agent trajectory capture (records the agent's tool-call history for a task)
 - `src/repo_sync.rs` — local-first repo sync: `ahead_behind` drift measurement and `sync_repo` (fetch, merge `origin/<base>`, push). Synchronous and `ProcessRunner`-driven like `src/dispatch/finish.rs`; local base history is never rewritten. See `docs/specs/repo-sync.allium`

@@ -168,34 +168,6 @@ async fn clear_conflict_sub_status_if_set(state: &McpState, task: &Task) {
     }
 }
 
-/// Fire-and-forget refresh of the repo's RAG index after a successful rebase
-/// fast-forwards the base branch. Never blocks the exit-token response, and
-/// never surfaces a failure to the agent.
-fn reindex_repo_in_background(state: &McpState, repo_path: String) {
-    let reindex_svc =
-        crate::service::repo_index::RepoIndexService::new(state.embedding_service.clone());
-    tokio::spawn(async move {
-        match reindex_svc
-            .reindex_if_indexed(std::path::Path::new(&repo_path))
-            .await
-        {
-            Ok(Some(r)) => tracing::info!(
-                repo = %repo_path,
-                chunks = r.chunks_total,
-                "wrap_up re-indexed repo"
-            ),
-            Ok(None) => tracing::debug!(
-                repo = %repo_path,
-                "wrap_up: no RAG index, skipping re-index"
-            ),
-            Err(e) => tracing::warn!(
-                repo = %repo_path,
-                "wrap_up re-index failed: {e}"
-            ),
-        }
-    });
-}
-
 async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) -> JsonRpcResponse {
     let (worktree, branch) = match resolve_rebase_target(&id, &task) {
         Ok(t) => t,
@@ -229,9 +201,6 @@ async fn finish_wrap_up_rebase(state: &McpState, id: Option<Value>, task: Task) 
 
     match rebase_result {
         Ok(()) => {
-            // The base branch was just fast-forwarded, so repo_path now
-            // reflects the merged code.
-            reindex_repo_in_background(state, task.repo_path.clone());
             state.notify_task_changed(task_id);
             // Local base provably just moved ahead of origin, and the refs are
             // already current — RefreshRepoSyncStateAfterRebase.

@@ -2,7 +2,6 @@
 mod epics;
 mod learnings;
 mod managed_feeds;
-mod repo_rag;
 mod tasks;
 mod usage;
 
@@ -611,8 +610,6 @@ async fn every_tool_with_args_rejects_unknown_field() {
             "exit_session",
             json!({"task_id": 1, "token": "t", "action": "rebase"}),
         ),
-        ("index_repo", json!({})),
-        ("search_docs", json!({"query": "q"})),
         ("set_managed_feed_config", json!({})),
         ("query_usage", json!({})),
     ];

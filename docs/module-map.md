@@ -53,8 +53,6 @@ to look.
 | `src/service/managed_feeds.rs` | Managed feed config read/write (`get`/`set_managed_feed_config`) |
 | `src/service/embeddings.rs` | `EmbeddingService` — text embedding computation used by RAG and learning search |
 | `src/service/clock.rs` | `Clock` trait + `SystemClock`/`FixedClock` for injectable time in services/tests |
-| `src/service/repo_index/mod.rs` | Repo-index orchestration: `index_repo` / `search_docs` driver |
-| `src/service/repo_index/{scan,chunking,embed,search}.rs` | RAG pipeline: source scan, chunking, embedding, vector search |
 | `src/db/mod.rs` | `Database` struct, `db_call` (writer) / `db_call_read` (read pool), the `*Store` trait hierarchy (`TaskStore`, `TaskReadStore`, …), `patch_struct!` behind the `TaskPatch`/`EpicPatch` builders |
 | `src/db/migrations.rs` | Versioned schema migrations (`MIGRATIONS` array, `migrate_vN_*` functions, `LATEST_SCHEMA_VERSION`) |
 | `src/db/queries/mod.rs` | `impl TaskStore for Database` — fans out across the per-domain query files; `set_field!` macro and the soft-fail row decoders (`row_to_task`, `row_to_epic`) |
@@ -67,7 +65,7 @@ to look.
 | `src/dispatch/prompts.rs` | Prompt construction: `build_prompt` (with-plan / no-plan / review variants), `build_quick_dispatch_prompt`, `build_research_prompt`, knowledge-block rendering |
 | `src/dispatch/prompts/` | Markdown bodies for the two review addenda (`pr-review.md`, `dependabot.md`), inlined via `include_str!` |
 | `src/dispatch/prompts_snapshots.rs` | Insta snapshot tests locking the rendered output of every `build_*_prompt` variant (snapshots in `src/dispatch/snapshots/`) |
-| `src/dispatch/worktree.rs` | Worktree creation/teardown, `.dispatch/` directory + gitignore bootstrap |
+| `src/dispatch/worktree.rs` | Worktree creation/teardown |
 | `src/dispatch/trust.rs` | Reads and writes Claude Code's per-project trust flag in `~/.claude.json` so a fresh worktree doesn't stall on the trust prompt |
 | `src/dispatch/finish.rs` | Rebase + fast-forward branch onto base branch (`finish_task`); git only — the session teardown is the caller's, gated on the task's terminal write. Defines `FinishError` |
 | `src/dispatch/split_panes.rs` | Multi-step tmux sequences behind the board's split-pane feature: `join_task_window_into_pane` (pin, killing the leftover agent-tree companion) and `swap_task_window_into_pane` (swap + rename/kill + `@dispatch_dir` rewrite + companion resync). Lives here rather than in `src/tmux.rs` because it carries policy and calls `resync_agent_tree_pane`; `src/runtime/split.rs` keeps only the `spawn_blocking` + message emission |
@@ -106,9 +104,8 @@ to look.
 | `src/mcp/handlers/epics.rs` | Epic tool handlers (thin wrappers): parse JSON-RPC args → call `EpicService` → format response |
 | `src/mcp/handlers/learnings.rs` | Knowledge base tool handlers |
 | `src/mcp/handlers/managed_feeds.rs` | Managed feed config tool handlers (`get`/`set_managed_feed_config`) |
-| `src/mcp/handlers/repo_rag.rs` | Repo-RAG tool handlers: `index_repo`, `search_docs` |
 | `src/mcp/handlers/types.rs` | JSON-RPC request/response types, flexible integer deserializer |
 | `src/mcp/handlers/tests/mod.rs` | MCP handler integration tests entry point |
 | `src/mcp/handlers/tests/tasks/mod.rs` | Task test entry point: module declarations and shared helpers |
 | `src/mcp/handlers/tests/tasks/{crud,dispatch,wrap_up,verify,watch}.rs` | Task handler tests per sub-domain |
-| `src/mcp/handlers/tests/{epics,learnings,managed_feeds,repo_rag,usage}.rs` | MCP handler tests per domain |
+| `src/mcp/handlers/tests/{epics,learnings,managed_feeds,usage}.rs` | MCP handler tests per domain |

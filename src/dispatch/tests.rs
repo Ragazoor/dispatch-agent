@@ -2834,27 +2834,6 @@ fn agent_launchers_default_to_bare_binary_names() {
     );
 }
 
-#[test]
-fn provision_worktree_does_not_create_dispatch_dir() {
-    // .dispatch/ should only be created on demand (e.g. when index_repo is called),
-    // not automatically for every dispatched worktree.
-    let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
-
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // tmux new-window
-        MockProcessRunner::ok(), // tmux set-option @dispatch_dir
-        MockProcessRunner::ok(), // tmux set-hook (after-split-window)
-    ]);
-
-    let task = make_task(&repo_path);
-    provision_worktree(&task, &mock, None, SUBPROCESS_TIMEOUT).unwrap();
-
-    assert!(
-        !worktree_dir.join(".dispatch").exists(),
-        ".dispatch/ must not be created by provision_worktree"
-    );
-}
-
 // --- provision_worktree error path ---
 
 #[test]
