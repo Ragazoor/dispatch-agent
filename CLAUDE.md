@@ -136,6 +136,8 @@ Required on `PATH` at runtime, with **no startup preflight** — nothing checks 
 
 The agent launchers read `claude`/`dispatch` from `ProcessRunner::agent_binaries()` (`src/process.rs`) rather than hardcoding them — see "One quoting layer per launch site" in `docs/conventions.md` before touching a launch site.
 
+That same generated settings file also enables Claude Code's sandbox mode for every dispatched agent (`sandbox.enabled: true` plus a credential-directory read-deny list — see `SandboxedAgentExecution` in `docs/specs/dispatch.allium`). On Linux/WSL2 this needs `bubblewrap` and `socat` on `PATH` (`sudo dnf install bubblewrap socat` on Fedora); if either is missing, Claude Code warns and falls back to running unsandboxed rather than failing to start.
+
 POSIX-only. Embeddings/RAG (`src/service/embeddings.rs`) run **locally** — `fastembed` does inference in-process on a dedicated OS thread, with no API key and no per-call network I/O. The only network activity is a one-time model download on first init.
 
 ## Verify Command

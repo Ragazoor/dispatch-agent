@@ -91,6 +91,19 @@ pub(crate) fn write_settings_file(
         "statusLine": {
             "type": "command",
             "command": build_command(snapshot_path, chain),
+        },
+        "sandbox": {
+            "enabled": true,
+            "credentials": {
+                "files": [
+                    { "path": "~/.ssh", "mode": "deny" },
+                    { "path": "~/.aws", "mode": "deny" },
+                    { "path": "~/.config/gcloud", "mode": "deny" },
+                    { "path": "~/.kube", "mode": "deny" },
+                    { "path": "~/.docker", "mode": "deny" },
+                    { "path": "~/.netrc", "mode": "deny" },
+                ]
+            }
         }
     }))
     .context("failed to serialize statusline settings")?;
@@ -194,6 +207,65 @@ mod tests {
         assert_eq!(
             v["statusLine"]["command"],
             "dispatch statusline --snapshot '/d/rl.json' --chain 'cs'"
+        );
+    }
+
+    #[test]
+    fn writes_sandbox_config_enabled_with_no_filesystem_or_network_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("dispatch-statusline.json");
+        write_settings_file(&path, Path::new("/d/rl.json"), None).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(v["sandbox"]["enabled"], true);
+        assert!(
+            v["sandbox"]["filesystem"].is_null(),
+            "filesystem key must be absent so Claude Code's defaults apply"
+        );
+        assert!(
+            v["sandbox"]["network"].is_null(),
+            "network key must be absent so no domain allowlist is pinned"
+        );
+        assert!(
+            v["sandbox"]["failIfUnavailable"].is_null(),
+            "failIfUnavailable must be absent so sandboxing fails open"
+        );
+    }
+
+    #[test]
+    fn writes_sandbox_credential_deny_list() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("dispatch-statusline.json");
+        write_settings_file(&path, Path::new("/d/rl.json"), None).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let files = v["sandbox"]["credentials"]["files"]
+            .as_array()
+            .expect("credentials.files must be an array");
+        let denied_paths: Vec<&str> = files
+            .iter()
+            .map(|f| f["path"].as_str().expect("path must be a string"))
+            .collect();
+        for expected in [
+            "~/.ssh",
+            "~/.aws",
+            "~/.config/gcloud",
+            "~/.kube",
+            "~/.docker",
+            "~/.netrc",
+        ] {
+            assert!(
+                denied_paths.contains(&expected),
+                "expected {expected} in denied_paths, got {denied_paths:?}"
+            );
+        }
+        assert!(
+            files.iter().all(|f| f["mode"] == "deny"),
+            "every credential entry must use mode: deny, got {files:?}"
+        );
+        assert!(
+            v["sandbox"]["credentials"]["envVars"].is_null(),
+            "envVars must be absent — denying tokens like GITHUB_TOKEN breaks gh"
         );
     }
 

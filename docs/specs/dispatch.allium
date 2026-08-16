@@ -1530,6 +1530,70 @@ surface StatusLineDecorator {
         -- is missing, because `claude` refuses to start without it.
 }
 
+surface SandboxedAgentExecution {
+    facing operator: User
+    -- prose: The same dispatch-owned settings file that carries the
+    -- statusLine decorator (see StatusLineDecorator) also enables Claude
+    -- Code's sandbox mode for every dispatch-spawned session. Sandbox mode
+    -- is a Bash-tool-only, OS-enforced jail — it has no effect on
+    -- Read/Edit/Write/MCP tool calls, which stay governed entirely by the
+    -- operator's own permission rules. It exists to give the "agents work
+    -- from their worktree" convention (see the "Agent Working Directory"
+    -- section of CLAUDE.md) real enforcement: until now that convention was
+    -- prompt-instruction only, and a misbehaving or tricked agent's shell
+    -- commands could still write outside the worktree.
+
+    let sandbox_enabled = true
+    let credential_read_denied = [
+        "~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube", "~/.docker",
+        "~/.netrc"
+    ]
+
+    exposes:
+        sandbox_enabled
+        credential_read_denied
+
+    @guarantee FilesystemLeftAtDefaults
+        -- No sandbox.filesystem key is set. Claude Code's own default
+        -- already confines sandboxed writes to the working directory and
+        -- the session temp dir, which matches the worktree convention;
+        -- reads stay unrestricted except for credential_read_denied, which
+        -- sandbox's default read policy would otherwise still allow.
+
+    @guarantee NetworkLeftUnrestricted
+        -- No sandbox.network key is set — no allowedDomains, no
+        -- strictAllowlist. Dispatch spans repos across several ecosystems
+        -- (Rust, Python, Scala, frontend, Terraform, dbt); a fixed domain
+        -- allowlist would be incomplete and need constant upkeep. Sandboxed
+        -- commands instead go through Claude Code's existing prompt/classifier
+        -- flow the first time they need a new host, same as before sandbox
+        -- mode was enabled.
+
+    @guarantee CredentialsDeniedNotMasked
+        -- Only sandbox.credentials.files deny entries are set — no envVars
+        -- entries. Denying an env var such as GITHUB_TOKEN unsets it
+        -- entirely, which would break `gh`, a hard dependency of dispatch's
+        -- PR workflows (see pr-workflow.allium). File-read denial has no
+        -- such cost: nothing in the dispatch flow needs to read
+        -- credential_read_denied's paths.
+
+    @guarantee FailsOpenOnMissingDependencies
+        -- sandbox.failIfUnavailable is not set. On Linux/WSL2 the sandbox
+        -- needs bubblewrap and socat; if either is missing, Claude Code
+        -- warns and runs the session unsandboxed rather than refusing to
+        -- start — consistent with every other external dependency in this
+        -- repo having no startup preflight (see "External Dependencies" in
+        -- CLAUDE.md).
+
+    @guidance
+        -- Baked into the same JSON object write_settings_file
+        -- (src/setup/statusline.rs) produces for the statusLine key, so
+        -- every dispatch-spawned Claude session gets it automatically —
+        -- dispatch_agent, quick_dispatch_agent, research_agent, and resume
+        -- all pass --settings through the same DISPATCH_PLUGIN_DIR constant
+        -- (src/dispatch/prompts.rs). No change needed at any spawn site.
+}
+
 ------------------------------------------------------------
 -- Invariants
 ------------------------------------------------------------
