@@ -502,6 +502,33 @@ Two habits matter:
 
 `DispatchScript` assumes the `AnyName` window-lookup policy above (response index == recorded-call index). A test on `with_queued_window_lookup()` cannot use one.
 
+**Adding a new *shape* (a new operation's sequence)? Sweep for the queues it obsoletes before you finish.** The value is not in the shape, it is in the hand-written vectors it replaces, and a repo-wide grep finds far more of them than the task description will name — #4216 was scoped at "four places" and found ~20, two of which were **already stale**: one omitted a preflight response so every later entry answered the wrong call, another led with a response the code never asks for. Both passed. That is the whole failure mode — a stale queue is silent, because most callers ignore stdout — so converting them is what turns the script from a nicety into the thing that would have caught them. Grep for `MockProcessRunner::new(vec![` and check every queue that drives the operation you just modelled.
+
+#### The finish family
+
+`finish_task` has the same problem one operation over: `git rev-parse --abbrev-ref HEAD` → `git status --porcelain` → `git remote get-url origin` → `git pull`? → `git rebase` → mid-rebase `git status --porcelain`? → `git rebase --abort`? → `git merge --ff-only`?. Four of the eight are conditional (and the three preflight reads each gate everything after them), which is why the dirty-worktree preflight landing was exactly the splice-a-response-into-every-vector episode the section above describes.
+
+`DispatchScript::finish()` declares it. The default is the fullest successful path — a remote is configured, so the pull happens, and every call succeeds — and each modifier names one axis. `drive_finish()` runs a real `finish_task` against the paths and base branch the shape itself declares, and asserts the sequence:
+
+```rust
+let (calls, result) = DispatchScript::finish()
+    .no_remote()
+    .rebase_conflicts_in_stderr(&["foo.rs"])
+    .drive_finish();                       // asserts the sequence for you
+let err = result.unwrap_err();
+```
+
+Use `drive_finish()` rather than building the context by hand — it is what stops a test's `FinishContext` from contradicting the script it is driving. Reach for `runner()` + `finish_context()` only when you need the mock afterwards (to read `recorded_timeouts()`, say); `shared_runner()` is for the MCP tests, which feed the runner to `McpState` and never see the calls.
+
+- **Preflight**: `base_branch(b)` (the branch HEAD is on and the rebase targets), `head_branch(b)` (HEAD is *elsewhere*, so the finish refuses at its first call), `current_branch_cannot_run()`, `dirty_primary(&["a.rs"])`.
+- **Remote**: `no_remote()` skips the pull; `remote_probe_cannot_run()` does not — a probe that identified nothing is a failure worth naming, not a licence to rebase onto a base that was never refreshed.
+- **Each fallible call** has three shapes: `*_fails()` (non-zero exit), `*_cannot_run()` (the runner itself returns `Err`, which `finish_task` reaches through a different arm and names differently), and `*_times_out(d)` (a *success* held back past the bound, so it still fails if the call ever regresses to the unbounded `run`) — for `pull_`, `rebase_` and `fast_forward_`.
+- **Conflicts**: `rebase_conflicts_in_stdout(files)` / `..._in_stderr(files)`. Both streams are real axes, because `is_rebase_conflict` reads both and a regression to reading one would still pass the other's test. The files come back in the marker *and* in the mid-rebase porcelain read.
+
+`assert_matches` checks one thing extra for a finish: each call's `-C` path, because a finish splits its calls across the repo root and the worktree and argv alone cannot tell its two `git status --porcelain` reads apart. A mid-rebase read issued against the repo root would name the wrong files in `RebaseConflict` and otherwise look like a perfectly correct sequence.
+
+The guards run both ways: a finish shape rejects the dispatch modifiers, and a dispatch/resume/provision shape rejects the finish ones, with a panic rather than a silent no-op. (`fails_at` is the one exception in wording — a finish states its failures through the `*_fails`/`*_cannot_run` modifiers, and its panic says so.)
+
 ## No `tokio::time::sleep` in tests
 
 Tests must never sleep on the wall clock to "wait for" background work or to cross a duration threshold, and must never **measure** it either. Both are flaky on slow CI (the work may not be done when the timer fires; the budget may be missed for reasons unrelated to the code under test) and needlessly slow the suite. `./scripts/check-no-test-sleep.sh` enforces this in the pre-push hook, rejecting:

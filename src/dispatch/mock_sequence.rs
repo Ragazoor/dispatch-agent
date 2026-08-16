@@ -30,6 +30,15 @@
 //! stale call fails. Tests that pin exact argv keep doing so — this module only
 //! decides *which* call to look at, never what to assert about it.
 //!
+//! # Finish is the same problem, one operation over
+//!
+//! [`DispatchScript::finish`] declares `finish_task`'s sequence (three preflight
+//! reads → pull? → rebase → mid-rebase status? → abort? → fast-forward?) the
+//! same way, for the same reason: four of its eight calls are conditional and
+//! each preflight read gates everything after it, and the dirty-worktree
+//! preflight landing is exactly the splice-into-every-vector episode described
+//! above.
+//!
 //! # Response index == recorded-call index
 //!
 //! `MockProcessRunner` answers `tmux::window_target`'s name lookup out of band
@@ -41,11 +50,22 @@
 use std::process::Output;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 
 use super::worktree::FETCH_MAX_ATTEMPTS;
 use crate::process::MockProcessRunner;
 use crate::tmux;
+
+/// One call `MockProcessRunner` recorded: the program, then its argv.
+pub(crate) type RecordedCall = (String, Vec<String>);
+
+/// What driving a scripted `finish_task` produced — the calls it issued and the
+/// outcome it returned. Named because the three test modules that drive a finish
+/// shape all hand both back from their own helper.
+pub(crate) type FinishRun = (
+    Vec<RecordedCall>,
+    std::result::Result<(), super::FinishError>,
+);
 
 /// tmux's reply to the companion pane's `split-window -P`: the new pane's id.
 /// Arbitrary but non-positional on purpose — a pane id that does not look like
@@ -65,6 +85,25 @@ const FETCH_FAILURE: &str = "fatal: unable to access 'origin': transient network
 /// by [`Step::HasWindowQuery`] and [`Step::NewWindow`], since both fail the
 /// same realistic way when there is nothing to connect to.
 const NO_TMUX_SERVER: &str = "no server running on /tmp/tmux-1000/default";
+
+/// What the runner itself reports when a git call cannot be spawned at all —
+/// the `Err` arm, as opposed to a git that ran and exited non-zero.
+const GIT_NOT_ON_PATH: &str = "git: command not found";
+
+/// `git remote get-url origin`'s reply for a repo that has one.
+const ORIGIN_URL: &[u8] = b"git@github.com:org/repo.git\n";
+
+/// The repo root, worktree and branch a finish shape runs against by default.
+/// Only their argv matters — `finish_task` runs subprocesses and touches no
+/// filesystem of its own, so nothing here has to exist on disk.
+const FINISH_REPO: &str = "/repo";
+const FINISH_WORKTREE: &str = "/repo/.worktrees/42-fix-bug";
+const FINISH_BRANCH: &str = "42-fix-bug";
+
+/// The bound every scripted finish runs under. Short enough that a timing-out
+/// shape resolves instantly: `MockProcessRunner::run_with_timeout` bails
+/// *without* sleeping once a scripted delay reaches the timeout.
+pub(crate) const FINISH_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// `git symbolic-ref refs/remotes/origin/HEAD`'s reply for a repo whose default
 /// branch is `branch` — the form `crate::git::detect_default_branch` parses.
@@ -131,6 +170,33 @@ pub(crate) enum Step {
     /// `tmux set-option -p … @dispatch_pane_role agent_tree` on the pane that
     /// split just returned — how dispatch will recognise that pane again.
     CompanionRoleMark,
+
+    // --- finish (`DispatchScript::finish`) ---
+    //
+    // A finish is a different operation with a disjoint sequence; only
+    // [`Step::OriginProbe`] is shared, because it is literally the same
+    // `git remote get-url origin` call reached from the other side.
+    /// `git rev-parse --abbrev-ref HEAD` in the repo root — `git::current_branch`,
+    /// the first thing a finish reads.
+    CurrentBranch,
+    /// `git status --porcelain` in the repo root — `git::dirty_files`, the
+    /// preflight that refuses to rebase into an uncommitted mess.
+    DirtyCheck,
+    /// `git pull --no-rebase origin <base>` in the repo root — only when the
+    /// origin probe found a remote.
+    Pull,
+    /// `git rebase <base>` in the worktree.
+    Rebase,
+    /// `git status --porcelain` in the *worktree*, read mid-rebase to name the
+    /// conflicted files before the abort below clears that state. Only for a
+    /// rebase failure that looks like a conflict.
+    ConflictStatus,
+    /// `git rebase --abort` in the worktree — after any rebase that ran and
+    /// failed.
+    RebaseAbort,
+    /// `git merge --ff-only <branch>` in the repo root, the last step of a
+    /// successful finish.
+    FastForward,
 }
 
 impl Step {
@@ -163,6 +229,23 @@ impl Step {
             Step::SendKeysLiteral => program == "tmux" && command_is("send-keys") && has("-l"),
             Step::SendKeysEnter => program == "tmux" && command_is("send-keys") && !has("-l"),
             Step::CompanionSplit => program == "tmux" && command_is("split-window"),
+
+            Step::CurrentBranch => program == "git" && has("rev-parse"),
+            // The two porcelain reads differ only in their `-C` path — the repo
+            // root for the preflight, the worktree for the mid-rebase read —
+            // which this matcher, being argv-token based, cannot see. Sharing a
+            // predicate costs nothing: the rebase sits between them, so
+            // `assert_matches` still rejects a reordering, and the two tests
+            // that care about the scope assert it through the error's own
+            // `path` field.
+            Step::DirtyCheck | Step::ConflictStatus => {
+                program == "git" && has("status") && has("--porcelain")
+            }
+            Step::Pull => program == "git" && has("pull"),
+            // The abort is a `rebase` too, and `--abort` is the whole difference.
+            Step::Rebase => program == "git" && has("rebase") && !has("--abort"),
+            Step::RebaseAbort => program == "git" && has("rebase") && has("--abort"),
+            Step::FastForward => program == "git" && has("merge") && has("--ff-only"),
         }
     }
 }
@@ -216,6 +299,303 @@ enum FetchOutcome {
     TimesOut(Duration),
 }
 
+/// How one of the finish path's fallible git calls answers. Only [`Self::Ok`]
+/// lets the sequence continue; the other three end it where they sit.
+#[derive(Clone, Copy)]
+enum CallOutcome {
+    /// Exits zero.
+    Ok,
+    /// Exits non-zero, with the step's own realistic stderr (see
+    /// [`failure_stderr`]).
+    Fails,
+    /// The process could not be spawned at all, i.e. the runner itself returns
+    /// `Err`. Distinct from [`Self::Fails`] because `finish_task` reaches it
+    /// through a different arm — `map_err` rather than a `status.success()`
+    /// check — and names it differently.
+    CannotRun,
+    /// Answers *successfully*, but only after `delay`, so a caller bounding the
+    /// call kills it first. Deliberately not a plain failure: a success held
+    /// back past the deadline still fails if the call ever regresses to the
+    /// unbounded `run`, which is exactly what the bounding tests defend.
+    TimesOut(Duration),
+}
+
+impl CallOutcome {
+    fn is_ok(self) -> bool {
+        matches!(self, CallOutcome::Ok)
+    }
+
+    /// This outcome's response, with `stderr` used only by [`Self::Fails`].
+    fn response(self, stderr: &str) -> (Option<Duration>, Result<Output>) {
+        match self {
+            CallOutcome::Ok => (None, MockProcessRunner::ok()),
+            CallOutcome::Fails => (None, MockProcessRunner::fail(stderr)),
+            CallOutcome::CannotRun => (None, Err(anyhow!("{GIT_NOT_ON_PATH}"))),
+            CallOutcome::TimesOut(delay) => (Some(delay), MockProcessRunner::ok()),
+        }
+    }
+}
+
+/// How `git rebase <base>` goes. A rebase has every [`CallOutcome`] the other
+/// calls do, plus one that is its alone: a *conflict*, which is what decides
+/// whether the mid-rebase porcelain read happens at all. Only that arm is
+/// modelled here; the rest delegate, so a new outcome shape is added once.
+#[derive(Clone, Copy)]
+enum RebaseOutcome {
+    /// Goes the way any other call can go. [`CallOutcome::Fails`] is the
+    /// non-conflict failure — an invalid upstream, a dirty worktree — which is
+    /// aborted and reported as `FinishError::Other` with no mid-rebase read,
+    /// because there is no conflict to name.
+    Plain(CallOutcome),
+    /// Exits non-zero carrying git's `CONFLICT (content): …` marker. Which
+    /// stream carries it is a real axis, not a detail: `is_rebase_conflict`
+    /// reads both, and a regression to reading only one would pass the other's
+    /// tests. `files` appear both in the marker and in the mid-rebase porcelain
+    /// read that follows.
+    Conflicts {
+        files: &'static [&'static str],
+        on_stderr: bool,
+    },
+}
+
+/// What `git rev-parse --abbrev-ref HEAD` reports for the repo root. One enum
+/// rather than a branch plus a can-be-read flag, so "HEAD is on `x`" and "HEAD
+/// could not be read" cannot both be declared at once.
+#[derive(Clone, Copy)]
+enum HeadOutcome {
+    /// HEAD is on the base branch, so the finish proceeds.
+    OnBase,
+    /// HEAD is on some other branch, so the finish refuses before touching
+    /// anything.
+    On(&'static str),
+    /// The read's subprocess could not be spawned.
+    CannotRun,
+}
+
+/// Which checkout a finish's call runs in, i.e. what its `-C` names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Scope {
+    /// The repo root, where the base branch is checked out.
+    Repo,
+    /// The task's worktree, where the task branch is.
+    Worktree,
+}
+
+/// What `git remote get-url origin` reports, i.e. whether the pull happens.
+#[derive(Clone, Copy)]
+enum RemoteOutcome {
+    /// A remote is configured, so the base branch is pulled first.
+    Present,
+    /// No remote: the probe exits non-zero and the pull is skipped.
+    Absent,
+    /// The probe could not be *run*, which is not the same as finding no
+    /// remote — `finish_task` stops rather than rebasing onto a base it never
+    /// refreshed.
+    CannotRun,
+}
+
+/// The shape of one `finish_task` call sequence: the preflight reads, the
+/// optional pull, the rebase and whatever that rebase's outcome pulls in.
+///
+/// Its own struct behind one `Option` on [`DispatchScript`] rather than more
+/// flat fields, because a finish's axes and a dispatch's are disjoint — folding
+/// them together would put `fails_at(Step::NewWindow)` in reach of a shape that
+/// launches no tmux window at all.
+#[derive(Clone, Copy)]
+struct Finish {
+    /// The repo root and the task worktree the finish is driven against. Held
+    /// here so [`DispatchScript::drive_finish`] can build the `FinishContext`
+    /// from the same declaration the scope assertion reads.
+    repo_path: &'static str,
+    worktree: &'static str,
+    /// The task branch, i.e. the fast-forward target.
+    branch: &'static str,
+    /// The branch the repo root must be on, and the rebase/pull target.
+    base_branch: &'static str,
+    head: HeadOutcome,
+    /// Paths the repo root's working tree reports as dirty. Empty is clean.
+    dirty: &'static [&'static str],
+    remote: RemoteOutcome,
+    pull: CallOutcome,
+    rebase: RebaseOutcome,
+    fast_forward: CallOutcome,
+}
+
+impl Finish {
+    /// The branch HEAD reports, which is the base branch unless a test moved it.
+    fn head_branch(&self) -> &'static str {
+        match self.head {
+            HeadOutcome::On(branch) => branch,
+            HeadOutcome::OnBase | HeadOutcome::CannotRun => self.base_branch,
+        }
+    }
+
+    /// Which checkout `step` runs in — the repo root or the task worktree.
+    ///
+    /// `finish_task` splits its calls across both, and getting that wrong is not
+    /// cosmetic: a mid-rebase porcelain read against the repo root names the
+    /// wrong files in `RebaseConflict`, and a preflight dirty check against the
+    /// worktree clears the wrong tree. Argv alone cannot tell the two porcelain
+    /// reads apart, so [`DispatchScript::assert_matches`] checks this separately.
+    fn scope_of(step: Step) -> Scope {
+        match step {
+            Step::CurrentBranch | Step::DirtyCheck | Step::OriginProbe | Step::Pull => Scope::Repo,
+            Step::Rebase | Step::ConflictStatus | Step::RebaseAbort => Scope::Worktree,
+            // The fast-forward is the repo root's own merge, not the worktree's.
+            Step::FastForward => Scope::Repo,
+            other => unreachable!("{other:?} is not part of a finish sequence"),
+        }
+    }
+
+    /// Assert call `i`'s `-C` path is the checkout [`Self::scope_of`] expects.
+    fn assert_scope(&self, i: usize, step: Step, args: &[String]) {
+        let (scope, expected) = match Self::scope_of(step) {
+            Scope::Repo => (Scope::Repo, self.repo_path),
+            Scope::Worktree => (Scope::Worktree, self.worktree),
+        };
+        // `-C <path>` is how every one of these calls names its checkout, so the
+        // token after `-C` is the whole claim.
+        let got = args
+            .iter()
+            .position(|a| a == "-C")
+            .and_then(|at| args.get(at + 1));
+        assert_eq!(
+            got.map(String::as_str),
+            Some(expected),
+            "call {i} ({step:?}) must run in the {scope:?} ({expected}), got argv {args:?}",
+        );
+    }
+
+    /// The steps a finish of this shape issues, one entry per recorded call.
+    /// Mirrors `finish_task`'s own control flow, which is what the self-tests in
+    /// this module hold it to.
+    fn steps(&self) -> Vec<Step> {
+        let mut steps = vec![Step::CurrentBranch];
+        // A HEAD that could not be read, or that is not on the base branch, is
+        // refused before anything is touched.
+        if !matches!(self.head, HeadOutcome::OnBase) {
+            return steps;
+        }
+        steps.push(Step::DirtyCheck);
+        if !self.dirty.is_empty() {
+            return steps;
+        }
+        steps.push(Step::OriginProbe);
+        match self.remote {
+            RemoteOutcome::CannotRun => return steps,
+            RemoteOutcome::Present => {
+                steps.push(Step::Pull);
+                if !self.pull.is_ok() {
+                    return steps;
+                }
+            }
+            RemoteOutcome::Absent => {}
+        }
+        steps.push(Step::Rebase);
+        match self.rebase {
+            RebaseOutcome::Plain(CallOutcome::Ok) => steps.push(Step::FastForward),
+            // The conflicted files are read out of the worktree's own status
+            // while the rebase is still mid-flight, because the abort clears it.
+            RebaseOutcome::Conflicts { .. } => {
+                steps.push(Step::ConflictStatus);
+                steps.push(Step::RebaseAbort);
+            }
+            // A rebase that ran and exited non-zero is aborted; one that never
+            // ran — could not be spawned, or was killed by the bound — leaves
+            // nothing to abort.
+            RebaseOutcome::Plain(CallOutcome::Fails) => steps.push(Step::RebaseAbort),
+            RebaseOutcome::Plain(CallOutcome::CannotRun | CallOutcome::TimesOut(_)) => {}
+        }
+        steps
+    }
+
+    /// How `step` answers under this shape.
+    fn response(&self, step: Step) -> (Option<Duration>, Result<Output>) {
+        match step {
+            Step::CurrentBranch => match self.head {
+                HeadOutcome::CannotRun => (None, Err(anyhow!("{GIT_NOT_ON_PATH}"))),
+                HeadOutcome::OnBase | HeadOutcome::On(_) => {
+                    let head = format!("{}\n", self.head_branch());
+                    (None, MockProcessRunner::ok_with_stdout(head.as_bytes()))
+                }
+            },
+            Step::DirtyCheck => (
+                None,
+                MockProcessRunner::ok_with_stdout(&porcelain_lines(" M", self.dirty)),
+            ),
+            Step::OriginProbe => match self.remote {
+                RemoteOutcome::Present => (None, MockProcessRunner::ok_with_stdout(ORIGIN_URL)),
+                // "No remote" is a non-zero exit, not an error: `has_origin_remote`
+                // reads the status, and only an `Err` means it could not look.
+                RemoteOutcome::Absent => (None, MockProcessRunner::fail("")),
+                RemoteOutcome::CannotRun => (None, Err(anyhow!("{GIT_NOT_ON_PATH}"))),
+            },
+            Step::Pull => self.pull.response(failure_stderr(Step::Pull)),
+            Step::Rebase => rebase_response(self.rebase),
+            Step::ConflictStatus => match self.rebase {
+                RebaseOutcome::Conflicts { files, .. } => (
+                    None,
+                    MockProcessRunner::ok_with_stdout(&porcelain_lines("UU", files)),
+                ),
+                _ => unreachable!("ConflictStatus is only emitted for a conflicting rebase"),
+            },
+            // Best-effort cleanup whose result `finish_task` discards.
+            Step::RebaseAbort => (None, MockProcessRunner::ok()),
+            Step::FastForward => self
+                .fast_forward
+                .response(failure_stderr(Step::FastForward)),
+            other => unreachable!("{other:?} is not part of a finish sequence"),
+        }
+    }
+}
+
+/// `git rebase`'s reply for each [`RebaseOutcome`]. Only the conflict arm is
+/// built here — the rest are ordinary [`CallOutcome`]s — and it is built by hand
+/// because it is a *failure carrying stdout*, which no `MockProcessRunner`
+/// helper produces.
+fn rebase_response(outcome: RebaseOutcome) -> (Option<Duration>, Result<Output>) {
+    match outcome {
+        RebaseOutcome::Plain(plain) => plain.response(failure_stderr(Step::Rebase)),
+        RebaseOutcome::Conflicts { files, on_stderr } => {
+            let marker = conflict_markers(files);
+            let response = if on_stderr {
+                MockProcessRunner::fail(&marker)
+            } else {
+                Ok(Output {
+                    status: crate::process::exit_fail(),
+                    stdout: marker.into_bytes(),
+                    stderr: Vec::new(),
+                })
+            };
+            (None, response)
+        }
+    }
+}
+
+/// `git status --porcelain`'s reply listing `paths` under status `code`.
+///
+/// The code is what each reader selects on: `parse_porcelain_files` keeps every
+/// entry regardless (so ` M` stands in for any dirty path), while
+/// `parse_unmerged_files` keeps only the conflict codes (so `UU`). That both
+/// parse the column correctly — including the leading-space and `??` forms — is
+/// covered directly in `src/git.rs`, so this need only pick one form of each.
+fn porcelain_lines(code: &str, paths: &[&str]) -> Vec<u8> {
+    paths
+        .iter()
+        .map(|path| format!("{code} {path}\n"))
+        .collect::<String>()
+        .into_bytes()
+}
+
+/// `git rebase`'s conflict report for `files`, one marker line each — the form
+/// `is_rebase_conflict` matches on.
+fn conflict_markers(files: &[&str]) -> String {
+    files
+        .iter()
+        .map(|file| format!("CONFLICT (content): Merge conflict in {file}\n"))
+        .collect()
+}
+
 /// Where the sequence ends.
 #[derive(Clone, Copy)]
 enum Ending {
@@ -255,6 +635,9 @@ pub(crate) struct DispatchScript {
     /// see [`Self::window_already_alive`].
     window_already_alive: bool,
     ending: Ending,
+    /// Present only for a [`Self::finish`] shape. `Some` makes every field
+    /// above irrelevant: a finish issues none of a dispatch's calls.
+    finish: Option<Finish>,
 }
 
 impl DispatchScript {
@@ -275,7 +658,224 @@ impl DispatchScript {
             is_resume: false,
             window_already_alive: false,
             ending: Ending::Complete,
+            finish: None,
         }
+    }
+
+    /// `finish_task`'s sequence: the three preflight reads, a pull, the rebase
+    /// and the fast-forward. The default is the fullest successful path — a
+    /// remote is configured, so the pull happens, and every call succeeds.
+    ///
+    /// Shares nothing with a dispatch but [`Step::OriginProbe`], so the
+    /// dispatch modifiers do not apply to it and panic if used — as the finish
+    /// modifiers do on a dispatch shape.
+    pub(crate) fn finish() -> Self {
+        let mut script = Self::dispatch();
+        script.finish = Some(Finish {
+            repo_path: FINISH_REPO,
+            worktree: FINISH_WORKTREE,
+            branch: FINISH_BRANCH,
+            base_branch: "main",
+            head: HeadOutcome::OnBase,
+            dirty: &[],
+            remote: RemoteOutcome::Present,
+            pull: CallOutcome::Ok,
+            rebase: RebaseOutcome::Plain(CallOutcome::Ok),
+            fast_forward: CallOutcome::Ok,
+        });
+        script
+    }
+
+    /// The finish configuration, for the modifiers below.
+    ///
+    /// # Panics
+    ///
+    /// If this is not a [`Self::finish`] shape — a finish modifier on a
+    /// dispatch shape would otherwise be a silent no-op.
+    fn finish_mut(&mut self) -> &mut Finish {
+        match self.finish.as_mut() {
+            Some(finish) => finish,
+            None => panic!("this modifier only applies to a finish() shape"),
+        }
+    }
+
+    /// Guards a *dispatch* modifier, the mirror of [`Self::finish_mut`].
+    ///
+    /// Without it, `finish().fetch_times_out(d)` would set a field `steps()`
+    /// early-returns past: it compiles, passes, and asserts nothing — the exact
+    /// silent no-op the finish-side guard exists to prevent.
+    ///
+    /// # Panics
+    ///
+    /// If this is a [`Self::finish`] shape.
+    fn assert_is_dispatch(&self) {
+        assert!(
+            self.finish.is_none(),
+            "this modifier only applies to a dispatch/resume/provision shape"
+        );
+    }
+
+    /// The branch the repo root is on and the rebase targets. Defaults to
+    /// `main`.
+    pub(crate) fn base_branch(mut self, branch: &'static str) -> Self {
+        self.finish_mut().base_branch = branch;
+        self
+    }
+
+    /// The repo root is on `branch` rather than the base branch, so the finish
+    /// refuses before touching anything — its sequence is the HEAD read alone.
+    pub(crate) fn head_branch(mut self, branch: &'static str) -> Self {
+        self.finish_mut().head = HeadOutcome::On(branch);
+        self
+    }
+
+    /// `git::current_branch`'s subprocess cannot be spawned, so the finish stops
+    /// at its very first call.
+    pub(crate) fn current_branch_cannot_run(mut self) -> Self {
+        self.finish_mut().head = HeadOutcome::CannotRun;
+        self
+    }
+
+    /// The repo root's working tree reports `paths` as dirty, so the finish
+    /// stops after the preflight read — before any pull, rebase or merge.
+    pub(crate) fn dirty_primary(mut self, paths: &'static [&'static str]) -> Self {
+        self.finish_mut().dirty = paths;
+        self
+    }
+
+    /// No origin remote is configured, so the pull is skipped entirely.
+    pub(crate) fn no_remote(mut self) -> Self {
+        self.finish_mut().remote = RemoteOutcome::Absent;
+        self
+    }
+
+    /// The origin probe could not be *run*. Not the same as [`Self::no_remote`]:
+    /// a probe that identified nothing is a failure worth naming, not a licence
+    /// to rebase onto a base that was never refreshed.
+    pub(crate) fn remote_probe_cannot_run(mut self) -> Self {
+        self.finish_mut().remote = RemoteOutcome::CannotRun;
+        self
+    }
+
+    /// The pull exits non-zero.
+    pub(crate) fn pull_fails(mut self) -> Self {
+        self.finish_mut().pull = CallOutcome::Fails;
+        self
+    }
+
+    /// The pull's subprocess cannot be spawned.
+    pub(crate) fn pull_cannot_run(mut self) -> Self {
+        self.finish_mut().pull = CallOutcome::CannotRun;
+        self
+    }
+
+    /// The pull succeeds but only after `delay`, so a bounded caller kills it.
+    /// See [`CallOutcome::TimesOut`] for why this is not just a failure.
+    pub(crate) fn pull_times_out(mut self, delay: Duration) -> Self {
+        self.finish_mut().pull = CallOutcome::TimesOut(delay);
+        self
+    }
+
+    /// The rebase conflicts, with git's marker on **stdout** — one of the two
+    /// streams `is_rebase_conflict` reads. `files` come back both in the marker
+    /// and in the mid-rebase porcelain read.
+    pub(crate) fn rebase_conflicts_in_stdout(mut self, files: &'static [&'static str]) -> Self {
+        self.finish_mut().rebase = RebaseOutcome::Conflicts {
+            files,
+            on_stderr: false,
+        };
+        self
+    }
+
+    /// The rebase conflicts with the marker on **stderr** — the other stream.
+    pub(crate) fn rebase_conflicts_in_stderr(mut self, files: &'static [&'static str]) -> Self {
+        self.finish_mut().rebase = RebaseOutcome::Conflicts {
+            files,
+            on_stderr: true,
+        };
+        self
+    }
+
+    /// The rebase exits non-zero with no conflict marker, so it is aborted and
+    /// reported as `Other` — with no mid-rebase porcelain read.
+    pub(crate) fn rebase_fails(mut self) -> Self {
+        self.finish_mut().rebase = RebaseOutcome::Plain(CallOutcome::Fails);
+        self
+    }
+
+    /// The rebase's subprocess cannot be spawned, so there is nothing to abort.
+    pub(crate) fn rebase_cannot_run(mut self) -> Self {
+        self.finish_mut().rebase = RebaseOutcome::Plain(CallOutcome::CannotRun);
+        self
+    }
+
+    /// The rebase answers past the caller's bound and is killed.
+    pub(crate) fn rebase_times_out(mut self, delay: Duration) -> Self {
+        self.finish_mut().rebase = RebaseOutcome::Plain(CallOutcome::TimesOut(delay));
+        self
+    }
+
+    /// Drive a real `finish_task` under this shape, against the paths and base
+    /// branch the shape itself declares, and return the calls it recorded with
+    /// its outcome — after asserting the calls are exactly the declared steps.
+    ///
+    /// Every test module that drives a finish goes through here, so the context
+    /// can never contradict the script: before this existed, three separate
+    /// helpers each built their own `FinishContext` and two of them hardcoded a
+    /// base branch the script was free to change underneath them.
+    ///
+    /// # Panics
+    ///
+    /// If this is not a [`Self::finish`] shape, or if the recorded calls are not
+    /// the declared sequence.
+    pub(crate) fn drive_finish(&self) -> FinishRun {
+        let mock = self.runner();
+        let result = super::finish_task(&self.finish_context(), &mock);
+        let calls = mock.recorded_calls();
+        self.assert_matches(&calls);
+        (calls, result)
+    }
+
+    /// The `FinishContext` this shape declares — the paths, the branch, the base
+    /// branch and the bound, all from one place.
+    ///
+    /// [`Self::drive_finish`] is the usual way in; reach for this directly only
+    /// when a test needs the `MockProcessRunner` itself afterwards (to read
+    /// `recorded_timeouts`, say), which `drive_finish` does not hand back.
+    ///
+    /// # Panics
+    ///
+    /// If this is not a [`Self::finish`] shape.
+    pub(crate) fn finish_context(&self) -> super::FinishContext<'static> {
+        let finish = match self.finish.as_ref() {
+            Some(finish) => finish,
+            None => panic!("finish_context only applies to a finish() shape"),
+        };
+        super::FinishContext {
+            repo_path: finish.repo_path,
+            worktree: finish.worktree,
+            branch: finish.branch,
+            base_branch: finish.base_branch,
+            timeout: FINISH_TIMEOUT,
+        }
+    }
+
+    /// The fast-forward exits non-zero.
+    pub(crate) fn fast_forward_fails(mut self) -> Self {
+        self.finish_mut().fast_forward = CallOutcome::Fails;
+        self
+    }
+
+    /// The fast-forward's subprocess cannot be spawned.
+    pub(crate) fn fast_forward_cannot_run(mut self) -> Self {
+        self.finish_mut().fast_forward = CallOutcome::CannotRun;
+        self
+    }
+
+    /// The fast-forward answers past the caller's bound and is killed.
+    pub(crate) fn fast_forward_times_out(mut self, delay: Duration) -> Self {
+        self.finish_mut().fast_forward = CallOutcome::TimesOut(delay);
+        self
     }
 
     /// `resume_agent`'s sequence: the tmux tail only, since resume reuses the
@@ -316,12 +916,14 @@ impl DispatchScript {
     /// and the fetch becomes `FetchPolicy::Required`, which is what makes the
     /// retry budget and the classification probes reachable.
     pub(crate) fn fresh_worktree(mut self) -> Self {
+        self.assert_is_dispatch();
         self.fresh_worktree = true;
         self
     }
 
     /// No base ref was resolved, so no fetch is attempted.
     pub(crate) fn no_fetch(mut self) -> Self {
+        self.assert_is_dispatch();
         self.fetch = FetchOutcome::Absent;
         self
     }
@@ -329,6 +931,7 @@ impl DispatchScript {
     /// The fetch fails until attempt `n`, which succeeds. Needs a fresh worktree
     /// for `n > 1`: the reuse path only ever makes one attempt.
     pub(crate) fn fetch_succeeds_on_attempt(mut self, n: u32) -> Self {
+        self.assert_is_dispatch();
         assert!(n >= 1, "fetch attempts are 1-based");
         self.fetch = FetchOutcome::SucceedsOnAttempt(n);
         self
@@ -337,6 +940,7 @@ impl DispatchScript {
     /// The fetch fails and the probes identify a missing origin ref, so the local
     /// branch is used with a `Note:` and no retry happens.
     pub(crate) fn fetch_finds_no_origin_ref(mut self) -> Self {
+        self.assert_is_dispatch();
         self.fetch = FetchOutcome::NoOriginRef;
         self
     }
@@ -345,6 +949,7 @@ impl DispatchScript {
     /// aborts the dispatch after the probes and the full budget; on the reuse
     /// path it is one attempt, no probes, and a warning.
     pub(crate) fn fetch_is_unreachable(mut self) -> Self {
+        self.assert_is_dispatch();
         self.fetch = FetchOutcome::Unreachable;
         self
     }
@@ -354,6 +959,7 @@ impl DispatchScript {
     /// [`FetchOutcome::TimesOut`] for why this is not the same as
     /// [`Self::fetch_is_unreachable`].
     pub(crate) fn fetch_times_out(mut self, delay: Duration) -> Self {
+        self.assert_is_dispatch();
         self.fetch = FetchOutcome::TimesOut(delay);
         self
     }
@@ -361,6 +967,7 @@ impl DispatchScript {
     /// Local `<base>` holds `n` commits origin lacks, so `select_start_point`
     /// prefers the local ref. The default is `0` — no drift, origin wins.
     pub(crate) fn local_ahead(mut self, n: u32) -> Self {
+        self.assert_is_dispatch();
         self.local_ahead = n;
         self
     }
@@ -368,12 +975,14 @@ impl DispatchScript {
     /// The caller passed no base branch, so the dispatch detects the repo's
     /// default branch first and then fetches `branch`.
     pub(crate) fn detecting_default_branch(mut self, branch: &'static str) -> Self {
+        self.assert_is_dispatch();
         self.default_branch = Some(branch);
         self
     }
 
     /// This is a review task carrying a PR url, so `gh pr view` runs first.
     pub(crate) fn pr_head(mut self, head: PrHead) -> Self {
+        self.assert_is_dispatch();
         self.pr_head = Some(head);
         self
     }
@@ -383,12 +992,20 @@ impl DispatchScript {
     /// Private because [`Self::provision`] is the only shape that needs it; widen
     /// it if a test ever needs a different stopping point.
     fn stops_after(mut self, step: Step) -> Self {
+        self.assert_is_dispatch();
         self.ending = Ending::StopsAfter(step);
         self
     }
 
     /// `step` fails and nothing after it is queued. See [`Ending::FailsAt`].
     pub(crate) fn fails_at(mut self, step: Step) -> Self {
+        // Not the generic guard: a finish shape *can* state a failure, just not
+        // this way, so the message points at the modifier that does it.
+        assert!(
+            self.finish.is_none(),
+            "a finish() shape states its failures directly — use one of the \
+             *_fails / *_cannot_run modifiers instead"
+        );
         assert!(
             !matches!(step, Step::Fetch | Step::OriginProbe | Step::LsRemote),
             "a failing fetch is retried and classified, not terminal — use one of \
@@ -464,6 +1081,9 @@ impl DispatchScript {
 
     /// The steps this shape issues, one entry per recorded call, in order.
     fn steps(&self) -> Vec<Step> {
+        if let Some(finish) = self.finish.as_ref() {
+            return finish.steps();
+        }
         let mut steps = Vec::new();
         if self.default_branch.is_some() {
             steps.push(Step::DetectDefaultBranch);
@@ -559,6 +1179,12 @@ impl DispatchScript {
     /// the pattern.
     pub(crate) fn responses(&self) -> Vec<(Option<Duration>, Result<Output>)> {
         let steps = self.steps();
+        if let Some(finish) = self.finish.as_ref() {
+            return steps
+                .into_iter()
+                .map(|step| finish.response(step))
+                .collect();
+        }
         let failing_last = matches!(self.ending, Ending::FailsAt(_));
         let mut fetch_attempt = 0;
         let mut out = Vec::with_capacity(steps.len());
@@ -643,7 +1269,7 @@ impl DispatchScript {
     ///
     /// The point of the whole module: a queue that has drifted from the code no
     /// longer sits there as a stale comment, it fails here.
-    pub(crate) fn assert_matches(&self, calls: &[(String, Vec<String>)]) {
+    pub(crate) fn assert_matches(&self, calls: &[RecordedCall]) {
         let steps = self.steps();
         for (i, step) in steps.iter().enumerate() {
             let Some((program, args)) = calls.get(i) else {
@@ -658,6 +1284,14 @@ impl DispatchScript {
                 "call {i} should be {step:?}, got {program} {args:?}. \
                  Full sequence expected: {steps:?}",
             );
+            // A finish splits its calls across two checkouts, and argv alone
+            // cannot tell its two `git status --porcelain` reads apart. Checking
+            // the `-C` path here is what stops a swapped scope — a mid-rebase
+            // read against the repo root, which would name the wrong files in
+            // `RebaseConflict` — from passing as the right sequence.
+            if let Some(finish) = self.finish.as_ref() {
+                finish.assert_scope(i, *step, args);
+            }
         }
         // A short `calls` already panicked in the loop above, so anything left is
         // a call the code should not have made.
@@ -698,6 +1332,20 @@ fn failure_stderr(step: Step) -> &'static str {
         Step::SendKeysLiteral | Step::SendKeysEnter => "can't find pane",
         Step::CompanionSplit => "no target pane",
         Step::CompanionRoleMark => "unknown option",
+
+        // The finish steps with no non-zero-exit mode of their own: the HEAD
+        // read and the porcelain reads only ever succeed or fail to spawn, and
+        // the abort's result `finish_task` discards outright. Left unreachable
+        // rather than given invented prose that would read as configuration.
+        Step::CurrentBranch | Step::DirtyCheck | Step::ConflictStatus | Step::RebaseAbort => {
+            unreachable!("{step:?} has no failing-exit shape")
+        }
+        Step::Pull => "fatal: unable to access remote",
+        // Deliberately free of every marker `is_rebase_conflict` reads —
+        // "CONFLICT", "could not apply", "Merge conflict" — since this is the
+        // stderr that must classify as a *non*-conflict failure.
+        Step::Rebase => "fatal: refusing to rebase onto unrelated histories",
+        Step::FastForward => "fatal: Not possible to fast-forward, aborting.",
     }
 }
 
@@ -707,7 +1355,7 @@ mod tests {
     use super::*;
     use crate::dispatch::tests::{make_task, make_test_repo_with_worktree, pr_review_task};
     use crate::dispatch::worktree::BaseRef;
-    use crate::dispatch::{dispatch_agent, resume_agent};
+    use crate::dispatch::{dispatch_agent, resume_agent, FinishError};
     use crate::models::TaskId;
     use crate::process::SUBPROCESS_TIMEOUT;
 
@@ -946,6 +1594,269 @@ mod tests {
             "origin/main",
             "no drift means origin wins: {calls:?}"
         );
+    }
+
+    // --- the finish shape describes what finish_task really does ---
+
+    /// Drive `script` and hand back only the outcome — `drive_finish` has
+    /// already asserted the calls are exactly its declared steps.
+    fn assert_finish_matches(script: &DispatchScript) -> std::result::Result<(), FinishError> {
+        script.drive_finish().1
+    }
+
+    /// The finish counterpart of `dispatch_script_matches_a_real_dispatch`, and
+    /// load-bearing in the same way: a preflight call added to `finish_task`
+    /// fails here until `Finish::steps` names it, rather than shifting an
+    /// unrelated test's queue by one.
+    #[test]
+    fn finish_script_matches_a_real_finish() {
+        assert_finish_matches(&DispatchScript::finish()).expect("the happy path succeeds");
+    }
+
+    #[test]
+    fn finish_script_matches_a_finish_with_no_remote() {
+        let (calls, result) = DispatchScript::finish().no_remote().drive_finish();
+        result.expect("no remote is not an error, it just skips the pull");
+        // The absence is the claim: assert_matches already rejects an extra
+        // call, and this names why that one in particular must not appear.
+        assert!(
+            !calls.iter().any(|(_, args)| args.contains(&"pull".into())),
+            "no remote means no pull: {calls:?}"
+        );
+    }
+
+    // That a finish issues no tmux call at all is asserted where the behaviour
+    // lives, by `finish_task_issues_no_tmux_command` in `src/dispatch/finish.rs`.
+
+    #[test]
+    fn finish_script_stops_when_head_is_not_on_the_base_branch() {
+        let err =
+            assert_finish_matches(&DispatchScript::finish().head_branch("feature-x")).unwrap_err();
+        assert!(matches!(err, FinishError::NotOnDefaultBranch { .. }));
+    }
+
+    #[test]
+    fn finish_script_stops_on_a_dirty_primary_worktree() {
+        let script = DispatchScript::finish().dirty_primary(&["src/unrelated.rs"]);
+        let err = assert_finish_matches(&script).unwrap_err();
+        assert!(
+            matches!(err, FinishError::DirtyPrimaryWorktree { ref files, .. }
+                if files == &["src/unrelated.rs".to_string()]),
+            "the declared dirty paths must reach the error, got: {err}"
+        );
+    }
+
+    /// Both conflict shapes must classify as conflicts and name the same files,
+    /// because `is_rebase_conflict` reads both streams — a regression to reading
+    /// only one would still pass the other's test.
+    #[test]
+    fn finish_script_matches_a_conflicting_rebase_on_either_stream() {
+        for script in [
+            DispatchScript::finish().rebase_conflicts_in_stdout(&["lib.rs"]),
+            DispatchScript::finish().rebase_conflicts_in_stderr(&["lib.rs"]),
+        ] {
+            let err = assert_finish_matches(&script).unwrap_err();
+            assert!(
+                matches!(err, FinishError::RebaseConflict { ref files, .. }
+                    if files == &["lib.rs".to_string()]),
+                "a conflict shape must name its files, got: {err}"
+            );
+        }
+    }
+
+    /// A non-conflict failure is aborted too, but reads no porcelain: there is
+    /// no conflict to name. Declared as the absence of `ConflictStatus`, so
+    /// `assert_matches` rejects one appearing.
+    #[test]
+    fn finish_script_matches_a_non_conflict_rebase_failure() {
+        let script = DispatchScript::finish().rebase_fails();
+        let err = assert_finish_matches(&script).unwrap_err();
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Rebase failed")),
+            "a non-conflict rebase failure is Other, got: {err}"
+        );
+        assert_eq!(
+            script.index_of(Step::RebaseAbort),
+            script.index_of(Step::Rebase) + 1,
+            "the abort follows the rebase directly, with no porcelain read between"
+        );
+    }
+
+    /// A rebase that never ran leaves nothing to abort, so the sequence ends at
+    /// the rebase itself.
+    #[test]
+    fn finish_script_matches_a_rebase_that_could_not_be_spawned() {
+        let script = DispatchScript::finish().rebase_cannot_run();
+        let err = assert_finish_matches(&script).unwrap_err();
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Failed to run git rebase")),
+            "a rebase that could not run must say so, got: {err}"
+        );
+        assert_eq!(*script.steps().last().unwrap(), Step::Rebase);
+    }
+
+    #[test]
+    fn finish_script_matches_a_remote_probe_that_could_not_be_run() {
+        let script = DispatchScript::finish().remote_probe_cannot_run();
+        let err = assert_finish_matches(&script).unwrap_err();
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains(GIT_NOT_ON_PATH)),
+            "a probe that cannot run must carry why, got: {err}"
+        );
+        assert_eq!(*script.steps().last().unwrap(), Step::OriginProbe);
+    }
+
+    #[test]
+    fn finish_script_matches_a_failing_pull() {
+        let err = assert_finish_matches(&DispatchScript::finish().pull_fails()).unwrap_err();
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Failed to pull")),
+            "a failing pull is Other, got: {err}"
+        );
+    }
+
+    #[test]
+    fn finish_script_matches_a_failing_fast_forward() {
+        let err =
+            assert_finish_matches(&DispatchScript::finish().fast_forward_fails()).unwrap_err();
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Fast-forward failed")),
+            "a failing fast-forward is Other, got: {err}"
+        );
+    }
+
+    #[test]
+    fn finish_script_matches_a_head_read_that_could_not_be_run() {
+        let script = DispatchScript::finish().current_branch_cannot_run();
+        let err = assert_finish_matches(&script).unwrap_err();
+        assert!(
+            matches!(err, FinishError::Other(ref m) if m.contains("Failed to check current branch")),
+            "a HEAD read that cannot run must say so, got: {err}"
+        );
+        assert_eq!(script.steps(), vec![Step::CurrentBranch]);
+    }
+
+    /// Every timing-out shape must surface as a *timeout*, which only holds
+    /// because the queued response is a success the bound never waits for.
+    #[test]
+    fn finish_script_times_out_each_bounded_call() {
+        for (script, expected) in [
+            (
+                DispatchScript::finish().pull_times_out(FINISH_TIMEOUT),
+                "Failed to pull",
+            ),
+            (
+                DispatchScript::finish().rebase_times_out(FINISH_TIMEOUT),
+                "Failed to run git rebase",
+            ),
+            (
+                DispatchScript::finish().fast_forward_times_out(FINISH_TIMEOUT),
+                "Failed to fast-forward",
+            ),
+        ] {
+            let err = assert_finish_matches(&script).unwrap_err();
+            assert!(
+                matches!(err, FinishError::Other(ref m) if m.contains(expected) && m.contains("timed out")),
+                "expected a timed-out {expected}, got: {err}"
+            );
+        }
+    }
+
+    /// The base branch reaches both the HEAD reply and the calls' argv, so a
+    /// non-default one needs no hand-built response.
+    #[test]
+    fn finish_script_drives_a_non_default_base_branch() {
+        let script = DispatchScript::finish().base_branch("develop").no_remote();
+        let (calls, result) = script.drive_finish();
+        result.expect("develop is as good a base as main");
+        assert!(
+            calls[script.index_of(Step::Rebase)]
+                .1
+                .contains(&"develop".to_string()),
+            "the rebase must target the declared base branch: {calls:?}"
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|(_, args)| args.iter().any(|a| a == "symbolic-ref")),
+            "an explicit base branch must not be detected: {calls:?}"
+        );
+    }
+
+    /// The finish counterpart of `index_of_shifts_with_the_optional_leading_steps`:
+    /// the pull is conditional, so everything after it moves by one and no call
+    /// site has to know that.
+    #[test]
+    fn finish_index_of_shifts_with_the_optional_pull() {
+        let with_pull = DispatchScript::finish();
+        assert_eq!(with_pull.index_of(Step::CurrentBranch), 0);
+        assert_eq!(with_pull.index_of(Step::DirtyCheck), 1);
+        assert_eq!(with_pull.index_of(Step::OriginProbe), 2);
+        assert_eq!(with_pull.index_of(Step::Pull), 3);
+        assert_eq!(with_pull.index_of(Step::Rebase), 4);
+        assert_eq!(with_pull.index_of(Step::FastForward), 5);
+
+        let without = DispatchScript::finish().no_remote();
+        assert_eq!(without.index_of(Step::Rebase), 3);
+        assert_eq!(without.index_of(Step::FastForward), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "Pull is not part of this script's sequence")]
+    fn finish_index_of_panics_for_a_step_this_shape_never_issues() {
+        DispatchScript::finish().no_remote().index_of(Step::Pull);
+    }
+
+    #[test]
+    #[should_panic(expected = "only applies to a finish() shape")]
+    fn a_finish_modifier_on_a_dispatch_shape_panics() {
+        let _ = DispatchScript::dispatch().no_remote();
+    }
+
+    /// The mirror guard. Without it a dispatch modifier on a finish shape sets a
+    /// field `steps()` skips past — it compiles, passes, and asserts nothing.
+    #[test]
+    #[should_panic(expected = "only applies to a dispatch/resume/provision shape")]
+    fn a_dispatch_modifier_on_a_finish_shape_panics() {
+        let _ = DispatchScript::finish().fetch_times_out(Duration::from_millis(1));
+    }
+
+    /// The scope check earns its keep on `ConflictStatus` above all: a
+    /// mid-rebase porcelain read issued against the repo root instead of the
+    /// worktree returns the *repo's* status, so `RebaseConflict` would name the
+    /// wrong files — and argv alone cannot tell the two reads apart.
+    #[test]
+    #[should_panic(expected = "must run in the Worktree")]
+    fn assert_matches_rejects_a_mid_rebase_read_against_the_repo_root() {
+        let script = DispatchScript::finish()
+            .no_remote()
+            .rebase_conflicts_in_stdout(&["lib.rs"]);
+        let (mut calls, _) = script.drive_finish();
+        // Re-point the mid-rebase read at the repo root, leaving argv otherwise
+        // identical — exactly the drift a program+argv matcher cannot see.
+        let at = script.index_of(Step::ConflictStatus);
+        let dash_c = calls[at].1.iter().position(|a| a == "-C").unwrap();
+        calls[at].1[dash_c + 1] = FINISH_REPO.to_string();
+        script.assert_matches(&calls);
+    }
+
+    /// And the other direction: the preflight dirty check belongs to the repo
+    /// root, not the worktree.
+    #[test]
+    #[should_panic(expected = "must run in the Repo")]
+    fn assert_matches_rejects_a_dirty_check_against_the_worktree() {
+        let script = DispatchScript::finish().no_remote();
+        let (mut calls, _) = script.drive_finish();
+        let at = script.index_of(Step::DirtyCheck);
+        let dash_c = calls[at].1.iter().position(|a| a == "-C").unwrap();
+        calls[at].1[dash_c + 1] = FINISH_WORKTREE.to_string();
+        script.assert_matches(&calls);
+    }
+
+    #[test]
+    #[should_panic(expected = "a finish() shape states its failures directly")]
+    fn fails_at_rejects_a_finish_shape() {
+        let _ = DispatchScript::finish().fails_at(Step::Rebase);
     }
 
     // --- step bookkeeping ---

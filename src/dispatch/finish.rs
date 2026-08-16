@@ -197,31 +197,14 @@ pub fn finish_task(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::process::MockProcessRunner;
-    use std::process::Output;
+    use crate::dispatch::mock_sequence::{DispatchScript, FinishRun, FINISH_TIMEOUT};
 
-    fn exit_fail() -> std::process::ExitStatus {
-        // UNIX only, but tests only run on Linux/macOS anyway.
-        use std::os::unix::process::ExitStatusExt;
-        std::process::ExitStatus::from_raw(1)
-    }
-
-    /// A bound short enough that no test ever waits on it.
-    /// `MockProcessRunner::run_with_timeout` bails *without* sleeping once a
-    /// scripted delay reaches the timeout, so a bounded call is instant; and on
-    /// the unbounded path — which does sleep — 50ms is unnoticeable.
-    const TEST_TIMEOUT: Duration = Duration::from_millis(50);
-
-    /// Build a `FinishContext` with the standard test repo/worktree/branch,
-    /// varying only the base branch the individual tests care about.
-    fn fctx(base_branch: &str) -> FinishContext<'_> {
-        FinishContext {
-            repo_path: "/repo",
-            worktree: "/repo/.worktrees/42-fix-bug",
-            branch: "42-fix-bug",
-            base_branch,
-            timeout: TEST_TIMEOUT,
-        }
+    /// Drive `finish_task` under `script`, which declares the whole subprocess
+    /// sequence and asserts the recorded calls are exactly it — see
+    /// `docs/conventions.md`, "Driving a dispatch: `DispatchScript`, never a
+    /// hand-written queue"; the same rule holds for a finish.
+    fn run(script: &DispatchScript) -> FinishRun {
+        script.drive_finish()
     }
 
     // finish_task is the git half only: a successful rebase + fast-forward
@@ -230,22 +213,12 @@ mod tests {
     // docs/specs/pr-workflow.allium).
     #[test]
     fn finish_task_issues_no_tmux_command() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-            MockProcessRunner::fail(""),                  // remote get-url (no remote)
-            MockProcessRunner::ok(),                      // git rebase main
-            MockProcessRunner::ok(),                      // git merge --ff-only
-        ]);
+        let (calls, result) = run(&DispatchScript::finish().no_remote());
 
-        finish_task(&fctx("main"), &mock).expect("rebase + fast-forward succeeds");
-
+        result.expect("rebase + fast-forward succeeds");
         assert!(
-            mock.recorded_calls()
-                .iter()
-                .all(|(program, _)| program != "tmux"),
-            "finish_task must not touch tmux: {:?}",
-            mock.recorded_calls()
+            calls.iter().all(|(program, _)| program != "tmux"),
+            "finish_task must not touch tmux: {calls:?}"
         );
     }
 
@@ -253,15 +226,9 @@ mod tests {
     // non-zero exit — maps to FinishError::Other via map_err.
     #[test]
     fn finish_task_pull_runner_error_returns_other() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url
-            Err(anyhow::anyhow!("git: command not found")), // git pull
-        ]);
+        let (_calls, result) = run(&DispatchScript::finish().pull_cannot_run());
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to pull")),
             "pull runner error should map to FinishError::Other, got: {err}"
@@ -272,16 +239,11 @@ mod tests {
     // FinishError::Other via map_err with "Failed to fast-forward" prefix.
     #[test]
     fn finish_task_ff_only_runner_error_returns_other() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-            MockProcessRunner::fail(""),                  // remote get-url (no remote)
-            MockProcessRunner::ok(),                      // git rebase
-            Err(anyhow::anyhow!("git: command not found")), // git merge --ff-only
-        ]);
+        let (_calls, result) = run(&DispatchScript::finish()
+            .no_remote()
+            .fast_forward_cannot_run());
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to fast-forward")),
             "ff-only runner error should map to FinishError::Other, got: {err}"
@@ -293,23 +255,15 @@ mod tests {
     // skipping the pull and rebasing against a base that was never refreshed.
     #[test]
     fn finish_task_reports_a_remote_probe_that_could_not_be_run() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-            Err(anyhow::anyhow!("git: command not found")), // remote get-url
-        ]);
+        // That nothing beyond the probe ran is pinned by `assert_matches` inside
+        // `run`: the shape declares the probe as its last step, and an extra
+        // call fails there.
+        let (_calls, result) = run(&DispatchScript::finish().remote_probe_cannot_run());
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("command not found")),
             "a probe that cannot run must carry why, got: {err}"
-        );
-        let calls = mock.recorded_calls();
-        assert_eq!(
-            calls.len(),
-            3,
-            "nothing beyond the remote probe may run: {calls:?}"
         );
     }
 
@@ -319,21 +273,11 @@ mod tests {
     // git's English rebase prose.
     #[test]
     fn finish_task_rebase_conflict_in_stdout_returns_rebase_conflict() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-            MockProcessRunner::fail(""),                  // remote get-url (no remote)
-            Ok(Output {
-                status: exit_fail(),
-                stdout: b"CONFLICT (content): Merge conflict in lib.rs\n".to_vec(),
-                stderr: vec![],
-            }),
-            MockProcessRunner::ok_with_stdout(b"UU lib.rs\n"), // status --porcelain (mid-rebase, conflicted)
-            MockProcessRunner::ok(),                           // git rebase --abort
-        ]);
+        let (_calls, result) = run(&DispatchScript::finish()
+            .no_remote()
+            .rebase_conflicts_in_stdout(&["lib.rs"]));
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::RebaseConflict { ref files, .. } if files == &["lib.rs".to_string()]),
             "CONFLICT in stdout should map to RebaseConflict naming lib.rs, got: {err}"
@@ -349,13 +293,12 @@ mod tests {
     // conflict.
     #[test]
     fn finish_task_dirty_primary_worktree_returns_error_before_pull() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b" M src/unrelated.rs\n?? scratch.txt\n"), // status --porcelain (dirty)
-        ]);
+        // `assert_matches` inside `run` is what pins "and no pull, rebase or
+        // merge followed": the shape declares the dirty check as its last step.
+        let (_calls, result) =
+            run(&DispatchScript::finish().dirty_primary(&["src/unrelated.rs", "scratch.txt"]));
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::DirtyPrimaryWorktree { ref path, ref files }
                 if path == "/repo" && files == &["src/unrelated.rs".to_string(), "scratch.txt".to_string()]),
@@ -364,14 +307,6 @@ mod tests {
         assert!(
             err.to_string().contains("/repo") && err.to_string().contains("uncommitted"),
             "error message should name the primary worktree and mention uncommitted changes, got: {err}"
-        );
-
-        // No pull, rebase, or merge call should have been attempted.
-        let calls = mock.recorded_calls();
-        assert_eq!(
-            calls.len(),
-            2,
-            "should stop after rev-parse + status --porcelain, got: {calls:?}"
         );
     }
 
@@ -382,18 +317,9 @@ mod tests {
     // token is ever minted, so the agent cannot close its session at all.
     #[test]
     fn finish_task_bounds_the_pull() {
-        let mock = MockProcessRunner::new_with_delays(vec![
-            (None, MockProcessRunner::ok_with_stdout(b"main\n")), // rev-parse HEAD
-            (None, MockProcessRunner::ok_with_stdout(b"")),       // status --porcelain (clean)
-            (
-                None,
-                MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"),
-            ), // remote get-url
-            (Some(TEST_TIMEOUT), MockProcessRunner::ok()), // git pull — stalls past the bound
-        ]);
+        let (_calls, result) = run(&DispatchScript::finish().pull_times_out(FINISH_TIMEOUT));
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to pull") && m.contains("timed out")),
             "a stalled pull must surface as a timed-out pull, got: {err}"
@@ -404,15 +330,11 @@ mod tests {
     // same checkout can hold indefinitely.
     #[test]
     fn finish_task_bounds_the_rebase() {
-        let mock = MockProcessRunner::new_with_delays(vec![
-            (None, MockProcessRunner::ok_with_stdout(b"main\n")), // rev-parse HEAD
-            (None, MockProcessRunner::ok_with_stdout(b"")),       // status --porcelain (clean)
-            (None, MockProcessRunner::fail("")),                  // remote get-url (no remote)
-            (Some(TEST_TIMEOUT), MockProcessRunner::ok()), // git rebase — blocked on the lock
-        ]);
+        let (_calls, result) = run(&DispatchScript::finish()
+            .no_remote()
+            .rebase_times_out(FINISH_TIMEOUT));
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to run git rebase") && m.contains("timed out")),
             "a rebase blocked on the index lock must surface as a timeout, got: {err}"
@@ -422,16 +344,11 @@ mod tests {
     // Same for the fast-forward, which takes the repo root's index lock.
     #[test]
     fn finish_task_bounds_the_fast_forward() {
-        let mock = MockProcessRunner::new_with_delays(vec![
-            (None, MockProcessRunner::ok_with_stdout(b"main\n")), // rev-parse HEAD
-            (None, MockProcessRunner::ok_with_stdout(b"")),       // status --porcelain (clean)
-            (None, MockProcessRunner::fail("")),                  // remote get-url (no remote)
-            (None, MockProcessRunner::ok()),                      // git rebase
-            (Some(TEST_TIMEOUT), MockProcessRunner::ok()),        // git merge --ff-only — blocked
-        ]);
+        let (_calls, result) = run(&DispatchScript::finish()
+            .no_remote()
+            .fast_forward_times_out(FINISH_TIMEOUT));
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+        let err = result.unwrap_err();
         assert!(
             matches!(err, FinishError::Other(ref m) if m.contains("Failed to fast-forward") && m.contains("timed out")),
             "a blocked fast-forward must surface as a timeout, got: {err}"
@@ -445,24 +362,19 @@ mod tests {
     //
     // The preflight reads (rev-parse, status --porcelain, remote get-url) go
     // through `crate::git` helpers bounded in Task 2 with the production
-    // `SUBPROCESS_TIMEOUT` constant, not the injected `TEST_TIMEOUT` — only the
+    // `SUBPROCESS_TIMEOUT` constant, not the injected `FINISH_TIMEOUT` — only the
     // pull/rebase/merge calls `finish_task` issues directly carry the context's
     // `timeout` field. So the recorded timeouts are a mix of two different
     // `Some(_)` durations, not all equal to one value. What matters here is that
     // none of them is `None` — i.e. nothing on the path is unbounded.
     #[test]
     fn finish_task_bounds_every_subprocess_it_runs() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url
-            MockProcessRunner::ok(),                      // git pull origin main
-            MockProcessRunner::ok(),                      // git rebase main
-            MockProcessRunner::ok(),                      // git merge --ff-only
-        ]);
+        let script = DispatchScript::finish();
+        let mock = script.runner();
 
-        finish_task(&fctx("main"), &mock).expect("rebase + fast-forward succeeds");
+        finish_task(&script.finish_context(), &mock).expect("rebase + fast-forward succeeds");
 
+        script.assert_matches(&mock.recorded_calls());
         let timeouts = mock.recorded_timeouts();
         assert_eq!(
             timeouts.len(),
@@ -485,20 +397,13 @@ mod tests {
     // `finish_task_bounds_every_subprocess_it_runs` above.
     #[test]
     fn finish_task_bounds_the_conflict_abort_path() {
-        let mock = MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-            MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-            MockProcessRunner::fail(""),                  // remote get-url (no remote)
-            Ok(Output {
-                status: exit_fail(),
-                stdout: b"CONFLICT (content): Merge conflict in lib.rs\n".to_vec(),
-                stderr: vec![],
-            }), // git rebase — conflicts
-            MockProcessRunner::ok_with_stdout(b"UU lib.rs\n"), // status --porcelain (mid-rebase)
-            MockProcessRunner::ok(),                      // git rebase --abort
-        ]);
+        let script = DispatchScript::finish()
+            .no_remote()
+            .rebase_conflicts_in_stdout(&["lib.rs"]);
+        let mock = script.runner();
 
-        let err = finish_task(&fctx("main"), &mock).unwrap_err();
+        let err = finish_task(&script.finish_context(), &mock).unwrap_err();
+        script.assert_matches(&mock.recorded_calls());
         assert!(
             matches!(err, FinishError::RebaseConflict { .. }),
             "expected a rebase conflict, got: {err}"

@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
+use crate::dispatch::mock_sequence::DispatchScript;
 
 // -- update_task boundary parity ---------------------------------------------
 //
@@ -2333,13 +2334,7 @@ async fn list_tasks_done_status_filter() {
 #[tokio::test]
 async fn wrap_up_rebase_does_not_change_status() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // git remote get-url (no remote)
-        MockProcessRunner::ok(),                      // git rebase main
-        MockProcessRunner::ok(),                      // git merge --ff-only
-    ]));
+    let runner: Arc<dyn ProcessRunner> = DispatchScript::finish().no_remote().shared_runner();
     let state = Arc::new(McpState::new(
         McpDeps {
             db: db.clone(),
@@ -2396,13 +2391,7 @@ async fn wrap_up_rebase_does_not_change_status() {
 #[tokio::test]
 async fn wrap_up_rebase_does_not_recalculate_epic_status() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // git remote get-url (no remote)
-        MockProcessRunner::ok(),                      // git rebase main
-        MockProcessRunner::ok(),                      // git merge --ff-only
-    ]));
+    let runner: Arc<dyn ProcessRunner> = DispatchScript::finish().no_remote().shared_runner();
     let state = Arc::new(McpState::new(
         McpDeps {
             db: db.clone(),
@@ -2461,12 +2450,7 @@ async fn wrap_up_rebase_does_not_recalculate_epic_status() {
 #[tokio::test]
 async fn wrap_up_accepts_string_task_id() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse
-        MockProcessRunner::fail(""),                  // git remote get-url
-        MockProcessRunner::ok(),                      // git rebase main
-        MockProcessRunner::ok(),                      // git merge --ff-only
-    ]));
+    let runner: Arc<dyn ProcessRunner> = DispatchScript::finish().no_remote().shared_runner();
     let state = Arc::new(McpState::new(
         McpDeps {
             db: db.clone(),

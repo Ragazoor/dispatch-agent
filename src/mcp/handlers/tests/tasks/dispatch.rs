@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 
+use crate::dispatch::mock_sequence::DispatchScript;
 use crate::mcp::handlers::tasks::WrapUpAction;
 
 /// An epic that does not resolve stops the chain silently. This is the
@@ -1014,13 +1015,7 @@ async fn dispatch_next_tool_no_longer_exists() {
 #[tokio::test]
 async fn wrap_up_rebase_preserves_tmux_window() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // git remote get-url (no remote)
-        MockProcessRunner::ok(),                      // git rebase main
-        MockProcessRunner::ok(),                      // git merge --ff-only
-    ]));
+    let runner: Arc<dyn ProcessRunner> = DispatchScript::finish().no_remote().shared_runner();
     let state = Arc::new(McpState::new(
         McpDeps {
             db: db.clone(),
@@ -1087,14 +1082,10 @@ async fn wrap_up_rebase_preserves_tmux_window() {
 #[tokio::test]
 async fn wrap_up_rebase_conflict_sets_conflict_substatus() {
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // git status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // git remote get-url (no remote)
-        MockProcessRunner::fail("CONFLICT (content): Merge conflict in foo.rs"), // git rebase
-        MockProcessRunner::ok_with_stdout(b"UU foo.rs\n"), // git status --porcelain (mid-rebase, conflicted)
-        MockProcessRunner::ok(),                           // git rebase --abort
-    ]));
+    let runner: Arc<dyn ProcessRunner> = DispatchScript::finish()
+        .no_remote()
+        .rebase_conflicts_in_stderr(&["foo.rs"])
+        .shared_runner();
     let state = Arc::new(McpState::new(
         McpDeps {
             db: db.clone(),
@@ -1158,13 +1149,14 @@ async fn wrap_up_rebase_clears_conflict_substatus_on_non_conflict_error() {
     // and a new rebase fails with a non-conflict error (e.g. Other), the
     // stale Conflict sub_status should be cleared — matching TUI behavior.
     let db: Arc<dyn db::TaskStore> = Arc::new(Database::open_in_memory().await.unwrap());
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail(""), // detect_default_branch (symbolic-ref)
-        MockProcessRunner::ok_with_stdout(b"main\n"), // git rev-parse --abbrev-ref HEAD
-        MockProcessRunner::fail(""), // git remote get-url (no remote)
-        MockProcessRunner::fail("fatal: some other git error"), // git rebase (non-conflict failure)
-        MockProcessRunner::ok(),     // git rebase --abort
-    ]));
+    // This queue was stale before the script existed: it led with a
+    // `detect_default_branch` response `finish_task` never asks for, and omitted
+    // the dirty-worktree porcelain read, so every response after the first
+    // answered the wrong call and it still passed.
+    let runner: Arc<dyn ProcessRunner> = DispatchScript::finish()
+        .no_remote()
+        .rebase_fails()
+        .shared_runner();
     let state = Arc::new(McpState::new(
         McpDeps {
             db: db.clone(),

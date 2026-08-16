@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use super::mock_sequence::{pr_view_reply, DispatchScript, PrHead, Step, COMPANION_PANE_ID};
+use super::mock_sequence::{
+    pr_view_reply, DispatchScript, FinishRun, PrHead, Step, COMPANION_PANE_ID,
+};
 use super::prompts::{
     allium_instruction, build_prompt, build_quick_dispatch_prompt, epic_preamble,
     mcp_tools_instruction, plan_and_attach_instruction, reused_rebase_preamble, task_block,
@@ -11,10 +13,9 @@ use super::worktree::{
 use super::*;
 
 use crate::models::{EpicId, Task, TaskId, TaskStatus};
-use crate::process::{exit_fail, AgentBinaries, MockProcessRunner, SUBPROCESS_TIMEOUT};
+use crate::process::{AgentBinaries, MockProcessRunner, SUBPROCESS_TIMEOUT};
 use crate::tmux;
 use chrono::Utc;
-use std::process::Output;
 use std::time::Duration;
 
 // -----------------------------------------------------------------------
@@ -2259,32 +2260,20 @@ fn pr_head_branch_is_bounded_by_subprocess_timeout() {
 
 // --- finish_task tests ---
 
-/// Build a `FinishContext` with the standard test repo/worktree/branch, varying
-/// only the base branch the individual tests care about.
-fn fctx(base_branch: &str) -> FinishContext<'_> {
-    FinishContext {
-        repo_path: "/repo",
-        worktree: "/repo/.worktrees/42-fix-bug",
-        branch: "42-fix-bug",
-        base_branch,
-        timeout: std::time::Duration::from_millis(50),
-    }
+/// Drive `finish_task` under `script`, which declares the base branch, the
+/// paths and the whole subprocess sequence — and asserts the recorded calls are
+/// exactly that sequence. See `docs/conventions.md`, "Driving a dispatch:
+/// `DispatchScript`, never a hand-written queue"; the same rule holds for a
+/// finish.
+fn run_finish(script: &DispatchScript) -> FinishRun {
+    script.drive_finish()
 }
 
 #[test]
 fn finish_task_happy_path() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url origin
-        MockProcessRunner::ok(),                                             // git pull origin main
-        MockProcessRunner::ok(), // git rebase main (from worktree)
-        MockProcessRunner::ok(), // git merge --ff-only (fast-forward main)
-    ]);
+    let (calls, result) = run_finish(&DispatchScript::finish());
 
-    finish_task(&fctx("main"), &mock).unwrap();
-
-    let calls = mock.recorded_calls();
+    result.unwrap();
     assert!(calls.iter().any(|c| c.1.contains(&"rebase".to_string())));
     assert!(calls.iter().any(|c| c.1.contains(&"--ff-only".to_string())));
     // No worktree removal
@@ -2293,40 +2282,25 @@ fn finish_task_happy_path() {
 
 #[test]
 fn finish_task_with_master_default_branch() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"master\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),         // status --porcelain (clean)
-        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url origin
-        MockProcessRunner::ok(), // git pull origin master
-        MockProcessRunner::ok(), // git rebase master (from worktree)
-        MockProcessRunner::ok(), // git merge --ff-only
-    ]);
+    let script = DispatchScript::finish().base_branch("master");
+    let (calls, result) = run_finish(&script);
 
-    finish_task(&fctx("master"), &mock).unwrap();
-
-    let calls = mock.recorded_calls();
-    // pull should reference "master" not "main"
-    let pull_call = calls
-        .iter()
-        .find(|c| c.1.contains(&"pull".to_string()))
-        .unwrap();
-    assert!(pull_call.1.contains(&"master".to_string()));
-    // rebase should reference "master"
-    let rebase_call = calls
-        .iter()
-        .find(|c| c.1.contains(&"rebase".to_string()))
-        .unwrap();
-    assert!(rebase_call.1.contains(&"master".to_string()));
+    result.unwrap();
+    // pull and rebase should both reference "master", not "main"
+    for step in [Step::Pull, Step::Rebase] {
+        assert!(
+            calls[script.index_of(step)]
+                .1
+                .contains(&"master".to_string()),
+            "{step:?} should target master, got: {calls:?}"
+        );
+    }
 }
 
 #[test]
 fn finish_task_not_on_default_branch() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"feature-branch\n"), // rev-parse HEAD
-    ]);
+    let (_calls, result) = run_finish(&DispatchScript::finish().head_branch("feature-branch"));
 
-    let result = finish_task(&fctx("main"), &mock);
-    assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(matches!(err, FinishError::NotOnDefaultBranch { .. }));
     assert!(err.to_string().contains("feature-branch"));
@@ -2334,20 +2308,11 @@ fn finish_task_not_on_default_branch() {
 
 #[test]
 fn finish_task_rebase_conflict() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"),
-        MockProcessRunner::ok_with_stdout(b""),              // status --porcelain (clean)
-        MockProcessRunner::fail(""),                         // remote get-url (no remote)
-        Ok(Output {
-            status: exit_fail(),
-            stdout: b"".to_vec(),
-            stderr: b"CONFLICT (content): Merge conflict in src/main.rs\nerror: could not apply abc1234\n".to_vec(),
-        }),
-        MockProcessRunner::ok_with_stdout(b"UU src/main.rs\n"), // status --porcelain (mid-rebase, conflicted)
-        MockProcessRunner::ok(),                             // git rebase --abort
-    ]);
+    let script = DispatchScript::finish()
+        .no_remote()
+        .rebase_conflicts_in_stderr(&["src/main.rs"]);
+    let (calls, result) = run_finish(&script);
 
-    let result = finish_task(&fctx("main"), &mock);
     let err = result.unwrap_err();
     assert!(
         matches!(
@@ -2356,31 +2321,20 @@ fn finish_task_rebase_conflict() {
         ),
         "expected RebaseConflict naming src/main.rs, got: {err}"
     );
-    let calls = mock.recorded_calls();
     assert!(calls.last().unwrap().1.contains(&"--abort".to_string()));
 }
 
 #[test]
 fn finish_task_pull_fails() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"),
-        MockProcessRunner::ok_with_stdout(b""), // status --porcelain (clean)
-        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote get-url origin
-        MockProcessRunner::fail("fatal: unable to access remote"),           // git pull fails
-    ]);
-
-    let result = finish_task(&fctx("main"), &mock);
+    let (_calls, result) = run_finish(&DispatchScript::finish().pull_fails());
     assert!(matches!(result.unwrap_err(), FinishError::Other(_)));
 }
 
 #[test]
 fn finish_task_dirty_primary_worktree_returns_error_before_pull() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b" M src/unrelated.rs\n"), // status --porcelain (dirty)
-    ]);
+    let (calls, result) =
+        run_finish(&DispatchScript::finish().dirty_primary(&["src/unrelated.rs"]));
 
-    let result = finish_task(&fctx("main"), &mock);
     let err = result.unwrap_err();
     assert!(
         matches!(err, FinishError::DirtyPrimaryWorktree { ref path, ref files }
@@ -2388,7 +2342,6 @@ fn finish_task_dirty_primary_worktree_returns_error_before_pull() {
         "expected DirtyPrimaryWorktree naming /repo and src/unrelated.rs, got: {err}"
     );
 
-    let calls = mock.recorded_calls();
     assert!(
         !calls.iter().any(|c| c.1.contains(&"pull".to_string())
             || c.1.contains(&"rebase".to_string())
@@ -2464,17 +2417,9 @@ fn check_pr_status_open_changes_requested() {
 
 #[test]
 fn finish_task_no_remote_skips_pull() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // remote get-url (no remote)
-        MockProcessRunner::ok(),                      // git rebase main (from worktree)
-        MockProcessRunner::ok(),                      // git merge --ff-only (fast-forward)
-                                                      // No tmux window, no cleanup
-    ]);
+    let (calls, result) = run_finish(&DispatchScript::finish().no_remote());
 
-    finish_task(&fctx("main"), &mock).unwrap();
-    let calls = mock.recorded_calls();
+    result.unwrap();
     // Should not have a "pull" call
     assert!(!calls.iter().any(|c| c.1.contains(&"pull".to_string())));
 }
@@ -2484,17 +2429,10 @@ fn finish_task_no_remote_skips_pull() {
 #[test]
 fn finish_task_uses_explicit_base_branch_not_auto_detected() {
     // "develop" is passed explicitly; no symbolic-ref (detect_default_branch) call
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"develop\n"), // rev-parse HEAD → on develop
-        MockProcessRunner::ok_with_stdout(b""),          // status --porcelain (clean)
-        MockProcessRunner::fail(""),                     // remote get-url (no remote)
-        MockProcessRunner::ok(),                         // git rebase develop
-        MockProcessRunner::ok(),                         // git merge --ff-only develop
-    ]);
+    let script = DispatchScript::finish().base_branch("develop").no_remote();
+    let (calls, result) = run_finish(&script);
 
-    finish_task(&fctx("develop"), &mock).unwrap();
-
-    let calls = mock.recorded_calls();
+    result.unwrap();
     // No symbolic-ref call — branch was provided explicitly
     assert!(
         !calls
@@ -2503,11 +2441,9 @@ fn finish_task_uses_explicit_base_branch_not_auto_detected() {
         "symbolic-ref must not be called when base_branch is explicit"
     );
     // Rebase should target "develop"
-    let rebase = calls
-        .iter()
-        .find(|c| c.1.contains(&"rebase".to_string()))
-        .unwrap();
-    assert!(rebase.1.contains(&"develop".to_string()));
+    assert!(calls[script.index_of(Step::Rebase)]
+        .1
+        .contains(&"develop".to_string()));
 }
 
 #[test]
@@ -2822,22 +2758,13 @@ fn cleanup_skips_kill_when_window_not_found() {
 fn finish_task_rebase_other_failure_aborts_and_returns_other() {
     // Rebase fails with a non-conflict stderr → maps to FinishError::Other.
     // `git rebase --abort` is still issued for cleanup.
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // remote get-url (no remote)
-        MockProcessRunner::fail("fatal: unrelated histories"), // git rebase
-        MockProcessRunner::ok(),                      // git rebase --abort
-    ]);
+    let (calls, result) = run_finish(&DispatchScript::finish().no_remote().rebase_fails());
 
-    let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+    let err = result.unwrap_err();
     assert!(
         matches!(err, FinishError::Other(ref m) if m.contains("Rebase failed")),
         "non-conflict rebase failure should be FinishError::Other, got: {err}"
     );
-
-    let calls = mock.recorded_calls();
     assert!(
         calls.last().unwrap().1.contains(&"--abort".to_string()),
         "rebase --abort must be invoked after a non-conflict rebase failure"
@@ -2846,16 +2773,9 @@ fn finish_task_rebase_other_failure_aborts_and_returns_other() {
 
 #[test]
 fn finish_task_ff_only_failure_returns_other() {
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // remote get-url (no remote)
-        MockProcessRunner::ok(),                      // git rebase main
-        MockProcessRunner::fail("fatal: Not possible to fast-forward, aborting."),
-    ]);
+    let (_calls, result) = run_finish(&DispatchScript::finish().no_remote().fast_forward_fails());
 
-    let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+    let err = result.unwrap_err();
     assert!(
         matches!(err, FinishError::Other(ref m) if m.contains("Fast-forward failed")),
         "ff-only failure should map to FinishError::Other, got: {err}"
@@ -2865,10 +2785,9 @@ fn finish_task_ff_only_failure_returns_other() {
 #[test]
 fn finish_task_rev_parse_runner_error_returns_other() {
     // The runner itself errors (e.g. git binary missing) on rev-parse.
-    let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("no such program"))]);
+    let (_calls, result) = run_finish(&DispatchScript::finish().current_branch_cannot_run());
 
-    let err = finish_task(&fctx("main"), &mock).unwrap_err();
-
+    let err = result.unwrap_err();
     assert!(
         matches!(err, FinishError::Other(ref m) if m.contains("Failed to check current branch")),
         "rev-parse runner error should map to FinishError::Other, got: {err}"
@@ -2878,17 +2797,9 @@ fn finish_task_rev_parse_runner_error_returns_other() {
 #[test]
 fn finish_task_no_tmux_window_skips_tmux_entirely() {
     // tmux_window=None → no list-windows or kill-window calls.
-    let mock = MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"main\n"), // rev-parse HEAD
-        MockProcessRunner::ok_with_stdout(b""),       // status --porcelain (clean)
-        MockProcessRunner::fail(""),                  // remote get-url (no remote)
-        MockProcessRunner::ok(),                      // git rebase
-        MockProcessRunner::ok(),                      // git merge --ff-only
-    ]);
+    let (calls, result) = run_finish(&DispatchScript::finish().no_remote());
 
-    finish_task(&fctx("main"), &mock).unwrap();
-
-    let calls = mock.recorded_calls();
+    result.unwrap();
     assert!(
         !calls.iter().any(|c| c.0 == "tmux"),
         "no tmux calls expected when tmux_window is None, got: {calls:?}"
