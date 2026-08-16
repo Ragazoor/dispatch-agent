@@ -906,7 +906,7 @@ mod tests {
         let now = Utc::now();
         let mut task = make_unprovisioned_task(1, TaskStatus::Running);
         task.last_pre_tool_use_at = Some(
-            now - chrono::Duration::seconds(crate::tui::DISPATCH_WATCHDOG_TIMEOUT.as_secs() as i64)
+            now - chrono::Duration::from_std(crate::tui::DISPATCH_WATCHDOG_TIMEOUT).unwrap()
                 - chrono::Duration::seconds(1),
         );
         let app = App::new(vec![task.clone()]);

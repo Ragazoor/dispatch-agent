@@ -1408,13 +1408,11 @@ fn dispatch_watchdog_timeout_matches_provision_worst_case() {
     assert_eq!(
         crate::tui::DISPATCH_WATCHDOG_TIMEOUT,
         crate::process::SUBPROCESS_TIMEOUT * crate::dispatch::PROVISION_MAX_SUBPROCESS_CALLS,
-        "the watchdog must be sized off SUBPROCESS_TIMEOUT * PROVISION_MAX_SUBPROCESS_CALLS"
-    );
-    assert!(
-        crate::tui::DISPATCH_WATCHDOG_TIMEOUT > crate::process::SUBPROCESS_TIMEOUT,
-        "a 1:1 mirror is the bug #4201 fixed: fetch_origin's retry budget under \
-         FetchPolicy::Required can issue several SUBPROCESS_TIMEOUT-bounded calls \
-         before a fresh dispatch succeeds or gives up"
+        "the watchdog must be sized off SUBPROCESS_TIMEOUT * PROVISION_MAX_SUBPROCESS_CALLS \
+         (PROVISION_MAX_SUBPROCESS_CALLS > 1, so this also rules out the old 1:1 mirror — \
+         exactly the bug #4201 fixed: fetch_origin's retry budget under FetchPolicy::Required \
+         can issue several SUBPROCESS_TIMEOUT-bounded calls before a fresh dispatch succeeds \
+         or gives up)"
     );
 }
 

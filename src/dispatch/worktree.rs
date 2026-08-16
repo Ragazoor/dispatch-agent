@@ -33,6 +33,15 @@ pub(super) const FETCH_MAX_ATTEMPTS: u32 = 3;
 /// `DISPATCH_WATCHDOG_TIMEOUT` (`src/tui/mod.rs`) can derive its budget from
 /// this instead of mirroring the number by hand — see `FETCH_MAX_ATTEMPTS`'s
 /// own doc comment for why mirroring is the hazard this avoids (#4201).
+///
+/// Deliberately stops at `git worktree add`: the three tmux calls that follow
+/// it in `provision_worktree`'s `post_add` step are unbounded today (they call
+/// `runner.run(...)`, not `run_with_timeout`), so they are out of scope for
+/// this count. If a future change (tracked separately) puts those calls behind
+/// `run_with_timeout` too, they become sequential `SUBPROCESS_TIMEOUT`-bounded
+/// calls *after* `WorktreeAdd`, and this constant must grow to cover them —
+/// nothing here or in the test that pins this value would catch that drift on
+/// its own.
 pub(crate) const PROVISION_MAX_SUBPROCESS_CALLS: u32 = FETCH_MAX_ATTEMPTS + 4;
 
 // Zero delay under `cfg(test)` so the retry tests below don't spend real
