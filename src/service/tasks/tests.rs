@@ -55,6 +55,8 @@ fn make_task_params(repo_path: &str) -> CreateTaskParams {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     }
 }
 
@@ -77,6 +79,8 @@ async fn create_and_get_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -103,6 +107,8 @@ async fn create_task_with_tag() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -129,6 +135,8 @@ async fn create_task_with_sort_order() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -154,6 +162,8 @@ async fn update_task_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -186,6 +196,8 @@ async fn update_task_no_fields_returns_error() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -214,6 +226,8 @@ async fn update_task_params_builder_compiles() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -243,6 +257,8 @@ async fn update_task_invalid_substatus_for_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -418,6 +434,8 @@ async fn list_tasks_with_filter() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     })
     .await
     .unwrap();
@@ -479,6 +497,8 @@ async fn update_task_with_epic_linkage() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -524,6 +544,8 @@ async fn update_task_status_recalculates_parent_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -581,6 +603,8 @@ async fn update_task_relink_recalculates_old_and_new_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -640,6 +664,8 @@ async fn make_task(svc: &TaskService, epic_id: Option<EpicId>) -> TaskId {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     })
     .await
     .unwrap()
@@ -938,6 +964,8 @@ async fn list_epics_with_progress() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -991,6 +1019,8 @@ async fn list_epics_with_progress_multiple_epics() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1006,6 +1036,8 @@ async fn list_epics_with_progress_multiple_epics() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1022,6 +1054,8 @@ async fn list_epics_with_progress_multiple_epics() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1072,6 +1106,8 @@ async fn update_task_status_recalculates_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1115,6 +1151,8 @@ async fn get_epic_with_subtasks() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1305,6 +1343,8 @@ async fn epic_with_backlog_subtasks(
                 base_branch: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                schedule_interval_secs: None,
+                pinned_branch: None,
             })
             .await
             .unwrap();
@@ -1578,6 +1618,8 @@ async fn create_task_returning_gives_full_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1605,6 +1647,8 @@ async fn create_task_with_auto_run_plan_true_persists() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: true,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1641,6 +1685,8 @@ async fn create_task_returning_with_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1678,6 +1724,8 @@ async fn create_task_returning_sets_all_optional_fields_atomically() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1706,6 +1754,8 @@ async fn delete_task_removes_it() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1743,6 +1793,8 @@ async fn update_task_sets_worktree_and_tmux_window() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1778,6 +1830,8 @@ async fn update_task_clears_worktree() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1826,6 +1880,8 @@ async fn update_task_allows_done_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1901,6 +1957,8 @@ async fn update_task_worktree_set_persists() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1933,6 +1991,8 @@ async fn update_task_worktree_clear_sets_null() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1974,6 +2034,8 @@ async fn update_task_pr_url_set_and_clear() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2031,6 +2093,8 @@ async fn list_tasks_filters_by_epic_id() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2047,6 +2111,8 @@ async fn list_tasks_filters_by_epic_id() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2079,6 +2145,8 @@ async fn list_tasks_excludes_archived_by_default() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2112,6 +2180,8 @@ async fn list_tasks_filters_by_repo_paths() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     })
     .await
     .unwrap();
@@ -2127,6 +2197,8 @@ async fn list_tasks_filters_by_repo_paths() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     })
     .await
     .unwrap();
@@ -2159,6 +2231,8 @@ async fn list_tasks_excludes_caller_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2174,6 +2248,8 @@ async fn list_tasks_excludes_caller_task() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     })
     .await
     .unwrap();
@@ -2320,6 +2396,8 @@ async fn update_task_toctou_last_write_wins() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2374,6 +2452,8 @@ async fn update_task_sub_status_validated_against_persisted_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2703,6 +2783,8 @@ async fn record_hook_event_noop_for_non_running_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3732,6 +3814,8 @@ mod property_tests {
                         tag: None,
                         wrap_up_mode: None,
                         auto_run_plan: false,
+                        schedule_interval_secs: None,
+                        pinned_branch: None,
                     })
                     .await
                     .unwrap();
@@ -3932,6 +4016,8 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3994,6 +4080,8 @@ async fn create_task_on_grouped_epic_routes_into_sub_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -4026,6 +4114,8 @@ async fn update_repo_path_reroutes_within_grouped_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -4075,6 +4165,8 @@ async fn move_task_to_grouped_epic_routes_into_sub_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -4121,6 +4213,8 @@ async fn move_task_to_non_grouped_epic_lands_directly() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();

@@ -524,6 +524,8 @@ impl TaskService {
                 tag: params.tag,
                 wrap_up_mode: params.wrap_up_mode,
                 auto_run_plan: params.auto_run_plan,
+                schedule_interval_secs: params.schedule_interval_secs,
+                pinned_branch: params.pinned_branch.as_deref(),
             })
             .await?;
 

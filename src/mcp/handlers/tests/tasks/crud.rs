@@ -33,6 +33,19 @@ fn update_task_schema_properties_match_the_args_struct() {
     assert_eq!(advertised, declared);
 }
 
+/// The JSON type a property really is, ignoring a nullable field's `"null"`
+/// alternative. `"type"` is either a bare string or an array of them.
+fn nominal_type(ty: &serde_json::Value) -> Option<&str> {
+    match ty {
+        serde_json::Value::String(s) => Some(s.as_str()),
+        serde_json::Value::Array(members) => members
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .find(|m| *m != "null"),
+        _ => None,
+    }
+}
+
 /// Every advertised field name is one `deny_unknown_fields` accepts. This is
 /// the leg that used to fail at runtime: a schema/struct name mismatch was a
 /// `-32602 Invalid arguments` rather than a build or test failure.
@@ -51,7 +64,10 @@ fn every_advertised_update_task_field_is_accepted_by_the_parser() {
                 .find(|m| !m.is_null())
                 .expect("an enum must advertise at least one non-null member")
                 .clone(),
-            None => match spec["type"].as_str() {
+            // A nullable field advertises `["<type>", "null"]`. Clearing is
+            // covered elsewhere; here the representative value is the
+            // non-null half.
+            None => match nominal_type(&spec["type"]) {
                 Some("integer") => json!(1),
                 Some("boolean") => json!(true),
                 Some("string") => json!("x"),
@@ -122,6 +138,8 @@ async fn update_task_maps_every_advertised_field_to_params() {
                 "base_branch": "develop",
                 "wrap_up_mode": "pr",
                 "auto_run_plan": true,
+                "schedule_interval_secs": 600,
+                "pinned_branch": "staging",
             }
         })),
     )
@@ -153,6 +171,83 @@ async fn update_task_maps_every_advertised_field_to_params() {
         text.contains("url"),
         "update_task did not report url as updated: {text}"
     );
+}
+
+/// The scheduling primitive's config surface is MCP, not the TUI (design doc
+/// Part A, "Config surface"). Both fields are nullable through `update_task`:
+/// a number/string sets, an explicit `null` unschedules/unpins.
+#[tokio::test]
+async fn update_task_sets_and_clears_scheduling_fields() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": {
+                "task_id": task_id.0,
+                "schedule_interval_secs": 600,
+                "pinned_branch": "staging",
+            }
+        })),
+    )
+    .await;
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_eq!(task.schedule_interval_secs, Some(600));
+    assert_eq!(task.pinned_branch.as_deref(), Some("staging"));
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": {
+                "task_id": task_id.0,
+                "schedule_interval_secs": null,
+                "pinned_branch": null,
+            }
+        })),
+    )
+    .await;
+
+    let task = state.db.get_task(task_id).await.unwrap().unwrap();
+    assert_eq!(task.schedule_interval_secs, None);
+    assert_eq!(task.pinned_branch, None);
+}
+
+/// A scheduled, pinned task must be creatable in one `create_task` call —
+/// the design doc's `create_task(... schedule_interval_secs: 600,
+/// pinned_branch: "staging" ...)` example.
+#[tokio::test]
+async fn create_task_accepts_scheduling_fields() {
+    let state = test_state().await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "create_task",
+            "arguments": {
+                "title": "staging pipeline",
+                "repo_path": "/repo",
+                "schedule_interval_secs": 600,
+                "pinned_branch": "staging",
+            }
+        })),
+    )
+    .await;
+    assert!(resp.error.is_none(), "create_task failed: {resp:?}");
+
+    let tasks = state.db.list_all().await.unwrap();
+    let task = tasks
+        .iter()
+        .find(|t| t.title == "staging pipeline")
+        .expect("created task");
+    assert_eq!(task.schedule_interval_secs, Some(600));
+    assert_eq!(task.pinned_branch.as_deref(), Some("staging"));
 }
 
 // -- update_task tests -------------------------------------------------------
@@ -329,6 +424,8 @@ async fn get_task_found() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -500,6 +597,8 @@ async fn update_task_accepts_string_task_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -640,6 +739,8 @@ async fn get_task_accepts_string_task_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -680,6 +781,8 @@ async fn update_task_with_plan() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -717,6 +820,8 @@ async fn update_task_title_only() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -758,6 +863,8 @@ async fn update_task_status_optional() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -795,6 +902,8 @@ async fn update_task_title_and_description() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -832,6 +941,8 @@ async fn update_task_repo_path() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -873,6 +984,8 @@ async fn update_task_no_fields_errors() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -906,6 +1019,8 @@ async fn patch_task_sets_multiple_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -947,6 +1062,8 @@ async fn update_task_without_plan_preserves_existing() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -987,6 +1104,8 @@ async fn update_task_sets_pr_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1320,6 +1439,8 @@ async fn list_tasks_returns_all_when_no_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1337,6 +1458,8 @@ async fn list_tasks_returns_all_when_no_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1371,6 +1494,8 @@ async fn list_tasks_filters_by_single_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1388,6 +1513,8 @@ async fn list_tasks_filters_by_single_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1422,6 +1549,8 @@ async fn list_tasks_filters_by_multiple_statuses() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1439,6 +1568,8 @@ async fn list_tasks_filters_by_multiple_statuses() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1456,6 +1587,8 @@ async fn list_tasks_filters_by_multiple_statuses() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1612,6 +1745,8 @@ async fn update_task_sets_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1653,6 +1788,8 @@ async fn update_task_rejects_invalid_sub_status_for_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1686,6 +1823,8 @@ async fn update_task_rejects_bogus_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1719,6 +1858,8 @@ async fn update_task_sub_status_with_status_change() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1757,6 +1898,8 @@ async fn update_task_status_running_with_needs_input() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1797,6 +1940,8 @@ async fn update_task_sub_status_invalid_for_new_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1831,6 +1976,8 @@ async fn list_tasks_shows_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1873,6 +2020,8 @@ async fn get_task_shows_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2131,6 +2280,8 @@ async fn list_tasks_filters_by_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2148,6 +2299,8 @@ async fn list_tasks_filters_by_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2197,6 +2350,8 @@ async fn list_tasks_filters_by_status_and_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2214,6 +2369,8 @@ async fn list_tasks_filters_by_status_and_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2266,6 +2423,8 @@ async fn list_tasks_epic_filter_no_match() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2298,6 +2457,8 @@ async fn list_tasks_done_status_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2315,6 +2476,8 @@ async fn list_tasks_done_status_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2362,6 +2525,8 @@ async fn wrap_up_rebase_does_not_change_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2420,6 +2585,8 @@ async fn wrap_up_rebase_does_not_recalculate_epic_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2478,6 +2645,8 @@ async fn wrap_up_accepts_string_task_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2530,6 +2699,8 @@ async fn get_task_shows_all_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2598,6 +2769,8 @@ async fn get_task_without_epic_omits_epic_line() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2639,6 +2812,8 @@ async fn list_tasks_shows_tag_and_plan_indicators() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2689,6 +2864,8 @@ async fn list_tasks_shows_epic_indicator() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2729,6 +2906,8 @@ async fn list_tasks_truncates_long_descriptions() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2767,6 +2946,8 @@ async fn list_tasks_excludes_archived_by_default() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2784,6 +2965,8 @@ async fn list_tasks_excludes_archived_by_default() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2911,6 +3094,8 @@ async fn update_task_with_base_branch_updates_it() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2956,6 +3141,8 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2972,6 +3159,8 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2988,6 +3177,8 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3028,6 +3219,8 @@ async fn list_tasks_task_identity_scopes_to_project_when_no_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3044,6 +3237,8 @@ async fn list_tasks_task_identity_scopes_to_project_when_no_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3081,6 +3276,8 @@ async fn list_tasks_session_identity_sees_all_tasks() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     })
     .await
     .unwrap();
@@ -3096,6 +3293,8 @@ async fn list_tasks_session_identity_sees_all_tasks() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        schedule_interval_secs: None,
+        pinned_branch: None,
     })
     .await
     .unwrap();
@@ -3130,6 +3329,8 @@ async fn list_tasks_repo_paths_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3147,6 +3348,8 @@ async fn list_tasks_repo_paths_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3221,6 +3424,8 @@ async fn list_tasks_includes_plan_goal_in_output() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3259,6 +3464,8 @@ async fn list_tasks_falls_back_to_description_when_no_plan() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3320,6 +3527,8 @@ async fn update_task_pr_finalisation_appends_reflection_nudge_by_default() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3367,6 +3576,8 @@ async fn update_task_pr_finalisation_omits_nudge_when_disabled() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3412,6 +3623,8 @@ async fn update_task_pr_set_without_status_does_not_nudge() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3455,6 +3668,8 @@ async fn update_task_status_review_without_pr_url_change_does_not_nudge() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3499,6 +3714,8 @@ async fn update_task_pr_url_already_set_does_not_nudge_again() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3569,6 +3786,8 @@ async fn create_task_task_identity_inherits_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3606,6 +3825,8 @@ async fn create_task_explicit_null_epic_clears_inheritance() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -3660,6 +3881,8 @@ async fn get_task_shows_wrap_up_mode_when_set() {
             tag: None,
             wrap_up_mode: Some(crate::models::WrapUpMode::Rebase),
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();

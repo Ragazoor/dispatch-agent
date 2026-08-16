@@ -8,7 +8,8 @@ use crate::service::{FieldUpdate, UpdateTaskParams};
 
 // Promoted to pub(super) so sub-modules can `use super::{parse_args, ...}`
 pub(super) use super::types::{
-    deserialize_flexible_id, deserialize_nullable_flexible_id, deserialize_nullable_wrap_up_mode,
+    deserialize_flexible_id, deserialize_nullable_flexible_i64, deserialize_nullable_flexible_id,
+    deserialize_nullable_string, deserialize_nullable_wrap_up_mode,
     deserialize_optional_flexible_i64, deserialize_optional_flexible_id,
     deserialize_optional_url_type, fetch_caller_task, parse_args, service_err_to_response,
     JsonRpcResponse, StatusFilter, INTERNAL_ERROR, INVALID_PARAMS,
@@ -148,6 +149,18 @@ mcp_args! {
         "type": "boolean",
         "description": "When true and the task has a plan_path, the dispatched agent implements the plan immediately instead of asking for confirmation first."
     };
+
+    #[serde(default, deserialize_with = "deserialize_nullable_flexible_i64")]
+    optional schedule_interval_secs: Option<Option<i64>> = [set(schedule_interval_secs)] {
+        "type": ["integer", "null"],
+        "description": "Redispatch this task automatically every N seconds while it is idle (backlog or done, no live agent). Pass null to unschedule. Combine with pinned_branch to skip the redispatch entirely when nothing new has landed on that branch."
+    };
+
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    optional pinned_branch: Option<Option<String>> = [set(pinned_branch)] {
+        "type": ["string", "null"],
+        "description": "Check the task's worktree out on this EXISTING branch (e.g. 'staging') instead of creating a disposable per-task branch. Pass null to unpin."
+    };
 }
 
 #[derive(Deserialize)]
@@ -191,6 +204,10 @@ pub(super) struct CreateTaskWithEpicArgs {
     pub(super) wrap_up_mode: Option<WrapUpMode>,
     #[serde(default)]
     pub(super) auto_run_plan: bool,
+    #[serde(default, deserialize_with = "deserialize_optional_flexible_i64")]
+    pub(super) schedule_interval_secs: Option<i64>,
+    #[serde(default)]
+    pub(super) pinned_branch: Option<String>,
 }
 
 // WrapUpAction lives in `crate::mcp` — it's shared between wrap_up (which

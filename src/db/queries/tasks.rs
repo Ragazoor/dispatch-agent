@@ -29,6 +29,8 @@ struct OwnedCreateTaskRequest {
     tag: Option<crate::models::TaskTag>,
     wrap_up_mode: Option<WrapUpMode>,
     auto_run_plan: bool,
+    schedule_interval_secs: Option<i64>,
+    pinned_branch: Option<String>,
 }
 
 impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
@@ -45,6 +47,8 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             tag,
             wrap_up_mode,
             auto_run_plan,
+            schedule_interval_secs,
+            pinned_branch,
         } = r;
         Self {
             title: title.to_string(),
@@ -58,6 +62,8 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             tag,
             wrap_up_mode,
             auto_run_plan,
+            schedule_interval_secs,
+            pinned_branch: pinned_branch.map(str::to_string),
         }
     }
 }
@@ -146,6 +152,10 @@ struct OwnedTaskPatch {
     wrap_up_mode: Option<Option<WrapUpMode>>,
     auto_run_plan: Option<bool>,
     stop_pending: Option<bool>,
+    schedule_interval_secs: Option<Option<i64>>,
+    pinned_branch: Option<Option<String>>,
+    last_processed_sha: Option<Option<String>>,
+    last_scheduled_check_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
@@ -172,6 +182,10 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             wrap_up_mode,
             auto_run_plan,
             stop_pending,
+            schedule_interval_secs,
+            pinned_branch,
+            last_processed_sha,
+            last_scheduled_check_at,
         } = *p;
         Self {
             status,
@@ -194,6 +208,10 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             wrap_up_mode,
             auto_run_plan,
             stop_pending,
+            schedule_interval_secs,
+            pinned_branch: pinned_branch.map(|o| o.map(str::to_string)),
+            last_processed_sha: last_processed_sha.map(|o| o.map(str::to_string)),
+            last_scheduled_check_at,
         }
     }
 }
@@ -274,8 +292,9 @@ impl super::super::TaskCrud for Database {
             conn.execute(
                 "INSERT INTO tasks \
                  (title, description, repo_path, plan_path, status, sub_status, base_branch, \
-                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan, \
+                  schedule_interval_secs, pinned_branch) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     req.title,
                     req.description,
@@ -289,6 +308,8 @@ impl super::super::TaskCrud for Database {
                     req.tag.map(|t| t.as_str()),
                     req.wrap_up_mode.map(|m| m.as_str()),
                     req.auto_run_plan,
+                    req.schedule_interval_secs,
+                    req.pinned_branch,
                 ],
             )
             .context("Failed to insert task")?;
@@ -415,6 +436,22 @@ impl super::super::TaskCrud for Database {
             );
             set_field!(sets, values, patch.auto_run_plan, "auto_run_plan");
             set_field!(sets, values, patch.stop_pending, "stop_pending");
+            set_field!(
+                sets,
+                values,
+                patch.schedule_interval_secs,
+                "schedule_interval_secs"
+            );
+            set_field!(sets, values, patch.pinned_branch, "pinned_branch");
+            set_field!(sets, values, patch.last_processed_sha, "last_processed_sha");
+            set_field!(
+                sets,
+                values,
+                patch
+                    .last_scheduled_check_at
+                    .map(|opt| opt.map(super::format_datetime)),
+                "last_scheduled_check_at"
+            );
 
             sets.push("updated_at = datetime('now')");
             values.push(Box::new(id.0));

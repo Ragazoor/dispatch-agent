@@ -109,6 +109,10 @@ patch_struct! {
         nullable wrap_up_mode: WrapUpMode,
         plain    auto_run_plan: bool,
         plain    stop_pending: bool,
+        nullable schedule_interval_secs: i64,
+        nullable pinned_branch: &'a str,
+        nullable last_processed_sha: &'a str,
+        nullable last_scheduled_check_at: chrono::DateTime<chrono::Utc>,
     }
 }
 
@@ -129,6 +133,12 @@ pub struct CreateTaskRequest<'a> {
     pub tag: Option<TaskTag>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
+    /// Opt a task into scheduled redispatch at creation time. `last_processed_sha`
+    /// and `last_scheduled_check_at` are deliberately absent from this struct —
+    /// they are scheduler-owned and only ever written by `SchedulerRunner` and
+    /// the merge-progress path, never supplied by a creator.
+    pub schedule_interval_secs: Option<i64>,
+    pub pinned_branch: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------

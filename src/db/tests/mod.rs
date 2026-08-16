@@ -54,6 +54,8 @@ pub(super) async fn create_task_returning(
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await?;
     db.get_task(id)

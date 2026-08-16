@@ -3825,6 +3825,8 @@ async fn auto_run_plan_column_defaults_to_false() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -4078,7 +4080,11 @@ fn migration_v88_adds_scheduling_fields_to_tasks() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .unwrap();
-    assert_eq!(row, (None, None, None, None), "existing rows stay unscheduled");
+    assert_eq!(
+        row,
+        (None, None, None, None),
+        "existing rows stay unscheduled"
+    );
 }
 
 #[test]
