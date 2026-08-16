@@ -40,11 +40,64 @@ The sandbox has a second, less legible failure mode: a plain `grep`/`cargo` invo
 
 Pick that redirect target with care under the sandbox: bare `/tmp` is **not** writable, and neither `$TMPDIR` nor the session scratchpad path is reliably expanded in a sandboxed shell (both fail as `Permission denied` / `No such file or directory` *before* the suite runs, which looks nothing like a sandbox problem). `mkdir -p /tmp/claude-1000/<something>` first and redirect there, or disable the sandbox for the run.
 
-The full suite takes roughly 5 minutes. A backgrounded run (`run_in_background: true`) can be killed mid-suite by the harness for reasons unrelated to the tests themselves — observed causes include another subagent's stray `cargo test` still holding the `target/` build lock. If a background run reports `killed` rather than a completed exit code, don't assume a real hang: check for and let go a stray process holding the lock (`ps aux | grep cargo`), then prefer running the full suite in the foreground with an explicit long timeout over backgrounding it again.
+**The full suite takes ~20 seconds — run it in the foreground.** It used to take
+5 minutes, which is why so much of the advice you may have seen elsewhere is
+about managing a backgrounded run. Don't background it: `run_in_background`
+buys nothing at this length and costs you the failure modes below.
 
-Two corollaries, both learned the hard way. **Don't run any other `cargo` command while one is backgrounded** — `cargo fmt`/`cargo clippy` contend for the same `target/` lock, so you become the stray process the paragraph above blames on someone else. And **judge a background run only by its completion notification**: its redirected output file lags behind (a finished run can still look mid-suite), and `pgrep` races the teardown, so neither "the tail stopped moving" nor "no process found" is evidence it died. Waiting on the notification costs nothing; restarting a run that already finished costs another full suite.
+It got there by not rebuilding the schema for every test — see "Schema template"
+below. Incremental compilation after a one-file edit (~13 s) is now the larger
+half of an edit→test cycle, so if a run feels slow, it is the compile.
+
+If you do background a `cargo` command anyway, two things, both learned the hard
+way. **Don't run any other `cargo` command while one is backgrounded** —
+`cargo fmt`/`cargo clippy` contend for the same `target/` lock, and a run killed
+mid-suite for "no reason" is usually another process holding it (`ps aux | grep
+cargo`). And **judge a background run only by its completion notification**: its
+redirected output file lags behind (a finished run can still look mid-suite),
+and `pgrep` races the teardown, so neither "the tail stopped moving" nor "no
+process found" is evidence it died.
 
 Suite is green; if a runtime test fails locally, suspect timing — `spawn_blocking`-based tests are timing-sensitive.
+
+## Schema template
+
+`Database::open_in_memory()` — the constructor behind essentially every
+DB-touching test — does **not** replay the migration chain. It clones a
+process-wide, already-migrated template via SQLite's backup API
+(`init_schema_from_template_sync` in `src/db/mod.rs`). Replaying ~88 migrations
+costs ~87 ms per database; the clone costs ~0.05 ms. That single change took the
+suite from ~260 s to ~20 s, `db::` alone from 103 s to 4 s.
+
+`Database::open()` (file-backed) still migrates for real, and must: a file on
+disk can be at any older `user_version`. The clone is only equivalent because an
+in-memory database is always brand new.
+
+**Adding a migration needs no action here** — the template is built by
+`init_schema_sync`, the same function `Database::open` uses, so it picks up new
+migrations automatically. `src/db/tests/schema_template.rs` fails loudly if that
+ever stops being true. It pins four properties, each a way a clone could quietly
+differ from a migrated database:
+
+| Guard | Catches |
+|---|---|
+| identical `sqlite_master` | the template not picking up a new migration |
+| identical `user_version` | a clone that looks unmigrated and re-runs the chain |
+| identical per-table row counts | a migration-seeded row lost by the clone |
+| identical connection PRAGMAs | a PRAGMA set on one init path but not the other |
+
+That last one is the subtle one: PRAGMAs are properties of the *connection*, and
+the backup API copies pages only, so the template path has to set them itself.
+Both paths call `apply_writer_pragmas`, so they cannot drift by construction —
+the test guards against someone re-inlining one of them.
+
+Two traps if you ever think about replacing the mechanism. Capturing DDL from
+`sqlite_master` and re-executing it looks equivalent but carries neither
+`user_version` nor seeded rows, and is only ~28x faster rather than ~1700x. And
+`foreign_keys` reads as the dangerous PRAGMA to drop but isn't: `libsqlite3-sys`
+builds bundled SQLite with `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`, so it is on
+regardless — `synchronous`, `cache_size` and `temp_store` are the ones that
+actually differ from their defaults.
 
 ## Snapshot tests
 

@@ -6,6 +6,7 @@ mod epics;
 mod learnings;
 mod migrations;
 mod read_pool;
+mod schema_template;
 mod settings;
 mod shells;
 mod subagents;

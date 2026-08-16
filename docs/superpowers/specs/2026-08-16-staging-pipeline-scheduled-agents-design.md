@@ -241,7 +241,35 @@ same discipline as `FeedTick`.
 
 ## Part B — Staging pipeline (an application of Part A)
 
-### Verify-command tiering
+### Verify-command tiering — DROPPED (2026-08-16, task #4206)
+
+**This section was not built, and `full_verify_command` does not exist.** Task
+#4206 set out to implement it and measured the premise first: dispatch's suite
+was ~260 s, and ~87 ms of every DB-touching test was replaying the ~88-migration
+chain into a fresh in-memory database. Cloning an already-migrated template
+instead took the suite to **~20 s** with no test skipped and no fidelity lost
+(see "Schema template" in `docs/testing.md`).
+
+At 20 s there is no expensive tier left to defer. A single `verify_command` is
+both the cheap check a feature task runs before wrap-up and the exhaustive one
+the pipeline agent runs, so the tiering would have been machinery separating two
+things that no longer differ. Ordinary tasks and the pipeline task both just run
+`verify_command`.
+
+Consequences for the rest of this design:
+
+- No `full_verify_command` field, no `set_full_verify_command` MCP tool, no
+  `dispatch repo set-verify-full` / `clear-verify-full` CLI forms.
+- `get_task` keeps its single "Verify command" line; there is no "Full verify
+  command" line.
+- **Part A's `wrap_up(action="merge")` (task #4205) surfaces `verify_command`,
+  not `full_verify_command`** — otherwise unchanged.
+- The pipeline task's prompt (below) should point at `verify_command`.
+
+Revisit only if the suite grows a genuinely expensive tier again — something
+that cannot be made fast and that a feature task should not have to wait on.
+
+The original design follows, retained for context:
 
 `SavedRepoPath` gains a second command, parallel to the existing one:
 

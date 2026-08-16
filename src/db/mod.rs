@@ -950,7 +950,16 @@ impl Database {
         let conn = tokio_rusqlite::Connection::open(&uri)
             .await
             .context("Failed to open in-memory database")?;
-        Self::init_schema(&conn).await?;
+        // Cloned from the schema template rather than migrated from scratch —
+        // an in-memory database is always brand new, so the two are equivalent
+        // and the clone is ~1700x cheaper. See
+        // [`init_schema_from_template_sync`].
+        conn.call(|c| {
+            init_schema_from_template_sync(c)
+                .map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))))
+        })
+        .await
+        .map_err(unwrap_anyhow)?;
         Ok(Database {
             conn,
             read_pool: Self::empty_read_pool(),
@@ -1130,13 +1139,20 @@ impl Database {
             init_schema_sync(c).map_err(|e| tokio_rusqlite::Error::Other(Box::new(AnyhowErr(e))))
         })
         .await
-        .map_err(|e| match e {
-            tokio_rusqlite::Error::Other(other) => match other.downcast::<AnyhowErr>() {
-                Ok(boxed) => boxed.0,
-                Err(other) => anyhow::anyhow!(other.to_string()),
-            },
-            other => anyhow::Error::from(other),
-        })
+        .map_err(unwrap_anyhow)
+    }
+}
+
+/// Recover the original [`anyhow::Error`] that a `conn.call` closure boxed up
+/// as [`AnyhowErr`], so callers see the real context chain rather than a
+/// stringified `tokio_rusqlite::Error`.
+fn unwrap_anyhow(e: tokio_rusqlite::Error) -> anyhow::Error {
+    match e {
+        tokio_rusqlite::Error::Other(other) => match other.downcast::<AnyhowErr>() {
+            Ok(boxed) => boxed.0,
+            Err(other) => anyhow::anyhow!(other.to_string()),
+        },
+        other => anyhow::Error::from(other),
     }
 }
 
@@ -1149,14 +1165,78 @@ const CONNECTION_PRAGMAS: &str = "PRAGMA busy_timeout=5000;
      PRAGMA cache_size=-8000;
      PRAGMA temp_store=MEMORY;";
 
-fn init_schema_sync(conn: &Connection) -> Result<()> {
+/// One fully-migrated, empty database, built at most once per process and
+/// cloned by [`init_schema_from_template_sync`].
+///
+/// A `rusqlite::Connection` is `Send` but not `Sync`, hence the `Mutex`. It
+/// serializes template *clones*, not database work — each clone holds the lock
+/// for ~0.05 ms, so contention between parallel tests is immaterial.
+static SCHEMA_TEMPLATE: std::sync::OnceLock<std::sync::Mutex<Connection>> =
+    std::sync::OnceLock::new();
+
+/// Bring `conn` to the fully-migrated schema by cloning [`SCHEMA_TEMPLATE`]
+/// instead of replaying the migration chain.
+///
+/// Only sound for a database known to be brand new — replaying ~88 migrations
+/// and cloning a database that already has them applied produce the same
+/// result *only* when the target starts empty. [`Database::open`] therefore
+/// still migrates for real: a file on disk can be at any older `user_version`.
+///
+/// The backup API copies pages, so schema, `user_version` and any rows seeded
+/// by migrations all come across together. Capturing DDL from `sqlite_master`
+/// and re-executing it looks equivalent but carries neither `user_version` nor
+/// rows, and is only ~28x faster against this chain rather than ~1700x.
+/// `src/db/tests/schema_template.rs` pins each of those properties.
+fn init_schema_from_template_sync(conn: &mut Connection) -> Result<()> {
+    // Applied per connection, before the clone: these are properties of the
+    // *connection*, and the backup API carries only database pages.
+    apply_writer_pragmas(conn)?;
+
+    let template = SCHEMA_TEMPLATE.get_or_init(|| {
+        let conn = Connection::open_in_memory()
+            .context("Failed to open the schema template connection")
+            .and_then(|c| init_schema_sync(&c).map(|()| c));
+        // A template that cannot be built means every test database is
+        // unusable; there is no sensible degraded mode, and propagating the
+        // error out of `OnceLock::get_or_init` is not possible.
+        #[allow(clippy::expect_used)]
+        std::sync::Mutex::new(conn.expect("failed to build the schema template"))
+    });
+
+    // Poisoning would mean a prior clone panicked mid-backup. The template is
+    // only ever read, so its contents are still sound.
+    let template = template.lock().unwrap_or_else(|e| e.into_inner());
+
+    let backup = rusqlite::backup::Backup::new(&template, conn)
+        .context("Failed to start the schema-template backup")?;
+    backup
+        .run_to_completion(BACKUP_PAGES_PER_STEP, std::time::Duration::ZERO, None)
+        .context("Failed to clone the schema template")
+}
+
+/// Pages copied per backup step. The template is a few dozen pages, so this is
+/// sized to complete the clone in a single step.
+const BACKUP_PAGES_PER_STEP: std::os::raw::c_int = 1024;
+
+/// The writer connection's PRAGMAs: the shared [`CONNECTION_PRAGMAS`] plus the
+/// three that only apply to a read-write connection.
+///
+/// Shared by both ways a writer gets built — [`init_schema_sync`] (migrate for
+/// real) and [`init_schema_from_template_sync`] (clone the template) — so the
+/// two cannot drift. `template_connection_pragmas_match_a_migrated_connection`
+/// in `src/db/tests/schema_template.rs` asserts they haven't.
+fn apply_writer_pragmas(conn: &Connection) -> Result<()> {
     conn.execute_batch(&format!(
         "PRAGMA journal_mode=WAL;
          PRAGMA foreign_keys=ON;
          PRAGMA synchronous=NORMAL;
          {CONNECTION_PRAGMAS}"
     ))
-    .context("Failed to set PRAGMAs")?;
+    .context("Failed to set PRAGMAs")
+}
+
+fn init_schema_sync(conn: &Connection) -> Result<()> {
+    apply_writer_pragmas(conn)?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS tasks (
