@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::models::ReviewDecision;
+use crate::models::{extract_github_repo, ReviewDecision};
 use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 
 mod agents;
@@ -11,21 +11,16 @@ pub(crate) mod git_output;
 /// module's own, and three other test suites drive it.
 #[cfg(test)]
 pub(crate) mod mock_sequence;
-// `pub(crate)` (not plain-private) because `parse_tmux_window_task_id` is
-// also the resolver `TaskService::record_peer_message_sent`
-// (src/service/tasks/crud.rs) uses for a SendMessage `to` field — every
-// other item in this module keeps its own `pub(super)` cap regardless.
-pub(crate) mod prompts;
+mod prompts;
 mod split_panes;
 mod trust;
 mod worktree;
 
 pub use agents::{
     agent_tree_pane_id, companion_pane_ids, create_main_session, dispatch_agent,
-    fetch_verify_command, is_wrappable, main_session_window_alive, prepare_inputs,
-    prepare_inputs_with_epic_ctx, quick_dispatch_agent, research_agent, resume_agent,
-    resync_agent_tree_pane, run_agent_for_mode, toggle_agent_tree_pane, DispatchInputs,
-    MAIN_SESSION_WINDOW,
+    fetch_verify_command, main_session_window_alive, prepare_inputs, prepare_inputs_with_epic_ctx,
+    quick_dispatch_agent, research_agent, resume_agent, resync_agent_tree_pane, run_agent_for_mode,
+    toggle_agent_tree_pane, DispatchInputs, MAIN_SESSION_WINDOW,
 };
 pub use finish::{finish_task, FinishContext, FinishError};
 pub use prompts::{build_and_record_injections, EpicContext, LearningInjections};
@@ -153,54 +148,6 @@ pub fn pr_head_branch(pr_url: &str, runner: &dyn ProcessRunner) -> Option<String
         return None;
     }
     Some(head)
-}
-
-/// Fallback group name used by `repo_name_from_url` when the URL is not a
-/// recognisable GitHub URL (empty, non-GitHub host, or malformed).
-pub const UNKNOWN_REPO_GROUP: &str = "other";
-
-/// Extract the short repo name (e.g. `"my-repo"`) from a GitHub URL.
-///
-/// Returns [`UNKNOWN_REPO_GROUP`] for non-GitHub URLs, empty strings, and malformed input.
-pub fn repo_name_from_url(url: &str) -> String {
-    extract_github_repo(url)
-        .and_then(|s| s.split('/').next_back())
-        .unwrap_or(UNKNOWN_REPO_GROUP)
-        .to_string()
-}
-
-/// Derive a repo-grouping key from a filesystem repo path: the final path
-/// component (basename). Empty / root paths fall back to `UNKNOWN_REPO_GROUP`,
-/// matching the URL-based grouping used by feeds.
-pub fn repo_name_from_path(repo_path: &str) -> String {
-    std::path::Path::new(repo_path.trim_end_matches('/'))
-        .file_name()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(UNKNOWN_REPO_GROUP)
-        .to_string()
-}
-
-/// Extract `"org/repo"` from a GitHub URL.
-///
-/// Handles `https://github.com/org/repo`, `.../pull/N`, `.../issues/N`,
-/// `.../tree/...`, and similar paths — any URL whose host is `github.com`.
-/// Returns `None` for non-GitHub URLs, empty strings, and single-segment paths.
-pub fn extract_github_repo(url: &str) -> Option<&str> {
-    let rest = url.strip_prefix("https://github.com/")?;
-    let rest = rest.trim_end_matches('/');
-    // Need at least two path segments: "org/repo[/...]"
-    let slash = rest.find('/')?;
-    let after_org = &rest[slash + 1..];
-    if after_org.is_empty() {
-        return None;
-    }
-    let end = after_org.find('/').unwrap_or(after_org.len());
-    let repo = &after_org[..end];
-    if repo.is_empty() {
-        return None;
-    }
-    Some(&rest[..slash + 1 + end])
 }
 
 /// Resolve the local repo path for each feed item from its URL.

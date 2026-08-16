@@ -5,15 +5,19 @@ mod repo_filter;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::{App, ColumnItem, Command, InputMode, Message, MoveDirection, ViewMode};
-use crate::models::{DispatchMode, EpicId, SubStatus, TaskId, TaskStatus, TaskTag};
+use crate::models::{
+    DispatchMode, EpicId, SubStatus, TaskId, TaskStatus, TaskTag, UsageActor, UsageCategory,
+    UsageEvent,
+};
+use crate::tui::commands::UsageCommand;
 
 fn key_event(action: &str, key: &str) -> Command {
-    Command::RecordUsageEvent(crate::models::UsageEvent {
-        category: crate::models::UsageCategory::Keybinding,
+    Command::Usage(UsageCommand::Record(UsageEvent {
+        category: UsageCategory::Keybinding,
         action: action.to_string(),
         detail: Some(key.to_string()),
-        actor: crate::models::UsageActor::Human,
-    })
+        actor: UsageActor::Human,
+    }))
 }
 
 /// The `detail` of a keybinding usage event: the key as the user typed it.

@@ -127,8 +127,13 @@ impl App {
         };
         vec![
             Command::Task(crate::tui::commands::TaskCommand::Insert { draft, epic_id }),
-            Command::SaveRepoPath(repo_path.clone()),
-            Command::SaveBaseBranch(repo_path, base_branch),
+            Command::Settings(crate::tui::commands::SettingsCommand::SaveRepoPath(
+                repo_path.clone(),
+            )),
+            Command::Settings(crate::tui::commands::SettingsCommand::SaveBaseBranch(
+                repo_path,
+                base_branch,
+            )),
         ]
     }
 

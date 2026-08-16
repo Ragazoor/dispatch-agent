@@ -59,25 +59,6 @@ impl EpicContext {
     }
 }
 
-pub(super) fn build_tmux_window_name(task_id: TaskId) -> String {
-    format!("task-{task_id}")
-}
-
-/// Inverse of [`build_tmux_window_name`]: recover the task id from a tmux
-/// window name, or `None` for any window that isn't a task-agent window
-/// (the board's own TUI window, the main-session window, anything else).
-///
-/// `pub(crate)` rather than `pub(super)`: the same `task-<id>` string also
-/// names a task's native cross-session-messaging session
-/// ([`super::agents::session_name_flag`]), so
-/// `TaskService::record_peer_message_sent`'s target resolution
-/// (`src/service/tasks/crud.rs`) parses a `SendMessage` call's `to` field
-/// through this exact function too, rather than a second copy of the same
-/// `strip_prefix("task-")` logic that could drift from this one.
-pub(crate) fn parse_tmux_window_task_id(window: &str) -> Option<TaskId> {
-    window.strip_prefix("task-")?.parse().ok()
-}
-
 /// Preamble for a worktree reused from a previous attempt.
 ///
 /// Reuse is the only non-PR case where a rebase does real work: a fresh

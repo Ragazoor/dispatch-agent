@@ -3,6 +3,7 @@ pub mod snapshots;
 
 mod archive;
 mod budget;
+mod commands;
 mod dispatch;
 mod epics;
 mod helpers;

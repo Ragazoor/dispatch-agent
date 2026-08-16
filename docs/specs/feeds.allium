@@ -893,7 +893,7 @@ rule GroupedFeedUpsert {
         -- repo_name(url) = last path segment of extract_github_repo(url),
         -- or "other" when the URL yields no GitHub repo (empty URL, non-GitHub,
         -- malformed). Implementation: src/feed/ingest/grouped.rs::sync_grouped_feed,
-        -- src/dispatch/mod.rs::repo_name_from_url.
+        -- src/models/paths.rs::repo_name_from_url.
         -- Sub-epics are not auto-deleted when their tasks disappear; empty
         -- sub-epics remain for the user to clean up manually. The
         -- reconciliation only clears their feed tasks — it never removes the
@@ -1060,7 +1060,7 @@ rule RoleRoutedFeedSync {
     -- the sub-epic — src/models/epics.rs), the PR is routed ONE LEVEL DEEPER:
     -- into a per-repo REPO-GROUP sub-epic nested UNDER the role sub-epic,
     -- found-or-created and keyed by repo name
-    -- (src/dispatch/mod.rs::repo_name_from_url of item.url).
+    -- (src/models/paths.rs::repo_name_from_url of item.url).
     -- Tasks then live at this third level, not
     -- directly on the role sub-epic. When the role sub-epic does NOT have
     -- grouping enabled the target is the role sub-epic directly — today's
@@ -1239,7 +1239,7 @@ rule RoleRoutedFeedSync {
         -- (role_target), if roles.can_auto_group(role_target) is true the
         -- actual target is a repo-group sub-epic found-or-created via
         -- db.create_repo_group_sub_epic (src/db/mod.rs), keyed by
-        -- src/dispatch/mod.rs::repo_name_from_url and memoised in an
+        -- src/models/paths.rs::repo_name_from_url and memoised in an
         -- in-memory (role_sub_epic_id, repo_name) -> repo_group_epic_id cache
         -- for the duration of one sync; a create failure falls back to
         -- role_target. can_auto_group is src/models/epics.rs::can_auto_group (group_by_repo

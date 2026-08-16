@@ -1,5 +1,6 @@
 use super::*;
 use crate::models::{Epic, EpicId, SubStatus, TaskId, TaskStatus};
+use crate::tui::commands::SettingsCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
@@ -58,9 +59,10 @@ fn close_repo_filter_returns_to_normal() {
     ));
     assert_eq!(app.input.mode, InputMode::Normal);
     // Should emit PersistStringSetting
-    assert!(cmds
-        .iter()
-        .any(|c| matches!(c, Command::PersistStringSetting { .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Settings(SettingsCommand::PersistStringSetting { .. })
+    )));
 }
 
 #[test]
@@ -286,9 +288,10 @@ fn repo_filter_enter_closes() {
     app.input.mode = InputMode::RepoFilter;
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(cmds
-        .iter()
-        .any(|c| matches!(c, Command::PersistStringSetting { .. })));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Settings(SettingsCommand::PersistStringSetting { .. })
+    )));
 }
 
 #[test]
@@ -409,7 +412,7 @@ fn close_repo_filter_persists_mode() {
     ));
     let expected_key = "repo_filter_mode";
     assert!(cmds.iter().any(|c| matches!(c,
-        Command::PersistStringSetting { key, value } if *key == expected_key && value == "exclude"
+        Command::Settings(SettingsCommand::PersistStringSetting { key, value }) if *key == expected_key && value == "exclude"
     )));
 }
 
@@ -426,7 +429,9 @@ fn close_repo_filter_persists_keys() {
     let keys: Vec<&str> = cmds
         .iter()
         .filter_map(|c| match c {
-            Command::PersistStringSetting { key, .. } => Some(key.as_str()),
+            Command::Settings(SettingsCommand::PersistStringSetting { key, .. }) => {
+                Some(key.as_str())
+            }
             _ => None,
         })
         .collect();

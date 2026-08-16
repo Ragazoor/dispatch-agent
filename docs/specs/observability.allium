@@ -241,7 +241,7 @@ rule UsageWriteFailureIsSilent {
     ensures: UsageWriteWarning(event: event, error: error)
 
     @guidance
-        -- Both fire-and-forget call sites — the TUI's RecordUsageEvent
+        -- Both fire-and-forget call sites — the TUI's UsageCommand::Record
         -- command and the MCP handler's post-dispatch recording — route
         -- through one helper, src/service/usage.rs::record_usage_event_logged,
         -- rather than each writing its own error branch. The helper awaits

@@ -1,4 +1,4 @@
-//! Keybinding telemetry: which key surfaces record a `RecordUsageEvent`.
+//! Keybinding telemetry: which key surfaces record a `UsageCommand::Record`.
 //!
 //! Every arm the TUI acts on records exactly one keybinding usage event, and a
 //! keypress that changes nothing records none — see rules
@@ -10,6 +10,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{EpicId, TaskId, TaskStatus, TodoLink, UsageActor, UsageCategory};
+use crate::tui::commands::UsageCommand;
 use crate::tui::messages::{EpicMessage, TaskMessage, TodoMessage};
 use crate::tui::types::{InputMode, TaskDraft};
 use crossterm::event::KeyCode;
@@ -19,7 +20,7 @@ use crossterm::event::KeyCode;
 fn usage_events(cmds: &[Command]) -> Vec<(String, Option<String>)> {
     cmds.iter()
         .filter_map(|c| match c {
-            Command::RecordUsageEvent(e) => Some((e.action.clone(), e.detail.clone())),
+            Command::Usage(UsageCommand::Record(e)) => Some((e.action.clone(), e.detail.clone())),
             _ => None,
         })
         .collect()
@@ -106,10 +107,10 @@ fn recorded_event_is_a_human_keybinding_event() {
     let event = cmds
         .iter()
         .find_map(|c| match c {
-            Command::RecordUsageEvent(e) => Some(e.clone()),
+            Command::Usage(UsageCommand::Record(e)) => Some(e.clone()),
             _ => None,
         })
-        .expect("expected RecordUsageEvent for 'n'");
+        .expect("expected UsageCommand::Record for 'n'");
     assert_eq!(event.category, UsageCategory::Keybinding);
     assert_eq!(event.actor, UsageActor::Human);
     assert_eq!(event.action, "create_task");

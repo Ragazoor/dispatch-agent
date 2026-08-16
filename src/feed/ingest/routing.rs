@@ -83,7 +83,7 @@ pub(super) async fn route_and_group_entries(
         let role_target = roles.target_for(route(&entry.item.signals));
 
         let target = if roles.can_auto_group(role_target) {
-            let repo_name = crate::dispatch::repo_name_from_url(&entry.item.url);
+            let repo_name = crate::models::repo_name_from_url(&entry.item.url);
             let key = (role_target, repo_name.clone());
             if let Some(&cached) = repo_group_cache.get(&key) {
                 cached

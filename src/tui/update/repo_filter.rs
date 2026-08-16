@@ -40,14 +40,18 @@ impl App {
         let value = serde_json::to_string(&paths).unwrap_or_else(|_| "[]".to_string());
         let mode_value = self.filter.mode.as_str();
         vec![
-            Command::PersistStringSetting {
-                key: "repo_filter".to_string(),
-                value,
-            },
-            Command::PersistStringSetting {
-                key: "repo_filter_mode".to_string(),
-                value: mode_value.to_string(),
-            },
+            Command::Settings(
+                crate::tui::commands::SettingsCommand::PersistStringSetting {
+                    key: "repo_filter".to_string(),
+                    value,
+                },
+            ),
+            Command::Settings(
+                crate::tui::commands::SettingsCommand::PersistStringSetting {
+                    key: "repo_filter_mode".to_string(),
+                    value: mode_value.to_string(),
+                },
+            ),
         ]
     }
 

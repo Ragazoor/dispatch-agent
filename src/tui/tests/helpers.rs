@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{Epic, EpicId, SubStatus, TaskId, TaskStatus};
+use crate::tui::commands::UsageCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     backend::TestBackend,
@@ -55,11 +56,11 @@ pub(in crate::tui) fn make_key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-/// Strip telemetry `RecordUsageEvent` entries from a `cmds` vec. Used by tests
-/// that assert exact command counts and don't care about usage telemetry.
+/// Strip telemetry `UsageCommand::Record` entries from a `cmds` vec. Used by
+/// tests that assert exact command counts and don't care about usage telemetry.
 pub(in crate::tui) fn without_usage(cmds: Vec<Command>) -> Vec<Command> {
     cmds.into_iter()
-        .filter(|c| !matches!(c, Command::RecordUsageEvent(_)))
+        .filter(|c| !matches!(c, Command::Usage(UsageCommand::Record(_))))
         .collect()
 }
 

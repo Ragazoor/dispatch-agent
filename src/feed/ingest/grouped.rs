@@ -82,7 +82,7 @@ async fn clear_sub_epic_and_recalc(
 fn group_by_repo(entries: Vec<FeedItemWithTarget>) -> HashMap<String, Vec<FeedItemWithTarget>> {
     let mut groups: HashMap<String, Vec<FeedItemWithTarget>> = HashMap::new();
     for entry in entries {
-        let name = crate::dispatch::repo_name_from_url(&entry.item.url);
+        let name = crate::models::repo_name_from_url(&entry.item.url);
         groups.entry(name).or_default().push(entry);
     }
     groups

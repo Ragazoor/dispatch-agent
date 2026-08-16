@@ -2,12 +2,11 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::time::Duration;
 
-use crate::models::{expand_tilde, slugify, Task};
+use crate::models::{build_tmux_window_name, expand_tilde, slugify, Task};
 use crate::process::ProcessRunner;
 use crate::tmux;
 
 use super::git_output::WORKTREE_ALREADY_REMOVED;
-use super::prompts::build_tmux_window_name;
 use super::stderr_str;
 
 /// Bounded retry budget for `git fetch origin <base>` during worktree

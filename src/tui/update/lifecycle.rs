@@ -145,10 +145,12 @@ impl App {
             "Notifications disabled"
         };
         self.set_status(label.to_string());
-        vec![Command::PersistSetting {
-            key: "notifications_enabled".to_string(),
-            value: self.notifications_enabled,
-        }]
+        vec![Command::Settings(
+            crate::tui::commands::SettingsCommand::PersistSetting {
+                key: "notifications_enabled".to_string(),
+                value: self.notifications_enabled,
+            },
+        )]
     }
 
     /// Start a dispatch from the board.

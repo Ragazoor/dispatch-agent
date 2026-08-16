@@ -419,6 +419,18 @@ impl Task {
             && self.tmux_window.is_none()
             && matches!(self.status, TaskStatus::Running | TaskStatus::Review)
     }
+
+    /// Whether this task can be wrapped up: it has a worktree and is either
+    /// Running or Review.
+    ///
+    /// A predicate over `Task`, so it belongs on the model rather than on the
+    /// dispatch adapter it used to live in — see the header of
+    /// `src/models/tmux_window.rs` for why a pure predicate the service layer
+    /// gates on cannot sit in an adapter. Its sole production caller is
+    /// `TaskService::validate_wrap_up`, which every wrap-up path goes through.
+    pub fn is_wrappable(&self) -> bool {
+        self.worktree.is_some() && matches!(self.status, TaskStatus::Running | TaskStatus::Review)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1885,6 +1897,36 @@ mod model_tests {
             live_shells: 0,
             oldest_live_shell_started_at: None,
         }
+    }
+
+    // --- is_wrappable ---
+
+    fn wrappable_task(status: TaskStatus, worktree: Option<&str>) -> Task {
+        Task {
+            status,
+            worktree: worktree.map(String::from),
+            ..make_task_with(None, None)
+        }
+    }
+
+    #[test]
+    fn is_wrappable_running_with_worktree() {
+        assert!(wrappable_task(TaskStatus::Running, Some("/tmp/wt")).is_wrappable());
+    }
+
+    #[test]
+    fn is_wrappable_review_with_worktree() {
+        assert!(wrappable_task(TaskStatus::Review, Some("/tmp/wt")).is_wrappable());
+    }
+
+    #[test]
+    fn is_wrappable_running_without_worktree() {
+        assert!(!wrappable_task(TaskStatus::Running, None).is_wrappable());
+    }
+
+    #[test]
+    fn is_wrappable_backlog_with_worktree() {
+        assert!(!wrappable_task(TaskStatus::Backlog, Some("/tmp/wt")).is_wrappable());
     }
 
     #[test]

@@ -25,10 +25,12 @@ impl App {
         self.input.mode = InputMode::Normal;
         self.input.clear_buffer();
         vec![
-            Command::PersistStringSetting {
-                key: "main_session.dir".to_string(),
-                value: expanded,
-            },
+            Command::Settings(
+                crate::tui::commands::SettingsCommand::PersistStringSetting {
+                    key: "main_session.dir".to_string(),
+                    value: expanded,
+                },
+            ),
             Command::MainSession(crate::tui::commands::MainSessionCommand::Create),
         ]
     }

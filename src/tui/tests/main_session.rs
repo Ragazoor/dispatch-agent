@@ -2,6 +2,7 @@
 use crossterm::event::KeyCode;
 
 use super::*;
+use crate::tui::commands::SettingsCommand;
 
 fn make_app() -> App {
     App::new(vec![])
@@ -63,7 +64,7 @@ fn full_reconfigure_flow_open_to_create() {
     app.input.set_buffer("/home/user/code".to_string());
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert!(cmds.iter().any(
-        |c| matches!(c, Command::PersistStringSetting { key, .. } if key == "main_session.dir")
+        |c| matches!(c, Command::Settings(SettingsCommand::PersistStringSetting { key, .. }) if key == "main_session.dir")
     ));
     assert!(cmds.iter().any(|c| matches!(
         c,
@@ -91,7 +92,7 @@ fn enter_in_main_session_dir_mode_emits_submit_message() {
     app.input.set_buffer("/home/user".to_string());
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert!(cmds.iter().any(
-        |c| matches!(c, Command::PersistStringSetting { key, .. } if key == "main_session.dir")
+        |c| matches!(c, Command::Settings(SettingsCommand::PersistStringSetting { key, .. }) if key == "main_session.dir")
     ));
     assert!(cmds.iter().any(|c| matches!(
         c,
@@ -150,7 +151,7 @@ fn submit_main_session_dir_returns_persist_and_create_commands() {
         crate::tui::messages::MainSessionMessage::SubmitDir("/home/user".to_string()),
     ));
     assert!(cmds.iter().any(
-        |c| matches!(c, Command::PersistStringSetting { key, .. } if key == "main_session.dir")
+        |c| matches!(c, Command::Settings(SettingsCommand::PersistStringSetting { key, .. }) if key == "main_session.dir")
     ));
     assert!(cmds.iter().any(|c| matches!(
         c,
@@ -209,9 +210,10 @@ fn enter_with_fuzzy_match_submits_filtered_selection_in_main_session_dir() {
     app.handle_key(make_key(KeyCode::Char('r')));
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert!(
-        cmds.iter()
-            .any(|c| matches!(c, Command::PersistStringSetting { key, value }
-        if key == "main_session.dir" && value == "/a/bar")),
+        cmds.iter().any(
+            |c| matches!(c, Command::Settings(SettingsCommand::PersistStringSetting { key, value })
+        if key =="main_session.dir" && value == "/a/bar")
+        ),
         "expected persist of /a/bar from filtered match, got: {cmds:?}"
     );
     assert!(cmds.iter().any(|c| matches!(
@@ -229,9 +231,10 @@ fn enter_with_no_fuzzy_match_submits_literal_buffer_in_main_session_dir() {
     }
     let cmds = app.handle_key(make_key(KeyCode::Enter));
     assert!(
-        cmds.iter()
-            .any(|c| matches!(c, Command::PersistStringSetting { key, value }
-        if key == "main_session.dir" && value == "/totally/new/path")),
+        cmds.iter().any(
+            |c| matches!(c, Command::Settings(SettingsCommand::PersistStringSetting { key, value })
+        if key =="main_session.dir" && value == "/totally/new/path")
+        ),
         "expected literal buffer to be submitted when no history match, got: {cmds:?}"
     );
 }

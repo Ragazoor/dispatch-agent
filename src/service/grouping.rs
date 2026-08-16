@@ -4,8 +4,7 @@
 //! epics it mutates, owning the status-rollup invariant.
 
 use crate::db::TaskAndEpicStore;
-use crate::dispatch::repo_name_from_path;
-use crate::models::{EpicId, EpicOrigin, TaskId, TaskStatus};
+use crate::models::{repo_name_from_path, EpicId, EpicOrigin, TaskId, TaskStatus};
 use crate::service::ServiceError;
 
 /// Resolve where a task assigned to `root_id` should actually live.

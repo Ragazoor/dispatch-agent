@@ -58,14 +58,14 @@ fn with_status_transition(
 /// first — `ListAgents`/`SendMessage` append one when more than one live
 /// agent answers to a name, even though dispatch's own `task-<id>` names are
 /// unique by construction and should rarely need it — then delegates to
-/// `parse_tmux_window_task_id`, the same parser tmux window names go
-/// through, so the two can't drift apart into two spellings of one
+/// [`crate::models::parse_tmux_window_task_id`], the same parser tmux window
+/// names go through, so the two can't drift apart into two spellings of one
 /// convention. `None` for any value that doesn't match this shape — a
 /// message addressed to a session dispatch didn't launch, or one the sender
 /// renamed itself away from.
 fn parse_peer_message_target_name(to: &str) -> Option<TaskId> {
     let name = to.split(' ').next().unwrap_or(to);
-    crate::dispatch::prompts::parse_tmux_window_task_id(name)
+    crate::models::parse_tmux_window_task_id(name)
 }
 
 /// Result of [`TaskService::update_task`]. Carries the updated task id plus
@@ -596,7 +596,7 @@ impl TaskService {
     pub async fn validate_wrap_up(&self, task_id: TaskId) -> Result<Task, ServiceError> {
         let task = self.get_task(task_id).await?;
 
-        if !crate::dispatch::is_wrappable(&task) {
+        if !task.is_wrappable() {
             return Err(ServiceError::Validation(format!(
                 "Task {} cannot be wrapped up. Requires Running or Review status with a worktree.",
                 task_id.0

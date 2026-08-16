@@ -166,6 +166,13 @@ pub enum Message {
 // Command
 // ---------------------------------------------------------------------------
 
+/// Side effects the runtime executes on the update loop's behalf.
+///
+/// A pure router: every variant wraps exactly one per-domain inner enum from
+/// [`crate::tui::commands`], with no payload of its own. The migration that
+/// established that shape is complete — adding a new inline variant here
+/// instead of a variant on (or a new module beside) one of the inner enums
+/// reintroduces the half-done split it was done to remove.
 #[derive(Debug, Clone)]
 pub enum Command {
     /// Task-domain side-effect commands — see
@@ -176,12 +183,9 @@ pub enum Command {
     /// Pop-out `$EDITOR` flow side-effect commands — see
     /// [`crate::tui::commands::EditorCommand`].
     Editor(crate::tui::commands::EditorCommand),
-    SaveRepoPath(String),
-    /// Record a base_branch into a repo's most-recently-used history (see
-    /// docs/specs/dispatch.allium: rule RecordBaseBranch). Emitted only from
-    /// `finish_task_creation` (the manual "new task" form) — never
-    /// quick-dispatch or MCP `create_task`.
-    SaveBaseBranch(String, String),
+    /// Settings/preference-persistence side-effect commands — see
+    /// [`crate::tui::commands::SettingsCommand`].
+    Settings(crate::tui::commands::SettingsCommand),
     /// Epic-domain side-effect commands — see
     /// [`crate::tui::commands::EpicCommand`].
     Epic(crate::tui::commands::EpicCommand),
@@ -191,14 +195,6 @@ pub enum Command {
     /// System-level side-effect commands — see
     /// [`crate::tui::commands::SystemCommand`].
     System(crate::tui::commands::SystemCommand),
-    PersistSetting {
-        key: String,
-        value: bool,
-    },
-    PersistStringSetting {
-        key: String,
-        value: String,
-    },
     /// Repo-filter overlay side-effect commands — see [`crate::tui::commands::RepoFilterCommand`].
     RepoFilter(crate::tui::commands::RepoFilterCommand),
     /// Local-first repo sync side-effect commands — see
@@ -214,9 +210,9 @@ pub enum Command {
     /// Personal TODO overlay side-effect commands — see
     /// [`crate::tui::commands::TodoCommand`].
     Todo(crate::tui::commands::TodoCommand),
-    /// Append-only telemetry: record a feature-usage event. The runtime spawns
-    /// a fire-and-forget DB write; failures are intentionally swallowed.
-    RecordUsageEvent(crate::models::UsageEvent),
+    /// Usage-telemetry side-effect commands — see
+    /// [`crate::tui::commands::UsageCommand`].
+    Usage(crate::tui::commands::UsageCommand),
     /// Budget-indicator side-effect commands — see
     /// [`crate::tui::commands::BudgetCommand`].
     Budget(crate::tui::commands::BudgetCommand),

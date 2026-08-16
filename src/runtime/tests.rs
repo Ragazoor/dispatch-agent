@@ -8,6 +8,7 @@ use crate::db::{
 };
 use crate::dispatch::mock_sequence::DispatchScript;
 use crate::process::MockProcessRunner;
+use crate::tui::commands::SettingsCommand;
 
 /// Timeout for async receive assertions in tests.
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -773,13 +774,14 @@ async fn finish_task_creation_emits_save_repo_path_and_save_base_branch() {
     ));
 
     assert!(
-        cmds.iter()
-            .any(|c| matches!(c, Command::SaveRepoPath(p) if p == "/tmp")),
+        cmds.iter().any(
+            |c| matches!(c, Command::Settings(SettingsCommand::SaveRepoPath(p)) if p == "/tmp")
+        ),
         "expected a SaveRepoPath(\"/tmp\") command, got: {cmds:?}"
     );
     assert!(
         cmds.iter().any(
-            |c| matches!(c, Command::SaveBaseBranch(repo, branch) if repo == "/tmp" && branch == "develop")
+            |c| matches!(c, Command::Settings(SettingsCommand::SaveBaseBranch(repo, branch)) if repo == "/tmp" && branch == "develop")
         ),
         "expected a SaveBaseBranch(\"/tmp\", \"develop\") command, got: {cmds:?}"
     );
@@ -5328,7 +5330,12 @@ mod command_dispatch {
     async fn dispatch_save_repo_path_persists_and_updates_app() {
         let (rt, mut app) = test_runtime().await;
 
-        let extra = dispatch_one(&rt, &mut app, Command::SaveRepoPath("/some/repo".into())).await;
+        let extra = dispatch_one(
+            &rt,
+            &mut app,
+            Command::Settings(SettingsCommand::SaveRepoPath("/some/repo".into())),
+        )
+        .await;
 
         assert!(
             extra.is_empty(),
@@ -5355,7 +5362,10 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::SaveBaseBranch("/some/repo".into(), "develop".into()),
+            Command::Settings(SettingsCommand::SaveBaseBranch(
+                "/some/repo".into(),
+                "develop".into(),
+            )),
         )
         .await;
 
@@ -5567,19 +5577,19 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::PersistSetting {
+            Command::Settings(SettingsCommand::PersistSetting {
                 key: "notifications_enabled".into(),
                 value: true,
-            },
+            }),
         )
         .await;
         dispatch_one(
             &rt,
             &mut app,
-            Command::PersistStringSetting {
+            Command::Settings(SettingsCommand::PersistStringSetting {
                 key: "main_session_dir".into(),
                 value: "/main".into(),
-            },
+            }),
         )
         .await;
 
@@ -5929,7 +5939,12 @@ mod command_dispatch {
     async fn dispatch_repo_filter_delete_repo_path_forgets_the_path() {
         use crate::tui::commands::RepoFilterCommand;
         let (rt, mut app) = test_runtime().await;
-        dispatch_one(&rt, &mut app, Command::SaveRepoPath("/doomed".into())).await;
+        dispatch_one(
+            &rt,
+            &mut app,
+            Command::Settings(SettingsCommand::SaveRepoPath("/doomed".into())),
+        )
+        .await;
 
         dispatch_one(
             &rt,

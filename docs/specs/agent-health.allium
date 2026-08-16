@@ -815,7 +815,7 @@ rule HookPeerMessageSent {
         -- per `ListAgents`' listing format; `parse_peer_message_target_name`
         -- (src/service/tasks/crud.rs — the `core/Task.find_by_session_name`
         -- of the rule body above) strips it before delegating to
-        -- `parse_tmux_window_task_id` (src/dispatch/prompts.rs), the same
+        -- `parse_tmux_window_task_id` (src/models/tmux_window.rs), the same
         -- parser tmux window names go through, so the two conventions
         -- cannot drift apart.
         -- A `to` that doesn't parse to that shape, or a task id that no

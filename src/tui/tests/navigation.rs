@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
+use crate::tui::commands::SettingsCommand;
 use crate::tui::ui::palette::{FG, MUTED, RED, YELLOW};
 use crossterm::event::KeyCode;
 use std::time::{Duration, Instant};
@@ -1200,7 +1201,7 @@ fn key_n_uppercase_toggles_notifications() {
                                           // Should emit PersistSetting command
     assert!(cmds
         .iter()
-        .any(|c| matches!(c, Command::PersistSetting { .. })));
+        .any(|c| matches!(c, Command::Settings(SettingsCommand::PersistSetting { .. }))));
     // Should show status message
     assert!(app.status.message.as_deref().unwrap().contains("enabled"));
 }

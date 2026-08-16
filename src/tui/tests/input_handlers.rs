@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::models::{EpicId, SubStatus, TaskId, TaskStatus, TaskTag};
+use crate::tui::commands::SettingsCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
@@ -2202,7 +2203,7 @@ fn handle_key_main_session_dir_typing_digit_filters_not_selects() {
     let cmds = app.handle_key(make_key(KeyCode::Char('2')));
     assert!(
         !cmds.iter().any(
-            |c| matches!(c, Command::PersistStringSetting { key, .. } if key == "main_session.dir")
+            |c| matches!(c, Command::Settings(SettingsCommand::PersistStringSetting { key, .. }) if key == "main_session.dir")
         ),
         "digit must not submit a main session dir; cmds: {cmds:?}"
     );

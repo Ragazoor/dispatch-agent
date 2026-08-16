@@ -21,7 +21,7 @@ to look.
 | `src/tui/mod.rs` | `App` struct, lifecycle, `update()` entry point, timing constants (`STATUS_MESSAGE_TTL`, `PR_POLL_INTERVAL`, `MAIN_SESSION_POLL_TICKS`, `GG_CHORD_TIMEOUT`). Column-listing helpers: `column_items_for_status_with_stats` (production render path — requires pre-computed `EpicStatsMap`, used by kanban columns); `column_items_for_visual_column` (snapshot/archive views — filters by `VisualColumn` granularity, no stats needed). `column_items_for_status` is test-only. |
 | `src/tui/dispatcher.rs` | `dispatch(app, msg)` — thin top-level router: one arm per outer `Message` domain, delegating to that domain's inner-enum `route(self, app)` method |
 | `src/tui/messages/` | Per-domain inner `*Message` enums (`task.rs`, `epic.rs`, `system.rs`, `split.rs`, `todos.rs`, …). Each also owns its per-variant routing via an inherent `route(self, app) -> Vec<Command>` method co-located with the enum — see `docs/architecture.md` "Message routing (co-located)" |
-| `src/tui/commands/` | Per-domain inner `*Command` enums (`task.rs`, `epic.rs`, `editor.rs`, `feed.rs`, `split.rs`, `todos.rs`, …) — the command twin of `src/tui/messages/`. Variants of the outer `Command` enum are progressively migrated here. Unlike `messages/`, these are pure data: `Command` → effect stays centralised in `src/runtime/commands.rs` |
+| `src/tui/commands/` | Per-domain inner `*Command` enums (`task.rs`, `epic.rs`, `editor.rs`, `feed.rs`, `settings.rs`, `split.rs`, `todos.rs`, `usage.rs`, …) — the command twin of `src/tui/messages/`. **Every** outer `Command` variant now wraps one of these; adding a bare inline variant to `src/tui/types.rs` is a regression. Unlike `messages/`, these are pure data: `Command` → effect stays centralised in `src/runtime/commands.rs` |
 | `src/tui/update/` | Per-message handlers (`agent.rs`, `epics.rs`, `feeds.rs`, `forms.rs`, `lifecycle.rs`, `main_session.rs`, `move_task.rs`, `navigation.rs`, `pr.rs`, `repo_filter.rs`, `retry.rs`, `selection.rs`, `split_pane.rs`, `system.rs`, `todos.rs`) |
 | `src/tui/input.rs` | Key event entry point, `text_edit_message()` caret routing, inline-mutation convention for UI-only state, unconditional `dirty = true` |
 | `src/tui/input/` | Per-mode key handlers: `normal.rs`, `confirm.rs`, `repo_filter.rs` |
@@ -32,15 +32,16 @@ to look.
 | `src/tui/ui/budget.rs` | Subscription rate-limit indicator: `budget_spans` renders the 5-hour/7-day windows from a `BudgetSnapshot` into status-bar spans — colour by threshold, countdown to reset, dimmed with an age suffix when the snapshot is stale, and graceful degradation (drop countdowns, then the 7-day window, then everything) as the available width shrinks. `pub(in crate::tui::ui)`, so its tests are inline |
 | `src/tui/ui/palette.rs` | Tokyo Night color palette constants |
 | `src/tui/ui/{input_form,todos}.rs` | Overlay renderers (input forms, TODO overlay) |
-| `src/tui/types.rs` | `Message`, `Command`, `ViewMode`, `InputMode`, `LayoutCache`, `AgentTracking` enums and structs |
+| `src/tui/types.rs` | `Message`, `Command` (a pure router over the per-domain enums in `src/tui/commands/`), `ViewMode`, `InputMode`, `LayoutCache`, `AgentTracking` enums and structs |
 | `src/tui/tests/` | TUI unit and scenario tests, snapshots, helpers |
 | `src/models/mod.rs` | Module declarations + flat re-exports of all domain types (no logic, no tests) |
-| `src/models/tasks.rs` | `Task`, `TaskStatus`, `SubStatus`, `TaskTag` (+ `is_review()`), `DispatchMode::for_task()` tag routing, `slugify`, age formatting |
+| `src/models/tasks.rs` | `Task`, `TaskStatus`, `SubStatus`, `TaskTag` (+ `is_review()`), `DispatchMode::for_task()` tag routing, `is_wrappable`, `slugify`, age formatting |
 | `src/models/{epics,learnings,review,todos,usage}.rs` | Domain types per area. `review.rs` holds `ReviewDecision` and `pr_number_from_url` |
 | `src/models/url.rs` | `TaskUrl` / `UrlType` — the typed URL on a task (PR, issue, security alert), stored explicitly rather than sniffed |
 | `src/models/ids.rs` | `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId`/`TodoId` |
 | `src/models/string_enum.rs` | `define_str_enum!` macro behind `TaskStatus`/`SubStatus`/`TaskTag`/`WrapUpMode` string conversions |
-| `src/models/paths.rs` | `expand_tilde` path utility |
+| `src/models/paths.rs` | `expand_tilde`, plus the whole repo-grouping family — `repo_name_from_path`, `repo_name_from_url`, `extract_github_repo`, `UNKNOWN_REPO_GROUP`. Both grouping halves share the fallback, so they stay in one module; turning a repo name into a *local* path is the adapter's job (`resolve_repo_path`) |
+| `src/models/tmux_window.rs` | The `task-<id>` naming convention: `build_tmux_window_name` / `parse_tmux_window_task_id`. Lives in the model, not the adapter, because `TaskService` parses `SendMessage` targets through the same pair |
 | `src/models/columns.rs` | `VisualColumn` kanban board layout |
 | `src/service/mod.rs` | Service module root: `ServiceError`, `FieldUpdate`, `UrlUpdate`, re-exports of all sub-module types |
 | `src/service/tasks/mod.rs` | `TaskService` — task business logic |
@@ -63,7 +64,7 @@ to look.
 | `src/db/queries/subagents.rs` | `task_subagents` CRUD with session fencing, keeping `tasks.live_subagents` in step |
 | `src/db/tests/mod.rs` | Database unit tests entry point |
 | `src/db/tests/{tasks,epics,learnings,settings,todos,usage,migrations,async_handle,read_pool}.rs` | Tests per domain, plus the async-handle and read-pool behaviour tests |
-| `src/dispatch/mod.rs` | Dispatch module root: PR-status polling via `gh` (`check_pr_status`, `pr_head_branch`) and repo-path/URL helpers (`repo_name_from_path`, `extract_github_repo`, `resolve_repo_path`, `resolve_feed_item_repo_paths`) |
+| `src/dispatch/mod.rs` | Dispatch module root: PR-status polling via `gh` (`check_pr_status`, `pr_head_branch`) and local-path resolution (`resolve_repo_path`, `resolve_feed_item_repo_paths`); the pure URL/name parsing it builds on lives in `src/models/paths.rs` |
 | `src/dispatch/agents.rs` | The agent launchers — `dispatch_agent`, `research_agent`, `quick_dispatch_agent`, `resume_agent` — plus `fetch_verify_command` (a soft-fail settings read used by the `wrap_up` MCP handler, not by any launcher). Each launcher provisions a worktree, writes the prompt file, and starts `claude` inside a tmux window |
 | `src/dispatch/prompts.rs` | Prompt construction: `build_prompt` (with-plan / no-plan / review variants), `build_quick_dispatch_prompt`, `build_research_prompt`, knowledge-block rendering |
 | `src/dispatch/prompts/` | Markdown bodies for the two review addenda (`pr-review.md`, `dependabot.md`), inlined via `include_str!` |

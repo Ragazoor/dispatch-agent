@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::tui::commands::{BudgetCommand, LearningCommand};
+use crate::tui::commands::{BudgetCommand, LearningCommand, UsageCommand};
 
 /// Full `Command` match dispatch — one entry per variant, in `Command` enum order.
 ///
@@ -19,12 +19,8 @@ pub(super) async fn dispatch(
             dispatch_feed(rt, cmd);
             vec![]
         }
-        SaveRepoPath(path) => {
-            rt.exec_save_repo_path(app, path).await;
-            vec![]
-        }
-        SaveBaseBranch(repo_path, branch) => {
-            rt.exec_save_base_branch(app, repo_path, branch).await;
+        Settings(cmd) => {
+            dispatch_settings(rt, app, cmd).await;
             vec![]
         }
         MainSession(cmd) => {
@@ -38,15 +34,6 @@ pub(super) async fn dispatch(
         }
         System(cmd) => {
             dispatch_system(rt, cmd);
-            vec![]
-        }
-        // Settings
-        PersistSetting { key, value } => {
-            rt.exec_persist_setting(app, &key, value).await;
-            vec![]
-        }
-        PersistStringSetting { key, value } => {
-            rt.exec_persist_string_setting(app, &key, &value).await;
             vec![]
         }
         RepoFilter(cmd) => {
@@ -71,7 +58,7 @@ pub(super) async fn dispatch(
             rt.exec_archive_stale_learnings().await;
             vec![]
         }
-        RecordUsageEvent(event) => {
+        Usage(UsageCommand::Record(event)) => {
             let db = Arc::clone(&rt.database);
             tokio::spawn(async move {
                 crate::service::record_usage_event_logged(db.as_ref(), &event).await;
@@ -85,6 +72,22 @@ pub(super) async fn dispatch(
         Budget(BudgetCommand::Refresh) => {
             drop(rt.exec_refresh_budget());
             vec![]
+        }
+    }
+}
+
+async fn dispatch_settings(
+    rt: &super::TuiRuntime,
+    app: &mut super::App,
+    cmd: crate::tui::commands::SettingsCommand,
+) {
+    use crate::tui::commands::SettingsCommand::*;
+    match cmd {
+        SaveRepoPath(path) => rt.exec_save_repo_path(app, path).await,
+        SaveBaseBranch(repo_path, branch) => rt.exec_save_base_branch(app, repo_path, branch).await,
+        PersistSetting { key, value } => rt.exec_persist_setting(app, &key, value).await,
+        PersistStringSetting { key, value } => {
+            rt.exec_persist_string_setting(app, &key, &value).await
         }
     }
 }

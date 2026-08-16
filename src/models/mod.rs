@@ -6,7 +6,9 @@
 //!
 //! - [`ids`] — the `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId`/`TodoId`
 //! - [`string_enum`] — the `define_str_enum!` macro behind status/tag/mode string conversions
-//! - [`paths`] — path utilities (`expand_tilde`)
+//! - [`paths`] — path utilities (`expand_tilde`) and the repo-grouping family
+//!   (`repo_name_from_path`/`repo_name_from_url`/`extract_github_repo`)
+//! - [`tmux_window`] — the `task-<id>` window/session naming convention
 //! - [`tasks`] — tasks, statuses, tags, dispatch mode, slugify, age formatting
 //! - [`epics`] — epics, epic sub-status, descendant traversal
 //! - [`review`] — review decisions, PR-URL parsing
@@ -26,7 +28,12 @@ mod ids;
 mod string_enum;
 
 mod paths;
-pub use paths::expand_tilde;
+pub use paths::{
+    expand_tilde, extract_github_repo, repo_name_from_path, repo_name_from_url, UNKNOWN_REPO_GROUP,
+};
+
+mod tmux_window;
+pub use tmux_window::{build_tmux_window_name, parse_tmux_window_task_id};
 
 pub mod learnings;
 pub use learnings::*;

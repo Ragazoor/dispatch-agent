@@ -1,10 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::mock_sequence::{pr_view_reply, DispatchScript, PrHead, Step, COMPANION_PANE_ID};
 use super::prompts::{
-    allium_instruction, build_prompt, build_quick_dispatch_prompt, build_tmux_window_name,
-    epic_preamble, mcp_tools_instruction, parse_tmux_window_task_id, plan_and_attach_instruction,
-    reused_rebase_preamble, task_block, tdd_instruction, wrap_up_instruction, EpicContext,
-    LearningInjections, PromptContext,
+    allium_instruction, build_prompt, build_quick_dispatch_prompt, epic_preamble,
+    mcp_tools_instruction, plan_and_attach_instruction, reused_rebase_preamble, task_block,
+    tdd_instruction, wrap_up_instruction, EpicContext, LearningInjections, PromptContext,
 };
 use super::worktree::{
     provision_worktree, BaseRef, StartPoint, FETCH_MAX_ATTEMPTS, PROVISION_MAX_SUBPROCESS_CALLS,
@@ -381,46 +380,6 @@ fn build_prompt_mentions_mcp_tools() {
 }
 
 #[test]
-fn is_wrappable_running_with_worktree() {
-    let task = Task {
-        status: TaskStatus::Running,
-        worktree: Some("/tmp/wt".to_string()),
-        ..make_task("/repo")
-    };
-    assert!(is_wrappable(&task));
-}
-
-#[test]
-fn is_wrappable_review_with_worktree() {
-    let task = Task {
-        status: TaskStatus::Review,
-        worktree: Some("/tmp/wt".to_string()),
-        ..make_task("/repo")
-    };
-    assert!(is_wrappable(&task));
-}
-
-#[test]
-fn is_wrappable_running_without_worktree() {
-    let task = Task {
-        status: TaskStatus::Running,
-        worktree: None,
-        ..make_task("/repo")
-    };
-    assert!(!is_wrappable(&task));
-}
-
-#[test]
-fn is_wrappable_backlog_with_worktree() {
-    let task = Task {
-        status: TaskStatus::Backlog,
-        worktree: Some("/tmp/wt".to_string()),
-        ..make_task("/repo")
-    };
-    assert!(!is_wrappable(&task));
-}
-
-#[test]
 fn validate_repo_path_existing_dir() {
     assert!(validate_repo_path("/tmp").is_ok());
 }
@@ -437,26 +396,6 @@ fn validate_repo_path_not_a_dir() {
     let result = validate_repo_path("/etc/hostname");
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("Not a directory"));
-}
-
-#[test]
-fn resume_window_name_matches_dispatch() {
-    // The resume window name should use the same naming convention as dispatch
-    assert_eq!(build_tmux_window_name(TaskId(42)), "task-42");
-}
-
-#[test]
-fn parse_tmux_window_task_id_roundtrips_with_build_tmux_window_name() {
-    let name = build_tmux_window_name(TaskId(42));
-    assert_eq!(parse_tmux_window_task_id(&name), Some(TaskId(42)));
-}
-
-#[test]
-fn parse_tmux_window_task_id_rejects_non_task_windows() {
-    assert_eq!(parse_tmux_window_task_id("TUI"), None);
-    assert_eq!(parse_tmux_window_task_id("dispatch-main"), None);
-    assert_eq!(parse_tmux_window_task_id("task-"), None);
-    assert_eq!(parse_tmux_window_task_id("task-abc"), None);
 }
 
 // -----------------------------------------------------------------------
@@ -2456,112 +2395,6 @@ fn finish_task_dirty_primary_worktree_returns_error_before_pull() {
             || c.1.contains(&"--ff-only".to_string())),
         "a dirty primary worktree must be reported before any pull/rebase/merge is attempted, got: {calls:?}"
     );
-}
-
-// --- repo_name_from_path tests ---
-
-#[test]
-fn repo_name_from_path_uses_basename() {
-    assert_eq!(super::repo_name_from_path("/home/u/dispatch"), "dispatch");
-    assert_eq!(super::repo_name_from_path("/home/u/dispatch/"), "dispatch");
-    assert_eq!(super::repo_name_from_path(""), super::UNKNOWN_REPO_GROUP);
-    assert_eq!(super::repo_name_from_path("/"), super::UNKNOWN_REPO_GROUP);
-}
-
-// --- repo_name_from_url tests ---
-
-#[test]
-fn repo_name_from_url_extracts_last_segment() {
-    assert_eq!(
-        super::repo_name_from_url("https://github.com/org/my-repo/pull/42"),
-        "my-repo"
-    );
-    assert_eq!(
-        super::repo_name_from_url("https://github.com/org/my-repo"),
-        "my-repo"
-    );
-    assert_eq!(
-        super::repo_name_from_url("https://github.com/org/another-repo/issues/1"),
-        "another-repo"
-    );
-}
-
-#[test]
-fn repo_name_from_url_returns_other_for_non_github() {
-    assert_eq!(super::repo_name_from_url(""), "other");
-    assert_eq!(
-        super::repo_name_from_url("https://example.com/not-github"),
-        "other"
-    );
-    assert_eq!(
-        super::repo_name_from_url("https://gitlab.com/org/repo"),
-        "other"
-    );
-}
-
-// --- extract_github_repo tests ---
-
-#[test]
-fn extract_github_repo_pr_url() {
-    assert_eq!(
-        extract_github_repo("https://github.com/org/repo/pull/42"),
-        Some("org/repo"),
-    );
-}
-
-#[test]
-fn extract_github_repo_issue_url() {
-    assert_eq!(
-        extract_github_repo("https://github.com/org/repo/issues/5"),
-        Some("org/repo"),
-    );
-}
-
-#[test]
-fn extract_github_repo_root_url() {
-    assert_eq!(
-        extract_github_repo("https://github.com/org/repo"),
-        Some("org/repo"),
-    );
-}
-
-#[test]
-fn extract_github_repo_root_url_with_trailing_slash() {
-    assert_eq!(
-        extract_github_repo("https://github.com/org/repo/"),
-        Some("org/repo"),
-    );
-}
-
-#[test]
-fn extract_github_repo_tree_url() {
-    assert_eq!(
-        extract_github_repo("https://github.com/org/repo/tree/main"),
-        Some("org/repo"),
-    );
-}
-
-#[test]
-fn extract_github_repo_non_github_url() {
-    assert_eq!(
-        extract_github_repo("https://jira.company.com/browse/PROJ-123"),
-        None
-    );
-}
-
-#[test]
-fn extract_github_repo_empty_string() {
-    assert_eq!(extract_github_repo(""), None);
-}
-
-#[test]
-fn extract_github_repo_only_one_segment() {
-    assert_eq!(extract_github_repo("https://github.com/org"), None);
-}
-
-#[test]
-fn extract_github_repo_malformed_url() {
-    assert_eq!(extract_github_repo("not-a-url"), None);
 }
 
 // --- dispatch guard tests ---

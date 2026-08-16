@@ -2,14 +2,17 @@ use anyhow::{Context, Result};
 use std::fs;
 
 use crate::git::detect_default_branch;
-use crate::models::{expand_tilde, DispatchResult, ResumeResult, Task, TaskId, TaskStatus};
+use crate::models::{
+    build_tmux_window_name, expand_tilde, parse_tmux_window_task_id, DispatchResult, ResumeResult,
+    Task, TaskId,
+};
 use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 use crate::tmux;
 
 use super::prompts::{
     build_and_record_injections, build_prompt, build_quick_dispatch_prompt, build_research_prompt,
-    build_tmux_window_name, compose_prompt_head, parse_tmux_window_task_id, select_preamble,
-    EpicContext, LearningInjections, PromptContext, DISPATCH_PLUGIN_DIR,
+    compose_prompt_head, select_preamble, EpicContext, LearningInjections, PromptContext,
+    DISPATCH_PLUGIN_DIR,
 };
 use super::worktree::{provision_worktree, rollback_failed_provisioning, BaseRef, StartPoint};
 
@@ -559,12 +562,6 @@ pub fn resume_agent(
     tracing::info!(task_id = task_id.0, %tmux_window, "agent resumed");
 
     Ok(ResumeResult { tmux_window })
-}
-
-/// A task can be wrapped up if it has a worktree and is either Running or Review.
-pub fn is_wrappable(task: &Task) -> bool {
-    task.worktree.is_some()
-        && (task.status == TaskStatus::Review || task.status == TaskStatus::Running)
 }
 
 /// The fixed tmux window name used for the main claude session.
