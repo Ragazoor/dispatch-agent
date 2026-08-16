@@ -722,6 +722,8 @@ mod tests {
             epic_svc: Arc::new(crate::service::EpicService::new(db.clone())),
             todo_svc: Arc::new(crate::service::TodoService::new(todo_db)),
             feed_runner: Some(feed_runner),
+            // Never started by these fixtures — see the field's doc comment.
+            scheduler_runner: None,
             feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),

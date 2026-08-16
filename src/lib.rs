@@ -19,6 +19,7 @@ pub mod plan;
 pub mod process;
 pub mod repo_sync;
 pub mod runtime;
+pub mod scheduler;
 pub mod service;
 pub mod setup;
 #[cfg(test)]

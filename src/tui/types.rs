@@ -120,6 +120,17 @@ pub(in crate::tui) fn apply_tree_nav<Id: Clone + PartialEq + Eq + std::hash::Has
 // Message
 // ---------------------------------------------------------------------------
 
+// `Task`-carrying variants (`TaskMessage::Created`/`Updated`, and the same in
+// `TaskCommand`) make this variant ~480 bytes against a ~208-byte runner-up.
+// It sat just inside the lint's 200-byte default until the four scheduling
+// columns (#4203) added ~80 bytes to `Task`.
+//
+// The fix clippy asks for — boxing the `Task` payloads — is right, but it is
+// ~89 call sites across the TUI message/command plumbing, which is exactly the
+// code subtask #4204 is editing. Deferred to its own task rather than landed
+// as a drive-by in the middle of that. Allowed here, not silenced globally, so
+// re-checking it is a one-line diff.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Message {
     /// System-level messages — see [`crate::tui::messages::SystemMessage`].
@@ -173,6 +184,8 @@ pub enum Message {
 /// established that shape is complete — adding a new inline variant here
 /// instead of a variant on (or a new module beside) one of the inner enums
 /// reintroduces the half-done split it was done to remove.
+// Same cause and same deferral as `Message` above — see the comment there.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum Command {
     /// Task-domain side-effect commands — see

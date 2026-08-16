@@ -41,6 +41,8 @@ async fn create_task_via_task_header_inherits_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();

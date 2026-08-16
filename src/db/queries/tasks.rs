@@ -260,6 +260,28 @@ impl super::super::TaskRead for Database {
         .await
     }
 
+    async fn list_scheduled_tasks(&self) -> Result<Vec<crate::models::Task>> {
+        self.db_call_read(move |conn| {
+            let mut stmt = conn
+                .prepare_cached(&format!(
+                    "SELECT {TASK_COLUMNS} FROM tasks \
+                     WHERE schedule_interval_secs IS NOT NULL \
+                       AND tmux_window IS NULL \
+                       AND status IN (?1, ?2) \
+                     ORDER BY id ASC"
+                ))
+                .context("Failed to prepare list_scheduled_tasks")?;
+            let rows = stmt
+                .query_map(
+                    params![TaskStatus::Backlog.as_str(), TaskStatus::Done.as_str()],
+                    row_to_task,
+                )
+                .context("Failed to query scheduled tasks")?;
+            collect_decodable(rows, "scheduled tasks").context("Failed to collect scheduled tasks")
+        })
+        .await
+    }
+
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<crate::models::Task>> {
         let plan = plan.to_string();
         self.db_call_read(move |conn| {
@@ -818,6 +840,42 @@ impl super::super::TaskCrud for Database {
                     ],
                 )
                 .context("Failed to claim backlog task")?;
+            Ok(rows == 1)
+        })
+        .await
+    }
+
+    async fn try_claim_scheduled_task(
+        &self,
+        id: TaskId,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let now = super::format_datetime(now);
+        self.db_call(move |conn| {
+            let running = TaskStatus::Running;
+            // Same SET list as `try_claim_backlog_task`; only the WHERE differs.
+            // Every precondition of `DispatchScheduledTask` that a concurrent
+            // writer could invalidate is in this one statement, so the claim is
+            // the serialisation point — a second tick arriving mid-provision
+            // finds `status = running` and loses.
+            let rows = conn
+                .execute(
+                    "UPDATE tasks \
+                     SET status = ?1, sub_status = ?2, last_pre_tool_use_at = ?3, \
+                         updated_at = datetime('now') \
+                     WHERE id = ?4 AND status IN (?5, ?6) \
+                       AND tmux_window IS NULL \
+                       AND schedule_interval_secs IS NOT NULL",
+                    params![
+                        running.as_str(),
+                        SubStatus::default_for(running).as_str(),
+                        now,
+                        id.0,
+                        TaskStatus::Backlog.as_str(),
+                        TaskStatus::Done.as_str(),
+                    ],
+                )
+                .context("Failed to claim scheduled task")?;
             Ok(rows == 1)
         })
         .await

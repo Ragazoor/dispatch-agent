@@ -196,6 +196,8 @@ pub(super) async fn make_runtime(
         epic_svc: Arc::new(crate::service::EpicService::new(store.clone())),
         todo_svc: Arc::new(crate::service::TodoService::new(db.clone())),
         feed_runner: Some(feed_runner),
+        // Never started by these fixtures — see the field's doc comment.
+        scheduler_runner: None,
         feed_invalidate_tx,
         feed_sync_guard,
         learning_svc: Arc::new(crate::service::MockLearningService),

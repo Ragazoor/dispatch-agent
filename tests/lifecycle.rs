@@ -52,6 +52,8 @@ async fn full_lifecycle() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -87,6 +89,10 @@ async fn full_lifecycle() {
                 stop_pending: false,
                 live_shells: 0,
                 oldest_live_shell_started_at: None,
+                schedule_interval_secs: None,
+                pinned_branch: None,
+                last_processed_sha: None,
+                last_scheduled_check_at: None,
             },
         },
     ));
