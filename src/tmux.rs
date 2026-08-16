@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use std::process::Output;
 
-use crate::process::{stderr_str, stdout_str, ProcessRunner};
+use crate::process::{stderr_str, stdout_str, ProcessRunner, SUBPROCESS_TIMEOUT};
 
 // ---------------------------------------------------------------------------
 // Shared checked-run helper
@@ -22,14 +22,20 @@ fn checked_error(context: &str, output: &Output) -> anyhow::Error {
     }
 }
 
-/// Run `tmux` with `args`, returning the raw [`Output`] on success and a
-/// consistent checked-run error (see [`checked_error`]) otherwise.
-fn run_checked(runner: &dyn ProcessRunner, args: &[&str], context: &str) -> Result<Output> {
-    let output = runner.run("tmux", args)?;
+/// Turn a raw [`Output`] into a [`Result`], via [`checked_error`] on failure.
+/// Shared by [`run_checked`] and [`run_checked_timeout`], which differ only in
+/// which `ProcessRunner` method produced the `Output`.
+fn check_output(output: Output, context: &str) -> Result<Output> {
     if !output.status.success() {
         return Err(checked_error(context, &output));
     }
     Ok(output)
+}
+
+/// Run `tmux` with `args`, returning the raw [`Output`] on success and a
+/// consistent checked-run error (see [`checked_error`]) otherwise.
+fn run_checked(runner: &dyn ProcessRunner, args: &[&str], context: &str) -> Result<Output> {
+    check_output(runner.run("tmux", args)?, context)
 }
 
 /// Like [`run_checked`], but returns trimmed stdout as a `String` instead of
@@ -37,6 +43,23 @@ fn run_checked(runner: &dyn ProcessRunner, args: &[&str], context: &str) -> Resu
 fn run_checked_stdout(runner: &dyn ProcessRunner, args: &[&str], context: &str) -> Result<String> {
     let output = run_checked(runner, args, context)?;
     Ok(stdout_str(&output))
+}
+
+/// Like [`run_checked`], but bounds the subprocess with [`SUBPROCESS_TIMEOUT`]
+/// so a hung tmux server cannot park the calling thread forever.
+///
+/// Used by [`new_window`], [`set_window_dispatch_dir`] and
+/// [`ensure_split_hook`] — and so by every one of their callers, including
+/// `provision_worktree`'s `post_add` step, `resume_agent` and
+/// `create_main_session` (`src/dispatch/agents.rs`) — which is what closes
+/// #4202. Every other tmux call in this module still goes through the
+/// unbounded [`run_checked`]; if one of those turns out to need the same
+/// treatment it should get its own pass rather than folding in here.
+fn run_checked_timeout(runner: &dyn ProcessRunner, args: &[&str], context: &str) -> Result<Output> {
+    check_output(
+        runner.run_with_timeout("tmux", args, SUBPROCESS_TIMEOUT)?,
+        context,
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +204,7 @@ pub(crate) fn window_target(window: &str, runner: &dyn ProcessRunner) -> Result<
 
 /// Create a new tmux window with the given name, starting in `working_dir`.
 pub fn new_window(name: &str, working_dir: &str, runner: &dyn ProcessRunner) -> Result<()> {
-    run_checked(
+    run_checked_timeout(
         runner,
         &["new-window", "-d", "-n", name, "-c", working_dir],
         "new-window",
@@ -336,7 +359,7 @@ pub fn set_window_dispatch_dir(
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
     let target = window_target(window, runner)?;
-    run_checked(
+    run_checked_timeout(
         runner,
         &[
             "set-option",
@@ -419,7 +442,7 @@ pub fn ensure_split_hook(runner: &dyn ProcessRunner) -> Result<()> {
         "if-shell -F '{SPLIT_NEEDS_CORRECTION}' \
          'run-shell -bC \"respawn-pane -k -t #{{pane_id}} -c \\\"#{{@dispatch_dir}}\\\"\"'"
     );
-    run_checked(
+    run_checked_timeout(
         runner,
         &["set-hook", "after-split-window", &hook_cmd],
         "set-hook",
@@ -1072,6 +1095,18 @@ mod tests {
         );
     }
 
+    // A hung tmux server must not park the calling thread forever (#4202):
+    // this is one of `provision_worktree`'s `post_add` calls.
+    #[test]
+    fn new_window_is_bounded_by_subprocess_timeout() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        new_window("task-42", "/some/path", &mock).unwrap();
+        assert_eq!(
+            mock.recorded_timeouts(),
+            vec![Some(crate::process::SUBPROCESS_TIMEOUT)]
+        );
+    }
+
     #[test]
     fn new_window_running_issues_correct_tmux_args() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
@@ -1235,6 +1270,18 @@ mod tests {
         );
     }
 
+    // A hung tmux server must not park the calling thread forever (#4202):
+    // this is one of `provision_worktree`'s `post_add` calls.
+    #[test]
+    fn set_window_dispatch_dir_is_bounded_by_subprocess_timeout() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&COLLIDING);
+        set_window_dispatch_dir("task-42", "/some/path", &mock).unwrap();
+        assert_eq!(
+            mock.recorded_timeouts(),
+            vec![Some(crate::process::SUBPROCESS_TIMEOUT)]
+        );
+    }
+
     #[test]
     fn set_window_dispatch_dir_detects_ambiguous_windows() {
         let mock = MockProcessRunner::new(vec![]).with_windows(&["task-42", "task-42"]);
@@ -1270,6 +1317,18 @@ mod tests {
                 "if-shell -F '#{&&:#{@dispatch_dir},#{!=:#{pane_start_path},#{@dispatch_dir}}}' \
                  'run-shell -bC \"respawn-pane -k -t #{pane_id} -c \\\"#{@dispatch_dir}\\\"\"'",
             ]
+        );
+    }
+
+    // A hung tmux server must not park the calling thread forever (#4202):
+    // this is one of `provision_worktree`'s `post_add` calls.
+    #[test]
+    fn ensure_split_hook_is_bounded_by_subprocess_timeout() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok()]);
+        ensure_split_hook(&mock).unwrap();
+        assert_eq!(
+            mock.recorded_timeouts(),
+            vec![Some(crate::process::SUBPROCESS_TIMEOUT)]
         );
     }
 

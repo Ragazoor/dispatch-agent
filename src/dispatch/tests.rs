@@ -2300,6 +2300,17 @@ fn pr_head_branch_returns_none_on_empty_output() {
     );
 }
 
+// A hung `gh` must not park the calling thread forever (#4202).
+#[test]
+fn pr_head_branch_is_bounded_by_subprocess_timeout() {
+    let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(&pr_view_reply(
+        "renovate/serde-1.x",
+        false,
+    ))]);
+    pr_head_branch("https://github.com/org/repo/pull/7", &mock);
+    assert_eq!(mock.recorded_timeouts(), vec![Some(SUBPROCESS_TIMEOUT)]);
+}
+
 // --- finish_task tests ---
 
 /// Build a `FinishContext` with the standard test repo/worktree/branch, varying

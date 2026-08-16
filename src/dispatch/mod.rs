@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::models::ReviewDecision;
-use crate::process::ProcessRunner;
+use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 
 mod agents;
 mod finish;
@@ -122,7 +122,7 @@ pub fn check_pr_status(pr_url: &str, runner: &dyn ProcessRunner) -> Result<PrSta
 /// basing on it would fail `git worktree add`, hence the fork fall-back.
 pub fn pr_head_branch(pr_url: &str, runner: &dyn ProcessRunner) -> Option<String> {
     let output = runner
-        .run(
+        .run_with_timeout(
             "gh",
             &[
                 "pr",
@@ -133,6 +133,7 @@ pub fn pr_head_branch(pr_url: &str, runner: &dyn ProcessRunner) -> Option<String
                 "-q",
                 r#"[.headRefName, (.isCrossRepository|tostring)] | join("\n")"#,
             ],
+            SUBPROCESS_TIMEOUT,
         )
         .ok()?;
     if !output.status.success() {

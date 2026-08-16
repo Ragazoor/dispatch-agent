@@ -251,6 +251,13 @@ rule DispatchTask {
         -- reuse — the window itself is never reused, so it is always rolled
         -- back on failure regardless of whether the worktree was.
         --
+        -- Each of the three tmux calls this rollback guards against —
+        -- opening the window, setting its dispatch dir, installing the split
+        -- hook — is bounded by SUBPROCESS_TIMEOUT (120s), so a hung tmux
+        -- server now surfaces as an ordinary failure here (triggering this
+        -- same rollback) within 120s rather than parking the calling thread
+        -- indefinitely.
+        --
         -- == Repo-trust pre-gate ==
         -- Every launch of a worktree agent from the TUI is gated on Claude
         -- Code trusting the repo: an untrusted repo makes the freshly created
@@ -384,6 +391,9 @@ rule DispatchTask {
         -- compared against a local branch of the same name). This soft-falls
         -- back to <base_branch> on any gh failure, empty output, or a
         -- cross-repository (fork) PR whose head branch is not on origin.
+        -- This `gh pr view` call is bounded by SUBPROCESS_TIMEOUT (120s), so
+        -- a hung `gh` falls into this same soft fallback rather than
+        -- blocking the dispatch indefinitely.
         -- That fallback happens before the head branch is resolved to a
         -- fetch target; it does not apply once a PR head branch has been
         -- chosen. If the subsequent `git fetch origin <headRefName>` then
