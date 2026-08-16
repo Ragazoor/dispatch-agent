@@ -30,8 +30,8 @@ pub use finish::{finish_task, FinishContext, FinishError};
 pub use prompts::{build_and_record_injections, EpicContext, LearningInjections};
 pub use split_panes::{join_task_window_into_pane, swap_task_window_into_pane};
 pub use trust::{is_repo_trusted, trust_repo};
-pub use worktree::{branch_from_worktree, teardown_task, validate_repo_path, TeardownFailure};
 pub(crate) use worktree::PROVISION_MAX_SUBPROCESS_CALLS;
+pub use worktree::{branch_from_worktree, teardown_task, validate_repo_path, TeardownFailure};
 
 /// Extract stderr from a process `Output` as a trimmed `String`.
 pub(super) fn stderr_str(output: &std::process::Output) -> String {
