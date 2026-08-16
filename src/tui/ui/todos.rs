@@ -3,11 +3,11 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{BorderType, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
 use super::palette::{BLUE, CYAN, MUTED, PURPLE, YELLOW};
-use super::shared::rounded_block;
+use super::shared::{centered_rect, open_overlay, titled_block};
 use crate::models::TodoLink;
 use crate::tui::{App, InputMode, ViewMode};
 
@@ -29,21 +29,14 @@ pub fn render_todos(frame: &mut Frame, app: &App, area: Rect) {
     // ── Centered overlay (70% × 70%) ──────────────────────────────────────────
     let overlay_width = (area.width * 70 / 100).clamp(40, 100);
     let overlay_height = (area.height * 70 / 100).clamp(12, 35);
-    let x = area.x + (area.width.saturating_sub(overlay_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(overlay_height)) / 2;
-    let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
-
-    frame.render_widget(Clear, overlay_area);
+    let overlay_area = centered_rect(area, overlay_width, overlay_height);
 
     let open_count = todos.iter().filter(|t| !t.done).count();
     let title = format!(" TODO ({open_count} open) ");
 
-    let outer_block = rounded_block(CYAN)
-        .title(title)
-        .title_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD));
+    let outer_block = titled_block(CYAN, BorderType::Rounded, title);
 
-    let inner_area = outer_block.inner(overlay_area);
-    frame.render_widget(outer_block, overlay_area);
+    let inner_area = open_overlay(frame, overlay_area, outer_block);
 
     let adding = matches!(
         app.input.mode,

@@ -2,13 +2,13 @@
 
 use ratatui::{
     layout::Rect,
-    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{BorderType, Paragraph},
     Frame,
 };
 
-use crate::tui::ui::palette::{CYAN, MUTED, MUTED_LIGHT};
+use crate::tui::ui::palette::CYAN;
+use crate::tui::ui::shared::{centered_rect, open_overlay, titled_block, HintStyles};
 use crate::tui::{App, InputMode};
 
 pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &App, area: Rect) {
@@ -18,23 +18,14 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
 
     let popup_width = (area.width * 80 / 100).clamp(40, 72);
     let popup_height = (area.height * 80 / 100).clamp(25, 36);
-    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
-    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
-    let popup_area = Rect::new(x, y, popup_width, popup_height);
+    let popup_area = centered_rect(area, popup_width, popup_height);
 
-    frame.render_widget(Clear, popup_area);
+    let block = titled_block(CYAN, BorderType::Double, " Help ".to_string());
 
-    let block = Block::default()
-        .title(" Help ")
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .border_style(Style::default().fg(CYAN))
-        .title_style(Style::default().fg(CYAN).add_modifier(Modifier::BOLD));
-
-    let header = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
-    let key = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
-    let desc = Style::default().fg(MUTED_LIGHT);
-    let note = Style::default().fg(MUTED);
+    let styles = HintStyles::new(CYAN);
+    // Section headers and key glyphs share the accent; kept as local aliases so
+    // the table below stays readable.
+    let (header, key, desc, note) = (styles.accent, styles.accent, styles.desc, styles.note);
 
     // Keep this body short enough that the `General` section still renders at
     // the popup's clamped 25-row floor (inner height = popup_height - 2, so 23
@@ -173,6 +164,6 @@ pub(in crate::tui::ui::kanban) fn render_help_overlay(frame: &mut Frame, app: &A
         Line::from(Span::styled("  [?] or [Esc] to close", note)),
     ];
 
-    let paragraph = Paragraph::new(lines).block(block);
-    frame.render_widget(paragraph, popup_area);
+    let inner = open_overlay(frame, popup_area, block);
+    frame.render_widget(Paragraph::new(lines), inner);
 }

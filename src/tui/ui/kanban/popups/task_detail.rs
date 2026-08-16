@@ -4,14 +4,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
 
 use crate::tui::ui::palette::{BORDER, FG, MUTED, MUTED_LIGHT};
 use crate::tui::{App, ViewMode};
 
-use crate::tui::ui::shared::rounded_block;
+use crate::tui::ui::shared::{open_overlay, rounded_block};
 
 use super::super::wrapped_line_count;
 
@@ -47,8 +47,6 @@ pub(in crate::tui::ui::kanban) fn render_task_detail_overlay(
         width: area.width,
         height: overlay_height,
     };
-
-    frame.render_widget(Clear, overlay_area);
 
     // ── Header lines (metadata) ──────────────────────────────────────────────
     let label_style = Style::default().fg(MUTED);
@@ -109,8 +107,7 @@ pub(in crate::tui::ui::kanban) fn render_task_detail_overlay(
             hint_style,
         )));
 
-    let inner = block.inner(overlay_area);
-    frame.render_widget(block, overlay_area);
+    let inner = open_overlay(frame, overlay_area, block);
 
     // ── Render header inside block ────────────────────────────────────────────
     let layout = Layout::default()

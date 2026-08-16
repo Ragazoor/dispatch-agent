@@ -21,6 +21,15 @@ Code under `src/tui/ui/` must be pure: it reads `App` and shared helpers, writes
 
 If a render path needs data that isn't on `App`, compute it in the runtime/update layer and stash the result on `App` before rendering — do not reach for it from `src/tui/ui/`.
 
+### The two panic sites layout arithmetic hides
+
+"No `panic!`" is easy to read as "no explicit `panic!` call", but overlay sizing reaches the same place through two ordinary-looking expressions. Both were live in `src/tui/ui/kanban/popups/repo_filter.rs` and the help/todos/reparent overlays until task #4213, and neither is caught by clippy or by the 120×40 snapshot tests — only by rendering at a small size.
+
+1. **`x.clamp(lo, hi)` panics when `lo > hi`.** Popup heights are written as `wanted.clamp(MIN, area.height - 4)`, which is fine until the terminal is short enough that `area.height - 4 < MIN`. Write `wanted.clamp(MIN.min(ceiling), ceiling)` — the ceiling wins on a board too small for the floor.
+2. **`Frame::render_widget` does no clipping.** It hands the rect straight to the buffer, and `Clear` writes every cell it is given, so a widget rect extending past the frame panics with `index outside of buffer`. Any overlay whose size has a *floor* (the help overlay's is 25 rows) will exceed a short terminal. `shared::open_overlay` intersects with `frame.area()` for exactly this reason, and `shared::centered_rect` caps to its parent — route new overlays through them rather than hand-rolling `Clear` + `block.inner()`.
+
+Test it with a render at a board smaller than the floor, e.g. `every_overlay_survives_a_board_shorter_than_its_own_minimum` in `src/tui/tests/rendering.rs`. A layout helper extracted as a plain function (`repo_filter_layout`) also makes the arithmetic unit-testable without a `Frame`.
+
 ## Single-line text-field caret
 
 Every `InputMode` that types free text into `InputState.buffer` (task/epic title,

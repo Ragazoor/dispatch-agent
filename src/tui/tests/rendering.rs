@@ -3198,3 +3198,127 @@ async fn task_card_frame_spans_four_lines_top_to_bottom() {
         "the card's bottom border should sit 3 rows below its top border"
     );
 }
+
+/// The repo-filter overlay used to compute its height as
+/// `.clamp(8, area.height - 4)`, which panics on `min > max` the moment the
+/// board is shorter than 12 rows. Render code must never panic, so a short
+/// board now shrinks the popup instead. Driven through the real render path
+/// (not just the layout helper) so the whole overlay is exercised.
+#[tokio::test]
+async fn repo_filter_overlay_renders_on_a_board_too_short_for_its_minimum_height() {
+    use crate::tui::messages::RepoFilterMessage;
+
+    for height in [6_u16, 8, 10, 11, 12] {
+        let mut app = App::new(vec![]);
+        app.board.repo_paths = vec!["/repos/alpha".to_string(), "/repos/beta".to_string()];
+        app.update(Message::RepoFilter(RepoFilterMessage::Start));
+        // Panics here, not an assertion failure, are the regression.
+        let _buf = render_to_buffer(&mut app, 60, height);
+    }
+}
+
+/// The centred overlays are laid out from percentages of the board, so a
+/// terminal far from the 120x40 the snapshots pin must still draw a complete,
+/// on-screen frame. Substitutes for eyeballing the popup at an odd size.
+#[tokio::test]
+async fn repo_filter_overlay_stays_inside_a_narrow_board() {
+    use crate::tui::messages::RepoFilterMessage;
+
+    let mut app = App::new(vec![]);
+    app.board.repo_paths = (0..30).map(|i| format!("/repos/r{i}")).collect();
+    app.update(Message::RepoFilter(RepoFilterMessage::Start));
+    let buf = render_to_buffer(&mut app, 46, 18);
+
+    assert!(
+        buffer_contains(&buf, "Repo Filter"),
+        "the overlay title should be drawn"
+    );
+    // Double-line border corners: all four must be present, so the popup is
+    // fully on-screen rather than clipped at an edge.
+    for glyph in ["\u{2554}", "\u{2557}", "\u{255a}", "\u{255d}"] {
+        assert!(
+            buffer_contains(&buf, glyph),
+            "the overlay border corner {glyph:?} should be on-screen"
+        );
+    }
+}
+
+/// Overlays size themselves as a clamped percentage of the board, and several
+/// of those clamps have floors taller than a small terminal (the help overlay
+/// floors at 25 rows, todos at 12). `Frame::render_widget` does no clipping and
+/// `Clear` writes every cell it is handed, so before `centered_rect`/
+/// `open_overlay` clamped, opening any of these on a short board panicked the
+/// render thread with "index outside of buffer" rather than drawing something
+/// small. One case per overlay, at a board shorter than every floor.
+#[tokio::test]
+async fn every_overlay_survives_a_board_shorter_than_its_own_minimum() {
+    use crate::tui::messages::RepoFilterMessage;
+
+    let short = (100_u16, 8_u16);
+
+    // Help — floors at 25 rows.
+    let mut app = App::new(vec![]);
+    app.input.mode = crate::tui::InputMode::Help;
+    let _ = render_to_buffer(&mut app, short.0, short.1);
+
+    // Todos — floors at 12 rows.
+    let mut app = App::new(vec![]);
+    app.board.view_mode = crate::tui::ViewMode::Todos {
+        todos: vec![],
+        selected: 0,
+        previous: Box::new(crate::tui::ViewMode::Board(Default::default())),
+    };
+    let _ = render_to_buffer(&mut app, short.0, short.1);
+
+    // Repo filter — floors at 8 rows.
+    let mut app = App::new(vec![]);
+    app.board.repo_paths = vec!["/repos/alpha".to_string()];
+    app.update(Message::RepoFilter(RepoFilterMessage::Start));
+    let _ = render_to_buffer(&mut app, short.0, short.1);
+
+    // Error popup — fixed 7 rows tall, top-pinned once the board is smaller.
+    let mut app = App::new(vec![]);
+    app.update(Message::System(crate::tui::messages::SystemMessage::Error(
+        "boom".to_string(),
+    )));
+    let _ = render_to_buffer(&mut app, short.0, 4);
+}
+
+/// The repo-filter overlay's height budget and its visible-repo window are both
+/// derived from `header.len() + footer.len()` — the rows the render body has
+/// already built. This drives the real render path in every input mode the
+/// overlay supports and asserts the footer's last row is on screen, which is
+/// what a budget too small would clip. A layout tallied by hand (the `+7`/`+5`
+/// literals this replaced) had nothing pinning it to the rows actually drawn.
+#[tokio::test]
+async fn repo_filter_renders_its_whole_footer_in_every_mode() {
+    use crate::tui::messages::RepoFilterMessage;
+
+    // Enough repos that the list competes with the footer for rows.
+    let repos: Vec<String> = (0..12).map(|i| format!("/repos/r{i}")).collect();
+
+    for (mode, expected_footer) in [
+        (crate::tui::InputMode::RepoFilter, "close"),
+        (crate::tui::InputMode::InputPresetName, "save"),
+        (crate::tui::InputMode::ConfirmDeletePreset, "delete preset"),
+        (crate::tui::InputMode::ConfirmDeleteRepoPath, "cancel"),
+    ] {
+        let mut app = App::new(vec![]);
+        app.board.repo_paths = repos.clone();
+        app.update(Message::RepoFilter(RepoFilterMessage::Start));
+        app.input.mode = mode.clone();
+
+        let buf = render_to_buffer(&mut app, 100, 24);
+        assert!(
+            buffer_contains(&buf, expected_footer),
+            "footer text {expected_footer:?} was clipped in {mode:?} — the layout \
+             budget disagrees with the rows the overlay renders"
+        );
+        // The bottom border must also survive: a footer that fits but a border
+        // that doesn't means the popup is one row taller than it budgeted.
+        assert!(
+            buffer_contains(&buf, "\u{255a}"),
+            "the overlay's bottom-left corner should be drawn in {mode:?}"
+        );
+    }
+}

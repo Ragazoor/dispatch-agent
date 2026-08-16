@@ -1,4 +1,4 @@
-use super::palette::{FG, GREEN, MUTED, RED, YELLOW};
+use super::palette::{FG, GREEN, MUTED, MUTED_LIGHT, RED, YELLOW};
 
 use crate::models::{FeedRole, Staleness};
 use crate::tui::{App, RepoFilterMode, ViewMode};
@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, ListItem, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, ListItem, Paragraph},
     Frame,
 };
 use std::time::{Duration, Instant};
@@ -65,6 +65,126 @@ pub(in crate::tui::ui) fn rounded_block(color: Color) -> Block<'static> {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(color))
+}
+
+/// A fully-bordered block whose border and title share `color`, with the title
+/// bolded — the frame every overlay in this codebase draws.
+///
+/// [`rounded_block`] is the untitled `BorderType::Rounded` case; pass
+/// `BorderType::Rounded` here when a rounded overlay also wants a title.
+pub(in crate::tui::ui) fn titled_block(
+    color: Color,
+    border_type: BorderType,
+    title: String,
+) -> Block<'static> {
+    Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(border_type)
+        .border_style(Style::default().fg(color))
+        .title_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+}
+
+/// The style set for keyed hint rows — the `[key] description` tables the help
+/// and repo-filter overlays are built from.
+///
+/// `accent` covers everything that should stand out against the body text:
+/// key glyphs, section headers, and the selection cursor. They were three
+/// separately-declared locals with byte-identical values before, in two
+/// different files; one field means a recolour cannot make them disagree.
+pub(in crate::tui::ui) struct HintStyles {
+    pub accent: Style,
+    pub desc: Style,
+    pub note: Style,
+}
+
+impl HintStyles {
+    pub fn new(accent_color: Color) -> Self {
+        Self {
+            accent: Style::default()
+                .fg(accent_color)
+                .add_modifier(Modifier::BOLD),
+            desc: Style::default().fg(MUTED_LIGHT),
+            note: Style::default().fg(MUTED),
+        }
+    }
+}
+
+/// Rows left for a scrolling list once `reserved` rows of surrounding chrome
+/// are taken out of `total`, floored at one so a list is never invisible.
+///
+/// Paired with [`scroll_offset`]: every caller computes this, then feeds it
+/// straight in. Keeping them adjacent means a change to the floor lands on both.
+pub(in crate::tui::ui) fn visible_rows(total: usize, reserved: usize) -> usize {
+    total.saturating_sub(reserved).max(1)
+}
+
+/// Left edge of a `width`-wide box centred horizontally inside `area`.
+///
+/// Saturating so an over-wide box pins to `area.x` rather than wrapping.
+pub(in crate::tui::ui) fn centered_x(area: Rect, width: u16) -> u16 {
+    area.x + area.width.saturating_sub(width) / 2
+}
+
+/// A `width` × `height` `Rect` centred inside `area`, never larger than it.
+///
+/// The single home for the centred-overlay offset arithmetic that the error,
+/// help, repo-filter and todos overlays all need. Overlays that pin one axis
+/// (the tree pickers pin their top edge) use [`centered_x`] directly.
+///
+/// Every caller sizes itself as a clamped percentage of the board, and those
+/// clamps have floors (the help overlay's is 25 rows) that exceed a short
+/// terminal — so the requested box is capped to `area` here rather than at each
+/// call site. [`open_overlay`] repeats the guard against the real buffer.
+pub(in crate::tui::ui) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        centered_x(area, width),
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
+}
+
+/// Open an overlay: clear `popup_area`, draw `block` into it, and return the
+/// block's inner area for the caller's content.
+///
+/// Keeps the clear-then-block order (and the inner-area derivation) in one
+/// place so every overlay frames its content identically.
+///
+/// `popup_area` is intersected with the frame first. `Frame::render_widget`
+/// does no clipping of its own and `Clear` writes every cell it is given, so an
+/// overlay whose height floor exceeds the terminal's would otherwise panic the
+/// render thread with "index outside of buffer". Because every overlay's
+/// content rect derives from the returned inner area, one guard here covers the
+/// whole class — including the top-pinned tree pickers, which `centered_rect`
+/// never sees.
+pub(in crate::tui::ui) fn open_overlay<'a>(
+    frame: &mut Frame,
+    popup_area: Rect,
+    block: Block<'a>,
+) -> Rect {
+    let popup_area = popup_area.intersection(frame.area());
+    frame.render_widget(Clear, popup_area);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    inner
+}
+
+/// First visible index for a list of `count` items showing `visible` rows with
+/// the cursor at `cursor`.
+///
+/// The window scrolls only as far as needed to keep the cursor on the last
+/// visible row, and never past the end of the list. Shared by the repo-path
+/// picker (`input_form`) and the repo-filter overlay, which previously carried
+/// verbatim copies of this formula.
+pub(in crate::tui::ui) fn scroll_offset(cursor: usize, count: usize, visible: usize) -> usize {
+    if visible == 0 || count <= visible {
+        0
+    } else {
+        cursor.saturating_sub(visible - 1).min(count - visible)
+    }
 }
 
 /// Truncate a string to at most `max` characters, appending "…" if truncated.
@@ -427,6 +547,78 @@ mod tests {
         let text = line_text(&line);
         assert!(text.starts_with('0'));
         assert_eq!(caret_cell(&line), "0");
+    }
+
+    // ---- centered_rect / centered_x --------------------------------------
+
+    #[test]
+    fn centered_rect_centers_within_area() {
+        let area = Rect::new(0, 0, 100, 40);
+        let r = centered_rect(area, 60, 10);
+        assert_eq!(r, Rect::new(20, 15, 60, 10));
+        // Equal slack on both sides.
+        assert_eq!(r.x - area.x, area.right() - r.right());
+        assert_eq!(r.y - area.y, area.bottom() - r.bottom());
+    }
+
+    #[test]
+    fn centered_rect_honours_a_non_zero_area_origin() {
+        let area = Rect::new(5, 3, 20, 10);
+        assert_eq!(centered_rect(area, 10, 4), Rect::new(10, 6, 10, 4));
+    }
+
+    #[test]
+    fn centered_rect_pins_to_origin_when_box_is_larger_than_area() {
+        // Saturating: an over-sized box must not wrap around to the far edge.
+        let area = Rect::new(4, 2, 10, 6);
+        let r = centered_rect(area, 30, 20);
+        assert_eq!(r.x, 4);
+        assert_eq!(r.y, 2);
+    }
+
+    #[test]
+    fn centered_rect_never_exceeds_its_area() {
+        // Overlays size themselves as a clamped percentage of the board, and
+        // those clamps have floors taller than a short terminal. The box has to
+        // shrink rather than hang off the edge — an over-hanging rect panics
+        // `Clear` with "index outside of buffer".
+        let area = Rect::new(0, 0, 10, 6);
+        let r = centered_rect(area, 40, 25);
+        assert_eq!(r, area);
+        assert!(area.union(r) == area, "{r:?} must stay inside {area:?}");
+    }
+
+    #[test]
+    fn centered_x_matches_centered_rect() {
+        let area = Rect::new(7, 0, 51, 40);
+        assert_eq!(centered_x(area, 20), centered_rect(area, 20, 10).x);
+    }
+
+    // ---- scroll_offset ----------------------------------------------------
+
+    #[test]
+    fn scroll_offset_is_zero_when_everything_fits() {
+        assert_eq!(scroll_offset(2, 3, 10), 0);
+        assert_eq!(scroll_offset(9, 10, 10), 0);
+    }
+
+    #[test]
+    fn scroll_offset_keeps_cursor_on_the_last_visible_row() {
+        // 10 items, 3 visible, cursor at 4 → window is [2, 5).
+        assert_eq!(scroll_offset(4, 10, 3), 2);
+    }
+
+    #[test]
+    fn scroll_offset_never_scrolls_past_the_end() {
+        // cursor at the last item: window is the final `visible` rows.
+        assert_eq!(scroll_offset(9, 10, 3), 7);
+        // even a cursor beyond the list clamps to the last window.
+        assert_eq!(scroll_offset(99, 10, 3), 7);
+    }
+
+    #[test]
+    fn scroll_offset_zero_visible_rows_is_zero() {
+        assert_eq!(scroll_offset(5, 10, 0), 0);
     }
 
     #[test]

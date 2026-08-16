@@ -22,6 +22,25 @@ fn caret_field(prefix: &str, app: &App, area: Rect, active: Style) -> Line<'stat
     )
 }
 
+/// The sizing and styling context every repo-path picker list shares.
+///
+/// `height_offset` is the number of rows the surrounding form already spends
+/// above and below the list; `area_height` is the popup's total height. The
+/// list gets whatever is left. Bundled into one struct because these three
+/// always travel together and are constant for a given picker surface.
+pub(in crate::tui::ui) struct RepoListCtx {
+    pub height_offset: u16,
+    pub area_height: u16,
+    pub hint: Style,
+}
+
+impl RepoListCtx {
+    /// Rows available to the list itself, never less than one.
+    fn visible_rows(&self) -> usize {
+        super::shared::visible_rows(self.area_height as usize, self.height_offset as usize)
+    }
+}
+
 /// Appends the filtered repo list and optional new-path entry to `lines`.
 ///
 /// Shows existing paths that fuzzy-match `buffer`, then appends a selectable
@@ -33,9 +52,7 @@ fn append_filtered_repos_with_new_entry<'a>(
     filtered: &[String],
     buffer: &'a str,
     cursor: usize,
-    height_offset: u16,
-    area_height: u16,
-    hint: Style,
+    ctx: &RepoListCtx,
 ) {
     let show_new = crate::tui::has_new_repo_option(buffer, filtered);
     let scroll_cursor = if show_new && !filtered.is_empty() && cursor == filtered.len() {
@@ -44,15 +61,9 @@ fn append_filtered_repos_with_new_entry<'a>(
         cursor
     };
     if !filtered.is_empty() {
-        append_repo_path_list(
-            lines,
-            filtered,
-            scroll_cursor,
-            height_offset,
-            area_height,
-            hint,
-        );
+        append_repo_path_list(lines, filtered, scroll_cursor, ctx);
     }
+    let hint = ctx.hint;
     if show_new {
         let cursor_style = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
         if cursor == filtered.len() {
@@ -68,23 +79,15 @@ fn append_filtered_repos_with_new_entry<'a>(
 }
 
 /// Appends a scrollable repo-path picker list to `lines`.
-pub(in crate::tui) fn append_repo_path_list<'a>(
+pub(in crate::tui::ui) fn append_repo_path_list<'a>(
     lines: &mut Vec<Line<'a>>,
     repo_paths: &[String],
     cursor: usize,
-    height_offset: u16,
-    area_height: u16,
-    hint: Style,
+    ctx: &RepoListCtx,
 ) {
-    let repo_count = repo_paths.len();
-    let visible_repos = (area_height.saturating_sub(height_offset) as usize).max(1);
-    let scroll = if repo_count <= visible_repos {
-        0
-    } else {
-        cursor
-            .saturating_sub(visible_repos - 1)
-            .min(repo_count - visible_repos)
-    };
+    let hint = ctx.hint;
+    let visible_repos = ctx.visible_rows();
+    let scroll = super::shared::scroll_offset(cursor, repo_paths.len(), visible_repos);
     let cursor_style = Style::default().fg(CYAN).add_modifier(Modifier::BOLD);
     for (i, path) in repo_paths
         .iter()
@@ -217,9 +220,11 @@ pub(in crate::tui) fn input_repo_path_lines<'a>(
         &filtered,
         &app.input.buffer,
         app.input.repo_cursor,
-        7,
-        area.height,
-        hint,
+        &RepoListCtx {
+            height_offset: 7,
+            area_height: area.height,
+            hint,
+        },
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -284,9 +289,11 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
         &filtered,
         &app.input.buffer,
         app.input.repo_cursor,
-        6,
-        area.height,
-        hint,
+        &RepoListCtx {
+            height_offset: 6,
+            area_height: area.height,
+            hint,
+        },
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -349,9 +356,11 @@ fn repo_picker_lines<'a>(
         &filtered,
         &app.input.buffer,
         app.input.repo_cursor,
-        7,
-        area.height,
-        hint,
+        &RepoListCtx {
+            height_offset: 7,
+            area_height: area.height,
+            hint,
+        },
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(hint_text, hint)));
@@ -392,9 +401,11 @@ pub(in crate::tui) fn quick_dispatch_lines<'a>(
         &filtered,
         &app.input.buffer,
         app.input.repo_cursor,
-        7,
-        area.height,
-        hint,
+        &RepoListCtx {
+            height_offset: 7,
+            area_height: area.height,
+            hint,
+        },
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -480,6 +491,14 @@ mod tests {
         paths.iter().map(|s| s.to_string()).collect()
     }
 
+    fn ctx(height_offset: u16, area_height: u16, hint: Style) -> RepoListCtx {
+        RepoListCtx {
+            height_offset,
+            area_height,
+            hint,
+        }
+    }
+
     // ---- append_repo_path_list -------------------------------------------
 
     #[test]
@@ -488,7 +507,7 @@ mod tests {
         let paths = owned(&["a", "b", "c"]);
         let mut lines: Vec<Line> = Vec::new();
         // visible = area_height - height_offset = 10; 3 <= 10 → scroll = 0.
-        append_repo_path_list(&mut lines, &paths, 1, 0, 10, hint);
+        append_repo_path_list(&mut lines, &paths, 1, &ctx(0, 10, hint));
 
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[0]), "    a");
@@ -504,7 +523,7 @@ mod tests {
         let paths = owned(&["p0", "p1", "p2", "p3", "p4"]);
         let mut lines: Vec<Line> = Vec::new();
         // visible = 3, cursor at last item → scroll = 4.sat_sub(2)=2, min(5-3=2)=2.
-        append_repo_path_list(&mut lines, &paths, 4, 0, 3, hint);
+        append_repo_path_list(&mut lines, &paths, 4, &ctx(0, 3, hint));
 
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[0]), "    p2");
@@ -518,7 +537,7 @@ mod tests {
         let paths = owned(&["p0", "p1", "p2"]);
         let mut lines: Vec<Line> = Vec::new();
         // height_offset >= area_height → saturating_sub is 0, floored to 1 visible row.
-        append_repo_path_list(&mut lines, &paths, 2, 5, 3, hint);
+        append_repo_path_list(&mut lines, &paths, 2, &ctx(5, 3, hint));
 
         assert_eq!(lines.len(), 1);
         assert_eq!(line_text(&lines[0]), "  ► p2");
@@ -532,7 +551,7 @@ mod tests {
         let filtered = owned(&["a", "b"]);
         let mut lines: Vec<Line> = Vec::new();
         // buffer "c" is new; cursor == filtered.len() selects the new entry.
-        append_filtered_repos_with_new_entry(&mut lines, &filtered, "c", 2, 1, 40, hint);
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "c", 2, &ctx(1, 40, hint));
 
         // Two existing paths + the highlighted new entry.
         assert_eq!(lines.len(), 3);
@@ -550,7 +569,7 @@ mod tests {
         let filtered = owned(&["a", "b"]);
         let mut lines: Vec<Line> = Vec::new();
         // buffer "c" is new but cursor points at an existing row.
-        append_filtered_repos_with_new_entry(&mut lines, &filtered, "c", 0, 1, 40, hint);
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "c", 0, &ctx(1, 40, hint));
 
         assert_eq!(lines.len(), 3);
         assert_eq!(line_text(&lines[0]), "  ► a");
@@ -563,7 +582,7 @@ mod tests {
         let filtered = owned(&["a", "b"]);
         let mut lines: Vec<Line> = Vec::new();
         // Empty buffer → no "new path" entry offered.
-        append_filtered_repos_with_new_entry(&mut lines, &filtered, "", 0, 1, 40, hint);
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "", 0, &ctx(1, 40, hint));
 
         assert_eq!(lines.len(), 2);
     }
@@ -574,7 +593,7 @@ mod tests {
         let filtered = owned(&["a", "b"]);
         let mut lines: Vec<Line> = Vec::new();
         // buffer exactly equals a filtered path → not a "new" entry.
-        append_filtered_repos_with_new_entry(&mut lines, &filtered, "b", 1, 1, 40, hint);
+        append_filtered_repos_with_new_entry(&mut lines, &filtered, "b", 1, &ctx(1, 40, hint));
 
         assert_eq!(lines.len(), 2);
     }

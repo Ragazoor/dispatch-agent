@@ -4,14 +4,14 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::Text,
-    widgets::{Block, Clear, Paragraph},
+    widgets::{Block, BorderType, Paragraph},
     Frame,
 };
 use std::collections::HashSet;
 
 use crate::models::{Epic, EpicId};
 use crate::tui::ui::palette::{MUTED, PURPLE};
-use crate::tui::ui::shared::rounded_block;
+use crate::tui::ui::shared::{centered_x, open_overlay, titled_block};
 use crate::tui::{types::REPARENT_NO_PARENT_SENTINEL, App, InputMode};
 
 pub(in crate::tui::ui::kanban) fn render_reparent_epic_overlay(
@@ -82,18 +82,18 @@ fn render_tree_picker(
 ) {
     let overlay_width = (area.width * 50 / 100).clamp(30, 80);
     let overlay_height = area.height.saturating_sub(4).max(10);
-    let x = area.x + (area.width.saturating_sub(overlay_width)) / 2;
-    let y = area.y + 2;
-    let overlay_area = Rect::new(x, y, overlay_width, overlay_height);
+    // Horizontally centred, but top-pinned two rows below the board — not
+    // `centered_rect`, which centres on both axes.
+    let overlay_area = Rect::new(
+        centered_x(area, overlay_width),
+        area.y + 2,
+        overlay_width,
+        overlay_height,
+    );
 
-    frame.render_widget(Clear, overlay_area);
+    let block = titled_block(PURPLE, BorderType::Rounded, title.to_string());
 
-    let block = rounded_block(PURPLE)
-        .title(title.to_string())
-        .title_style(Style::default().fg(PURPLE).add_modifier(Modifier::BOLD));
-
-    let inner_area = block.inner(overlay_area);
-    frame.render_widget(block, overlay_area);
+    let inner_area = open_overlay(frame, overlay_area, block);
 
     // Split inner area: tree above, hint line at bottom
     let footer_area = Rect {
