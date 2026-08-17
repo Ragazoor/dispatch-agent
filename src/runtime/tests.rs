@@ -209,6 +209,11 @@ pub(super) async fn make_runtime(
         emb_svc: crate::service::embeddings::EmbeddingService::new_noop(),
         last_change_count: std::sync::atomic::AtomicI64::new(-1),
         budget_snapshot_path: std::path::PathBuf::from("/nonexistent-test-path/rate-limits.json"),
+        // Absent by default, so `is_trusted_at` reads "not trusted" and
+        // `trust_at` fails to write (no such directory) rather than falling
+        // through to the developer's real `$HOME/.claude.json`. A test that
+        // needs the "trusted" branch overrides this with a real tempfile.
+        claude_json_path: std::path::PathBuf::from("/nonexistent-test-path/.claude.json"),
     }
 }
 
@@ -251,6 +256,21 @@ async fn create_task_returning(
     db.get_task(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Task {id} vanished after insert"))
+}
+
+/// An empty `App` fixture — a board with no tasks. Distinct from
+/// `crate::tui::tests::helpers::make_app`, which seeds four fixed tasks; the two
+/// are not interchangeable, hence the different name rather than a shared import.
+fn empty_app() -> App {
+    App::new(vec![])
+}
+
+/// Receive the next message or fail the test rather than hang forever.
+async fn recv_msg(rx: &mut mpsc::UnboundedReceiver<Message>) -> Message {
+    tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+        .await
+        .expect("a message should arrive well within the timeout")
+        .expect("the sender should still be alive")
 }
 
 #[tokio::test]
@@ -744,3771 +764,4138 @@ async fn exec_save_repo_path_expands_tilde() {
     assert!(!db_paths.iter().any(|p| p.starts_with("~/")));
 }
 
-// -----------------------------------------------------------------------
-// Base branch history tests (task #3422) — see docs/specs/dispatch.allium:
-// RecordBaseBranch, BaseBranchPicker.
-// -----------------------------------------------------------------------
+/// Base-branch history tests, plus the broader grab-bag of task exec/dispatch/cleanup
+/// tests that accumulated under this banner over time — the name reflects the
+/// original section, not its full current scope.
+mod base_branch_history_and_task_exec {
+    use super::*;
 
-#[tokio::test]
-async fn exec_save_base_branch_records_and_updates_app_state() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_save_base_branch(&mut app, "/repo".into(), "develop".into())
-        .await;
-    assert_eq!(
-        app.base_branches_for("/repo"),
-        &["develop".to_string()],
-        "app.board.repo_base_branches should reflect the newly recorded branch"
-    );
-    let all = rt.database.list_all_base_branches().await.unwrap();
-    assert!(all.contains(&("/repo".to_string(), "develop".to_string())));
-}
+    #[tokio::test]
+    async fn exec_save_base_branch_records_and_updates_app_state() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_save_base_branch(&mut app, "/repo".into(), "develop".into())
+            .await;
+        assert_eq!(
+            app.base_branches_for("/repo"),
+            &["develop".to_string()],
+            "app.board.repo_base_branches should reflect the newly recorded branch"
+        );
+        let all = rt.database.list_all_base_branches().await.unwrap();
+        assert!(all.contains(&("/repo".to_string(), "develop".to_string())));
+    }
 
-#[tokio::test]
-async fn exec_save_base_branch_upsert_keeps_most_recent_first() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_save_base_branch(&mut app, "/repo".into(), "main".into())
-        .await;
-    rt.exec_save_base_branch(&mut app, "/repo".into(), "develop".into())
-        .await;
-    assert_eq!(
-        app.base_branches_for("/repo"),
-        &["develop".to_string(), "main".to_string()],
-        "most-recently-used branch should be first"
-    );
-}
+    #[tokio::test]
+    async fn exec_save_base_branch_upsert_keeps_most_recent_first() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_save_base_branch(&mut app, "/repo".into(), "main".into())
+            .await;
+        rt.exec_save_base_branch(&mut app, "/repo".into(), "develop".into())
+            .await;
+        assert_eq!(
+            app.base_branches_for("/repo"),
+            &["develop".to_string(), "main".to_string()],
+            "most-recently-used branch should be first"
+        );
+    }
 
-#[tokio::test]
-async fn finish_task_creation_emits_save_repo_path_and_save_base_branch() {
-    let (_rt, mut app) = test_runtime().await;
+    #[tokio::test]
+    async fn finish_task_creation_emits_save_repo_path_and_save_base_branch() {
+        let (_rt, mut app) = test_runtime().await;
 
-    // Drive the whole manual task-creation flow through the public Message
-    // API (App fields are `pub(in crate::tui)` and unreachable from here).
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::StartNewTask,
-    ));
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitTitle("T".to_string()),
-    ));
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitTag(None),
-    ));
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitDescription("D".to_string()),
-    ));
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitRepoPath("/tmp".to_string()),
-    ));
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitBaseBranch("develop".to_string()),
-    ));
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
-    // The schedule gate is the form's last step; declining it is what commits
-    // the creation (tasks.allium: CreateTask, "The schedule step").
-    let cmds = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitScheduleGate(false),
-    ));
+        // Drive the whole manual task-creation flow through the public Message
+        // API (App fields are `pub(in crate::tui)` and unreachable from here).
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::StartNewTask,
+        ));
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitTitle("T".to_string()),
+        ));
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitTag(None),
+        ));
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitDescription("D".to_string()),
+        ));
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitRepoPath("/tmp".to_string()),
+        ));
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitBaseBranch("develop".to_string()),
+        ));
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
+        ));
+        // The schedule gate is the form's last step; declining it is what commits
+        // the creation (tasks.allium: CreateTask, "The schedule step").
+        let cmds = app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitScheduleGate(false),
+        ));
 
-    assert!(
-        cmds.iter().any(
-            |c| matches!(c, Command::Settings(SettingsCommand::SaveRepoPath(p)) if p == "/tmp")
-        ),
-        "expected a SaveRepoPath(\"/tmp\") command, got: {cmds:?}"
-    );
-    assert!(
+        assert!(
+            cmds.iter().any(
+                |c| matches!(c, Command::Settings(SettingsCommand::SaveRepoPath(p)) if p == "/tmp")
+            ),
+            "expected a SaveRepoPath(\"/tmp\") command, got: {cmds:?}"
+        );
+        assert!(
         cmds.iter().any(
             |c| matches!(c, Command::Settings(SettingsCommand::SaveBaseBranch(repo, branch)) if repo == "/tmp" && branch == "develop")
         ),
         "expected a SaveBaseBranch(\"/tmp\", \"develop\") command, got: {cmds:?}"
     );
-}
-
-#[tokio::test]
-async fn exec_quick_dispatch_does_not_record_base_branch_history() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().to_str().unwrap();
-    std::fs::create_dir_all(format!("{repo}/.worktrees/1-quick-task")).unwrap();
-
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = DispatchScript::dispatch()
-        .detecting_default_branch("main")
-        .shared_runner();
-    let rt = make_runtime(db.clone(), tx, mock).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-
-    rt.exec_quick_dispatch(
-        &mut app,
-        tui::TaskDraft {
-            title: "Quick task".into(),
-            description: String::new(),
-            repo_path: repo.to_string(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-
-    // Repo path IS recorded (existing RecordRepoPath behavior)...
-    assert!(app.repo_paths().contains(&repo.to_string()));
-    // ...but base branch history is deliberately NOT recorded for quick
-    // dispatch — see dispatch.allium: RecordBaseBranch's "recording scope
-    // (deliberately narrow)" guidance. Only the manual new-task form records.
-    assert!(
-        app.base_branches_for(repo).is_empty(),
-        "quick dispatch must not record base branch history"
-    );
-    assert!(rt
-        .database
-        .list_all_base_branches()
-        .await
-        .unwrap()
-        .is_empty());
-
-    // Drain the async Dispatched message so the sender isn't left dangling.
-    let _ = tokio::time::timeout(TEST_TIMEOUT, rx.recv()).await;
-}
-
-#[tokio::test]
-async fn exec_refresh_from_db_syncs_external_changes() {
-    let (rt, mut app) = test_runtime().await;
-    // Insert directly into DB, bypassing app
-    rt.db_write()
-        .create_task(CreateTaskRequest {
-            title: "External",
-            description: "Added via CLI",
-            repo_path: "/repo",
-            plan: None,
-            status: models::TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-        })
-        .await
-        .unwrap();
-    assert!(app.tasks().is_empty());
-    rt.exec_refresh_from_db(&mut app).await;
-    assert_eq!(app.tasks().len(), 1);
-    assert_eq!(app.tasks()[0].title, "External");
-}
-
-#[tokio::test]
-async fn exec_refresh_from_db_returns_commands_from_refresh() {
-    let (rt, mut app) = test_runtime().await;
-    // Insert a task directly into DB as Running
-    rt.db_write()
-        .create_task(CreateTaskRequest {
-            title: "Test",
-            description: "Desc",
-            repo_path: "/repo",
-            plan: None,
-            status: models::TaskStatus::Running,
-            base_branch: "main",
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-        })
-        .await
-        .unwrap();
-    // Load it into app
-    let cmds = rt.exec_refresh_from_db(&mut app).await;
-    assert!(cmds.is_empty()); // First load — no transition
-
-    let task = rt.database.list_all().await.unwrap()[0].clone();
-    rt.db_write()
-        .patch_task(
-            task.id,
-            &db::TaskPatch::new().status(models::TaskStatus::Review),
-        )
-        .await
-        .unwrap();
-
-    app.set_notifications_enabled(true);
-    let cmds = rt.exec_refresh_from_db(&mut app).await;
-    assert!(cmds.iter().any(|c| matches!(
-        c,
-        Command::System(crate::tui::commands::SystemCommand::SendNotification { .. })
-    )));
-}
-
-#[tokio::test]
-async fn exec_delete_task_nonexistent_shows_error() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_delete_task(&mut app, TaskId(999)).await;
-    assert!(app.error_popup().is_some());
-}
-
-#[tokio::test]
-async fn exec_jump_to_tmux_calls_select_window() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // for select-window
-        ])
-        .with_windows(&["my-window"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-
-    rt.exec_jump_to_tmux(&mut app, "my-window".to_string());
-
-    let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1);
-    assert!(calls[0].1.contains(&"select-window".to_string()));
-    // Targeted by resolved pane ID, not by name — see `tmux::window_target`.
-    assert!(calls[0].1.contains(&mock.pane_id_of("my-window")));
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_dispatch_sends_dispatched_message() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().to_str().unwrap();
-    // Create .worktrees/ and fake worktree directory so file writes succeed
-    std::fs::create_dir_all(format!("{repo}/.worktrees/1-test-task")).unwrap();
-
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = DispatchScript::dispatch().shared_runner();
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Test Task",
-        "desc",
-        repo,
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
-    let id = task.id;
-    rt.exec_dispatch_agent(Box::new(task), models::DispatchMode::Dispatch)
-        .await;
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
-        ),
-        "Expected Dispatched, got: {msg:?}"
-    );
-
-    // The claim, not `handle_dispatched`'s Persist, owns the Running write — and
-    // nothing here runs that Persist, so the row can only have left Backlog via
-    // the claim `exec_dispatch_agent` takes before provisioning
-    // (`DispatchClaimExclusive` in docs/specs/dispatch.allium).
-    let claimed = db.get_task(id).await.unwrap().unwrap();
-    assert_eq!(claimed.status, models::TaskStatus::Running);
-    assert!(
-        claimed.last_pre_tool_use_at.is_some(),
-        "the claim seeds the activity stamp"
-    );
-}
-
-/// Mode routing at the board's entry point. The `DispatchMode` match lives once
-/// (`dispatch::run_agent_for_mode`) and the service seam takes it too, so this
-/// is the assertion that the board reaches the *same* match: `Research` must
-/// launch the read-only research agent, the only one that passes
-/// `--permission-mode plan`. Its twin at the seam is
-/// `service::tasks::tests::dispatch_seam::research_mode_launches_the_read_only_research_agent`.
-#[tokio::test]
-async fn exec_dispatch_agent_routes_research_mode_to_the_research_agent() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().to_str().unwrap();
-    std::fs::create_dir_all(format!("{repo}/.worktrees/1-test-task")).unwrap();
-
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = DispatchScript::dispatch().shared_runner();
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Test Task",
-        "desc",
-        repo,
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
-    rt.exec_dispatch_agent(Box::new(task), models::DispatchMode::Research)
-        .await;
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
-        ),
-        "Expected Dispatched, got: {msg:?}"
-    );
-
-    let argv = mock.flattened_calls().join("\n");
-    assert!(
-        argv.contains("--permission-mode plan"),
-        "research mode must launch with plan permissions: {argv}"
-    );
-}
-
-/// A lost claim must stop the dispatch dead, before any provisioning command
-/// runs, and report the failure so the spinner drains (`LostClaimReported` in
-/// docs/specs/dispatch.allium).
-#[tokio::test]
-async fn exec_dispatch_agent_lost_claim_provisions_nothing() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // An empty script is itself the assertion: any provisioning command would
-    // panic the mock rather than pass quietly.
-    let mock = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    // Backlog in the caller's snapshot, already Running in the DB — exactly the
-    // race the claim exists to catch.
-    let task = create_task_returning(
-        &*db,
-        "Contended Task",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
-    assert!(rt.task_svc.claim_backlog_task(task.id).await.unwrap());
-
-    rt.exec_dispatch_agent(Box::new(task.clone()), models::DispatchMode::Dispatch)
-        .await;
-
-    let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(msg1, Message::Task(crate::tui::messages::TaskMessage::DispatchAbandoned(id)) if id == task.id),
-        "a lost claim must report DispatchAbandoned, not DispatchFailed — the latter \
-         releases, and the claim we lost belongs to the winner. Got: {msg1:?}"
-    );
-    let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg2,
-            Message::System(crate::tui::messages::SystemMessage::Error(_))
-        ),
-        "Expected Error, got: {msg2:?}"
-    );
-    assert!(
-        mock.recorded_calls().is_empty(),
-        "a lost claim must run no provisioning commands, got: {:?}",
-        mock.recorded_calls()
-    );
-    // The winner's claim is untouched: still Running, still unprovisioned,
-    // still theirs to finish.
-    let after = db.get_task(task.id).await.unwrap().unwrap();
-    assert_eq!(after.status, models::TaskStatus::Running);
-    assert!(after.worktree.is_none());
-}
-
-/// `ReleaseClaim` returns a claimed-but-unprovisioned task to Backlog. This is
-/// the command `DispatchFailed` emits.
-#[tokio::test]
-async fn exec_release_claim_returns_the_task_to_backlog() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-    let mut app = App::new(vec![]);
-    let task = create_task_returning(
-        &*db,
-        "Claimed Task",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
-    assert!(rt.task_svc.claim_backlog_task(task.id).await.unwrap());
-
-    rt.exec_release_claim(&mut app, task.id).await;
-
-    let released = db.get_task(task.id).await.unwrap().unwrap();
-    assert_eq!(released.status, models::TaskStatus::Backlog);
-    assert!(
-        released.last_pre_tool_use_at.is_none(),
-        "the release clears the stamp the claim seeded"
-    );
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_dispatch_sends_error_on_failure() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("fatal: not a git repository"), // git worktree add fails
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Fail Task",
-        "desc",
-        "/nonexistent",
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
-    rt.exec_dispatch_agent(Box::new(task.clone()), models::DispatchMode::Dispatch)
-        .await;
-
-    let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(msg1, Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(id)) if id == task.id),
-        "Expected DispatchFailed, got: {msg1:?}"
-    );
-
-    let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg2,
-            Message::System(crate::tui::messages::SystemMessage::Error(_))
-        ),
-        "Expected Error, got: {msg2:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_check_window_sends_window_gone_when_absent() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        // has_window: list-windows returns other window names (not our window)
-        MockProcessRunner::ok_with_stdout(b"other-window\n"),
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_check_window(TaskId(1), "gone-window".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::WindowGone(TaskId(1)))
-        ),
-        "Expected WindowGone, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_check_window_sends_nothing_when_present() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        // has_window: list-windows returns our window
-        MockProcessRunner::ok_with_stdout(b"task-1\n"),
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_check_window(TaskId(1), "task-1".to_string())
-        .await
-        .unwrap();
-    assert!(
-        rx.try_recv().is_err(),
-        "Expected no message but received one"
-    );
-}
-
-#[tokio::test]
-async fn exec_check_window_sends_nothing_when_query_fails() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // The runner itself errors (e.g. tmux binary missing) — a transient
-    // failure must not be mistaken for the window (and therefore the agent)
-    // being gone.
-    let mock = Arc::new(MockProcessRunner::new(vec![Err(anyhow::anyhow!(
-        "failed to run tmux"
-    ))]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_check_window(TaskId(1), "task-1".to_string())
-        .await
-        .unwrap();
-
-    assert!(
-        rx.try_recv().is_err(),
-        "a tmux query failure must not send WindowGone"
-    );
-}
-
-#[tokio::test]
-async fn exec_batch_check_windows_sends_window_gone_only_for_absent() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // Single `tmux list-windows -a` reports task-1 present, task-2 gone (died mid-run).
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"task-1\nother-window\n"),
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_batch_check_windows(vec![
-        (TaskId(1), "task-1".to_string()),
-        (TaskId(2), "task-2".to_string()),
-    ])
-    .await
-    .unwrap();
-
-    // Exactly one WindowGone, for the absent window (task-2).
-    let mut gone = Vec::new();
-    while let Ok(msg) = rx.try_recv() {
-        if let Message::Task(crate::tui::messages::TaskMessage::WindowGone(id)) = msg {
-            gone.push(id);
-        } else {
-            panic!("unexpected message: {msg:?}");
-        }
     }
-    assert_eq!(gone, vec![TaskId(2)], "only the absent window should crash");
 
-    // A single batched tmux call, not one per window. (The exact argv of
-    // list-windows is owned by tmux.rs's own unit tests — assert only the
-    // batching guarantee here.)
-    let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1, "batch check should issue one tmux call");
-    assert_eq!(calls[0].1[0], "list-windows");
-}
+    #[tokio::test]
+    async fn exec_quick_dispatch_does_not_record_base_branch_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(format!("{repo}/.worktrees/1-quick-task")).unwrap();
 
-#[tokio::test]
-async fn exec_batch_check_windows_sends_nothing_when_all_present() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"task-1\ntask-2\n"),
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = DispatchScript::dispatch()
+            .detecting_default_branch("main")
+            .shared_runner();
+        let rt = make_runtime(db.clone(), tx, mock).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
 
-    rt.exec_batch_check_windows(vec![
-        (TaskId(1), "task-1".to_string()),
-        (TaskId(2), "task-2".to_string()),
-    ])
-    .await
-    .unwrap();
-
-    assert!(
-        rx.try_recv().is_err(),
-        "no WindowGone expected when all windows are present"
-    );
-}
-
-#[tokio::test]
-async fn exec_batch_check_windows_stays_silent_when_tmux_cannot_be_spawned() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // The runner itself errors (e.g. tmux binary missing) — `list_all_window_names`
-    // propagates the Err, and the batch check bails without marking any window
-    // gone, so a transient tmux failure can't crash every running task at once.
-    let mock = Arc::new(MockProcessRunner::new(vec![Err(anyhow::anyhow!(
-        "failed to run tmux"
-    ))]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_batch_check_windows(vec![(TaskId(1), "task-1".to_string())])
-        .await
-        .unwrap();
-
-    assert!(
-        rx.try_recv().is_err(),
-        "a tmux spawn error must not be treated as every window being gone"
-    );
-}
-
-#[tokio::test]
-async fn exec_jump_to_tmux_failure_shows_error() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("no such window"), // simulate tmux failure
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-
-    rt.exec_jump_to_tmux(&mut app, "nonexistent-window".to_string());
-
-    assert!(app.error_popup().is_some());
-}
-
-/// Seed one archived task that owns `worktree`, and a runtime whose runner
-/// answers `script`. Returns the runtime, the task id, the message receiver and
-/// the concrete runner, so a caller that needs to assert on the issued commands
-/// can reach `flattened_calls()`.
-async fn cleanup_fixture(
-    script: Vec<anyhow::Result<std::process::Output>>,
-    worktree: &str,
-) -> (
-    TuiRuntime,
-    models::TaskId,
-    mpsc::UnboundedReceiver<Message>,
-    Arc<MockProcessRunner>,
-) {
-    cleanup_fixture_owning(script, Some(worktree), None).await
-}
-
-/// `cleanup_fixture` with both resources spelled out — for the window-only row
-/// shape (`TeardownIsOwedWheneverThereIsSomethingToRelease`), which owns a tmux
-/// window and no worktree.
-async fn cleanup_fixture_owning(
-    script: Vec<anyhow::Result<std::process::Output>>,
-    worktree: Option<&str>,
-    window: Option<&str>,
-) -> (
-    TuiRuntime,
-    models::TaskId,
-    mpsc::UnboundedReceiver<Message>,
-    Arc<MockProcessRunner>,
-) {
-    let db = test_db().await;
-    let (tx, rx) = mpsc::unbounded_channel();
-    let runner = Arc::new(MockProcessRunner::new(script));
-    let rt = make_runtime(db.clone(), tx, runner.clone()).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Doomed",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Archived,
-    )
-    .await
-    .unwrap();
-    db.patch_task(
-        task.id,
-        &db::TaskPatch::new().worktree(worktree).tmux_window(window),
-    )
-    .await
-    .unwrap();
-
-    (rt, task.id, rx, runner)
-}
-
-/// A failed `git worktree remove` must not let the operation forget the path.
-/// The row keeps its pointer so the leftover directory stays reachable from the
-/// board, and the failure is reported. `WorktreeReleaseIsGated` in
-/// docs/specs/tasks.allium; the silent-orphan mechanism from
-/// docs/plans/archive/2026-08-11-3897-worktree-cleanup-investigation.md §3.
-#[tokio::test]
-async fn exec_cleanup_failure_keeps_the_worktree_pointer() {
-    let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx, _runner) = cleanup_fixture(
-        vec![MockProcessRunner::fail("fatal: could not lock index")],
-        worktree,
-    )
-    .await;
-
-    let handle = rt.exec_cleanup(
-        id,
-        "/repo".into(),
-        Some(worktree.into()),
-        None,
-        crate::tui::commands::CleanupFollowUp::ClearPointer,
-    );
-    handle.await.unwrap();
-
-    let row = rt.database.get_task(id).await.unwrap().unwrap();
-    assert_eq!(
-        row.worktree.as_deref(),
-        Some(worktree),
-        "a failed removal must leave the pointer in place"
-    );
-
-    let msg = rx.recv().await.unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::CleanupFailed { worktree: ref w, .. })
-                if w == worktree
-        ),
-        "the failure must reach the app, got: {msg:?}"
-    );
-}
-
-/// The success half: only a removal that actually happened earns the follow-up.
-#[tokio::test]
-async fn exec_cleanup_success_reports_its_follow_up() {
-    let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx, _runner) = cleanup_fixture(
-        vec![
-            MockProcessRunner::ok(), // git worktree remove
-            MockProcessRunner::ok(), // git branch -D
-        ],
-        worktree,
-    )
-    .await;
-
-    let handle = rt.exec_cleanup(
-        id,
-        "/repo".into(),
-        Some(worktree.into()),
-        None,
-        crate::tui::commands::CleanupFollowUp::DeleteRow,
-    );
-    handle.await.unwrap();
-
-    let msg = rx.recv().await.unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
-                follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
-                ..
-            })
-        ),
-        "a successful removal must carry its follow-up back, got: {msg:?}"
-    );
-}
-
-/// The delete path's half of the gate: a failed removal means the row survives,
-/// still archived and still pointing at what is on disk, so deleting again
-/// retries the removal.
-#[tokio::test]
-async fn exec_cleanup_failure_does_not_delete_the_row() {
-    let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx, _runner) = cleanup_fixture(
-        vec![MockProcessRunner::fail("fatal: could not lock index")],
-        worktree,
-    )
-    .await;
-
-    let handle = rt.exec_cleanup(
-        id,
-        "/repo".into(),
-        Some(worktree.into()),
-        None,
-        crate::tui::commands::CleanupFollowUp::DeleteRow,
-    );
-    handle.await.unwrap();
-
-    let row = rt
-        .database
-        .get_task(id)
-        .await
-        .unwrap()
-        .expect("the row must survive a failed removal");
-    assert_eq!(row.status, models::TaskStatus::Archived);
-    assert_eq!(row.worktree.as_deref(), Some(worktree));
-
-    let msg = rx.recv().await.unwrap();
-    assert!(
-        !matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded { .. })
-        ),
-        "a failed removal must never report success, got: {msg:?}"
-    );
-}
-
-/// `TeardownIsOwedWheneverThereIsSomethingToRelease` in docs/specs/tasks.allium:
-/// a task with a window and no worktree still owes step 1. Before #4096
-/// `take_cleanup` dropped the whole command for this shape, so nothing ever ran.
-#[tokio::test]
-async fn exec_cleanup_kills_the_window_of_a_task_with_no_worktree() {
-    let (rt, id, mut rx, runner) = cleanup_fixture_owning(
-        vec![
-            MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
-            MockProcessRunner::ok(),                        // tmux kill-window
-        ],
-        None,
-        Some("task-1"),
-    )
-    .await;
-
-    rt.exec_cleanup(
-        id,
-        "/repo".into(),
-        None,
-        Some("task-1".into()),
-        crate::tui::commands::CleanupFollowUp::DeleteRow,
-    )
-    .await
-    .unwrap();
-
-    let calls = runner.flattened_calls();
-    assert!(
-        calls.iter().any(|c| c.contains("kill-window")),
-        "the window must be reclaimed even with no worktree, got: {calls:?}"
-    );
-    assert!(
-        !calls.iter().any(|c| c.contains("worktree remove")),
-        "there is no worktree to remove, got: {calls:?}"
-    );
-
-    let msg = rx.recv().await.unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
-                follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
-                ..
-            })
-        ),
-        "the follow-up must come back so the row is deleted, got: {msg:?}"
-    );
-}
-
-/// The gate is keyed on step 2 and only on step 2 (`WorktreeReleaseIsGated`).
-/// With no worktree there is nothing to release and nothing to retry, so a failed
-/// window kill is warn-logged and the follow-up still applies — withholding it
-/// would strand the row instead of the resource.
-#[tokio::test]
-async fn exec_cleanup_window_only_kill_failure_still_applies_the_follow_up() {
-    let (rt, id, mut rx, _runner) = cleanup_fixture_owning(
-        vec![
-            MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
-            MockProcessRunner::fail("can't find window"),   // kill-window fails
-        ],
-        None,
-        Some("task-1"),
-    )
-    .await;
-
-    rt.exec_cleanup(
-        id,
-        "/repo".into(),
-        None,
-        Some("task-1".into()),
-        crate::tui::commands::CleanupFollowUp::DeleteRow,
-    )
-    .await
-    .unwrap();
-
-    let msg = rx.recv().await.unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
-                follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
-                ..
-            })
-        ),
-        "a window-only teardown must not withhold its follow-up, got: {msg:?}"
-    );
-}
-
-/// `exec_cleanup` tears the worktree down unconditionally — deliberately.
-///
-/// Hand-builds the state the removed sharing exception described — a second live
-/// row naming the very same worktree, which the dispatch flow cannot produce —
-/// and pins that the full teardown runs anyway, follow-up and all. A reinstated
-/// guard fails here rather than passing silently. `WorktreeIsNeverShared` in
-/// docs/specs/tasks.allium is the argument; this is only its tripwire.
-#[tokio::test]
-async fn exec_cleanup_tears_down_even_if_another_row_names_the_worktree() {
-    let worktree = "/repo/.worktrees/1-doomed";
-    let (rt, id, mut rx, runner) = cleanup_fixture(
-        vec![
-            MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
-            MockProcessRunner::ok(),                        // tmux kill-window
-            MockProcessRunner::ok(),                        // git worktree remove
-            MockProcessRunner::ok(),                        // git branch -D
-        ],
-        worktree,
-    )
-    .await;
-
-    // The impossible second holder of the same path.
-    let sharer = create_task_returning(
-        &**rt.db_write(),
-        "Impossible sharer",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Running,
-    )
-    .await
-    .unwrap();
-    rt.db_write()
-        .patch_task(sharer.id, &db::TaskPatch::new().worktree(Some(worktree)))
-        .await
-        .unwrap();
-
-    rt.exec_cleanup(
-        id,
-        "/repo".into(),
-        Some(worktree.into()),
-        Some("task-1".into()),
-        crate::tui::commands::CleanupFollowUp::DeleteRow,
-    )
-    .await
-    .unwrap();
-
-    let calls = runner.flattened_calls();
-    let removed_at = calls
-        .iter()
-        .position(|c| c.contains("worktree remove") && c.contains(worktree))
-        .unwrap_or_else(|| {
-            panic!("the worktree goes regardless of what other rows name, got: {calls:?}")
-        });
-    let killed_at = calls
-        .iter()
-        .position(|c| c.contains("kill-window"))
-        .unwrap_or_else(|| panic!("the window is reclaimed too, got: {calls:?}"));
-    // TaskTeardown's clause order: the window goes before the worktree.
-    assert!(
-        killed_at < removed_at,
-        "the window must be killed before the worktree is removed, got: {calls:?}"
-    );
-
-    let msg = rx.recv().await.unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
-                follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
-                ..
-            })
-        ),
-        "a real removal must earn its follow-up, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn send_system_error_sends_error_message() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db, tx, runner).await;
-
-    rt.send_system_error("something went wrong");
-
-    let msg = rx.recv().await.unwrap();
-    assert!(
-        matches!(msg, Message::System(crate::tui::messages::SystemMessage::Error(ref e)) if e == "something went wrong"),
-        "Expected SystemMessage::Error, got: {msg:?}"
-    );
-}
-
-// `TaskCommand::Finish`/`exec_finish` and `TaskCommand::CloseSession`/
-// `exec_close_session` no longer exist — the TUI wrap-up entry point (`W`)
-// that used to dispatch them is gone. Wrap-up rebase/merge and session close
-// are now exclusively the MCP `wrap_up`/`exit_session` tools' job (see
-// src/mcp/handlers/tasks/wrap_up.rs), which drive `dispatch::finish_task` and
-// `TaskService::close_session` directly rather than through a runtime
-// command. The ExitSession ordering invariant — the tmux teardown follows the
-// terminal write and is gated on it, so a task whose write failed keeps BOTH
-// its live window and its `tmux_window` reference — is covered at that layer
-// by `exit_session_failed_close_leaves_the_task_unchanged` and
-// `exit_session_failed_close_issues_no_kill_window` in
-// src/mcp/handlers/tests/tasks/dispatch.rs.
-
-#[tokio::test]
-async fn exec_send_notification_calls_notify_send() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // notify-send call
-    ]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-    rt.exec_send_notification("Task #1: Fix bug", "Ready for review", false)
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "notify-send");
-    assert!(calls[0].1.contains(&"Task #1: Fix bug".to_string()));
-    assert!(calls[0].1.contains(&"Ready for review".to_string()));
-}
-
-#[tokio::test]
-async fn exec_send_notification_urgent_uses_critical() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::ok()]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-    rt.exec_send_notification("Task #1: Fix bug", "Agent needs your input", true)
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    assert!(calls[0].1.contains(&"critical".to_string()));
-}
-
-#[tokio::test]
-async fn exec_send_notification_failure_does_not_panic() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::fail(
-        "command not found",
-    )]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-    // Should not panic — just logs a warning
-    rt.exec_send_notification("Task #1: Fix bug", "Ready for review", false)
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn exec_persist_setting_writes_to_db() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_persist_setting(&mut app, "notifications_enabled", true)
+        rt.exec_quick_dispatch(
+            &mut app,
+            tui::TaskDraft {
+                title: "Quick task".into(),
+                description: String::new(),
+                repo_path: repo.to_string(),
+                ..Default::default()
+            },
+            None,
+        )
         .await;
-    assert_eq!(
-        rt.database
-            .get_setting_bool("notifications_enabled")
+
+        // Repo path IS recorded (existing RecordRepoPath behavior)...
+        assert!(app.repo_paths().contains(&repo.to_string()));
+        // ...but base branch history is deliberately NOT recorded for quick
+        // dispatch — see dispatch.allium: RecordBaseBranch's "recording scope
+        // (deliberately narrow)" guidance. Only the manual new-task form records.
+        assert!(
+            app.base_branches_for(repo).is_empty(),
+            "quick dispatch must not record base branch history"
+        );
+        assert!(rt
+            .database
+            .list_all_base_branches()
             .await
-            .unwrap(),
-        Some(true)
-    );
-}
+            .unwrap()
+            .is_empty());
 
-#[tokio::test]
-async fn exec_check_pr_status_sends_merged() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"MERGED\n"), // gh pr view (no review decision line)
-    ]));
-    let rt = make_runtime(db, tx, mock).await;
-
-    rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        msg,
-        Message::Pr(crate::tui::messages::PrMessage::Merged(TaskId(1)))
-    ));
-}
-
-#[tokio::test]
-async fn exec_check_pr_status_open_sends_review_state() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"OPEN\nAPPROVED\n"), // gh pr view
-    ]));
-    let rt = make_runtime(db, tx, mock).await;
-
-    rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    match msg {
-        Message::Pr(crate::tui::messages::PrMessage::ReviewState {
-            id,
-            review_decision,
-        }) => {
-            assert_eq!(id, TaskId(1));
-            assert_eq!(review_decision, Some(models::ReviewDecision::Approved));
-        }
-        other => panic!("Expected PrReviewState, got {:?}", other),
+        // Drain the async Dispatched message so the sender isn't left dangling.
+        let _ = tokio::time::timeout(TEST_TIMEOUT, rx.recv()).await;
     }
-}
 
-#[tokio::test]
-async fn exec_check_pr_status_sends_closed() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"CLOSED\n"), // gh pr view (no review decision line)
-    ]));
-    let rt = make_runtime(db, tx, mock).await;
-
-    rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        msg,
-        Message::Pr(crate::tui::messages::PrMessage::Closed(TaskId(1)))
-    ));
-}
-
-#[tokio::test]
-async fn exec_persist_string_setting_writes_to_db() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_persist_string_setting(&mut app, "repo_filter", "/repo1\n/repo2")
-        .await;
-    assert_eq!(
-        rt.database.get_setting_string("repo_filter").await.unwrap(),
-        Some("/repo1\n/repo2".to_string())
-    );
-}
-
-#[tokio::test]
-async fn exec_quick_dispatch_creates_task_and_dispatches() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().to_str().unwrap();
-    // Pre-create worktree directory so provision_worktree skips git worktree add
-    std::fs::create_dir_all(format!("{repo}/.worktrees/1-my-task")).unwrap();
-
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = DispatchScript::dispatch()
-        .detecting_default_branch("main")
-        .shared_runner();
-    let rt = make_runtime(db.clone(), tx, mock).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-
-    rt.exec_quick_dispatch(
-        &mut app,
-        tui::TaskDraft {
-            title: "My Task".into(),
-            description: "Do stuff".into(),
-            repo_path: repo.to_string(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-
-    // Task was created in app and DB synchronously
-    assert_eq!(app.tasks().len(), 1);
-    assert_eq!(app.tasks()[0].title, "My Task");
-    assert_eq!(db.list_all().await.unwrap().len(), 1);
-
-    // Repo path was saved
-    assert!(app.repo_paths().contains(&repo.to_string()));
-
-    // Dispatch message arrives asynchronously
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::Dispatched {
-                switch_focus: true,
-                ..
+    #[tokio::test]
+    async fn exec_refresh_from_db_syncs_external_changes() {
+        let (rt, mut app) = test_runtime().await;
+        // Insert directly into DB, bypassing app
+        rt.db_write()
+            .create_task(CreateTaskRequest {
+                title: "External",
+                description: "Added via CLI",
+                repo_path: "/repo",
+                plan: None,
+                status: models::TaskStatus::Backlog,
+                base_branch: "main",
+                epic_id: None,
+                sort_order: None,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+                schedule_interval_secs: None,
+                pinned_branch: None,
             })
-        ),
-        "Expected Dispatched, got: {msg:?}"
-    );
-}
+            .await
+            .unwrap();
+        assert!(app.tasks().is_empty());
+        rt.exec_refresh_from_db(&mut app).await;
+        assert_eq!(app.tasks().len(), 1);
+        assert_eq!(app.tasks()[0].title, "External");
+    }
 
-#[tokio::test]
-async fn exec_quick_dispatch_sets_base_branch_to_repo_default() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().to_str().unwrap();
-    std::fs::create_dir_all(format!("{repo}/.worktrees/1-quick-task")).unwrap();
+    #[tokio::test]
+    async fn exec_refresh_from_db_returns_commands_from_refresh() {
+        let (rt, mut app) = test_runtime().await;
+        // Insert a task directly into DB as Running
+        rt.db_write()
+            .create_task(CreateTaskRequest {
+                title: "Test",
+                description: "Desc",
+                repo_path: "/repo",
+                plan: None,
+                status: models::TaskStatus::Running,
+                base_branch: "main",
+                epic_id: None,
+                sort_order: None,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+                schedule_interval_secs: None,
+                pinned_branch: None,
+            })
+            .await
+            .unwrap();
+        // Load it into app
+        let cmds = rt.exec_refresh_from_db(&mut app).await;
+        assert!(cmds.is_empty()); // First load — no transition
 
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = DispatchScript::dispatch()
-        .detecting_default_branch("master")
-        .shared_runner();
-    let rt = make_runtime(db.clone(), tx, mock).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
+        let task = rt.database.list_all().await.unwrap()[0].clone();
+        rt.db_write()
+            .patch_task(
+                task.id,
+                &db::TaskPatch::new().status(models::TaskStatus::Review),
+            )
+            .await
+            .unwrap();
 
-    rt.exec_quick_dispatch(
-        &mut app,
-        tui::TaskDraft {
-            title: "Quick task".into(),
-            description: String::new(),
-            repo_path: repo.to_string(),
-            // The draft default doesn't matter — quick-dispatch resolves
-            // base_branch from the repo's `origin/HEAD`.
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
+        app.set_notifications_enabled(true);
+        let cmds = rt.exec_refresh_from_db(&mut app).await;
+        assert!(cmds.iter().any(|c| matches!(
+            c,
+            Command::System(crate::tui::commands::SystemCommand::SendNotification { .. })
+        )));
+    }
 
-    let stored = db.list_all().await.unwrap();
-    assert_eq!(stored.len(), 1);
-    assert_eq!(
-        stored[0].base_branch, "master",
-        "quick-dispatch should resolve and persist the repo's default branch"
-    );
-}
+    #[tokio::test]
+    async fn exec_delete_task_nonexistent_shows_error() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_delete_task(&mut app, TaskId(999)).await;
+        assert!(app.error_popup().is_some());
+    }
 
-#[tokio::test]
-async fn exec_quick_dispatch_with_epic_dispatches_successfully() {
-    let dir = tempfile::tempdir().unwrap();
-    let repo = dir.path().to_str().unwrap();
-    std::fs::create_dir_all(format!("{repo}/.worktrees/1-epic-task")).unwrap();
+    #[tokio::test]
+    async fn exec_jump_to_tmux_calls_select_window() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok(), // for select-window
+            ])
+            .with_windows(&["my-window"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
 
-    let db = test_db().await;
-    let epic = db.create_epic("My Epic", "epic desc", None).await.unwrap();
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = DispatchScript::dispatch()
-        .detecting_default_branch("main")
-        .shared_runner();
-    let rt = make_runtime(db.clone(), tx, mock).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
+        rt.exec_jump_to_tmux(&mut app, "my-window".to_string());
 
-    rt.exec_quick_dispatch(
-        &mut app,
-        tui::TaskDraft {
-            title: "Epic Task".into(),
-            description: "do stuff".into(),
-            repo_path: repo.to_string(),
-            ..Default::default()
-        },
-        Some(epic.id),
-    )
-    .await;
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.contains(&"select-window".to_string()));
+        // Targeted by resolved pane ID, not by name — see `tmux::window_target`.
+        assert!(calls[0].1.contains(&mock.pane_id_of("my-window")));
+        assert!(app.error_popup().is_none());
+    }
 
-    // Task was created with epic linkage
-    assert_eq!(app.tasks().len(), 1);
-    assert_eq!(app.tasks()[0].epic_id, Some(epic.id));
+    #[tokio::test]
+    async fn exec_dispatch_sends_dispatched_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        // Create .worktrees/ and fake worktree directory so file writes succeed
+        std::fs::create_dir_all(format!("{repo}/.worktrees/1-test-task")).unwrap();
 
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
-        ),
-        "Expected Dispatched, got: {msg:?}"
-    );
-}
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = DispatchScript::dispatch().shared_runner();
+        let rt = make_runtime(db.clone(), tx, mock).await;
 
-#[tokio::test]
-async fn exec_quick_dispatch_sends_error_on_failure() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("not a git repo"), // detect_default_branch
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-
-    // /nonexistent won't have .worktrees dir, so provision_worktree fails
-    rt.exec_quick_dispatch(
-        &mut app,
-        tui::TaskDraft {
-            title: "Fail Task".into(),
-            description: "desc".into(),
-            repo_path: "/nonexistent".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(_))
-                | Message::System(crate::tui::messages::SystemMessage::Error(_))
-        ),
-        "Expected DispatchFailed or Error, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_quick_dispatch_failure_sends_dispatch_failed_and_error() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::fail(
-        "not a git repo",
-    )]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-
-    rt.exec_quick_dispatch(
-        &mut app,
-        tui::TaskDraft {
-            title: "Fail Task".into(),
-            description: String::new(),
-            repo_path: "/nonexistent".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-
-    // The task was created synchronously
-    let created_id = app.tasks()[0].id;
-
-    let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(msg1, Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(id)) if id == created_id),
-        "Expected DispatchFailed, got: {msg1:?}"
-    );
-    let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg2,
-            Message::System(crate::tui::messages::SystemMessage::Error(_))
-        ),
-        "Expected Error, got: {msg2:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_resume_sends_resumed_message() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = DispatchScript::resume().shared_runner();
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    let mut task = create_task_returning(
-        &*db,
-        "Resume Me",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Running,
-    )
-    .await
-    .unwrap();
-    task.worktree = Some("/repo/.worktrees/1-resume-me".into());
-    let id = task.id;
-
-    rt.exec_resume(task.id, task.worktree.clone());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    let Message::Task(crate::tui::messages::TaskMessage::Resumed {
-        id: tid,
-        tmux_window,
-    }) = msg
-    else {
-        panic!("Expected Resumed, got: {msg:?}");
-    };
-    assert_eq!(tid, id);
-    assert_eq!(tmux_window, format!("task-{id}"));
-}
-
-#[tokio::test]
-async fn exec_resume_sends_error_on_failure() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // tmux list-windows (has_window: not alive)
-        MockProcessRunner::fail("no tmux session"), // tmux new-window fails
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    let task = create_task_returning(
-        &*db,
-        "Fail Resume",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Running,
-    )
-    .await
-    .unwrap();
-    rt.exec_resume(task.id, task.worktree.clone());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::System(crate::tui::messages::SystemMessage::Error(_))
-        ),
-        "Expected Error, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_kill_tmux_window_failure_does_not_send_error() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("no such window"), // tmux kill-window fails
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_kill_tmux_window("task-99".to_string())
+        let task = create_task_returning(
+            &*db,
+            "Test Task",
+            "desc",
+            repo,
+            None,
+            models::TaskStatus::Backlog,
+        )
         .await
         .unwrap();
+        let id = task.id;
+        rt.exec_dispatch_agent(Box::new(task), models::DispatchMode::Dispatch)
+            .await;
 
-    // Channel should be empty — no error message sent
-    assert!(rx.try_recv().is_err(), "Expected no message, but got one");
-}
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+            ),
+            "Expected Dispatched, got: {msg:?}"
+        );
 
-#[tokio::test]
-async fn exec_patch_sub_status_updates_db() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "Test".into(),
-            description: "Desc".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-    let id = app.tasks()[0].id;
+        // The claim, not `handle_dispatched`'s Persist, owns the Running write — and
+        // nothing here runs that Persist, so the row can only have left Backlog via
+        // the claim `exec_dispatch_agent` takes before provisioning
+        // (`DispatchClaimExclusive` in docs/specs/dispatch.allium).
+        let claimed = db.get_task(id).await.unwrap().unwrap();
+        assert_eq!(claimed.status, models::TaskStatus::Running);
+        assert!(
+            claimed.last_pre_tool_use_at.is_some(),
+            "the claim seeds the activity stamp"
+        );
+    }
 
-    // Move task to Running first
-    rt.db_write()
-        .patch_task(
-            id,
-            &db::TaskPatch::new().status(models::TaskStatus::Running),
+    /// Mode routing at the board's entry point. The `DispatchMode` match lives once
+    /// (`dispatch::run_agent_for_mode`) and the service seam takes it too, so this
+    /// is the assertion that the board reaches the *same* match: `Research` must
+    /// launch the read-only research agent, the only one that passes
+    /// `--permission-mode plan`. Its twin at the seam is
+    /// `service::tasks::tests::dispatch_seam::research_mode_launches_the_read_only_research_agent`.
+    #[tokio::test]
+    async fn exec_dispatch_agent_routes_research_mode_to_the_research_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(format!("{repo}/.worktrees/1-test-task")).unwrap();
+
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = DispatchScript::dispatch().shared_runner();
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        let task = create_task_returning(
+            &*db,
+            "Test Task",
+            "desc",
+            repo,
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        rt.exec_dispatch_agent(Box::new(task), models::DispatchMode::Research)
+            .await;
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+            ),
+            "Expected Dispatched, got: {msg:?}"
+        );
+
+        let argv = mock.flattened_calls().join("\n");
+        assert!(
+            argv.contains("--permission-mode plan"),
+            "research mode must launch with plan permissions: {argv}"
+        );
+    }
+
+    /// A lost claim must stop the dispatch dead, before any provisioning command
+    /// runs, and report the failure so the spinner drains (`LostClaimReported` in
+    /// docs/specs/dispatch.allium).
+    #[tokio::test]
+    async fn exec_dispatch_agent_lost_claim_provisions_nothing() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // An empty script is itself the assertion: any provisioning command would
+        // panic the mock rather than pass quietly.
+        let mock = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        // Backlog in the caller's snapshot, already Running in the DB — exactly the
+        // race the claim exists to catch.
+        let task = create_task_returning(
+            &*db,
+            "Contended Task",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        assert!(rt.task_svc.claim_backlog_task(task.id).await.unwrap());
+
+        rt.exec_dispatch_agent(Box::new(task.clone()), models::DispatchMode::Dispatch)
+            .await;
+
+        let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(msg1, Message::Task(crate::tui::messages::TaskMessage::DispatchAbandoned(id)) if id == task.id),
+            "a lost claim must report DispatchAbandoned, not DispatchFailed — the latter \
+         releases, and the claim we lost belongs to the winner. Got: {msg1:?}"
+        );
+        let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg2,
+                Message::System(crate::tui::messages::SystemMessage::Error(_))
+            ),
+            "Expected Error, got: {msg2:?}"
+        );
+        assert!(
+            mock.recorded_calls().is_empty(),
+            "a lost claim must run no provisioning commands, got: {:?}",
+            mock.recorded_calls()
+        );
+        // The winner's claim is untouched: still Running, still unprovisioned,
+        // still theirs to finish.
+        let after = db.get_task(task.id).await.unwrap().unwrap();
+        assert_eq!(after.status, models::TaskStatus::Running);
+        assert!(after.worktree.is_none());
+    }
+
+    /// `ReleaseClaim` returns a claimed-but-unprovisioned task to Backlog. This is
+    /// the command `DispatchFailed` emits.
+    #[tokio::test]
+    async fn exec_release_claim_returns_the_task_to_backlog() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+        let mut app = App::new(vec![]);
+        let task = create_task_returning(
+            &*db,
+            "Claimed Task",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        assert!(rt.task_svc.claim_backlog_task(task.id).await.unwrap());
+
+        rt.exec_release_claim(&mut app, task.id).await;
+
+        let released = db.get_task(task.id).await.unwrap().unwrap();
+        assert_eq!(released.status, models::TaskStatus::Backlog);
+        assert!(
+            released.last_pre_tool_use_at.is_none(),
+            "the release clears the stamp the claim seeded"
+        );
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_dispatch_sends_error_on_failure() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("fatal: not a git repository"), // git worktree add fails
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        let task = create_task_returning(
+            &*db,
+            "Fail Task",
+            "desc",
+            "/nonexistent",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        rt.exec_dispatch_agent(Box::new(task.clone()), models::DispatchMode::Dispatch)
+            .await;
+
+        let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(msg1, Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(id)) if id == task.id),
+            "Expected DispatchFailed, got: {msg1:?}"
+        );
+
+        let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg2,
+                Message::System(crate::tui::messages::SystemMessage::Error(_))
+            ),
+            "Expected Error, got: {msg2:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_check_window_sends_window_gone_when_absent() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            // has_window: list-windows returns other window names (not our window)
+            MockProcessRunner::ok_with_stdout(b"other-window\n"),
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_check_window(TaskId(1), "gone-window".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::WindowGone(TaskId(1)))
+            ),
+            "Expected WindowGone, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_check_window_sends_nothing_when_present() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            // has_window: list-windows returns our window
+            MockProcessRunner::ok_with_stdout(b"task-1\n"),
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_check_window(TaskId(1), "task-1".to_string())
+            .await
+            .unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "Expected no message but received one"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_check_window_sends_nothing_when_query_fails() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // The runner itself errors (e.g. tmux binary missing) — a transient
+        // failure must not be mistaken for the window (and therefore the agent)
+        // being gone.
+        let mock = Arc::new(MockProcessRunner::new(vec![Err(anyhow::anyhow!(
+            "failed to run tmux"
+        ))]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_check_window(TaskId(1), "task-1".to_string())
+            .await
+            .unwrap();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a tmux query failure must not send WindowGone"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_batch_check_windows_sends_window_gone_only_for_absent() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Single `tmux list-windows -a` reports task-1 present, task-2 gone (died mid-run).
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"task-1\nother-window\n"),
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_batch_check_windows(vec![
+            (TaskId(1), "task-1".to_string()),
+            (TaskId(2), "task-2".to_string()),
+        ])
+        .await
+        .unwrap();
+
+        // Exactly one WindowGone, for the absent window (task-2).
+        let mut gone = Vec::new();
+        while let Ok(msg) = rx.try_recv() {
+            if let Message::Task(crate::tui::messages::TaskMessage::WindowGone(id)) = msg {
+                gone.push(id);
+            } else {
+                panic!("unexpected message: {msg:?}");
+            }
+        }
+        assert_eq!(gone, vec![TaskId(2)], "only the absent window should crash");
+
+        // A single batched tmux call, not one per window. (The exact argv of
+        // list-windows is owned by tmux.rs's own unit tests — assert only the
+        // batching guarantee here.)
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1, "batch check should issue one tmux call");
+        assert_eq!(calls[0].1[0], "list-windows");
+    }
+
+    #[tokio::test]
+    async fn exec_batch_check_windows_sends_nothing_when_all_present() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"task-1\ntask-2\n"),
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_batch_check_windows(vec![
+            (TaskId(1), "task-1".to_string()),
+            (TaskId(2), "task-2".to_string()),
+        ])
+        .await
+        .unwrap();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "no WindowGone expected when all windows are present"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_batch_check_windows_stays_silent_when_tmux_cannot_be_spawned() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // The runner itself errors (e.g. tmux binary missing) — `list_all_window_names`
+        // propagates the Err, and the batch check bails without marking any window
+        // gone, so a transient tmux failure can't crash every running task at once.
+        let mock = Arc::new(MockProcessRunner::new(vec![Err(anyhow::anyhow!(
+            "failed to run tmux"
+        ))]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_batch_check_windows(vec![(TaskId(1), "task-1".to_string())])
+            .await
+            .unwrap();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a tmux spawn error must not be treated as every window being gone"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_jump_to_tmux_failure_shows_error() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("no such window"), // simulate tmux failure
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+
+        rt.exec_jump_to_tmux(&mut app, "nonexistent-window".to_string());
+
+        assert!(app.error_popup().is_some());
+    }
+
+    /// Seed one archived task that owns `worktree`, and a runtime whose runner
+    /// answers `script`. Returns the runtime, the task id, the message receiver and
+    /// the concrete runner, so a caller that needs to assert on the issued commands
+    /// can reach `flattened_calls()`.
+    async fn cleanup_fixture(
+        script: Vec<anyhow::Result<std::process::Output>>,
+        worktree: &str,
+    ) -> (
+        TuiRuntime,
+        models::TaskId,
+        mpsc::UnboundedReceiver<Message>,
+        Arc<MockProcessRunner>,
+    ) {
+        cleanup_fixture_owning(script, Some(worktree), None).await
+    }
+
+    /// `cleanup_fixture` with both resources spelled out — for the window-only row
+    /// shape (`TeardownIsOwedWheneverThereIsSomethingToRelease`), which owns a tmux
+    /// window and no worktree.
+    async fn cleanup_fixture_owning(
+        script: Vec<anyhow::Result<std::process::Output>>,
+        worktree: Option<&str>,
+        window: Option<&str>,
+    ) -> (
+        TuiRuntime,
+        models::TaskId,
+        mpsc::UnboundedReceiver<Message>,
+        Arc<MockProcessRunner>,
+    ) {
+        let db = test_db().await;
+        let (tx, rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(MockProcessRunner::new(script));
+        let rt = make_runtime(db.clone(), tx, runner.clone()).await;
+
+        let task = create_task_returning(
+            &*db,
+            "Doomed",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Archived,
+        )
+        .await
+        .unwrap();
+        db.patch_task(
+            task.id,
+            &db::TaskPatch::new().worktree(worktree).tmux_window(window),
         )
         .await
         .unwrap();
 
-    rt.exec_patch_sub_status(&mut app, id, models::SubStatus::NeedsInput)
+        (rt, task.id, rx, runner)
+    }
+
+    /// A failed `git worktree remove` must not let the operation forget the path.
+    /// The row keeps its pointer so the leftover directory stays reachable from the
+    /// board, and the failure is reported. `WorktreeReleaseIsGated` in
+    /// docs/specs/tasks.allium; the silent-orphan mechanism from
+    /// docs/plans/archive/2026-08-11-3897-worktree-cleanup-investigation.md §3.
+    #[tokio::test]
+    async fn exec_cleanup_failure_keeps_the_worktree_pointer() {
+        let worktree = "/repo/.worktrees/1-doomed";
+        let (rt, id, mut rx, _runner) = cleanup_fixture(
+            vec![MockProcessRunner::fail("fatal: could not lock index")],
+            worktree,
+        )
         .await;
 
-    let db_task = rt.database.get_task(id).await.unwrap().unwrap();
-    assert_eq!(db_task.sub_status, models::SubStatus::NeedsInput);
-    assert!(app.error_popup().is_none());
-}
+        let handle = rt.exec_cleanup(
+            id,
+            "/repo".into(),
+            Some(worktree.into()),
+            None,
+            crate::tui::commands::CleanupFollowUp::ClearPointer,
+        );
+        handle.await.unwrap();
 
-#[tokio::test]
-async fn exec_patch_sub_status_shows_error_for_missing_task() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_patch_sub_status(&mut app, TaskId(999), models::SubStatus::Active)
-        .await;
-    assert!(app.error_popup().is_some());
-}
+        let row = rt.database.get_task(id).await.unwrap().unwrap();
+        assert_eq!(
+            row.worktree.as_deref(),
+            Some(worktree),
+            "a failed removal must leave the pointer in place"
+        );
 
-#[tokio::test]
-async fn exec_move_task_to_epic_links_and_refreshes() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("Epic", "desc", None)
-        .await
-        .unwrap();
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "T".into(),
-            description: "".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-    let id = app.tasks()[0].id;
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::CleanupFailed { worktree: ref w, .. })
+                    if w == worktree
+            ),
+            "the failure must reach the app, got: {msg:?}"
+        );
+    }
 
-    rt.exec_move_task_to_epic(&mut app, id, Some(epic.id)).await;
-
-    assert_eq!(
-        rt.database.get_task(id).await.unwrap().unwrap().epic_id,
-        Some(epic.id)
-    );
-    // Board reflects the new membership after refresh.
-    assert_eq!(
-        app.tasks().iter().find(|t| t.id == id).unwrap().epic_id,
-        Some(epic.id)
-    );
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_move_task_to_epic_detaches_to_none() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("Epic", "desc", None)
-        .await
-        .unwrap();
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "T".into(),
-            description: "".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        Some(epic.id),
-    )
-    .await;
-    let id = app.tasks()[0].id;
-
-    rt.exec_move_task_to_epic(&mut app, id, None).await;
-
-    assert_eq!(
-        rt.database.get_task(id).await.unwrap().unwrap().epic_id,
-        None
-    );
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_move_task_to_epic_shows_error_for_missing_epic() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "T".into(),
-            description: "".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-    let id = app.tasks()[0].id;
-
-    rt.exec_move_task_to_epic(&mut app, id, Some(models::EpicId(9999)))
+    /// The success half: only a removal that actually happened earns the follow-up.
+    #[tokio::test]
+    async fn exec_cleanup_success_reports_its_follow_up() {
+        let worktree = "/repo/.worktrees/1-doomed";
+        let (rt, id, mut rx, _runner) = cleanup_fixture(
+            vec![
+                MockProcessRunner::ok(), // git worktree remove
+                MockProcessRunner::ok(), // git branch -D
+            ],
+            worktree,
+        )
         .await;
 
-    assert!(app.error_popup().is_some());
-    assert_eq!(
-        rt.database.get_task(id).await.unwrap().unwrap().epic_id,
-        None
-    );
-}
+        let handle = rt.exec_cleanup(
+            id,
+            "/repo".into(),
+            Some(worktree.into()),
+            None,
+            crate::tui::commands::CleanupFollowUp::DeleteRow,
+        );
+        handle.await.unwrap();
 
-// -----------------------------------------------------------------------
-// Filter preset tests
-// -----------------------------------------------------------------------
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
+                    follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+                    ..
+                })
+            ),
+            "a successful removal must carry its follow-up back, got: {msg:?}"
+        );
+    }
 
-#[tokio::test]
-async fn exec_persist_filter_preset_saves_to_db() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_persist_filter_preset(
-        &mut app,
-        "my-preset",
-        &["/repo1".into(), "/repo2".into()],
-        "include",
-    )
-    .await;
-    let presets = rt.database.list_filter_presets().await.unwrap();
-    assert_eq!(presets.len(), 1);
-    assert_eq!(presets[0].0, "my-preset");
-    assert_eq!(presets[0].2, "include");
-    assert!(app.error_popup().is_none());
-}
+    /// The delete path's half of the gate: a failed removal means the row survives,
+    /// still archived and still pointing at what is on disk, so deleting again
+    /// retries the removal.
+    #[tokio::test]
+    async fn exec_cleanup_failure_does_not_delete_the_row() {
+        let worktree = "/repo/.worktrees/1-doomed";
+        let (rt, id, mut rx, _runner) = cleanup_fixture(
+            vec![MockProcessRunner::fail("fatal: could not lock index")],
+            worktree,
+        )
+        .await;
 
-#[tokio::test]
-async fn exec_delete_filter_preset_removes_from_db() {
-    let (rt, mut app) = test_runtime().await;
-    rt.database
-        .save_filter_preset("doomed", &["/repo".into()], "include")
+        let handle = rt.exec_cleanup(
+            id,
+            "/repo".into(),
+            Some(worktree.into()),
+            None,
+            crate::tui::commands::CleanupFollowUp::DeleteRow,
+        );
+        handle.await.unwrap();
+
+        let row = rt
+            .database
+            .get_task(id)
+            .await
+            .unwrap()
+            .expect("the row must survive a failed removal");
+        assert_eq!(row.status, models::TaskStatus::Archived);
+        assert_eq!(row.worktree.as_deref(), Some(worktree));
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            !matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded { .. })
+            ),
+            "a failed removal must never report success, got: {msg:?}"
+        );
+    }
+
+    /// `TeardownIsOwedWheneverThereIsSomethingToRelease` in docs/specs/tasks.allium:
+    /// a task with a window and no worktree still owes step 1. Before #4096
+    /// `take_cleanup` dropped the whole command for this shape, so nothing ever ran.
+    #[tokio::test]
+    async fn exec_cleanup_kills_the_window_of_a_task_with_no_worktree() {
+        let (rt, id, mut rx, runner) = cleanup_fixture_owning(
+            vec![
+                MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
+                MockProcessRunner::ok(),                        // tmux kill-window
+            ],
+            None,
+            Some("task-1"),
+        )
+        .await;
+
+        rt.exec_cleanup(
+            id,
+            "/repo".into(),
+            None,
+            Some("task-1".into()),
+            crate::tui::commands::CleanupFollowUp::DeleteRow,
+        )
         .await
         .unwrap();
-    rt.exec_delete_filter_preset(&mut app, "doomed").await;
-    assert!(rt.database.list_filter_presets().await.unwrap().is_empty());
-    assert!(app.error_popup().is_none());
+
+        let calls = runner.flattened_calls();
+        assert!(
+            calls.iter().any(|c| c.contains("kill-window")),
+            "the window must be reclaimed even with no worktree, got: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.contains("worktree remove")),
+            "there is no worktree to remove, got: {calls:?}"
+        );
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
+                    follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+                    ..
+                })
+            ),
+            "the follow-up must come back so the row is deleted, got: {msg:?}"
+        );
+    }
+
+    /// The gate is keyed on step 2 and only on step 2 (`WorktreeReleaseIsGated`).
+    /// With no worktree there is nothing to release and nothing to retry, so a failed
+    /// window kill is warn-logged and the follow-up still applies — withholding it
+    /// would strand the row instead of the resource.
+    #[tokio::test]
+    async fn exec_cleanup_window_only_kill_failure_still_applies_the_follow_up() {
+        let (rt, id, mut rx, _runner) = cleanup_fixture_owning(
+            vec![
+                MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
+                MockProcessRunner::fail("can't find window"),   // kill-window fails
+            ],
+            None,
+            Some("task-1"),
+        )
+        .await;
+
+        rt.exec_cleanup(
+            id,
+            "/repo".into(),
+            None,
+            Some("task-1".into()),
+            crate::tui::commands::CleanupFollowUp::DeleteRow,
+        )
+        .await
+        .unwrap();
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
+                    follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+                    ..
+                })
+            ),
+            "a window-only teardown must not withhold its follow-up, got: {msg:?}"
+        );
+    }
+
+    /// `exec_cleanup` tears the worktree down unconditionally — deliberately.
+    ///
+    /// Hand-builds the state the removed sharing exception described — a second live
+    /// row naming the very same worktree, which the dispatch flow cannot produce —
+    /// and pins that the full teardown runs anyway, follow-up and all. A reinstated
+    /// guard fails here rather than passing silently. `WorktreeIsNeverShared` in
+    /// docs/specs/tasks.allium is the argument; this is only its tripwire.
+    #[tokio::test]
+    async fn exec_cleanup_tears_down_even_if_another_row_names_the_worktree() {
+        let worktree = "/repo/.worktrees/1-doomed";
+        let (rt, id, mut rx, runner) = cleanup_fixture(
+            vec![
+                MockProcessRunner::ok_with_stdout(b"task-1\n"), // has_window
+                MockProcessRunner::ok(),                        // tmux kill-window
+                MockProcessRunner::ok(),                        // git worktree remove
+                MockProcessRunner::ok(),                        // git branch -D
+            ],
+            worktree,
+        )
+        .await;
+
+        // The impossible second holder of the same path.
+        let sharer = create_task_returning(
+            &**rt.db_write(),
+            "Impossible sharer",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Running,
+        )
+        .await
+        .unwrap();
+        rt.db_write()
+            .patch_task(sharer.id, &db::TaskPatch::new().worktree(Some(worktree)))
+            .await
+            .unwrap();
+
+        rt.exec_cleanup(
+            id,
+            "/repo".into(),
+            Some(worktree.into()),
+            Some("task-1".into()),
+            crate::tui::commands::CleanupFollowUp::DeleteRow,
+        )
+        .await
+        .unwrap();
+
+        let calls = runner.flattened_calls();
+        let removed_at = calls
+            .iter()
+            .position(|c| c.contains("worktree remove") && c.contains(worktree))
+            .unwrap_or_else(|| {
+                panic!("the worktree goes regardless of what other rows name, got: {calls:?}")
+            });
+        let killed_at = calls
+            .iter()
+            .position(|c| c.contains("kill-window"))
+            .unwrap_or_else(|| panic!("the window is reclaimed too, got: {calls:?}"));
+        // TaskTeardown's clause order: the window goes before the worktree.
+        assert!(
+            killed_at < removed_at,
+            "the window must be killed before the worktree is removed, got: {calls:?}"
+        );
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
+                    follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+                    ..
+                })
+            ),
+            "a real removal must earn its follow-up, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_system_error_sends_error_message() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db, tx, runner).await;
+
+        rt.send_system_error("something went wrong");
+
+        let msg = rx.recv().await.unwrap();
+        assert!(
+            matches!(msg, Message::System(crate::tui::messages::SystemMessage::Error(ref e)) if e == "something went wrong"),
+            "Expected SystemMessage::Error, got: {msg:?}"
+        );
+    }
+
+    // `TaskCommand::Finish`/`exec_finish` and `TaskCommand::CloseSession`/
+    // `exec_close_session` no longer exist — the TUI wrap-up entry point (`W`)
+    // that used to dispatch them is gone. Wrap-up rebase/merge and session close
+    // are now exclusively the MCP `wrap_up`/`exit_session` tools' job (see
+    // src/mcp/handlers/tasks/wrap_up.rs), which drive `dispatch::finish_task` and
+    // `TaskService::close_session` directly rather than through a runtime
+    // command. The ExitSession ordering invariant — the tmux teardown follows the
+    // terminal write and is gated on it, so a task whose write failed keeps BOTH
+    // its live window and its `tmux_window` reference — is covered at that layer
+    // by `exit_session_failed_close_leaves_the_task_unchanged` and
+    // `exit_session_failed_close_issues_no_kill_window` in
+    // src/mcp/handlers/tests/tasks/dispatch.rs.
+
+    #[tokio::test]
+    async fn exec_send_notification_calls_notify_send() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // notify-send call
+        ]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+        rt.exec_send_notification("Task #1: Fix bug", "Ready for review", false)
+            .await
+            .unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "notify-send");
+        assert!(calls[0].1.contains(&"Task #1: Fix bug".to_string()));
+        assert!(calls[0].1.contains(&"Ready for review".to_string()));
+    }
+
+    #[tokio::test]
+    async fn exec_send_notification_urgent_uses_critical() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::ok()]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+        rt.exec_send_notification("Task #1: Fix bug", "Agent needs your input", true)
+            .await
+            .unwrap();
+        let calls = mock.recorded_calls();
+        assert!(calls[0].1.contains(&"critical".to_string()));
+    }
+
+    #[tokio::test]
+    async fn exec_send_notification_failure_does_not_panic() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::fail(
+            "command not found",
+        )]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+        // Should not panic — just logs a warning
+        rt.exec_send_notification("Task #1: Fix bug", "Ready for review", false)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn exec_persist_setting_writes_to_db() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_persist_setting(&mut app, "notifications_enabled", true)
+            .await;
+        assert_eq!(
+            rt.database
+                .get_setting_bool("notifications_enabled")
+                .await
+                .unwrap(),
+            Some(true)
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_check_pr_status_sends_merged() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"MERGED\n"), // gh pr view (no review decision line)
+        ]));
+        let rt = make_runtime(db, tx, mock).await;
+
+        rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::Pr(crate::tui::messages::PrMessage::Merged(TaskId(1)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_check_pr_status_open_sends_review_state() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"OPEN\nAPPROVED\n"), // gh pr view
+        ]));
+        let rt = make_runtime(db, tx, mock).await;
+
+        rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match msg {
+            Message::Pr(crate::tui::messages::PrMessage::ReviewState {
+                id,
+                review_decision,
+            }) => {
+                assert_eq!(id, TaskId(1));
+                assert_eq!(review_decision, Some(models::ReviewDecision::Approved));
+            }
+            other => panic!("Expected PrReviewState, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_check_pr_status_sends_closed() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"CLOSED\n"), // gh pr view (no review decision line)
+        ]));
+        let rt = make_runtime(db, tx, mock).await;
+
+        rt.exec_check_pr_status(TaskId(1), "https://github.com/org/repo/pull/42".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            msg,
+            Message::Pr(crate::tui::messages::PrMessage::Closed(TaskId(1)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_persist_string_setting_writes_to_db() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_persist_string_setting(&mut app, "repo_filter", "/repo1\n/repo2")
+            .await;
+        assert_eq!(
+            rt.database.get_setting_string("repo_filter").await.unwrap(),
+            Some("/repo1\n/repo2".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_quick_dispatch_creates_task_and_dispatches() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        // Pre-create worktree directory so provision_worktree skips git worktree add
+        std::fs::create_dir_all(format!("{repo}/.worktrees/1-my-task")).unwrap();
+
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = DispatchScript::dispatch()
+            .detecting_default_branch("main")
+            .shared_runner();
+        let rt = make_runtime(db.clone(), tx, mock).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+
+        rt.exec_quick_dispatch(
+            &mut app,
+            tui::TaskDraft {
+                title: "My Task".into(),
+                description: "Do stuff".into(),
+                repo_path: repo.to_string(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        // Task was created in app and DB synchronously
+        assert_eq!(app.tasks().len(), 1);
+        assert_eq!(app.tasks()[0].title, "My Task");
+        assert_eq!(db.list_all().await.unwrap().len(), 1);
+
+        // Repo path was saved
+        assert!(app.repo_paths().contains(&repo.to_string()));
+
+        // Dispatch message arrives asynchronously
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::Dispatched {
+                    switch_focus: true,
+                    ..
+                })
+            ),
+            "Expected Dispatched, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_quick_dispatch_sets_base_branch_to_repo_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(format!("{repo}/.worktrees/1-quick-task")).unwrap();
+
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = DispatchScript::dispatch()
+            .detecting_default_branch("master")
+            .shared_runner();
+        let rt = make_runtime(db.clone(), tx, mock).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+
+        rt.exec_quick_dispatch(
+            &mut app,
+            tui::TaskDraft {
+                title: "Quick task".into(),
+                description: String::new(),
+                repo_path: repo.to_string(),
+                // The draft default doesn't matter — quick-dispatch resolves
+                // base_branch from the repo's `origin/HEAD`.
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        let stored = db.list_all().await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            stored[0].base_branch, "master",
+            "quick-dispatch should resolve and persist the repo's default branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_quick_dispatch_with_epic_dispatches_successfully() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().to_str().unwrap();
+        std::fs::create_dir_all(format!("{repo}/.worktrees/1-epic-task")).unwrap();
+
+        let db = test_db().await;
+        let epic = db.create_epic("My Epic", "epic desc", None).await.unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = DispatchScript::dispatch()
+            .detecting_default_branch("main")
+            .shared_runner();
+        let rt = make_runtime(db.clone(), tx, mock).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+
+        rt.exec_quick_dispatch(
+            &mut app,
+            tui::TaskDraft {
+                title: "Epic Task".into(),
+                description: "do stuff".into(),
+                repo_path: repo.to_string(),
+                ..Default::default()
+            },
+            Some(epic.id),
+        )
+        .await;
+
+        // Task was created with epic linkage
+        assert_eq!(app.tasks().len(), 1);
+        assert_eq!(app.tasks()[0].epic_id, Some(epic.id));
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+            ),
+            "Expected Dispatched, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_quick_dispatch_sends_error_on_failure() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("not a git repo"), // detect_default_branch
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+
+        // /nonexistent won't have .worktrees dir, so provision_worktree fails
+        rt.exec_quick_dispatch(
+            &mut app,
+            tui::TaskDraft {
+                title: "Fail Task".into(),
+                description: "desc".into(),
+                repo_path: "/nonexistent".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(_))
+                    | Message::System(crate::tui::messages::SystemMessage::Error(_))
+            ),
+            "Expected DispatchFailed or Error, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_quick_dispatch_failure_sends_dispatch_failed_and_error() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::fail(
+            "not a git repo",
+        )]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+
+        rt.exec_quick_dispatch(
+            &mut app,
+            tui::TaskDraft {
+                title: "Fail Task".into(),
+                description: String::new(),
+                repo_path: "/nonexistent".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+
+        // The task was created synchronously
+        let created_id = app.tasks()[0].id;
+
+        let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(msg1, Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(id)) if id == created_id),
+            "Expected DispatchFailed, got: {msg1:?}"
+        );
+        let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg2,
+                Message::System(crate::tui::messages::SystemMessage::Error(_))
+            ),
+            "Expected Error, got: {msg2:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_resume_sends_resumed_message() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = DispatchScript::resume().shared_runner();
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        let mut task = create_task_returning(
+            &*db,
+            "Resume Me",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Running,
+        )
+        .await
+        .unwrap();
+        task.worktree = Some("/repo/.worktrees/1-resume-me".into());
+        let id = task.id;
+
+        rt.exec_resume(task.id, task.worktree.clone());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let Message::Task(crate::tui::messages::TaskMessage::Resumed {
+            id: tid,
+            tmux_window,
+        }) = msg
+        else {
+            panic!("Expected Resumed, got: {msg:?}");
+        };
+        assert_eq!(tid, id);
+        assert_eq!(tmux_window, format!("task-{id}"));
+    }
+
+    #[tokio::test]
+    async fn exec_resume_sends_error_on_failure() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // tmux list-windows (has_window: not alive)
+            MockProcessRunner::fail("no tmux session"), // tmux new-window fails
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        let task = create_task_returning(
+            &*db,
+            "Fail Resume",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Running,
+        )
+        .await
+        .unwrap();
+        rt.exec_resume(task.id, task.worktree.clone());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::System(crate::tui::messages::SystemMessage::Error(_))
+            ),
+            "Expected Error, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_kill_tmux_window_failure_does_not_send_error() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("no such window"), // tmux kill-window fails
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_kill_tmux_window("task-99".to_string())
+            .await
+            .unwrap();
+
+        // Channel should be empty — no error message sent
+        assert!(rx.try_recv().is_err(), "Expected no message, but got one");
+    }
+
+    #[tokio::test]
+    async fn exec_patch_sub_status_updates_db() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_insert_task(
+            &mut app,
+            tui::TaskDraft {
+                title: "Test".into(),
+                description: "Desc".into(),
+                repo_path: "/repo".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let id = app.tasks()[0].id;
+
+        // Move task to Running first
+        rt.db_write()
+            .patch_task(
+                id,
+                &db::TaskPatch::new().status(models::TaskStatus::Running),
+            )
+            .await
+            .unwrap();
+
+        rt.exec_patch_sub_status(&mut app, id, models::SubStatus::NeedsInput)
+            .await;
+
+        let db_task = rt.database.get_task(id).await.unwrap().unwrap();
+        assert_eq!(db_task.sub_status, models::SubStatus::NeedsInput);
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_patch_sub_status_shows_error_for_missing_task() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_patch_sub_status(&mut app, TaskId(999), models::SubStatus::Active)
+            .await;
+        assert!(app.error_popup().is_some());
+    }
+
+    #[tokio::test]
+    async fn exec_move_task_to_epic_links_and_refreshes() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Epic", "desc", None)
+            .await
+            .unwrap();
+        rt.exec_insert_task(
+            &mut app,
+            tui::TaskDraft {
+                title: "T".into(),
+                description: "".into(),
+                repo_path: "/repo".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let id = app.tasks()[0].id;
+
+        rt.exec_move_task_to_epic(&mut app, id, Some(epic.id)).await;
+
+        assert_eq!(
+            rt.database.get_task(id).await.unwrap().unwrap().epic_id,
+            Some(epic.id)
+        );
+        // Board reflects the new membership after refresh.
+        assert_eq!(
+            app.tasks().iter().find(|t| t.id == id).unwrap().epic_id,
+            Some(epic.id)
+        );
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_move_task_to_epic_detaches_to_none() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Epic", "desc", None)
+            .await
+            .unwrap();
+        rt.exec_insert_task(
+            &mut app,
+            tui::TaskDraft {
+                title: "T".into(),
+                description: "".into(),
+                repo_path: "/repo".into(),
+                ..Default::default()
+            },
+            Some(epic.id),
+        )
+        .await;
+        let id = app.tasks()[0].id;
+
+        rt.exec_move_task_to_epic(&mut app, id, None).await;
+
+        assert_eq!(
+            rt.database.get_task(id).await.unwrap().unwrap().epic_id,
+            None
+        );
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_move_task_to_epic_shows_error_for_missing_epic() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_insert_task(
+            &mut app,
+            tui::TaskDraft {
+                title: "T".into(),
+                description: "".into(),
+                repo_path: "/repo".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let id = app.tasks()[0].id;
+
+        rt.exec_move_task_to_epic(&mut app, id, Some(models::EpicId(9999)))
+            .await;
+
+        assert!(app.error_popup().is_some());
+        assert_eq!(
+            rt.database.get_task(id).await.unwrap().unwrap().epic_id,
+            None
+        );
+    }
 }
 
-// -----------------------------------------------------------------------
-// parse_raw_presets tests
-// -----------------------------------------------------------------------
+mod filter_presets {
+    use super::*;
 
-#[tokio::test]
-async fn parse_raw_presets_converts_all_paths() {
-    let raw = vec![(
-        "backend".to_string(),
-        vec!["/a".to_string(), "/b".to_string()],
-        "include".to_string(),
-    )];
-    let result = parse_raw_presets(raw, None);
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].0, "backend");
-    assert_eq!(
-        result[0].1,
-        HashSet::from(["/a".to_string(), "/b".to_string()])
-    );
-    assert_eq!(result[0].2, RepoFilterMode::Include);
+    #[tokio::test]
+    async fn exec_persist_filter_preset_saves_to_db() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_persist_filter_preset(
+            &mut app,
+            "my-preset",
+            &["/repo1".into(), "/repo2".into()],
+            "include",
+        )
+        .await;
+        let presets = rt.database.list_filter_presets().await.unwrap();
+        assert_eq!(presets.len(), 1);
+        assert_eq!(presets[0].0, "my-preset");
+        assert_eq!(presets[0].2, "include");
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_delete_filter_preset_removes_from_db() {
+        let (rt, mut app) = test_runtime().await;
+        rt.database
+            .save_filter_preset("doomed", &["/repo".into()], "include")
+            .await
+            .unwrap();
+        rt.exec_delete_filter_preset(&mut app, "doomed").await;
+        assert!(rt.database.list_filter_presets().await.unwrap().is_empty());
+        assert!(app.error_popup().is_none());
+    }
 }
 
-#[tokio::test]
-async fn parse_raw_presets_filters_against_known_repos() {
-    let raw = vec![(
-        "backend".to_string(),
-        vec!["/a".to_string(), "/b".to_string(), "/gone".to_string()],
-        "exclude".to_string(),
-    )];
-    let known = HashSet::from(["/a".to_string(), "/b".to_string()]);
-    let result = parse_raw_presets(raw, Some(&known));
-    assert_eq!(
-        result[0].1,
-        HashSet::from(["/a".to_string(), "/b".to_string()])
-    );
-    assert_eq!(result[0].2, RepoFilterMode::Exclude);
-}
+mod parse_raw_presets {
+    use super::*;
 
-#[tokio::test]
-async fn parse_raw_presets_defaults_invalid_mode() {
-    let raw = vec![("x".to_string(), vec![], "bogus".to_string())];
-    let result = parse_raw_presets(raw, None);
-    assert_eq!(result[0].2, RepoFilterMode::Include);
-}
-
-#[tokio::test]
-async fn parse_raw_presets_empty_input() {
-    let result = parse_raw_presets(vec![], None);
-    assert!(result.is_empty());
-}
-
-#[tokio::test]
-async fn parse_raw_presets_multiple_presets() {
-    let raw = vec![
-        (
-            "a".to_string(),
-            vec!["/x".to_string()],
+    #[tokio::test]
+    async fn parse_raw_presets_converts_all_paths() {
+        let raw = vec![(
+            "backend".to_string(),
+            vec!["/a".to_string(), "/b".to_string()],
             "include".to_string(),
-        ),
-        (
-            "b".to_string(),
-            vec!["/y".to_string()],
+        )];
+        let result = parse_raw_presets(raw, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "backend");
+        assert_eq!(
+            result[0].1,
+            HashSet::from(["/a".to_string(), "/b".to_string()])
+        );
+        assert_eq!(result[0].2, RepoFilterMode::Include);
+    }
+
+    #[tokio::test]
+    async fn parse_raw_presets_filters_against_known_repos() {
+        let raw = vec![(
+            "backend".to_string(),
+            vec!["/a".to_string(), "/b".to_string(), "/gone".to_string()],
             "exclude".to_string(),
-        ),
-    ];
-    let result = parse_raw_presets(raw, None);
-    assert_eq!(result.len(), 2);
-    assert_eq!(result[0].2, RepoFilterMode::Include);
-    assert_eq!(result[1].2, RepoFilterMode::Exclude);
-}
-
-// -----------------------------------------------------------------------
-// Repo path tests
-// -----------------------------------------------------------------------
-
-#[tokio::test]
-async fn exec_delete_repo_path_removes_and_refreshes() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_save_repo_path(&mut app, "/repo1".into()).await;
-    rt.exec_save_repo_path(&mut app, "/repo2".into()).await;
-    assert_eq!(app.repo_paths().len(), 2);
-
-    rt.exec_delete_repo_path(&mut app, "/repo1").await;
-    assert_eq!(app.repo_paths().len(), 1);
-    assert!(app.repo_paths().contains(&"/repo2".to_string()));
-    assert!(app.error_popup().is_none());
-}
-
-// -----------------------------------------------------------------------
-// Epic tests
-// -----------------------------------------------------------------------
-
-#[tokio::test]
-async fn exec_insert_epic_creates_in_db_and_app() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_insert_epic(&mut app, "My Epic".into(), "description".into(), None)
-        .await;
-    assert_eq!(app.epics().len(), 1);
-    assert_eq!(app.epics()[0].title, "My Epic");
-    assert_eq!(rt.database.list_epics().await.unwrap().len(), 1);
-}
-
-#[tokio::test]
-async fn exec_delete_epic_removes_from_db() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("Doomed", "bye", None)
-        .await
-        .unwrap();
-    rt.exec_delete_epic(&mut app, epic.id).await;
-    assert!(rt.database.list_epics().await.unwrap().is_empty());
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_persist_epic_updates_status() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("Epic", "desc", None)
-        .await
-        .unwrap();
-    rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Running), None)
-        .await;
-    let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert_eq!(updated.status, models::TaskStatus::Running);
-}
-
-#[tokio::test]
-async fn exec_persist_epic_noop_when_nothing_to_update() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("Epic", "desc", None)
-        .await
-        .unwrap();
-    // Should return early without error
-    rt.exec_persist_epic(&mut app, epic.id, None, None).await;
-    assert!(app.error_popup().is_none());
-}
-
-/// Regression for the whole-branch review finding, epic side:
-/// `exec_persist_epic` (routed through `exec_patch_epic`, the shared
-/// chokepoint) must write the service-computed `sort_order` into the
-/// in-memory board itself, not just the DB. Drives the actual
-/// `exec_persist_epic` runtime path and asserts on `app.epics()` with no
-/// `exec_refresh_epics_from_db` call in between, to prove the write-back is
-/// immediate.
-#[tokio::test]
-async fn exec_persist_epic_writes_back_done_transition_sort_order_immediately() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("Epic", "desc", None)
-        .await
-        .unwrap();
-    // Load the epic into the in-memory board (mirrors what a real session
-    // would already have from a prior refresh).
-    rt.exec_refresh_epics_from_db(&mut app).await;
-    assert_eq!(
-        app.epics()
-            .iter()
-            .find(|e| e.id == epic.id)
-            .unwrap()
-            .sort_order,
-        None,
-        "precondition: no sort_order yet"
-    );
-
-    rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Done), None)
-        .await;
-
-    // Assert on the in-memory board directly — no
-    // exec_refresh_epics_from_db call in between — to prove the write-back
-    // is immediate.
-    let in_memory = app.epics().iter().find(|e| e.id == epic.id).unwrap();
-    assert!(
-        in_memory.sort_order.is_some_and(|so| so < 0),
-        "expected a negative completion-recency sort_order written back to \
-         the in-memory board immediately, got {:?}",
-        in_memory.sort_order
-    );
-
-    let db_epic = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert_eq!(
-        in_memory.sort_order, db_epic.sort_order,
-        "in-memory sort_order must match what was actually persisted"
-    );
-}
-
-/// The clear direction of the same rule, epic side:
-/// `sort_order_for_status_transition(Done, <non-Done>)` returns
-/// `Some(None)`, so `write_back_epic_sort_order` must clear the in-memory
-/// epic's `sort_order` — not skip the write-back because the new value is
-/// `None`. Asserts on `app.epics()` with no `exec_refresh_epics_from_db`
-/// call in between.
-#[tokio::test]
-async fn exec_persist_epic_writes_back_leaving_done_sort_order_clear_immediately() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("Epic", "desc", None)
-        .await
-        .unwrap();
-    // Put the epic in Done with a completion-recency sort_order, the state a
-    // just-completed epic is in before it gets moved back out of Done.
-    rt.db_write()
-        .patch_epic(
-            epic.id,
-            &db::EpicPatch::new()
-                .status(models::TaskStatus::Done)
-                .sort_order(Some(-1234)),
-        )
-        .await
-        .unwrap();
-    // Load that state into the in-memory board.
-    rt.exec_refresh_epics_from_db(&mut app).await;
-    assert_eq!(
-        app.epics()
-            .iter()
-            .find(|e| e.id == epic.id)
-            .unwrap()
-            .sort_order,
-        Some(-1234),
-        "precondition: in-memory epic carries the Done sort_order"
-    );
-
-    rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Review), None)
-        .await;
-
-    let in_memory = app.epics().iter().find(|e| e.id == epic.id).unwrap();
-    assert_eq!(
-        in_memory.sort_order, None,
-        "leaving Done must clear the in-memory epic's sort_order immediately"
-    );
-
-    let db_epic = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert_eq!(
-        db_epic.sort_order, None,
-        "in-memory clear must match what was actually persisted"
-    );
-}
-
-/// Regression for learning #162, ported from the retired TUI `[C]` save path
-/// (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §6): a freshly-enabled
-/// feed on a previously feed-less instance must become pollable after
-/// `set_managed_feed_config` notifies the runtime, not stay stranded behind the
-/// FeedRunner's `any_feed_cmds == Some(false)` short-circuit until an unrelated
-/// EpicChanged or a restart. MCP is now the only configuration path, so the
-/// `McpEvent::Refresh` arm is the only thing that can invalidate the cache.
-#[tokio::test]
-async fn mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed() {
-    let (mut rt, mut app) = test_runtime().await;
-    let mut feed_runner = rt.feed_runner.take().expect("runtime has a feed runner");
-
-    // First tick with no feeds configured -> cache settles to Some(false),
-    // which makes every subsequent tick short-circuit before any DB work.
-    feed_runner.tick().await;
-    assert_eq!(
-        feed_runner.any_feed_cmds_cache(),
-        Some(false),
-        "feed-less instance should cache Some(false) and short-circuit"
-    );
-
-    // Enable the reviews feed and provision it, exactly as
-    // set_managed_feed_config does, then deliver the notification it sends.
-    rt.database
-        .set_reviews_feed_command(Some("reviews.sh"))
-        .await
-        .unwrap();
-    let settings = crate::service::read_managed_feed_settings(&*rt.database)
-        .await
-        .unwrap();
-    rt.epic_svc.provision_managed_feeds(settings).await.unwrap();
-    apply_loop_event(&mut app, LoopEvent::Mcp(mcp::McpEvent::Refresh), &rt);
-
-    // The refresh must have invalidated the cache so the next tick re-queries
-    // and discovers the freshly-provisioned reviews_parent feed command.
-    feed_runner.tick().await;
-    assert_eq!(
-        feed_runner.any_feed_cmds_cache(),
-        Some(true),
-        "refresh must invalidate the cache so the freshly-enabled feed becomes pollable"
-    );
-}
-
-#[tokio::test]
-async fn exec_refresh_epics_from_db_syncs_to_app() {
-    let (rt, mut app) = test_runtime().await;
-    // Insert epic directly into DB, bypassing app
-    rt.db_write()
-        .create_epic("Direct", "desc", None)
-        .await
-        .unwrap();
-    assert!(app.epics().is_empty());
-    rt.exec_refresh_epics_from_db(&mut app).await;
-    assert_eq!(app.epics().len(), 1);
-    assert_eq!(app.epics()[0].title, "Direct");
-}
-
-// -----------------------------------------------------------------------
-// Split mode tests
-// -----------------------------------------------------------------------
-
-#[tokio::test]
-async fn exec_enter_split_mode_opens_pane() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-        MockProcessRunner::ok_with_stdout(b"%2\n"), // split_window_horizontal
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_enter_split_mode().await.unwrap();
-    // PaneOpened message arrives via msg_tx — no error message expected.
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened { .. })
-        ),
-        "Expected PaneOpened, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_enter_split_mode_no_tmux_shows_status() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("no server"), // current_pane_id fails
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_enter_split_mode().await.unwrap();
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::System(crate::tui::messages::SystemMessage::StatusInfo(s)) if s == "Split mode requires tmux"
-        ),
-        "Expected StatusInfo, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_enter_split_mode_with_task_joins_pane() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // join_pane no longer needs its own display-message: resolving the source
-    // window by exact name already yields that window's pane ID, out of band.
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            // companion_pane_ids: no pane carries a dispatch role
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
-            MockProcessRunner::ok(), // join_pane: join-pane command
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    assert!(calls[2].1.contains(&"join-pane".to_string()));
-    assert!(
-        calls[2].1.contains(&mock.pane_id_of("task-1")),
-        "the source must be the resolved pane, not the window name"
-    );
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
-                task_id: Some(TaskId(1)),
-                ..
-            })
-        ),
-        "Expected PaneOpened with task 1, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_enter_split_mode_with_task_kills_leftover_companion_panes_after_join() {
-    // The window holds the agent's own pane (%1), the agent-tree companion
-    // (%2) and an editor pane opened from it (%5). Once the agent's pane is
-    // joined out, both companions must be killed: a lone tree pane is
-    // indistinguishable from "hidden" to the agent-tree toggle, and an editor
-    // pane has no owner left at all (docs/specs/agent-tree.allium:
-    // ToggleVsSplitPaneInteraction).
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            // companion_pane_ids: both dispatch-created panes, by their roles.
-            MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%5 editor\n"),
-            MockProcessRunner::ok(), // join_pane: join-pane
-            MockProcessRunner::ok(), // kill-pane %2
-            MockProcessRunner::ok(), // kill-pane %5
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 5, "calls: {calls:?}");
-    assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%2"]);
-    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%5"]);
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
-                task_id: Some(TaskId(1)),
-                ..
-            })
-        ),
-        "Expected PaneOpened with task 1, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_check_fails() {
-    // A failed companion-pane check must not block the join itself — it's a
-    // best-effort cleanup, not the primary action.
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            MockProcessRunner::fail("list-panes error"), // companion_pane_ids check
-            MockProcessRunner::ok(),                    // join_pane: join-pane
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    assert_eq!(
-        calls.len(),
-        3,
-        "no kill-pane attempted after a failed check"
-    );
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened { .. })
-        ),
-        "Expected PaneOpened despite the failed companion check, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_kill_fails() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            // companion_pane_ids: tree pane %2, no editor pane
-            MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n"),
-            MockProcessRunner::ok(), // join_pane: join-pane
-            MockProcessRunner::fail("kill-pane error"),
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
-        .await
-        .unwrap();
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened { .. })
-        ),
-        "Expected PaneOpened despite the failed companion kill, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_exit_split_mode_with_restore_breaks_pane() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // break_pane_to_window
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_exit_split_mode("%2", Some("task-1")).await.unwrap();
-    let calls = mock.recorded_calls();
-    assert!(calls[0].1.contains(&"break-pane".to_string()));
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
-        ),
-        "Expected PaneClosed, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_exit_split_mode_without_restore_kills_pane() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // kill_pane
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_exit_split_mode("%2", None).await.unwrap();
-    let calls = mock.recorded_calls();
-    assert!(calls[0].1.contains(&"kill-pane".to_string()));
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
-        ),
-        "Expected PaneClosed, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_check_split_pane_existing_pane_no_message() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n%2\n"), // pane_exists → listing contains %2
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_check_split_pane("%2").await.unwrap();
-    assert!(
-        rx.try_recv().is_err(),
-        "expected no message when pane exists"
-    );
-}
-
-#[tokio::test]
-async fn exec_check_split_pane_gone_sends_closed() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        // pane_exists → the listing no longer contains %2. Note this is a
-        // *successful* tmux call: real tmux exits 0 for an unknown pane, which is
-        // why absence has to be detected by membership rather than exit status.
-        MockProcessRunner::ok_with_stdout(b"%1\n%7\n"),
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_check_split_pane("%2").await.unwrap();
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
-        ),
-        "Expected PaneClosed, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_respawn_split_pane_gone_sends_closed() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("no pane"), // respawn_pane fails when pane is gone
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_respawn_split_pane("%2").await.unwrap();
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
-        ),
-        "Expected PaneClosed when pane gone, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_respawn_split_pane_respawn_fails_sends_closed() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("respawn err"), // respawn_pane fails
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_respawn_split_pane("%2").await.unwrap();
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
-        ),
-        "Expected PaneClosed when respawn fails, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_swap_split_pane_uses_swap_pane() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // pane_id_for_window resolves out of band, so it is not a recorded call.
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // swap-pane
-            MockProcessRunner::ok(), // kill-window (old pane had no task)
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    // 1st call: swap-pane, sourced from the resolved pane ID rather than
-    // `task-1.0` — a `<window>.<index>` target would prefix-match the window
-    // name and depend on pane-base-index.
-    assert!(calls[0].1.contains(&"swap-pane".to_string()));
-    assert!(calls[0].1.contains(&mock.pane_id_of("task-1")));
-    // 2nd call: kill-window (no old task to rename)
-    assert!(calls[1].1.contains(&"kill-window".to_string()));
-    // No 3rd call — focus must NOT be transferred
-    assert_eq!(calls.len(), 2, "select-pane must not be called after swap");
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
-                task_id: Some(TaskId(1)),
-                ..
-            })
-        ),
-        "Expected PaneOpened with task 1, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_swap_split_pane_renames_old_task_window() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // pane_id_for_window / the resync's own window lookups resolve out of band,
-    // so they are not recorded calls.
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // swap-pane
-            MockProcessRunner::ok(), // rename-window (old task had a window)
-            MockProcessRunner::ok(), // set-option -w: rewrite @dispatch_dir to task 2's worktree
-            // resync: list-panes finds the companion. It is still running the
-            // *incoming* task's tree (3), which is exactly why it is stale — the
-            // lookup matches on the binary and subcommand, not the id.
-            MockProcessRunner::ok_with_stdout(b"%10 \n%11 agent_tree\n"),
-            MockProcessRunner::ok(), // resync: kill-pane %11
-            MockProcessRunner::ok_with_stdout(b"/repo/.worktrees/2-some-task\n"), // resync: show-options @dispatch_dir
-            MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
-            MockProcessRunner::ok(),                     // resync: set-option, the new pane's role
-        ])
-        .with_windows(&["task-3", "task-2"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_swap_split_pane(
-        TaskId(3),
-        "task-3",
-        Some("%2"),
-        Some(("task-2", "/repo/.worktrees/2-some-task")),
-    )
-    .await
-    .unwrap();
-    let calls = mock.recorded_calls();
-    // 2nd call should be rename-window, not kill-window
-    assert!(calls[1].1.contains(&"rename-window".to_string()));
-    // The rename *target* is the resolved pane ID; the new name stays a name.
-    assert!(calls[1].1.contains(&mock.pane_id_of("task-3")));
-    assert!(calls[1].1.contains(&"task-2".to_string()));
-    // 3rd call: @dispatch_dir is rewritten to the outgoing task's worktree —
-    // targeted by the *new* name ("task-2"), not the pane ID resolved in step
-    // 1: swap-pane moves pane objects between windows, so that pane ID no
-    // longer identifies anything in this window post-swap — only the window's
-    // new name does. Without this rewrite the resync's start directory still
-    // names task 3's worktree, since a rename never touches window options.
-    assert_eq!(
-        calls[2].1,
-        vec![
-            "set-option",
-            "-w",
-            "-t",
-            &mock.pane_id_of("task-2"),
-            "@dispatch_dir",
-            "/repo/.worktrees/2-some-task",
-        ]
-    );
-    // Companion pane resync: the renamed window's stale companion (still
-    // showing the incoming task's tree) is killed and replaced with one for
-    // the correct (old) task.
-    assert!(calls[3].1.contains(&"list-panes".to_string()));
-    assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%11"]);
-    assert!(calls[6].1.contains(&"split-window".to_string()));
-    assert!(calls[6].1.contains(&"2".to_string()));
-    // …and the respawned pane is marked, or the resynced window would read as
-    // companion-less to the next toggle.
-    assert!(calls[7].1.contains(&"set-option".to_string()));
-    // No further call — focus must NOT be transferred
-    assert_eq!(calls.len(), 8, "select-pane must not be called after swap");
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
-                task_id: Some(TaskId(3)),
-                ..
-            })
-        ),
-        "Expected PaneOpened with task 3, got: {msg:?}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// Event-loop: split-mode functions send results via msg_tx (not app.update)
-// -----------------------------------------------------------------------
-
-#[tokio::test]
-async fn exec_enter_split_mode_sends_pane_opened_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-        MockProcessRunner::ok_with_stdout(b"%2\n"), // split_window_horizontal
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_enter_split_mode().await.unwrap();
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
-                pane_id,
-                task_id: None
-            }) if pane_id == "%2"
-        ),
-        "Expected PaneOpened(%2), got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_enter_split_mode_no_tmux_sends_status_info_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::fail("no server"), // current_pane_id fails
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_enter_split_mode().await.unwrap();
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::System(crate::tui::messages::SystemMessage::StatusInfo(s)) if s.contains("tmux")
-        ),
-        "Expected StatusInfo about tmux, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
-            // companion_pane_ids: no pane carries a dispatch role
-            MockProcessRunner::ok_with_stdout(b"%1 \n"),
-            MockProcessRunner::ok(), // join_pane: join-pane command
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
-        .await
-        .unwrap();
-
-    let calls = mock.recorded_calls();
-    assert!(calls[2].1.contains(&"join-pane".to_string()));
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
-                task_id: Some(TaskId(1)),
-                ..
-            })
-        ),
-        "Expected PaneOpened with task, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_exit_split_mode_with_restore_sends_pane_closed_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // break_pane_to_window
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_exit_split_mode("%2", Some("task-1")).await.unwrap();
-
-    let calls = mock.recorded_calls();
-    assert!(calls[0].1.contains(&"break-pane".to_string()));
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
-        ),
-        "Expected PaneClosed, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_exit_split_mode_without_restore_sends_pane_closed_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // kill_pane
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_exit_split_mode("%2", None).await.unwrap();
-
-    let calls = mock.recorded_calls();
-    assert!(calls[0].1.contains(&"kill-pane".to_string()));
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
-        ),
-        "Expected PaneClosed, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_swap_split_pane_kills_old_window_and_sends_pane_opened_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    // pane_id_for_window resolves out of band, so it is not a recorded call.
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // swap-pane
-            MockProcessRunner::ok(), // kill-window (old pane had no task)
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
-        .await
-        .unwrap();
-
-    let calls = mock.recorded_calls();
-    assert!(calls[0].1.contains(&"swap-pane".to_string()));
-    assert!(calls[1].1.contains(&"kill-window".to_string()));
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
-                task_id: Some(TaskId(1)),
-                ..
-            })
-        ),
-        "Expected PaneOpened with task, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_focus_split_pane_returns_join_handle() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // select-pane
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-
-    // Must return a JoinHandle so the caller can fire-and-forget without blocking.
-    rt.exec_focus_split_pane("%2".to_string()).await.unwrap();
-
-    let calls = mock.recorded_calls();
-    assert!(calls[0].1.contains(&"select-pane".to_string()));
-}
-
-// -----------------------------------------------------------------------
-// Event-loop: spawn_refresh_from_db sends board data via msg_tx
-// -----------------------------------------------------------------------
-
-#[tokio::test]
-async fn spawn_refresh_from_db_sends_task_refresh_via_msg_tx() {
-    let db = test_db().await;
-    // Create a task so the refresh has something to send.
-    db.create_task(crate::db::CreateTaskRequest {
-        title: "test task",
-        description: "desc",
-        repo_path: "/repo",
-        plan: None,
-        status: crate::models::TaskStatus::Backlog,
-        epic_id: None,
-        sort_order: None,
-        tag: None,
-        base_branch: "main",
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        schedule_interval_secs: None,
-        pinned_branch: None,
-    })
-    .await
-    .unwrap();
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-
-    rt.spawn_refresh_from_db().await.unwrap();
-
-    // First message should be a task Refresh.
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Task(crate::tui::messages::TaskMessage::Refresh(tasks)) if !tasks.is_empty()
-        ),
-        "Expected Task::Refresh with tasks, got: {msg:?}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// Browser / tmux window
-// -----------------------------------------------------------------------
-
-#[tokio::test]
-async fn exec_open_in_browser_calls_xdg_open() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // xdg-open
-    ]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-
-    rt.exec_open_in_browser("https://github.com/org/repo/pull/1".into())
-        .await
-        .unwrap();
-    let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "xdg-open");
-    assert!(calls[0]
-        .1
-        .contains(&"https://github.com/org/repo/pull/1".to_string()));
-}
-
-#[tokio::test]
-async fn exec_kill_tmux_window_calls_kill() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(
-        MockProcessRunner::new(vec![
-            MockProcessRunner::ok(), // tmux kill-window
-        ])
-        .with_windows(&["task-1"]),
-    );
-    let rt = make_runtime(db, tx, mock.clone()).await;
-
-    rt.exec_kill_tmux_window("task-1".into()).await.unwrap();
-    let calls = mock.recorded_calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, "tmux");
-    assert!(calls[0].1.contains(&"kill-window".to_string()));
-    // Targeted by resolved pane ID, not by name — see `tmux::window_target`.
-    assert!(calls[0].1.contains(&mock.pane_id_of("task-1")));
-}
-
-#[tokio::test]
-async fn exec_kill_tmux_window_failure_is_best_effort() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::fail(
-        "no such window",
-    )]));
-    let rt = make_runtime(db, tx, mock).await;
-
-    rt.exec_kill_tmux_window("gone-window".into())
-        .await
-        .unwrap();
-
-    // Kill-window failure is best-effort — no error message sent
-    assert!(rx.try_recv().is_err(), "Expected no message, but got one");
-}
-
-// load_* init helper tests
-// -----------------------------------------------------------------------
-
-fn make_app() -> App {
-    App::new(vec![])
-}
-
-#[tokio::test]
-async fn load_notifications_pref_defaults_to_false_when_not_set() {
-    let db = Database::open_in_memory().await.unwrap();
-    let mut app = make_app();
-    load_notifications_pref(&db, &mut app).await;
-    assert!(!app.notifications_enabled());
-}
-
-#[tokio::test]
-async fn load_notifications_pref_sets_true_when_enabled() {
-    let db = Database::open_in_memory().await.unwrap();
-    db.set_setting_bool("notifications_enabled", true)
-        .await
-        .unwrap();
-    let mut app = make_app();
-    load_notifications_pref(&db, &mut app).await;
-    assert!(app.notifications_enabled());
-}
-
-#[tokio::test]
-async fn load_filter_presets_returns_none_on_success() {
-    let db = Database::open_in_memory().await.unwrap();
-    let mut app = make_app();
-    let result = load_filter_presets(&db, &mut app);
-    assert!(result.await.is_none());
-}
-
-#[tokio::test]
-async fn load_filter_presets_loads_saved_presets() {
-    let db = Database::open_in_memory().await.unwrap();
-    db.save_filter_preset("backend", &["/repo/a".into()], "include")
-        .await
-        .unwrap();
-    let mut app = make_app();
-    load_filter_presets(&db, &mut app).await;
-    assert_eq!(app.filter_presets().len(), 1);
-    assert_eq!(app.filter_presets()[0].0, "backend");
-}
-
-#[tokio::test]
-async fn apply_tmux_focus_warning_returns_none_when_enabled() {
-    let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"on\n")]);
-    let result = apply_tmux_focus_warning(&mock);
-    assert!(result.is_none());
-}
-
-#[tokio::test]
-async fn apply_tmux_focus_warning_returns_status_info_when_disabled() {
-    let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"off\n")]);
-    let result = apply_tmux_focus_warning(&mock);
-    assert!(matches!(
-        result,
-        Some(Message::System(
-            crate::tui::messages::SystemMessage::StatusInfo(_)
-        ))
-    ));
-}
-
-// ---------------------------------------------------------------------------
-// ensure_statusline_settings_file — Finding 1: bootstrap safety net for the
-// dispatch-owned statusline settings file (see src/setup/statusline.rs).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn ensure_statusline_settings_file_creates_when_absent() {
-    let dir = tempfile::tempdir().unwrap();
-    let claude_dir = dir.path().join("claude");
-    let snapshot_path = dir.path().join("data").join("rate-limits.json");
-
-    ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
-
-    let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
-    assert!(settings_path.exists(), "settings file must be created");
-    let content = std::fs::read_to_string(&settings_path).unwrap();
-    assert!(content.contains("dispatch statusline"));
-}
-
-#[test]
-fn ensure_statusline_settings_file_is_idempotent() {
-    let dir = tempfile::tempdir().unwrap();
-    let claude_dir = dir.path().join("claude");
-    let snapshot_path = dir.path().join("data").join("rate-limits.json");
-
-    ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
-    let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
-    let first = std::fs::read_to_string(&settings_path).unwrap();
-
-    // A normal TUI start on an already-configured machine must not rewrite
-    // the file (setup's write_settings_file already guarantees this; this
-    // asserts bootstrap doesn't bypass that guarantee).
-    ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
-    let second = std::fs::read_to_string(&settings_path).unwrap();
-    assert_eq!(first, second);
-}
-
-#[test]
-fn ensure_statusline_settings_file_errors_when_directory_unwritable() {
-    // Point `claude_dir` at a path whose parent is a *file*, not a directory
-    // — `create_dir_all` fails deterministically without touching real
-    // permission bits (which vary by OS/CI and can be blocked by sandboxing).
-    let dir = tempfile::tempdir().unwrap();
-    let blocker = dir.path().join("blocker");
-    std::fs::write(&blocker, b"not a directory").unwrap();
-    let claude_dir = blocker.join("claude");
-    let snapshot_path = dir.path().join("rate-limits.json");
-
-    let result = ensure_statusline_settings_file_in(&claude_dir, &snapshot_path);
-
-    assert!(
-        result.is_err(),
-        "must surface an error rather than silently doing nothing"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// exec_trigger_epic_feed
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
-// SerialisedFeedCycle (feeds.allium) — one feed cycle per epic at a time.
-//
-// The race these close: nothing used to serialise a manual "r" refresh against
-// an in-flight auto-poll for the SAME epic, so the two could interleave between
-// the non-transactional steps of run_role_routed_feed_sync. Each of those steps
-// filters on a task's CURRENT epic_id, so one pass could see a task the other
-// had moved-but-not-yet-committed as absent from its keep-set, delete it, and --
-// since feed deletes now feed TaskTeardown -- force-remove a live review agent's
-// worktree.
-// ---------------------------------------------------------------------------
-
-/// The manual path's half of the drop contract: a refresh requested while a
-/// cycle for that epic is in flight reports AlreadyRefreshing and writes
-/// nothing. Deterministic because the test holds the claim itself.
-#[tokio::test]
-async fn exec_trigger_epic_feed_reports_already_refreshing_while_a_cycle_is_in_flight() {
-    let db = test_db().await;
-    let epic = db.create_epic("Reviews", "", None).await.unwrap();
-    // Would delete the seeded task (absent from an empty emission) and tear its
-    // worktree down, if it ever ran.
-    set_feed_command(&db, epic.id, "echo '[]'").await;
-    seed_feed_task_with_worktree(&db, epic.id, "In-flight PR").await;
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    let _claim = rt
-        .feed_sync_guard
-        .try_claim(epic.id)
-        .expect("the epic starts unclaimed");
-
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::AlreadyRefreshing { .. })
-        ),
-        "a dropped refresh must report AlreadyRefreshing, not a success or a \
-         failure, got: {msg:?}"
-    );
-    assert_eq!(
-        db.list_tasks_for_epic(epic.id).await.unwrap().len(),
-        1,
-        "a dropped refresh must run no sync, so the existing task survives"
-    );
-}
-
-/// The wiring invariant, pinned directly and cheaply: the manual "r" path and
-/// the auto-poll runner must share ONE claim registry. A second registry
-/// type-checks, compiles, and silently serialises nothing.
-///
-/// This is a one-line structural check, so it survives any change to feed
-/// behaviour. It does NOT subsume the FIFO test below: identity of the registry
-/// is not the same property as the claim actually being HELD across the exec,
-/// and only a real in-flight cycle can show the latter.
-#[tokio::test]
-async fn the_manual_path_and_the_feed_runner_share_one_claim_registry() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    assert!(
-        Arc::ptr_eq(
-            &rt.feed_sync_guard,
-            &rt.feed_runner
-                .as_ref()
-                .expect("make_runtime wires a FeedRunner")
-                .sync_guard(),
-        ),
-        "TuiRuntime.feed_sync_guard must be the FeedRunner's registry, not a \
-         second one -- otherwise the two feed surfaces never serialise"
-    );
-}
-
-/// The flagship: BOTH surfaces against ONE epic, with a real auto-poll cycle
-/// genuinely mid-exec rather than a claim the test planted.
-///
-/// This is the only test here that would catch the two surfaces being wired to
-/// DIFFERENT `FeedSyncGuard` registries — a mistake that type-checks, passes
-/// every other test in this file, and silently serialises nothing.
-///
-/// Determinism without sleeping: the feed command blocks on `cat <fifo>`, and
-/// opening a FIFO for WRITING blocks until a reader opens it. So the successful
-/// return of that open IS the proof that the cycle has reached its exec. No
-/// polling, no `sleep` (which `./scripts/check-no-test-sleep.sh` bans anyway).
-///
-/// The open is deadline-bounded on purpose. If a regression makes the cycle
-/// bail before exec — a broken claim, a failed epic read — no reader ever opens
-/// the FIFO and an unbounded open would wedge CI silently instead of failing.
-/// Note what the timeout does and does not buy: `spawn_blocking` work is not
-/// cancellable, so it frees the test, not the thread; the blocked thread leaks
-/// until the process exits. That is the right trade in a test binary, and it is
-/// strictly better than a hang.
-#[tokio::test]
-async fn manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight() {
-    let db = test_db().await;
-    let epic = db.create_epic("Reviews", "", None).await.unwrap();
-
-    let fifo = std::env::temp_dir().join(format!("dispatch_feed_gate_{}", epic.id.0));
-    let _ = std::fs::remove_file(&fifo);
-    let mkfifo = std::process::Command::new("mkfifo")
-        .arg(&fifo)
-        .status()
-        .expect("failed to run mkfifo");
-    assert!(mkfifo.success(), "mkfifo failed for {}", fifo.display());
-
-    // Blocks in exec until the test opens the write end and closes it.
-    set_feed_command(&db, epic.id, &format!("cat {}; echo '[]'", fifo.display())).await;
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    // Start the auto-poll cycle. `tick` only spawns; it does not block.
-    rt.feed_runner
-        .as_mut()
-        .expect("make_runtime wires a FeedRunner")
-        .tick()
-        .await;
-
-    // Handshake: unblocks only once the spawned cycle's `cat` has the FIFO open,
-    // i.e. once it is genuinely inside exec_feed_command holding the claim.
-    let gate = fifo.clone();
-    let write_end = tokio::time::timeout(
-        TEST_TIMEOUT,
-        tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(gate)),
-    )
-    .await
-    .expect(
-        "timed out waiting for the feed cycle to reach its exec -- it bailed \
-         earlier (claim? epic read?), so no reader ever opened the FIFO",
-    )
-    .expect("the opener thread panicked")
-    .expect("failed to open the FIFO for writing");
-
-    // With a cycle provably in flight, the manual refresh must be dropped.
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out waiting for the manual refresh outcome")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::AlreadyRefreshing { .. })
-        ),
-        "a manual refresh during a live auto-poll cycle must be dropped; if this \
-         is Refreshed, the two paths are not sharing one FeedSyncGuard. got: {msg:?}"
-    );
-
-    // Release the feed command so the in-flight cycle can finish.
-    drop(write_end);
-    rt.feed_runner
-        .as_mut()
-        .expect("feed runner")
-        .join_spawned_jobs()
-        .await;
-
-    // And the epic is claimable again, so the drop was not a permanent wedge.
-    assert!(
-        rt.feed_sync_guard.try_claim(epic.id).is_some(),
-        "the finished cycle must have released its claim"
-    );
-
-    let _ = std::fs::remove_file(&fifo);
-}
-
-/// Seed one feed task carrying a worktree and tmux window, as a dispatched
-/// review agent would. Its survival is what distinguishes "the cycle was
-/// dropped" from "the cycle ran and destroyed a live session".
-async fn seed_feed_task_with_worktree(
-    db: &Arc<Database>,
-    epic_id: crate::models::EpicId,
-    title: &str,
-) {
-    db.upsert_feed_tasks(
-        epic_id,
-        &[crate::models::FeedItem {
-            external_id: "pr-1".to_string(),
-            title: title.to_string(),
-            description: String::new(),
-            url: String::new(),
-            url_type: None,
-            status: crate::models::TaskStatus::Backlog,
-            tag: crate::models::TaskTag::PrReview,
-            labels: Vec::new(),
-            sort_order: None,
-            signals: vec![],
-            wrap_up_mode: None,
-        }],
-        &["/repo/a".to_string()],
-        &["main".to_string()],
-    )
-    .await
-    .unwrap();
-    let task = db.list_tasks_for_epic(epic_id).await.unwrap().remove(0);
-    db.patch_task(
-        task.id,
-        &db::TaskPatch::new()
-            .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-            .tmux_window(Some("dispatch:pr-1")),
-    )
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn exec_trigger_epic_feed_success() {
-    let db = test_db().await;
-    let epic = db
-        .create_epic("Security Vulnerabilities", "", None)
-        .await
-        .unwrap();
-
-    let cmd = r#"echo '[{"external_id":"vuln:1","title":"CVE-1","description":"desc","status":"backlog","tag":"fix"}]'"#;
-    set_feed_command(&db, epic.id, cmd).await;
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    rt.exec_trigger_epic_feed(epic.id, "Security Vulnerabilities".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out waiting for FeedRefreshed")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 1, .. })
-        ),
-        "expected FeedRefreshed with count=1, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn exec_trigger_epic_feed_zero_items() {
-    let db = test_db().await;
-    let epic = db.create_epic("Empty Feed", "", None).await.unwrap();
-    set_feed_command(&db, epic.id, "echo '[]'").await;
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    rt.exec_trigger_epic_feed(epic.id, "Empty Feed".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 0, .. })
-        ),
-        "empty feed should still succeed with count=0, got: {msg:?}"
-    );
-}
-
-// feeds.allium: DegradedEmptyEmission. A zero-item emission that wrote to
-// stderr is a failure, not a refresh — the sync is skipped entirely so the
-// epic's existing tasks survive. Inverted from the #3900 behaviour, which
-// reported it as a successful zero-task refresh AFTER the delete had run.
-#[tokio::test]
-async fn exec_trigger_epic_feed_fails_on_degraded_empty_emission() {
-    let db = test_db().await;
-    let epic = db.create_epic("Degraded Feed", "", None).await.unwrap();
-    set_feed_command(&db, epic.id, "echo 'Invalid search query' >&2; echo '[]'").await;
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    rt.exec_trigger_epic_feed(epic.id, "Degraded Feed".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    match msg {
-        Message::Feed(crate::tui::messages::FeedMessage::Failed { error, .. }) => {
-            assert!(
-                error.contains("Invalid search query"),
-                "failure must carry the stderr, got: {error}"
-            );
-        }
-        other => panic!("expected FeedMessage::Failed, got: {other:?}"),
+        )];
+        let known = HashSet::from(["/a".to_string(), "/b".to_string()]);
+        let result = parse_raw_presets(raw, Some(&known));
+        assert_eq!(
+            result[0].1,
+            HashSet::from(["/a".to_string(), "/b".to_string()])
+        );
+        assert_eq!(result[0].2, RepoFilterMode::Exclude);
+    }
+
+    #[tokio::test]
+    async fn parse_raw_presets_defaults_invalid_mode() {
+        let raw = vec![("x".to_string(), vec![], "bogus".to_string())];
+        let result = parse_raw_presets(raw, None);
+        assert_eq!(result[0].2, RepoFilterMode::Include);
+    }
+
+    #[tokio::test]
+    async fn parse_raw_presets_empty_input() {
+        let result = parse_raw_presets(vec![], None);
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn parse_raw_presets_multiple_presets() {
+        let raw = vec![
+            (
+                "a".to_string(),
+                vec!["/x".to_string()],
+                "include".to_string(),
+            ),
+            (
+                "b".to_string(),
+                vec!["/y".to_string()],
+                "exclude".to_string(),
+            ),
+        ];
+        let result = parse_raw_presets(raw, None);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].2, RepoFilterMode::Include);
+        assert_eq!(result[1].2, RepoFilterMode::Exclude);
     }
 }
 
-/// Companion to the auto-poll guard test
-/// (`tick_degraded_empty_emission_does_not_delete_existing_tasks`): the
-/// message-only assertion above would still pass if the DegradedEmptyEmission
-/// guard were relocated to AFTER `run_feed_sync_by_role`, by which point the
-/// stale-delete has already run — and, since feed removals now tear down
-/// worktrees, already destroyed a live agent's session. Pin "no sync ran" on
-/// the manual path, not just "a failure was reported".
-#[tokio::test]
-async fn exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing_tasks() {
-    let db = test_db().await;
-    let epic = db.create_epic("Degraded Feed", "", None).await.unwrap();
+mod repo_path {
+    use super::*;
 
-    // Seed one feed task, as a previous healthy refresh would have.
-    db.upsert_feed_tasks(
-        epic.id,
-        &[crate::models::FeedItem {
-            external_id: "pr-1".to_string(),
-            title: "Existing PR".to_string(),
-            description: String::new(),
-            url: String::new(),
-            url_type: None,
-            status: crate::models::TaskStatus::Backlog,
-            tag: crate::models::TaskTag::PrReview,
-            labels: Vec::new(),
-            sort_order: None,
-            signals: vec![],
-            wrap_up_mode: None,
-        }],
-        &["".to_string()],
-        &["main".to_string()],
-    )
-    .await
-    .unwrap();
-    assert_eq!(db.list_tasks_for_epic(epic.id).await.unwrap().len(), 1);
-    set_feed_command(&db, epic.id, "echo 'Invalid search query' >&2; echo '[]'").await;
+    #[tokio::test]
+    async fn exec_delete_repo_path_removes_and_refreshes() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_save_repo_path(&mut app, "/repo1".into()).await;
+        rt.exec_save_repo_path(&mut app, "/repo2".into()).await;
+        assert_eq!(app.repo_paths().len(), 2);
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    rt.exec_trigger_epic_feed(epic.id, "Degraded Feed".to_string());
-
-    // Awaiting the message is the deterministic completion signal: the spawned
-    // job sends it on its way out, so the DB is settled once it arrives.
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Failed { .. })
-        ),
-        "expected FeedMessage::Failed, got: {msg:?}"
-    );
-
-    let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
-    assert_eq!(
-        tasks.len(),
-        1,
-        "a degraded empty emission must not run the sync, so existing feed tasks survive"
-    );
-    assert_eq!(tasks[0].external_id.as_deref(), Some("pr-1"));
+        rt.exec_delete_repo_path(&mut app, "/repo1").await;
+        assert_eq!(app.repo_paths().len(), 1);
+        assert!(app.repo_paths().contains(&"/repo2".to_string()));
+        assert!(app.error_popup().is_none());
+    }
 }
 
-/// Manual counterpart of
-/// `feed::tests::tick_partially_degraded_emission_does_not_delete_or_tear_down`
-/// (#4095, feeds.allium: DegradedNonEmptyEmission). A partially degraded
-/// emission is NOT a failure — the sync still runs and the emitted item still
-/// lands — but it removes nothing, and the status line says so rather than
-/// reading like an ordinary reconcile.
-#[tokio::test]
-async fn exec_trigger_epic_feed_partially_degraded_emission_does_not_delete() {
-    let db = test_db().await;
-    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+mod epic_tests {
+    use super::*;
 
-    let seeded: Vec<crate::models::FeedItem> = ["pr-1", "pr-2"]
-        .iter()
-        .map(|ext| crate::models::FeedItem {
-            external_id: ext.to_string(),
-            title: "Seeded".to_string(),
-            description: String::new(),
-            url: String::new(),
-            url_type: None,
-            status: crate::models::TaskStatus::Backlog,
-            tag: crate::models::TaskTag::PrReview,
-            labels: Vec::new(),
-            sort_order: None,
-            signals: vec![],
-            wrap_up_mode: None,
-        })
-        .collect();
-    db.upsert_feed_tasks(
-        epic.id,
-        &seeded,
-        &vec!["/repo/a".to_string(); 2],
-        &vec!["main".to_string(); 2],
-    )
-    .await
-    .unwrap();
+    #[tokio::test]
+    async fn exec_insert_epic_creates_in_db_and_app() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_insert_epic(&mut app, "My Epic".into(), "description".into(), None)
+            .await;
+        assert_eq!(app.epics().len(), 1);
+        assert_eq!(app.epics()[0].title, "My Epic");
+        assert_eq!(rt.database.list_epics().await.unwrap().len(), 1);
+    }
 
-    let live = db
-        .list_tasks_for_epic(epic.id)
+    #[tokio::test]
+    async fn exec_delete_epic_removes_from_db() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Doomed", "bye", None)
+            .await
+            .unwrap();
+        rt.exec_delete_epic(&mut app, epic.id).await;
+        assert!(rt.database.list_epics().await.unwrap().is_empty());
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_persist_epic_updates_status() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Epic", "desc", None)
+            .await
+            .unwrap();
+        rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Running), None)
+            .await;
+        let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(updated.status, models::TaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn exec_persist_epic_noop_when_nothing_to_update() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Epic", "desc", None)
+            .await
+            .unwrap();
+        // Should return early without error
+        rt.exec_persist_epic(&mut app, epic.id, None, None).await;
+        assert!(app.error_popup().is_none());
+    }
+
+    /// Regression for the whole-branch review finding, epic side:
+    /// `exec_persist_epic` (routed through `exec_patch_epic`, the shared
+    /// chokepoint) must write the service-computed `sort_order` into the
+    /// in-memory board itself, not just the DB. Drives the actual
+    /// `exec_persist_epic` runtime path and asserts on `app.epics()` with no
+    /// `exec_refresh_epics_from_db` call in between, to prove the write-back is
+    /// immediate.
+    #[tokio::test]
+    async fn exec_persist_epic_writes_back_done_transition_sort_order_immediately() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Epic", "desc", None)
+            .await
+            .unwrap();
+        // Load the epic into the in-memory board (mirrors what a real session
+        // would already have from a prior refresh).
+        rt.exec_refresh_epics_from_db(&mut app).await;
+        assert_eq!(
+            app.epics()
+                .iter()
+                .find(|e| e.id == epic.id)
+                .unwrap()
+                .sort_order,
+            None,
+            "precondition: no sort_order yet"
+        );
+
+        rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Done), None)
+            .await;
+
+        // Assert on the in-memory board directly — no
+        // exec_refresh_epics_from_db call in between — to prove the write-back
+        // is immediate.
+        let in_memory = app.epics().iter().find(|e| e.id == epic.id).unwrap();
+        assert!(
+            in_memory.sort_order.is_some_and(|so| so < 0),
+            "expected a negative completion-recency sort_order written back to \
+         the in-memory board immediately, got {:?}",
+            in_memory.sort_order
+        );
+
+        let db_epic = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(
+            in_memory.sort_order, db_epic.sort_order,
+            "in-memory sort_order must match what was actually persisted"
+        );
+    }
+
+    /// The clear direction of the same rule, epic side:
+    /// `sort_order_for_status_transition(Done, <non-Done>)` returns
+    /// `Some(None)`, so `write_back_epic_sort_order` must clear the in-memory
+    /// epic's `sort_order` — not skip the write-back because the new value is
+    /// `None`. Asserts on `app.epics()` with no `exec_refresh_epics_from_db`
+    /// call in between.
+    #[tokio::test]
+    async fn exec_persist_epic_writes_back_leaving_done_sort_order_clear_immediately() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("Epic", "desc", None)
+            .await
+            .unwrap();
+        // Put the epic in Done with a completion-recency sort_order, the state a
+        // just-completed epic is in before it gets moved back out of Done.
+        rt.db_write()
+            .patch_epic(
+                epic.id,
+                &db::EpicPatch::new()
+                    .status(models::TaskStatus::Done)
+                    .sort_order(Some(-1234)),
+            )
+            .await
+            .unwrap();
+        // Load that state into the in-memory board.
+        rt.exec_refresh_epics_from_db(&mut app).await;
+        assert_eq!(
+            app.epics()
+                .iter()
+                .find(|e| e.id == epic.id)
+                .unwrap()
+                .sort_order,
+            Some(-1234),
+            "precondition: in-memory epic carries the Done sort_order"
+        );
+
+        rt.exec_persist_epic(&mut app, epic.id, Some(models::TaskStatus::Review), None)
+            .await;
+
+        let in_memory = app.epics().iter().find(|e| e.id == epic.id).unwrap();
+        assert_eq!(
+            in_memory.sort_order, None,
+            "leaving Done must clear the in-memory epic's sort_order immediately"
+        );
+
+        let db_epic = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(
+            db_epic.sort_order, None,
+            "in-memory clear must match what was actually persisted"
+        );
+    }
+
+    /// Regression for learning #162, ported from the retired TUI `[C]` save path
+    /// (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §6): a freshly-enabled
+    /// feed on a previously feed-less instance must become pollable after
+    /// `set_managed_feed_config` notifies the runtime, not stay stranded behind the
+    /// FeedRunner's `any_feed_cmds == Some(false)` short-circuit until an unrelated
+    /// EpicChanged or a restart. MCP is now the only configuration path, so the
+    /// `McpEvent::Refresh` arm is the only thing that can invalidate the cache.
+    #[tokio::test]
+    async fn mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed() {
+        let (mut rt, mut app) = test_runtime().await;
+        let mut feed_runner = rt.feed_runner.take().expect("runtime has a feed runner");
+
+        // First tick with no feeds configured -> cache settles to Some(false),
+        // which makes every subsequent tick short-circuit before any DB work.
+        feed_runner.tick().await;
+        assert_eq!(
+            feed_runner.any_feed_cmds_cache(),
+            Some(false),
+            "feed-less instance should cache Some(false) and short-circuit"
+        );
+
+        // Enable the reviews feed and provision it, exactly as
+        // set_managed_feed_config does, then deliver the notification it sends.
+        rt.database
+            .set_reviews_feed_command(Some("reviews.sh"))
+            .await
+            .unwrap();
+        let settings = crate::service::read_managed_feed_settings(&*rt.database)
+            .await
+            .unwrap();
+        rt.epic_svc.provision_managed_feeds(settings).await.unwrap();
+        apply_loop_event(&mut app, LoopEvent::Mcp(mcp::McpEvent::Refresh), &rt);
+
+        // The refresh must have invalidated the cache so the next tick re-queries
+        // and discovers the freshly-provisioned reviews_parent feed command.
+        feed_runner.tick().await;
+        assert_eq!(
+            feed_runner.any_feed_cmds_cache(),
+            Some(true),
+            "refresh must invalidate the cache so the freshly-enabled feed becomes pollable"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_refresh_epics_from_db_syncs_to_app() {
+        let (rt, mut app) = test_runtime().await;
+        // Insert epic directly into DB, bypassing app
+        rt.db_write()
+            .create_epic("Direct", "desc", None)
+            .await
+            .unwrap();
+        assert!(app.epics().is_empty());
+        rt.exec_refresh_epics_from_db(&mut app).await;
+        assert_eq!(app.epics().len(), 1);
+        assert_eq!(app.epics()[0].title, "Direct");
+    }
+}
+
+mod split_mode {
+    use super::*;
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_opens_pane() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::ok_with_stdout(b"%2\n"), // split_window_horizontal
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_enter_split_mode().await.unwrap();
+        // PaneOpened message arrives via msg_tx — no error message expected.
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened { .. })
+            ),
+            "Expected PaneOpened, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_no_tmux_shows_status() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("no server"), // current_pane_id fails
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_enter_split_mode().await.unwrap();
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::System(crate::tui::messages::SystemMessage::StatusInfo(s)) if s == "Split mode requires tmux"
+            ),
+            "Expected StatusInfo, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_with_task_joins_pane() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // join_pane no longer needs its own display-message: resolving the source
+        // window by exact name already yields that window's pane ID, out of band.
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+                // companion_pane_ids: no pane carries a dispatch role
+                MockProcessRunner::ok_with_stdout(b"%1 \n"),
+                MockProcessRunner::ok(), // join_pane: join-pane command
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+            .await
+            .unwrap();
+        let calls = mock.recorded_calls();
+        assert!(calls[2].1.contains(&"join-pane".to_string()));
+        assert!(
+            calls[2].1.contains(&mock.pane_id_of("task-1")),
+            "the source must be the resolved pane, not the window name"
+        );
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(1)),
+                    ..
+                })
+            ),
+            "Expected PaneOpened with task 1, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_with_task_kills_leftover_companion_panes_after_join() {
+        // The window holds the agent's own pane (%1), the agent-tree companion
+        // (%2) and an editor pane opened from it (%5). Once the agent's pane is
+        // joined out, both companions must be killed: a lone tree pane is
+        // indistinguishable from "hidden" to the agent-tree toggle, and an editor
+        // pane has no owner left at all (docs/specs/agent-tree.allium:
+        // ToggleVsSplitPaneInteraction).
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+                // companion_pane_ids: both dispatch-created panes, by their roles.
+                MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n%5 editor\n"),
+                MockProcessRunner::ok(), // join_pane: join-pane
+                MockProcessRunner::ok(), // kill-pane %2
+                MockProcessRunner::ok(), // kill-pane %5
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+            .await
+            .unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 5, "calls: {calls:?}");
+        assert_eq!(calls[3].1, vec!["kill-pane", "-t", "%2"]);
+        assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%5"]);
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(1)),
+                    ..
+                })
+            ),
+            "Expected PaneOpened with task 1, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_check_fails() {
+        // A failed companion-pane check must not block the join itself — it's a
+        // best-effort cleanup, not the primary action.
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+                MockProcessRunner::fail("list-panes error"), // companion_pane_ids check
+                MockProcessRunner::ok(),                    // join_pane: join-pane
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+            .await
+            .unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(
+            calls.len(),
+            3,
+            "no kill-pane attempted after a failed check"
+        );
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened { .. })
+            ),
+            "Expected PaneOpened despite the failed companion check, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_kill_fails() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+                // companion_pane_ids: tree pane %2, no editor pane
+                MockProcessRunner::ok_with_stdout(b"%1 \n%2 agent_tree\n"),
+                MockProcessRunner::ok(), // join_pane: join-pane
+                MockProcessRunner::fail("kill-pane error"),
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+            .await
+            .unwrap();
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened { .. })
+            ),
+            "Expected PaneOpened despite the failed companion kill, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_exit_split_mode_with_restore_breaks_pane() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // break_pane_to_window
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_exit_split_mode("%2", Some("task-1")).await.unwrap();
+        let calls = mock.recorded_calls();
+        assert!(calls[0].1.contains(&"break-pane".to_string()));
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_exit_split_mode_without_restore_kills_pane() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // kill_pane
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_exit_split_mode("%2", None).await.unwrap();
+        let calls = mock.recorded_calls();
+        assert!(calls[0].1.contains(&"kill-pane".to_string()));
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_check_split_pane_existing_pane_no_message() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n%2\n"), // pane_exists → listing contains %2
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_check_split_pane("%2").await.unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "expected no message when pane exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_check_split_pane_gone_sends_closed() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            // pane_exists → the listing no longer contains %2. Note this is a
+            // *successful* tmux call: real tmux exits 0 for an unknown pane, which is
+            // why absence has to be detected by membership rather than exit status.
+            MockProcessRunner::ok_with_stdout(b"%1\n%7\n"),
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_check_split_pane("%2").await.unwrap();
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_respawn_split_pane_gone_sends_closed() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("no pane"), // respawn_pane fails when pane is gone
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_respawn_split_pane("%2").await.unwrap();
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed when pane gone, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_respawn_split_pane_respawn_fails_sends_closed() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("respawn err"), // respawn_pane fails
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_respawn_split_pane("%2").await.unwrap();
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed when respawn fails, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_swap_split_pane_uses_swap_pane() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // pane_id_for_window resolves out of band, so it is not a recorded call.
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok(), // swap-pane
+                MockProcessRunner::ok(), // kill-window (old pane had no task)
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
+            .await
+            .unwrap();
+        let calls = mock.recorded_calls();
+        // 1st call: swap-pane, sourced from the resolved pane ID rather than
+        // `task-1.0` — a `<window>.<index>` target would prefix-match the window
+        // name and depend on pane-base-index.
+        assert!(calls[0].1.contains(&"swap-pane".to_string()));
+        assert!(calls[0].1.contains(&mock.pane_id_of("task-1")));
+        // 2nd call: kill-window (no old task to rename)
+        assert!(calls[1].1.contains(&"kill-window".to_string()));
+        // No 3rd call — focus must NOT be transferred
+        assert_eq!(calls.len(), 2, "select-pane must not be called after swap");
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(1)),
+                    ..
+                })
+            ),
+            "Expected PaneOpened with task 1, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_swap_split_pane_renames_old_task_window() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // pane_id_for_window / the resync's own window lookups resolve out of band,
+        // so they are not recorded calls.
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok(), // swap-pane
+                MockProcessRunner::ok(), // rename-window (old task had a window)
+                MockProcessRunner::ok(), // set-option -w: rewrite @dispatch_dir to task 2's worktree
+                // resync: list-panes finds the companion. It is still running the
+                // *incoming* task's tree (3), which is exactly why it is stale — the
+                // lookup matches on the binary and subcommand, not the id.
+                MockProcessRunner::ok_with_stdout(b"%10 \n%11 agent_tree\n"),
+                MockProcessRunner::ok(), // resync: kill-pane %11
+                MockProcessRunner::ok_with_stdout(b"/repo/.worktrees/2-some-task\n"), // resync: show-options @dispatch_dir
+                MockProcessRunner::ok_with_stdout(b"%12\n"), // resync: split-window relaunch
+                MockProcessRunner::ok(), // resync: set-option, the new pane's role
+            ])
+            .with_windows(&["task-3", "task-2"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_swap_split_pane(
+            TaskId(3),
+            "task-3",
+            Some("%2"),
+            Some(("task-2", "/repo/.worktrees/2-some-task")),
+        )
         .await
-        .unwrap()
-        .into_iter()
-        .find(|t| t.external_id.as_deref() == Some("pr-1"))
         .unwrap();
-    db.patch_task(
-        live.id,
-        &TaskPatch::new()
-            .status(crate::models::TaskStatus::Running)
-            .sub_status(crate::models::SubStatus::Active)
-            .worktree(Some("/repo/a/.worktrees/7-pr-1")),
-    )
-    .await
-    .unwrap();
+        let calls = mock.recorded_calls();
+        // 2nd call should be rename-window, not kill-window
+        assert!(calls[1].1.contains(&"rename-window".to_string()));
+        // The rename *target* is the resolved pane ID; the new name stays a name.
+        assert!(calls[1].1.contains(&mock.pane_id_of("task-3")));
+        assert!(calls[1].1.contains(&"task-2".to_string()));
+        // 3rd call: @dispatch_dir is rewritten to the outgoing task's worktree —
+        // targeted by the *new* name ("task-2"), not the pane ID resolved in step
+        // 1: swap-pane moves pane objects between windows, so that pane ID no
+        // longer identifies anything in this window post-swap — only the window's
+        // new name does. Without this rewrite the resync's start directory still
+        // names task 3's worktree, since a rename never touches window options.
+        assert_eq!(
+            calls[2].1,
+            vec![
+                "set-option",
+                "-w",
+                "-t",
+                &mock.pane_id_of("task-2"),
+                "@dispatch_dir",
+                "/repo/.worktrees/2-some-task",
+            ]
+        );
+        // Companion pane resync: the renamed window's stale companion (still
+        // showing the incoming task's tree) is killed and replaced with one for
+        // the correct (old) task.
+        assert!(calls[3].1.contains(&"list-panes".to_string()));
+        assert_eq!(calls[4].1, vec!["kill-pane", "-t", "%11"]);
+        assert!(calls[6].1.contains(&"split-window".to_string()));
+        assert!(calls[6].1.contains(&"2".to_string()));
+        // …and the respawned pane is marked, or the resynced window would read as
+        // companion-less to the next toggle.
+        assert!(calls[7].1.contains(&"set-option".to_string()));
+        // No further call — focus must NOT be transferred
+        assert_eq!(calls.len(), 8, "select-pane must not be called after swap");
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(3)),
+                    ..
+                })
+            ),
+            "Expected PaneOpened with task 3, got: {msg:?}"
+        );
+    }
+}
 
-    set_feed_command(
+/// Event-loop: split-mode functions send results via msg_tx (not app.update)
+mod split_mode_via_msg_tx {
+    use super::*;
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_sends_pane_opened_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::ok_with_stdout(b"%2\n"), // split_window_horizontal
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_enter_split_mode().await.unwrap();
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    pane_id,
+                    task_id: None
+                }) if pane_id == "%2"
+            ),
+            "Expected PaneOpened(%2), got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_no_tmux_sends_status_info_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::fail("no server"), // current_pane_id fails
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_enter_split_mode().await.unwrap();
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::System(crate::tui::messages::SystemMessage::StatusInfo(s)) if s.contains("tmux")
+            ),
+            "Expected StatusInfo about tmux, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_enter_split_mode_with_task_sends_pane_opened_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+                // companion_pane_ids: no pane carries a dispatch role
+                MockProcessRunner::ok_with_stdout(b"%1 \n"),
+                MockProcessRunner::ok(), // join_pane: join-pane command
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+            .await
+            .unwrap();
+
+        let calls = mock.recorded_calls();
+        assert!(calls[2].1.contains(&"join-pane".to_string()));
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(1)),
+                    ..
+                })
+            ),
+            "Expected PaneOpened with task, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_exit_split_mode_with_restore_sends_pane_closed_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // break_pane_to_window
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_exit_split_mode("%2", Some("task-1")).await.unwrap();
+
+        let calls = mock.recorded_calls();
+        assert!(calls[0].1.contains(&"break-pane".to_string()));
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_exit_split_mode_without_restore_sends_pane_closed_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // kill_pane
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_exit_split_mode("%2", None).await.unwrap();
+
+        let calls = mock.recorded_calls();
+        assert!(calls[0].1.contains(&"kill-pane".to_string()));
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_swap_split_pane_kills_old_window_and_sends_pane_opened_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // pane_id_for_window resolves out of band, so it is not a recorded call.
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok(), // swap-pane
+                MockProcessRunner::ok(), // kill-window (old pane had no task)
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
+            .await
+            .unwrap();
+
+        let calls = mock.recorded_calls();
+        assert!(calls[0].1.contains(&"swap-pane".to_string()));
+        assert!(calls[1].1.contains(&"kill-window".to_string()));
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(1)),
+                    ..
+                })
+            ),
+            "Expected PaneOpened with task, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_focus_split_pane_returns_join_handle() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // select-pane
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+
+        // Must return a JoinHandle so the caller can fire-and-forget without blocking.
+        rt.exec_focus_split_pane("%2".to_string()).await.unwrap();
+
+        let calls = mock.recorded_calls();
+        assert!(calls[0].1.contains(&"select-pane".to_string()));
+    }
+}
+
+/// Event-loop: spawn_refresh_from_db sends board data via msg_tx
+mod spawn_refresh_from_db_via_msg_tx {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_refresh_from_db_sends_task_refresh_via_msg_tx() {
+        let db = test_db().await;
+        // Create a task so the refresh has something to send.
+        db.create_task(crate::db::CreateTaskRequest {
+            title: "test task",
+            description: "desc",
+            repo_path: "/repo",
+            plan: None,
+            status: crate::models::TaskStatus::Backlog,
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            base_branch: "main",
+            wrap_up_mode: None,
+            auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
+        })
+        .await
+        .unwrap();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+
+        rt.spawn_refresh_from_db().await.unwrap();
+
+        // First message should be a task Refresh.
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Task(crate::tui::messages::TaskMessage::Refresh(tasks)) if !tasks.is_empty()
+            ),
+            "Expected Task::Refresh with tasks, got: {msg:?}"
+        );
+    }
+}
+
+mod browser_and_tmux_window {
+    use super::*;
+
+    #[tokio::test]
+    async fn exec_open_in_browser_calls_xdg_open() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // xdg-open
+        ]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+
+        rt.exec_open_in_browser("https://github.com/org/repo/pull/1".into())
+            .await
+            .unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "xdg-open");
+        assert!(calls[0]
+            .1
+            .contains(&"https://github.com/org/repo/pull/1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn exec_kill_tmux_window_calls_kill() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok(), // tmux kill-window
+            ])
+            .with_windows(&["task-1"]),
+        );
+        let rt = make_runtime(db, tx, mock.clone()).await;
+
+        rt.exec_kill_tmux_window("task-1".into()).await.unwrap();
+        let calls = mock.recorded_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tmux");
+        assert!(calls[0].1.contains(&"kill-window".to_string()));
+        // Targeted by resolved pane ID, not by name — see `tmux::window_target`.
+        assert!(calls[0].1.contains(&mock.pane_id_of("task-1")));
+    }
+
+    #[tokio::test]
+    async fn exec_kill_tmux_window_failure_is_best_effort() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![MockProcessRunner::fail(
+            "no such window",
+        )]));
+        let rt = make_runtime(db, tx, mock).await;
+
+        rt.exec_kill_tmux_window("gone-window".into())
+            .await
+            .unwrap();
+
+        // Kill-window failure is best-effort — no error message sent
+        assert!(rx.try_recv().is_err(), "Expected no message, but got one");
+    }
+}
+
+mod load_init_helpers {
+    use super::*;
+
+    #[tokio::test]
+    async fn load_notifications_pref_defaults_to_false_when_not_set() {
+        let db = Database::open_in_memory().await.unwrap();
+        let mut app = empty_app();
+        load_notifications_pref(&db, &mut app).await;
+        assert!(!app.notifications_enabled());
+    }
+
+    #[tokio::test]
+    async fn load_notifications_pref_sets_true_when_enabled() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.set_setting_bool("notifications_enabled", true)
+            .await
+            .unwrap();
+        let mut app = empty_app();
+        load_notifications_pref(&db, &mut app).await;
+        assert!(app.notifications_enabled());
+    }
+
+    #[tokio::test]
+    async fn load_filter_presets_returns_none_on_success() {
+        let db = Database::open_in_memory().await.unwrap();
+        let mut app = empty_app();
+        let result = load_filter_presets(&db, &mut app);
+        assert!(result.await.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_filter_presets_loads_saved_presets() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.save_filter_preset("backend", &["/repo/a".into()], "include")
+            .await
+            .unwrap();
+        let mut app = empty_app();
+        load_filter_presets(&db, &mut app).await;
+        assert_eq!(app.filter_presets().len(), 1);
+        assert_eq!(app.filter_presets()[0].0, "backend");
+    }
+
+    #[tokio::test]
+    async fn apply_tmux_focus_warning_returns_none_when_enabled() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"on\n")]);
+        let result = apply_tmux_focus_warning(&mock);
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn apply_tmux_focus_warning_returns_status_info_when_disabled() {
+        let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"off\n")]);
+        let result = apply_tmux_focus_warning(&mock);
+        assert!(matches!(
+            result,
+            Some(Message::System(
+                crate::tui::messages::SystemMessage::StatusInfo(_)
+            ))
+        ));
+    }
+}
+
+/// Finding 1: bootstrap safety net for the dispatch-owned statusline settings file
+/// (see src/setup/statusline.rs).
+mod ensure_statusline_settings_file {
+    use super::*;
+
+    #[test]
+    fn ensure_statusline_settings_file_creates_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude_dir = dir.path().join("claude");
+        let snapshot_path = dir.path().join("data").join("rate-limits.json");
+
+        ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+
+        let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
+        assert!(settings_path.exists(), "settings file must be created");
+        let content = std::fs::read_to_string(&settings_path).unwrap();
+        assert!(content.contains("dispatch statusline"));
+    }
+
+    #[test]
+    fn ensure_statusline_settings_file_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude_dir = dir.path().join("claude");
+        let snapshot_path = dir.path().join("data").join("rate-limits.json");
+
+        ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+        let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
+        let first = std::fs::read_to_string(&settings_path).unwrap();
+
+        // A normal TUI start on an already-configured machine must not rewrite
+        // the file (setup's write_settings_file already guarantees this; this
+        // asserts bootstrap doesn't bypass that guarantee).
+        ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+        let second = std::fs::read_to_string(&settings_path).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn ensure_statusline_settings_file_errors_when_directory_unwritable() {
+        // Point `claude_dir` at a path whose parent is a *file*, not a directory
+        // — `create_dir_all` fails deterministically without touching real
+        // permission bits (which vary by OS/CI and can be blocked by sandboxing).
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let claude_dir = blocker.join("claude");
+        let snapshot_path = dir.path().join("rate-limits.json");
+
+        let result = ensure_statusline_settings_file_in(&claude_dir, &snapshot_path);
+
+        assert!(
+            result.is_err(),
+            "must surface an error rather than silently doing nothing"
+        );
+    }
+}
+
+/// exec_trigger_epic_feed / SerialisedFeedCycle (feeds.allium) — one feed cycle per
+/// epic at a time. The race these close: nothing used to serialise a manual "r"
+/// refresh against an in-flight auto-poll for the SAME epic, so the two could
+/// interleave between the non-transactional steps of run_role_routed_feed_sync.
+/// Each of those steps filters on a task's CURRENT epic_id, so one pass could see
+/// a task the other had moved-but-not-yet-committed as absent from its keep-set,
+/// delete it, and -- since feed deletes now feed TaskTeardown -- force-remove a
+/// live review agent's worktree.
+mod feed_epic_trigger {
+    use super::*;
+
+    /// The manual path's half of the drop contract: a refresh requested while a
+    /// cycle for that epic is in flight reports AlreadyRefreshing and writes
+    /// nothing. Deterministic because the test holds the claim itself.
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_reports_already_refreshing_while_a_cycle_is_in_flight() {
+        let db = test_db().await;
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+        // Would delete the seeded task (absent from an empty emission) and tear its
+        // worktree down, if it ever ran.
+        set_feed_command(&db, epic.id, "echo '[]'").await;
+        seed_feed_task_with_worktree(&db, epic.id, "In-flight PR").await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        let _claim = rt
+            .feed_sync_guard
+            .try_claim(epic.id)
+            .expect("the epic starts unclaimed");
+
+        rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::AlreadyRefreshing { .. })
+            ),
+            "a dropped refresh must report AlreadyRefreshing, not a success or a \
+         failure, got: {msg:?}"
+        );
+        assert_eq!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().len(),
+            1,
+            "a dropped refresh must run no sync, so the existing task survives"
+        );
+    }
+
+    /// The wiring invariant, pinned directly and cheaply: the manual "r" path and
+    /// the auto-poll runner must share ONE claim registry. A second registry
+    /// type-checks, compiles, and silently serialises nothing.
+    ///
+    /// This is a one-line structural check, so it survives any change to feed
+    /// behaviour. It does NOT subsume the FIFO test below: identity of the registry
+    /// is not the same property as the claim actually being HELD across the exec,
+    /// and only a real in-flight cycle can show the latter.
+    #[tokio::test]
+    async fn the_manual_path_and_the_feed_runner_share_one_claim_registry() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        assert!(
+            Arc::ptr_eq(
+                &rt.feed_sync_guard,
+                &rt.feed_runner
+                    .as_ref()
+                    .expect("make_runtime wires a FeedRunner")
+                    .sync_guard(),
+            ),
+            "TuiRuntime.feed_sync_guard must be the FeedRunner's registry, not a \
+         second one -- otherwise the two feed surfaces never serialise"
+        );
+    }
+
+    /// The flagship: BOTH surfaces against ONE epic, with a real auto-poll cycle
+    /// genuinely mid-exec rather than a claim the test planted.
+    ///
+    /// This is the only test here that would catch the two surfaces being wired to
+    /// DIFFERENT `FeedSyncGuard` registries — a mistake that type-checks, passes
+    /// every other test in this file, and silently serialises nothing.
+    ///
+    /// Determinism without sleeping: the feed command blocks on `cat <fifo>`, and
+    /// opening a FIFO for WRITING blocks until a reader opens it. So the successful
+    /// return of that open IS the proof that the cycle has reached its exec. No
+    /// polling, no `sleep` (which `./scripts/check-no-test-sleep.sh` bans anyway).
+    ///
+    /// The open is deadline-bounded on purpose. If a regression makes the cycle
+    /// bail before exec — a broken claim, a failed epic read — no reader ever opens
+    /// the FIFO and an unbounded open would wedge CI silently instead of failing.
+    /// Note what the timeout does and does not buy: `spawn_blocking` work is not
+    /// cancellable, so it frees the test, not the thread; the blocked thread leaks
+    /// until the process exits. That is the right trade in a test binary, and it is
+    /// strictly better than a hang.
+    #[tokio::test]
+    async fn manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight() {
+        let db = test_db().await;
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+        let fifo = std::env::temp_dir().join(format!("dispatch_feed_gate_{}", epic.id.0));
+        let _ = std::fs::remove_file(&fifo);
+        let mkfifo = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("failed to run mkfifo");
+        assert!(mkfifo.success(), "mkfifo failed for {}", fifo.display());
+
+        // Blocks in exec until the test opens the write end and closes it.
+        set_feed_command(&db, epic.id, &format!("cat {}; echo '[]'", fifo.display())).await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        // Start the auto-poll cycle. `tick` only spawns; it does not block.
+        rt.feed_runner
+            .as_mut()
+            .expect("make_runtime wires a FeedRunner")
+            .tick()
+            .await;
+
+        // Handshake: unblocks only once the spawned cycle's `cat` has the FIFO open,
+        // i.e. once it is genuinely inside exec_feed_command holding the claim.
+        let gate = fifo.clone();
+        let write_end = tokio::time::timeout(
+            TEST_TIMEOUT,
+            tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(gate)),
+        )
+        .await
+        .expect(
+            "timed out waiting for the feed cycle to reach its exec -- it bailed \
+         earlier (claim? epic read?), so no reader ever opened the FIFO",
+        )
+        .expect("the opener thread panicked")
+        .expect("failed to open the FIFO for writing");
+
+        // With a cycle provably in flight, the manual refresh must be dropped.
+        rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out waiting for the manual refresh outcome")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::AlreadyRefreshing { .. })
+            ),
+            "a manual refresh during a live auto-poll cycle must be dropped; if this \
+         is Refreshed, the two paths are not sharing one FeedSyncGuard. got: {msg:?}"
+        );
+
+        // Release the feed command so the in-flight cycle can finish.
+        drop(write_end);
+        rt.feed_runner
+            .as_mut()
+            .expect("feed runner")
+            .join_spawned_jobs()
+            .await;
+
+        // And the epic is claimable again, so the drop was not a permanent wedge.
+        assert!(
+            rt.feed_sync_guard.try_claim(epic.id).is_some(),
+            "the finished cycle must have released its claim"
+        );
+
+        let _ = std::fs::remove_file(&fifo);
+    }
+
+    /// Seed one feed task carrying a worktree and tmux window, as a dispatched
+    /// review agent would. Its survival is what distinguishes "the cycle was
+    /// dropped" from "the cycle ran and destroyed a live session".
+    async fn seed_feed_task_with_worktree(
+        db: &Arc<Database>,
+        epic_id: crate::models::EpicId,
+        title: &str,
+    ) {
+        db.upsert_feed_tasks(
+            epic_id,
+            &[crate::models::FeedItem {
+                external_id: "pr-1".to_string(),
+                title: title.to_string(),
+                description: String::new(),
+                url: String::new(),
+                url_type: None,
+                status: crate::models::TaskStatus::Backlog,
+                tag: crate::models::TaskTag::PrReview,
+                labels: Vec::new(),
+                sort_order: None,
+                signals: vec![],
+                wrap_up_mode: None,
+            }],
+            &["/repo/a".to_string()],
+            &["main".to_string()],
+        )
+        .await
+        .unwrap();
+        let task = db.list_tasks_for_epic(epic_id).await.unwrap().remove(0);
+        db.patch_task(
+            task.id,
+            &db::TaskPatch::new()
+                .worktree(Some("/repo/a/.worktrees/7-pr-1"))
+                .tmux_window(Some("dispatch:pr-1")),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_success() {
+        let db = test_db().await;
+        let epic = db
+            .create_epic("Security Vulnerabilities", "", None)
+            .await
+            .unwrap();
+
+        let cmd = r#"echo '[{"external_id":"vuln:1","title":"CVE-1","description":"desc","status":"backlog","tag":"fix"}]'"#;
+        set_feed_command(&db, epic.id, cmd).await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Security Vulnerabilities".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out waiting for FeedRefreshed")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 1, .. })
+            ),
+            "expected FeedRefreshed with count=1, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_zero_items() {
+        let db = test_db().await;
+        let epic = db.create_epic("Empty Feed", "", None).await.unwrap();
+        set_feed_command(&db, epic.id, "echo '[]'").await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Empty Feed".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 0, .. })
+            ),
+            "empty feed should still succeed with count=0, got: {msg:?}"
+        );
+    }
+
+    // feeds.allium: DegradedEmptyEmission. A zero-item emission that wrote to
+    // stderr is a failure, not a refresh — the sync is skipped entirely so the
+    // epic's existing tasks survive. Inverted from the #3900 behaviour, which
+    // reported it as a successful zero-task refresh AFTER the delete had run.
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_fails_on_degraded_empty_emission() {
+        let db = test_db().await;
+        let epic = db.create_epic("Degraded Feed", "", None).await.unwrap();
+        set_feed_command(&db, epic.id, "echo 'Invalid search query' >&2; echo '[]'").await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Degraded Feed".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        match msg {
+            Message::Feed(crate::tui::messages::FeedMessage::Failed { error, .. }) => {
+                assert!(
+                    error.contains("Invalid search query"),
+                    "failure must carry the stderr, got: {error}"
+                );
+            }
+            other => panic!("expected FeedMessage::Failed, got: {other:?}"),
+        }
+    }
+
+    /// Companion to the auto-poll guard test
+    /// (`tick_degraded_empty_emission_does_not_delete_existing_tasks`): the
+    /// message-only assertion above would still pass if the DegradedEmptyEmission
+    /// guard were relocated to AFTER `run_feed_sync_by_role`, by which point the
+    /// stale-delete has already run — and, since feed removals now tear down
+    /// worktrees, already destroyed a live agent's session. Pin "no sync ran" on
+    /// the manual path, not just "a failure was reported".
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_degraded_empty_emission_does_not_delete_existing_tasks() {
+        let db = test_db().await;
+        let epic = db.create_epic("Degraded Feed", "", None).await.unwrap();
+
+        // Seed one feed task, as a previous healthy refresh would have.
+        db.upsert_feed_tasks(
+            epic.id,
+            &[crate::models::FeedItem {
+                external_id: "pr-1".to_string(),
+                title: "Existing PR".to_string(),
+                description: String::new(),
+                url: String::new(),
+                url_type: None,
+                status: crate::models::TaskStatus::Backlog,
+                tag: crate::models::TaskTag::PrReview,
+                labels: Vec::new(),
+                sort_order: None,
+                signals: vec![],
+                wrap_up_mode: None,
+            }],
+            &["".to_string()],
+            &["main".to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(db.list_tasks_for_epic(epic.id).await.unwrap().len(), 1);
+        set_feed_command(&db, epic.id, "echo 'Invalid search query' >&2; echo '[]'").await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Degraded Feed".to_string());
+
+        // Awaiting the message is the deterministic completion signal: the spawned
+        // job sends it on its way out, so the DB is settled once it arrives.
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::Failed { .. })
+            ),
+            "expected FeedMessage::Failed, got: {msg:?}"
+        );
+
+        let tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+        assert_eq!(
+            tasks.len(),
+            1,
+            "a degraded empty emission must not run the sync, so existing feed tasks survive"
+        );
+        assert_eq!(tasks[0].external_id.as_deref(), Some("pr-1"));
+    }
+
+    /// Manual counterpart of
+    /// `feed::tests::tick_partially_degraded_emission_does_not_delete_or_tear_down`
+    /// (#4095, feeds.allium: DegradedNonEmptyEmission). A partially degraded
+    /// emission is NOT a failure — the sync still runs and the emitted item still
+    /// lands — but it removes nothing, and the status line says so rather than
+    /// reading like an ordinary reconcile.
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_partially_degraded_emission_does_not_delete() {
+        let db = test_db().await;
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+        let seeded: Vec<crate::models::FeedItem> = ["pr-1", "pr-2"]
+            .iter()
+            .map(|ext| crate::models::FeedItem {
+                external_id: ext.to_string(),
+                title: "Seeded".to_string(),
+                description: String::new(),
+                url: String::new(),
+                url_type: None,
+                status: crate::models::TaskStatus::Backlog,
+                tag: crate::models::TaskTag::PrReview,
+                labels: Vec::new(),
+                sort_order: None,
+                signals: vec![],
+                wrap_up_mode: None,
+            })
+            .collect();
+        db.upsert_feed_tasks(
+            epic.id,
+            &seeded,
+            &vec!["/repo/a".to_string(); 2],
+            &vec!["main".to_string(); 2],
+        )
+        .await
+        .unwrap();
+
+        let live = db
+            .list_tasks_for_epic(epic.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|t| t.external_id.as_deref() == Some("pr-1"))
+            .unwrap();
+        db.patch_task(
+            live.id,
+            &TaskPatch::new()
+                .status(crate::models::TaskStatus::Running)
+                .sub_status(crate::models::SubStatus::Active)
+                .worktree(Some("/repo/a/.worktrees/7-pr-1")),
+        )
+        .await
+        .unwrap();
+
+        set_feed_command(
         &db,
         epic.id,
         r#"echo 'fetch-reviews: gh search prs failed' >&2; echo '[{"external_id":"pr-2","title":"Other","description":"","status":"backlog","tag":"pr-review"}]'"#,
     )
     .await;
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let proc_runner = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, proc_runner.clone()).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let proc_runner = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, proc_runner.clone()).await;
 
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+        rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
 
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    match msg {
-        Message::Feed(crate::tui::messages::FeedMessage::Refreshed { degraded, .. }) => {
-            let reason = degraded.expect("a degraded refresh must carry its reason");
-            assert!(
-                reason.contains("gh search prs failed"),
-                "the reason must name what the script reported, got: {reason}"
-            );
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        match msg {
+            Message::Feed(crate::tui::messages::FeedMessage::Refreshed { degraded, .. }) => {
+                let reason = degraded.expect("a degraded refresh must carry its reason");
+                assert!(
+                    reason.contains("gh search prs failed"),
+                    "the reason must name what the script reported, got: {reason}"
+                );
+            }
+            other => panic!("expected a degraded FeedMessage::Refreshed, got: {other:?}"),
         }
-        other => panic!("expected a degraded FeedMessage::Refreshed, got: {other:?}"),
+
+        let ids: Vec<String> = db
+            .list_tasks_for_epic(epic.id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| t.external_id)
+            .collect();
+        assert!(
+            ids.contains(&"pr-1".to_string()),
+            "the omitted task must survive a degraded manual refresh, got {ids:?}"
+        );
+        assert!(
+            !proc_runner
+                .flattened_calls()
+                .iter()
+                .any(|c| c.contains("worktree remove")),
+            "and its worktree must not be torn down"
+        );
     }
 
-    let ids: Vec<String> = db
-        .list_tasks_for_epic(epic.id)
+    /// End-to-end wiring guard for the MANUAL "r" refresh path — the mirror of
+    /// `feed::tests::tick_removed_task_tears_down_its_worktree` on the auto-poll
+    /// side. A refresh whose emission drops a task must actually shell out
+    /// `git worktree remove` for it.
+    ///
+    /// Both call sites need their own guard: they are separate call sites, and the
+    /// coverage either side of the seam never crosses it (ingest tests prove
+    /// `outcome.removed` is populated; the `cleanup_*` tests call the helper
+    /// directly with a hand-built `Vec`). Gutting either fan-out call to
+    /// `let _ = outcome.removed;` left the whole suite green before these landed.
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
+        let db = test_db().await;
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+        // Seed one feed task with the on-disk state a dispatched agent would own.
+        seed_feed_task_with_worktree(&db, epic.id, "Merged PR").await;
+
+        set_feed_command(&db, epic.id, "echo '[]'").await;
+
+        let proc_runner = Arc::new(MockProcessRunner::new(vec![
+            // has_window: list-windows names the window, so the kill proceeds
+            MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
+            MockProcessRunner::ok(), // tmux kill-window
+            MockProcessRunner::ok(), // git worktree remove
+            MockProcessRunner::ok(), // git branch -D (best effort)
+        ]));
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db.clone(), tx, proc_runner.clone()).await;
+
+        // The PR merged, so the refresh's emission no longer carries it. A clean
+        // empty emission (no stderr) is a genuine reconcile, not a degraded run.
+        rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+        // Refreshed is sent AFTER the teardown is awaited, so its arrival is a
+        // deterministic signal that the cleanup has run.
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 0, .. })
+            ),
+            "expected FeedRefreshed with count=0, got: {msg:?}"
+        );
+
+        assert!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+            "the merged PR's row is gone"
+        );
+
+        let calls: Vec<String> = proc_runner.flattened_calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.contains("worktree remove") && c.contains("/repo/a/.worktrees/7-pr-1")),
+            "the manual refresh path must tear the removed task's worktree down, got: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|c| c.contains("kill-window")),
+            "and kill its tmux window, got: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_command_fails() {
+        let db = test_db().await;
+        let epic = db.create_epic("Failing Feed", "", None).await.unwrap();
+        set_feed_command(&db, epic.id, "exit 1").await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Failing Feed".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert_feed_failed_because(&msg, None, "non-zero exit");
+    }
+
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_malformed_json() {
+        let db = test_db().await;
+        let epic = db.create_epic("Bad JSON Feed", "", None).await.unwrap();
+        set_feed_command(&db, epic.id, "echo 'not-json'").await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Bad JSON Feed".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert_feed_failed_because(&msg, Some("parse"), "malformed JSON");
+    }
+
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_missing_tag_fails_and_upserts_nothing() {
+        // The manual "r" path must reject a tag-less item exactly as the auto-poll
+        // path and verify-feed do. This held by accident while all three called
+        // serde_json separately; once the manual path routes through the shared
+        // parse_feed_items it holds by construction. See feeds.allium's
+        // FeedItemParse block.
+        let db = test_db().await;
+        let epic = db.create_epic("Untagged Feed", "", None).await.unwrap();
+        set_feed_command(
+            &db,
+            epic.id,
+            r#"echo '[{"external_id":"x1","title":"T","description":"","status":"backlog"}]'"#,
+        )
+        .await;
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Untagged Feed".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert_feed_failed_because(&msg, Some("parse"), "a missing tag");
+        let tasks = db.list_all().await.unwrap();
+        assert!(
+            tasks.is_empty(),
+            "a rejected emission must upsert no task, got: {tasks:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_grouped_puts_tasks_in_sub_epics() {
+        let db = test_db().await;
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+
+        let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo-a/pull/1","status":"backlog","tag":"pr-review"}]'"#;
+        // group_by_repo lives on the epic now, not on the trigger call: the cycle
+        // reads it from the DB so a manual refresh cannot use a stale flag.
+        db.patch_epic(
+            epic.id,
+            &db::EpicPatch::new()
+                .feed_command(Some(cmd))
+                .group_by_repo(true),
+        )
         .await
-        .unwrap()
-        .into_iter()
-        .filter_map(|t| t.external_id)
-        .collect();
-    assert!(
-        ids.contains(&"pr-1".to_string()),
-        "the omitted task must survive a degraded manual refresh, got {ids:?}"
-    );
-    assert!(
-        !proc_runner
-            .flattened_calls()
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 1, .. })
+            ),
+            "expected FeedRefreshed with count=1, got: {msg:?}"
+        );
+
+        let parent_tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+        assert_eq!(
+            parent_tasks.len(),
+            0,
+            "parent should have no direct tasks when group_by_repo=true"
+        );
+
+        let sub_epics = db.list_sub_epics(epic.id).await.unwrap();
+        assert_eq!(sub_epics.len(), 1);
+        assert_eq!(sub_epics[0].title, "repo-a");
+        let sub_tasks = db.list_tasks_for_epic(sub_epics[0].id).await.unwrap();
+        assert_eq!(sub_tasks.len(), 1);
+    }
+
+    /// Bug A: a MANUAL "r" refresh of a reviews_parent epic must dispatch by
+    /// feed_role exactly like the auto-poll path — routing the emission into the
+    /// My/Team/Bots subtree — and must NOT flat-upsert into the parent. Regression
+    /// guard for the parent-flat routing bug.
+    #[tokio::test]
+    async fn exec_trigger_epic_feed_reviews_parent_routes_into_subtree() {
+        let db = test_db().await;
+        let epic = db.create_epic("Reviews", "", None).await.unwrap();
+        // A single direct-request PR: route(signals) => my_reviews.
+        let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo/pull/1","status":"backlog","tag":"pr-review","signals":["direct-request"]}]'"#;
+        // group_by_repo stays false; dispatch must key on feed_role, not that flag.
+        db.patch_epic(
+            epic.id,
+            &db::EpicPatch::new()
+                .feed_role(crate::models::FeedRole::ReviewsParent)
+                .feed_command(Some(cmd)),
+        )
+        .await
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+
+        rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .expect("timed out")
+            .expect("channel closed");
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 1, .. })
+            ),
+            "expected FeedRefreshed with count=1, got: {msg:?}"
+        );
+
+        // No feed task may be stranded flat on the reviews_parent epic.
+        let parent_tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
+        assert!(
+            parent_tasks.iter().all(|t| t.external_id.is_none()),
+            "manual reviews_parent refresh must route, not flat-upsert onto the parent"
+        );
+
+        // The PR must land in the My Reviews role sub-epic.
+        let subs = db.list_sub_epics(epic.id).await.unwrap();
+        let my = subs
             .iter()
-            .any(|c| c.contains("worktree remove")),
-        "and its worktree must not be torn down"
-    );
+            .find(|e| e.feed_role == crate::models::FeedRole::MyReviews)
+            .expect("My Reviews role sub-epic ensured by the role router");
+        let my_tasks = db.list_tasks_for_epic(my.id).await.unwrap();
+        assert_eq!(
+            my_tasks.len(),
+            1,
+            "direct-request PR routed into My Reviews"
+        );
+        assert_eq!(my_tasks[0].external_id.as_deref(), Some("pr-1"));
+    }
 }
 
-/// End-to-end wiring guard for the MANUAL "r" refresh path — the mirror of
-/// `feed::tests::tick_removed_task_tears_down_its_worktree` on the auto-poll
-/// side. A refresh whose emission drops a task must actually shell out
-/// `git worktree remove` for it.
-///
-/// Both call sites need their own guard: they are separate call sites, and the
-/// coverage either side of the seam never crosses it (ingest tests prove
-/// `outcome.removed` is populated; the `cleanup_*` tests call the helper
-/// directly with a hand-built `Vec`). Gutting either fan-out call to
-/// `let _ = outcome.removed;` left the whole suite green before these landed.
-#[tokio::test]
-async fn exec_trigger_epic_feed_removed_task_tears_down_its_worktree() {
-    let db = test_db().await;
-    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+mod exec_open_main_session {
+    use super::*;
 
-    // Seed one feed task with the on-disk state a dispatched agent would own.
-    seed_feed_task_with_worktree(&db, epic.id, "Merged PR").await;
+    #[tokio::test]
+    async fn exec_open_jumps_when_window_alive() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"dispatch-main\n"), // has_window → true
+            MockProcessRunner::ok(),                               // select-window
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+        let mut app = empty_app();
 
-    set_feed_command(&db, epic.id, "echo '[]'").await;
+        rt.exec_open_main_session(&mut app).await;
 
-    let proc_runner = Arc::new(MockProcessRunner::new(vec![
-        // has_window: list-windows names the window, so the kill proceeds
-        MockProcessRunner::ok_with_stdout(b"dispatch:pr-1\n"),
-        MockProcessRunner::ok(), // tmux kill-window
-        MockProcessRunner::ok(), // git worktree remove
-        MockProcessRunner::ok(), // git branch -D (best effort)
-    ]));
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db.clone(), tx, proc_runner.clone()).await;
-
-    // The PR merged, so the refresh's emission no longer carries it. A clean
-    // empty emission (no stderr) is a genuine reconcile, not a degraded run.
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
-
-    // Refreshed is sent AFTER the teardown is awaited, so its arrival is a
-    // deterministic signal that the cleanup has run.
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 0, .. })
-        ),
-        "expected FeedRefreshed with count=0, got: {msg:?}"
-    );
-
-    assert!(
-        db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
-        "the merged PR's row is gone"
-    );
-
-    let calls: Vec<String> = proc_runner.flattened_calls();
-    assert!(
-        calls
+        let calls = mock.recorded_calls();
+        // Jumped to the live window — never created one, never opened the picker.
+        assert!(!calls
             .iter()
-            .any(|c| c.contains("worktree remove") && c.contains("/repo/a/.worktrees/7-pr-1")),
-        "the manual refresh path must tear the removed task's worktree down, got: {calls:?}"
-    );
-    assert!(
-        calls.iter().any(|c| c.contains("kill-window")),
-        "and kill its tmux window, got: {calls:?}"
-    );
+            .any(|(_, args)| args.contains(&"new-window".to_string())));
+        assert_ne!(app.mode(), &crate::tui::InputMode::MainSessionDir);
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_open_enters_picker_when_no_window() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // has_window → false (empty list)
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+        let mut app = empty_app();
+        // A previously-configured dir does not stop the picker from re-prompting.
+        app.set_main_session_dir(Some("/home/user".to_string()));
+
+        rt.exec_open_main_session(&mut app).await;
+
+        // No live window — opened the picker to (re)select the directory.
+        assert_eq!(app.mode(), &crate::tui::InputMode::MainSessionDir);
+        let calls = mock.recorded_calls();
+        assert!(!calls
+            .iter()
+            .any(|(_, args)| args.contains(&"new-window".to_string())));
+        assert!(app.error_popup().is_none());
+    }
 }
 
-#[tokio::test]
-async fn exec_trigger_epic_feed_command_fails() {
-    let db = test_db().await;
-    let epic = db.create_epic("Failing Feed", "", None).await.unwrap();
-    set_feed_command(&db, epic.id, "exit 1").await;
+/// MainSessionIndicator poll
+mod exec_check_main_session_liveness {
+    use super::*;
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+    // @guarantee LivenessFromLiveTmuxCheck: the poll derives liveness from a live
+    // tmux has-window check and reports true when the window is present.
+    #[tokio::test]
+    async fn exec_check_liveness_emits_alive_when_window_present() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"dispatch-main\n"), // has_window → true
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
 
-    rt.exec_trigger_epic_feed(epic.id, "Failing Feed".to_string());
+        rt.exec_check_main_session_liveness().await.unwrap();
 
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert_feed_failed_because(&msg, None, "non-zero exit");
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
+                    true
+                ))
+            ),
+            "expected LivenessChanged(true), got: {msg:?}"
+        );
+    }
+
+    // @guarantee LivenessFromLiveTmuxCheck: reports false when the window is absent.
+    #[tokio::test]
+    async fn exec_check_liveness_emits_not_alive_when_window_absent() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // has_window → false (empty list)
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock).await;
+
+        rt.exec_check_main_session_liveness().await.unwrap();
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
+                    false
+                ))
+            ),
+            "expected LivenessChanged(false), got: {msg:?}"
+        );
+    }
 }
 
-#[tokio::test]
-async fn exec_trigger_epic_feed_malformed_json() {
-    let db = test_db().await;
-    let epic = db.create_epic("Bad JSON Feed", "", None).await.unwrap();
-    set_feed_command(&db, epic.id, "echo 'not-json'").await;
+mod exec_create_main_session {
+    use super::*;
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db, tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+    #[tokio::test]
+    async fn exec_create_makes_window_and_jumps_without_persisting_window() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // new-window
+            MockProcessRunner::ok(), // send-keys -l
+            MockProcessRunner::ok(), // send-keys Enter
+            MockProcessRunner::ok(), // select-window
+        ]));
+        let rt = make_runtime(db.clone(), tx, mock.clone()).await;
+        let mut app = empty_app();
+        app.set_main_session_dir(Some("/home/user".to_string()));
 
-    rt.exec_trigger_epic_feed(epic.id, "Bad JSON Feed".to_string());
+        rt.exec_create_main_session(&mut app).await;
 
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert_feed_failed_because(&msg, Some("parse"), "malformed JSON");
+        let calls = mock.recorded_calls();
+        assert!(calls
+            .iter()
+            .any(|(_, args)| args.contains(&"new-window".to_string())));
+        assert!(app.error_popup().is_none());
+        // The window identity is never persisted.
+        let stored = db.get_setting_string("main_session.window").await.unwrap();
+        assert!(stored.as_deref().unwrap_or("").is_empty());
+    }
+
+    #[tokio::test]
+    async fn exec_create_with_no_dir_errors() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_create_main_session(&mut app).await;
+        assert!(app.error_popup().is_some());
+    }
 }
 
-#[tokio::test]
-async fn exec_trigger_epic_feed_missing_tag_fails_and_upserts_nothing() {
-    // The manual "r" path must reject a tag-less item exactly as the auto-poll
-    // path and verify-feed do. This held by accident while all three called
-    // serde_json separately; once the manual path routes through the shared
-    // parse_feed_items it holds by construction. See feeds.allium's
-    // FeedItemParse block.
-    let db = test_db().await;
-    let epic = db.create_epic("Untagged Feed", "", None).await.unwrap();
-    set_feed_command(
-        &db,
-        epic.id,
-        r#"echo '[{"external_id":"x1","title":"T","description":"","status":"backlog"}]'"#,
-    )
-    .await;
+mod load_main_session {
+    use super::*;
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+    #[tokio::test]
+    async fn load_main_session_sets_dir_from_db() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.set_setting_string("main_session.dir", "/home/user/code")
+            .await
+            .unwrap();
+        let mut app = empty_app();
 
-    rt.exec_trigger_epic_feed(epic.id, "Untagged Feed".to_string());
+        load_main_session(&db, &mut app).await;
 
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert_feed_failed_because(&msg, Some("parse"), "a missing tag");
-    let tasks = db.list_all().await.unwrap();
-    assert!(
-        tasks.is_empty(),
-        "a rejected emission must upsert no task, got: {tasks:?}"
-    );
-}
+        assert_eq!(app.main_session_dir(), Some("/home/user/code"));
+    }
 
-#[tokio::test]
-async fn exec_trigger_epic_feed_grouped_puts_tasks_in_sub_epics() {
-    let db = test_db().await;
-    let epic = db.create_epic("Reviews", "", None).await.unwrap();
+    #[tokio::test]
+    async fn load_main_session_ignores_empty_dir() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.set_setting_string("main_session.dir", "").await.unwrap();
+        let mut app = empty_app();
 
-    let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo-a/pull/1","status":"backlog","tag":"pr-review"}]'"#;
-    // group_by_repo lives on the epic now, not on the trigger call: the cycle
-    // reads it from the DB so a manual refresh cannot use a stale flag.
-    db.patch_epic(
-        epic.id,
-        &db::EpicPatch::new()
-            .feed_command(Some(cmd))
-            .group_by_repo(true),
-    )
-    .await
-    .unwrap();
+        load_main_session(&db, &mut app).await;
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+        assert_eq!(app.main_session_dir(), None);
+    }
 
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
+    #[tokio::test]
+    async fn build_learning_injections_partitions_and_records_retrievals() {
+        use crate::models::{LearningKind, LearningScope, RetrievalSource};
+        use crate::service::embeddings::{serialize_embedding, EmbeddingService};
 
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 1, .. })
-        ),
-        "expected FeedRefreshed with count=1, got: {msg:?}"
-    );
-
-    let parent_tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
-    assert_eq!(
-        parent_tasks.len(),
-        0,
-        "parent should have no direct tasks when group_by_repo=true"
-    );
-
-    let sub_epics = db.list_sub_epics(epic.id).await.unwrap();
-    assert_eq!(sub_epics.len(), 1);
-    assert_eq!(sub_epics[0].title, "repo-a");
-    let sub_tasks = db.list_tasks_for_epic(sub_epics[0].id).await.unwrap();
-    assert_eq!(sub_tasks.len(), 1);
-}
-
-/// Bug A: a MANUAL "r" refresh of a reviews_parent epic must dispatch by
-/// feed_role exactly like the auto-poll path — routing the emission into the
-/// My/Team/Bots subtree — and must NOT flat-upsert into the parent. Regression
-/// guard for the parent-flat routing bug.
-#[tokio::test]
-async fn exec_trigger_epic_feed_reviews_parent_routes_into_subtree() {
-    let db = test_db().await;
-    let epic = db.create_epic("Reviews", "", None).await.unwrap();
-    // A single direct-request PR: route(signals) => my_reviews.
-    let cmd = r#"echo '[{"external_id":"pr-1","title":"PR 1","description":"","url":"https://github.com/org/repo/pull/1","status":"backlog","tag":"pr-review","signals":["direct-request"]}]'"#;
-    // group_by_repo stays false; dispatch must key on feed_role, not that flag.
-    db.patch_epic(
-        epic.id,
-        &db::EpicPatch::new()
-            .feed_role(crate::models::FeedRole::ReviewsParent)
-            .feed_command(Some(cmd)),
-    )
-    .await
-    .unwrap();
-
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let rt = make_runtime(db.clone(), tx, Arc::new(MockProcessRunner::new(vec![]))).await;
-
-    rt.exec_trigger_epic_feed(epic.id, "Reviews".to_string());
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("timed out")
-        .expect("channel closed");
-    assert!(
-        matches!(
-            msg,
-            Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 1, .. })
-        ),
-        "expected FeedRefreshed with count=1, got: {msg:?}"
-    );
-
-    // No feed task may be stranded flat on the reviews_parent epic.
-    let parent_tasks = db.list_tasks_for_epic(epic.id).await.unwrap();
-    assert!(
-        parent_tasks.iter().all(|t| t.external_id.is_none()),
-        "manual reviews_parent refresh must route, not flat-upsert onto the parent"
-    );
-
-    // The PR must land in the My Reviews role sub-epic.
-    let subs = db.list_sub_epics(epic.id).await.unwrap();
-    let my = subs
-        .iter()
-        .find(|e| e.feed_role == crate::models::FeedRole::MyReviews)
-        .expect("My Reviews role sub-epic ensured by the role router");
-    let my_tasks = db.list_tasks_for_epic(my.id).await.unwrap();
-    assert_eq!(
-        my_tasks.len(),
-        1,
-        "direct-request PR routed into My Reviews"
-    );
-    assert_eq!(my_tasks[0].external_id.as_deref(), Some("pr-1"));
-}
-
-// ── exec_open_main_session ──
-
-#[tokio::test]
-async fn exec_open_jumps_when_window_alive() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"dispatch-main\n"), // has_window → true
-        MockProcessRunner::ok(),                               // select-window
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-    let mut app = make_app();
-
-    rt.exec_open_main_session(&mut app).await;
-
-    let calls = mock.recorded_calls();
-    // Jumped to the live window — never created one, never opened the picker.
-    assert!(!calls
-        .iter()
-        .any(|(_, args)| args.contains(&"new-window".to_string())));
-    assert_ne!(app.mode(), &crate::tui::InputMode::MainSessionDir);
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_open_enters_picker_when_no_window() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // has_window → false (empty list)
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-    let mut app = make_app();
-    // A previously-configured dir does not stop the picker from re-prompting.
-    app.set_main_session_dir(Some("/home/user".to_string()));
-
-    rt.exec_open_main_session(&mut app).await;
-
-    // No live window — opened the picker to (re)select the directory.
-    assert_eq!(app.mode(), &crate::tui::InputMode::MainSessionDir);
-    let calls = mock.recorded_calls();
-    assert!(!calls
-        .iter()
-        .any(|(_, args)| args.contains(&"new-window".to_string())));
-    assert!(app.error_popup().is_none());
-}
-
-// ── exec_check_main_session_liveness (MainSessionIndicator poll) ──
-
-// @guarantee LivenessFromLiveTmuxCheck: the poll derives liveness from a live
-// tmux has-window check and reports true when the window is present.
-#[tokio::test]
-async fn exec_check_liveness_emits_alive_when_window_present() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"dispatch-main\n"), // has_window → true
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_check_main_session_liveness().await.unwrap();
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
-                true
-            ))
-        ),
-        "expected LivenessChanged(true), got: {msg:?}"
-    );
-}
-
-// @guarantee LivenessFromLiveTmuxCheck: reports false when the window is absent.
-#[tokio::test]
-async fn exec_check_liveness_emits_not_alive_when_window_absent() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // has_window → false (empty list)
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock).await;
-
-    rt.exec_check_main_session_liveness().await.unwrap();
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
-                false
-            ))
-        ),
-        "expected LivenessChanged(false), got: {msg:?}"
-    );
-}
-
-// ── exec_create_main_session ──
-
-#[tokio::test]
-async fn exec_create_makes_window_and_jumps_without_persisting_window() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok(), // new-window
-        MockProcessRunner::ok(), // send-keys -l
-        MockProcessRunner::ok(), // send-keys Enter
-        MockProcessRunner::ok(), // select-window
-    ]));
-    let rt = make_runtime(db.clone(), tx, mock.clone()).await;
-    let mut app = make_app();
-    app.set_main_session_dir(Some("/home/user".to_string()));
-
-    rt.exec_create_main_session(&mut app).await;
-
-    let calls = mock.recorded_calls();
-    assert!(calls
-        .iter()
-        .any(|(_, args)| args.contains(&"new-window".to_string())));
-    assert!(app.error_popup().is_none());
-    // The window identity is never persisted.
-    let stored = db.get_setting_string("main_session.window").await.unwrap();
-    assert!(stored.as_deref().unwrap_or("").is_empty());
-}
-
-#[tokio::test]
-async fn exec_create_with_no_dir_errors() {
-    let (rt, mut app) = test_runtime().await;
-    rt.exec_create_main_session(&mut app).await;
-    assert!(app.error_popup().is_some());
-}
-
-// ── load_main_session ──
-
-#[tokio::test]
-async fn load_main_session_sets_dir_from_db() {
-    let db = Database::open_in_memory().await.unwrap();
-    db.set_setting_string("main_session.dir", "/home/user/code")
+        let (rt, _app) = test_runtime().await;
+        // Seed a task in the default project.
+        let task = create_task_returning(
+            &**rt.db_write(),
+            "title",
+            "desc",
+            "/repo/a",
+            None,
+            models::TaskStatus::Backlog,
+        )
         .await
         .unwrap();
-    let mut app = make_app();
 
-    load_main_session(&db, &mut app).await;
+        // RAG pipeline requires stored embeddings. Seed fake BLOB bytes so both
+        // learnings survive the `embedding IS NULL` filter.
+        let fake_emb = serialize_embedding(&[0.1f32; 384]);
 
-    assert_eq!(app.main_session_dir(), Some("/home/user/code"));
+        // Seed two approved learnings: one repo-scoped non-procedural, one
+        // user-scoped procedural. Both should land in the dispatch list for
+        // a task in /repo/a.
+        let proc_id = rt
+            .database
+            .create_learning(CreateLearningRow {
+                kind: LearningKind::Procedural,
+                summary: "Always run tests before committing.",
+                detail: None,
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: &[],
+                source_task_id: None,
+                embedding: Some(&fake_emb),
+            })
+            .await
+            .unwrap();
+        let repo_id = rt
+            .database
+            .create_learning(CreateLearningRow {
+                kind: LearningKind::Convention,
+                summary: "Use Arc for shared state.",
+                detail: None,
+                scope: LearningScope::Repo,
+                scope_ref: Some("/repo/a"),
+                tags: &[],
+                source_task_id: None,
+                embedding: Some(&fake_emb),
+            })
+            .await
+            .unwrap();
+
+        let emb_svc = EmbeddingService::new_test();
+        let injected =
+            crate::dispatch::build_and_record_injections(&*rt.database, &task, &emb_svc).await;
+        assert_eq!(injected.len(), 2);
+        let ids: Vec<_> = injected.iter().map(|l| l.id).collect();
+        assert!(ids.contains(&proc_id));
+        assert!(ids.contains(&repo_id));
+
+        let rows = rt.database.list_retrievals_for_task(task.id).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .all(|r| matches!(r.source, RetrievalSource::PromptInjection)));
+    }
 }
 
-#[tokio::test]
-async fn load_main_session_ignores_empty_dir() {
-    let db = Database::open_in_memory().await.unwrap();
-    db.set_setting_string("main_session.dir", "").await.unwrap();
-    let mut app = make_app();
+/// The shared dispatch prologue. Four launch sites (dispatch_task and the epic chain
+/// in src/mcp/handlers/tasks/dispatch.rs, exec_quick_dispatch and exec_dispatch_agent
+/// in src/runtime/tasks.rs) run it; their own end-to-end tests cover the wiring,
+/// these pin the prologue itself.
+mod prepare_inputs {
+    use super::*;
 
-    load_main_session(&db, &mut app).await;
+    #[tokio::test]
+    async fn prepare_inputs_reads_epic_context_and_injections() {
+        use crate::db::CreateLearningRow;
+        use crate::models::{LearningKind, LearningScope, RetrievalSource};
+        use crate::service::embeddings::{serialize_embedding, EmbeddingService};
 
-    assert_eq!(app.main_session_dir(), None);
+        let (rt, _app) = test_runtime().await;
+        let db = rt.db_write().clone();
+        let epic = db.create_epic("Chained Epic", "desc", None).await.unwrap();
+        let task_id = db
+            .create_task(CreateTaskRequest {
+                title: "title",
+                description: "desc",
+                repo_path: "/repo/a",
+                plan: None,
+                status: models::TaskStatus::Backlog,
+                base_branch: "main",
+                epic_id: Some(epic.id),
+                sort_order: None,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+                schedule_interval_secs: None,
+                pinned_branch: None,
+            })
+            .await
+            .unwrap();
+        let task = db.get_task(task_id).await.unwrap().unwrap();
+        let learning_id = db
+            .create_learning(CreateLearningRow {
+                kind: LearningKind::Convention,
+                summary: "Use Arc for shared state.",
+                detail: None,
+                scope: LearningScope::Repo,
+                scope_ref: Some("/repo/a"),
+                tags: &[],
+                source_task_id: None,
+                embedding: Some(&serialize_embedding(&[0.1f32; 384])),
+            })
+            .await
+            .unwrap();
+
+        let inputs =
+            crate::dispatch::prepare_inputs(&*db, &task, &EmbeddingService::new_test()).await;
+
+        let epic_ctx = inputs.epic_ctx.expect("epic context read from the DB");
+        assert_eq!(epic_ctx.epic_id, epic.id);
+        assert_eq!(epic_ctx.epic_title, "Chained Epic");
+        assert_eq!(
+            inputs.injected.iter().map(|l| l.id).collect::<Vec<_>>(),
+            vec![learning_id]
+        );
+
+        // The prologue's side effect: each injection is recorded as a retrieval.
+        let rows = db.list_retrievals_for_task(task.id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0].source, RetrievalSource::PromptInjection));
+    }
+
+    #[tokio::test]
+    async fn prepare_inputs_with_epic_ctx_uses_the_supplied_context() {
+        use crate::service::embeddings::EmbeddingService;
+
+        let (rt, _app) = test_runtime().await;
+        let db = rt.db_write().clone();
+        // Deliberately epic-less: a from_db read would yield None, so seeing the
+        // supplied context proves it was not re-read.
+        let task = create_task_returning(
+            &*db,
+            "title",
+            "desc",
+            "/repo/a",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        let supplied = crate::dispatch::EpicContext {
+            epic_id: models::EpicId(7),
+            epic_title: "Already in hand".to_string(),
+        };
+
+        let inputs = crate::dispatch::prepare_inputs_with_epic_ctx(
+            &*db,
+            &task,
+            &EmbeddingService::new_test(),
+            Some(supplied),
+        )
+        .await;
+
+        let epic_ctx = inputs.epic_ctx.expect("the supplied context is returned");
+        assert_eq!(epic_ctx.epic_id, models::EpicId(7));
+        assert_eq!(epic_ctx.epic_title, "Already in hand");
+        assert!(inputs.injected.is_empty());
+    }
 }
 
-#[tokio::test]
-async fn build_learning_injections_partitions_and_records_retrievals() {
-    use crate::models::{LearningKind, LearningScope, RetrievalSource};
-    use crate::service::embeddings::{serialize_embedding, EmbeddingService};
+mod backfill_embeddings {
+    use super::*;
 
-    let (rt, _app) = test_runtime().await;
-    // Seed a task in the default project.
-    let task = create_task_returning(
-        &**rt.db_write(),
-        "title",
-        "desc",
-        "/repo/a",
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
+    #[tokio::test]
+    async fn backfill_fills_missing_embeddings() {
+        use crate::db::{CreateLearningRow, LearningStore};
+        use crate::models::{LearningKind, LearningScope};
+        use crate::service::embeddings::EmbeddingService;
 
-    // RAG pipeline requires stored embeddings. Seed fake BLOB bytes so both
-    // learnings survive the `embedding IS NULL` filter.
-    let fake_emb = serialize_embedding(&[0.1f32; 384]);
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
 
-    // Seed two approved learnings: one repo-scoped non-procedural, one
-    // user-scoped procedural. Both should land in the dispatch list for
-    // a task in /repo/a.
-    let proc_id = rt
-        .database
-        .create_learning(CreateLearningRow {
-            kind: LearningKind::Procedural,
-            summary: "Always run tests before committing.",
+        // Insert two learnings without embeddings.
+        let id1 = db
+            .create_learning(CreateLearningRow {
+                kind: LearningKind::Convention,
+                summary: "always use snake_case",
+                detail: None,
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: &[],
+                source_task_id: None,
+                embedding: None,
+            })
+            .await
+            .unwrap();
+        let id2 = db
+            .create_learning(CreateLearningRow {
+                kind: LearningKind::Pitfall,
+                summary: "avoid unwrap in production",
+                detail: Some("use ? or expect with a message"),
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: &["rust".to_string()],
+                source_task_id: None,
+                embedding: None,
+            })
+            .await
+            .unwrap();
+
+        // Confirm both are missing embeddings before backfill.
+        let missing_before = db.list_learnings_missing_embedding().await.unwrap();
+        assert_eq!(
+            missing_before.len(),
+            2,
+            "expected 2 learnings missing embeddings"
+        );
+
+        // Run the backfill using the test stub service.
+        let emb_svc = EmbeddingService::new_noop();
+        let db_for_backfill: Arc<dyn crate::db::LearningStore + Send + Sync> = db.clone();
+        super::backfill_embeddings(db_for_backfill, emb_svc)
+            .await
+            .unwrap();
+
+        // After backfill, no learnings should be missing embeddings.
+        let missing_after = db.list_learnings_missing_embedding().await.unwrap();
+        assert!(
+            missing_after.is_empty(),
+            "expected 0 learnings missing embeddings after backfill, got {}",
+            missing_after.len()
+        );
+
+        // Both learnings should now have non-empty embeddings stored.
+        let l1 = db.get_learning(id1).await.unwrap().unwrap();
+        let l2 = db.get_learning(id2).await.unwrap().unwrap();
+        // Verify via list_all_approved_non_task_learnings which returns embeddings
+        let all = db.list_all_approved_non_task_learnings().await.unwrap();
+        let emb1 = all.iter().find(|(l, _)| l.id == l1.id).map(|(_, e)| e);
+        let emb2 = all.iter().find(|(l, _)| l.id == l2.id).map(|(_, e)| e);
+        assert!(
+            emb1.is_some_and(|e| !e.is_empty()),
+            "learning 1 should have embedding"
+        );
+        assert!(
+            emb2.is_some_and(|e| !e.is_empty()),
+            "learning 2 should have embedding"
+        );
+    }
+
+    #[tokio::test]
+    async fn backfill_is_noop_when_no_missing_embeddings() {
+        use crate::db::{CreateLearningRow, LearningStore};
+        use crate::models::{LearningKind, LearningScope};
+        use crate::service::embeddings::{serialize_embedding, EmbeddingService};
+
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+
+        // Insert a learning that already has an embedding.
+        let sentinel = serialize_embedding(&vec![0.1f32; 384]);
+        db.create_learning(CreateLearningRow {
+            kind: LearningKind::Convention,
+            summary: "already embedded",
             detail: None,
             scope: LearningScope::User,
             scope_ref: None,
             tags: &[],
             source_task_id: None,
-            embedding: Some(&fake_emb),
-        })
-        .await
-        .unwrap();
-    let repo_id = rt
-        .database
-        .create_learning(CreateLearningRow {
-            kind: LearningKind::Convention,
-            summary: "Use Arc for shared state.",
-            detail: None,
-            scope: LearningScope::Repo,
-            scope_ref: Some("/repo/a"),
-            tags: &[],
-            source_task_id: None,
-            embedding: Some(&fake_emb),
+            embedding: Some(&sentinel),
         })
         .await
         .unwrap();
 
-    let emb_svc = EmbeddingService::new_test();
-    let injected =
-        crate::dispatch::build_and_record_injections(&*rt.database, &task, &emb_svc).await;
-    assert_eq!(injected.len(), 2);
-    let ids: Vec<_> = injected.iter().map(|l| l.id).collect();
-    assert!(ids.contains(&proc_id));
-    assert!(ids.contains(&repo_id));
+        let missing_before = db.list_learnings_missing_embedding().await.unwrap();
+        assert!(
+            missing_before.is_empty(),
+            "precondition: no missing embeddings"
+        );
 
-    let rows = rt.database.list_retrievals_for_task(task.id).await.unwrap();
-    assert_eq!(rows.len(), 2);
-    assert!(rows
-        .iter()
-        .all(|r| matches!(r.source, RetrievalSource::PromptInjection)));
+        // Backfill should succeed without doing any work.
+        let emb_svc = EmbeddingService::new_noop();
+        let db_for_backfill: Arc<dyn crate::db::LearningStore + Send + Sync> = db.clone();
+        super::backfill_embeddings(db_for_backfill, emb_svc)
+            .await
+            .unwrap();
+
+        let missing_after = db.list_learnings_missing_embedding().await.unwrap();
+        assert!(
+            missing_after.is_empty(),
+            "still no missing embeddings after no-op backfill"
+        );
+    }
 }
 
-// ---------------------------------------------------------------------------
-// prepare_inputs tests
-// ---------------------------------------------------------------------------
-//
-// The shared dispatch prologue. Four launch sites (dispatch_task and the epic
-// chain in src/mcp/handlers/tasks/dispatch.rs, exec_quick_dispatch and
-// exec_dispatch_agent in src/runtime/tasks.rs) run it; their own end-to-end
-// tests cover the wiring, these pin the prologue itself.
+mod spawn_refresh_task {
+    use super::*;
 
-#[tokio::test]
-async fn prepare_inputs_reads_epic_context_and_injections() {
-    use crate::db::CreateLearningRow;
-    use crate::models::{LearningKind, LearningScope, RetrievalSource};
-    use crate::service::embeddings::{serialize_embedding, EmbeddingService};
+    #[tokio::test]
+    async fn spawn_refresh_task_sends_updated_task_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+        rt.exec_insert_task(
+            &mut app,
+            tui::TaskDraft {
+                title: "Refresh Me".into(),
+                description: "Desc".into(),
+                repo_path: "/repo".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let id = app.tasks()[0].id;
+        rt.db_write()
+            .patch_task(
+                id,
+                &db::TaskPatch::new()
+                    .status(models::TaskStatus::Running)
+                    .sub_status(models::SubStatus::Active),
+            )
+            .await
+            .unwrap();
 
-    let (rt, _app) = test_runtime().await;
-    let db = rt.db_write().clone();
-    let epic = db.create_epic("Chained Epic", "desc", None).await.unwrap();
-    let task_id = db
-        .create_task(CreateTaskRequest {
-            title: "title",
-            description: "desc",
-            repo_path: "/repo/a",
+        rt.spawn_refresh_task(id).await.unwrap();
+
+        // Drain messages to find the Updated one.
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Task(crate::tui::messages::TaskMessage::Updated(t)) if t.status == models::TaskStatus::Running
+            ),
+            "Expected Updated with Running status, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_refresh_task_falls_back_when_task_gone() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let tasks = db.list_all().await.unwrap();
+        let mut app = App::new(tasks);
+        rt.exec_insert_task(
+            &mut app,
+            tui::TaskDraft {
+                title: "Gone Task".into(),
+                description: "Desc".into(),
+                repo_path: "/repo".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let id = app.tasks()[0].id;
+        rt.db_write().delete_task(id).await.unwrap();
+
+        rt.spawn_refresh_task(id).await.unwrap();
+
+        // The fallback sends a Refresh message with an empty list.
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Task(crate::tui::messages::TaskMessage::Refresh(tasks)) if tasks.is_empty()
+            ),
+            "Expected empty Refresh fallback, got: {msg:?}"
+        );
+    }
+}
+
+mod spawn_refresh_epic {
+    use super::*;
+
+    #[tokio::test]
+    async fn spawn_refresh_epic_sends_updated_epic_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let epic = db.create_epic("Epic", "desc", None).await.unwrap();
+        db.patch_epic(
+            epic.id,
+            &db::EpicPatch::new().status(models::TaskStatus::Running),
+        )
+        .await
+        .unwrap();
+
+        rt.spawn_refresh_epic(epic.id).await.unwrap();
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg,
+                Message::Epic(crate::tui::messages::EpicMessage::Updated(e)) if e.status == models::TaskStatus::Running
+            ),
+            "Expected Updated epic with Running status, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_refresh_epic_falls_back_when_epic_gone() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let epic = db.create_epic("Gone Epic", "desc", None).await.unwrap();
+        db.delete_epic(epic.id).await.unwrap();
+
+        rt.spawn_refresh_epic(epic.id).await.unwrap();
+
+        let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // Fallback sends a full Refresh (tasks list, may be empty).
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::Refresh(_))
+            ),
+            "Expected Task::Refresh fallback, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn spawn_refresh_epic_also_sends_epic_tasks_via_msg_tx() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let epic = db.create_epic("Feed Epic", "desc", None).await.unwrap();
+        db.create_task(crate::db::CreateTaskRequest {
+            title: "Feed Task",
+            description: "from feed",
+            repo_path: "/repo",
             plan: None,
             status: models::TaskStatus::Backlog,
             base_branch: "main",
@@ -4522,809 +4909,450 @@ async fn prepare_inputs_reads_epic_context_and_injections() {
         })
         .await
         .unwrap();
-    let task = db.get_task(task_id).await.unwrap().unwrap();
-    let learning_id = db
-        .create_learning(CreateLearningRow {
-            kind: LearningKind::Convention,
-            summary: "Use Arc for shared state.",
-            detail: None,
-            scope: LearningScope::Repo,
-            scope_ref: Some("/repo/a"),
-            tags: &[],
-            source_task_id: None,
-            embedding: Some(&serialize_embedding(&[0.1f32; 384])),
-        })
-        .await
-        .unwrap();
 
-    let inputs = crate::dispatch::prepare_inputs(&*db, &task, &EmbeddingService::new_test()).await;
+        rt.spawn_refresh_epic(epic.id).await.unwrap();
 
-    let epic_ctx = inputs.epic_ctx.expect("epic context read from the DB");
-    assert_eq!(epic_ctx.epic_id, epic.id);
-    assert_eq!(epic_ctx.epic_title, "Chained Epic");
-    assert_eq!(
-        inputs.injected.iter().map(|l| l.id).collect::<Vec<_>>(),
-        vec![learning_id]
-    );
-
-    // The prologue's side effect: each injection is recorded as a retrieval.
-    let rows = db.list_retrievals_for_task(task.id).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert!(matches!(rows[0].source, RetrievalSource::PromptInjection));
+        // First message: EpicMessage::Updated
+        let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                msg1,
+                Message::Epic(crate::tui::messages::EpicMessage::Updated(_))
+            ),
+            "Expected Epic::Updated first, got: {msg1:?}"
+        );
+        // Second message: TaskMessage::Updated for the linked task
+        let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(
+                &msg2,
+                Message::Task(crate::tui::messages::TaskMessage::Updated(t)) if t.title == "Feed Task"
+            ),
+            "Expected Task::Updated with 'Feed Task', got: {msg2:?}"
+        );
+    }
 }
 
-#[tokio::test]
-async fn prepare_inputs_with_epic_ctx_uses_the_supplied_context() {
-    use crate::service::embeddings::EmbeddingService;
+mod epic_auto_dispatch_and_group_by_repo {
+    use super::*;
 
-    let (rt, _app) = test_runtime().await;
-    let db = rt.db_write().clone();
-    // Deliberately epic-less: a from_db read would yield None, so seeing the
-    // supplied context proves it was not re-read.
-    let task = create_task_returning(
-        &*db,
-        "title",
-        "desc",
-        "/repo/a",
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
-    let supplied = crate::dispatch::EpicContext {
-        epic_id: models::EpicId(7),
-        epic_title: "Already in hand".to_string(),
-    };
+    #[tokio::test]
+    async fn exec_toggle_epic_auto_dispatch_sets_flag_to_false() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("AutoDispatch Epic", "desc", None)
+            .await
+            .unwrap();
+        // Default is false; opt in first so the toggle-to-false is meaningful.
+        rt.db_write()
+            .patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(true))
+            .await
+            .unwrap();
+        let enabled = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(enabled.auto_dispatch);
 
-    let inputs = crate::dispatch::prepare_inputs_with_epic_ctx(
-        &*db,
-        &task,
-        &EmbeddingService::new_test(),
-        Some(supplied),
-    )
-    .await;
+        rt.exec_toggle_epic_auto_dispatch(&mut app, epic.id, false)
+            .await;
 
-    let epic_ctx = inputs.epic_ctx.expect("the supplied context is returned");
-    assert_eq!(epic_ctx.epic_id, models::EpicId(7));
-    assert_eq!(epic_ctx.epic_title, "Already in hand");
-    assert!(inputs.injected.is_empty());
+        let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(!updated.auto_dispatch);
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_toggle_epic_auto_dispatch_sets_flag_to_true() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("AutoDispatch Epic", "desc", None)
+            .await
+            .unwrap();
+        rt.db_write()
+            .patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(false))
+            .await
+            .unwrap();
+
+        rt.exec_toggle_epic_auto_dispatch(&mut app, epic.id, true)
+            .await;
+
+        let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(updated.auto_dispatch);
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_toggle_epic_group_by_repo_sets_flag_to_true() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("GroupByRepo Epic", "desc", None)
+            .await
+            .unwrap();
+        assert!(!epic.group_by_repo, "default group_by_repo should be false");
+
+        rt.exec_toggle_epic_group_by_repo(&mut app, epic.id, true)
+            .await;
+
+        let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(updated.group_by_repo);
+        assert!(app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn exec_toggle_epic_group_by_repo_sets_flag_to_false() {
+        let (rt, mut app) = test_runtime().await;
+        let epic = rt
+            .db_write()
+            .create_epic("GroupByRepo Epic", "desc", None)
+            .await
+            .unwrap();
+        rt.db_write()
+            .patch_epic(epic.id, &db::EpicPatch::new().group_by_repo(true))
+            .await
+            .unwrap();
+
+        rt.exec_toggle_epic_group_by_repo(&mut app, epic.id, false)
+            .await;
+
+        let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
+        assert!(!updated.group_by_repo);
+        assert!(app.error_popup().is_none());
+    }
 }
 
-// ---------------------------------------------------------------------------
-// backfill_embeddings tests
-// ---------------------------------------------------------------------------
+mod epic_group_by_repo_migration {
+    use super::*;
 
-#[tokio::test]
-async fn backfill_fills_missing_embeddings() {
-    use crate::db::{CreateLearningRow, LearningStore};
-    use crate::models::{LearningKind, LearningScope};
-    use crate::service::embeddings::EmbeddingService;
+    #[tokio::test]
+    async fn toggle_group_by_repo_on_regroups_existing_tasks() {
+        let (rt, mut app) = test_runtime().await;
+        let root = rt.db_write().create_epic("root", "", None).await.unwrap();
+        // Add a backlog task on root with repo "/x/alpha".
+        let _task_id = rt
+            .db_write()
+            .create_task(CreateTaskRequest {
+                title: "task on root",
+                description: "",
+                repo_path: "/x/alpha",
+                plan: None,
+                status: models::TaskStatus::Backlog,
+                base_branch: "main",
+                epic_id: Some(root.id),
+                sort_order: None,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+                schedule_interval_secs: None,
+                pinned_branch: None,
+            })
+            .await
+            .unwrap();
 
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
+        rt.exec_toggle_epic_group_by_repo(&mut app, root.id, true)
+            .await;
 
-    // Insert two learnings without embeddings.
-    let id1 = db
-        .create_learning(CreateLearningRow {
-            kind: LearningKind::Convention,
-            summary: "always use snake_case",
-            detail: None,
-            scope: LearningScope::User,
-            scope_ref: None,
-            tags: &[],
-            source_task_id: None,
-            embedding: None,
-        })
-        .await
-        .unwrap();
-    let id2 = db
-        .create_learning(CreateLearningRow {
-            kind: LearningKind::Pitfall,
-            summary: "avoid unwrap in production",
-            detail: Some("use ? or expect with a message"),
-            scope: LearningScope::User,
-            scope_ref: None,
-            tags: &["rust".to_string()],
-            source_task_id: None,
-            embedding: None,
-        })
-        .await
-        .unwrap();
-
-    // Confirm both are missing embeddings before backfill.
-    let missing_before = db.list_learnings_missing_embedding().await.unwrap();
-    assert_eq!(
-        missing_before.len(),
-        2,
-        "expected 2 learnings missing embeddings"
-    );
-
-    // Run the backfill using the test stub service.
-    let emb_svc = EmbeddingService::new_noop();
-    let db_for_backfill: Arc<dyn crate::db::LearningStore + Send + Sync> = db.clone();
-    super::backfill_embeddings(db_for_backfill, emb_svc)
-        .await
-        .unwrap();
-
-    // After backfill, no learnings should be missing embeddings.
-    let missing_after = db.list_learnings_missing_embedding().await.unwrap();
-    assert!(
-        missing_after.is_empty(),
-        "expected 0 learnings missing embeddings after backfill, got {}",
-        missing_after.len()
-    );
-
-    // Both learnings should now have non-empty embeddings stored.
-    let l1 = db.get_learning(id1).await.unwrap().unwrap();
-    let l2 = db.get_learning(id2).await.unwrap().unwrap();
-    // Verify via list_all_approved_non_task_learnings which returns embeddings
-    let all = db.list_all_approved_non_task_learnings().await.unwrap();
-    let emb1 = all.iter().find(|(l, _)| l.id == l1.id).map(|(_, e)| e);
-    let emb2 = all.iter().find(|(l, _)| l.id == l2.id).map(|(_, e)| e);
-    assert!(
-        emb1.is_some_and(|e| !e.is_empty()),
-        "learning 1 should have embedding"
-    );
-    assert!(
-        emb2.is_some_and(|e| !e.is_empty()),
-        "learning 2 should have embedding"
-    );
+        assert!(
+            rt.database
+                .list_tasks_for_epic(root.id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "root tasks should have been migrated into sub-epics"
+        );
+        assert_eq!(
+            rt.database.list_sub_epics(root.id).await.unwrap().len(),
+            1,
+            "one sub-epic should exist for the repo group"
+        );
+        assert!(app.error_popup().is_none());
+    }
 }
 
-#[tokio::test]
-async fn backfill_is_noop_when_no_missing_embeddings() {
-    use crate::db::{CreateLearningRow, LearningStore};
-    use crate::models::{LearningKind, LearningScope};
-    use crate::service::embeddings::{serialize_embedding, EmbeddingService};
+mod frame_rate_cap {
+    use super::*;
 
-    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    #[test]
+    fn min_frame_interval_is_16ms() {
+        assert_eq!(MIN_FRAME_INTERVAL, Duration::from_millis(16));
+    }
 
-    // Insert a learning that already has an embedding.
-    let sentinel = serialize_embedding(&vec![0.1f32; 384]);
-    db.create_learning(CreateLearningRow {
-        kind: LearningKind::Convention,
-        summary: "already embedded",
-        detail: None,
-        scope: LearningScope::User,
-        scope_ref: None,
-        tags: &[],
-        source_task_id: None,
-        embedding: Some(&sentinel),
-    })
-    .await
-    .unwrap();
+    #[test]
+    fn frame_ready_true_when_dirty_and_interval_elapsed() {
+        assert!(
+            frame_ready(Duration::from_millis(20), true),
+            "should render when dirty and interval has elapsed"
+        );
+    }
 
-    let missing_before = db.list_learnings_missing_embedding().await.unwrap();
-    assert!(
-        missing_before.is_empty(),
-        "precondition: no missing embeddings"
-    );
+    #[test]
+    fn frame_ready_false_when_interval_not_elapsed() {
+        assert!(
+            !frame_ready(Duration::from_millis(8), true),
+            "should not render when interval has not elapsed even if dirty"
+        );
+    }
 
-    // Backfill should succeed without doing any work.
-    let emb_svc = EmbeddingService::new_noop();
-    let db_for_backfill: Arc<dyn crate::db::LearningStore + Send + Sync> = db.clone();
-    super::backfill_embeddings(db_for_backfill, emb_svc)
-        .await
-        .unwrap();
+    #[test]
+    fn frame_ready_false_when_not_dirty_even_if_interval_elapsed() {
+        assert!(
+            !frame_ready(Duration::from_millis(20), false),
+            "should not render when not dirty even if interval has elapsed"
+        );
+    }
 
-    let missing_after = db.list_learnings_missing_embedding().await.unwrap();
-    assert!(
-        missing_after.is_empty(),
-        "still no missing embeddings after no-op backfill"
-    );
+    #[test]
+    fn frame_ready_false_when_zero_elapsed() {
+        assert!(
+            !frame_ready(Duration::ZERO, true),
+            "should not render when no time has elapsed"
+        );
+    }
+
+    #[test]
+    fn frame_ready_true_at_exact_interval_boundary() {
+        assert!(
+            frame_ready(Duration::from_millis(16), true),
+            "should render exactly at the 16ms boundary"
+        );
+    }
 }
 
-// ---------------------------------------------------------------------------
-// spawn_refresh_task
-// ---------------------------------------------------------------------------
+/// next_loop_event / apply_loop_event / run_loop
+mod event_loop {
+    use super::*;
 
-#[tokio::test]
-async fn spawn_refresh_task_sends_updated_task_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "Refresh Me".into(),
-            description: "Desc".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-    let id = app.tasks()[0].id;
-    rt.db_write()
-        .patch_task(
+    use crossterm::event::{KeyCode, KeyEvent};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// A tick interval whose first (and every) tick is far in the future, so it
+    /// never fires during a test — lets us assert which non-tick arm `select!`
+    /// chooses without the immediate-first-tick of a plain `interval`.
+    fn quiet_tick() -> tokio::time::Interval {
+        let far = tokio::time::Instant::now() + Duration::from_secs(3600);
+        tokio::time::interval_at(far, Duration::from_secs(3600))
+    }
+
+    fn status_info(text: &str) -> Message {
+        Message::System(crate::tui::messages::SystemMessage::StatusInfo(
+            text.to_string(),
+        ))
+    }
+
+    /// `next_loop_event` drains queued async messages FIFO — the order they were
+    /// sent is the order the loop observes them.
+    #[tokio::test]
+    async fn next_loop_event_drains_messages_in_order() {
+        let (_key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
+        let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
+        let (_mcp_tx, mut mcp_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
+        let mut tick = quiet_tick();
+
+        msg_tx.send(status_info("first")).unwrap();
+        msg_tx.send(status_info("second")).unwrap();
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            match next_loop_event(&mut key_rx, &mut msg_rx, &mut mcp_rx, &mut tick).await {
+                LoopEvent::Message(Message::System(
+                    crate::tui::messages::SystemMessage::StatusInfo(s),
+                )) => seen.push(s),
+                other => panic!("expected a StatusInfo message, got something else: {other:?}"),
+            }
+        }
+
+        assert_eq!(seen, vec!["first".to_string(), "second".to_string()]);
+    }
+
+    /// A `Message` loop event is applied to the app and marks it dirty so the next
+    /// frame redraws.
+    #[tokio::test]
+    async fn apply_loop_event_message_applies_and_marks_dirty() {
+        let (rt, mut app) = test_runtime().await;
+        app.dirty = false;
+
+        let cmds = apply_loop_event(&mut app, LoopEvent::Message(status_info("hello")), &rt);
+
+        assert!(
+            app.dirty,
+            "applying an async message must mark the app dirty"
+        );
+        assert!(
+            cmds.is_empty(),
+            "a status-info message produces no commands"
+        );
+        assert_eq!(app.status_message(), Some("hello"));
+    }
+
+    /// A `Tick` loop event routes through `App::handle_tick`, which emits a single
+    /// batched window-staleness check for the windowed tasks on the board.
+    #[tokio::test]
+    async fn apply_loop_event_tick_triggers_window_sweep() {
+        let db = test_db().await;
+        let id = db
+            .create_task(CreateTaskRequest {
+                title: "windowed",
+                description: "",
+                repo_path: "/repo",
+                plan: None,
+                status: models::TaskStatus::Running,
+                epic_id: None,
+                sort_order: None,
+                tag: None,
+                base_branch: "main",
+                wrap_up_mode: None,
+                auto_run_plan: false,
+                schedule_interval_secs: None,
+                pinned_branch: None,
+            })
+            .await
+            .unwrap();
+        // Give the task a live tmux window so the tick has something to sweep.
+        db.patch_task(
             id,
-            &db::TaskPatch::new()
-                .status(models::TaskStatus::Running)
-                .sub_status(models::SubStatus::Active),
+            &crate::db::TaskPatch::new().tmux_window(Some("dispatch:1")),
         )
         .await
         .unwrap();
 
-    rt.spawn_refresh_task(id).await.unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let mut app = App::new(db.list_all().await.unwrap());
 
-    // Drain messages to find the Updated one.
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Task(crate::tui::messages::TaskMessage::Updated(t)) if t.status == models::TaskStatus::Running
-        ),
-        "Expected Updated with Running status, got: {msg:?}"
-    );
-}
+        let cmds = apply_loop_event(&mut app, LoopEvent::Tick, &rt);
 
-#[tokio::test]
-async fn spawn_refresh_task_falls_back_when_task_gone() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let tasks = db.list_all().await.unwrap();
-    let mut app = App::new(tasks);
-    rt.exec_insert_task(
-        &mut app,
-        tui::TaskDraft {
-            title: "Gone Task".into(),
-            description: "Desc".into(),
-            repo_path: "/repo".into(),
-            ..Default::default()
-        },
-        None,
-    )
-    .await;
-    let id = app.tasks()[0].id;
-    rt.db_write().delete_task(id).await.unwrap();
-
-    rt.spawn_refresh_task(id).await.unwrap();
-
-    // The fallback sends a Refresh message with an empty list.
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Task(crate::tui::messages::TaskMessage::Refresh(tasks)) if tasks.is_empty()
-        ),
-        "Expected empty Refresh fallback, got: {msg:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// spawn_refresh_epic
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn spawn_refresh_epic_sends_updated_epic_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let epic = db.create_epic("Epic", "desc", None).await.unwrap();
-    db.patch_epic(
-        epic.id,
-        &db::EpicPatch::new().status(models::TaskStatus::Running),
-    )
-    .await
-    .unwrap();
-
-    rt.spawn_refresh_epic(epic.id).await.unwrap();
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg,
-            Message::Epic(crate::tui::messages::EpicMessage::Updated(e)) if e.status == models::TaskStatus::Running
-        ),
-        "Expected Updated epic with Running status, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn spawn_refresh_epic_falls_back_when_epic_gone() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let epic = db.create_epic("Gone Epic", "desc", None).await.unwrap();
-    db.delete_epic(epic.id).await.unwrap();
-
-    rt.spawn_refresh_epic(epic.id).await.unwrap();
-
-    let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    // Fallback sends a full Refresh (tasks list, may be empty).
-    assert!(
-        matches!(
-            msg,
-            Message::Task(crate::tui::messages::TaskMessage::Refresh(_))
-        ),
-        "Expected Task::Refresh fallback, got: {msg:?}"
-    );
-}
-
-#[tokio::test]
-async fn spawn_refresh_epic_also_sends_epic_tasks_via_msg_tx() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let epic = db.create_epic("Feed Epic", "desc", None).await.unwrap();
-    db.create_task(crate::db::CreateTaskRequest {
-        title: "Feed Task",
-        description: "from feed",
-        repo_path: "/repo",
-        plan: None,
-        status: models::TaskStatus::Backlog,
-        base_branch: "main",
-        epic_id: Some(epic.id),
-        sort_order: None,
-        tag: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        schedule_interval_secs: None,
-        pinned_branch: None,
-    })
-    .await
-    .unwrap();
-
-    rt.spawn_refresh_epic(epic.id).await.unwrap();
-
-    // First message: EpicMessage::Updated
-    let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            msg1,
-            Message::Epic(crate::tui::messages::EpicMessage::Updated(_))
-        ),
-        "Expected Epic::Updated first, got: {msg1:?}"
-    );
-    // Second message: TaskMessage::Updated for the linked task
-    let msg2 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(
-            &msg2,
-            Message::Task(crate::tui::messages::TaskMessage::Updated(t)) if t.title == "Feed Task"
-        ),
-        "Expected Task::Updated with 'Feed Task', got: {msg2:?}"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// exec_toggle_epic_auto_dispatch / exec_toggle_epic_group_by_repo
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn exec_toggle_epic_auto_dispatch_sets_flag_to_false() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("AutoDispatch Epic", "desc", None)
-        .await
-        .unwrap();
-    // Default is false; opt in first so the toggle-to-false is meaningful.
-    rt.db_write()
-        .patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(true))
-        .await
-        .unwrap();
-    let enabled = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert!(enabled.auto_dispatch);
-
-    rt.exec_toggle_epic_auto_dispatch(&mut app, epic.id, false)
-        .await;
-
-    let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert!(!updated.auto_dispatch);
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_toggle_epic_auto_dispatch_sets_flag_to_true() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("AutoDispatch Epic", "desc", None)
-        .await
-        .unwrap();
-    rt.db_write()
-        .patch_epic(epic.id, &db::EpicPatch::new().auto_dispatch(false))
-        .await
-        .unwrap();
-
-    rt.exec_toggle_epic_auto_dispatch(&mut app, epic.id, true)
-        .await;
-
-    let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert!(updated.auto_dispatch);
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_toggle_epic_group_by_repo_sets_flag_to_true() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("GroupByRepo Epic", "desc", None)
-        .await
-        .unwrap();
-    assert!(!epic.group_by_repo, "default group_by_repo should be false");
-
-    rt.exec_toggle_epic_group_by_repo(&mut app, epic.id, true)
-        .await;
-
-    let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert!(updated.group_by_repo);
-    assert!(app.error_popup().is_none());
-}
-
-#[tokio::test]
-async fn exec_toggle_epic_group_by_repo_sets_flag_to_false() {
-    let (rt, mut app) = test_runtime().await;
-    let epic = rt
-        .db_write()
-        .create_epic("GroupByRepo Epic", "desc", None)
-        .await
-        .unwrap();
-    rt.db_write()
-        .patch_epic(epic.id, &db::EpicPatch::new().group_by_repo(true))
-        .await
-        .unwrap();
-
-    rt.exec_toggle_epic_group_by_repo(&mut app, epic.id, false)
-        .await;
-
-    let updated = rt.database.get_epic(epic.id).await.unwrap().unwrap();
-    assert!(!updated.group_by_repo);
-    assert!(app.error_popup().is_none());
-}
-
-// ---------------------------------------------------------------------------
-// exec_toggle_epic_group_by_repo — migration behaviour
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn toggle_group_by_repo_on_regroups_existing_tasks() {
-    let (rt, mut app) = test_runtime().await;
-    let root = rt.db_write().create_epic("root", "", None).await.unwrap();
-    // Add a backlog task on root with repo "/x/alpha".
-    let _task_id = rt
-        .db_write()
-        .create_task(CreateTaskRequest {
-            title: "task on root",
-            description: "",
-            repo_path: "/x/alpha",
-            plan: None,
-            status: models::TaskStatus::Backlog,
-            base_branch: "main",
-            epic_id: Some(root.id),
-            sort_order: None,
-            tag: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-        })
-        .await
-        .unwrap();
-
-    rt.exec_toggle_epic_group_by_repo(&mut app, root.id, true)
-        .await;
-
-    assert!(
-        rt.database
-            .list_tasks_for_epic(root.id)
-            .await
-            .unwrap()
-            .is_empty(),
-        "root tasks should have been migrated into sub-epics"
-    );
-    assert_eq!(
-        rt.database.list_sub_epics(root.id).await.unwrap().len(),
-        1,
-        "one sub-epic should exist for the repo group"
-    );
-    assert!(app.error_popup().is_none());
-}
-
-// ---------------------------------------------------------------------------
-// Frame rate cap
-// ---------------------------------------------------------------------------
-
-#[test]
-fn min_frame_interval_is_16ms() {
-    assert_eq!(MIN_FRAME_INTERVAL, Duration::from_millis(16));
-}
-
-#[test]
-fn frame_ready_true_when_dirty_and_interval_elapsed() {
-    assert!(
-        frame_ready(Duration::from_millis(20), true),
-        "should render when dirty and interval has elapsed"
-    );
-}
-
-#[test]
-fn frame_ready_false_when_interval_not_elapsed() {
-    assert!(
-        !frame_ready(Duration::from_millis(8), true),
-        "should not render when interval has not elapsed even if dirty"
-    );
-}
-
-#[test]
-fn frame_ready_false_when_not_dirty_even_if_interval_elapsed() {
-    assert!(
-        !frame_ready(Duration::from_millis(20), false),
-        "should not render when not dirty even if interval has elapsed"
-    );
-}
-
-#[test]
-fn frame_ready_false_when_zero_elapsed() {
-    assert!(
-        !frame_ready(Duration::ZERO, true),
-        "should not render when no time has elapsed"
-    );
-}
-
-#[test]
-fn frame_ready_true_at_exact_interval_boundary() {
-    assert!(
-        frame_ready(Duration::from_millis(16), true),
-        "should render exactly at the 16ms boundary"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Event loop: next_loop_event / apply_loop_event / run_loop
-// ---------------------------------------------------------------------------
-
-use crossterm::event::{KeyCode, KeyEvent};
-use ratatui::backend::TestBackend;
-use ratatui::Terminal;
-
-/// A tick interval whose first (and every) tick is far in the future, so it
-/// never fires during a test — lets us assert which non-tick arm `select!`
-/// chooses without the immediate-first-tick of a plain `interval`.
-fn quiet_tick() -> tokio::time::Interval {
-    let far = tokio::time::Instant::now() + Duration::from_secs(3600);
-    tokio::time::interval_at(far, Duration::from_secs(3600))
-}
-
-fn status_info(text: &str) -> Message {
-    Message::System(crate::tui::messages::SystemMessage::StatusInfo(
-        text.to_string(),
-    ))
-}
-
-/// `next_loop_event` drains queued async messages FIFO — the order they were
-/// sent is the order the loop observes them.
-#[tokio::test]
-async fn next_loop_event_drains_messages_in_order() {
-    let (_key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
-    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
-    let (_mcp_tx, mut mcp_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
-    let mut tick = quiet_tick();
-
-    msg_tx.send(status_info("first")).unwrap();
-    msg_tx.send(status_info("second")).unwrap();
-
-    let mut seen = Vec::new();
-    for _ in 0..2 {
-        match next_loop_event(&mut key_rx, &mut msg_rx, &mut mcp_rx, &mut tick).await {
-            LoopEvent::Message(Message::System(
-                crate::tui::messages::SystemMessage::StatusInfo(s),
-            )) => seen.push(s),
-            other => panic!("expected a StatusInfo message, got something else: {other:?}"),
-        }
+        let batch_checks = cmds
+            .iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Command::Task(crate::tui::commands::TaskCommand::BatchCheckWindows { .. })
+                )
+            })
+            .count();
+        assert_eq!(
+            batch_checks, 1,
+            "tick must emit exactly one batched window-staleness check"
+        );
     }
 
-    assert_eq!(seen, vec!["first".to_string(), "second".to_string()]);
-}
+    fn count_archive_stale(cmds: &[Command]) -> usize {
+        cmds.iter()
+            .filter(|c| {
+                matches!(
+                    c,
+                    Command::Learning(crate::tui::commands::LearningCommand::ArchiveStale)
+                )
+            })
+            .count()
+    }
 
-/// A `Message` loop event is applied to the app and marks it dirty so the next
-/// frame redraws.
-#[tokio::test]
-async fn apply_loop_event_message_applies_and_marks_dirty() {
-    let (rt, mut app) = test_runtime().await;
-    app.dirty = false;
+    /// A `Tick` emits the stale-learning cleanup command when the cleanup interval
+    /// has elapsed (tracker = None means never run). See
+    /// docs/specs/learnings.allium: ArchiveStaleLearning.
+    #[tokio::test]
+    async fn apply_loop_event_tick_emits_stale_cleanup_when_interval_elapsed() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let mut app = App::new(vec![]);
+        app.last_stale_cleanup_at = None;
 
-    let cmds = apply_loop_event(&mut app, LoopEvent::Message(status_info("hello")), &rt);
+        let cmds = apply_loop_event(&mut app, LoopEvent::Tick, &rt);
 
-    assert!(
-        app.dirty,
-        "applying an async message must mark the app dirty"
-    );
-    assert!(
-        cmds.is_empty(),
-        "a status-info message produces no commands"
-    );
-    assert_eq!(app.status_message(), Some("hello"));
-}
+        assert_eq!(
+            count_archive_stale(&cmds),
+            1,
+            "tick must emit exactly one ArchiveStale command when the interval has elapsed"
+        );
+        assert!(
+            app.last_stale_cleanup_at.is_some(),
+            "the sweep must record its run time to space out subsequent sweeps"
+        );
+    }
 
-/// A `Tick` loop event routes through `App::handle_tick`, which emits a single
-/// batched window-staleness check for the windowed tasks on the board.
-#[tokio::test]
-async fn apply_loop_event_tick_triggers_window_sweep() {
-    let db = test_db().await;
-    let id = db
-        .create_task(CreateTaskRequest {
-            title: "windowed",
-            description: "",
-            repo_path: "/repo",
-            plan: None,
-            status: models::TaskStatus::Running,
-            epic_id: None,
-            sort_order: None,
-            tag: None,
-            base_branch: "main",
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-        })
+    /// A `Tick` does NOT re-emit the stale-learning cleanup command when the last
+    /// sweep ran just now (interval not yet elapsed).
+    #[tokio::test]
+    async fn apply_loop_event_tick_skips_stale_cleanup_when_interval_not_elapsed() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let mut app = App::new(vec![]);
+        app.last_stale_cleanup_at = Some(std::time::Instant::now());
+
+        let cmds = apply_loop_event(&mut app, LoopEvent::Tick, &rt);
+
+        assert_eq!(
+            count_archive_stale(&cmds),
+            0,
+            "tick must not re-emit ArchiveStale before the interval has elapsed"
+        );
+    }
+
+    /// An MCP `Refresh` event marks the app dirty and produces no immediate
+    /// commands (the DB refresh is spawned; its result returns via a later message).
+    #[tokio::test]
+    async fn apply_loop_event_mcp_refresh_spawns_and_yields_no_commands() {
+        let (rt, mut app) = test_runtime().await;
+        app.dirty = false;
+
+        let cmds = apply_loop_event(&mut app, LoopEvent::Mcp(mcp::McpEvent::Refresh), &rt);
+
+        assert!(app.dirty, "an MCP event must mark the app dirty");
+        assert!(
+            cmds.is_empty(),
+            "Refresh spawns a background refresh and returns no synchronous commands"
+        );
+    }
+
+    /// Driving `run_loop` (on a headless `TestBackend`) with a `q`→`y` quit
+    /// sequence exits the loop cleanly, after draining the queued key events.
+    #[tokio::test]
+    async fn run_loop_exits_cleanly_on_quit_sequence() {
+        let (mut rt, mut app) = test_runtime().await;
+        // Don't start the real feed poll loop in a unit test.
+        rt.feed_runner = None;
+
+        let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
+        let (_msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
+        let (_mcp_tx, mut mcp_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
+        let mut tick = quiet_tick();
+
+        // q opens the quit confirm; y confirms. FIFO ordering guarantees q first.
+        key_tx.send(KeyEvent::from(KeyCode::Char('q'))).unwrap();
+        key_tx.send(KeyEvent::from(KeyCode::Char('y'))).unwrap();
+
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        let result = tokio::time::timeout(
+            TEST_TIMEOUT,
+            run_loop(
+                &mut app,
+                &mut terminal,
+                &mut key_rx,
+                &mut msg_rx,
+                &mut mcp_rx,
+                &mut tick,
+                &mut rt,
+            ),
+        )
         .await
-        .unwrap();
-    // Give the task a live tmux window so the tick has something to sweep.
-    db.patch_task(
-        id,
-        &crate::db::TaskPatch::new().tmux_window(Some("dispatch:1")),
-    )
-    .await
-    .unwrap();
+        .expect("run_loop should exit well within the timeout");
 
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let mut app = App::new(db.list_all().await.unwrap());
-
-    let cmds = apply_loop_event(&mut app, LoopEvent::Tick, &rt);
-
-    let batch_checks = cmds
-        .iter()
-        .filter(|c| {
-            matches!(
-                c,
-                Command::Task(crate::tui::commands::TaskCommand::BatchCheckWindows { .. })
-            )
-        })
-        .count();
-    assert_eq!(
-        batch_checks, 1,
-        "tick must emit exactly one batched window-staleness check"
-    );
-}
-
-fn count_archive_stale(cmds: &[Command]) -> usize {
-    cmds.iter()
-        .filter(|c| {
-            matches!(
-                c,
-                Command::Learning(crate::tui::commands::LearningCommand::ArchiveStale)
-            )
-        })
-        .count()
-}
-
-/// A `Tick` emits the stale-learning cleanup command when the cleanup interval
-/// has elapsed (tracker = None means never run). See
-/// docs/specs/learnings.allium: ArchiveStaleLearning.
-#[tokio::test]
-async fn apply_loop_event_tick_emits_stale_cleanup_when_interval_elapsed() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let mut app = App::new(vec![]);
-    app.last_stale_cleanup_at = None;
-
-    let cmds = apply_loop_event(&mut app, LoopEvent::Tick, &rt);
-
-    assert_eq!(
-        count_archive_stale(&cmds),
-        1,
-        "tick must emit exactly one ArchiveStale command when the interval has elapsed"
-    );
-    assert!(
-        app.last_stale_cleanup_at.is_some(),
-        "the sweep must record its run time to space out subsequent sweeps"
-    );
-}
-
-/// A `Tick` does NOT re-emit the stale-learning cleanup command when the last
-/// sweep ran just now (interval not yet elapsed).
-#[tokio::test]
-async fn apply_loop_event_tick_skips_stale_cleanup_when_interval_not_elapsed() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db.clone(), tx, runner).await;
-    let mut app = App::new(vec![]);
-    app.last_stale_cleanup_at = Some(std::time::Instant::now());
-
-    let cmds = apply_loop_event(&mut app, LoopEvent::Tick, &rt);
-
-    assert_eq!(
-        count_archive_stale(&cmds),
-        0,
-        "tick must not re-emit ArchiveStale before the interval has elapsed"
-    );
-}
-
-/// An MCP `Refresh` event marks the app dirty and produces no immediate
-/// commands (the DB refresh is spawned; its result returns via a later message).
-#[tokio::test]
-async fn apply_loop_event_mcp_refresh_spawns_and_yields_no_commands() {
-    let (rt, mut app) = test_runtime().await;
-    app.dirty = false;
-
-    let cmds = apply_loop_event(&mut app, LoopEvent::Mcp(mcp::McpEvent::Refresh), &rt);
-
-    assert!(app.dirty, "an MCP event must mark the app dirty");
-    assert!(
-        cmds.is_empty(),
-        "Refresh spawns a background refresh and returns no synchronous commands"
-    );
-}
-
-/// Driving `run_loop` (on a headless `TestBackend`) with a `q`→`y` quit
-/// sequence exits the loop cleanly, after draining the queued key events.
-#[tokio::test]
-async fn run_loop_exits_cleanly_on_quit_sequence() {
-    let (mut rt, mut app) = test_runtime().await;
-    // Don't start the real feed poll loop in a unit test.
-    rt.feed_runner = None;
-
-    let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
-    let (_msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
-    let (_mcp_tx, mut mcp_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
-    let mut tick = quiet_tick();
-
-    // q opens the quit confirm; y confirms. FIFO ordering guarantees q first.
-    key_tx.send(KeyEvent::from(KeyCode::Char('q'))).unwrap();
-    key_tx.send(KeyEvent::from(KeyCode::Char('y'))).unwrap();
-
-    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
-
-    let result = tokio::time::timeout(
-        TEST_TIMEOUT,
-        run_loop(
-            &mut app,
-            &mut terminal,
-            &mut key_rx,
-            &mut msg_rx,
-            &mut mcp_rx,
-            &mut tick,
-            &mut rt,
-        ),
-    )
-    .await
-    .expect("run_loop should exit well within the timeout");
-
-    assert!(result.is_ok(), "run_loop returned an error: {result:?}");
-    assert!(app.should_quit(), "the quit sequence must set should_quit");
+        assert!(result.is_ok(), "run_loop returned an error: {result:?}");
+        assert!(app.should_quit(), "the quit sequence must set should_quit");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -5342,7 +5370,10 @@ async fn run_loop_exits_cleanly_on_quit_sequence() {
 // refactor of the dispatcher's internals.
 mod command_dispatch {
     use super::*;
-    use crate::tui::commands::{EditorCommand, PersistFields, TaskCommand, TodoCommand};
+    use crate::tui::commands::{
+        EditorCommand, FeedCommand, MainSessionCommand, PersistFields, PrCommand, RepoSyncCommand,
+        SplitCommand, SystemCommand, TaskCommand, TodoCommand,
+    };
 
     /// Run one command through the real dispatcher and return its follow-on
     /// commands (the vec `execute_commands` extends its queue with).
@@ -6023,447 +6054,1873 @@ mod command_dispatch {
             "Load must switch the view to Todos with the loaded item"
         );
     }
-}
 
-// ---------------------------------------------------------------------------
-// run_blocking_dispatch — the three result arms
-// ---------------------------------------------------------------------------
+    #[tokio::test]
+    async fn dispatch_todo_load_count_updates_the_badge_without_opening_the_view() {
+        let (rt, mut app) = test_runtime().await;
+        rt.todo_svc
+            .create_todo("Counted".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            app.todo_open_count(),
+            0,
+            "precondition: nothing counted yet"
+        );
 
-/// Receive the next message or fail the test rather than hang forever.
-async fn recv_msg(rx: &mut mpsc::UnboundedReceiver<Message>) -> Message {
-    tokio::time::timeout(TEST_TIMEOUT, rx.recv())
-        .await
-        .expect("a message should arrive well within the timeout")
-        .expect("the sender should still be alive")
-}
+        dispatch_one(&rt, &mut app, Command::Todo(TodoCommand::LoadCount)).await;
 
-#[tokio::test]
-async fn run_blocking_dispatch_sends_dispatched_on_success() {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    tasks::run_blocking_dispatch(models::TaskId(7), "Dispatch", true, tx, || {
-        Ok(models::DispatchResult {
-            worktree_path: "/wt".into(),
-            tmux_window: "win".into(),
-        })
-    });
+        assert_eq!(app.todo_open_count(), 1);
+        assert!(
+            !matches!(app.view_mode(), tui::ViewMode::Todos { .. }),
+            "LoadCount feeds the badge only — `Load` is the arm that opens the view"
+        );
+    }
 
-    match recv_msg(&mut rx).await {
-        Message::Task(crate::tui::messages::TaskMessage::Dispatched {
-            id,
-            worktree,
-            tmux_window,
-            switch_focus,
-        }) => {
-            assert_eq!(id, models::TaskId(7));
-            assert_eq!(worktree, "/wt");
-            assert_eq!(tmux_window, "win");
-            assert!(switch_focus);
+    // -----------------------------------------------------------------------
+    // The process-effect half
+    // -----------------------------------------------------------------------
+    //
+    // Everything above asserts on a DB row or on `App`. The arms below reach
+    // tmux, git, `gh`, `notify-send` or `xdg-open` instead, and nearly all of
+    // them do it from a detached `spawn_blocking` whose `JoinHandle` the
+    // dispatcher `drop`s. Two consequences shape this section:
+    //
+    // - There is nothing to `await`, so every test needs a completion signal.
+    //   Most arms send a `Message`; the ones that succeed silently
+    //   (`Split::FocusPane`, `Task::KillTmuxWindow`, `System::*`) are covered
+    //   through [`Harness::await_call`] instead.
+    // - A `MockProcessRunner` panic on a detached thread does *not* fail the
+    //   test (KB #336), so an under-scripted runner reads as a pass. Waiting on
+    //   a signal that only the arm under test can produce is what closes that
+    //   hole: the runner panicking means the signal never arrives and the wait
+    //   times out.
+
+    /// A `ProcessRunner` that announces every call it forwards.
+    ///
+    /// The completion signal for the arms that report nothing. It wraps a real
+    /// [`MockProcessRunner`] rather than replacing it, so the queue semantics,
+    /// the out-of-band window lookup and `recorded_calls` all still apply.
+    struct AnnouncingRunner {
+        inner: Arc<MockProcessRunner>,
+        tx: mpsc::UnboundedSender<String>,
+    }
+
+    impl AnnouncingRunner {
+        /// Announce *after* the inner call returns, so observing the signal
+        /// implies the side effect already happened.
+        fn announce(&self, program: &str, args: &[&str]) {
+            let _ = self.tx.send(format!("{program} {}", args.join(" ")));
         }
-        other => panic!("expected Dispatched, got {other:?}"),
     }
-}
 
-#[tokio::test]
-async fn run_blocking_dispatch_reports_panics_as_dispatch_failure() {
-    // The panic arm is unreachable from production code on demand: it only
-    // fires when the dispatch closure itself unwinds. Without this test the
-    // downcast-and-report logic is never executed.
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    tasks::run_blocking_dispatch(models::TaskId(9), "Dispatch", false, tx, || {
-        panic!("worktree exploded")
-    });
-
-    match recv_msg(&mut rx).await {
-        Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(id)) => {
-            assert_eq!(id, models::TaskId(9));
+    impl ProcessRunner for AnnouncingRunner {
+        fn run(&self, program: &str, args: &[&str]) -> anyhow::Result<std::process::Output> {
+            let result = self.inner.run(program, args);
+            self.announce(program, args);
+            result
         }
-        other => panic!("expected DispatchFailed, got {other:?}"),
-    }
-    match recv_msg(&mut rx).await {
-        Message::System(crate::tui::messages::SystemMessage::Error(msg)) => {
-            assert!(
-                msg.contains("panicked") && msg.contains("worktree exploded"),
-                "the panic payload must be surfaced to the user, got {msg:?}"
-            );
+
+        fn run_with_timeout(
+            &self,
+            program: &str,
+            args: &[&str],
+            timeout: Duration,
+        ) -> anyhow::Result<std::process::Output> {
+            let result = self.inner.run_with_timeout(program, args, timeout);
+            self.announce(program, args);
+            result
         }
-        other => panic!("expected a System error, got {other:?}"),
-    }
-}
 
-#[tokio::test]
-async fn run_blocking_dispatch_reports_non_string_panic_payload_as_unknown() {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    tasks::run_blocking_dispatch(models::TaskId(11), "Dispatch", false, tx, || {
-        std::panic::panic_any(42_u32)
-    });
-
-    assert!(matches!(
-        recv_msg(&mut rx).await,
-        Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(_))
-    ));
-    match recv_msg(&mut rx).await {
-        Message::System(crate::tui::messages::SystemMessage::Error(msg)) => {
-            assert!(
-                msg.contains("unknown"),
-                "an undowncastable payload must fall back to 'unknown', got {msg:?}"
-            );
+        fn agent_binaries(&self) -> crate::process::AgentBinaries {
+            self.inner.agent_binaries()
         }
-        other => panic!("expected a System error, got {other:?}"),
     }
-}
 
-#[tokio::test]
-async fn spawn_refresh_from_db_sends_task_and_epic_refresh_messages() {
-    // `do_full_board_refresh` is the *unguarded* twin of `exec_refresh_from_db`
-    // (see the doc comments on both). It is only reachable through the
-    // `spawn_refresh_*` helpers, so it was never executed by any test.
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db, tx, runner).await;
-    create_task_returning(
-        &**rt.db_write(),
-        "Refreshed",
-        "desc",
-        "/repo",
-        None,
-        models::TaskStatus::Backlog,
-    )
-    .await
-    .unwrap();
+    /// A runtime, its board, and the two channels a detached arm reports on.
+    struct Harness {
+        rt: TuiRuntime,
+        app: App,
+        msgs: mpsc::UnboundedReceiver<Message>,
+        calls: mpsc::UnboundedReceiver<String>,
+        mock: Arc<MockProcessRunner>,
+        db: Arc<Database>,
+    }
 
-    rt.spawn_refresh_from_db().await.unwrap();
-
-    match recv_msg(&mut rx).await {
-        Message::Task(crate::tui::messages::TaskMessage::Refresh(tasks)) => {
-            assert_eq!(tasks.len(), 1);
+    async fn harness(mock: MockProcessRunner) -> Harness {
+        let db = test_db().await;
+        let (tx, msgs) = mpsc::unbounded_channel();
+        let (call_tx, calls) = mpsc::unbounded_channel();
+        let mock = Arc::new(mock);
+        let runner: Arc<dyn ProcessRunner> = Arc::new(AnnouncingRunner {
+            inner: Arc::clone(&mock),
+            tx: call_tx,
+        });
+        let rt = make_runtime(db.clone(), tx, runner).await;
+        let app = App::new(db.list_all().await.unwrap());
+        Harness {
+            rt,
+            app,
+            msgs,
+            calls,
+            mock,
+            db,
         }
-        other => panic!("expected a task Refresh, got {other:?}"),
-    }
-    assert!(matches!(
-        recv_msg(&mut rx).await,
-        Message::Epic(crate::tui::messages::EpicMessage::Refresh(_))
-    ));
-}
-
-// ---------------------------------------------------------------------------
-// Local-first repo sync (docs/specs/repo-sync.allium)
-// ---------------------------------------------------------------------------
-
-/// The three responses one fetching refresh consumes: symbolic-ref, fetch,
-/// rev-list.
-fn refresh_responses_fetching(counts: &[u8]) -> Vec<anyhow::Result<std::process::Output>> {
-    vec![
-        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
-        MockProcessRunner::ok(),
-        MockProcessRunner::ok_with_stdout(counts),
-    ]
-}
-
-async fn expect_measurement(
-    rx: &mut mpsc::UnboundedReceiver<Message>,
-) -> crate::repo_sync::RepoSyncMeasurement {
-    match recv_msg(rx).await {
-        Message::RepoSync(crate::tui::messages::RepoSyncMessage::Measured(m)) => m,
-        other => panic!("expected a repo-sync measurement, got {other:?}"),
-    }
-}
-
-// rule-success.RefreshRepoSyncState: the refresh runs off the event loop and
-// reports its measurement back as a message.
-#[tokio::test]
-async fn exec_refresh_repo_sync_reports_the_measurement() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(refresh_responses_fetching(
-        b"3\t1\n",
-    )));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-
-    rt.exec_refresh_repo_sync("/repo".to_string(), true)
-        .await
-        .unwrap();
-
-    let m = expect_measurement(&mut rx).await;
-    assert_eq!(m.repo_path, "/repo");
-    assert_eq!(m.base_branch, "main");
-    assert_eq!(
-        m.counts,
-        Some(crate::repo_sync::AheadBehind {
-            ahead: 3,
-            behind: 1
-        })
-    );
-    assert!(mock
-        .recorded_calls()
-        .iter()
-        .any(|(_, a)| a.contains(&"fetch".to_string())));
-}
-
-// Only the fetching refresh points perform a fetch; every other caller rides
-// refs some other operation already refreshed.
-#[tokio::test]
-async fn exec_refresh_repo_sync_without_fetch_touches_no_network() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
-        MockProcessRunner::ok_with_stdout(b"0\t2\n"),
-    ]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-
-    rt.exec_refresh_repo_sync("/repo".to_string(), false)
-        .await
-        .unwrap();
-
-    let m = expect_measurement(&mut rx).await;
-    assert_eq!(
-        m.counts,
-        Some(crate::repo_sync::AheadBehind {
-            ahead: 0,
-            behind: 2
-        })
-    );
-    assert!(
-        !mock
-            .recorded_calls()
-            .iter()
-            .any(|(_, a)| a.contains(&"fetch".to_string())),
-        "a non-fetching refresh must be a pure local ref read"
-    );
-}
-
-// rule-success.RefreshRepoSyncStateOnStartup + OneRepoSetForDriftMeasurement:
-// one fetching refresh per saved repo path, and no other repository.
-#[tokio::test]
-async fn exec_refresh_all_repo_sync_fetches_once_per_saved_repo_path() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mut responses = refresh_responses_fetching(b"1\t0\n");
-    responses.extend(refresh_responses_fetching(b"0\t1\n"));
-    let mock = Arc::new(MockProcessRunner::new(responses));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-
-    let paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
-    for handle in rt.exec_refresh_all_repo_sync(&paths) {
-        handle.await.unwrap();
     }
 
-    let mut seen = vec![
-        expect_measurement(&mut rx).await.repo_path,
-        expect_measurement(&mut rx).await.repo_path,
-    ];
-    seen.sort();
-    assert_eq!(seen, paths);
-    assert_eq!(
-        mock.recorded_calls()
-            .iter()
-            .filter(|(_, a)| a.contains(&"fetch".to_string()))
-            .count(),
-        2,
-        "exactly one fetch per saved repo path"
-    );
-}
+    /// A harness whose runner is expected to run nothing at all.
+    async fn quiet_harness() -> Harness {
+        harness(MockProcessRunner::new(vec![])).await
+    }
 
-#[tokio::test]
-async fn exec_refresh_all_repo_sync_does_nothing_without_saved_paths() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
+    impl Harness {
+        async fn dispatch(&mut self, cmd: Command) -> Vec<Command> {
+            commands::dispatch(cmd, &mut self.app, &self.rt).await
+        }
 
-    assert!(rt.exec_refresh_all_repo_sync(&[]).is_empty());
-    assert!(mock.recorded_calls().is_empty());
-}
+        /// Put `task` on the board, which several arms require before their
+        /// result message is applied at all.
+        fn seed_board(&mut self, task: models::Task) {
+            self.app
+                .update(Message::Task(crate::tui::messages::TaskMessage::Refresh(
+                    vec![task],
+                )));
+        }
 
-// rule-success.SyncRepo, reported back through the success channel.
-#[tokio::test]
-async fn exec_sync_repo_reports_the_counts_it_moved() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote
-        MockProcessRunner::ok_with_stdout(b"main\n"),                        // branch
-        MockProcessRunner::ok_with_stdout(b""),                              // clean
-        MockProcessRunner::ok(),                                             // fetch
-        MockProcessRunner::ok_with_stdout(b"3\t1\n"),                        // rev-list
-        MockProcessRunner::ok(),                                             // merge
-        MockProcessRunner::ok_with_stdout(b"4\t0\n"),                        // recount
-        MockProcessRunner::ok(),                                             // push
-    ]));
-    let rt = make_runtime(db, tx, mock).await;
+        async fn next_msg(&mut self) -> Message {
+            tokio::time::timeout(TEST_TIMEOUT, self.msgs.recv())
+                .await
+                .expect("the arm under test must report well within the timeout")
+                .expect("the runtime's message sender should still be alive")
+        }
 
-    rt.exec_sync_repo("/repo".to_string(), "main".to_string())
-        .await
-        .unwrap();
-
-    match recv_msg(&mut rx).await {
-        Message::RepoSync(crate::tui::messages::RepoSyncMessage::Succeeded {
-            repo_path,
-            outcome,
-        }) => {
-            assert_eq!(repo_path, "/repo");
-            assert_eq!(
-                outcome,
-                crate::repo_sync::SyncOutcome::Synced {
-                    pulled: 1,
-                    pushed: 4
+        /// Await the first announced call whose command line contains `needle`.
+        ///
+        /// The completion signal for an arm that succeeds silently. A timeout
+        /// here means the arm never ran, never reached the runner, or panicked
+        /// the mock on a detached thread — all of which would otherwise pass.
+        async fn await_call(&mut self, needle: &str) -> String {
+            let found = tokio::time::timeout(TEST_TIMEOUT, async {
+                while let Some(call) = self.calls.recv().await {
+                    if call.contains(needle) {
+                        return Some(call);
+                    }
                 }
-            );
+                None
+            })
+            .await;
+            match found {
+                Ok(Some(call)) => call,
+                Ok(None) => panic!("the runner was dropped before any call contained {needle:?}"),
+                Err(_) => panic!(
+                    "no subprocess call containing {needle:?} was made; recorded: {:?}",
+                    self.mock.flattened_calls()
+                ),
+            }
         }
-        other => panic!("expected a sync success, got {other:?}"),
     }
-}
 
-// rule-success.ReportRepoSyncFailure: the failure channel carries the detail
-// that makes the cause actionable, plus whether retrying is the fix.
-#[tokio::test]
-async fn exec_sync_repo_reports_a_failure_with_its_detail() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"),
-        MockProcessRunner::ok_with_stdout(b"feature\n"), // not on base branch
-    ]));
-    let rt = make_runtime(db, tx, mock).await;
+    /// A tempdir repo with `.worktrees/<slug>` already present, i.e. the reuse
+    /// path a [`DispatchScript::dispatch`] shape scripts.
+    fn provisioned_repo(slug: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".worktrees").join(slug)).unwrap();
+        dir
+    }
 
-    rt.exec_sync_repo("/repo".to_string(), "main".to_string())
+    // --- SplitCommand ------------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_split_enter_opens_an_unowned_pane() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+            MockProcessRunner::ok_with_stdout(b"%2\n"), // split-window
+        ]))
+        .await;
+
+        let extra = h.dispatch(Command::Split(SplitCommand::Enter)).await;
+
+        assert!(extra.is_empty(), "Split arms queue no follow-on commands");
+        let msg = h.next_msg().await;
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: None,
+                    ..
+                })
+            ),
+            "a bare Enter opens a pane owned by no task, got: {msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_split_enter_with_task_joins_that_task_window() {
+        let mut h = harness(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok_with_stdout(b"%1\n"), // current_pane_id
+                MockProcessRunner::ok_with_stdout(b"%1 \n"), // companion_pane_ids: none
+                MockProcessRunner::ok(),                    // join-pane
+            ])
+            .with_windows(&["task-1"]),
+        )
+        .await;
+
+        h.dispatch(Command::Split(SplitCommand::EnterWithTask {
+            task_id: TaskId(1),
+            window: "task-1".into(),
+        }))
+        .await;
+
+        let msg = h.next_msg().await;
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(1)),
+                    ..
+                })
+            ),
+            "the pane must come back owned by the task it was opened for, got: {msg:?}"
+        );
+        assert!(
+            h.mock
+                .flattened_calls()
+                .iter()
+                .any(|c| c.contains("join-pane")),
+            "the task's window is joined in, not split afresh: {:?}",
+            h.mock.flattened_calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_split_exit_with_a_window_to_restore_breaks_the_pane_out() {
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::ok()])).await;
+
+        h.dispatch(Command::Split(SplitCommand::Exit {
+            pane_id: "%2".into(),
+            restore_window: Some("task-1".into()),
+        }))
+        .await;
+
+        let msg = h.next_msg().await;
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+            ),
+            "Expected PaneClosed, got: {msg:?}"
+        );
+        // The distinction the arm carries: a pane with a window to go back to is
+        // broken out, never killed — killing it would take the agent with it.
+        let calls = h.mock.flattened_calls();
+        assert!(
+            calls.iter().any(|c| c.contains("break-pane")),
+            "expected break-pane, got: {calls:?}"
+        );
+        assert!(
+            !calls.iter().any(|c| c.contains("kill-pane")),
+            "a restorable pane must not be killed, got: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_split_exit_without_a_window_kills_the_pane() {
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::ok()])).await;
+
+        h.dispatch(Command::Split(SplitCommand::Exit {
+            pane_id: "%2".into(),
+            restore_window: None,
+        }))
+        .await;
+
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+        ));
+        assert!(
+            h.mock
+                .flattened_calls()
+                .iter()
+                .any(|c| c.contains("kill-pane")),
+            "a pane with nowhere to go back to is killed, got: {:?}",
+            h.mock.flattened_calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_split_swap_hands_the_pane_to_the_incoming_task() {
+        let mut h = harness(
+            MockProcessRunner::new(vec![
+                MockProcessRunner::ok(), // swap-pane
+                MockProcessRunner::ok(), // kill-window (no outgoing task)
+            ])
+            .with_windows(&["task-1"]),
+        )
+        .await;
+
+        h.dispatch(Command::Split(SplitCommand::Swap {
+            task_id: TaskId(1),
+            new_window: "task-1".into(),
+            old_pane_id: Some("%2".into()),
+            old_task: None,
+        }))
+        .await;
+
+        let msg = h.next_msg().await;
+        assert!(
+            matches!(
+                msg,
+                Message::Split(crate::tui::messages::SplitMessage::PaneOpened {
+                    task_id: Some(TaskId(1)),
+                    ..
+                })
+            ),
+            "the swapped-in pane must be reported as the new task's, got: {msg:?}"
+        );
+        assert!(
+            h.mock
+                .flattened_calls()
+                .iter()
+                .any(|c| c.contains("swap-pane")),
+            "got: {:?}",
+            h.mock.flattened_calls()
+        );
+    }
+
+    /// No message on success, so the runner announcement is the whole signal.
+    #[tokio::test]
+    async fn dispatch_split_focus_pane_selects_it() {
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::ok()])).await;
+
+        h.dispatch(Command::Split(SplitCommand::FocusPane {
+            pane_id: "%2".into(),
+        }))
+        .await;
+
+        let call = h.await_call("select-pane").await;
+        assert!(call.contains("%2"), "the focused pane must be ours: {call}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_split_check_pane_exists_reports_a_pane_that_is_gone() {
+        // A *successful* tmux call whose listing no longer holds %2 — real tmux
+        // exits 0 for an unknown pane.
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"%1\n%7\n"),
+        ]))
+        .await;
+
+        h.dispatch(Command::Split(SplitCommand::CheckPaneExists {
+            pane_id: "%2".into(),
+        }))
+        .await;
+
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_split_respawn_pane_reports_one_it_could_not_revive() {
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::fail(
+            "no such pane",
+        )]))
+        .await;
+
+        h.dispatch(Command::Split(SplitCommand::RespawnPane {
+            pane_id: "%2".into(),
+        }))
+        .await;
+
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Split(crate::tui::messages::SplitMessage::PaneClosed)
+        ));
+        // `PaneClosed` alone does not discriminate this arm from
+        // `CheckPaneExists` — both report it on a failing tmux call. The call
+        // itself must be the respawn attempt, not a pane-existence query.
+        let calls = h.mock.flattened_calls();
+        assert!(
+            calls.iter().any(|c| c.contains("respawn-pane")),
+            "expected a respawn-pane call, got: {calls:?}"
+        );
+    }
+
+    // --- SystemCommand -----------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_system_send_notification_shells_out_to_notify_send() {
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::ok()])).await;
+
+        h.dispatch(Command::System(SystemCommand::SendNotification {
+            title: "Task #1: Fix bug".into(),
+            body: "Ready for review".into(),
+            urgent: true,
+        }))
+        .await;
+
+        let call = h.await_call("notify-send").await;
+        assert!(call.contains("Task #1: Fix bug"), "got: {call}");
+        assert!(call.contains("Ready for review"), "got: {call}");
+        assert!(
+            call.contains("critical"),
+            "an urgent notification must carry the critical urgency: {call}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_system_open_in_browser_shells_out_to_xdg_open() {
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::ok()])).await;
+
+        h.dispatch(Command::System(SystemCommand::OpenInBrowser {
+            url: "https://github.com/org/repo/pull/1".into(),
+        }))
+        .await;
+
+        let call = h.await_call("xdg-open").await;
+        assert!(
+            call.contains("https://github.com/org/repo/pull/1"),
+            "got: {call}"
+        );
+    }
+
+    // --- PrCommand ---------------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_pr_check_status_reports_the_state_gh_returned() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"OPEN\nAPPROVED\n"),
+        ]))
+        .await;
+
+        h.dispatch(Command::Pr(PrCommand::CheckStatus {
+            id: TaskId(1),
+            url: "https://github.com/org/repo/pull/42".into(),
+        }))
+        .await;
+
+        match h.next_msg().await {
+            Message::Pr(crate::tui::messages::PrMessage::ReviewState {
+                id,
+                review_decision,
+            }) => {
+                assert_eq!(id, TaskId(1));
+                assert_eq!(review_decision, Some(models::ReviewDecision::Approved));
+            }
+            other => panic!("expected a PR review state, got {other:?}"),
+        }
+    }
+
+    // --- RepoSyncCommand ---------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_repo_sync_refresh_reports_the_measured_drift() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok(),                      // fetch
+            MockProcessRunner::ok_with_stdout(b"3\t1\n"), // rev-list
+        ]))
+        .await;
+
+        h.dispatch(Command::RepoSync(RepoSyncCommand::Refresh {
+            repo_path: "/repo".into(),
+            fetch_first: true,
+        }))
+        .await;
+
+        match h.next_msg().await {
+            Message::RepoSync(crate::tui::messages::RepoSyncMessage::Measured(m)) => {
+                assert_eq!(m.repo_path, "/repo");
+                assert_eq!(
+                    m.counts,
+                    Some(crate::repo_sync::AheadBehind {
+                        ahead: 3,
+                        behind: 1
+                    })
+                );
+            }
+            other => panic!("expected a repo-sync measurement, got {other:?}"),
+        }
+    }
+
+    /// The two `RepoSync` arms are one wire apart, so the sync arm is pinned by
+    /// an outcome the refresh arm cannot produce: a `Failed`.
+    #[tokio::test]
+    async fn dispatch_repo_sync_sync_reports_a_failure_the_refresh_arm_cannot() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"),
+            MockProcessRunner::ok_with_stdout(b"feature\n"), // not on the base branch
+        ]))
+        .await;
+
+        h.dispatch(Command::RepoSync(RepoSyncCommand::Sync {
+            repo_path: "/repo".into(),
+            base_branch: "main".into(),
+        }))
+        .await;
+
+        match h.next_msg().await {
+            Message::RepoSync(crate::tui::messages::RepoSyncMessage::Failed {
+                repo_path,
+                detail,
+                retryable,
+            }) => {
+                assert_eq!(repo_path, "/repo");
+                assert!(
+                    detail.contains("feature") && detail.contains("main"),
+                    "the branch found and the one expected: {detail}"
+                );
+                assert!(!retryable, "the operator must check out main first");
+            }
+            other => panic!("expected a sync failure, got {other:?}"),
+        }
+    }
+
+    // --- MainSessionCommand ------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_main_session_open_falls_back_to_the_picker_when_no_window_is_alive() {
+        // has_window → false (empty listing)
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::ok()])).await;
+        // A previously-configured dir must not stop the picker re-prompting.
+        h.app.set_main_session_dir(Some("/home/user".to_string()));
+
+        h.dispatch(Command::MainSession(MainSessionCommand::Open))
+            .await;
+
+        assert_eq!(h.app.mode(), &crate::tui::InputMode::MainSessionDir);
+        assert!(
+            !h.mock
+                .flattened_calls()
+                .iter()
+                .any(|c| c.contains("new-window")),
+            "Open never creates a window — that is Create's job: {:?}",
+            h.mock.flattened_calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_main_session_create_without_a_configured_dir_errors_and_runs_nothing() {
+        let mut h = quiet_harness().await;
+
+        h.dispatch(Command::MainSession(MainSessionCommand::Create))
+            .await;
+
+        let err = h.app.error_popup().unwrap_or_default();
+        assert!(
+            err.contains("Main session directory not configured"),
+            "got: {err:?}"
+        );
+        assert!(
+            h.mock.recorded_calls().is_empty(),
+            "an unconfigured create must not reach tmux at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_main_session_check_liveness_reports_the_live_window() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"dispatch-main\n"),
+        ]))
+        .await;
+
+        h.dispatch(Command::MainSession(MainSessionCommand::CheckLiveness))
+            .await;
+
+        assert!(
+            matches!(
+                h.next_msg().await,
+                Message::MainSession(crate::tui::messages::MainSessionMessage::LivenessChanged(
+                    true
+                ))
+            ),
+            "the poll must report the window it found"
+        );
+    }
+
+    // --- FeedCommand -------------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_feed_trigger_epic_runs_the_epics_own_feed_command() {
+        let mut h = quiet_harness().await;
+        let epic =
+            h.db.create_epic("Security Vulnerabilities", "", None)
+                .await
+                .unwrap();
+        set_feed_command(
+            &h.db,
+            epic.id,
+            r#"echo '[{"external_id":"vuln:1","title":"CVE-1","description":"d","status":"backlog","tag":"fix"}]'"#,
+        )
+        .await;
+
+        h.dispatch(Command::Feed(FeedCommand::TriggerEpic {
+            epic_id: epic.id,
+            epic_title: "Security Vulnerabilities".into(),
+        }))
+        .await;
+
+        let msg = h.next_msg().await;
+        assert_feed_failed_because_not_applicable(&msg);
+        assert!(
+            matches!(
+                msg,
+                Message::Feed(crate::tui::messages::FeedMessage::Refreshed { count: 1, .. })
+            ),
+            "expected one synced item, got: {msg:?}"
+        );
+        assert_eq!(
+            h.db.list_tasks_for_epic(epic.id).await.unwrap().len(),
+            1,
+            "the cycle must have upserted the emitted item"
+        );
+    }
+
+    /// A feed cycle that failed for a *configuration* reason never reached the
+    /// command, so it proves nothing about the wire. Kept as its own assertion
+    /// rather than folded into the match so the failure names the cause.
+    fn assert_feed_failed_because_not_applicable(msg: &Message) {
+        if let Message::Feed(crate::tui::messages::FeedMessage::Failed { error, .. }) = msg {
+            panic!("the feed cycle failed before it ran the command: {error}");
+        }
+    }
+
+    // --- LearningCommand ---------------------------------------------------
+
+    /// Records that the sweep reached it. Only `archive_stale_learnings` is
+    /// implemented; every other seam method keeps the panicking stub default,
+    /// which is what proves the arm called this one and nothing else.
+    struct CountingSweep {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::service::LearningServiceApiStub for CountingSweep {
+        async fn archive_stale_learnings(
+            &self,
+            _cutoff: chrono::DateTime<chrono::Utc>,
+        ) -> Result<u64, crate::service::ServiceError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(0)
+        }
+    }
+
+    crate::learning_service_api!(service_api_stub_bridge, CountingSweep);
+
+    #[tokio::test]
+    async fn dispatch_learning_archive_stale_sweeps_through_the_learning_service() {
+        let mut h = quiet_harness().await;
+        let svc = Arc::new(CountingSweep {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        h.rt.learning_svc = svc.clone();
+
+        h.dispatch(Command::Learning(
+            crate::tui::commands::LearningCommand::ArchiveStale,
+        ))
+        .await;
+
+        assert_eq!(
+            svc.calls.load(Ordering::Relaxed),
+            1,
+            "the arm must reach the injected learning seam exactly once"
+        );
+    }
+
+    // --- UsageCommand ------------------------------------------------------
+
+    /// Await the fire-and-forget usage write by re-reading until it lands.
+    ///
+    /// `Usage::Record` spawns its write and keeps no handle, sends no message
+    /// and has no test hook, so the row appearing is the only observable there
+    /// is. Each iteration awaits a real DB round-trip — which yields to the
+    /// runtime rather than spinning — and the whole loop is bounded by
+    /// `TEST_TIMEOUT` structurally, never by the wall clock (docs/conventions.md,
+    /// "No `tokio::time::sleep` in tests").
+    async fn await_usage_row(rt: &TuiRuntime, action: &str) -> crate::models::UsageSummary {
+        tokio::time::timeout(TEST_TIMEOUT, async {
+            loop {
+                let rows = rt
+                    .database
+                    .query_usage(&db::UsageQuery::default())
+                    .await
+                    .unwrap();
+                if let Some(row) = rows.into_iter().find(|r| r.action == action) {
+                    return row;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the spawned usage write must land well within the timeout")
+    }
+
+    #[tokio::test]
+    async fn dispatch_usage_record_writes_the_event_in_the_background() {
+        let mut h = quiet_harness().await;
+
+        h.dispatch(Command::Usage(crate::tui::commands::UsageCommand::Record(
+            crate::models::UsageEvent {
+                category: crate::models::UsageCategory::Keybinding,
+                action: "move_task_right".into(),
+                detail: Some("l".into()),
+                actor: crate::models::UsageActor::Human,
+            },
+        )))
+        .await;
+
+        let row = await_usage_row(&h.rt, "move_task_right").await;
+        assert_eq!(row.detail.as_deref(), Some("l"));
+        assert_eq!(row.count, 1);
+    }
+
+    // --- BudgetCommand -----------------------------------------------------
+
+    #[tokio::test]
+    async fn dispatch_budget_refresh_reads_the_snapshot_file_off_the_event_loop() {
+        let mut h = quiet_harness().await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rate-limits.json");
+        std::fs::write(
+            &path,
+            r#"{"five_hour":{"used_percentage":42.5,"resets_at":1000},"captured_at":900}"#,
+        )
+        .unwrap();
+        h.rt.budget_snapshot_path = path;
+
+        h.dispatch(Command::Budget(
+            crate::tui::commands::BudgetCommand::Refresh,
+        ))
+        .await;
+
+        match h.next_msg().await {
+            Message::Budget(crate::tui::messages::BudgetMessage::Updated(Some(snapshot))) => {
+                assert_eq!(snapshot.captured_at, 900);
+                assert_eq!(
+                    snapshot.five_hour.map(|w| w.used_percentage),
+                    Some(42.5),
+                    "the parsed window must be the one on disk"
+                );
+            }
+            other => panic!("expected a parsed budget snapshot, got {other:?}"),
+        }
+    }
+
+    // --- TaskCommand: the tmux/process half --------------------------------
+
+    #[tokio::test]
+    async fn dispatch_task_dispatch_agent_claims_then_provisions() {
+        let repo = provisioned_repo("1-test-task");
+        let mut h = harness(DispatchScript::dispatch().runner()).await;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Test Task",
+            "desc",
+            repo.path().to_str().unwrap(),
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        let id = task.id;
+
+        h.dispatch(Command::Task(TaskCommand::DispatchAgent {
+            task: Box::new(task),
+            mode: models::DispatchMode::Dispatch,
+        }))
+        .await;
+
+        let msg = h.next_msg().await;
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+            ),
+            "Expected Dispatched, got: {msg:?}"
+        );
+        // Nothing here runs the Persist `handle_dispatched` emits, so the row can
+        // only have left Backlog via the pre-provisioning claim
+        // (`DispatchClaimExclusive` in docs/specs/dispatch.allium).
+        let claimed = h.rt.database.get_task(id).await.unwrap().unwrap();
+        assert_eq!(claimed.status, models::TaskStatus::Running);
+    }
+
+    /// `Research` must reach the read-only research agent, the only launcher that
+    /// passes `--permission-mode plan`. The mode travels on the command, so a
+    /// dispatcher arm that dropped it would launch an editing agent instead.
+    #[tokio::test]
+    async fn dispatch_task_dispatch_agent_carries_the_mode_to_the_launcher() {
+        let repo = provisioned_repo("1-test-task");
+        let mut h = harness(DispatchScript::dispatch().runner()).await;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Test Task",
+            "desc",
+            repo.path().to_str().unwrap(),
+            None,
+            models::TaskStatus::Backlog,
+        )
         .await
         .unwrap();
 
-    match recv_msg(&mut rx).await {
-        Message::RepoSync(crate::tui::messages::RepoSyncMessage::Failed {
+        h.dispatch(Command::Task(TaskCommand::DispatchAgent {
+            task: Box::new(task),
+            mode: models::DispatchMode::Research,
+        }))
+        .await;
+
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+        ));
+        let argv = h.mock.flattened_calls().join("\n");
+        assert!(
+            argv.contains("--permission-mode plan"),
+            "research mode must launch with plan permissions: {argv}"
+        );
+    }
+
+    /// The trust gate's read half. The harness's default `claude_json_path`
+    /// points at a nonexistent file, so the check is a deterministic
+    /// "untrusted" — and this arm only reads, so nothing is written even
+    /// there.
+    #[tokio::test]
+    async fn dispatch_task_check_trust_and_dispatch_prompts_for_an_untrusted_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut h = quiet_harness().await;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Needs trust",
+            "desc",
+            &repo_path,
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        h.seed_board(task.clone());
+
+        h.dispatch(Command::Task(TaskCommand::CheckTrustAndDispatch {
+            id: task.id,
             repo_path,
-            detail,
-            retryable,
-        }) => {
-            assert_eq!(repo_path, "/repo");
-            assert!(
-                detail.contains("feature") && detail.contains("main"),
-                "the branch found and the one expected: {detail}"
-            );
-            assert!(!retryable, "the operator must checkout main first");
+            mode: models::DispatchMode::Dispatch,
+        }))
+        .await;
+
+        let status = h.app.status_message().unwrap_or_default();
+        assert!(
+            status.contains("not trusted by Claude Code"),
+            "an untrusted repo must reach the confirmation prompt, got: {status:?}"
+        );
+        assert!(
+            h.mock.recorded_calls().is_empty(),
+            "nothing may be provisioned before the operator confirms"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_quick_dispatch_stops_at_the_trust_prompt_for_an_untrusted_repo() {
+        let repo = tempfile::tempdir().unwrap();
+        let mut h = quiet_harness().await;
+
+        h.dispatch(Command::Task(TaskCommand::QuickDispatch {
+            draft: tui::TaskDraft {
+                title: "Quick one".into(),
+                description: String::new(),
+                repo_path: repo.path().to_str().unwrap().into(),
+                ..Default::default()
+            },
+            epic_id: None,
+        }))
+        .await;
+
+        let status = h.app.status_message().unwrap_or_default();
+        assert!(
+            status.contains("not trusted by Claude Code"),
+            "quick dispatch must gate on trust too, got: {status:?}"
+        );
+        assert!(
+            h.rt.database.list_all().await.unwrap().is_empty(),
+            "no task row may be created before the operator confirms"
+        );
+    }
+
+    /// A tempfile path for `claude_json_path`, pointing at a file that does not
+    /// exist yet — the shape `trust_at` creates on its first grant.
+    fn tempfile_claude_json_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".claude.json");
+        (dir, path)
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_trust_and_dispatch_grants_trust_then_dispatches() {
+        let repo = provisioned_repo("1-test-task");
+        let (_claude_dir, claude_json_path) = tempfile_claude_json_path();
+        let mut h = harness(DispatchScript::dispatch().runner()).await;
+        h.rt.claude_json_path = claude_json_path.clone();
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Test Task",
+            "desc",
+            repo.path().to_str().unwrap(),
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        let repo_path = task.repo_path.clone();
+
+        h.dispatch(Command::Task(TaskCommand::TrustAndDispatch {
+            task: Box::new(task),
+            mode: models::DispatchMode::Dispatch,
+        }))
+        .await;
+
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+        ));
+        assert!(
+            crate::dispatch::is_trusted_at(&claude_json_path, &repo_path).unwrap(),
+            "the grant must be durable, not just in-memory permission to proceed"
+        );
+    }
+
+    /// The grant's own failure — a `claude.json` that cannot even be parsed —
+    /// must abandon the dispatch before anything is provisioned, distinct from
+    /// `DispatchFailed` because there is no claim yet to release.
+    #[tokio::test]
+    async fn dispatch_task_trust_and_dispatch_abandons_on_a_trust_write_failure() {
+        let (_claude_dir, claude_json_path) = tempfile_claude_json_path();
+        std::fs::write(&claude_json_path, "not json").unwrap();
+        let mut h = quiet_harness().await;
+        h.rt.claude_json_path = claude_json_path;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Test Task",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        let id = task.id;
+        // Mirrors `handle_dispatch_task`, which marks a task dispatching before
+        // ever queuing `TrustAndDispatch` — without this, "not dispatching"
+        // would hold trivially before the arm even runs.
+        h.app.update(Message::Task(
+            crate::tui::messages::TaskMessage::MarkDispatching(id),
+        ));
+
+        h.dispatch(Command::Task(TaskCommand::TrustAndDispatch {
+            task: Box::new(task),
+            mode: models::DispatchMode::Dispatch,
+        }))
+        .await;
+
+        // Both the abandon and the error apply directly to `app`, the same way
+        // `CheckTrustAndDispatch`'s untrusted branch does — this runs
+        // synchronously inside `dispatch_task`, never through `msg_tx`.
+        assert!(
+            !h.app.is_dispatching(id),
+            "an abandoned dispatch must clear the dispatching marker"
+        );
+        let err = h.app.error_popup().unwrap_or_default();
+        assert!(err.contains("Failed to trust repo"), "got: {err:?}");
+        assert!(
+            h.mock.recorded_calls().is_empty(),
+            "nothing may be provisioned when the trust grant itself fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_trust_and_quick_dispatch_grants_trust_then_dispatches() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        std::fs::create_dir_all(dir.path().join(".worktrees/1-quick-one")).unwrap();
+        let (_claude_dir, claude_json_path) = tempfile_claude_json_path();
+        let mut h = harness(
+            DispatchScript::dispatch()
+                .detecting_default_branch("main")
+                .runner(),
+        )
+        .await;
+        h.rt.claude_json_path = claude_json_path.clone();
+
+        h.dispatch(Command::Task(TaskCommand::TrustAndQuickDispatch {
+            draft: tui::TaskDraft {
+                title: "Quick one".into(),
+                description: String::new(),
+                repo_path: repo_path.clone(),
+                ..Default::default()
+            },
+            epic_id: None,
+        }))
+        .await;
+
+        // `Created` applies to `app` directly, the same way `MarkDispatching`
+        // does — only the eventual dispatch outcome travels over `msg_tx`.
+        assert_eq!(
+            h.app.tasks().len(),
+            1,
+            "quick dispatch must still create the task row on the granted path"
+        );
+        assert_eq!(h.app.tasks()[0].title, "Quick one");
+        assert!(
+            crate::dispatch::is_trusted_at(&claude_json_path, &repo_path).unwrap(),
+            "the grant must be durable"
+        );
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+        ));
+    }
+
+    /// The trusted-repo halves of `CheckTrustAndDispatch`/`QuickDispatch`: the
+    /// untrusted-repo tests above cover the read failing to find trust, so this
+    /// pair covers it finding trust and letting the dispatch through instead.
+    #[tokio::test]
+    async fn dispatch_task_check_trust_and_dispatch_proceeds_when_already_trusted() {
+        let repo = provisioned_repo("1-test-task");
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let (_claude_dir, claude_json_path) = tempfile_claude_json_path();
+        crate::dispatch::trust_at(&claude_json_path, &repo_path).unwrap();
+        let mut h = harness(DispatchScript::dispatch().runner()).await;
+        h.rt.claude_json_path = claude_json_path;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Test Task",
+            "desc",
+            &repo_path,
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        h.seed_board(task.clone());
+
+        let extra = h
+            .dispatch(Command::Task(TaskCommand::CheckTrustAndDispatch {
+                id: task.id,
+                repo_path,
+                mode: models::DispatchMode::Dispatch,
+            }))
+            .await;
+        for cmd in extra {
+            drain(&h.rt, &mut h.app, cmd).await;
         }
-        other => panic!("expected a sync failure, got {other:?}"),
+
+        assert!(
+            matches!(
+                h.next_msg().await,
+                Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+            ),
+            "an already-trusted repo must reach the real dispatcher, not a prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_quick_dispatch_proceeds_when_already_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().to_str().unwrap().to_string();
+        std::fs::create_dir_all(dir.path().join(".worktrees/1-quick-one")).unwrap();
+        let (_claude_dir, claude_json_path) = tempfile_claude_json_path();
+        crate::dispatch::trust_at(&claude_json_path, &repo_path).unwrap();
+        let mut h = harness(
+            DispatchScript::dispatch()
+                .detecting_default_branch("main")
+                .runner(),
+        )
+        .await;
+        h.rt.claude_json_path = claude_json_path;
+
+        h.dispatch(Command::Task(TaskCommand::QuickDispatch {
+            draft: tui::TaskDraft {
+                title: "Quick one".into(),
+                description: String::new(),
+                repo_path,
+                ..Default::default()
+            },
+            epic_id: None,
+        }))
+        .await;
+
+        assert_eq!(
+            h.app.tasks().len(),
+            1,
+            "an already-trusted repo must proceed straight to task creation, not a prompt"
+        );
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_release_claim_returns_the_task_to_backlog() {
+        let mut h = quiet_harness().await;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Claimed",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        assert!(h.rt.task_svc.claim_backlog_task(task.id).await.unwrap());
+
+        h.dispatch(Command::Task(TaskCommand::ReleaseClaim(task.id)))
+            .await;
+
+        let released = h.rt.database.get_task(task.id).await.unwrap().unwrap();
+        assert_eq!(released.status, models::TaskStatus::Backlog);
+        assert!(
+            released.last_pre_tool_use_at.is_none(),
+            "the release clears the stamp the claim seeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_clear_subagents_drops_the_live_count() {
+        let mut h = quiet_harness().await;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Busy",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Running,
+        )
+        .await
+        .unwrap();
+        h.rt.task_svc
+            .record_subagent_event(
+                task.id,
+                models::SubagentEvent::Start {
+                    agent_id: "a1".into(),
+                    session_id: "s1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            h.rt.database
+                .get_task(task.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .live_subagents,
+            1,
+            "precondition: one live subagent"
+        );
+
+        h.dispatch(Command::Task(TaskCommand::ClearSubagents {
+            id: task.id,
+            mode: models::DrainMode::Drain,
+        }))
+        .await;
+
+        assert_eq!(
+            h.rt.database
+                .get_task(task.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .live_subagents,
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_check_window_reports_a_window_that_is_gone() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"other-window\n"),
+        ]))
+        .await;
+
+        h.dispatch(Command::Task(TaskCommand::CheckWindow {
+            id: TaskId(1),
+            window: "gone-window".into(),
+        }))
+        .await;
+
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Task(crate::tui::messages::TaskMessage::WindowGone(TaskId(1)))
+        ));
+    }
+
+    /// The batch arm's distinguishing property: one tmux call for N windows, and
+    /// a `WindowGone` for the absent one only.
+    #[tokio::test]
+    async fn dispatch_task_batch_check_windows_reports_only_the_absent_one() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"task-1\nother-window\n"),
+        ]))
+        .await;
+
+        h.dispatch(Command::Task(TaskCommand::BatchCheckWindows {
+            windows: vec![(TaskId(1), "task-1".into()), (TaskId(2), "task-2".into())],
+        }))
+        .await;
+
+        assert!(matches!(
+            h.next_msg().await,
+            Message::Task(crate::tui::messages::TaskMessage::WindowGone(TaskId(2)))
+        ));
+        assert_eq!(
+            h.mock.recorded_calls().len(),
+            1,
+            "the batch arm issues one tmux call, not one per window"
+        );
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_resume_relaunches_the_agent_window() {
+        let mut h = harness(DispatchScript::resume().runner()).await;
+        let task = create_task_returning(
+            &**h.rt.db_write(),
+            "Resume Me",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Running,
+        )
+        .await
+        .unwrap();
+        let id = task.id;
+        let worktree = Some("/repo/.worktrees/1-resume-me".to_string());
+
+        h.dispatch(Command::Task(TaskCommand::Resume { id, worktree }))
+            .await;
+
+        match h.next_msg().await {
+            Message::Task(crate::tui::messages::TaskMessage::Resumed {
+                id: tid,
+                tmux_window,
+            }) => {
+                assert_eq!(tid, id);
+                assert_eq!(tmux_window, format!("task-{id}"));
+            }
+            other => panic!("expected Resumed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_jump_to_tmux_selects_the_window() {
+        let mut h = harness(
+            MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&["task-1"]),
+        )
+        .await;
+
+        h.dispatch(Command::Task(TaskCommand::JumpToTmux {
+            window: "task-1".into(),
+        }))
+        .await;
+
+        // Synchronous, not spawned: the call is already recorded on return.
+        let calls = h.mock.flattened_calls();
+        assert!(
+            calls.iter().any(|c| c.contains("select-window")),
+            "got: {calls:?}"
+        );
+        assert!(h.app.error_popup().is_none());
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_jump_to_tmux_surfaces_a_failed_jump() {
+        let mut h = harness(MockProcessRunner::new(vec![MockProcessRunner::fail(
+            "no such window",
+        )]))
+        .await;
+
+        h.dispatch(Command::Task(TaskCommand::JumpToTmux {
+            window: "task-1".into(),
+        }))
+        .await;
+
+        let err = h.app.error_popup().unwrap_or_default();
+        assert!(err.contains("Jump failed"), "got: {err:?}");
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_cleanup_carries_its_follow_up_back_on_success() {
+        let mut h = harness(MockProcessRunner::new(vec![
+            MockProcessRunner::ok(), // git worktree remove
+            MockProcessRunner::ok(), // git branch -D
+        ]))
+        .await;
+
+        h.dispatch(Command::Task(TaskCommand::Cleanup {
+            id: TaskId(1),
+            repo_path: "/repo".into(),
+            worktree: Some("/repo/.worktrees/1-doomed".into()),
+            tmux_window: None,
+            follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+        }))
+        .await;
+
+        let msg = h.next_msg().await;
+        assert!(
+            matches!(
+                msg,
+                Message::Task(crate::tui::messages::TaskMessage::CleanupSucceeded {
+                    id: TaskId(1),
+                    follow_up: crate::tui::commands::CleanupFollowUp::DeleteRow,
+                })
+            ),
+            "the follow-up must ride the completion path, got: {msg:?}"
+        );
+    }
+
+    /// No message at all on either outcome — the kill is best-effort — so the
+    /// runner announcement is the only signal this arm produces.
+    #[tokio::test]
+    async fn dispatch_task_kill_tmux_window_kills_the_window() {
+        let mut h = harness(
+            MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&["task-1"]),
+        )
+        .await;
+
+        h.dispatch(Command::Task(TaskCommand::KillTmuxWindow {
+            window: "task-1".into(),
+        }))
+        .await;
+
+        let call = h.await_call("kill-window").await;
+        assert!(
+            call.contains(&h.mock.pane_id_of("task-1")),
+            "targeted by resolved pane ID, not by name (see `tmux::window_target`): {call}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Every variant reaches the dispatcher
+    // -----------------------------------------------------------------------
+
+    /// The dispatcher's top-level match has one arm per `Command` sub-enum, and
+    /// a mis-wire between two of them compiles. The tests above drive every
+    /// variant through `commands::dispatch`; this one is the *inventory* that
+    /// keeps that true — a new sub-enum added to `Command` fails to compile
+    /// here until it is listed, which is the prompt to write its test.
+    ///
+    /// Deliberately not an assertion on the match's shape: it builds one value
+    /// per sub-enum and lets exhaustiveness do the work.
+    #[test]
+    fn every_command_sub_enum_is_named_by_this_module() {
+        fn sub_enum_name(cmd: &Command) -> &'static str {
+            match cmd {
+                Command::Task(_) => "Task",
+                Command::Editor(_) => "Editor",
+                Command::Feed(_) => "Feed",
+                Command::Settings(_) => "Settings",
+                Command::MainSession(_) => "MainSession",
+                Command::Epic(_) => "Epic",
+                Command::System(_) => "System",
+                Command::RepoFilter(_) => "RepoFilter",
+                Command::RepoSync(_) => "RepoSync",
+                Command::Pr(_) => "Pr",
+                Command::Split(_) => "Split",
+                Command::Learning(_) => "Learning",
+                Command::Usage(_) => "Usage",
+                Command::Todo(_) => "Todo",
+                Command::Budget(_) => "Budget",
+            }
+        }
+
+        // One representative per sub-enum. Every name below is driven through
+        // `commands::dispatch` by a test in this module.
+        let covered = [
+            Command::Task(TaskCommand::RefreshFromDb),
+            Command::Editor(EditorCommand::PopOut(crate::tui::EditKind::Description {
+                is_epic: false,
+            })),
+            Command::Feed(FeedCommand::TriggerEpic {
+                epic_id: crate::models::EpicId(1),
+                epic_title: String::new(),
+            }),
+            Command::Settings(SettingsCommand::SaveRepoPath(String::new())),
+            Command::MainSession(MainSessionCommand::CheckLiveness),
+            Command::Epic(crate::tui::commands::EpicCommand::RefreshFromDb),
+            Command::System(SystemCommand::OpenInBrowser { url: String::new() }),
+            Command::RepoFilter(crate::tui::commands::RepoFilterCommand::DeleteRepoPath(
+                String::new(),
+            )),
+            Command::RepoSync(RepoSyncCommand::Refresh {
+                repo_path: String::new(),
+                fetch_first: false,
+            }),
+            Command::Pr(PrCommand::CheckStatus {
+                id: TaskId(1),
+                url: String::new(),
+            }),
+            Command::Split(SplitCommand::Enter),
+            Command::Learning(crate::tui::commands::LearningCommand::ArchiveStale),
+            Command::Usage(crate::tui::commands::UsageCommand::Record(
+                crate::models::UsageEvent {
+                    category: crate::models::UsageCategory::Keybinding,
+                    action: String::new(),
+                    detail: None,
+                    actor: crate::models::UsageActor::Human,
+                },
+            )),
+            Command::Todo(TodoCommand::LoadCount),
+            Command::Budget(crate::tui::commands::BudgetCommand::Refresh),
+        ];
+
+        let mut names: Vec<&str> = covered.iter().map(sub_enum_name).collect();
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            before,
+            "each sub-enum needs exactly one representative, got {names:?}"
+        );
     }
 }
 
-// rule-success.RefreshRepoSyncStateAfterRebase: a rebase that moved the repo's
-// base branch triggers a non-fetching refresh.
-#[tokio::test]
-async fn apply_loop_event_branch_rebased_refreshes_the_repo() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
-        MockProcessRunner::ok_with_stdout(b"2\t0\n"),
-    ]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-    let mut app = App::new(vec![]);
+/// The three result arms
+mod run_blocking_dispatch {
+    use super::*;
 
-    let cmds = apply_loop_event(
-        &mut app,
-        LoopEvent::Mcp(mcp::McpEvent::BranchRebased {
-            repo_path: "/repo".to_string(),
-        }),
-        &rt,
-    );
+    /// Receive the next message or fail the test rather than hang forever.
+    #[tokio::test]
+    async fn run_blocking_dispatch_sends_dispatched_on_success() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tasks::run_blocking_dispatch(models::TaskId(7), "Dispatch", true, tx, || {
+            Ok(models::DispatchResult {
+                worktree_path: "/wt".into(),
+                tmux_window: "win".into(),
+            })
+        });
 
-    assert!(cmds.is_empty(), "the refresh is spawned, not queued");
-    let m = expect_measurement(&mut rx).await;
-    assert_eq!(m.repo_path, "/repo");
-    assert!(
-        !mock
+        match recv_msg(&mut rx).await {
+            Message::Task(crate::tui::messages::TaskMessage::Dispatched {
+                id,
+                worktree,
+                tmux_window,
+                switch_focus,
+            }) => {
+                assert_eq!(id, models::TaskId(7));
+                assert_eq!(worktree, "/wt");
+                assert_eq!(tmux_window, "win");
+                assert!(switch_focus);
+            }
+            other => panic!("expected Dispatched, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_blocking_dispatch_reports_panics_as_dispatch_failure() {
+        // The panic arm is unreachable from production code on demand: it only
+        // fires when the dispatch closure itself unwinds. Without this test the
+        // downcast-and-report logic is never executed.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tasks::run_blocking_dispatch(models::TaskId(9), "Dispatch", false, tx, || {
+            panic!("worktree exploded")
+        });
+
+        match recv_msg(&mut rx).await {
+            Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(id)) => {
+                assert_eq!(id, models::TaskId(9));
+            }
+            other => panic!("expected DispatchFailed, got {other:?}"),
+        }
+        match recv_msg(&mut rx).await {
+            Message::System(crate::tui::messages::SystemMessage::Error(msg)) => {
+                assert!(
+                    msg.contains("panicked") && msg.contains("worktree exploded"),
+                    "the panic payload must be surfaced to the user, got {msg:?}"
+                );
+            }
+            other => panic!("expected a System error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_blocking_dispatch_reports_non_string_panic_payload_as_unknown() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        tasks::run_blocking_dispatch(models::TaskId(11), "Dispatch", false, tx, || {
+            std::panic::panic_any(42_u32)
+        });
+
+        assert!(matches!(
+            recv_msg(&mut rx).await,
+            Message::Task(crate::tui::messages::TaskMessage::DispatchFailed(_))
+        ));
+        match recv_msg(&mut rx).await {
+            Message::System(crate::tui::messages::SystemMessage::Error(msg)) => {
+                assert!(
+                    msg.contains("unknown"),
+                    "an undowncastable payload must fall back to 'unknown', got {msg:?}"
+                );
+            }
+            other => panic!("expected a System error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_refresh_from_db_sends_task_and_epic_refresh_messages() {
+        // `do_full_board_refresh` is the *unguarded* twin of `exec_refresh_from_db`
+        // (see the doc comments on both). It is only reachable through the
+        // `spawn_refresh_*` helpers, so it was never executed by any test.
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db, tx, runner).await;
+        create_task_returning(
+            &**rt.db_write(),
+            "Refreshed",
+            "desc",
+            "/repo",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+
+        rt.spawn_refresh_from_db().await.unwrap();
+
+        match recv_msg(&mut rx).await {
+            Message::Task(crate::tui::messages::TaskMessage::Refresh(tasks)) => {
+                assert_eq!(tasks.len(), 1);
+            }
+            other => panic!("expected a task Refresh, got {other:?}"),
+        }
+        assert!(matches!(
+            recv_msg(&mut rx).await,
+            Message::Epic(crate::tui::messages::EpicMessage::Refresh(_))
+        ));
+    }
+}
+
+/// Local-first repo sync (docs/specs/repo-sync.allium)
+mod repo_sync {
+    use super::*;
+
+    /// The three responses one fetching refresh consumes: symbolic-ref, fetch,
+    /// rev-list.
+    fn refresh_responses_fetching(counts: &[u8]) -> Vec<anyhow::Result<std::process::Output>> {
+        vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok(),
+            MockProcessRunner::ok_with_stdout(counts),
+        ]
+    }
+
+    async fn expect_measurement(
+        rx: &mut mpsc::UnboundedReceiver<Message>,
+    ) -> crate::repo_sync::RepoSyncMeasurement {
+        match recv_msg(rx).await {
+            Message::RepoSync(crate::tui::messages::RepoSyncMessage::Measured(m)) => m,
+            other => panic!("expected a repo-sync measurement, got {other:?}"),
+        }
+    }
+
+    // rule-success.RefreshRepoSyncState: the refresh runs off the event loop and
+    // reports its measurement back as a message.
+    #[tokio::test]
+    async fn exec_refresh_repo_sync_reports_the_measurement() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(refresh_responses_fetching(
+            b"3\t1\n",
+        )));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+
+        rt.exec_refresh_repo_sync("/repo".to_string(), true)
+            .await
+            .unwrap();
+
+        let m = expect_measurement(&mut rx).await;
+        assert_eq!(m.repo_path, "/repo");
+        assert_eq!(m.base_branch, "main");
+        assert_eq!(
+            m.counts,
+            Some(crate::repo_sync::AheadBehind {
+                ahead: 3,
+                behind: 1
+            })
+        );
+        assert!(mock
             .recorded_calls()
             .iter()
-            .any(|(_, a)| a.contains(&"fetch".to_string())),
-        "the rebase already refreshed the refs"
-    );
-}
+            .any(|(_, a)| a.contains(&"fetch".to_string())));
+    }
 
-// rule-success.RefreshRepoSyncStateAfterDispatch: an agent launched off-board
-// (the dispatch_task tool, or epic auto-dispatch chaining) refreshes the
-// repository's drift too, without a fetch — provisioning already fetched
-// origin/<base>.
-#[tokio::test]
-async fn apply_loop_event_agent_launched_refreshes_the_repo() {
-    let db = test_db().await;
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![
-        MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
-        MockProcessRunner::ok_with_stdout(b"1\t0\n"),
-    ]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-    let mut app = App::new(vec![]);
+    // Only the fetching refresh points perform a fetch; every other caller rides
+    // refs some other operation already refreshed.
+    #[tokio::test]
+    async fn exec_refresh_repo_sync_without_fetch_touches_no_network() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok_with_stdout(b"0\t2\n"),
+        ]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
 
-    let cmds = apply_loop_event(
-        &mut app,
-        LoopEvent::Mcp(mcp::McpEvent::AgentLaunched {
-            repo_path: "/repo".to_string(),
-        }),
-        &rt,
-    );
+        rt.exec_refresh_repo_sync("/repo".to_string(), false)
+            .await
+            .unwrap();
 
-    assert!(cmds.is_empty(), "the refresh is spawned, not queued");
-    let m = expect_measurement(&mut rx).await;
-    assert_eq!(m.repo_path, "/repo");
-    assert!(
-        !mock
-            .recorded_calls()
-            .iter()
-            .any(|(_, a)| a.contains(&"fetch".to_string())),
-        "provisioning already fetched origin/<base>"
-    );
-}
+        let m = expect_measurement(&mut rx).await;
+        assert_eq!(
+            m.counts,
+            Some(crate::repo_sync::AheadBehind {
+                ahead: 0,
+                behind: 2
+            })
+        );
+        assert!(
+            !mock
+                .recorded_calls()
+                .iter()
+                .any(|(_, a)| a.contains(&"fetch".to_string())),
+            "a non-fetching refresh must be a pure local ref read"
+        );
+    }
 
-// rule-failure.RefreshRepoSyncStateAfterRebase.1: no repository could be
-// resolved from the rebased branch, so nothing is refreshed.
-#[tokio::test]
-async fn apply_loop_event_branch_rebased_without_a_repo_refreshes_nothing() {
-    let db = test_db().await;
-    let (tx, _rx) = mpsc::unbounded_channel();
-    let mock = Arc::new(MockProcessRunner::new(vec![]));
-    let rt = make_runtime(db, tx, mock.clone()).await;
-    let mut app = App::new(vec![]);
+    // rule-success.RefreshRepoSyncStateOnStartup + OneRepoSetForDriftMeasurement:
+    // one fetching refresh per saved repo path, and no other repository.
+    #[tokio::test]
+    async fn exec_refresh_all_repo_sync_fetches_once_per_saved_repo_path() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut responses = refresh_responses_fetching(b"1\t0\n");
+        responses.extend(refresh_responses_fetching(b"0\t1\n"));
+        let mock = Arc::new(MockProcessRunner::new(responses));
+        let rt = make_runtime(db, tx, mock.clone()).await;
 
-    apply_loop_event(
-        &mut app,
-        LoopEvent::Mcp(mcp::McpEvent::BranchRebased {
-            repo_path: String::new(),
-        }),
-        &rt,
-    );
+        let paths = vec!["/repo-a".to_string(), "/repo-b".to_string()];
+        for handle in rt.exec_refresh_all_repo_sync(&paths) {
+            handle.await.unwrap();
+        }
 
-    assert!(
-        mock.recorded_calls().is_empty(),
-        "an unresolvable repository must not be measured"
-    );
-}
+        let mut seen = vec![
+            expect_measurement(&mut rx).await.repo_path,
+            expect_measurement(&mut rx).await.repo_path,
+        ];
+        seen.sort();
+        assert_eq!(seen, paths);
+        assert_eq!(
+            mock.recorded_calls()
+                .iter()
+                .filter(|(_, a)| a.contains(&"fetch".to_string()))
+                .count(),
+            2,
+            "exactly one fetch per saved repo path"
+        );
+    }
 
-/// `SurfaceAutoDispatchFailure` (docs/specs/epics.allium): the chain's failure
-/// event reaches the board as a message, so the marker, the status line and the
-/// notification are all decided by the app rather than by the loop.
-#[tokio::test]
-async fn apply_loop_event_auto_dispatch_failed_marks_the_subtask() {
-    let (rt, mut app) = test_runtime().await;
+    #[tokio::test]
+    async fn exec_refresh_all_repo_sync_does_nothing_without_saved_paths() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
 
-    let cmds = apply_loop_event(
-        &mut app,
-        LoopEvent::Mcp(mcp::McpEvent::AutoDispatchFailed {
-            task_id: TaskId(1),
-            epic_id: crate::models::EpicId(9),
-            reason: "no such repo".to_string(),
-        }),
-        &rt,
-    );
+        assert!(rt.exec_refresh_all_repo_sync(&[]).is_empty());
+        assert!(mock.recorded_calls().is_empty());
+    }
 
-    assert!(
-        app.auto_dispatch_failed(TaskId(1)),
-        "the failure must reach the board's marker, got commands: {cmds:?}"
-    );
-    let status = app.status_message().unwrap_or_default();
-    assert!(
-        status.contains("no such repo"),
-        "the reason must reach the status line, got: {status}"
-    );
+    // rule-success.SyncRepo, reported back through the success channel.
+    #[tokio::test]
+    async fn exec_sync_repo_reports_the_counts_it_moved() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"), // remote
+            MockProcessRunner::ok_with_stdout(b"main\n"),                        // branch
+            MockProcessRunner::ok_with_stdout(b""),                              // clean
+            MockProcessRunner::ok(),                                             // fetch
+            MockProcessRunner::ok_with_stdout(b"3\t1\n"),                        // rev-list
+            MockProcessRunner::ok(),                                             // merge
+            MockProcessRunner::ok_with_stdout(b"4\t0\n"),                        // recount
+            MockProcessRunner::ok(),                                             // push
+        ]));
+        let rt = make_runtime(db, tx, mock).await;
+
+        rt.exec_sync_repo("/repo".to_string(), "main".to_string())
+            .await
+            .unwrap();
+
+        match recv_msg(&mut rx).await {
+            Message::RepoSync(crate::tui::messages::RepoSyncMessage::Succeeded {
+                repo_path,
+                outcome,
+            }) => {
+                assert_eq!(repo_path, "/repo");
+                assert_eq!(
+                    outcome,
+                    crate::repo_sync::SyncOutcome::Synced {
+                        pulled: 1,
+                        pushed: 4
+                    }
+                );
+            }
+            other => panic!("expected a sync success, got {other:?}"),
+        }
+    }
+
+    // rule-success.ReportRepoSyncFailure: the failure channel carries the detail
+    // that makes the cause actionable, plus whether retrying is the fix.
+    #[tokio::test]
+    async fn exec_sync_repo_reports_a_failure_with_its_detail() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"git@github.com:org/repo.git\n"),
+            MockProcessRunner::ok_with_stdout(b"feature\n"), // not on base branch
+        ]));
+        let rt = make_runtime(db, tx, mock).await;
+
+        rt.exec_sync_repo("/repo".to_string(), "main".to_string())
+            .await
+            .unwrap();
+
+        match recv_msg(&mut rx).await {
+            Message::RepoSync(crate::tui::messages::RepoSyncMessage::Failed {
+                repo_path,
+                detail,
+                retryable,
+            }) => {
+                assert_eq!(repo_path, "/repo");
+                assert!(
+                    detail.contains("feature") && detail.contains("main"),
+                    "the branch found and the one expected: {detail}"
+                );
+                assert!(!retryable, "the operator must checkout main first");
+            }
+            other => panic!("expected a sync failure, got {other:?}"),
+        }
+    }
+
+    // rule-success.RefreshRepoSyncStateAfterRebase: a rebase that moved the repo's
+    // base branch triggers a non-fetching refresh.
+    #[tokio::test]
+    async fn apply_loop_event_branch_rebased_refreshes_the_repo() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok_with_stdout(b"2\t0\n"),
+        ]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+        let mut app = App::new(vec![]);
+
+        let cmds = apply_loop_event(
+            &mut app,
+            LoopEvent::Mcp(mcp::McpEvent::BranchRebased {
+                repo_path: "/repo".to_string(),
+            }),
+            &rt,
+        );
+
+        assert!(cmds.is_empty(), "the refresh is spawned, not queued");
+        let m = expect_measurement(&mut rx).await;
+        assert_eq!(m.repo_path, "/repo");
+        assert!(
+            !mock
+                .recorded_calls()
+                .iter()
+                .any(|(_, a)| a.contains(&"fetch".to_string())),
+            "the rebase already refreshed the refs"
+        );
+    }
+
+    // rule-success.RefreshRepoSyncStateAfterDispatch: an agent launched off-board
+    // (the dispatch_task tool, or epic auto-dispatch chaining) refreshes the
+    // repository's drift too, without a fetch — provisioning already fetched
+    // origin/<base>.
+    #[tokio::test]
+    async fn apply_loop_event_agent_launched_refreshes_the_repo() {
+        let db = test_db().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(b"refs/remotes/origin/main\n"),
+            MockProcessRunner::ok_with_stdout(b"1\t0\n"),
+        ]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+        let mut app = App::new(vec![]);
+
+        let cmds = apply_loop_event(
+            &mut app,
+            LoopEvent::Mcp(mcp::McpEvent::AgentLaunched {
+                repo_path: "/repo".to_string(),
+            }),
+            &rt,
+        );
+
+        assert!(cmds.is_empty(), "the refresh is spawned, not queued");
+        let m = expect_measurement(&mut rx).await;
+        assert_eq!(m.repo_path, "/repo");
+        assert!(
+            !mock
+                .recorded_calls()
+                .iter()
+                .any(|(_, a)| a.contains(&"fetch".to_string())),
+            "provisioning already fetched origin/<base>"
+        );
+    }
+
+    // rule-failure.RefreshRepoSyncStateAfterRebase.1: no repository could be
+    // resolved from the rebased branch, so nothing is refreshed.
+    #[tokio::test]
+    async fn apply_loop_event_branch_rebased_without_a_repo_refreshes_nothing() {
+        let db = test_db().await;
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mock = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = make_runtime(db, tx, mock.clone()).await;
+        let mut app = App::new(vec![]);
+
+        apply_loop_event(
+            &mut app,
+            LoopEvent::Mcp(mcp::McpEvent::BranchRebased {
+                repo_path: String::new(),
+            }),
+            &rt,
+        );
+
+        assert!(
+            mock.recorded_calls().is_empty(),
+            "an unresolvable repository must not be measured"
+        );
+    }
+
+    /// `SurfaceAutoDispatchFailure` (docs/specs/epics.allium): the chain's failure
+    /// event reaches the board as a message, so the marker, the status line and the
+    /// notification are all decided by the app rather than by the loop.
+    #[tokio::test]
+    async fn apply_loop_event_auto_dispatch_failed_marks_the_subtask() {
+        let (rt, mut app) = test_runtime().await;
+
+        let cmds = apply_loop_event(
+            &mut app,
+            LoopEvent::Mcp(mcp::McpEvent::AutoDispatchFailed {
+                task_id: TaskId(1),
+                epic_id: crate::models::EpicId(9),
+                reason: "no such repo".to_string(),
+            }),
+            &rt,
+        );
+
+        assert!(
+            app.auto_dispatch_failed(TaskId(1)),
+            "the failure must reach the board's marker, got commands: {cmds:?}"
+        );
+        let status = app.status_message().unwrap_or_default();
+        assert!(
+            status.contains("no such repo"),
+            "the reason must reach the status line, got: {status}"
+        );
+    }
 }

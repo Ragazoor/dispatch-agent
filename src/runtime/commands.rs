@@ -176,10 +176,12 @@ async fn dispatch_task(
         TrustAndDispatch { task, mode } => {
             let id = task.id;
             let repo_path = task.repo_path.clone();
-            let trust_result =
-                tokio::task::spawn_blocking(move || crate::dispatch::trust_repo(&repo_path))
-                    .await
-                    .unwrap_or_else(|e| Err(anyhow::anyhow!("trust_repo panicked: {e}")));
+            let claude_json_path = rt.claude_json_path.clone();
+            let trust_result = tokio::task::spawn_blocking(move || {
+                crate::dispatch::trust_at(&claude_json_path, &repo_path)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("trust_at panicked: {e}")));
 
             match trust_result {
                 Ok(()) => {
@@ -205,15 +207,16 @@ async fn dispatch_task(
             repo_path,
             mode,
         } => {
+            let claude_json_path = rt.claude_json_path.clone();
             let (repo_path, trust_result) = tokio::task::spawn_blocking(move || {
-                let result = crate::dispatch::is_repo_trusted(&repo_path);
+                let result = crate::dispatch::is_trusted_at(&claude_json_path, &repo_path);
                 (repo_path, result)
             })
             .await
             .unwrap_or_else(|e| {
                 (
                     String::new(),
-                    Err(anyhow::anyhow!("is_repo_trusted panicked: {e}")),
+                    Err(anyhow::anyhow!("is_trusted_at panicked: {e}")),
                 )
             });
             match trust_result {
@@ -270,10 +273,12 @@ async fn dispatch_task(
             // interactive trust prompt (see src/dispatch/trust.rs), silently
             // defeating "quick" dispatch's unattended, immediate contract.
             let repo_path = draft.repo_path.clone();
-            let trust_result =
-                tokio::task::spawn_blocking(move || crate::dispatch::is_repo_trusted(&repo_path))
-                    .await
-                    .unwrap_or_else(|e| Err(anyhow::anyhow!("is_repo_trusted panicked: {e}")));
+            let claude_json_path = rt.claude_json_path.clone();
+            let trust_result = tokio::task::spawn_blocking(move || {
+                crate::dispatch::is_trusted_at(&claude_json_path, &repo_path)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("is_trusted_at panicked: {e}")));
             match trust_result {
                 Ok(true) => {
                     rt.exec_quick_dispatch(app, draft, epic_id).await;
@@ -294,10 +299,12 @@ async fn dispatch_task(
         }
         TrustAndQuickDispatch { draft, epic_id } => {
             let repo_path = draft.repo_path.clone();
-            let trust_result =
-                tokio::task::spawn_blocking(move || crate::dispatch::trust_repo(&repo_path))
-                    .await
-                    .unwrap_or_else(|e| Err(anyhow::anyhow!("trust_repo panicked: {e}")));
+            let claude_json_path = rt.claude_json_path.clone();
+            let trust_result = tokio::task::spawn_blocking(move || {
+                crate::dispatch::trust_at(&claude_json_path, &repo_path)
+            })
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("trust_at panicked: {e}")));
             match trust_result {
                 Ok(()) => {
                     rt.exec_quick_dispatch(app, draft, epic_id).await;

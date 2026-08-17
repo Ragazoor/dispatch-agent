@@ -7,7 +7,12 @@ fn project_key(repo_path: &str) -> String {
     expand_tilde(repo_path).trim_end_matches('/').to_string()
 }
 
-fn is_trusted_at(claude_json: &Path, repo_path: &str) -> Result<bool> {
+/// The path-parameterised half of the trust check. `TuiRuntime::claude_json_path`
+/// carries the path a caller should use — the real `$HOME/.claude.json` in
+/// production, an injected tempfile in tests — so this is the seam a
+/// `commands::dispatch` test can point elsewhere without mutating the real
+/// file. See [`claude_json_path`] for the production default.
+pub(crate) fn is_trusted_at(claude_json: &Path, repo_path: &str) -> Result<bool> {
     if !claude_json.exists() {
         return Ok(false);
     }
@@ -21,7 +26,9 @@ fn is_trusted_at(claude_json: &Path, repo_path: &str) -> Result<bool> {
         .unwrap_or(false))
 }
 
-fn trust_at(claude_json: &Path, repo_path: &str) -> Result<()> {
+/// The path-parameterised half of granting trust. See [`is_trusted_at`] for
+/// why this takes the path rather than resolving it itself.
+pub(crate) fn trust_at(claude_json: &Path, repo_path: &str) -> Result<()> {
     let mut json: Value = if claude_json.exists() {
         let content = std::fs::read_to_string(claude_json)
             .with_context(|| format!("failed to read {}", claude_json.display()))?;
@@ -49,17 +56,13 @@ fn trust_at(claude_json: &Path, repo_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn claude_json_path() -> std::path::PathBuf {
+/// The real `$HOME/.claude.json` path. The production default for
+/// `TuiRuntime::claude_json_path`, set once at bootstrap; every trust check
+/// then reads that field rather than re-deriving this, which is what lets a
+/// test substitute a tempfile instead.
+pub(crate) fn claude_json_path() -> std::path::PathBuf {
     let home = std::env::var("HOME").unwrap_or_default();
     std::path::PathBuf::from(format!("{home}/.claude.json"))
-}
-
-pub fn is_repo_trusted(repo_path: &str) -> Result<bool> {
-    is_trusted_at(&claude_json_path(), repo_path)
-}
-
-pub fn trust_repo(repo_path: &str) -> Result<()> {
-    trust_at(&claude_json_path(), repo_path)
 }
 
 #[cfg(test)]

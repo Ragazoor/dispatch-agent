@@ -343,9 +343,15 @@ struct TuiRuntime {
     /// the event loop by `exec_refresh_budget`. See docs/specs/dispatch.allium:
     /// TokenBudgetIndicator.
     budget_snapshot_path: std::path::PathBuf,
+    /// Path the trust-gated `TaskCommand` arms (`TrustAndDispatch`,
+    /// `CheckTrustAndDispatch`, `QuickDispatch`, `TrustAndQuickDispatch`) read
+    /// and write via `dispatch::is_trusted_at`/`dispatch::trust_at`. Defaults
+    /// to the real `$HOME/.claude.json` (`dispatch::claude_json_path`) in
+    /// production; a test overrides it with a tempfile so exercising these
+    /// arms never touches the machine's actual Claude Code trust store.
+    claude_json_path: std::path::PathBuf,
 }
 
-mod agents;
 mod budget;
 mod commands;
 mod editor;
@@ -539,6 +545,7 @@ impl TuiRuntime {
             emb_svc,
             last_change_count: AtomicI64::new(-1),
             budget_snapshot_path,
+            claude_json_path: dispatch::claude_json_path(),
         };
 
         // Load initial todo open-count so the board footer shows it immediately.

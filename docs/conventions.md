@@ -360,6 +360,10 @@ Two rules make it temporary rather than permanent: the comment must name the spe
 
 Tests live inline behind `#[cfg(test)]` blocks (or in sibling `tests/` sub-modules) in the same file as the production code. Large files like `src/models/tasks.rs` (≈1700 LOC) are roughly half tests. If a file looks unexpectedly large, check how much of it is `#[cfg(test)]` before concluding the production code is complex.
 
+## Test-injectable path fields on `TuiRuntime`
+
+When a handler's only route to a real filesystem path is a free function that hardcodes it (e.g. `$HOME/...`), the fix is a `PathBuf` field on `TuiRuntime` that defaults to the real path in production and is overridden with a tempfile in tests — not a parameter threaded through every call site, and not mutating `$HOME` itself (see "No `tokio::time::sleep` in tests" for the same reasoning against mutating shared process state from a test). `budget_snapshot_path` (`src/runtime/mod.rs`, read by `exec_refresh_budget`) established the pattern; `claude_json_path` (read/written by the trust-gated `TaskCommand` arms via `dispatch::is_trusted_at`/`dispatch::trust_at`) is the second instance. Test fixtures that build a `TuiRuntime` directly (`make_runtime`, `editor_runtime`) default the field to a nonexistent path, so a test that never overrides it fails safe (read as absent, write fails) instead of silently touching the real file.
+
 ## `unsafe`
 
 Any `unsafe` block must have a `// SAFETY:` comment directly above it explaining why the invariant holds. Reviewer sign-off is required before merging. This policy is also stated in `CLAUDE.md`.

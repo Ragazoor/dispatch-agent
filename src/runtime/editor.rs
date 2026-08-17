@@ -743,6 +743,7 @@ mod tests {
             budget_snapshot_path: std::path::PathBuf::from(
                 "/nonexistent-test-path/rate-limits.json",
             ),
+            claude_json_path: std::path::PathBuf::from("/nonexistent-test-path/.claude.json"),
         }
     }
 
