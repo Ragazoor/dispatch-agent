@@ -189,9 +189,14 @@ fn parse_section<T>(
 
 /// The message an interval section shows when its content fails
 /// [`crate::models::parse_interval_secs`]. One wording for both sections, so
-/// the two cannot drift into describing the same grammar differently.
+/// the two cannot drift into describing the same grammar differently — and the
+/// examples come from [`crate::models::INTERVAL_EXAMPLES`] rather than being
+/// retyped, so they cannot drift from the parser either.
 fn interval_parse_failure_message(raw: &str) -> String {
-    format!("not a valid interval: {raw:?} (expected e.g. 600, 10m, 2h, 1d)")
+    format!(
+        "not a valid interval: {raw:?} (expected e.g. {})",
+        crate::models::INTERVAL_EXAMPLES
+    )
 }
 
 pub fn parse_epic_editor_output(input: &str) -> EpicEditorFields {
@@ -219,6 +224,9 @@ pub fn format_editor_content(task: &Task) -> String {
     let wrap_up_mode = task.wrap_up_mode.map(|m| m.as_str()).unwrap_or("");
     let url = task.url.as_ref().map(|u| u.url.as_str()).unwrap_or("");
     let url_type = task.url.as_ref().map(|u| u.url_type.as_str()).unwrap_or("");
+    // Bare seconds, never the humanised form: this value is read straight back
+    // by `parse_editor_content`, and re-rendering the user's own spelling
+    // ("10m") would mean storing it. See tasks.allium: EditTask.
     let schedule_interval_secs = task
         .schedule_interval_secs
         .map(|n| n.to_string())
@@ -242,11 +250,6 @@ pub fn format_editor_content(task: &Task) -> String {
         repo_path = task.repo_path,
         status = task.status.as_str(),
         base_branch = task.base_branch,
-        // Bare seconds, never the humanised form: this value is read straight
-        // back by `parse_editor_content`, and re-rendering the user's own
-        // spelling ("10m") would mean storing it. See tasks.allium: EditTask.
-        schedule_interval_secs = schedule_interval_secs,
-        pinned_branch = pinned_branch,
     )
 }
 
@@ -365,16 +368,10 @@ pub fn apply_task_editor_fields(task: &Task, fields: EditorFields) -> TaskEditAp
     } else {
         Some(crate::service::UrlUpdate::Clear)
     };
-    // Clearable scheduling pair: an empty (or unparseable) section unschedules
-    // / unpins. `pinned_branch` is a plain string section, so empty is the
-    // clear; `schedule_interval_secs` already arrives as `Option` from the
-    // interval grammar.
-    let schedule_interval_secs = fields.schedule_interval_secs;
-    let pinned_branch = if fields.pinned_branch.is_empty() {
-        None
-    } else {
-        Some(fields.pinned_branch)
-    };
+    // Clearable pinned branch: an empty section unpins. Its interval sibling
+    // needs no work here — the grammar already yields `Option`, with both
+    // "empty" and "unparseable" arriving as `None` (i.e. unschedule).
+    let pinned_branch = Some(fields.pinned_branch).filter(|s| !s.is_empty());
     let resolved_plan_path = plan_path.as_option().map(str::to_string);
     TaskEditApplied {
         title,
@@ -388,7 +385,7 @@ pub fn apply_task_editor_fields(task: &Task, fields: EditorFields) -> TaskEditAp
         wrap_up_mode,
         url,
         resolved_url: desired_url,
-        schedule_interval_secs,
+        schedule_interval_secs: fields.schedule_interval_secs,
         pinned_branch,
     }
 }
@@ -1261,6 +1258,41 @@ mod tests {
                 "https://github.com/o/r/pull/9",
                 UrlType::Pr
             )))
+        );
+    }
+
+    /// `format_editor_content` and `parse_editor_content` each name every
+    /// section as a string literal, in two lists nothing structural ties
+    /// together. A section added to one and misspelled in the other compiles
+    /// fine and silently never round-trips — this is what catches that.
+    ///
+    /// Deliberately asserts the whole set rather than the two sections this
+    /// change added: the point is to cover the next one too.
+    #[test]
+    fn every_formatted_section_is_a_section_the_parser_reads() {
+        let task = make_task("T", "D", "/repo", TaskStatus::Backlog, None);
+        let mut formatted: Vec<String> = parse_sections(&format_editor_content(&task))
+            .keys()
+            .map(|k| k.to_string())
+            .collect();
+        formatted.sort();
+        assert_eq!(
+            formatted,
+            vec![
+                "BASE_BRANCH",
+                "DESCRIPTION",
+                "PINNED_BRANCH",
+                "PLAN",
+                "REPO_PATH",
+                "SCHEDULE_INTERVAL_SECS",
+                "STATUS",
+                "TAG",
+                "TITLE",
+                "URL",
+                "URL_TYPE",
+                "WRAP_UP_MODE",
+            ],
+            "the editor's section set changed — update parse_editor_content to match"
         );
     }
 

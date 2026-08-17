@@ -60,7 +60,7 @@ mod columns;
 pub use columns::VisualColumn;
 
 mod interval;
-pub use interval::{format_interval_secs, parse_interval_secs};
+pub use interval::{format_interval_secs, parse_interval_secs, INTERVAL_EXAMPLES};
 
 mod url;
 pub use url::{TaskUrl, UrlType};

@@ -344,19 +344,16 @@ fn render_card_indicator(
         Span::raw("   "),
         Span::styled(label, Style::default().fg(color)),
     ];
-    // Ahead of the task's own labels, so a feed script's first label keeps its
-    // position regardless of a property the script knows nothing about.
-    if let Some(secs) = schedule_interval_secs {
+    // The badge is chained ahead of the task's own labels rather than pushed in
+    // its own loop: core.allium requires the two to be visually identical and
+    // the badge to come first, and one chain expresses both without a test
+    // having to police them.
+    let badge = schedule_interval_secs
+        .map(|secs| format!("\u{23f1} {}", crate::models::format_interval_secs(secs)));
+    for chip in badge.iter().chain(labels.iter()) {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
-            format!("[\u{23f1} {}]", crate::models::format_interval_secs(secs)),
-            Style::default().fg(MUTED),
-        ));
-    }
-    for label in labels {
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            format!("[{label}]"),
+            format!("[{chip}]"),
             Style::default().fg(MUTED),
         ));
     }

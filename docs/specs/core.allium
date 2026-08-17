@@ -734,6 +734,22 @@ config {
 -- NOT bound by it: the MCP/CLI surfaces, which take a JSON integer of seconds
 -- and never a string. The grammar is for humans typing into a field.
 --
+-- == KNOWN GAP: positivity is not enforced everywhere ==
+--
+-- The strictly-positive rule above is a property of the GRAMMAR, so today it
+-- binds only the three surfaces that parse a literal. The MCP integer path has
+-- no lower bound: create_task/update_task accept schedule_interval_secs = 0,
+-- and dispatch.allium's scheduler reads a non-positive interval as "every
+-- tick". So the busy-loop the grammar refuses is still reachable, just not by
+-- typing.
+--
+-- That split is wrong, and it is recorded here rather than quietly implied by
+-- the carve-out above. Positivity is a domain invariant of the field, not a
+-- spelling rule: it belongs in the task service's create/update validation,
+-- where every entry point inherits it, leaving the grammar to only parse. The
+-- fix is deliberately not folded into the TUI change that surfaced it, because
+-- it changes what the MCP tools accept.
+--
 -- == How an interval is displayed back ==
 --
 -- Stored values are seconds, and the editor sections WRITE seconds back

@@ -11,7 +11,7 @@ mod epics;
 mod feeds;
 mod forms;
 pub(in crate::tui) use forms::{
-    PINNED_BRANCH_PROMPT, SCHEDULE_GATE_PROMPT, SCHEDULE_INTERVAL_PROMPT,
+    schedule_interval_prompt, PINNED_BRANCH_PROMPT, SCHEDULE_GATE_PROMPT,
 };
 mod lifecycle;
 mod main_session;

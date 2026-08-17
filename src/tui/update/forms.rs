@@ -10,10 +10,29 @@ use super::super::{filtered_repos, has_new_repo_option, App, PendingAction};
 /// three cannot advertise three different key sets for one step — the drift
 /// the tag picker's hint text already demonstrates (tasks.allium: CreateTask).
 pub(in crate::tui) const SCHEDULE_GATE_PROMPT: &str = "Schedule: [Enter] none  [s] configure";
-pub(in crate::tui) const SCHEDULE_INTERVAL_PROMPT: &str =
-    "Schedule interval (600, 10m, 2h, 1d; [Enter] none): ";
 pub(in crate::tui) const PINNED_BRANCH_PROMPT: &str =
     "Pinned branch ([Enter] normal per-task branch): ";
+
+/// A function rather than a const because it quotes
+/// [`crate::models::INTERVAL_EXAMPLES`], and the examples must come from the
+/// parser's own table rather than be retyped here — a prompt advertising a
+/// suffix the parser rejects is worse than no prompt.
+pub(in crate::tui) fn schedule_interval_prompt() -> String {
+    format!(
+        "Schedule interval ({}; [Enter] none): ",
+        crate::models::INTERVAL_EXAMPLES
+    )
+}
+
+/// The message the interval step shows when the typed value does not parse.
+/// Shares its example set with the prompt above and with the editor sections'
+/// [`crate::editor`] failure message.
+fn interval_rejected_message(value: &str) -> String {
+    format!(
+        "Not a valid interval: {value:?} — try {} ([Enter] to skip)",
+        crate::models::INTERVAL_EXAMPLES
+    )
+}
 
 impl App {
     pub(in crate::tui) fn handle_copy_task(&mut self) -> Vec<Command> {
@@ -162,10 +181,7 @@ impl App {
         if let (Some(ref mut draft), Some(m)) = (self.input.task_draft.as_mut(), mode) {
             draft.wrap_up_mode = Some(m);
         }
-        self.input.clear_buffer();
-        self.input.mode = InputMode::InputScheduleGate;
-        self.set_status(SCHEDULE_GATE_PROMPT.to_string());
-        vec![]
+        self.advance_step(InputMode::InputScheduleGate, SCHEDULE_GATE_PROMPT)
     }
 
     /// The gate's answer: `false` (Enter) creates the task straight away with
@@ -173,13 +189,12 @@ impl App {
     /// text steps are gated at all. `true` (`s`) opens them.
     pub(in crate::tui) fn handle_submit_schedule_gate(&mut self, configure: bool) -> Vec<Command> {
         if !configure {
-            let repo_path = self.draft_repo_path();
-            return self.finish_task_creation(repo_path);
+            return self.finish_task_creation();
         }
-        self.input.clear_buffer();
-        self.input.mode = InputMode::InputScheduleInterval;
-        self.set_status(SCHEDULE_INTERVAL_PROMPT.to_string());
-        vec![]
+        self.advance_step(
+            InputMode::InputScheduleInterval,
+            &schedule_interval_prompt(),
+        )
     }
 
     /// Parse the typed cadence and advance to the pinned-branch step.
@@ -194,24 +209,15 @@ impl App {
         value: String,
     ) -> Vec<Command> {
         if !value.is_empty() {
-            match crate::models::parse_interval_secs(&value) {
-                Some(secs) => {
-                    if let Some(ref mut draft) = self.input.task_draft {
-                        draft.schedule_interval_secs = Some(secs);
-                    }
-                }
-                None => {
-                    self.set_status(format!(
-                        "Not a valid interval: {value:?} — try 600, 10m, 2h or 1d ([Enter] to skip)"
-                    ));
-                    return vec![];
-                }
+            let Some(secs) = crate::models::parse_interval_secs(&value) else {
+                self.set_status(interval_rejected_message(&value));
+                return vec![];
+            };
+            if let Some(ref mut draft) = self.input.task_draft {
+                draft.schedule_interval_secs = Some(secs);
             }
         }
-        self.input.clear_buffer();
-        self.input.mode = InputMode::InputPinnedBranch;
-        self.set_status(PINNED_BRANCH_PROMPT.to_string());
-        vec![]
+        self.advance_step(InputMode::InputPinnedBranch, PINNED_BRANCH_PROMPT)
     }
 
     /// The form's terminal step. The branch name is taken literally, with no
@@ -222,16 +228,17 @@ impl App {
             draft.pinned_branch = (!value.is_empty()).then_some(value);
         }
         self.input.clear_buffer();
-        let repo_path = self.draft_repo_path();
-        self.finish_task_creation(repo_path)
+        self.finish_task_creation()
     }
 
-    fn draft_repo_path(&self) -> String {
-        self.input
-            .task_draft
-            .as_ref()
-            .map(|d| d.repo_path.clone())
-            .unwrap_or_default()
+    /// Move the creation form to its next step: drop whatever the last step
+    /// typed, switch mode, and show the new step's prompt. The three lines
+    /// every step handler ended with, written once.
+    fn advance_step(&mut self, mode: InputMode, prompt: &str) -> Vec<Command> {
+        self.input.clear_buffer();
+        self.input.mode = mode;
+        self.set_status(prompt.to_string());
+        vec![]
     }
 
     pub(in crate::tui) fn handle_submit_tag(&mut self, tag: Option<TaskTag>) -> Vec<Command> {

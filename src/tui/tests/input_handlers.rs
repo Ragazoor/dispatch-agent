@@ -794,9 +794,7 @@ fn submit_base_branch_sets_branch_and_advances_to_wrap_up_mode() {
         repo_path: "/tmp".to_string(),
         tag: Some(TaskTag::Bug),
         base_branch: "main".into(),
-        wrap_up_mode: None,
-        schedule_interval_secs: None,
-        pinned_branch: None,
+        ..Default::default()
     });
     app.input.set_buffer("develop".to_string());
     let cmds = app.update(Message::Input(
@@ -1319,9 +1317,7 @@ fn caret_delete_forward_removes_char_at_caret() {
 fn caret_word_jump_ctrl_arrows() {
     let mut app = make_app();
     app.handle_key(make_key(KeyCode::Char('n')));
-    for c in "foo bar baz".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "foo bar baz");
     assert_eq!(app.input.caret, 11);
     // Ctrl+Left jumps to the start of the last word ("baz")
     app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
@@ -1337,9 +1333,7 @@ fn caret_word_jump_ctrl_arrows() {
 fn caret_word_jump_alt_bf_fallback() {
     let mut app = make_app();
     app.handle_key(make_key(KeyCode::Char('n')));
-    for c in "foo bar".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "foo bar");
     assert_eq!(app.input.caret, 7);
     // Alt+B is the readline word-left fallback (tmux without xterm-keys)
     app.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT));
@@ -2484,9 +2478,7 @@ fn enter_with_typed_filter_selects_filtered_item() {
         ..Default::default()
     });
     // Type "var" — only /var matches, cursor = 0
-    for c in "var".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "var");
     // Enter selects /var
     app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::InputBaseBranch);
@@ -2571,202 +2563,9 @@ fn submit_base_branch_transitions_to_wrap_up_mode() {
     );
 }
 
-#[test]
-fn wrap_up_mode_r_selects_rebase_and_creates_task() {
-    let mut app = make_app();
-    app.input.mode = InputMode::InputWrapUpMode;
-    app.input.task_draft = Some(TaskDraft {
-        title: "T".to_string(),
-        repo_path: "/repo".to_string(),
-        base_branch: "main".into(),
-        ..Default::default()
-    });
-
-    app.handle_key(make_key(KeyCode::Char('r')));
-    // The schedule gate is the form's last step; declining it is what commits
-    // the creation (tasks.allium: CreateTask, "The schedule step").
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    assert_eq!(app.input.mode, InputMode::Normal);
-    let insert_cmd = cmds.iter().find(|c| {
-        matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::Insert { .. })
-        )
-    });
-    assert!(
-        insert_cmd.is_some(),
-        "expected Insert command, got {:?}",
-        cmds
-    );
-    if let Some(Command::Task(crate::tui::commands::TaskCommand::Insert { draft, .. })) = insert_cmd
-    {
-        assert_eq!(
-            draft.wrap_up_mode,
-            Some(crate::models::WrapUpMode::Rebase),
-            "expected Rebase wrap_up_mode"
-        );
-    }
-}
-
-#[test]
-fn wrap_up_mode_p_selects_pr_and_creates_task() {
-    let mut app = make_app();
-    app.input.mode = InputMode::InputWrapUpMode;
-    app.input.task_draft = Some(TaskDraft {
-        title: "T".to_string(),
-        repo_path: "/repo".to_string(),
-        base_branch: "main".into(),
-        ..Default::default()
-    });
-
-    app.handle_key(make_key(KeyCode::Char('p')));
-    // The schedule gate is the form's last step; declining it is what commits
-    // the creation (tasks.allium: CreateTask, "The schedule step").
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    assert_eq!(app.input.mode, InputMode::Normal);
-    let insert_cmd = cmds.iter().find(|c| {
-        matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::Insert { .. })
-        )
-    });
-    assert!(
-        insert_cmd.is_some(),
-        "expected Insert command, got {:?}",
-        cmds
-    );
-    if let Some(Command::Task(crate::tui::commands::TaskCommand::Insert { draft, .. })) = insert_cmd
-    {
-        assert_eq!(
-            draft.wrap_up_mode,
-            Some(crate::models::WrapUpMode::Pr),
-            "expected Pr wrap_up_mode"
-        );
-    }
-}
-
-#[test]
-fn wrap_up_mode_d_selects_done_and_creates_task() {
-    let mut app = make_app();
-    app.input.mode = InputMode::InputWrapUpMode;
-    app.input.task_draft = Some(TaskDraft {
-        title: "T".to_string(),
-        repo_path: "/repo".to_string(),
-        base_branch: "main".into(),
-        ..Default::default()
-    });
-
-    app.handle_key(make_key(KeyCode::Char('d')));
-    // The schedule gate is the form's last step; declining it is what commits
-    // the creation (tasks.allium: CreateTask, "The schedule step").
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    assert_eq!(app.input.mode, InputMode::Normal);
-    let insert_cmd = cmds.iter().find(|c| {
-        matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::Insert { .. })
-        )
-    });
-    assert!(
-        insert_cmd.is_some(),
-        "expected Insert command, got {:?}",
-        cmds
-    );
-    if let Some(Command::Task(crate::tui::commands::TaskCommand::Insert { draft, .. })) = insert_cmd
-    {
-        assert_eq!(
-            draft.wrap_up_mode,
-            Some(crate::models::WrapUpMode::Done),
-            "expected Done wrap_up_mode"
-        );
-    }
-}
-
-#[test]
-fn wrap_up_mode_enter_skips_and_creates_task_with_no_mode() {
-    let mut app = make_app();
-    app.input.mode = InputMode::InputWrapUpMode;
-    app.input.task_draft = Some(TaskDraft {
-        title: "T".to_string(),
-        repo_path: "/repo".to_string(),
-        base_branch: "main".into(),
-        ..Default::default()
-    });
-
-    app.handle_key(make_key(KeyCode::Enter));
-    // Enter again: the schedule gate's default is "not scheduled".
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    assert_eq!(app.input.mode, InputMode::Normal);
-    let insert_cmd = cmds.iter().find(|c| {
-        matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::Insert { .. })
-        )
-    });
-    assert!(
-        insert_cmd.is_some(),
-        "expected Insert command, got {:?}",
-        cmds
-    );
-    if let Some(Command::Task(crate::tui::commands::TaskCommand::Insert { draft, .. })) = insert_cmd
-    {
-        assert_eq!(
-            draft.wrap_up_mode, None,
-            "Enter should create task with no wrap-up mode"
-        );
-    }
-}
-
-#[test]
-fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
-    // Regression guard: CopyTask prefills wrap_up_mode from the source task,
-    // but the picker's Enter previously always submitted None, silently
-    // clearing it. Enter (no explicit r/p/d pick) must keep whatever the
-    // draft already carries.
-    let mut app = make_app();
-    app.input.mode = InputMode::InputWrapUpMode;
-    app.input.task_draft = Some(TaskDraft {
-        title: "Copy of: T".to_string(),
-        repo_path: "/repo".to_string(),
-        base_branch: "main".into(),
-        wrap_up_mode: Some(crate::models::WrapUpMode::Pr),
-        ..Default::default()
-    });
-
-    app.handle_key(make_key(KeyCode::Enter));
-    // Enter again: the schedule gate's default is "not scheduled".
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    let insert_cmd = cmds.iter().find(|c| {
-        matches!(
-            c,
-            Command::Task(crate::tui::commands::TaskCommand::Insert { .. })
-        )
-    });
-    assert!(
-        insert_cmd.is_some(),
-        "expected Insert command, got {:?}",
-        cmds
-    );
-    if let Some(Command::Task(crate::tui::commands::TaskCommand::Insert { draft, .. })) = insert_cmd
-    {
-        assert_eq!(
-            draft.wrap_up_mode,
-            Some(crate::models::WrapUpMode::Pr),
-            "Enter should keep the copied wrap_up_mode, not clear it"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Schedule gate + schedule-interval / pinned-branch steps
-// ---------------------------------------------------------------------------
-
-/// A draft parked at the wrap-up step, ready to fall through into the gate.
+/// A draft parked at the wrap-up step — the shared starting point for every
+/// test of the form's tail (wrap-up picker, schedule gate, and the two
+/// configure steps beyond it).
 fn app_at_wrap_up_step() -> App {
     let mut app = make_app();
     app.input.mode = InputMode::InputWrapUpMode;
@@ -2779,12 +2578,118 @@ fn app_at_wrap_up_step() -> App {
     app
 }
 
+/// The draft the form asked to create, or `None` if it emitted no Insert.
 fn insert_draft(cmds: &[Command]) -> Option<&TaskDraft> {
     cmds.iter().find_map(|c| match c {
         Command::Task(crate::tui::commands::TaskCommand::Insert { draft, .. }) => Some(draft),
         _ => None,
     })
 }
+
+/// Type a string into the active text field, one key at a time.
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        app.handle_key(make_key(KeyCode::Char(c)));
+    }
+}
+
+#[test]
+fn wrap_up_mode_r_selects_rebase_and_creates_task() {
+    let mut app = app_at_wrap_up_step();
+
+    app.handle_key(make_key(KeyCode::Char('r')));
+    // The schedule gate is the form's last step; declining it is what commits
+    // the creation (tasks.allium: CreateTask, "The schedule step").
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+
+    assert_eq!(app.input.mode, InputMode::Normal);
+    let draft = insert_draft(&cmds).expect("expected Insert command");
+    assert_eq!(
+        draft.wrap_up_mode,
+        Some(crate::models::WrapUpMode::Rebase),
+        "expected Rebase wrap_up_mode"
+    );
+}
+
+#[test]
+fn wrap_up_mode_p_selects_pr_and_creates_task() {
+    let mut app = app_at_wrap_up_step();
+
+    app.handle_key(make_key(KeyCode::Char('p')));
+    // The schedule gate is the form's last step; declining it is what commits
+    // the creation (tasks.allium: CreateTask, "The schedule step").
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+
+    assert_eq!(app.input.mode, InputMode::Normal);
+    let draft = insert_draft(&cmds).expect("expected Insert command");
+    assert_eq!(
+        draft.wrap_up_mode,
+        Some(crate::models::WrapUpMode::Pr),
+        "expected Pr wrap_up_mode"
+    );
+}
+
+#[test]
+fn wrap_up_mode_d_selects_done_and_creates_task() {
+    let mut app = app_at_wrap_up_step();
+
+    app.handle_key(make_key(KeyCode::Char('d')));
+    // The schedule gate is the form's last step; declining it is what commits
+    // the creation (tasks.allium: CreateTask, "The schedule step").
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+
+    assert_eq!(app.input.mode, InputMode::Normal);
+    let draft = insert_draft(&cmds).expect("expected Insert command");
+    assert_eq!(
+        draft.wrap_up_mode,
+        Some(crate::models::WrapUpMode::Done),
+        "expected Done wrap_up_mode"
+    );
+}
+
+#[test]
+fn wrap_up_mode_enter_skips_and_creates_task_with_no_mode() {
+    let mut app = app_at_wrap_up_step();
+
+    app.handle_key(make_key(KeyCode::Enter));
+    // Enter again: the schedule gate's default is "not scheduled".
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+
+    assert_eq!(app.input.mode, InputMode::Normal);
+    let draft = insert_draft(&cmds).expect("expected Insert command");
+    assert_eq!(
+        draft.wrap_up_mode, None,
+        "Enter should create task with no wrap-up mode"
+    );
+}
+
+#[test]
+fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
+    // Regression guard: CopyTask prefills wrap_up_mode from the source task,
+    // but the picker's Enter previously always submitted None, silently
+    // clearing it. Enter (no explicit r/p/d pick) must keep whatever the
+    // draft already carries.
+    let mut app = app_at_wrap_up_step();
+    if let Some(draft) = app.input.task_draft.as_mut() {
+        draft.title = "Copy of: T".to_string();
+        draft.wrap_up_mode = Some(crate::models::WrapUpMode::Pr);
+    }
+
+    app.handle_key(make_key(KeyCode::Enter));
+    // Enter again: the schedule gate's default is "not scheduled".
+    let cmds = app.handle_key(make_key(KeyCode::Enter));
+
+    let draft = insert_draft(&cmds).expect("expected Insert command");
+    assert_eq!(
+        draft.wrap_up_mode,
+        Some(crate::models::WrapUpMode::Pr),
+        "Enter should keep the copied wrap_up_mode, not clear it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Schedule gate + schedule-interval / pinned-branch steps
+// ---------------------------------------------------------------------------
 
 #[test]
 fn wrap_up_mode_now_falls_through_to_the_schedule_gate_not_straight_to_creation() {
@@ -2861,9 +2766,7 @@ fn configuring_both_fields_carries_them_onto_the_created_task() {
     app.handle_key(make_key(KeyCode::Enter)); // wrap-up: skip
     app.handle_key(make_key(KeyCode::Char('s'))); // gate: configure
 
-    for c in "600".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "600");
     app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::InputPinnedBranch);
     assert!(
@@ -2871,9 +2774,7 @@ fn configuring_both_fields_carries_them_onto_the_created_task() {
         "the interval buffer must be cleared before the branch step reuses it"
     );
 
-    for c in "staging".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "staging");
     let cmds = app.handle_key(make_key(KeyCode::Enter));
 
     assert_eq!(app.input.mode, InputMode::Normal);
@@ -2889,9 +2790,7 @@ fn the_interval_step_accepts_a_suffixed_literal() {
     app.handle_key(make_key(KeyCode::Enter));
     app.handle_key(make_key(KeyCode::Char('s')));
 
-    for c in "10m".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "10m");
     app.handle_key(make_key(KeyCode::Enter));
     let cmds = app.handle_key(make_key(KeyCode::Enter)); // skip pinned branch
 
@@ -2910,9 +2809,7 @@ fn each_configure_step_is_individually_skippable() {
     app.handle_key(make_key(KeyCode::Enter)); // skip the interval
     assert_eq!(app.input.mode, InputMode::InputPinnedBranch);
 
-    for c in "staging".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "staging");
     let cmds = app.handle_key(make_key(KeyCode::Enter));
 
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2929,9 +2826,7 @@ fn an_unparseable_interval_is_rejected_in_place() {
         let mut app = app_at_wrap_up_step();
         app.handle_key(make_key(KeyCode::Enter));
         app.handle_key(make_key(KeyCode::Char('s')));
-        for c in bad.chars() {
-            app.handle_key(make_key(KeyCode::Char(c)));
-        }
+        type_text(&mut app, bad);
 
         let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
 
@@ -2962,17 +2857,13 @@ fn a_rejected_interval_can_be_corrected_and_resubmitted() {
     let mut app = app_at_wrap_up_step();
     app.handle_key(make_key(KeyCode::Enter));
     app.handle_key(make_key(KeyCode::Char('s')));
-    for c in "abc".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "abc");
     app.handle_key(make_key(KeyCode::Enter));
 
     for _ in 0..3 {
         app.handle_key(make_key(KeyCode::Backspace));
     }
-    for c in "5m".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "5m");
     app.handle_key(make_key(KeyCode::Enter));
     assert_eq!(app.input.mode, InputMode::InputPinnedBranch);
 
@@ -2990,9 +2881,7 @@ fn the_branch_step_treats_every_printable_character_as_text() {
     app.handle_key(make_key(KeyCode::Char('s')));
     app.handle_key(make_key(KeyCode::Enter)); // skip the interval
 
-    for c in "jk-release/v2".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "jk-release/v2");
     let cmds = app.handle_key(make_key(KeyCode::Enter));
 
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -3302,9 +3191,7 @@ fn quick_dispatch_zero_repos_new_path_entry_accepted() {
     assert!(matches!(app.input.mode, InputMode::QuickDispatch));
 
     // Type "/tmp" character by character.
-    for c in "/tmp".chars() {
-        app.handle_key(make_key(KeyCode::Char(c)));
-    }
+    type_text(&mut app, "/tmp");
     assert_eq!(app.input.buffer, "/tmp");
 
     let cmds = app.handle_key(make_key(KeyCode::Enter));

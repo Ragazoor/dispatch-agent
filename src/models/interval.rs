@@ -10,6 +10,25 @@
 //! Not used by the MCP/CLI surfaces: those take a JSON integer of seconds and
 //! never a string. This grammar is for humans typing into a field.
 
+/// The units a literal may carry, largest first.
+///
+/// One table, read from both directions: [`parse_interval_secs`] scans it for a
+/// typed suffix, [`format_interval_secs`] walks it largest-first for the first
+/// exact divisor. Two tables would let the halves disagree about what `d` is
+/// worth, which is precisely what `formatting_round_trips_back_through_the_parser`
+/// would then be left to discover.
+const UNITS: [(char, i64); 4] = [('d', 86_400), ('h', 3600), ('m', 60), ('s', 1)];
+
+/// The example set every user-facing surface quotes when describing this
+/// grammar — the form prompt, the form's rejection message, and the editor
+/// sections' parse error.
+///
+/// Exported rather than retyped because those are three separate strings in
+/// three modules, and a grammar described differently in each is how a surface
+/// ends up advertising a suffix the parser does not implement. Adding a unit is
+/// then a change to [`UNITS`] and this line, not a grep.
+pub const INTERVAL_EXAMPLES: &str = "600, 10m, 2h, 1d";
+
 /// Parse an interval literal into a strictly-positive number of seconds.
 ///
 /// Accepts a bare integer (seconds) or an integer with a single `s`/`m`/`h`/`d`
@@ -36,25 +55,24 @@
 /// additive: no value a user typed before changes meaning.
 pub fn parse_interval_secs(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
-    let (digits, multiplier) = match trimmed.chars().next_back() {
-        // `to_ascii_lowercase` on the char, not the whole string: only the
-        // suffix is case-insensitive, and the digits have no case to fold.
-        Some(last) if last.is_ascii_alphabetic() => {
-            let multiplier = match last.to_ascii_lowercase() {
-                's' => 1,
-                'm' => 60,
-                'h' => 3600,
-                'd' => 86_400,
-                _ => return None,
-            };
-            (&trimmed[..trimmed.len() - last.len_utf8()], multiplier)
+    // Matching on the last *byte*, not the last char: an ASCII-alphabetic
+    // suffix is one byte wide by definition, so the split needs no width
+    // arithmetic. A multi-byte trailing char is not alphabetic here and falls
+    // through to the bare-seconds arm, where the digit check rejects it.
+    let (digits, multiplier) = match trimmed.as_bytes().last() {
+        Some(&last) if last.is_ascii_alphabetic() => {
+            // Only the suffix is case-insensitive; digits have no case to fold.
+            let suffix = last.to_ascii_lowercase() as char;
+            let (_, multiplier) = UNITS.iter().find(|(u, _)| *u == suffix)?;
+            (&trimmed[..trimmed.len() - 1], *multiplier)
         }
         _ => (trimmed, 1),
     };
-    // Rejects the bare suffix ("m" leaves an empty digit string), every
-    // non-digit body, and a leading `+`/`-` — `i64::from_str` would accept the
-    // signs, and a negative cadence is not a thing.
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+    // Rejects every non-digit body and a leading `+`/`-` — `i64::from_str`
+    // would accept the signs, and a negative cadence is not a thing. The bare
+    // suffix ("m") lands here too: it leaves an empty digit string, which
+    // `parse` below rejects.
+    if !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     let value: i64 = digits.parse().ok()?;
@@ -78,7 +96,9 @@ pub fn format_interval_secs(secs: i64) -> String {
     if secs <= 0 {
         return format!("{secs}s");
     }
-    for (unit_secs, suffix) in [(86_400, 'd'), (3600, 'h'), (60, 'm')] {
+    // Largest-first, so the `('s', 1)` entry is the terminal case rather than a
+    // special one — every positive value divides by 1.
+    for (suffix, unit_secs) in UNITS {
         if secs % unit_secs == 0 {
             return format!("{}{suffix}", secs / unit_secs);
         }

@@ -126,9 +126,16 @@ impl App {
         })]
     }
 
-    pub(in crate::tui) fn finish_task_creation(&mut self, repo_path: String) -> Vec<Command> {
+    /// Emit the creation of the drafted task, plus the two settings writes that
+    /// record where it was created.
+    ///
+    /// The repo path is read off the draft rather than passed in: every caller
+    /// was passing exactly `draft.repo_path`, and a parameter that can only
+    /// hold one value is a chance to pass the wrong one.
+    pub(in crate::tui) fn finish_task_creation(&mut self) -> Vec<Command> {
         let draft = self.input.task_draft.take().unwrap_or_default();
         let base_branch = draft.base_branch.clone();
+        let repo_path = draft.repo_path.clone();
         self.input.mode = InputMode::Normal;
         self.clear_status();
         let epic_id = match self.effective_view_mode() {

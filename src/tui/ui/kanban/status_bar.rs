@@ -222,7 +222,7 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
             hint_text(app, crate::tui::update::SCHEDULE_GATE_PROMPT, YELLOW)
         }
         InputMode::InputScheduleInterval => {
-            hint_text(app, crate::tui::update::SCHEDULE_INTERVAL_PROMPT, YELLOW)
+            hint_text(app, &crate::tui::update::schedule_interval_prompt(), YELLOW)
         }
         InputMode::InputPinnedBranch => {
             hint_text(app, crate::tui::update::PINNED_BRANCH_PROMPT, YELLOW)

@@ -817,11 +817,7 @@ async fn exec_quick_dispatch_does_not_record_base_branch_history() {
             title: "Quick task".into(),
             description: String::new(),
             repo_path: repo.to_string(),
-            tag: None,
-            base_branch: "main".into(),
-            wrap_up_mode: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
+            ..Default::default()
         },
         None,
     )
@@ -1870,11 +1866,7 @@ async fn exec_quick_dispatch_creates_task_and_dispatches() {
             title: "My Task".into(),
             description: "Do stuff".into(),
             repo_path: repo.to_string(),
-            tag: None,
-            base_branch: "main".into(),
-            wrap_up_mode: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
+            ..Default::default()
         },
         None,
     )
@@ -1926,13 +1918,9 @@ async fn exec_quick_dispatch_sets_base_branch_to_repo_default() {
             title: "Quick task".into(),
             description: String::new(),
             repo_path: repo.to_string(),
-            tag: None,
             // The draft default doesn't matter — quick-dispatch resolves
             // base_branch from the repo's `origin/HEAD`.
-            base_branch: "main".into(),
-            wrap_up_mode: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
+            ..Default::default()
         },
         None,
     )
@@ -1968,11 +1956,7 @@ async fn exec_quick_dispatch_with_epic_dispatches_successfully() {
             title: "Epic Task".into(),
             description: "do stuff".into(),
             repo_path: repo.to_string(),
-            tag: None,
-            base_branch: "main".into(),
-            wrap_up_mode: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
+            ..Default::default()
         },
         Some(epic.id),
     )
@@ -2013,11 +1997,7 @@ async fn exec_quick_dispatch_sends_error_on_failure() {
             title: "Fail Task".into(),
             description: "desc".into(),
             repo_path: "/nonexistent".into(),
-            tag: None,
-            base_branch: "main".into(),
-            wrap_up_mode: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
+            ..Default::default()
         },
         None,
     )
@@ -2054,11 +2034,7 @@ async fn exec_quick_dispatch_failure_sends_dispatch_failed_and_error() {
             title: "Fail Task".into(),
             description: String::new(),
             repo_path: "/nonexistent".into(),
-            tag: None,
-            base_branch: "main".into(),
-            wrap_up_mode: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
+            ..Default::default()
         },
         None,
     )
