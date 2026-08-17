@@ -1706,10 +1706,14 @@ surface SandboxedAgentExecution {
         "~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube", "~/.docker",
         "~/.netrc"
     ]
+    let excluded_commands = ["./gradlew *", "gradlew *"]
+    let allowed_domains = ["github.com", "api.github.com"]
 
     exposes:
         sandbox_enabled
         credential_read_denied
+        excluded_commands
+        allowed_domains
 
     @guarantee FilesystemLeftAtDefaults
         -- No sandbox.filesystem key is set. Claude Code's own default
@@ -1718,14 +1722,24 @@ surface SandboxedAgentExecution {
         -- reads stay unrestricted except for credential_read_denied, which
         -- sandbox's default read policy would otherwise still allow.
 
-    @guarantee NetworkLeftUnrestricted
-        -- No sandbox.network key is set — no allowedDomains, no
-        -- strictAllowlist. Dispatch spans repos across several ecosystems
-        -- (Rust, Python, Scala, frontend, Terraform, dbt); a fixed domain
-        -- allowlist would be incomplete and need constant upkeep. Sandboxed
-        -- commands instead go through Claude Code's existing prompt/classifier
-        -- flow the first time they need a new host, same as before sandbox
-        -- mode was enabled.
+    @guarantee GitHubPreAllowedNetworkOtherwiseUnrestricted
+        -- allowed_domains pre-allows exactly github.com and api.github.com;
+        -- no strictAllowlist and no other domain is set. A fixed allowlist
+        -- of ecosystem package registries (npm, PyPI, crates.io, Maven, ...)
+        -- would be incomplete and need constant upkeep, since dispatch spans
+        -- several ecosystems (Rust, Python, Scala, frontend, Terraform,
+        -- dbt) — so those stay unenumerated, going through Claude Code's
+        -- existing prompt/classifier flow the first time a command needs
+        -- them, same as before sandbox mode was enabled. GitHub is
+        -- different: every dispatched task's worktree is a git repo, and
+        -- git/gh (both hard runtime dependencies — see "External
+        -- Dependencies" in CLAUDE.md) talk to these two hosts for
+        -- fetch/push/PR operations on every task, not just some. Leaving
+        -- them unenumerated would mean a dispatched agent's first git
+        -- network call either blocks on an interactive host-approval prompt
+        -- nobody is present to answer, or depends on the auto-mode
+        -- classifier approving it — an unattended session could stall on
+        -- its very first git push.
 
     @guarantee CredentialsDeniedNotMasked
         -- Only sandbox.credentials.files deny entries are set — no envVars
@@ -1742,6 +1756,23 @@ surface SandboxedAgentExecution {
         -- start — consistent with every other external dependency in this
         -- repo having no startup preflight (see "External Dependencies" in
         -- CLAUDE.md).
+
+    @guarantee GradleDaemonExcludedFromSandbox
+        -- excluded_commands pre-excludes Gradle wrapper invocations from the
+        -- sandbox entirely. Starting a fresh Gradle daemon calls
+        -- unshare(CLONE_NEWUSER), which the sandbox's seccomp policy always
+        -- blocks; dispatch spans repos across several ecosystems, and any of
+        -- them may build with Gradle. There is no narrower fix: Claude
+        -- Code's sandbox settings expose only filesystem, network,
+        -- credentials, and excluded_commands policy, never a syscall or
+        -- capability allowlist, so a command that needs CLONE_NEWUSER cannot
+        -- be let through the sandbox boundary itself. excluded_commands is
+        -- the mechanism Claude Code's own documentation recommends for a
+        -- sandbox-incompatible tool — its troubleshooting guidance uses the
+        -- identical pattern for `docker *` — so Gradle repos get it up
+        -- front instead of every dispatched agent rediscovering
+        -- "apply-seccomp: unshare(CLONE_NEWUSER)" and retrying with
+        -- dangerouslyDisableSandbox once per session.
 
     @guidance
         -- Baked into the same JSON object write_settings_file

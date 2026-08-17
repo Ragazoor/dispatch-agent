@@ -1,5 +1,16 @@
 # 4250: Allow github.com/api.github.com through the command sandbox
 
+**Superseded by task 4256**: the "personal machine only, not this repo" call
+below was revisited while working on a related sandbox issue (Gradle's
+`excludedCommands`) and reversed — `github.com`/`api.github.com` are now
+baked into `write_settings_file` (`src/setup/statusline.rs`), so every
+dispatch-spawned agent gets them regardless of machine. See
+`docs/plans/2026-08-17-4256-gradle-sandbox-clone-newuser.md` and the revised
+`GitHubPreAllowedNetworkOtherwiseUnrestricted` guarantee in
+`SandboxedAgentExecution` (`docs/specs/dispatch.allium`). The rest of this
+doc is kept as-is for the original reasoning and the still-relevant
+known-limitation note below.
+
 ## Problem
 
 The command sandbox's network allowlist (`sandbox.network.allowedDomains`)

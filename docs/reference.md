@@ -324,6 +324,10 @@ Code warns and falls back to running unsandboxed rather than failing to start.
 
 The setup is idempotent — safe to run on every install or upgrade.
 
+### Where sandbox config belongs
+
+Both `~/.claude/settings.json` and `~/.claude/dispatch-statusline.json` can carry a `sandbox` key, and it is not arbitrary which one a given setting should go in. `dispatch-statusline.json` is a generated artifact: `write_settings_file` (`src/setup/statusline.rs`) rebuilds its entire contents from a fixed literal every time `dispatch setup` runs, and `runtime::bootstrap` recreates it from scratch if it's ever missing (see Troubleshooting below) — so any key added to it by hand, rather than by dispatch's own code, is silently lost on the next regeneration. `~/.claude/settings.json` is the durable file dispatch never touches. The rule of thumb: personal or environment-specific sandbox config (for example, a domain your own workflow needs that isn't universal to dispatch) belongs in `~/.claude/settings.json`; only settings dispatch itself is responsible for generating — and can therefore keep correct across regenerations, such as the Gradle/GitHub entries described in `SandboxedAgentExecution` (`docs/specs/dispatch.allium`) — belong in `dispatch-statusline.json`, via code, never by hand-editing the file.
+
 ### Plugin contents
 
 | Component | Purpose |

@@ -32,6 +32,14 @@ into your branch and re-run the suite before reporting completion; a green run
 against a stale base proves nothing. Assume a function you did not write may have
 been rewritten since you read it.
 
+**A clean merge doesn't mean no conflict.** `HEAD..main` isn't only a code-conflict
+check. A sibling task's commit can record a *design decision* — in a
+`docs/plans/` doc or an Allium guarantee — that directly contradicts what you're
+mid-implementing, in files yours never touches, so `git merge` succeeds with
+nothing to resolve. Skim new commits' content, not just their file list, before
+wrapping up; if one conflicts with a decision you're making this session, surface
+it to the user rather than silently proceeding either way.
+
 ### First-time setup
 
 A fresh clone must point git at the tracked hooks once: `git config core.hooksPath .githooks`. Nothing does this for you, and until it is run the whole gate below is silently inert locally — CI runs the same checks (see "CI" below), so skipping the setup costs you the fast local feedback, not the enforcement. Don't add hooks to `.git/hooks/` directly — that directory is untracked and shared across all worktrees, so changes there aren't version-controlled or reviewed.

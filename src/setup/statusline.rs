@@ -94,6 +94,10 @@ pub(crate) fn write_settings_file(
         },
         "sandbox": {
             "enabled": true,
+            "excludedCommands": ["./gradlew *", "gradlew *"],
+            "network": {
+                "allowedDomains": ["github.com", "api.github.com"],
+            },
             "credentials": {
                 "files": [
                     { "path": "~/.ssh", "mode": "deny" },
@@ -196,13 +200,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn writes_valid_settings_json() {
+    /// Writes settings to a fresh tempdir and parses them back, returning
+    /// whether the write reported a change alongside the parsed value.
+    fn write_and_parse(chain: Option<&str>) -> (bool, serde_json::Value) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("dispatch-statusline.json");
-        assert!(write_settings_file(&path, Path::new("/d/rl.json"), Some("cs")).unwrap());
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let changed = write_settings_file(&path, Path::new("/d/rl.json"), chain).unwrap();
+        let v = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        (changed, v)
+    }
+
+    /// Extracts a JSON array of strings as borrowed `&str`s, panicking with a
+    /// descriptive message if the value isn't shaped that way.
+    fn str_array(v: &serde_json::Value) -> Vec<&str> {
+        v.as_array()
+            .expect("expected a JSON array")
+            .iter()
+            .map(|entry| entry.as_str().expect("array entry must be a string"))
+            .collect()
+    }
+
+    #[test]
+    fn writes_valid_settings_json() {
+        let (changed, v) = write_and_parse(Some("cs"));
+        assert!(changed);
         assert_eq!(v["statusLine"]["type"], "command");
         assert_eq!(
             v["statusLine"]["command"],
@@ -211,20 +232,12 @@ mod tests {
     }
 
     #[test]
-    fn writes_sandbox_config_enabled_with_no_filesystem_or_network_keys() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("dispatch-statusline.json");
-        write_settings_file(&path, Path::new("/d/rl.json"), None).unwrap();
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    fn writes_sandbox_config_enabled_with_no_filesystem_key() {
+        let (_, v) = write_and_parse(None);
         assert_eq!(v["sandbox"]["enabled"], true);
         assert!(
             v["sandbox"]["filesystem"].is_null(),
             "filesystem key must be absent so Claude Code's defaults apply"
-        );
-        assert!(
-            v["sandbox"]["network"].is_null(),
-            "network key must be absent so no domain allowlist is pinned"
         );
         assert!(
             v["sandbox"]["failIfUnavailable"].is_null(),
@@ -233,12 +246,38 @@ mod tests {
     }
 
     #[test]
+    fn writes_sandbox_allowed_domains_for_github_only() {
+        let (_, v) = write_and_parse(None);
+        let domains = str_array(&v["sandbox"]["network"]["allowedDomains"]);
+        assert_eq!(
+            domains,
+            vec!["github.com", "api.github.com"],
+            "git/gh are hard dependencies on every dispatched task, so their \
+             hosts are pre-allowed; other ecosystems' registries are not"
+        );
+        assert!(
+            v["sandbox"]["network"]["strictAllowlist"].is_null(),
+            "strictAllowlist must be absent so hosts outside allowedDomains \
+             still go through the normal prompt/classifier flow"
+        );
+    }
+
+    #[test]
+    fn writes_sandbox_excluded_commands_for_gradle_wrapper() {
+        let (_, v) = write_and_parse(None);
+        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
+        assert_eq!(
+            excluded,
+            vec!["./gradlew *", "gradlew *"],
+            "Gradle's fresh-daemon startup needs CLONE_NEWUSER, which the \
+             sandbox always blocks with no narrower fix available — see \
+             GradleDaemonExcludedFromSandbox in dispatch.allium"
+        );
+    }
+
+    #[test]
     fn writes_sandbox_credential_deny_list() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("dispatch-statusline.json");
-        write_settings_file(&path, Path::new("/d/rl.json"), None).unwrap();
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let (_, v) = write_and_parse(None);
         let files = v["sandbox"]["credentials"]["files"]
             .as_array()
             .expect("credentials.files must be an array");
