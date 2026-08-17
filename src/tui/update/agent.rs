@@ -27,7 +27,7 @@ impl App {
         // Non-running task: existing behavior
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = None;
-            let task_clone = task.clone();
+            let task_clone = Box::new(task.clone());
             vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
                 task_clone,
             ))]
@@ -523,7 +523,7 @@ impl App {
         }
         if let Some(task) = self.find_task(id) {
             cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                task.clone(),
+                Box::new(task.clone()),
             )));
         }
         // No-drain: the task is already going to `Crashed`, and draining here
@@ -560,7 +560,7 @@ impl App {
             }
             if task.worktree.is_some() && task.tmux_window.is_none() {
                 vec![Command::Task(crate::tui::commands::TaskCommand::Resume {
-                    task: task.clone(),
+                    task: Box::new(task.clone()),
                 })]
             } else {
                 vec![]
@@ -586,7 +586,7 @@ impl App {
             // cannot clobber a hook-written stamp.
             let seed_at = chrono::Utc::now();
             task.last_pre_tool_use_at = Some(seed_at);
-            let task_clone = task.clone();
+            let task_clone = Box::new(task.clone());
             self.sync_board_selection();
             self.set_status(format!("Task {id} resumed"));
             vec![

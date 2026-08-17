@@ -150,7 +150,7 @@ async fn dispatch_task(
     use crate::tui::commands::TaskCommand::*;
     match cmd {
         Persist(task) => {
-            rt.exec_persist_task(app, task).await;
+            rt.exec_persist_task(app, *task).await;
             vec![]
         }
         ClearSubagents { id, mode } => {
@@ -257,7 +257,7 @@ async fn dispatch_task(
             vec![]
         }
         Resume { task } => {
-            rt.exec_resume(task);
+            rt.exec_resume(*task);
             vec![]
         }
         JumpToTmux { window } => {

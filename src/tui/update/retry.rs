@@ -52,7 +52,7 @@ impl App {
             // subsequent Resumed → handle_resumed path.
             task.last_pre_tool_use_at = Some(chrono::Utc::now());
             let old_window = task.tmux_window.take();
-            let task_clone = task.clone();
+            let task_clone = Box::new(task.clone());
 
             let mut cmds = Vec::new();
             if let Some(window) = old_window {
@@ -89,7 +89,7 @@ impl App {
             // Retry-fresh is the likeliest leaving-Running board write to carry
             // a deferred Stop: a crashed task is still Running.
             Self::set_local_status(task, TaskStatus::Backlog);
-            let task_clone = task.clone();
+            let task_clone = Box::new(task.clone());
             self.sync_board_selection();
 
             let mut cmds = Vec::new();
@@ -127,7 +127,7 @@ impl App {
             let tmux_window = task.tmux_window.clone();
             let cleanup = Self::take_cleanup(task, CleanupFollowUp::ClearPointer);
             Self::set_local_status(task, TaskStatus::Archived);
-            let mut task_clone = task.clone();
+            let mut task_clone = Box::new(task.clone());
             task_clone.worktree = worktree;
             task_clone.tmux_window = tmux_window;
             self.clear_agent_tracking(id);

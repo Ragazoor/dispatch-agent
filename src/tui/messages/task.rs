@@ -9,7 +9,9 @@ use crate::tui::App;
 /// Messages targeting the task domain.
 ///
 /// Wrapped by [`crate::tui::types::Message::Task`] for dispatch.
-#[allow(clippy::large_enum_variant)]
+///
+/// `Task` payloads are boxed — see the `assert_no_entity_inline` tests in
+/// `crate::tui::types` for why nothing on this bus stores an entity inline.
 #[derive(Debug, Clone)]
 pub enum TaskMessage {
     Move {
@@ -26,7 +28,7 @@ pub enum TaskMessage {
         switch_focus: bool,
     },
     Created {
-        task: Task,
+        task: Box<Task>,
     },
     Delete(TaskId),
     OpenDetail(TaskId),
@@ -35,7 +37,7 @@ pub enum TaskMessage {
     WindowGone(TaskId),
     Refresh(Vec<Task>),
     /// Splice a single fresh task into `app.board.tasks`.
-    Updated(Task),
+    Updated(Box<Task>),
     Resume(TaskId),
     Resumed {
         id: TaskId,
@@ -136,14 +138,14 @@ impl TaskMessage {
                 tmux_window,
                 switch_focus,
             } => app.handle_dispatched(id, worktree, tmux_window, switch_focus),
-            TaskMessage::Created { task } => app.handle_task_created(task),
+            TaskMessage::Created { task } => app.handle_task_created(*task),
             TaskMessage::Delete(id) => app.handle_delete_task(id),
             TaskMessage::OpenDetail(task_id) => app.handle_open_task_detail(task_id),
             TaskMessage::CloseDetail => app.handle_close_task_detail(),
             TaskMessage::ToggleFlattened => app.handle_toggle_flattened(),
             TaskMessage::WindowGone(id) => app.handle_window_gone(id),
             TaskMessage::Refresh(tasks) => app.handle_refresh_tasks(tasks),
-            TaskMessage::Updated(task) => app.handle_task_updated(task),
+            TaskMessage::Updated(task) => app.handle_task_updated(*task),
             TaskMessage::Resume(id) => app.handle_resume_task(id),
             TaskMessage::Resumed { id, tmux_window } => app.handle_resumed(id, tmux_window),
             TaskMessage::DispatchFailed(id) => app.handle_dispatch_failed(id),

@@ -92,7 +92,7 @@ impl TuiRuntime {
         };
         if let Some(task) = self.create_task(app, params).await {
             app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
-                task,
+                task: Box::new(task),
             }));
         }
     }
@@ -139,7 +139,7 @@ impl TuiRuntime {
             return;
         };
         app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
-            task: task.clone(),
+            task: Box::new(task.clone()),
         }));
         app.update(Message::Task(
             crate::tui::messages::TaskMessage::MarkDispatching(task.id),
@@ -264,7 +264,7 @@ impl TuiRuntime {
         };
         task.sort_order = new_sort_order;
         app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-            task,
+            Box::new(task),
         )));
     }
 
@@ -376,7 +376,15 @@ impl TuiRuntime {
     /// ([`Self::claim_for_dispatch`] → `claim_backlog_task`), the prologue
     /// ([`dispatch::prepare_inputs`]) and the `DispatchMode` match
     /// ([`dispatch::run_agent_for_mode`]).
-    pub(super) async fn exec_dispatch_agent(&self, task: models::Task, mode: models::DispatchMode) {
+    /// Takes the `Task` boxed and keeps it that way: it is captured twice more
+    /// below (a `tokio::spawn` future, then a `spawn_blocking` closure), both of
+    /// which are heap-allocated, so unboxing here would re-inline ~470 bytes
+    /// into each capture.
+    pub(super) async fn exec_dispatch_agent(
+        &self,
+        task: Box<models::Task>,
+        mode: models::DispatchMode,
+    ) {
         if !self.claim_for_dispatch(task.id).await {
             return;
         }
@@ -602,7 +610,7 @@ impl TuiRuntime {
             match db.get_task(task_id).await {
                 Ok(Some(task)) => {
                     let _ = tx.send(Message::Task(crate::tui::messages::TaskMessage::Updated(
-                        task,
+                        Box::new(task),
                     )));
                 }
                 Ok(None) => {
@@ -634,7 +642,7 @@ impl TuiRuntime {
                         Ok(tasks) => {
                             for task in tasks {
                                 let _ = tx.send(Message::Task(
-                                    crate::tui::messages::TaskMessage::Updated(task),
+                                    crate::tui::messages::TaskMessage::Updated(Box::new(task)),
                                 ));
                             }
                         }

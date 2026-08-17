@@ -392,6 +392,8 @@ Two consequences for tests. `stop_pending_at` is stored at millisecond resolutio
 
 Custom lint rules are configured in `[lints.clippy]` in `Cargo.toml`. The pre-push hook enforces them via `cargo clippy --all-targets -- -D warnings` — note there is **no** `--fix`; the hook checks, it does not rewrite your source. When you discover a pattern worth enforcing, add a new entry with a structured comment explaining why. Consult the `/lint` skill for the full workflow.
 
+**A clean incremental `cargo clippy` is not evidence a lint stopped firing.** Clippy does not re-emit warnings for crates it did not recompile, so after removing an `#[allow]` — or making any change whose whole point is that a lint no longer fires — an incremental run prints nothing whether or not the lint would still fire. Run `cargo clean -p dispatch-tui` first when the clean result *is* the thing you are asserting. (Editing the file usually recompiles the crate, but "usually" is not a verification strategy; the failure mode here is a confidently wrong conclusion, not an error.)
+
 ## Visibility convention
 
 `App` fields use `pub(in crate::tui)` to restrict mutation to the TUI module. External code (runtime, MCP handlers) can only change `App` state by sending a `Message` through `app.update()`, which returns `Command`s. This keeps state transitions auditable in one place and prevents scattered mutation from outside the TUI boundary.
@@ -405,6 +407,27 @@ Two patterns have already caused bugs and must not be repeated:
 - **No `std::fs` inside async handlers.** Blocking I/O on the async executor stalls the tokio thread pool. Any file-system operation inside an `async fn` must use `tokio::fs` or be wrapped in `tokio::task::spawn_blocking`.
 
   **Accepted exception:** `validate_repo_path` (`src/dispatch/worktree.rs`), called synchronously from `handle_submit_repo_path` (`src/tui/update/forms.rs`). It does only a `.exists()`/`.is_dir()` stat — no file content is read or parsed — on the low-frequency repo-path form-submit path (once per new task typed), unlike the `~/.claude.json` read-plus-`serde_json`-parse that motivated moving the `Space`-key trust check off the render thread (`CheckTrustAndDispatch` in `src/tui/commands/task.rs`). Keep it inline; don't route it through a `Command` unless it grows beyond a bare stat.
+
+## No domain entity is stored inline on the `Message`/`Command` bus
+
+`Message` and `Command` are moved by value on every keystroke, every async
+result and every loop iteration (`LoopEvent::Message`), so whatever the fattest
+variant costs, every other variant pays. The rule: a variant that carries a
+domain entity carries it boxed — `Box<Task>`, `Box<Epic>` — never inline. That
+applies to the inner per-domain enums too (`TaskMessage`, `TaskCommand`,
+`EditKind`), because the outer enums are only as small as what they wrap.
+
+Do not rely on `clippy::large_enum_variant` alone to catch a regression here. It
+compares the largest variant against the *second* largest, so it is blind to the
+case these enums are most exposed to: several domains growing together, which
+keeps the spread under the threshold while the total doubles. The
+`assert_no_entity_inline` tests in `src/tui/types.rs` assert the invariant
+directly and run under `cargo test`.
+
+An `#[allow(clippy::large_enum_variant)]` anywhere in this plumbing is a smell,
+and its stated cause is not to be trusted — Rust has no lint for a *redundant*
+allow, so they outlive their reason and their comments rot. Task #4231 removed
+seven of them at once; only five were still doing anything.
 
 ## One bounded-child primitive: `run_bounded`
 

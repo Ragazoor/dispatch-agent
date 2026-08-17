@@ -596,13 +596,13 @@ impl TuiRuntime {
 /// event explicitly lets the loop body — `apply_loop_event` — be unit-tested
 /// without a running `select!` or a real terminal.
 ///
-/// `Message` is the largest variant, but this enum is a short-lived stack value
-/// produced and consumed once per loop iteration — and `Message` is already
-/// passed by value throughout the TUI (it flows through an
-/// `UnboundedReceiver<Message>` unboxed). Boxing it here would add an allocation
-/// per event for no benefit, so the size skew is accepted.
+/// `Message` is the largest variant and stays unboxed here deliberately: it is
+/// already passed by value throughout the TUI (it flows through an
+/// `UnboundedReceiver<Message>` unboxed), so boxing at this hop would add an
+/// allocation per event for no benefit. That only stays affordable while
+/// `Message` itself stays small — see the `size_of` guard-rail tests in
+/// `src/tui/types.rs`.
 #[cfg_attr(test, derive(Debug))]
-#[allow(clippy::large_enum_variant)]
 enum LoopEvent {
     Key(crossterm::event::KeyEvent),
     Message(Message),

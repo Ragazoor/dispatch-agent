@@ -291,7 +291,7 @@ impl TuiRuntime {
     ) -> Vec<Command> {
         match kind {
             EditKind::TaskEdit(task) => self.finalize_task_edit(app, *task, outcome).await,
-            EditKind::EpicEdit(epic) => self.finalize_epic_edit(app, epic, outcome).await,
+            EditKind::EpicEdit(epic) => self.finalize_epic_edit(app, *epic, outcome).await,
             EditKind::Description { .. } => {
                 tracing::warn!("FinalizeEditorResult received Description kind; ignoring");
                 vec![]

@@ -60,7 +60,7 @@ async fn full_lifecycle() {
     let now = chrono::Utc::now();
     let cmds = app.update(Message::Task(
         dispatch_tui::tui::messages::TaskMessage::Created {
-            task: Task {
+            task: Box::new(Task {
                 id: task_id,
                 title: "Fix auth bug".to_string(),
                 description: "Users can't log in".to_string(),
@@ -93,7 +93,7 @@ async fn full_lifecycle() {
                 pinned_branch: None,
                 last_processed_sha: None,
                 last_scheduled_check_at: None,
-            },
+            }),
         },
     ));
     assert!(cmds.is_empty());

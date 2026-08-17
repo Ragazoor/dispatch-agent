@@ -26,7 +26,7 @@ fn task_updated_replaces_existing_row() {
     let other_count_before = app.board.tasks.len();
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        updated,
+        Box::new(updated),
     )));
 
     let now = app
@@ -50,7 +50,7 @@ fn task_updated_appends_new_task() {
     let new_task = make_task(99, TaskStatus::Backlog);
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        new_task,
+        Box::new(new_task),
     )));
 
     assert_eq!(app.board.tasks.len(), before + 1);
@@ -109,7 +109,7 @@ fn task_updated_fires_review_notification_on_transition() {
     updated.sub_status = SubStatus::default_for(TaskStatus::Review);
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        updated,
+        Box::new(updated),
     )));
 
     assert!(
@@ -137,7 +137,7 @@ fn task_updated_flashes_sent_on_new_peer_message_sent_timestamp() {
 
     updated.last_peer_message_sent_at = Some(chrono::Utc::now());
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        updated,
+        Box::new(updated),
     )));
 
     assert!(
@@ -164,7 +164,7 @@ fn task_updated_flashes_received_on_new_peer_message_received_timestamp() {
 
     updated.last_peer_message_received_at = Some(chrono::Utc::now());
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        updated,
+        Box::new(updated),
     )));
 
     assert!(
@@ -187,7 +187,7 @@ fn task_updated_does_not_reflash_an_unchanged_peer_message_timestamp() {
         .expect("task 1 fixture");
     updated.last_peer_message_sent_at = Some(stamp);
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        updated.clone(),
+        Box::new(updated.clone()),
     )));
     assert!(app.agents.message_flash_sent.contains_key(&TaskId(1)));
 
@@ -195,7 +195,7 @@ fn task_updated_does_not_reflash_an_unchanged_peer_message_timestamp() {
     // the *same* timestamp, does not re-insert it.
     app.agents.message_flash_sent.remove(&TaskId(1));
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        updated,
+        Box::new(updated),
     )));
 
     assert!(

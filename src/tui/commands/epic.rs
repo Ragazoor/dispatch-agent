@@ -7,7 +7,6 @@ use super::super::types::EpicDraft;
 /// Side-effect commands for the epic domain.
 ///
 /// Wrapped by [`crate::tui::types::Command::Epic`] for runtime dispatch.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum EpicCommand {
     Insert(EpicDraft),

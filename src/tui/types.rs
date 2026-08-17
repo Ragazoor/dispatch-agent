@@ -59,14 +59,15 @@ impl std::str::FromStr for RepoFilterMode {
 /// Identifies what the user is editing and how to finalize the edit when
 /// the pop-out editor closes. One variant per existing $EDITOR call-site.
 #[derive(Debug, Clone)]
+/// Both entity payloads are boxed. `Task` (~470 bytes) and `Epic` (~180) each
+/// dwarf `Description`, and because this type is reached through
+/// `EditorMessage`/`EditorCommand` from the `Message`/`Command` bus, an inline
+/// entity here is paid for by every variant of all four enums.
 pub enum EditKind {
     /// Full task editor (title/description/repo_path/status/plan/tag/base_branch).
-    /// Boxed: `Task` has grown large enough (peer-message + live-shell
-    /// tracking fields) that clippy's `large_enum_variant` flags the
-    /// unboxed size difference against `EpicEdit`/`Description`.
     TaskEdit(Box<Task>),
     /// Full epic editor (title/description/repo_path).
-    EpicEdit(Epic),
+    EpicEdit(Box<Epic>),
     /// Description-only editor used during task/epic creation.
     /// `is_epic` distinguishes the epic-create flow from the task-create flow.
     Description { is_epic: bool },
@@ -120,17 +121,11 @@ pub(in crate::tui) fn apply_tree_nav<Id: Clone + PartialEq + Eq + std::hash::Has
 // Message
 // ---------------------------------------------------------------------------
 
-// `Task`-carrying variants (`TaskMessage::Created`/`Updated`, and the same in
-// `TaskCommand`) make this variant ~480 bytes against a ~208-byte runner-up.
-// It sat just inside the lint's 200-byte default until the four scheduling
-// columns (#4203) added ~80 bytes to `Task`.
-//
-// The fix clippy asks for — boxing the `Task` payloads — is right, but it is
-// ~89 call sites across the TUI message/command plumbing, which is exactly the
-// code subtask #4204 is editing. Deferred to its own task rather than landed
-// as a drive-by in the middle of that. Allowed here, not silenced globally, so
-// re-checking it is a one-line diff.
-#[allow(clippy::large_enum_variant)]
+/// Everything the update loop reacts to, routed to a per-domain inner enum.
+///
+/// Moved by value on every keystroke, async result and loop iteration, so no
+/// variant may carry a domain entity inline. Guard-railed by the
+/// `assert_no_entity_inline` tests at the bottom of this file.
 #[derive(Debug, Clone)]
 pub enum Message {
     /// System-level messages — see [`crate::tui::messages::SystemMessage`].
@@ -184,8 +179,9 @@ pub enum Message {
 /// established that shape is complete — adding a new inline variant here
 /// instead of a variant on (or a new module beside) one of the inner enums
 /// reintroduces the half-done split it was done to remove.
-// Same cause and same deferral as `Message` above — see the comment there.
-#[allow(clippy::large_enum_variant)]
+///
+/// Same size constraint as [`Message`]: moved by value, so no variant reachable
+/// from here may carry a domain entity inline.
 #[derive(Debug, Clone)]
 pub enum Command {
     /// Task-domain side-effect commands — see
@@ -1076,6 +1072,41 @@ mod tests {
             last_processed_sha: None,
             last_scheduled_check_at: None,
         }
+    }
+
+    // -- Message / Command size --
+
+    /// The bus enums are moved by value on every keystroke, every async result
+    /// and every loop iteration (`LoopEvent::Message`), so an entity stored
+    /// inline in one variant is paid for by every other variant. The rule is
+    /// that no domain entity is ever inline: `Task` and `Epic` payloads are
+    /// boxed wherever the bus carries them.
+    ///
+    /// Asserted as a relation rather than a byte count on purpose.
+    /// `clippy::large_enum_variant` compares the largest variant to the
+    /// *second* largest, so it is structurally blind to the case these enums
+    /// are most exposed to — the editor, epic and task domains all growing
+    /// together, which keeps the spread small while the total doubles. A fixed
+    /// ceiling would catch that, but its first failure invites a bump; the
+    /// relation states the actual invariant and never needs maintenance.
+    fn assert_no_entity_inline<T>(name: &str) {
+        let size = std::mem::size_of::<T>();
+        let task = std::mem::size_of::<Task>();
+        assert!(
+            size < task,
+            "{name} is {size} bytes against a {task}-byte `Task` — an entity has \
+             been inlined into the bus. Box the payload rather than relaxing this."
+        );
+    }
+
+    #[test]
+    fn message_enum_carries_no_inline_entity() {
+        assert_no_entity_inline::<Message>("Message");
+    }
+
+    #[test]
+    fn command_enum_carries_no_inline_entity() {
+        assert_no_entity_inline::<Command>("Command");
     }
 
     // -- SubtaskStats --

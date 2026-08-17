@@ -219,7 +219,7 @@ impl App {
             if let Some(t) = self.find_task_mut(tid) {
                 t.sort_order = Some(new_a);
                 cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                    t.clone(),
+                    Box::new(t.clone()),
                 )));
             }
         }
@@ -237,7 +237,7 @@ impl App {
             if let Some(t) = self.find_task_mut(tid) {
                 t.sort_order = Some(new_b);
                 cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                    t.clone(),
+                    Box::new(t.clone()),
                 )));
             }
         }

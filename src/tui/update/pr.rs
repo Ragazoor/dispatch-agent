@@ -36,7 +36,7 @@ impl App {
             }
             task.status = TaskStatus::Done;
             task.sub_status = SubStatus::default_for(TaskStatus::Done);
-            let task_clone = task.clone();
+            let task_clone = Box::new(task.clone());
 
             self.clear_agent_tracking(id);
             self.sync_board_selection();
@@ -84,7 +84,7 @@ impl App {
             };
             if task.sub_status != new_sub {
                 task.sub_status = new_sub;
-                let task_clone = task.clone();
+                let task_clone = Box::new(task.clone());
                 return vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
                     task_clone,
                 ))];

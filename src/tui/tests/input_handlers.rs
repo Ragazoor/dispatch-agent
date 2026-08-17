@@ -43,7 +43,7 @@ fn task_created_adds_to_list() {
     };
     let mut app = App::new(vec![]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
-        task,
+        task: Box::new(task),
     }));
     assert_eq!(app.board.tasks.len(), 1);
     assert_eq!(app.board.tasks[0].id, TaskId(42));

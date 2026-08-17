@@ -62,7 +62,9 @@ impl App {
     pub(in crate::tui) fn handle_edit_epic(&mut self, id: EpicId) -> Vec<Command> {
         if let Some(epic) = self.board.epics.iter().find(|e| e.id == id) {
             vec![Command::Editor(
-                crate::tui::commands::EditorCommand::PopOut(EditKind::EpicEdit(epic.clone())),
+                crate::tui::commands::EditorCommand::PopOut(EditKind::EpicEdit(Box::new(
+                    epic.clone(),
+                ))),
             )]
         } else {
             vec![]
@@ -168,7 +170,7 @@ impl App {
                             crate::tui::commands::TaskCommand::KillTmuxWindow { window },
                         ));
                         cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                            task.clone(),
+                            Box::new(task.clone()),
                         )));
                     }
                 }

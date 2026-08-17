@@ -2025,7 +2025,7 @@ impl App {
                 if task.sub_status == SubStatus::Stale || task.sub_status == SubStatus::Crashed {
                     task.sub_status = SubStatus::default_for(task.status);
                 }
-                let task_clone = task.clone();
+                let task_clone = Box::new(task.clone());
                 cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
                     task_clone,
                 )));

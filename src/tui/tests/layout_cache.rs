@@ -175,7 +175,9 @@ fn task_created_repopulates_cache() {
 
     let mut new_subtask = make_task(99, TaskStatus::Backlog);
     new_subtask.epic_id = Some(EpicId(10));
-    app.update(Message::Task(TaskMessage::Created { task: new_subtask }));
+    app.update(Message::Task(TaskMessage::Created {
+        task: Box::new(new_subtask),
+    }));
 
     let after = app.cached_epic_stats();
     assert_eq!(

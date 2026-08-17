@@ -1715,7 +1715,7 @@ fn quick_dispatch_status_uses_freshly_created_title() {
     };
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
-        task,
+        task: Box::new(task),
     }));
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::MarkDispatching(TaskId(42)),
@@ -2423,7 +2423,7 @@ fn auto_dispatch_failure_marker_cleared_when_the_task_leaves_backlog() {
     app.update(auto_dispatch_failed_msg(1));
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        make_task(1, TaskStatus::Running),
+        Box::new(make_task(1, TaskStatus::Running)),
     )));
 
     assert!(!app.auto_dispatch_failed(TaskId(1)));
@@ -2438,7 +2438,7 @@ fn auto_dispatch_failure_marker_survives_a_backlog_refresh() {
     app.update(auto_dispatch_failed_msg(1));
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        make_task(1, TaskStatus::Backlog),
+        Box::new(make_task(1, TaskStatus::Backlog)),
     )));
 
     assert!(app.auto_dispatch_failed(TaskId(1)));

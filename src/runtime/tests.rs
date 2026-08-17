@@ -450,7 +450,7 @@ async fn exec_persist_task_writes_back_done_transition_sort_order_immediately() 
     task.status = models::TaskStatus::Done;
     assert_eq!(task.sort_order, None, "precondition: no sort_order yet");
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        task.clone(),
+        Box::new(task.clone()),
     )));
 
     rt.exec_persist_task(&mut app, task).await;
@@ -523,7 +523,7 @@ async fn exec_persist_task_writes_back_leaving_done_sort_order_clear_immediately
     task.status = models::TaskStatus::Review;
     task.sub_status = models::SubStatus::default_for(models::TaskStatus::Review);
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        task.clone(),
+        Box::new(task.clone()),
     )));
 
     rt.exec_persist_task(&mut app, task).await;
@@ -592,7 +592,7 @@ async fn exec_persist_task_write_back_does_not_clobber_fresher_board_fields() {
     board_task.status = models::TaskStatus::Done;
     board_task.sub_status = models::SubStatus::default_for(models::TaskStatus::Done);
     app.update(Message::Task(crate::tui::messages::TaskMessage::Updated(
-        board_task.clone(),
+        Box::new(board_task.clone()),
     )));
     let mut stale = board_task;
     stale.last_pre_tool_use_at = None;
@@ -965,7 +965,7 @@ async fn exec_dispatch_sends_dispatched_message() {
     .await
     .unwrap();
     let id = task.id;
-    rt.exec_dispatch_agent(task, models::DispatchMode::Dispatch)
+    rt.exec_dispatch_agent(Box::new(task), models::DispatchMode::Dispatch)
         .await;
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -1019,7 +1019,7 @@ async fn exec_dispatch_agent_routes_research_mode_to_the_research_agent() {
     )
     .await
     .unwrap();
-    rt.exec_dispatch_agent(task, models::DispatchMode::Research)
+    rt.exec_dispatch_agent(Box::new(task), models::DispatchMode::Research)
         .await;
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -1067,7 +1067,7 @@ async fn exec_dispatch_agent_lost_claim_provisions_nothing() {
     .unwrap();
     assert!(rt.task_svc.claim_backlog_task(task.id).await.unwrap());
 
-    rt.exec_dispatch_agent(task.clone(), models::DispatchMode::Dispatch)
+    rt.exec_dispatch_agent(Box::new(task.clone()), models::DispatchMode::Dispatch)
         .await;
 
     let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -1152,7 +1152,7 @@ async fn exec_dispatch_sends_error_on_failure() {
     )
     .await
     .unwrap();
-    rt.exec_dispatch_agent(task.clone(), models::DispatchMode::Dispatch)
+    rt.exec_dispatch_agent(Box::new(task.clone()), models::DispatchMode::Dispatch)
         .await;
 
     let msg1 = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -5411,7 +5411,7 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::Task(TaskCommand::Persist(task.clone())),
+            Command::Task(TaskCommand::Persist(Box::new(task.clone()))),
         )
         .await;
 
@@ -5437,7 +5437,7 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::Task(TaskCommand::Persist(task.clone())),
+            Command::Task(TaskCommand::Persist(Box::new(task.clone()))),
         )
         .await;
 

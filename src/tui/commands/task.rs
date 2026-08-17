@@ -30,21 +30,23 @@ pub enum CleanupFollowUp {
 /// Side-effect commands for the task domain.
 ///
 /// Wrapped by [`crate::tui::types::Command::Task`] for runtime dispatch.
-#[allow(clippy::large_enum_variant)]
+///
+/// `Task` payloads are boxed — see the `assert_no_entity_inline` tests in
+/// `crate::tui::types` for why nothing on this bus stores an entity inline.
 #[derive(Debug, Clone)]
 pub enum TaskCommand {
-    Persist(Task),
+    Persist(Box<Task>),
     Insert {
         draft: TaskDraft,
         epic_id: Option<EpicId>,
     },
     Delete(TaskId),
     DispatchAgent {
-        task: Task,
+        task: Box<Task>,
         mode: DispatchMode,
     },
     TrustAndDispatch {
-        task: Task,
+        task: Box<Task>,
         mode: DispatchMode,
     },
     /// Check whether `repo_path` is trusted by Claude Code (reads
@@ -93,7 +95,7 @@ pub enum TaskCommand {
         windows: Vec<(TaskId, String)>,
     },
     Resume {
-        task: Task,
+        task: Box<Task>,
     },
     JumpToTmux {
         window: String,
