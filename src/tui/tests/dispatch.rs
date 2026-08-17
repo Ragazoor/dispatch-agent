@@ -310,10 +310,10 @@ fn dispatched_sets_fields_and_transitions_to_running() {
     // stamp, so re-writing it here would be redundant — and would clobber a
     // real hook stamp if this handling ever ran later than it does.
     assert_eq!(cmds.len(), 2, "got: {cmds:?}");
-    let Command::Task(crate::tui::commands::TaskCommand::Persist(persisted)) = &cmds[0] else {
-        panic!("expected Persist command, got {:?}", cmds[0]);
-    };
-    assert!(persisted.last_pre_tool_use_at.is_some());
+    assert!(matches!(
+        &cmds[0],
+        Command::Task(crate::tui::commands::TaskCommand::Persist(_))
+    ));
     assert!(
         !cmds.iter().any(|c| matches!(
             c,
@@ -552,10 +552,10 @@ fn resumed_seeds_last_pre_tool_use_at() {
             .num_seconds()
             < 5
     );
-    let Command::Task(crate::tui::commands::TaskCommand::Persist(persisted)) = &cmds[0] else {
-        panic!("expected Persist command, got {:?}", cmds[0]);
-    };
-    assert!(persisted.last_pre_tool_use_at.is_some());
+    assert!(matches!(
+        &cmds[0],
+        Command::Task(crate::tui::commands::TaskCommand::Persist(_))
+    ));
 }
 
 // `TaskMessage::FinishFailed` no longer exists — the TUI wrap-up entry

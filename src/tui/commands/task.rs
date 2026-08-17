@@ -1,8 +1,45 @@
 //! Task-domain side-effect commands.
 
-use crate::models::{DispatchMode, DrainMode, EpicId, SubStatus, Task, TaskId};
+use crate::models::{
+    DispatchMode, DrainMode, EpicId, SubStatus, Task, TaskId, TaskStatus, TaskUrl,
+};
 
 use super::super::types::TaskDraft;
+
+/// The 7 fields a generic board-mutation write actually persists —
+/// `id`, `status`, `sub_status`, `worktree`, `tmux_window`, `url`,
+/// `sort_order` — carried instead of a whole [`Task`] so [`TaskCommand::Persist`]
+/// doesn't force a ~470-byte deep clone (title, description, repo_path,
+/// base_branch, labels, ...) at every call site for fields it never reads.
+///
+/// Field names and types mirror `Task`'s corresponding fields, not
+/// `UpdateTaskParams`'s `FieldUpdate`/tri-state ones: there is no "leave
+/// untouched" state at this layer, only "here is the current value" — the
+/// same all-or-nothing semantics `Box<Task>` had before it.
+#[derive(Debug, Clone)]
+pub struct PersistFields {
+    pub id: TaskId,
+    pub status: TaskStatus,
+    pub sub_status: SubStatus,
+    pub worktree: Option<String>,
+    pub tmux_window: Option<String>,
+    pub url: Option<TaskUrl>,
+    pub sort_order: Option<i64>,
+}
+
+impl PersistFields {
+    pub fn from_task(task: &Task) -> Self {
+        Self {
+            id: task.id,
+            status: task.status,
+            sub_status: task.sub_status,
+            worktree: task.worktree.clone(),
+            tmux_window: task.tmux_window.clone(),
+            url: task.url.clone(),
+            sort_order: task.sort_order,
+        }
+    }
+}
 
 /// What a **successful** worktree removal earns the requesting operation.
 ///
@@ -31,11 +68,14 @@ pub enum CleanupFollowUp {
 ///
 /// Wrapped by [`crate::tui::types::Command::Task`] for runtime dispatch.
 ///
-/// `Task` payloads are boxed — see the `assert_no_entity_inline` tests in
+/// Variants that genuinely consume a whole `Task` (`DispatchAgent`,
+/// `TrustAndDispatch`) box it — see the `assert_no_entity_inline` tests in
 /// `crate::tui::types` for why nothing on this bus stores an entity inline.
+/// `Persist` and `Resume` carry only the handful of fields their runtime
+/// handler reads, so they need no box.
 #[derive(Debug, Clone)]
 pub enum TaskCommand {
-    Persist(Box<Task>),
+    Persist(PersistFields),
     Insert {
         draft: TaskDraft,
         epic_id: Option<EpicId>,
@@ -95,7 +135,8 @@ pub enum TaskCommand {
         windows: Vec<(TaskId, String)>,
     },
     Resume {
-        task: Box<Task>,
+        id: TaskId,
+        worktree: Option<String>,
     },
     JumpToTmux {
         window: String,

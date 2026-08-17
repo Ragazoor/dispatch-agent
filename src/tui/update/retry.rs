@@ -52,7 +52,7 @@ impl App {
             // subsequent Resumed → handle_resumed path.
             task.last_pre_tool_use_at = Some(chrono::Utc::now());
             let old_window = task.tmux_window.take();
-            let task_clone = Box::new(task.clone());
+            let worktree = task.worktree.clone();
 
             let mut cmds = Vec::new();
             if let Some(window) = old_window {
@@ -61,7 +61,8 @@ impl App {
                 ));
             }
             cmds.push(Command::Task(crate::tui::commands::TaskCommand::Resume {
-                task: task_clone,
+                id,
+                worktree,
             }));
             cmds.extend(self.maybe_respawn_split_pane(id));
             cmds
@@ -89,6 +90,7 @@ impl App {
             // Retry-fresh is the likeliest leaving-Running board write to carry
             // a deferred Stop: a crashed task is still Running.
             Self::set_local_status(task, TaskStatus::Backlog);
+            let fields = crate::tui::commands::PersistFields::from_task(task);
             let task_clone = Box::new(task.clone());
             self.sync_board_selection();
 
@@ -97,7 +99,7 @@ impl App {
                 cmds.push(c);
             }
             cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                task_clone.clone(),
+                fields,
             )));
             self.mark_dispatching(id);
             cmds.push(Command::Task(
@@ -127,9 +129,11 @@ impl App {
             let tmux_window = task.tmux_window.clone();
             let cleanup = Self::take_cleanup(task, CleanupFollowUp::ClearPointer);
             Self::set_local_status(task, TaskStatus::Archived);
-            let mut task_clone = Box::new(task.clone());
-            task_clone.worktree = worktree;
-            task_clone.tmux_window = tmux_window;
+            let fields = crate::tui::commands::PersistFields {
+                worktree,
+                tmux_window,
+                ..crate::tui::commands::PersistFields::from_task(task)
+            };
             self.clear_agent_tracking(id);
             self.sync_board_selection();
 
@@ -138,7 +142,7 @@ impl App {
                 cmds.push(c);
             }
             cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                task_clone,
+                fields,
             )));
             cmds.extend(self.maybe_respawn_split_pane(id));
             cmds

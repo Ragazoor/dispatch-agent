@@ -34,6 +34,6 @@ pub use repo_sync::RepoSyncCommand;
 pub use settings::SettingsCommand;
 pub use split::SplitCommand;
 pub use system::SystemCommand;
-pub use task::{CleanupFollowUp, TaskCommand};
+pub use task::{CleanupFollowUp, PersistFields, TaskCommand};
 pub use todos::TodoCommand;
 pub use usage::UsageCommand;

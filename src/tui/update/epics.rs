@@ -170,7 +170,7 @@ impl App {
                             crate::tui::commands::TaskCommand::KillTmuxWindow { window },
                         ));
                         cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                            Box::new(task.clone()),
+                            crate::tui::commands::PersistFields::from_task(task),
                         )));
                     }
                 }

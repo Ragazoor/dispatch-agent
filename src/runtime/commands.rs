@@ -149,8 +149,8 @@ async fn dispatch_task(
 ) -> Vec<super::Command> {
     use crate::tui::commands::TaskCommand::*;
     match cmd {
-        Persist(task) => {
-            rt.exec_persist_task(app, *task).await;
+        Persist(fields) => {
+            rt.exec_persist_task(app, fields).await;
             vec![]
         }
         ClearSubagents { id, mode } => {
@@ -256,8 +256,8 @@ async fn dispatch_task(
             drop(rt.exec_batch_check_windows(windows));
             vec![]
         }
-        Resume { task } => {
-            rt.exec_resume(*task);
+        Resume { id, worktree } => {
+            rt.exec_resume(id, worktree);
             vec![]
         }
         JumpToTmux { window } => {

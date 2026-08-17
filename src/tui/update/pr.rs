@@ -36,7 +36,7 @@ impl App {
             }
             task.status = TaskStatus::Done;
             task.sub_status = SubStatus::default_for(TaskStatus::Done);
-            let task_clone = Box::new(task.clone());
+            let fields = crate::tui::commands::PersistFields::from_task(task);
 
             self.clear_agent_tracking(id);
             self.sync_board_selection();
@@ -45,7 +45,7 @@ impl App {
             ));
 
             cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                task_clone,
+                fields,
             )));
 
             if self.notifications_enabled {
@@ -84,9 +84,9 @@ impl App {
             };
             if task.sub_status != new_sub {
                 task.sub_status = new_sub;
-                let task_clone = Box::new(task.clone());
+                let fields = crate::tui::commands::PersistFields::from_task(task);
                 return vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
-                    task_clone,
+                    fields,
                 ))];
             }
         }

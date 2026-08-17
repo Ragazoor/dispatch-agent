@@ -2025,9 +2025,9 @@ impl App {
                 if task.sub_status == SubStatus::Stale || task.sub_status == SubStatus::Crashed {
                     task.sub_status = SubStatus::default_for(task.status);
                 }
-                let task_clone = Box::new(task.clone());
+                let fields = crate::tui::commands::PersistFields::from_task(task);
                 cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                    task_clone,
+                    fields,
                 )));
             }
             // Drain: the agent genuinely finished its turn, so a pending Stop

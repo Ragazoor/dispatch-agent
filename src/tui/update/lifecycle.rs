@@ -47,7 +47,7 @@ impl App {
                 at
             });
 
-            let task_clone = Box::new(task.clone());
+            let fields = crate::tui::commands::PersistFields::from_task(task);
             self.clear_agent_tracking(id);
             self.sync_board_selection();
 
@@ -56,7 +56,7 @@ impl App {
                 cmds.push(c);
             }
             cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                task_clone,
+                fields,
             )));
             if let Some(at) = seed_at {
                 cmds.push(Command::Task(
@@ -114,13 +114,13 @@ impl App {
                 }
                 let detach = Self::take_detach(task);
                 Self::set_local_status(task, TaskStatus::Done);
-                let task_clone = Box::new(task.clone());
+                let fields = crate::tui::commands::PersistFields::from_task(task);
                 self.clear_agent_tracking(id);
                 if let Some(c) = detach {
                     cmds.push(c);
                 }
                 cmds.push(Command::Task(crate::tui::commands::TaskCommand::Persist(
-                    task_clone,
+                    fields,
                 )));
                 cmds.extend(self.maybe_respawn_split_pane(id));
             }
@@ -266,11 +266,11 @@ impl App {
             // the claim just set, and would overwrite a real hook stamp outright
             // if `Dispatched` handling ever moved behind slower work.
             task.last_pre_tool_use_at = Some(chrono::Utc::now());
-            let task_clone = Box::new(task.clone());
-            let repo_path = task_clone.repo_path.clone();
+            let fields = crate::tui::commands::PersistFields::from_task(task);
+            let repo_path = task.repo_path.clone();
             self.sync_board_selection();
             let mut cmds = vec![Command::Task(crate::tui::commands::TaskCommand::Persist(
-                task_clone,
+                fields,
             ))];
             if switch_focus {
                 cmds.push(Command::Task(

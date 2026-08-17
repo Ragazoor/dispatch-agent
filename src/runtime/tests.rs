@@ -309,7 +309,11 @@ async fn exec_persist_task_saves_status_to_db() {
     task.status = models::TaskStatus::Running;
     task.sub_status = models::SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-test".into());
-    rt.exec_persist_task(&mut app, task).await;
+    rt.exec_persist_task(
+        &mut app,
+        crate::tui::commands::PersistFields::from_task(&task),
+    )
+    .await;
     let db_task = rt
         .database
         .get_task(app.tasks()[0].id)
@@ -352,7 +356,11 @@ async fn exec_persist_task_preserves_sub_status() {
 
     // Persist the in-memory task (simulates handle_pr_review_state saving after PR approval)
     let task = app.tasks()[0].clone();
-    rt.exec_persist_task(&mut app, task).await;
+    rt.exec_persist_task(
+        &mut app,
+        crate::tui::commands::PersistFields::from_task(&task),
+    )
+    .await;
 
     // sub_status must survive the round-trip to DB
     let db_task = rt.database.get_task(id).await.unwrap().unwrap();
@@ -396,7 +404,11 @@ async fn exec_persist_task_does_not_overwrite_last_pre_tool_use_at() {
     stale.status = models::TaskStatus::Running;
     stale.sub_status = models::SubStatus::Active;
     stale.last_pre_tool_use_at = None;
-    rt.exec_persist_task(&mut app, stale).await;
+    rt.exec_persist_task(
+        &mut app,
+        crate::tui::commands::PersistFields::from_task(&stale),
+    )
+    .await;
 
     // The hook's timestamp must survive — Persist owns status/sub_status,
     // not the activity stamp.
@@ -453,7 +465,11 @@ async fn exec_persist_task_writes_back_done_transition_sort_order_immediately() 
         Box::new(task.clone()),
     )));
 
-    rt.exec_persist_task(&mut app, task).await;
+    rt.exec_persist_task(
+        &mut app,
+        crate::tui::commands::PersistFields::from_task(&task),
+    )
+    .await;
 
     // Assert on the in-memory board directly — no exec_refresh_from_db call
     // in between — to prove the write-back is immediate, not deferred to
@@ -526,7 +542,11 @@ async fn exec_persist_task_writes_back_leaving_done_sort_order_clear_immediately
         Box::new(task.clone()),
     )));
 
-    rt.exec_persist_task(&mut app, task).await;
+    rt.exec_persist_task(
+        &mut app,
+        crate::tui::commands::PersistFields::from_task(&task),
+    )
+    .await;
 
     // No exec_refresh_from_db in between — the clear must be immediate.
     let in_memory = app.tasks().iter().find(|t| t.id == id).unwrap();
@@ -597,7 +617,11 @@ async fn exec_persist_task_write_back_does_not_clobber_fresher_board_fields() {
     let mut stale = board_task;
     stale.last_pre_tool_use_at = None;
 
-    rt.exec_persist_task(&mut app, stale).await;
+    rt.exec_persist_task(
+        &mut app,
+        crate::tui::commands::PersistFields::from_task(&stale),
+    )
+    .await;
 
     let in_memory = app.tasks().iter().find(|t| t.id == id).unwrap();
     assert_eq!(
@@ -639,7 +663,11 @@ async fn exec_persist_task_write_back_does_not_resurrect_task_absent_from_board(
     let mut done = task.clone();
     done.status = models::TaskStatus::Done;
     done.sub_status = models::SubStatus::default_for(models::TaskStatus::Done);
-    rt.exec_persist_task(&mut app, done).await;
+    rt.exec_persist_task(
+        &mut app,
+        crate::tui::commands::PersistFields::from_task(&done),
+    )
+    .await;
 
     assert!(
         app.tasks().iter().all(|t| t.id != task.id),
@@ -2084,7 +2112,7 @@ async fn exec_resume_sends_resumed_message() {
     task.worktree = Some("/repo/.worktrees/1-resume-me".into());
     let id = task.id;
 
-    rt.exec_resume(task);
+    rt.exec_resume(task.id, task.worktree.clone());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -2121,7 +2149,7 @@ async fn exec_resume_sends_error_on_failure() {
     )
     .await
     .unwrap();
-    rt.exec_resume(task);
+    rt.exec_resume(task.id, task.worktree.clone());
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -5314,7 +5342,7 @@ async fn run_loop_exits_cleanly_on_quit_sequence() {
 // refactor of the dispatcher's internals.
 mod command_dispatch {
     use super::*;
-    use crate::tui::commands::{EditorCommand, TaskCommand, TodoCommand};
+    use crate::tui::commands::{EditorCommand, PersistFields, TaskCommand, TodoCommand};
 
     /// Run one command through the real dispatcher and return its follow-on
     /// commands (the vec `execute_commands` extends its queue with).
@@ -5404,7 +5432,7 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::Task(TaskCommand::Persist(Box::new(task.clone()))),
+            Command::Task(TaskCommand::Persist(PersistFields::from_task(&task))),
         )
         .await;
 
@@ -5430,7 +5458,7 @@ mod command_dispatch {
         dispatch_one(
             &rt,
             &mut app,
-            Command::Task(TaskCommand::Persist(Box::new(task.clone()))),
+            Command::Task(TaskCommand::Persist(PersistFields::from_task(&task))),
         )
         .await;
 

@@ -168,26 +168,30 @@ impl TuiRuntime {
         });
     }
 
-    pub(super) async fn exec_persist_task(&self, app: &mut App, task: models::Task) {
+    pub(super) async fn exec_persist_task(
+        &self,
+        app: &mut App,
+        fields: crate::tui::commands::PersistFields,
+    ) {
         use crate::service::UpdateTaskParams;
         // `last_pre_tool_use_at` is intentionally omitted: hooks own that
         // column. Writing it here would let a stale in-memory snapshot
         // (e.g. from a tick reclassification or sort_order swap) overwrite
         // a fresher hook write, flipping the task to Stale on the next tick.
         // Backlog→Running seeds go through `SeedActivity` instead.
-        let mut p = UpdateTaskParams::for_task(task.id)
-            .status(task.status)
-            .sub_status(task.sub_status)
-            .worktree(option_to_field_update(task.worktree.clone()))
-            .tmux_window(option_to_field_update(task.tmux_window.clone()));
+        let mut p = UpdateTaskParams::for_task(fields.id)
+            .status(fields.status)
+            .sub_status(fields.sub_status)
+            .worktree(option_to_field_update(fields.worktree))
+            .tmux_window(option_to_field_update(fields.tmux_window));
         // No UrlUpdate::Clear is emitted for the None branch intentionally: no
         // runtime/persist flow removes a task URL. If that ever changes, emit
         //   p = p.url(crate::service::UrlUpdate::Clear);
         // here so the clear is persisted.
-        if let Some(u) = task.url.clone() {
+        if let Some(u) = fields.url {
             p = p.url(crate::service::UrlUpdate::Set(u));
         }
-        if let Some(so) = task.sort_order {
+        if let Some(so) = fields.sort_order {
             p = p.sort_order(so);
         }
         match self.task_svc.update_task(p).await {
@@ -829,10 +833,9 @@ impl TuiRuntime {
         })
     }
 
-    pub(super) fn exec_resume(&self, task: models::Task) {
+    pub(super) fn exec_resume(&self, id: models::TaskId, worktree: Option<String>) {
         let tx = self.msg_tx.clone();
-        let id = task.id;
-        let worktree_path = task.worktree.clone().unwrap_or_default();
+        let worktree_path = worktree.unwrap_or_default();
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {
