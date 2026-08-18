@@ -850,43 +850,28 @@ mod tests {
     }
 
     #[test]
-    fn retro_skill_requires_more_than_a_workaround_for_tool_defects() {
-        // A local doc workaround treats the symptom. Retro must not let it
-        // read as full closure when the root cause is the tool/environment
-        // running the agent rather than this repo.
+    fn retro_root_cause_subsection_requires_filing_not_just_a_workaround() {
+        // A local doc workaround treats the symptom, not the defect. Retro
+        // must not let it read as full closure when the root cause is the
+        // tool/environment running the agent rather than this repo — and
+        // must route the filing itself based on who owns that root cause:
+        // this task's own repo (file directly) or a different one (flag to
+        // the user rather than filing unprompted onto a foreign board).
         let section = retro_section("### when the root cause is the tool or environment");
+        let flattened = section.replace('\n', " ");
         assert!(
             section.contains("workaround"),
             "the new subsection must address the local workaround explicitly"
         );
         assert!(
-            section.contains("not") && section.contains("sufficient closure"),
+            flattened.contains("is not") && flattened.contains("sufficient closure"),
             "the new subsection must state that a workaround alone is not \
              sufficient closure for a tool/environment root cause"
         );
-    }
-
-    #[test]
-    fn retro_skill_files_same_repo_root_cause_defects_directly() {
-        // When the task's own repo is the one that owns the root cause (e.g.
-        // dispatched into dispatch's own repo and the defect is dispatch's),
-        // there is no cross-repo concern — retro should just file it under
-        // the normal rules.
-        let section = retro_section("### when the root cause is the tool or environment");
         assert!(
             section.contains("create_task"),
             "retro must file a same-repo root-cause defect with create_task"
         );
-    }
-
-    #[test]
-    fn retro_skill_flags_cross_repo_root_cause_instead_of_filing_silently() {
-        // The common case: retro is dispatched into an unrelated repo (e.g.
-        // user-scala) and the root cause is dispatch's sandbox or Claude Code
-        // itself. A dispatched agent should not decide unprompted to open a
-        // task on a board outside its own task's repo — that must be flagged
-        // to the user, not filed silently.
-        let section = retro_section("### when the root cause is the tool or environment");
         assert!(
             section.contains("not file") || section.contains("don't file silently"),
             "retro must not file a cross-repo root-cause defect silently"
