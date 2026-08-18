@@ -55,6 +55,12 @@ against that and had to back the design out" is a finding — it cost real time.
 "A timing constant isn't listed in the constants table" is not — nobody was
 slowed by its absence, and filing it buys the next agent nothing.
 
+For every finding that passes this test, also ask: **is the root cause in the
+tool or environment running me — the sandbox, dispatch itself, or Claude Code —
+rather than in this repo's own code or docs?** A "yes" doesn't change whether a
+local doc workaround is worth writing; it changes what else is required. See
+"When the root cause is the tool or environment" under Step 3.
+
 ## Step 3: Fix it here, or file it
 
 Fix it yourself, in this session, when **all** of these hold:
@@ -96,6 +102,28 @@ worktree, an edit does not.
 Wrap-up settles the action before invoking you, so you can always know which
 path you are on — it is in the invocation, or in `wrap_up_mode` from `get_task`.
 If you somehow reach this step without knowing, ask rather than assuming.
+
+### When the root cause is the tool or environment
+
+A local doc workaround treats the symptom, not the defect — writing one is not
+sufficient closure when Step 2's root-cause question came back yes. Apply the
+workaround first, under the rules above, if it helps the next agent
+immediately; that part doesn't change. Then also deal with the defect itself:
+
+- **This task's own repo owns the root cause** — you're dispatched into the
+  repo that actually has the bug (e.g. a dispatch/sandbox defect found while
+  working in dispatch's own repo). File it with `create_task`, under the
+  filing rules below, same as any other finding.
+- **A different repo owns the root cause** — the common case: you're
+  dispatched into an unrelated repo and the defect is in dispatch's sandbox or
+  in Claude Code itself. Do not file silently onto a board outside this task's
+  own repo — a dispatched agent should not decide unprompted to open a task on
+  another repo's board. Flag it instead: name the root cause and which repo you
+  believe owns it in Step 4's output, so the user sees it before the session
+  closes and can file it themselves.
+
+Either way, do not let Step 4's summary read as if the workaround were the
+finding's full resolution — say plainly that the root cause is still open.
 
 ### What you may file
 
@@ -144,6 +172,7 @@ Print a structured summary:
 
 **Context fixed in this session:** {what you corrected in place per Step 3, and where}{, or "none needed"}
 **Follow-up tasks created:** #<id> (<tag>: <title>){, or "none needed"}
+**Root-cause issues flagged (elsewhere):** {root cause + repo it belongs to}{, or "none"}
 ```
 
 This is the last step of the retro skill itself — it is not the end of the session. Retro is almost always invoked as a sub-step of `wrap-up`, just before that skill's commit step. After printing this summary, immediately resume the calling skill's next instruction (wrap-up's commit step) in the same turn. Do not stop here.
