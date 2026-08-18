@@ -48,6 +48,7 @@ for repo in "${REPOS[@]}"; do
         url_type: "security_alert",
         status: "backlog",
         tag: "fix",
+        wrap_up_mode: "pr",
         labels: [($repo | split("/") | last)],
         sort_order: (
           {critical: 1, high: 2, medium: 3, low: 4}[

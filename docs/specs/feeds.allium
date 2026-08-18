@@ -166,12 +166,15 @@ value FeedItem {
                               -- and reinserted, taking the feed value again;
                               -- same tradeoff as status/repo_path). Absent
                               -- leaves the Task's wrap_up_mode null (decide at
-                              -- wrap-up time). Used by the CVE feed
-                              -- (fetch-cve.sh) to default fix tasks to pr so
-                              -- wrap-up goes straight to a PR. Defaults to
-                              -- absent when the script omits the field,
-                              -- preserving wire compatibility with scripts
-                              -- written before this field existed.
+                              -- wrap-up time). Used by the CVE-alert feed
+                              -- scripts (fetch-cve.sh, fetch-security.sh) to
+                              -- default fix tasks to pr so wrap-up goes
+                              -- straight to a PR — a CVE-shaped item should
+                              -- always default to pr regardless of which of
+                              -- the two emits it. Defaults to absent when the
+                              -- script omits the field, preserving wire
+                              -- compatibility with scripts written before
+                              -- this field existed.
     signals: Set<Signal> = {} -- optional routing signals a feed script attaches
                               -- to this item; routed into the right feed bucket
                               -- by the RouteSignals contract below. Defaults to the
@@ -217,13 +220,20 @@ value FeedItem {
 --
 --   - scripts/fetch-dependabot.sh — open dependency-update PRs (Renovate bot
 --                                   app/kognic-renovate) via `gh pr list`
---   - scripts/fetch-security.sh   — open Dependabot vulnerability alerts
---                                   via the `gh api` Dependabot endpoint
+--   - scripts/fetch-cve.sh        — open Dependabot vulnerability alerts
+--                                   (CVEs) via the `gh api` Dependabot
+--                                   endpoint, for the managed CVE feed (see
+--                                   "Managed review & CVE feeds" in
+--                                   docs/reference.md)
+--   - scripts/fetch-security.sh   — the same open Dependabot vulnerability
+--                                   alerts, predating the managed CVE feed;
+--                                   kept for a user wiring a hand-rolled
+--                                   generic epic instead of cve_feed_command
 --   - scripts/fetch-reviews.sh    — every open PR the user is involved with,
 --                                   as a SINGLE deduped FeedItem array (see
 --                                   below)
 --
--- All three templates ship with empty REPOS placeholders and are inert until
+-- All four templates ship with empty REPOS placeholders and are inert until
 -- the user edits them. They are reference implementations, not part of
 -- the feed runtime.
 --
