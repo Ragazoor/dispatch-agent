@@ -94,7 +94,7 @@ pub(crate) fn write_settings_file(
         },
         "sandbox": {
             "enabled": true,
-            "excludedCommands": ["./gradlew *", "gradlew *"],
+            "excludedCommands": ["./gradlew *", "gradlew *", "gh *"],
             "network": {
                 "allowedDomains": ["github.com", "api.github.com"],
             },
@@ -268,10 +268,22 @@ mod tests {
         let excluded = str_array(&v["sandbox"]["excludedCommands"]);
         assert_eq!(
             excluded,
-            vec!["./gradlew *", "gradlew *"],
+            vec!["./gradlew *", "gradlew *", "gh *"],
             "Gradle's fresh-daemon startup needs CLONE_NEWUSER, which the \
              sandbox always blocks with no narrower fix available — see \
              GradleDaemonExcludedFromSandbox in dispatch.allium"
+        );
+    }
+
+    #[test]
+    fn writes_sandbox_excluded_commands_for_gh_cli() {
+        let (_, v) = write_and_parse(None);
+        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
+        assert!(
+            excluded.contains(&"gh *"),
+            "gh stores its token in the OS keyring, reachable only over a \
+             D-Bus AF_UNIX socket the sandbox's seccomp policy always \
+             blocks — see GhCliExcludedFromSandboxKeyring in dispatch.allium"
         );
     }
 

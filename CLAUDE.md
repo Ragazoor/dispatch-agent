@@ -22,6 +22,8 @@ cargo run -- tui
 
 **`apply-seccomp: unshare(CLONE_NEWUSER): Invalid argument` is the sandbox, not your command.** A plain `grep`/`ls`/`cargo` can die with that string and no output. It names neither the sandbox nor a path, and it fires intermittently on commands that are otherwise perfectly sandbox-safe — retry, or re-run with the sandbox disabled, but don't go hunting for what you touched. Redirect targets need the same care: bare `/tmp` is not writable and `$TMPDIR` isn't reliably expanded, so `mkdir -p /tmp/claude-1000/<something>` first.
 
+**`git fetch`/`git push` over an SSH remote also fail under the sandbox**, even with `github.com`/`api.github.com` in `sandbox.network.allowedDomains` — that allowlist matches HTTP(S) domains, not SSH hosts, so an SSH remote (e.g. a custom `~/.ssh/config` alias) is blocked regardless. `git fetch origin main` failing with a `socat`/gateway error under the sandbox is this, not a real network problem: re-run with the sandbox disabled.
+
 Everything else about tests — the per-target command list, snapshot workflow, where a new test belongs, the no-wall-clock-sleep rule, coverage — is in [docs/testing.md](docs/testing.md).
 
 **`main` moves while you work.** Other agents land on it during your session, so

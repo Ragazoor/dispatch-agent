@@ -1706,7 +1706,7 @@ surface SandboxedAgentExecution {
         "~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube", "~/.docker",
         "~/.netrc"
     ]
-    let excluded_commands = ["./gradlew *", "gradlew *"]
+    let excluded_commands = ["./gradlew *", "gradlew *", "gh *"]
     let allowed_domains = ["github.com", "api.github.com"]
 
     exposes:
@@ -1773,6 +1773,25 @@ surface SandboxedAgentExecution {
         -- front instead of every dispatched agent rediscovering
         -- "apply-seccomp: unshare(CLONE_NEWUSER)" and retrying with
         -- dangerouslyDisableSandbox once per session.
+
+    @guarantee GhCliExcludedFromSandboxKeyring
+        -- excluded_commands also pre-excludes `gh` invocations. This is a
+        -- different underlying mechanism than GradleDaemonExcludedFromSandbox:
+        -- `gh` stores its GitHub token in the OS keyring (GNOME Keyring, over
+        -- D-Bus), and D-Bus is reached over an AF_UNIX socket. The sandbox's
+        -- Linux seccomp policy blocks AF_UNIX socket creation outright — the
+        -- settings schema's `network.allowUnixSockets` is macOS-only path
+        -- scoping; the only Linux-wide knob is the all-or-nothing
+        -- `allowAllUnixSockets`, which would loosen every sandboxed command's
+        -- access to local IPC, not just gh's. Without keyring access, `gh`
+        -- can't read its token and reports it invalid, even though the token
+        -- is fine and `github.com`/`api.github.com` are already in
+        -- allowed_domains — the failure happens at the local IPC layer,
+        -- before any network egress. gh/git are hard runtime dependencies of
+        -- every dispatched task (see allowed_domains above), so this is
+        -- excluded up front the same way, rather than every dispatched agent
+        -- rediscovering "token is invalid" and retrying with
+        -- dangerouslyDisableSandbox.
 
     @guidance
         -- Baked into the same JSON object write_settings_file
