@@ -94,7 +94,7 @@ pub(crate) fn write_settings_file(
         },
         "sandbox": {
             "enabled": true,
-            "excludedCommands": ["./gradlew *", "gradlew *", "gh *"],
+            "excludedCommands": ["./gradlew *", "gradlew *", "gh *", "git fetch *", "git push *"],
             "network": {
                 "allowedDomains": ["github.com", "api.github.com"],
             },
@@ -263,12 +263,23 @@ mod tests {
     }
 
     #[test]
-    fn writes_sandbox_excluded_commands_for_gradle_wrapper() {
+    fn writes_sandbox_excluded_commands_exactly() {
         let (_, v) = write_and_parse(None);
         let excluded = str_array(&v["sandbox"]["excludedCommands"]);
         assert_eq!(
             excluded,
-            vec!["./gradlew *", "gradlew *", "gh *"],
+            vec!["./gradlew *", "gradlew *", "gh *", "git fetch *", "git push *"],
+            "each entry here must correspond 1:1 to a documented \
+             @guarantee on SandboxedAgentExecution in dispatch.allium"
+        );
+    }
+
+    #[test]
+    fn writes_sandbox_excluded_commands_for_gradle_wrapper() {
+        let (_, v) = write_and_parse(None);
+        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
+        assert!(
+            excluded.contains(&"./gradlew *") && excluded.contains(&"gradlew *"),
             "Gradle's fresh-daemon startup needs CLONE_NEWUSER, which the \
              sandbox always blocks with no narrower fix available — see \
              GradleDaemonExcludedFromSandbox in dispatch.allium"
@@ -284,6 +295,18 @@ mod tests {
             "gh stores its token in the OS keyring, reachable only over a \
              D-Bus AF_UNIX socket the sandbox's seccomp policy always \
              blocks — see GhCliExcludedFromSandboxKeyring in dispatch.allium"
+        );
+    }
+
+    #[test]
+    fn writes_sandbox_excluded_commands_for_git_ssh_remotes() {
+        let (_, v) = write_and_parse(None);
+        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
+        assert!(
+            excluded.contains(&"git fetch *") && excluded.contains(&"git push *"),
+            "allowedDomains only matches HTTP(S) hosts, so git fetch/push over \
+             an SSH remote is blocked regardless — see \
+             GitSshFetchPushExcludedFromSandbox in dispatch.allium"
         );
     }
 

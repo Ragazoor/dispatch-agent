@@ -1699,14 +1699,19 @@ surface SandboxedAgentExecution {
     -- from their worktree" convention (see the "Agent Working Directory"
     -- section of CLAUDE.md) real enforcement: until now that convention was
     -- prompt-instruction only, and a misbehaving or tricked agent's shell
-    -- commands could still write outside the worktree.
+    -- commands could still write outside the worktree. excluded_commands is
+    -- a deliberate hole in that enforcement for a handful of patterns — see
+    -- GradleDaemonExcludedFromSandbox, GhCliExcludedFromSandboxKeyring, and
+    -- GitSshFetchPushExcludedFromSandbox below for which ones and why.
 
     let sandbox_enabled = true
     let credential_read_denied = [
         "~/.ssh", "~/.aws", "~/.config/gcloud", "~/.kube", "~/.docker",
         "~/.netrc"
     ]
-    let excluded_commands = ["./gradlew *", "gradlew *", "gh *"]
+    let excluded_commands = [
+        "./gradlew *", "gradlew *", "gh *", "git fetch *", "git push *"
+    ]
     let allowed_domains = ["github.com", "api.github.com"]
 
     exposes:
@@ -1746,8 +1751,11 @@ surface SandboxedAgentExecution {
         -- entries. Denying an env var such as GITHUB_TOKEN unsets it
         -- entirely, which would break `gh`, a hard dependency of dispatch's
         -- PR workflows (see pr-workflow.allium). File-read denial has no
-        -- such cost: nothing in the dispatch flow needs to read
-        -- credential_read_denied's paths.
+        -- such cost: no *sandboxed* command in the dispatch flow needs to
+        -- read credential_read_denied's paths. `git fetch`/`git push` do
+        -- need `~/.ssh`, which is why they are excluded from the sandbox
+        -- outright (see GitSshFetchPushExcludedFromSandbox) rather than
+        -- carved into this deny list as an exception.
 
     @guarantee FailsOpenOnMissingDependencies
         -- sandbox.failIfUnavailable is not set. On Linux/WSL2 the sandbox
@@ -1792,6 +1800,32 @@ surface SandboxedAgentExecution {
         -- excluded up front the same way, rather than every dispatched agent
         -- rediscovering "token is invalid" and retrying with
         -- dangerouslyDisableSandbox.
+
+    @guarantee GitSshFetchPushExcludedFromSandbox
+        -- excluded_commands also pre-excludes `git fetch`/`git push`
+        -- invocations. allowed_domains only matches HTTP(S) hosts; a worktree
+        -- whose origin is an SSH remote (e.g. a custom ~/.ssh/config alias,
+        -- the convention this repo itself uses) is blocked by the sandbox's
+        -- network layer regardless of allowed_domains, since the connection
+        -- never resolves as an HTTP(S) request against an allowed domain.
+        -- There is no narrower fix: Claude Code's sandbox settings expose no
+        -- SSH-host or port-level allowlist, only the HTTP(S) domain matching
+        -- allowed_domains already uses. This guarantee is a strictly bigger
+        -- bypass than GhCliExcludedFromSandboxKeyring: because
+        -- excluded_commands lifts every sandbox layer for a matching
+        -- invocation, not just network, a `git fetch`/`git push` call also
+        -- regains read access to credential_read_denied's `~/.ssh` entry —
+        -- required for git to present the SSH key at all, but also a
+        -- widening of what an unsandboxed git invocation could do (e.g. via
+        -- `-c core.sshCommand=...`) beyond the SSH-auth failure this fixes.
+        -- Deliberately accepted: git is a hard runtime dependency of every
+        -- dispatched task, every worktree likely shares this repo's SSH
+        -- remote convention, and the alternative (documented in CLAUDE.md
+        -- before this guarantee existed) was every dispatched agent
+        -- rediscovering the same `socat`/gateway failure and retrying with
+        -- dangerouslyDisableSandbox — see
+        -- docs/plans/2026-08-19-4289-git-ssh-sandbox-exclusion.md for the
+        -- narrower alternatives considered and why this one was picked.
 
     @guidance
         -- Baked into the same JSON object write_settings_file
