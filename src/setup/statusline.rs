@@ -268,7 +268,13 @@ mod tests {
         let excluded = str_array(&v["sandbox"]["excludedCommands"]);
         assert_eq!(
             excluded,
-            vec!["./gradlew *", "gradlew *", "gh *", "git fetch *", "git push *"],
+            vec![
+                "./gradlew *",
+                "gradlew *",
+                "gh *",
+                "git fetch *",
+                "git push *"
+            ],
             "each entry here must correspond 1:1 to a documented \
              @guarantee on SandboxedAgentExecution in dispatch.allium"
         );
