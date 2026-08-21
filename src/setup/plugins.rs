@@ -552,6 +552,88 @@ mod tests {
         }
     }
 
+    /// The "Draft the title and body" step of the PR path, isolated from its
+    /// neighbouring steps. Not built on `section_after`: that helper ends a
+    /// section at the next line starting with `#`, but this step's own
+    /// Markdown example contains fenced `## Summary` / `## Test plan` headings
+    /// as literal example text, which would truncate the section before the
+    /// part these tests need to inspect.
+    fn pr_body_draft_section() -> String {
+        let content = skill_body("wrap-up");
+        let (_, after) = content
+            .split_once("### Draft the title and body")
+            .expect("wrap-up skill must have a 'Draft the title and body' step");
+        let (section, _) = after.split_once("### Push and create the draft PR").expect(
+            "wrap-up skill must have a 'Push and create the draft PR' step \
+                 after drafting",
+        );
+        section.to_string()
+    }
+
+    /// Distilled from the shared PR-description knowledge base (learning #36):
+    /// PR bodies must describe the user-visible change and why, not the
+    /// implementation — so the template must never invite a function, class,
+    /// file, or variable name.
+    #[test]
+    fn wrap_up_skill_pr_body_uses_categorized_summary_like_coderabbit() {
+        let section = pr_body_draft_section();
+        for label in ["**Breaking Changes**", "**New Features**", "**Bug Fixes**"] {
+            assert!(
+                section.contains(label),
+                "PR body template must group changes under bold category labels \
+                 (CodeRabbit-style), missing: {label}"
+            );
+        }
+        assert!(
+            section.to_lowercase().contains("coderabbit"),
+            "PR body template should name CodeRabbit as the format it mirrors, \
+             so a future editor knows why the categories look like this"
+        );
+    }
+
+    /// Distilled from the shared PR-description knowledge base (learnings
+    /// #146 and #154): dispatch task IDs must never appear in a PR body —
+    /// GitHub auto-links `#N` to an unrelated issue/PR in the target repo.
+    /// The old template's `Implements #{task_id}.` line was a live
+    /// contradiction of both learnings until this test locked it out.
+    #[test]
+    fn wrap_up_skill_pr_body_omits_task_references() {
+        let section = pr_body_draft_section();
+        assert!(
+            !section.contains("Implements #{task_id}"),
+            "PR body template must not instruct the agent to write \
+             \"Implements #{{task_id}}\" into the body — GitHub auto-links #N \
+             to an unrelated issue/PR in this repo"
+        );
+        assert!(
+            section
+                .to_lowercase()
+                .contains("do not reference the dispatch task"),
+            "PR body template must explicitly warn against referencing the \
+             dispatch task (task IDs, \"Implements #N\")"
+        );
+    }
+
+    /// Distilled from the shared PR-description knowledge base (learning
+    /// #188): the Test plan section is opt-in for dangerous/breaking PRs,
+    /// not a default part of every PR body.
+    #[test]
+    fn wrap_up_skill_pr_body_test_plan_is_opt_in_not_default() {
+        let section = pr_body_draft_section();
+        assert!(
+            !section.contains("- [ ] {how to verify"),
+            "PR body template must not show an unconditional Test plan checklist \
+             in its default example"
+        );
+        let lower = section.to_lowercase();
+        assert!(
+            lower.contains("test plan")
+                && (lower.contains("dangerous") || lower.contains("breaking")),
+            "PR body template must say the Test plan section is only for \
+             dangerous or breaking PRs, omitted by default"
+        );
+    }
+
     /// The wrap-up skill's failed-close guidance block, lowercased: the heading
     /// section telling the agent that a *successful* `exit_session` response can
     /// still report that the close did not take effect.

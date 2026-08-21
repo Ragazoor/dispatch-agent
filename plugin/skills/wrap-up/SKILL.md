@@ -222,22 +222,33 @@ Read the output. Build a mental model of what shipped: which files changed and w
 
 Avoid `wip:`, `task #N:`, or anything that just restates the task title. The title should be useful in `git log --oneline`.
 
-**Body** — Markdown, this structure:
+**Body** — Markdown, `## Summary` grouping the changes under bold category labels — the same structure CodeRabbit's auto-generated PR summaries use. Only include the labels that apply:
+
+- **Breaking Changes**
+- **New Features**
+- **Bug Fixes**
+- **Refactor**
+- **Performance**
+- **Documentation**
+- **Tests**
+- **Chores**
 
 ```markdown
 ## Summary
-- {what changed and why, 1–4 bullets, plain language}
-- {keep one bullet per logical change so reviewers can scan}
 
-## Test plan
-- [ ] {how to verify the change manually or via tests}
-- [ ] {any edge case worth re-running}
-- [ ] {tests added/updated, if relevant}
-
-Implements #{task_id}.
+- **Bug Fixes**
+  - {user-visible change and why it matters, plain language, under 20 words where possible}
+- **Documentation**
+  - {user-visible change and why it matters}
 ```
 
-If the change has UI implications, add screenshots or a description of the visual effect under a `## Notes` section. Skip sections that don't apply (e.g. no Test plan if the change is documentation-only) — don't pad.
+Each bullet describes the user-visible change and why — never a function, class, file, or variable name. Skip a category entirely if nothing in the PR belongs to it; a one-line fix can have a single bullet under a single category — don't pad it out. If a PR breaks a public API or requires a migration, put that under **Breaking Changes** first, regardless of what else changed.
+
+Do not add a `## Test plan` section unless the PR is dangerous or breaking (a migration, a change to auth, a change to billing) — omit it by default.
+
+Do not reference the dispatch task — no task IDs, no "Implements #N" (GitHub auto-links `#N` to an unrelated issue/PR in this repo).
+
+If the change has UI implications, add screenshots or a description of the visual effect under a `## Notes` section.
 
 ### Push and create the draft PR
 
