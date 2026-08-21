@@ -1,6 +1,6 @@
 ---
 name: retro
-description: Sub-step of the wrap-up skill, not a way to finish a task. The wrap-up skill invokes this automatically before its commit step — to complete, finish, wrap up, or end a task, always use the wrap-up skill, never this one. Only invoke retro directly when the user explicitly runs /retro or asks for a session retrospective. Reflects on where this session lost time, fixes small agent-context drift in place so the next agent does better, and opens follow-up tasks only for what it must not fix itself.
+description: Sub-step of the wrap-up skill, not a way to finish a task. The wrap-up skill invokes this automatically before its commit step — to complete, finish, wrap up, or end a task, always use the wrap-up skill, never this one. Only invoke retro directly when the user explicitly runs /retro or asks for a session retrospective. Reflects on whether the user corrected or steered you this session, fixes small agent-context drift in place so the next agent does better, and opens follow-up tasks only for what it must not fix itself.
 ---
 
 # Retro
@@ -14,22 +14,34 @@ knowledge base.
 **Announce at start:** "I'm using the retro skill to run a session
 retrospective."
 
-## Step 1: Where did you lose time?
+## Step 1: Did the user correct or steer you this session?
 
-List the concrete moments this session where you were slowed down or misled. Be
-specific — a moment, not a category:
+List concrete moments where the user corrected your approach, confirmed a
+design choice among options you offered, or stated a convention or
+preference that wasn't written down anywhere — a moment, not a category.
+This step is about **feedback the user actually gave**, not a context gap you
+found on your own: a stale spec is the `weed` skill's job (spec-code
+alignment), and a command that failed until you found the right invocation
+is a tooling problem, not a correction from the user.
 
-- An assumption you took from `CLAUDE.md` that turned out to be wrong.
-- A convention you had to discover by reading source, because nothing told you.
-- A spec that described behaviour the code no longer had.
-- A rule you had to guess at — where a test goes, which helper to use.
-- A command that failed until you found the right invocation.
+- A code review comment that changed something you'd already written —
+  naming, structure, style, or architecture.
+- A design choice the user made when you offered options, rather than
+  picking one yourself.
+- A convention or preference the user stated in conversation that isn't
+  captured in `CLAUDE.md`, a spec, or the knowledge base.
+- A correction to a plan or approach you proposed, before or during
+  implementation.
+
+This counts even if it didn't cost time in the moment: if a future agent in
+this repo would hit the same choice and get it wrong, or have to ask again,
+that's the same category of loss.
 
 Also note what went well and is worth repeating.
 
 Keep both grounded in what actually happened this session. **"Nothing notable"
-is a real and common answer** — a session that ran smoothly has no findings, and
-padding this list is how retro turns into busywork.
+is a real and common answer** — a session where the user gave no corrections
+has no findings here, and inventing one is how retro turns into busywork.
 
 ## Step 2: Would a context change have prevented it?
 
@@ -50,10 +62,11 @@ inaccurate?" Every finding must trace back to a concrete moment from Step 1. If
 nothing in this session was made harder by it, it is not a finding, however true
 it is.
 
-Concretely: "`CLAUDE.md` claims there is a single DB connection; I designed
-against that and had to back the design out" is a finding — it cost real time.
-"A timing constant isn't listed in the constants table" is not — nobody was
-slowed by its absence, and filing it buys the next agent nothing.
+Concretely: "the user corrected me mid-review — test files use `Test`, not
+`Spec`, and I'd already written one the wrong way" is a finding: recording it
+as a convention saves the next agent the same correction. "A timing constant
+isn't listed in the constants table" is not — nobody corrected me on it, and
+filing it buys the next agent nothing.
 
 For every finding that passes this test, also ask: **is the root cause in the
 tool or environment running me — the sandbox, dispatch itself, or Claude Code —
@@ -147,8 +160,8 @@ back as a real bug with a real incident behind it.
   across three documents is one task that lists all three, not three tasks.
 - **Write it so a cold agent can act.** `title` names the specific change.
   `description` references this task's ID and says what the next agent will hit
-  if it stays unfixed — e.g. "Found during task #123 — `CLAUDE.md` claims the DB
-  has a single connection; I designed against that and had to back it out."
+  if it stays unfixed — e.g. "Found during task #123 — the user corrected me on
+  test files using `Test`, not `Spec`; record this as the repo's convention."
 
 `repo_path` and `epic_id` are inherited from the caller — no need to pass them
 explicitly unless overriding.
@@ -167,7 +180,7 @@ Print a structured summary:
 **Went well:**
 - {bullet}
 
-**Lost time on:**
+**User corrected or steered you on:**
 - {bullet}
 
 **Context fixed in this session:** {what you corrected in place per Step 3, and where}{, or "none needed"}
@@ -181,7 +194,9 @@ This is the last step of the retro skill itself — it is not the end of the ses
 
 - **`learnings`** still owns reusable pitfalls/conventions/preferences via
   `record_learning` — retro doesn't replace it. If Step 1 or Step 2 surfaces
-  something learnings-shaped (a convention, a pitfall), record it there too.
+  something learnings-shaped (a convention, a pitfall, a design or style
+  choice the user corrected or confirmed), record it there right away —
+  don't wait for the user to point out that you missed it.
 - **`summarize`** still owns the behaviour-change recap for the user. Retro is
   about the session and the repo's docs, not what shipped.
 - Retro is additive to both — run it in addition to, not instead of.

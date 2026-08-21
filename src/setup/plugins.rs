@@ -791,21 +791,84 @@ mod tests {
     }
 
     #[test]
-    fn retro_first_step_asks_where_time_was_lost() {
-        // Step 1 must prompt the agent for concrete moments this session lost
-        // time, and must state that "nothing notable" is a real answer so a
-        // smooth session isn't pressured into inventing findings. (The
-        // Step-1-to-Step-2 linkage is asserted separately, by the
-        // "concrete moment" check in `retro_admission_test_is_next_agent_benefit_not_doc_accuracy`.)
+    fn retro_first_step_asks_whether_user_corrected_or_steered_you() {
+        // Task #4326: the old Step 1 was entirely "context turned out wrong"
+        // shaped (a bad CLAUDE.md assumption, a convention found by reading
+        // source, a stale spec, a guessed rule, a failing command) — none of
+        // it about the user. #4316's code-review feedback (test suffix,
+        // one-class-per-file, ADTs over `require()`, and more) went
+        // uncaptured until the human explicitly asked whether it had been
+        // saved as learnings. Step 1 now asks specifically whether the user
+        // corrected or steered the agent, and must still say "nothing
+        // notable" is a real answer. (The Step-1-to-Step-2 linkage is
+        // asserted separately, by the "concrete moment" check in
+        // `retro_admission_test_is_next_agent_benefit_not_doc_accuracy`.)
         let section = retro_section("## step 1:");
         assert!(
-            section.contains("lost time") || section.contains("lose time"),
-            "retro's first step must ask where the session lost time"
+            section.contains("correct") && section.contains("steer"),
+            "retro's first step must ask whether the user corrected or \
+             steered the agent this session"
         );
         assert!(
             section.contains("nothing notable"),
             "retro must state that an empty reflection is a real answer, so a \
              smooth session is not pressured into inventing findings"
+        );
+    }
+
+    #[test]
+    fn retro_first_step_scopes_out_self_discovered_gaps() {
+        // A stale spec is `weed`'s job (spec-code alignment), and a command
+        // that failed until the right invocation was found is a tooling
+        // problem — neither is feedback from the user, so Step 1 must not
+        // invite them back in as findings.
+        let section = retro_section("## step 1:");
+        assert!(
+            section.contains("weed"),
+            "retro's first step must route spec-code alignment to the weed \
+             skill rather than treating a stale spec as its own finding"
+        );
+        assert!(
+            section.contains("tooling problem"),
+            "retro's first step must name a failing command as a tooling \
+             problem, not a correction from the user"
+        );
+    }
+
+    #[test]
+    fn retro_first_step_names_code_review_and_design_examples() {
+        // Step 1's checklist must give the agent concrete shapes of user
+        // feedback to look for, and must say this counts even when it cost
+        // no time in the moment — design/style feedback rarely does.
+        let section = retro_section("## step 1:");
+        assert!(
+            section.contains("code review"),
+            "retro's first step must prompt for feedback given during a \
+             code review pass"
+        );
+        assert!(
+            section.contains("design choice") || section.contains("design decision"),
+            "retro's first step must ask about a design choice the user \
+             made or corrected this session"
+        );
+        assert!(
+            section.contains("even if it didn't") || section.contains("even if it did not"),
+            "retro must state this category counts even when it didn't cost \
+             time in the moment, since design/style feedback often doesn't \
+             slow the agent down"
+        );
+    }
+
+    #[test]
+    fn retro_relationship_section_says_not_to_wait_to_be_asked_for_feedback() {
+        // #4316's design/style feedback only became learnings after the
+        // human asked "did you save learnings about the feedback I gave
+        // you" — retro must not rely on being asked.
+        let section = retro_section("## relationship to other skills");
+        assert!(
+            section.contains("don't wait") || section.contains("do not wait"),
+            "retro's relationship-to-learnings note must say to record \
+             design/style feedback without waiting to be asked"
         );
     }
 
