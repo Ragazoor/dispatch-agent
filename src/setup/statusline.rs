@@ -96,13 +96,12 @@ pub(crate) fn write_settings_file(
             "enabled": true,
             "excludedCommands": ["./gradlew *", "gradlew *", "gh *", "git fetch *", "git push *"],
             "network": {
-                "allowedDomains": ["github.com", "api.github.com"],
+                "allowedDomains": ["github.com", "api.github.com", "*.pkg.dev"],
             },
             "credentials": {
                 "files": [
                     { "path": "~/.ssh", "mode": "deny" },
                     { "path": "~/.aws", "mode": "deny" },
-                    { "path": "~/.config/gcloud", "mode": "deny" },
                     { "path": "~/.kube", "mode": "deny" },
                     { "path": "~/.docker", "mode": "deny" },
                     { "path": "~/.netrc", "mode": "deny" },
@@ -246,14 +245,16 @@ mod tests {
     }
 
     #[test]
-    fn writes_sandbox_allowed_domains_for_github_only() {
+    fn writes_sandbox_allowed_domains_for_github_and_artifact_registry() {
         let (_, v) = write_and_parse(None);
         let domains = str_array(&v["sandbox"]["network"]["allowedDomains"]);
         assert_eq!(
             domains,
-            vec!["github.com", "api.github.com"],
+            vec!["github.com", "api.github.com", "*.pkg.dev"],
             "git/gh are hard dependencies on every dispatched task, so their \
-             hosts are pre-allowed; other ecosystems' registries are not"
+             hosts are pre-allowed; *.pkg.dev is a deliberate exception for \
+             GCP Artifact Registry — see GcpArtifactRegistryPreAllowedForGradle \
+             in dispatch.allium; other ecosystems' registries are not"
         );
         assert!(
             v["sandbox"]["network"]["strictAllowlist"].is_null(),
@@ -326,19 +327,18 @@ mod tests {
             .iter()
             .map(|f| f["path"].as_str().expect("path must be a string"))
             .collect();
-        for expected in [
-            "~/.ssh",
-            "~/.aws",
-            "~/.config/gcloud",
-            "~/.kube",
-            "~/.docker",
-            "~/.netrc",
-        ] {
+        for expected in ["~/.ssh", "~/.aws", "~/.kube", "~/.docker", "~/.netrc"] {
             assert!(
                 denied_paths.contains(&expected),
                 "expected {expected} in denied_paths, got {denied_paths:?}"
             );
         }
+        assert!(
+            !denied_paths.contains(&"~/.config/gcloud"),
+            "~/.config/gcloud must not be denied — gradle's artifactregistry \
+             plugin needs it for `gcloud auth print-access-token` — see \
+             GcloudCredentialsUnrestrictedForArtifactRegistry in dispatch.allium"
+        );
         assert!(
             files.iter().all(|f| f["mode"] == "deny"),
             "every credential entry must use mode: deny, got {files:?}"
