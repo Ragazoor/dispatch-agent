@@ -93,20 +93,7 @@ pub(crate) fn write_settings_file(
             "command": build_command(snapshot_path, chain),
         },
         "sandbox": {
-            "enabled": true,
-            "excludedCommands": ["./gradlew *", "gradlew *", "gh *", "git fetch *", "git push *"],
-            "network": {
-                "allowedDomains": ["github.com", "api.github.com", "*.pkg.dev"],
-            },
-            "credentials": {
-                "files": [
-                    { "path": "~/.ssh", "mode": "deny" },
-                    { "path": "~/.aws", "mode": "deny" },
-                    { "path": "~/.kube", "mode": "deny" },
-                    { "path": "~/.docker", "mode": "deny" },
-                    { "path": "~/.netrc", "mode": "deny" },
-                ]
-            }
+            "enabled": false,
         }
     }))
     .context("failed to serialize statusline settings")?;
@@ -209,16 +196,6 @@ mod tests {
         (changed, v)
     }
 
-    /// Extracts a JSON array of strings as borrowed `&str`s, panicking with a
-    /// descriptive message if the value isn't shaped that way.
-    fn str_array(v: &serde_json::Value) -> Vec<&str> {
-        v.as_array()
-            .expect("expected a JSON array")
-            .iter()
-            .map(|entry| entry.as_str().expect("array entry must be a string"))
-            .collect()
-    }
-
     #[test]
     fn writes_valid_settings_json() {
         let (changed, v) = write_and_parse(Some("cs"));
@@ -231,121 +208,15 @@ mod tests {
     }
 
     #[test]
-    fn writes_sandbox_config_enabled_with_no_filesystem_key() {
+    fn writes_sandbox_disabled_with_no_other_keys() {
         let (_, v) = write_and_parse(None);
-        assert_eq!(v["sandbox"]["enabled"], true);
-        assert!(
-            v["sandbox"]["filesystem"].is_null(),
-            "filesystem key must be absent so Claude Code's defaults apply"
-        );
-        assert!(
-            v["sandbox"]["failIfUnavailable"].is_null(),
-            "failIfUnavailable must be absent so sandboxing fails open"
-        );
-    }
-
-    #[test]
-    fn writes_sandbox_allowed_domains_for_github_and_artifact_registry() {
-        let (_, v) = write_and_parse(None);
-        let domains = str_array(&v["sandbox"]["network"]["allowedDomains"]);
         assert_eq!(
-            domains,
-            vec!["github.com", "api.github.com", "*.pkg.dev"],
-            "git/gh are hard dependencies on every dispatched task, so their \
-             hosts are pre-allowed; *.pkg.dev is a deliberate exception for \
-             GCP Artifact Registry — see GcpArtifactRegistryPreAllowedForGradle \
-             in dispatch.allium; other ecosystems' registries are not"
-        );
-        assert!(
-            v["sandbox"]["network"]["strictAllowlist"].is_null(),
-            "strictAllowlist must be absent so hosts outside allowedDomains \
-             still go through the normal prompt/classifier flow"
-        );
-    }
-
-    #[test]
-    fn writes_sandbox_excluded_commands_exactly() {
-        let (_, v) = write_and_parse(None);
-        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
-        assert_eq!(
-            excluded,
-            vec![
-                "./gradlew *",
-                "gradlew *",
-                "gh *",
-                "git fetch *",
-                "git push *"
-            ],
-            "each entry here must correspond 1:1 to a documented \
-             @guarantee on SandboxedAgentExecution in dispatch.allium"
-        );
-    }
-
-    #[test]
-    fn writes_sandbox_excluded_commands_for_gradle_wrapper() {
-        let (_, v) = write_and_parse(None);
-        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
-        assert!(
-            excluded.contains(&"./gradlew *") && excluded.contains(&"gradlew *"),
-            "Gradle's fresh-daemon startup needs CLONE_NEWUSER, which the \
-             sandbox always blocks with no narrower fix available — see \
-             GradleDaemonExcludedFromSandbox in dispatch.allium"
-        );
-    }
-
-    #[test]
-    fn writes_sandbox_excluded_commands_for_gh_cli() {
-        let (_, v) = write_and_parse(None);
-        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
-        assert!(
-            excluded.contains(&"gh *"),
-            "gh stores its token in the OS keyring, reachable only over a \
-             D-Bus AF_UNIX socket the sandbox's seccomp policy always \
-             blocks — see GhCliExcludedFromSandboxKeyring in dispatch.allium"
-        );
-    }
-
-    #[test]
-    fn writes_sandbox_excluded_commands_for_git_ssh_remotes() {
-        let (_, v) = write_and_parse(None);
-        let excluded = str_array(&v["sandbox"]["excludedCommands"]);
-        assert!(
-            excluded.contains(&"git fetch *") && excluded.contains(&"git push *"),
-            "allowedDomains only matches HTTP(S) hosts, so git fetch/push over \
-             an SSH remote is blocked regardless — see \
-             GitSshFetchPushExcludedFromSandbox in dispatch.allium"
-        );
-    }
-
-    #[test]
-    fn writes_sandbox_credential_deny_list() {
-        let (_, v) = write_and_parse(None);
-        let files = v["sandbox"]["credentials"]["files"]
-            .as_array()
-            .expect("credentials.files must be an array");
-        let denied_paths: Vec<&str> = files
-            .iter()
-            .map(|f| f["path"].as_str().expect("path must be a string"))
-            .collect();
-        for expected in ["~/.ssh", "~/.aws", "~/.kube", "~/.docker", "~/.netrc"] {
-            assert!(
-                denied_paths.contains(&expected),
-                "expected {expected} in denied_paths, got {denied_paths:?}"
-            );
-        }
-        assert!(
-            !denied_paths.contains(&"~/.config/gcloud"),
-            "~/.config/gcloud must not be denied — gradle's artifactregistry \
-             plugin needs it for `gcloud auth print-access-token` — see \
-             GcloudCredentialsUnrestrictedForArtifactRegistry in dispatch.allium"
-        );
-        assert!(
-            files.iter().all(|f| f["mode"] == "deny"),
-            "every credential entry must use mode: deny, got {files:?}"
-        );
-        assert!(
-            v["sandbox"]["credentials"]["envVars"].is_null(),
-            "envVars must be absent — denying tokens like GITHUB_TOKEN breaks gh"
+            v["sandbox"],
+            json!({"enabled": false}),
+            "the sandbox is fully disabled for dispatch-spawned sessions — \
+             see SandboxDisabledForDockerAndUnixSockets in dispatch.allium; \
+             no other sandbox sub-key should be written since they're inert \
+             once disabled"
         );
     }
 
