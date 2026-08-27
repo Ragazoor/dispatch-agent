@@ -454,8 +454,9 @@ rule RecordLearningViaMcp {
         --     a programming language. A bare manifest or document filename
         --     with no directory separator is NOT a source-file reference —
         --     naming a root manifest or a spec file does not rot the way a
-        --     path into the source tree does. Tokens that look like a URL or
-        --     a hostname are exempt.
+        --     path into the source tree does. A token reached through a URL
+        --     scheme or carrying a "www." prefix is exempt; a bare hostname
+        --     with a path is not, and is rejected like any other path.
         -- The first three shapes mirror three of check-doc-symbols.sh's four
         -- candidate shapes (pathsym, typesym, bare) — see that script's header
         -- comment. Unlike that script, this is an unconditional reject, not a
