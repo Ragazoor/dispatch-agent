@@ -187,14 +187,6 @@ mcp_tools! {
                 "auto_run_plan": {
                     "type": "boolean",
                     "description": "When true and a plan_path is set, the dispatched agent implements the plan immediately instead of summarizing it and asking for confirmation first. Use only when the plan has already been reviewed (e.g. by the decompose-review skill's work-package confirmation step). Defaults to false."
-                },
-                "schedule_interval_secs": {
-                    "type": "integer",
-                    "description": "Redispatch this task automatically every N seconds while it is idle (backlog or done, no live agent). Omit for an ordinary, manually-dispatched task."
-                },
-                "pinned_branch": {
-                    "type": "string",
-                    "description": "Check the task's worktree out on this EXISTING branch (e.g. 'staging') instead of creating a disposable per-task branch. Combined with schedule_interval_secs, the scheduler skips the redispatch entirely when nothing new has landed on the branch."
                 }
             },
             "required": ["title", "repo_path"]

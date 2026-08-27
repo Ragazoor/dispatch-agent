@@ -129,8 +129,6 @@ pub(crate) async fn handle_create_task(
             base_branch: parsed.base_branch,
             wrap_up_mode: parsed.wrap_up_mode,
             auto_run_plan: parsed.auto_run_plan,
-            schedule_interval_secs: parsed.schedule_interval_secs,
-            pinned_branch: parsed.pinned_branch,
         })
         .await
     {

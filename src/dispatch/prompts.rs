@@ -469,49 +469,6 @@ Do NOT make code changes.";
     )
 }
 
-/// Prompt for a scheduled pipeline tick (`pipeline_agent`).
-///
-/// Deliberately spare: a tick has no plan and no epic addendum to summarise —
-/// the work is entirely "the branch moved, make it green again". The
-/// description is left empty for the same reason; the branch name and the
-/// merge target are the whole brief.
-///
-/// **This prompt is not final.** Subtask #4205 lands `wrap_up(action="merge")`;
-/// until then the closing instruction names an action the tools do not yet
-/// accept, and the merge sentence should be revisited once it exists. (Verify
-/// tiering was dropped — see the design doc's Part B — so the single
-/// `verify_command` is correct here and needs no follow-up.)
-pub(super) fn build_pipeline_prompt(
-    task_id: TaskId,
-    title: &str,
-    pinned_branch: Option<&str>,
-    base_branch: &str,
-    epic: Option<&EpicContext>,
-    ctx: &PromptContext<'_>,
-) -> String {
-    let branch = pinned_branch.unwrap_or("this task's own branch");
-    let addendum = format!(
-        "This is a recurring pipeline task tracking `{branch}`. New commits have landed on \
-         it since the last successful run.\n\
-         \n\
-         Run the verify command (`get_task` reports it on its \"Verify command\" line) and \
-         fix whatever fails, with ordinary commits on `{branch}`. Then promote the branch by \
-         merging it into `{base_branch}` and close the session.\n\
-         \n\
-         If the branch is already green, say so and close the session without inventing work."
-    );
-
-    let block = task_block(task_id, title, "", epic);
-    render_task_prompt(
-        "You are a pipeline agent.",
-        IntroSpacing::BlankLine,
-        &block,
-        ctx,
-        &addendum,
-        mcp_tools_instruction(),
-    )
-}
-
 /// Maximum total learnings injected into a dispatch prompt via RAG.
 pub const DISPATCH_INJECTION_CAP: usize = 5;
 
@@ -1014,10 +971,6 @@ stubborn convergence, got: {text}"
             (
                 "research",
                 build_research_prompt(TaskId(1), "t", "d", None, &plain),
-            ),
-            (
-                "pipeline",
-                build_pipeline_prompt(TaskId(1), "t", Some("staging"), "main", None, &plain),
             ),
             (
                 "dependabot",
@@ -1568,8 +1521,6 @@ mod rag_dispatch_tests {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();

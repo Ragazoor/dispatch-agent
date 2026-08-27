@@ -71,8 +71,6 @@ async fn subscribe_then_finish_delivers_notification() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -99,8 +97,6 @@ async fn subscribe_then_finish_delivers_notification() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();

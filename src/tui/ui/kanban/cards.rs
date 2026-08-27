@@ -273,17 +273,7 @@ fn count_suffix(n: u32, singular: &str, plural: &str) -> Option<String> {
 }
 
 /// Line 2 of a task card: the state indicator, then the chips.
-///
-/// `schedule_interval_secs` is the task's cadence, or `None` when it is not
-/// scheduled. It renders as a leading chip rather than as a `CardIndicator`
-/// variant precisely because it is *not* a lifecycle state — see "Scheduled
-/// badge" in `docs/specs/core.allium` for why folding it into the indicator
-/// would be backwards.
-fn render_card_indicator(
-    indicator: CardIndicator,
-    labels: &[String],
-    schedule_interval_secs: Option<i64>,
-) -> Line<'static> {
+fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'static> {
     let (label, color) = match indicator {
         CardIndicator::Dispatching { spinner_frame } => {
             let glyph = DISPATCHING_SPINNER
@@ -344,13 +334,7 @@ fn render_card_indicator(
         Span::raw("   "),
         Span::styled(label, Style::default().fg(color)),
     ];
-    // The badge is chained ahead of the task's own labels rather than pushed in
-    // its own loop: core.allium requires the two to be visually identical and
-    // the badge to come first, and one chain expresses both without a test
-    // having to police them.
-    let badge = schedule_interval_secs
-        .map(|secs| format!("\u{23f1} {}", crate::models::format_interval_secs(secs)));
-    for chip in badge.iter().chain(labels.iter()) {
+    for chip in labels {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             format!("[{chip}]"),
@@ -549,7 +533,7 @@ pub(super) fn build_task_list_item<'a>(
     // Read the severity off the indicator before it is consumed, so the border and
     // the glyph beneath it come from one classification rather than two.
     let state_border = state_border_color(&indicator);
-    let line2 = render_card_indicator(indicator, &task.labels, task.schedule_interval_secs);
+    let line2 = render_card_indicator(indicator, &task.labels);
 
     // Precedence: cursor, then state, then neutral (`core.allium`: "Selection").
     //
@@ -844,69 +828,8 @@ mod tests {
                 inactive_mins: Some(7)
             },
         );
-        let text = line_text(&render_card_indicator(indicator, &[], None));
+        let text = line_text(&render_card_indicator(indicator, &[]));
         assert!(text.contains("stale · 7m"), "got {text:?}");
-    }
-
-    // --- scheduled badge --------------------------------------------------
-
-    fn idle_indicator() -> CardIndicator {
-        CardIndicator::Idle {
-            status: TaskStatus::Backlog,
-            age: "1h".to_string(),
-            staleness: Staleness::Fresh,
-            plan_indicator: "",
-            tag_suffix: "",
-        }
-    }
-
-    /// The badge is the only thing on the card distinguishing a scheduled task
-    /// from one nobody has touched — a scheduled task sits idle in backlog
-    /// between redispatches (core.allium: "Scheduled badge").
-    #[test]
-    fn a_scheduled_task_shows_its_cadence_as_a_badge() {
-        let text = line_text(&render_card_indicator(idle_indicator(), &[], Some(600)));
-        assert!(text.contains("\u{23f1} 10m"), "got {text:?}");
-    }
-
-    #[test]
-    fn an_unscheduled_task_shows_no_badge_at_all() {
-        let text = line_text(&render_card_indicator(idle_indicator(), &[], None));
-        assert!(!text.contains('\u{23f1}'), "got {text:?}");
-    }
-
-    /// The badge is a standing property, not a lifecycle state: it must
-    /// coexist with whatever the card is actually doing rather than displace
-    /// it. A scheduled task whose last run died must still read as crashed.
-    #[test]
-    fn the_badge_coexists_with_an_alarming_indicator_rather_than_hiding_it() {
-        let text = line_text(&render_card_indicator(
-            CardIndicator::Crashed,
-            &[],
-            Some(7200),
-        ));
-        assert!(text.contains("crashed"), "got {text:?}");
-        assert!(text.contains("\u{23f1} 2h"), "got {text:?}");
-    }
-
-    /// Chip order is stated in core.allium: the badge precedes the task's own
-    /// labels, so a feed script's first label does not get pushed around by a
-    /// property the script knows nothing about.
-    #[test]
-    fn the_badge_renders_before_the_tasks_own_labels() {
-        let labels = vec!["alpha".to_string()];
-        let text = line_text(&render_card_indicator(idle_indicator(), &labels, Some(600)));
-        let badge_at = text.find('\u{23f1}').expect("badge missing");
-        let label_at = text.find("[alpha]").expect("label missing");
-        assert!(badge_at < label_at, "got {text:?}");
-    }
-
-    /// A cadence that divides no whole unit falls back to bare seconds rather
-    /// than rounding — the badge's whole job is to state the cadence.
-    #[test]
-    fn an_inexact_cadence_renders_as_seconds() {
-        let text = line_text(&render_card_indicator(idle_indicator(), &[], Some(650)));
-        assert!(text.contains("\u{23f1} 650s"), "got {text:?}");
     }
 
     #[test]
@@ -916,7 +839,7 @@ mod tests {
         let app = App::new(vec![]);
         let indicator = classify_card_indicator(&task, task.status, &app, now);
         assert_eq!(indicator, CardIndicator::Unprovisioned);
-        let text = line_text(&render_card_indicator(indicator, &[], None));
+        let text = line_text(&render_card_indicator(indicator, &[]));
         assert!(text.contains("no worktree"), "got {text:?}");
         assert!(!text.contains("running"), "got {text:?}");
     }
@@ -1023,7 +946,7 @@ mod tests {
     }
 
     fn label_of(indicator: CardIndicator) -> String {
-        render_card_indicator(indicator, &[], None)
+        render_card_indicator(indicator, &[])
             .spans
             .iter()
             .map(|s| s.content.as_ref())
@@ -1147,7 +1070,7 @@ mod tests {
                 inactive_mins: None
             },
         );
-        let text = line_text(&render_card_indicator(indicator, &[], None));
+        let text = line_text(&render_card_indicator(indicator, &[]));
         assert!(text.contains("stale"), "got {text:?}");
         assert!(!text.contains('m'), "got {text:?}");
     }

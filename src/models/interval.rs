@@ -1,8 +1,6 @@
-//! The interval literal a human types into a cadence field, and the humanised
-//! form a card renders back.
+//! The interval literal a human types into a cadence field.
 //!
-//! One grammar for every such field — the TUI creation form's schedule step,
-//! the task editor's `SCHEDULE_INTERVAL_SECS` section, and the epic editor's
+//! One grammar for every such field — today that is the epic editor's
 //! `FEED_INTERVAL_SECS` section — because two spellings of ten minutes in one
 //! application is a bug waiting to be filed. See "Interval literals" in
 //! `docs/specs/core.allium` for the normative statement.
@@ -12,21 +10,17 @@
 
 /// The units a literal may carry, largest first.
 ///
-/// One table, read from both directions: [`parse_interval_secs`] scans it for a
-/// typed suffix, [`format_interval_secs`] walks it largest-first for the first
-/// exact divisor. Two tables would let the halves disagree about what `d` is
-/// worth, which is precisely what `formatting_round_trips_back_through_the_parser`
-/// would then be left to discover.
+/// Scanned by [`parse_interval_secs`] for a typed suffix. One table, so a unit
+/// is worth the same thing wherever it is read.
 const UNITS: [(char, i64); 4] = [('d', 86_400), ('h', 3600), ('m', 60), ('s', 1)];
 
 /// The example set every user-facing surface quotes when describing this
-/// grammar — the form prompt, the form's rejection message, and the editor
-/// sections' parse error.
+/// grammar — today, the editor section's parse-error message.
 ///
-/// Exported rather than retyped because those are three separate strings in
-/// three modules, and a grammar described differently in each is how a surface
-/// ends up advertising a suffix the parser does not implement. Adding a unit is
-/// then a change to [`UNITS`] and this line, not a grep.
+/// Exported rather than retyped, because a grammar described differently at
+/// each surface is how one ends up advertising a suffix the parser does not
+/// implement. Adding a unit is then a change to [`UNITS`] and this line, not a
+/// grep.
 pub const INTERVAL_EXAMPLES: &str = "600, 10m, 2h, 1d";
 
 /// Parse an interval literal into a strictly-positive number of seconds.
@@ -46,13 +40,13 @@ pub const INTERVAL_EXAMPLES: &str = "600, 10m, 2h, 1d";
 /// (`"-5"`), zero in any unit (`"0"`, `"0m"`), a fraction (`"1.5h"`), a
 /// compound (`"1h30m"`), or arbitrary text. Zero is rejected rather than read
 /// as "off" because every calling surface already spells "off" as the empty
-/// value, and a zero-second cadence would busy-loop the scheduler.
+/// value, and a zero-second cadence would busy-loop the feed runner.
 ///
 /// A bare integer means *seconds* — not because seconds are the friendly unit,
-/// but because that is what the columns hold (`Task.schedule_interval_secs`,
-/// `Epic.feed_interval_secs`) and what these fields accepted before suffixes
-/// existed. Keeping the bare form's meaning is what makes suffix support purely
-/// additive: no value a user typed before changes meaning.
+/// but because that is what the column holds (`Epic.feed_interval_secs`) and
+/// what the field accepted before suffixes existed. Keeping the bare form's
+/// meaning is what makes suffix support purely additive: no value a user typed
+/// before changes meaning.
 pub fn parse_interval_secs(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     // Matching on the last *byte*, not the last char: an ASCII-alphabetic
@@ -80,30 +74,6 @@ pub fn parse_interval_secs(raw: &str) -> Option<i64> {
     // must be refused rather than quietly becoming i64::MAX seconds.
     let secs = value.checked_mul(multiplier)?;
     (secs > 0).then_some(secs)
-}
-
-/// Render a stored seconds count as the compact form a card badge shows.
-///
-/// The largest whole unit that divides the value *exactly*, else bare seconds:
-/// `600` → `"10m"`, `7200` → `"2h"`, `86400` → `"1d"`, `650` → `"650s"`. Only
-/// exact division is humanised — `"10m"` for 650 seconds would be a lie on a
-/// surface whose whole job is to state the cadence, and the alternative
-/// (`"10m50s"`) does not fit the space a chip has.
-///
-/// Non-positive input has no meaningful unit and renders as bare seconds; the
-/// parser above cannot produce it, but a hand-written DB row can.
-pub fn format_interval_secs(secs: i64) -> String {
-    if secs <= 0 {
-        return format!("{secs}s");
-    }
-    // Largest-first, so the `('s', 1)` entry is the terminal case rather than a
-    // special one — every positive value divides by 1.
-    for (suffix, unit_secs) in UNITS {
-        if secs % unit_secs == 0 {
-            return format!("{}{suffix}", secs / unit_secs);
-        }
-    }
-    format!("{secs}s")
 }
 
 #[cfg(test)]
@@ -144,7 +114,7 @@ mod tests {
 
     /// Zero is a parse failure in every unit, not a synonym for "off": the
     /// empty value already means off on every calling surface, and a
-    /// zero-second cadence would busy-loop the scheduler.
+    /// zero-second cadence would busy-loop the feed runner.
     #[test]
     fn zero_is_rejected_in_every_unit() {
         assert_eq!(parse_interval_secs("0"), None);
@@ -199,45 +169,5 @@ mod tests {
     fn overflow_is_a_parse_failure_not_a_saturation() {
         assert_eq!(parse_interval_secs("9999999999999999999d"), None);
         assert_eq!(parse_interval_secs("999999999999999999999"), None);
-    }
-
-    // --- format_interval_secs ---
-
-    #[test]
-    fn exact_multiples_render_as_the_largest_whole_unit() {
-        assert_eq!(format_interval_secs(600), "10m");
-        assert_eq!(format_interval_secs(7200), "2h");
-        assert_eq!(format_interval_secs(86_400), "1d");
-        assert_eq!(format_interval_secs(60), "1m");
-    }
-
-    /// Only exact division humanises — "10m" for 650s would be a lie on a
-    /// surface whose only job is to state the cadence.
-    #[test]
-    fn inexact_values_render_as_bare_seconds() {
-        assert_eq!(format_interval_secs(650), "650s");
-        assert_eq!(format_interval_secs(1), "1s");
-        assert_eq!(format_interval_secs(3601), "3601s");
-    }
-
-    #[test]
-    fn non_positive_values_render_as_bare_seconds() {
-        assert_eq!(format_interval_secs(0), "0s");
-        assert_eq!(format_interval_secs(-60), "-60s");
-    }
-
-    /// The two halves agree on every value the parser can produce from a
-    /// humanised string, which is what lets a badge and a form field describe
-    /// the same cadence without a translation table between them.
-    #[test]
-    fn formatting_round_trips_back_through_the_parser() {
-        for secs in [1, 59, 60, 600, 650, 3600, 7200, 86_400, 172_800] {
-            let rendered = format_interval_secs(secs);
-            assert_eq!(
-                parse_interval_secs(&rendered),
-                Some(secs),
-                "{secs}s rendered as {rendered:?}, which did not parse back"
-            );
-        }
     }
 }

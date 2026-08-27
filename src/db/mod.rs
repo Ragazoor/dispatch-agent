@@ -109,10 +109,6 @@ patch_struct! {
         nullable wrap_up_mode: WrapUpMode,
         plain    auto_run_plan: bool,
         plain    stop_pending: bool,
-        nullable schedule_interval_secs: i64,
-        nullable pinned_branch: &'a str,
-        nullable last_processed_sha: &'a str,
-        nullable last_scheduled_check_at: chrono::DateTime<chrono::Utc>,
     }
 }
 
@@ -133,12 +129,6 @@ pub struct CreateTaskRequest<'a> {
     pub tag: Option<TaskTag>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
-    /// Opt a task into scheduled redispatch at creation time. `last_processed_sha`
-    /// and `last_scheduled_check_at` are deliberately absent from this struct —
-    /// they are scheduler-owned and only ever written by `SchedulerRunner` and
-    /// the merge-progress path, never supplied by a creator.
-    pub schedule_interval_secs: Option<i64>,
-    pub pinned_branch: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -198,16 +188,6 @@ pub trait TaskRead: Send + Sync {
     /// column and discard the result.
     async fn task_exists(&self, id: TaskId) -> Result<bool>;
     async fn list_all(&self) -> Result<Vec<Task>>;
-    /// Every task the scheduler could act on this tick: `schedule_interval_secs`
-    /// set, no live agent, and idle (`backlog` or `done`). A narrow query
-    /// rather than a filter over [`list_all`](Self::list_all) because
-    /// `SchedulerRunner` polls every couple of seconds and the answer is almost
-    /// always empty — no board has many scheduled tasks.
-    ///
-    /// The predicates are only the cheap ones; the elapsed-time gate and the
-    /// pinned-branch SHA comparison stay in the scheduler, where the in-process
-    /// last-check map and the git subprocess live.
-    async fn list_scheduled_tasks(&self) -> Result<Vec<Task>>;
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<Task>>;
     /// Return the cumulative INSERT/UPDATE/DELETE count for this connection since
     /// it was opened. Cheap watermark: if the value is the same as the last
@@ -364,27 +344,6 @@ pub trait TaskCrud: TaskRead {
     /// it cannot stomp a task that has since been provisioned or moved by
     /// someone else. Returns whether the release applied.
     async fn try_release_backlog_claim(&self, id: TaskId) -> Result<bool>;
-    /// [`Self::try_claim_backlog_task`]'s counterpart for `DispatchScheduledTask`
-    /// (`docs/specs/dispatch.allium`), used only by
-    /// [`crate::scheduler::SchedulerRunner`].
-    ///
-    /// A separate statement rather than a loosened `try_claim_backlog_task`,
-    /// deliberately: scheduled dispatch is the one caller allowed to start from
-    /// `done` as well as `backlog`, and widening the shared claim would hand
-    /// that to every other entry point too. The extra guards
-    /// (`schedule_interval_secs IS NOT NULL`, `tmux_window IS NULL`) make this
-    /// claim the atomic enforcement point for the rule's whole precondition, so
-    /// two ticks racing cannot both dispatch.
-    ///
-    /// Releasing uses [`Self::try_release_backlog_claim`] unchanged: a failed
-    /// dispatch never wrote a worktree, so that method's guard holds. A
-    /// scheduled task that started from `done` therefore lands in `backlog` on
-    /// failure — visible on the board, and still eligible for the next tick.
-    async fn try_claim_scheduled_task(
-        &self,
-        id: TaskId,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<bool>;
     /// Upsert tasks from a feed. Inserts new tasks; on conflict (epic_id, external_id)
     /// updates title and description only — status and other user-managed fields are preserved.
     ///

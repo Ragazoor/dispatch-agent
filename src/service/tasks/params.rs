@@ -35,12 +35,6 @@ pub struct UpdateTaskParams {
     pub wrap_up_mode: Option<Option<WrapUpMode>>,
     /// `None` = leave untouched; `Some(v)` = write `v`.
     pub auto_run_plan: Option<bool>,
-    /// Double-Option: outer `None` = no-op; `Some(None)` = unschedule;
-    /// `Some(Some(secs))` = schedule at this cadence.
-    pub schedule_interval_secs: Option<Option<i64>>,
-    /// Double-Option: outer `None` = no-op; `Some(None)` = unpin;
-    /// `Some(Some(branch))` = pin the worktree to this existing branch.
-    pub pinned_branch: Option<Option<String>>,
 }
 
 impl UpdateTaskParams {
@@ -74,8 +68,6 @@ impl UpdateTaskParams {
             last_pre_tool_use_at,
             wrap_up_mode,
             auto_run_plan,
-            schedule_interval_secs,
-            pinned_branch,
         } = self;
 
         [
@@ -95,8 +87,6 @@ impl UpdateTaskParams {
             ("last_pre_tool_use_at", last_pre_tool_use_at.is_some()),
             ("wrap_up_mode", wrap_up_mode.is_some()),
             ("auto_run_plan", auto_run_plan.is_some()),
-            ("schedule_interval_secs", schedule_interval_secs.is_some()),
-            ("pinned_branch", pinned_branch.is_some()),
         ]
         .into_iter()
         .filter_map(|(name, is_set)| is_set.then_some(name))
@@ -123,8 +113,6 @@ impl UpdateTaskParams {
             last_pre_tool_use_at: None,
             wrap_up_mode: None,
             auto_run_plan: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         }
     }
 
@@ -207,16 +195,6 @@ impl UpdateTaskParams {
         self.auto_run_plan = Some(value);
         self
     }
-
-    pub fn schedule_interval_secs(mut self, value: Option<i64>) -> Self {
-        self.schedule_interval_secs = Some(value);
-        self
-    }
-
-    pub fn pinned_branch(mut self, value: Option<String>) -> Self {
-        self.pinned_branch = Some(value);
-        self
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -234,11 +212,6 @@ pub struct CreateTaskParams {
     pub base_branch: Option<String>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
-    /// Opt the new task into scheduled redispatch / a pinned worktree branch.
-    /// Both default to `None` — see `CreateTaskRequest` for why the two
-    /// scheduler-owned columns are absent here.
-    pub schedule_interval_secs: Option<i64>,
-    pub pinned_branch: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -375,14 +348,6 @@ mod tests {
             (
                 "auto_run_plan",
                 UpdateTaskParams::for_task(TaskId(1)).auto_run_plan(true),
-            ),
-            (
-                "schedule_interval_secs",
-                UpdateTaskParams::for_task(TaskId(1)).schedule_interval_secs(Some(600)),
-            ),
-            (
-                "pinned_branch",
-                UpdateTaskParams::for_task(TaskId(1)).pinned_branch(Some("staging".to_string())),
             ),
         ];
         for (expected, params) in &cases {

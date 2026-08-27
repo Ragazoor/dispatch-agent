@@ -334,8 +334,6 @@ impl TuiRuntime {
             wrap_up_mode,
             url,
             resolved_url,
-            schedule_interval_secs,
-            pinned_branch,
         } = applied;
 
         let mut params = UpdateTaskParams::for_task(task_id)
@@ -346,9 +344,7 @@ impl TuiRuntime {
             .repo_path(repo_path.clone())
             .tag(Some(tag))
             .base_branch(base_branch.clone())
-            .wrap_up_mode(wrap_up_mode)
-            .schedule_interval_secs(schedule_interval_secs)
-            .pinned_branch(pinned_branch.clone());
+            .wrap_up_mode(wrap_up_mode);
         // Only forward a url change when the edit actually altered it.
         if let Some(url_update) = url {
             params = params.url(url_update);
@@ -379,8 +375,6 @@ impl TuiRuntime {
                 base_branch,
                 wrap_up_mode,
                 url: resolved_url,
-                schedule_interval_secs,
-                pinned_branch,
             },
         )))
     }
@@ -729,7 +723,6 @@ mod tests {
             todo_svc: Arc::new(crate::service::TodoService::new(todo_db)),
             feed_runner: Some(feed_runner),
             // Never started by these fixtures — see the field's doc comment.
-            scheduler_runner: None,
             feed_sync_guard,
             feed_invalidate_tx: None,
             learning_svc: Arc::new(crate::service::MockLearningService),
@@ -846,8 +839,6 @@ mod tests {
 
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();

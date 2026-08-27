@@ -410,24 +410,6 @@ pub struct Task {
     /// task, used to detect an abandoned shell past `SHELL_STALE_THRESHOLD`.
     /// `None` when `live_shells == 0`.
     pub oldest_live_shell_started_at: Option<DateTime<Utc>>,
-    /// Cadence at which `SchedulerRunner` redispatches this task while it is
-    /// idle. `None` — the default for every task — means not scheduled, and
-    /// the scheduler never looks at it. Independent of `pinned_branch`.
-    pub schedule_interval_secs: Option<i64>,
-    /// An existing branch this task's worktree checks out *literally*, instead
-    /// of the usual disposable `<id>-<slug>` branch. Selects
-    /// [`crate::dispatch::worktree::BaseRef::Pinned`] at dispatch time.
-    /// Independent of `schedule_interval_secs`, though the pipeline use case
-    /// sets both.
-    pub pinned_branch: Option<String>,
-    /// `pinned_branch`'s tip as of the last *successful* promotion. Written
-    /// only on success, never speculatively — that is what makes retry fall out
-    /// for free: an incomplete tick leaves this stale, so the next tick still
-    /// sees the branch as unprocessed and runs again.
-    pub last_processed_sha: Option<String>,
-    /// Wallclock of the scheduler's last look at this task, whether or not it
-    /// dispatched. Drives the elapsed-time gate, mirroring `Epic.last_run`.
-    pub last_scheduled_check_at: Option<DateTime<Utc>>,
 }
 
 impl Task {
@@ -571,10 +553,6 @@ where
 pub enum DispatchMode {
     Dispatch,
     Research,
-    /// A scheduled pipeline tick. Never returned by [`DispatchMode::for_task`]
-    /// — it is not a property of the task's tag or plan, it is the scheduler
-    /// choosing it explicitly (the same way the retry path picks its mode).
-    Pipeline,
 }
 
 impl DispatchMode {
@@ -582,7 +560,6 @@ impl DispatchMode {
         match self {
             DispatchMode::Dispatch => "Dispatch",
             DispatchMode::Research => "Research",
-            DispatchMode::Pipeline => "Pipeline",
         }
     }
 
@@ -1978,10 +1955,6 @@ pub(in crate::models) mod model_tests {
             stop_pending: false,
             live_shells: 0,
             oldest_live_shell_started_at: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-            last_processed_sha: None,
-            last_scheduled_check_at: None,
         }
     }
 

@@ -196,8 +196,6 @@ pub(super) async fn make_runtime(
         epic_svc: Arc::new(crate::service::EpicService::new(store.clone())),
         todo_svc: Arc::new(crate::service::TodoService::new(db.clone())),
         feed_runner: Some(feed_runner),
-        // Never started by these fixtures — see the field's doc comment.
-        scheduler_runner: None,
         feed_invalidate_tx,
         feed_sync_guard,
         learning_svc: Arc::new(crate::service::MockLearningService),
@@ -249,8 +247,6 @@ async fn create_task_returning(
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await?;
     db.get_task(id)
@@ -822,13 +818,10 @@ mod base_branch_history_and_task_exec {
         app.update(Message::Input(
             crate::tui::messages::InputMessage::SubmitBaseBranch("develop".to_string()),
         ));
-        app.update(Message::Input(
-            crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-        ));
-        // The schedule gate is the form's last step; declining it is what commits
-        // the creation (tasks.allium: CreateTask, "The schedule step").
+        // The wrap-up step is the form's last one; submitting it commits the
+        // creation (tasks.allium: CreateTask).
         let cmds = app.update(Message::Input(
-            crate::tui::messages::InputMessage::SubmitScheduleGate(false),
+            crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
         ));
 
         assert!(
@@ -909,8 +902,6 @@ mod base_branch_history_and_task_exec {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();
@@ -937,8 +928,6 @@ mod base_branch_history_and_task_exec {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();
@@ -3361,8 +3350,6 @@ mod spawn_refresh_from_db_via_msg_tx {
             base_branch: "main",
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -4542,8 +4529,6 @@ mod prepare_inputs {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();
@@ -4904,8 +4889,6 @@ mod spawn_refresh_epic {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -5049,8 +5032,6 @@ mod epic_group_by_repo_migration {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();
@@ -5209,8 +5190,6 @@ mod event_loop {
                 base_branch: "main",
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();

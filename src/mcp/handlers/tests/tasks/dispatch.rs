@@ -233,8 +233,6 @@ impl ChainFixture {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             })
             .await
             .unwrap();
@@ -1041,8 +1039,6 @@ async fn wrap_up_rebase_preserves_tmux_window() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1113,8 +1109,6 @@ async fn wrap_up_rebase_conflict_sets_conflict_substatus() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1186,8 +1180,6 @@ async fn wrap_up_rebase_clears_conflict_substatus_on_non_conflict_error() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1393,8 +1385,6 @@ async fn dispatch_task_returns_error_for_non_backlog_task() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();

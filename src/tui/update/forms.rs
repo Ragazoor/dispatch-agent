@@ -5,35 +5,6 @@ use crate::models::{TaskTag, WrapUpMode};
 use super::super::types::*;
 use super::super::{filtered_repos, has_new_repo_option, App, PendingAction};
 
-/// Prompts for the creation form's schedule tail. Declared once and read by
-/// the status bar, the in-panel form renderer and the handlers below, so the
-/// three cannot advertise three different key sets for one step — the drift
-/// the tag picker's hint text already demonstrates (tasks.allium: CreateTask).
-pub(in crate::tui) const SCHEDULE_GATE_PROMPT: &str = "Schedule: [Enter] none  [s] configure";
-pub(in crate::tui) const PINNED_BRANCH_PROMPT: &str =
-    "Pinned branch ([Enter] normal per-task branch): ";
-
-/// A function rather than a const because it quotes
-/// [`crate::models::INTERVAL_EXAMPLES`], and the examples must come from the
-/// parser's own table rather than be retyped here — a prompt advertising a
-/// suffix the parser rejects is worse than no prompt.
-pub(in crate::tui) fn schedule_interval_prompt() -> String {
-    format!(
-        "Schedule interval ({}; [Enter] none): ",
-        crate::models::INTERVAL_EXAMPLES
-    )
-}
-
-/// The message the interval step shows when the typed value does not parse.
-/// Shares its example set with the prompt above and with the editor sections'
-/// [`crate::editor`] failure message.
-fn interval_rejected_message(value: &str) -> String {
-    format!(
-        "Not a valid interval: {value:?} — try {} ([Enter] to skip)",
-        crate::models::INTERVAL_EXAMPLES
-    )
-}
-
 impl App {
     pub(in crate::tui) fn handle_copy_task(&mut self) -> Vec<Command> {
         let task = match self.selected_task() {
@@ -91,8 +62,6 @@ impl App {
                 tag: None,
                 base_branch: "main".to_string(),
                 wrap_up_mode: None,
-                schedule_interval_secs: None,
-                pinned_branch: None,
             });
             self.input.mode = InputMode::InputTag;
             self.set_status(
@@ -181,64 +150,7 @@ impl App {
         if let (Some(ref mut draft), Some(m)) = (self.input.task_draft.as_mut(), mode) {
             draft.wrap_up_mode = Some(m);
         }
-        self.advance_step(InputMode::InputScheduleGate, SCHEDULE_GATE_PROMPT)
-    }
-
-    /// The gate's answer: `false` (Enter) creates the task straight away with
-    /// neither scheduling field set — the common path, and the reason the two
-    /// text steps are gated at all. `true` (`s`) opens them.
-    pub(in crate::tui) fn handle_submit_schedule_gate(&mut self, configure: bool) -> Vec<Command> {
-        if !configure {
-            return self.finish_task_creation();
-        }
-        self.advance_step(
-            InputMode::InputScheduleInterval,
-            &schedule_interval_prompt(),
-        )
-    }
-
-    /// Parse the typed cadence and advance to the pinned-branch step.
-    ///
-    /// The one form step that can refuse to advance on non-empty input. An
-    /// unparseable value leaves the mode and the buffer untouched so it can be
-    /// corrected in place, because this value drives a background loop the
-    /// user will not be watching — coercing or dropping it would schedule
-    /// something other than what was asked for (tasks.allium: CreateTask).
-    pub(in crate::tui) fn handle_submit_schedule_interval(
-        &mut self,
-        value: String,
-    ) -> Vec<Command> {
-        if !value.is_empty() {
-            let Some(secs) = crate::models::parse_interval_secs(&value) else {
-                self.set_status(interval_rejected_message(&value));
-                return vec![];
-            };
-            if let Some(ref mut draft) = self.input.task_draft {
-                draft.schedule_interval_secs = Some(secs);
-            }
-        }
-        self.advance_step(InputMode::InputPinnedBranch, PINNED_BRANCH_PROMPT)
-    }
-
-    /// The form's terminal step. The branch name is taken literally, with no
-    /// existence check — see tasks.allium: CreateTask for why that check
-    /// cannot usefully happen here.
-    pub(in crate::tui) fn handle_submit_pinned_branch(&mut self, value: String) -> Vec<Command> {
-        if let Some(ref mut draft) = self.input.task_draft {
-            draft.pinned_branch = (!value.is_empty()).then_some(value);
-        }
-        self.input.clear_buffer();
         self.finish_task_creation()
-    }
-
-    /// Move the creation form to its next step: drop whatever the last step
-    /// typed, switch mode, and show the new step's prompt. The three lines
-    /// every step handler ended with, written once.
-    fn advance_step(&mut self, mode: InputMode, prompt: &str) -> Vec<Command> {
-        self.input.clear_buffer();
-        self.input.mode = mode;
-        self.set_status(prompt.to_string());
-        vec![]
     }
 
     pub(in crate::tui) fn handle_submit_tag(&mut self, tag: Option<TaskTag>) -> Vec<Command> {

@@ -150,6 +150,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (87, migrate_v87_add_peer_message_columns),
     (88, migrate_v88_add_scheduling_fields),
     (89, migrate_v89_allow_pr_closed_for_review),
+    (90, migrate_v90_drop_scheduling_fields),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1719,23 +1720,15 @@ fn migrate_v87_add_peer_message_columns(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The generic scheduling primitive (task #4203). All four columns are
-/// nullable and null-by-default, so a task that never opts in behaves exactly
-/// as before:
+/// The generic scheduling primitive (task #4203): `schedule_interval_secs`,
+/// `pinned_branch`, `last_processed_sha` and `last_scheduled_check_at`, all
+/// nullable and null-by-default.
 ///
-/// - `schedule_interval_secs` — cadence at which `SchedulerRunner` redispatches
-///   this task while it is idle. Null means "not scheduled".
-/// - `pinned_branch` — an EXISTING branch the task's worktree checks out
-///   literally, instead of the usual disposable `<id>-<slug>` branch. Drives
-///   [`crate::dispatch::worktree::BaseRef::Pinned`].
-/// - `last_processed_sha` — `pinned_branch`'s tip as of the last *successful*
-///   promotion. Only ever written on success, which is what makes retry fall
-///   out for free: a tick that never completed leaves this stale, so the next
-///   tick still sees the branch as unprocessed.
-/// - `last_scheduled_check_at` — wallclock of the scheduler's last look at this
-///   task, dispatch or skip alike. Mirrors `Epic.last_run` for feeds.
-///
-/// See `docs/superpowers/specs/2026-08-16-staging-pipeline-scheduled-agents-design.md`.
+/// **Historical.** The feature was reverted in task #4407 and v90 drops all
+/// four columns again — nothing in the codebase reads them, and the design
+/// document this once cited is gone. It stays because the migration chain is
+/// append-only: a database that has never migrated still walks through here on
+/// its way to v90.
 pub(super) fn migrate_v88_add_scheduling_fields(conn: &Connection) -> Result<()> {
     for (column, ty) in [
         ("schedule_interval_secs", "INTEGER"),
@@ -1748,18 +1741,58 @@ pub(super) fn migrate_v88_add_scheduling_fields(conn: &Connection) -> Result<()>
                 .with_context(|| format!("migration v88: add {column}"))?;
         }
     }
-    // Partial index for `list_scheduled_tasks`, which the scheduler runs every
-    // couple of seconds. Without it the only usable index is `idx_tasks_status`,
-    // and `status IN ('backlog', 'done')` selects the two largest buckets on any
-    // real board — so the scan would grow with accumulated done tasks and
-    // almost always return nothing. Partial on the opt-in column, so it stays
-    // the size of the scheduled-task count (typically zero) and costs nothing
-    // to maintain for every task that never opts in.
+    // Partial index for the scheduler's every-few-seconds poll. Dropped again
+    // by v90 along with the columns; see this function's doc comment.
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_tasks_scheduled ON tasks(status) \
          WHERE schedule_interval_secs IS NOT NULL",
     )
     .context("migration v88: add idx_tasks_scheduled")?;
+    Ok(())
+}
+
+/// Undo v88: drop the four scheduling columns and the partial index over them.
+///
+/// The scheduling primitive (`SchedulerRunner`, `pinned_branch` worktrees, the
+/// pipeline dispatch mode) was reverted wholesale in task #4407 — nothing reads
+/// these columns any more, and a later scheduling abstraction will be designed
+/// from scratch rather than grown from them.
+///
+/// v88 itself is left in place and untouched: the chain is append-only, so a
+/// database that has never migrated must still walk through v88's ALTERs before
+/// arriving here. That costs one pass over a table SQLite rewrites anyway.
+///
+/// The index is dropped BEFORE the columns, and that order is load-bearing:
+/// SQLite refuses `DROP COLUMN` on a column any index mentions, and
+/// `idx_tasks_scheduled` is partial on `schedule_interval_secs`.
+///
+/// v72's two feed-subtree triggers are left alone, and that is deliberate
+/// rather than an oversight. `DROP COLUMN` makes SQLite re-resolve EVERY
+/// trigger on the table, not only those naming the dropped column — and a
+/// trigger body is never resolved when it is *created*, so a `tasks` missing a
+/// column some trigger names carries a latent error that surfaces here, as a
+/// failed migration on startup. Both trigger bodies name only columns that
+/// survive this migration, so they re-resolve cleanly and come through
+/// untouched; `migration_v90_leaves_the_feed_subtree_triggers_intact` pins
+/// that. Dropping and recreating them would be both unnecessary and wrong —
+/// it costs the uniqueness invariant for the width of the migration.
+///
+/// Every step is guarded so the migration is idempotent and safe on a database
+/// that somehow predates v88's columns.
+pub(super) fn migrate_v90_drop_scheduling_fields(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP INDEX IF EXISTS idx_tasks_scheduled")
+        .context("migration v90: drop idx_tasks_scheduled")?;
+    for column in [
+        "schedule_interval_secs",
+        "pinned_branch",
+        "last_processed_sha",
+        "last_scheduled_check_at",
+    ] {
+        if column_exists(conn, "tasks", column) {
+            conn.execute(&format!("ALTER TABLE tasks DROP COLUMN {column}"), [])
+                .with_context(|| format!("migration v90: drop {column}"))?;
+        }
+    }
     Ok(())
 }
 

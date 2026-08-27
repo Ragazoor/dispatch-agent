@@ -303,9 +303,12 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
     lines
 }
 
-/// The steps answered before the wrap-up picker, restated above whichever step
-/// is active. Shared by the whole tail of the creation form so the four
-/// summary lines are written once rather than once per step.
+/// The four steps answered before the wrap-up picker, restated above it.
+///
+/// Split out rather than inlined into its one caller because the wrap-up
+/// picker is the creation form's *last* step, and a step added after it would
+/// want exactly this list — which is also why the sibling step renderers above
+/// build their settled lines inline: none of them is the tail.
 fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
     let draft = app.input.task_draft.as_ref();
     let title = draft.map(|d| d.title.clone()).unwrap_or_default();
@@ -328,36 +331,17 @@ fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
     ]
 }
 
-/// The wrap-up answer as a settled summary line, for the steps after it.
-fn answered_wrap_up_line(app: &App, completed: Style) -> Line<'static> {
-    let wrap_up = app
-        .input
-        .task_draft
-        .as_ref()
-        .and_then(|d| d.wrap_up_mode)
-        .map(|m| m.as_str())
-        .unwrap_or("none");
-    Line::from(Span::styled(format!("  Wrap-up: {wrap_up}"), completed))
-}
-
 /// Close off a creation-form step page: the active line, a blank, the Esc hint.
 ///
-/// Every tail step has the same shape — settled summaries, one active line,
-/// then this footer — so the footer is written once. `active` is the one part
-/// that genuinely differs: a styled span for the single-key pickers, a
-/// [`caret_field`] for the free-text steps.
+/// A tail step is settled summaries, one active line, then this footer.
+/// `active` is the part that differs per step — a styled span for a
+/// single-key picker, a [`caret_field`] for a free-text one. Only the wrap-up
+/// picker uses it today; it is the shape a step added after it would take.
 fn form_step_page<'a>(mut settled: Vec<Line<'a>>, active: Line<'a>, hint: Style) -> Vec<Line<'a>> {
     settled.push(active);
     settled.push(Line::from(""));
     settled.push(Line::from(Span::styled("  [Esc] cancel", hint)));
     settled
-}
-
-/// The two-space indent every prompt is rendered with inside the form panel.
-/// The prompt constants themselves are unindented because the status bar shows
-/// them flush.
-fn indented(prompt: &str) -> String {
-    format!("  {prompt}")
 }
 
 pub(in crate::tui) fn input_wrap_up_mode_lines(
@@ -374,63 +358,6 @@ pub(in crate::tui) fn input_wrap_up_mode_lines(
         )),
         hint,
     )
-}
-
-/// The gate: one keypress deciding whether the two scheduling fields are
-/// configured at all. Enter is the common answer, so it is listed first.
-pub(in crate::tui) fn input_schedule_gate_lines(
-    app: &App,
-    completed: Style,
-    active: Style,
-    hint: Style,
-) -> Vec<Line<'static>> {
-    let mut settled = answered_step_lines(app, completed);
-    settled.push(answered_wrap_up_line(app, completed));
-    form_step_page(
-        settled,
-        Line::from(Span::styled(
-            indented(crate::tui::update::SCHEDULE_GATE_PROMPT),
-            active,
-        )),
-        hint,
-    )
-}
-
-pub(in crate::tui) fn input_schedule_interval_lines<'a>(
-    app: &'a App,
-    area: Rect,
-    completed: Style,
-    active: Style,
-    hint: Style,
-) -> Vec<Line<'a>> {
-    let mut settled = answered_step_lines(app, completed);
-    settled.push(answered_wrap_up_line(app, completed));
-    let prompt = indented(&crate::tui::update::schedule_interval_prompt());
-    form_step_page(settled, caret_field(&prompt, app, area, active), hint)
-}
-
-pub(in crate::tui) fn input_pinned_branch_lines<'a>(
-    app: &'a App,
-    area: Rect,
-    completed: Style,
-    active: Style,
-    hint: Style,
-) -> Vec<Line<'a>> {
-    let mut settled = answered_step_lines(app, completed);
-    settled.push(answered_wrap_up_line(app, completed));
-    let interval = app
-        .input
-        .task_draft
-        .as_ref()
-        .and_then(|d| d.schedule_interval_secs)
-        .map(crate::models::format_interval_secs)
-        .unwrap_or_else(|| "none".to_string());
-    settled.push(Line::from(Span::styled(
-        format!("  Schedule: {interval}"),
-        completed,
-    )));
-    let prompt = indented(crate::tui::update::PINNED_BRANCH_PROMPT);
-    form_step_page(settled, caret_field(&prompt, app, area, active), hint)
 }
 
 fn repo_picker_lines<'a>(

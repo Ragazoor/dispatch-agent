@@ -19,10 +19,8 @@ mod tests;
 
 use super::input_form::{
     confirm_retry_lines, input_base_branch_lines, input_description_lines,
-    input_epic_description_lines, input_epic_title_lines, input_pinned_branch_lines,
-    input_repo_path_lines, input_schedule_gate_lines, input_schedule_interval_lines,
-    input_tag_lines, input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines,
-    quick_dispatch_lines,
+    input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
+    input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
 };
 use super::palette::{
     header_label_focused, header_label_unfocused, mix, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
@@ -527,13 +525,6 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
         InputMode::InputRepoPath => input_repo_path_lines(app, area, completed, active, hint),
         InputMode::InputBaseBranch => input_base_branch_lines(app, area, completed, active, hint),
         InputMode::InputWrapUpMode => input_wrap_up_mode_lines(app, completed, active, hint),
-        InputMode::InputScheduleGate => input_schedule_gate_lines(app, completed, active, hint),
-        InputMode::InputScheduleInterval => {
-            input_schedule_interval_lines(app, area, completed, active, hint)
-        }
-        InputMode::InputPinnedBranch => {
-            input_pinned_branch_lines(app, area, completed, active, hint)
-        }
         InputMode::QuickDispatch => quick_dispatch_lines(app, area, active, hint),
         InputMode::MainSessionDir => main_session_dir_lines(app, area, active, hint),
         InputMode::ConfirmRetry(id) => confirm_retry_lines(app, *id),

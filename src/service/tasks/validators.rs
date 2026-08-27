@@ -63,12 +63,6 @@ pub(super) fn build_task_patch<'a>(
     if let Some(v) = params.auto_run_plan {
         patch = patch.auto_run_plan(v);
     }
-    if let Some(inner) = params.schedule_interval_secs {
-        patch = patch.schedule_interval_secs(inner);
-    }
-    if let Some(inner) = params.pinned_branch.as_ref() {
-        patch = patch.pinned_branch(inner.as_deref());
-    }
     patch
 }
 

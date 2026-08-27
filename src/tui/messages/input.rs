@@ -20,11 +20,6 @@ pub enum InputMessage {
     SubmitTag(Option<TaskTag>),
     SubmitBaseBranch(String),
     SubmitWrapUpMode(Option<WrapUpMode>),
-    /// The schedule gate's answer: `false` = create now with neither field
-    /// set, `true` = open the interval and pinned-branch steps.
-    SubmitScheduleGate(bool),
-    SubmitScheduleInterval(String),
-    SubmitPinnedBranch(String),
     InputChar(char),
     InputBackspace,
     InputDeleteForward,
@@ -55,13 +50,6 @@ impl InputMessage {
             InputMessage::SubmitTag(tag) => app.handle_submit_tag(tag),
             InputMessage::SubmitBaseBranch(value) => app.handle_submit_base_branch(value),
             InputMessage::SubmitWrapUpMode(mode) => app.handle_submit_wrap_up_mode(mode),
-            InputMessage::SubmitScheduleGate(configure) => {
-                app.handle_submit_schedule_gate(configure)
-            }
-            InputMessage::SubmitScheduleInterval(value) => {
-                app.handle_submit_schedule_interval(value)
-            }
-            InputMessage::SubmitPinnedBranch(value) => app.handle_submit_pinned_branch(value),
             InputMessage::InputChar(c) => app.handle_input_char(c),
             InputMessage::InputBackspace => app.handle_input_backspace(),
             InputMessage::InputDeleteForward => app.handle_input_delete_forward(),

@@ -26,7 +26,7 @@ given {
 -- == Task Creation ==
 
 rule CreateTask {
-    when: CreateTask(title, description, repo_path, plan?, epic?, tag?, sort_order?, base_branch?, wrap_up_mode?, auto_run_plan?, schedule_interval_secs?, pinned_branch?)
+    when: CreateTask(title, description, repo_path, plan?, epic?, tag?, sort_order?, base_branch?, wrap_up_mode?, auto_run_plan?)
 
     ensures: core/Task.created(
         title: title,
@@ -41,8 +41,6 @@ rule CreateTask {
         base_branch: base_branch ?? core/config.default_branch,
         wrap_up_mode: wrap_up_mode,
         auto_run_plan: auto_run_plan ?? false,
-        schedule_interval_secs: schedule_interval_secs,
-        pinned_branch: pinned_branch,
         created_at: now,
         updated_at: now
     )
@@ -71,51 +69,6 @@ rule CreateTask {
         -- step, after InputBaseBranch) or via the MCP create_task tool.
         -- When null, the wrap-up path is decided at wrap-up time.
         --
-        -- == The schedule step (TUI creation form tail) ==
-        -- schedule_interval_secs and pinned_branch are set from the TUI
-        -- creation form's LAST step, after InputWrapUpMode, or via the MCP
-        -- create_task tool. Both default to null: a task nobody schedules is
-        -- indistinguishable from every task created before these fields
-        -- existed.
-        --
-        -- The step is GATED rather than unconditional. After the wrap-up
-        -- picker the form shows a single-keypress gate
-        -- ("Schedule: [Enter] none  [s] configure"), which is the same
-        -- single-key-picker shape as the tag and wrap-up steps:
-        --   - Enter (or any unrecognised key falling through to Enter's
-        --     meaning is NOT the rule -- an unrecognised key is ignored and
-        --     the gate stays open, exactly as the tag picker behaves) creates
-        --     the task immediately with both fields null.
-        --   - "s" opens two free-text steps in order: the interval, then the
-        --     pinned branch. Only after the second does the task get created.
-        --   - Esc cancels creation outright, like every other form step.
-        -- The gate exists because scheduling is rare and creation is
-        -- frequent: two unconditional text steps would tax every task created
-        -- with two extra keypresses for a field almost none of them set. The
-        -- gate costs one keypress instead, and only the scheduling case pays
-        -- for the rest.
-        --
-        -- Both text steps render the shared TextInputField surface
-        -- (dispatch.allium), not a picker: neither field has a candidate list
-        -- to fuzzy-match against, so every printable character is literal
-        -- text and no key is a select shortcut. Enter on an empty buffer
-        -- means "leave this one null" and advances, so a user who takes the
-        -- "s" branch may still set only one of the two.
-        --
-        -- The interval is typed using the shared interval-literal grammar
-        -- (core.allium: "How a human types an interval") -- bare seconds or a
-        -- s/m/h/d suffix, strictly positive. Input that does not parse is
-        -- REJECTED IN PLACE: an error is shown and the step stays open with
-        -- the buffer intact, rather than being coerced or silently dropped.
-        -- This is the one form step that can refuse to advance on non-empty
-        -- input, and it refuses rather than accepting garbage because the
-        -- value drives a background loop the user will not be watching.
-        --
-        -- pinned_branch takes the branch name literally, with no validation
-        -- that the branch exists. The check cannot be usefully done here (the
-        -- branch may be created before the first scheduled run) and its
-        -- absence is caught at dispatch time -- see dispatch.allium:
-        -- PinnedWorktreeBranchIsNeverDerived.
         -- auto_run_plan defaults to false. When true, a dispatched agent
         -- with a plan skips the "summarize and ask permission" step (see
         -- dispatch.allium). Set by decompose-review's create_task calls,
@@ -241,11 +194,6 @@ rule CreateQuickTask {
         -- refs/remotes/origin/HEAD` against repo_path, falling back to
         -- "main" when origin/HEAD is unavailable. This prevents
         -- dispatch failures on repos whose default branch is not main.
-        -- schedule_interval_secs and pinned_branch are always null here.
-        -- Quick dispatch runs no form, so it never reaches CreateTask's
-        -- schedule gate — and an immediate one-shot agent is the opposite of
-        -- a recurring one. A quick task that should recur is scheduled after
-        -- the fact, through the task editor or update_task.
         -- AgentLaunched fires immediately after creation: the task goes
         -- Backlog -> Running with a worktree and tmux window provisioned,
         -- and — since QuickDispatchTrustGate — behind the same repo-trust
@@ -981,16 +929,8 @@ rule CopyTask {
         -- (decompose-review) rather than being a human TUI preference.
         -- The new task is a clean backlog item with no agent history.
         --
-        -- schedule_interval_secs and pinned_branch are NOT copied either.
-        -- Both are properties of one scheduled job, not preferences: two
-        -- tasks polling the same pinned branch on the same cadence would
-        -- double-dispatch it, so the copy starts unscheduled and the copy
-        -- flow's own schedule gate (below) is where the user opts back in.
-        --
         -- The copy flow runs the tail of the manual creation form:
-        -- InputRepoPath -> InputBaseBranch -> InputWrapUpMode -> the schedule
-        -- gate (see CreateTask's guidance; the copy pays the same single
-        -- keypress, and reaches the two text steps only via "s"). The user is
+        -- InputRepoPath -> InputBaseBranch -> InputWrapUpMode. The user is
         -- prompted to confirm or edit the repo_path before the task is
         -- created (the source's repo_path is pre-filled as default).
         -- base_branch is NOT copied from the source task and is NOT taken
@@ -1016,38 +956,14 @@ rule EditTask {
     -- run with no shell, so `EDITOR="vim -p"` works) — with a
     -- structured file containing the task's
     -- title, description, repo_path, status, plan, tag, base_branch,
-    -- wrap_up_mode, url, url_type, schedule_interval_secs and pinned_branch.
+    -- wrap_up_mode, url and url_type.
     -- The sections are delimited by `--- SECTION ---` markers
     -- (TITLE, DESCRIPTION, REPO_PATH, STATUS, PLAN, TAG, BASE_BRANCH,
-    -- WRAP_UP_MODE, URL, URL_TYPE, SCHEDULE_INTERVAL_SECS, PINNED_BRANCH).
+    -- WRAP_UP_MODE, URL, URL_TYPE).
     -- The user edits the file; on save, fields are parsed back.
     -- Empty title/description/repo_path retain their previous values.
     -- Empty plan or tag clears the field. Empty base_branch retains the
     -- previous value. Empty wrap_up_mode clears the preference.
-    -- Empty SCHEDULE_INTERVAL_SECS unschedules the task; empty PINNED_BRANCH
-    -- unpins it. Emptying a section is how each is turned off, the same
-    -- clear-on-empty convention EditEpic's feed sections use -- and the only
-    -- way to turn scheduling off from the editor, since there is no "off"
-    -- keyword.
-    --
-    -- SCHEDULE_INTERVAL_SECS accepts the shared interval-literal grammar
-    -- (core.allium: "How a human types an interval"), so "10m" and "600" are
-    -- the same edit. The section is WRITTEN back as bare seconds, so a
-    -- suffixed value the user typed reappears unsuffixed on the next open;
-    -- that is intended, not a round-trip bug -- seconds are what the column
-    -- holds, and re-rendering the user's spelling would mean storing it.
-    -- An unparseable value follows the same rule as the enum-ish sections
-    -- below: no value, a recorded parse error, and -- because "no value"
-    -- means clear for this field -- the task is UNSCHEDULED. This is the
-    -- sharp edge of the clear-on-empty convention: a typo in the interval
-    -- silently stops the schedule rather than preserving it. It is accepted
-    -- for consistency with FEED_INTERVAL_SECS, which has always behaved this
-    -- way, and it is not silent in practice -- the parse error is surfaced as
-    -- a status message and the card's scheduled badge disappears.
-    --
-    -- PINNED_BRANCH is free text taken literally, with no existence check
-    -- (see CreateTask's schedule-step guidance for why).
-    --
     -- The enum-ish sections (STATUS, TAG, WRAP_UP_MODE, URL_TYPE) all share
     -- one parse rule: an empty section and an unparseable section are
     -- treated identically — the section yields no value. Unparseable input
@@ -1106,9 +1022,6 @@ rule EditTask {
         else: task.tag = null
         if edited.base_branch != "": task.base_branch = edited.base_branch
         task.wrap_up_mode = edited.wrap_up_mode
-        task.schedule_interval_secs = edited.schedule_interval_secs
-        if edited.pinned_branch != "": task.pinned_branch = edited.pinned_branch
-        else: task.pinned_branch = null
         -- url updated from the URL/URL_TYPE sections per the semantics
         -- in the comment above; left untouched when unchanged.
         let desired_url =

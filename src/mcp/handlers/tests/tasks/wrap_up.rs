@@ -54,8 +54,6 @@ async fn wrap_up_rejects_backlog_task() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -99,8 +97,6 @@ async fn wrap_up_accepts_running_blocked_task() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -157,8 +153,6 @@ async fn wrap_up_accepts_running_active_task() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -217,8 +211,6 @@ async fn wrap_up_rebase_response_demands_exit_session_imperatively() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -288,8 +280,6 @@ async fn wrap_up_task_no_worktree() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -323,8 +313,6 @@ async fn wrap_up_invalid_action() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -376,8 +364,6 @@ async fn wrap_up_rebase_returns_started() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -486,8 +472,6 @@ async fn wrap_up_done_returns_exit_token() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -564,8 +548,6 @@ async fn wrap_up_pr_defers_review_and_url_to_exit_session() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -630,8 +612,6 @@ async fn wrap_up_pr_response_contains_token_and_no_retro_instruction() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -729,8 +709,6 @@ async fn create_wrappable_task(db: &Arc<dyn db::TaskStore>) -> crate::models::Ta
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -851,8 +829,6 @@ async fn wrap_up_pr_success_includes_verify_reminder_when_configured() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -955,8 +931,6 @@ async fn wrap_up_rebase_conflict_returns_error() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1019,8 +993,6 @@ async fn wrap_up_rebase_dirty_primary_worktree_returns_error() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1094,8 +1066,6 @@ async fn wrap_up_rebase_not_on_main_returns_error() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1143,8 +1113,6 @@ async fn update_task_status_recalculates_epic_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1306,8 +1274,6 @@ async fn seed_task_with_worktree(
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1778,8 +1744,6 @@ async fn wrap_up_rebase_does_not_kill_window() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2018,8 +1982,6 @@ async fn wrap_up_then_exit_session_end_to_end() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2128,8 +2090,6 @@ async fn wrap_up_done_defers_done_transition_to_exit_session() {
             tag: None,
             wrap_up_mode: Some(crate::models::WrapUpMode::Done),
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2235,8 +2195,6 @@ async fn wrap_up_done_recalculates_epic_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2316,8 +2274,6 @@ async fn wrap_up_pr_recalculates_epic_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -2433,8 +2389,6 @@ async fn dispatch_task_recalculates_epic_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();

@@ -115,23 +115,18 @@ pub(super) const TASK_COLUMNS: &str =
      created_at, updated_at, labels, last_pre_tool_use_at, last_notification_at, \
      last_peer_message_sent_at, last_peer_message_received_at, \
      wrap_up_mode, auto_run_plan, live_subagents, stop_pending, \
-     live_shells, oldest_live_shell_started_at, \
-     schedule_interval_secs, pinned_branch, last_processed_sha, last_scheduled_check_at";
+     live_shells, oldest_live_shell_started_at";
 
 /// The `SET` list every pre-provisioning claim applies — the one definition of
-/// what "a claim writes". Shared by all three claim statements
-/// (`try_claim_next_backlog_task`, `try_claim_backlog_task`,
-/// `try_claim_scheduled_task`), which differ only in their `WHERE`.
+/// what "a claim writes". Shared by both claim statements
+/// (`try_claim_next_backlog_task`, `try_claim_backlog_task`), which differ only
+/// in their `WHERE`.
 ///
 /// Binds `?1` = status, `?2` = sub_status, `?3` = the seeded
 /// `last_pre_tool_use_at`; the caller supplies `?4` onward in its own `WHERE`.
 /// That split is deliberate and matches [`STOP_FLIP_SET`] below: what a claim
 /// *writes* is one decision, and which rows it will accept is a different one
 /// per caller — widening a `WHERE` must never silently widen the others.
-///
-/// The three used to carry hand-copied copies of this string, kept in step by
-/// comments alone; the third copy arriving with scheduled dispatch is what
-/// made that worth fixing.
 pub(super) const CLAIM_SET: &str = "SET status = ?1, sub_status = ?2, \
      last_pre_tool_use_at = ?3, updated_at = datetime('now')";
 
@@ -256,10 +251,6 @@ pub(super) fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         stop_pending: row.get("stop_pending")?,
         live_shells: row.get("live_shells")?,
         oldest_live_shell_started_at: read_optional_datetime(row, "oldest_live_shell_started_at")?,
-        schedule_interval_secs: row.get("schedule_interval_secs")?,
-        pinned_branch: row.get("pinned_branch")?,
-        last_processed_sha: row.get("last_processed_sha")?,
-        last_scheduled_check_at: read_optional_datetime(row, "last_scheduled_check_at")?,
     })
 }
 

@@ -281,10 +281,6 @@ entity Task {
                                     -- has-plan addendum skips asking the dispatched
                                     -- agent to confirm before implementing (see
                                     -- dispatch.allium's build_prompt guidance)
-    schedule_interval_secs: Integer?  -- cadence at which this task is redispatched while idle; null (the default) means not scheduled and the scheduler never looks at it. See dispatch.allium: DispatchScheduledTask
-    pinned_branch: String?  -- an EXISTING branch this task's worktree checks out literally, instead of the disposable "<id>-<slug>" branch. Independent of schedule_interval_secs -- either may be set without the other, though the staging-pipeline case sets both. See dispatch.allium: PinnedWorktreeBranchIsNeverDerived
-    last_processed_sha: String?  -- pinned_branch's tip as of the last SUCCESSFUL promotion; null means nothing has been promoted yet. Written only on success, never speculatively -- that is what makes retry need no state of its own (see DispatchScheduledTask's guidance)
-    last_scheduled_check_at: Timestamp?  -- wallclock of the scheduler's last look at this task, whether or not it dispatched. Drives the elapsed-time gate, mirroring Epic.last_run for feeds
     created_at: Timestamp
     updated_at: Timestamp
 
@@ -733,10 +729,11 @@ config {
 
 -- == How a human types an interval ==
 --
--- Every user-facing surface that accepts a poll/redispatch cadence takes the
--- SAME literal grammar, so "10m" means the same thing wherever it is typed.
--- One grammar, stated once here, because two spellings of ten minutes in one
--- application is a bug waiting to be filed.
+-- Every user-facing surface that accepts a poll cadence takes the SAME literal
+-- grammar, so "10m" means the same thing wherever it is typed. One grammar,
+-- stated once here, because two spellings of ten minutes in one application is
+-- a bug waiting to be filed. Only one surface is bound by it today; the
+-- grammar is stated centrally so a second one cannot invent its own.
 --
 -- Grammar (case-insensitive, surrounding whitespace ignored):
 --
@@ -751,17 +748,15 @@ config {
 -- a negative ("-5"), zero in any unit ("0", "0m"), a fractional value
 -- ("1.5h"), a compound ("1h30m"), or any other text. Zero is rejected rather
 -- than treated as "off" because every surface already spells "off" as the
--- empty value, and a zero-second cadence would busy-loop the scheduler.
+-- empty value, and a zero-second cadence would busy-loop the feed runner.
 --
 -- A bare integer is seconds, and NOT because seconds are the friendly unit —
--- because that is what every stored column holds (Task.schedule_interval_secs,
--- Epic.feed_interval_secs) and what the pre-suffix surfaces already accepted.
+-- because that is what the stored column holds (Epic.feed_interval_secs) and
+-- what the pre-suffix surface already accepted.
 -- Keeping the bare form meaning seconds is what makes suffix support purely
 -- additive: no value a user typed before changes meaning.
 --
 -- Surfaces bound by this grammar:
---   - tasks.allium: CreateTask's schedule step (TUI creation form)
---   - tasks.allium: EditTask's SCHEDULE_INTERVAL_SECS section
 --   - epics.allium: EditEpic's FEED_INTERVAL_SECS section
 --
 -- NOT bound by it: the MCP/CLI surfaces, which take a JSON integer of seconds
@@ -769,28 +764,24 @@ config {
 --
 -- == KNOWN GAP: positivity is not enforced everywhere ==
 --
--- The strictly-positive rule above is a property of the GRAMMAR, so today it
--- binds only the three surfaces that parse a literal. The MCP integer path has
--- no lower bound: create_task/update_task accept schedule_interval_secs = 0,
--- and dispatch.allium's scheduler reads a non-positive interval as "every
--- tick". So the busy-loop the grammar refuses is still reachable, just not by
--- typing.
+-- Strict positivity is a property of the GRAMMAR above, so it binds only the
+-- surface that parses a literal. The MCP integer path has no lower bound:
+-- update_epic accepts feed_interval_secs = 0, and feeds.allium's poll loop
+-- reads a zero interval as "always due", so the busy-loop the grammar refuses
+-- is still reachable -- just not by typing.
 --
--- That split is wrong, and it is recorded here rather than quietly implied by
--- the carve-out above. Positivity is a domain invariant of the field, not a
--- spelling rule: it belongs in the task service's create/update validation,
--- where every entry point inherits it, leaving the grammar to only parse. The
--- fix is deliberately not folded into the TUI change that surfaced it, because
--- it changes what the MCP tools accept.
+-- That split is wrong, and it is recorded here rather than left implied by the
+-- carve-out above. Positivity is a domain invariant of the field, not a
+-- spelling rule: it belongs in the epic service's update validation, where
+-- every entry point inherits it, leaving the grammar to only parse.
 --
 -- == How an interval is displayed back ==
 --
--- Stored values are seconds, and the editor sections WRITE seconds back
+-- Stored values are seconds, and the editor section WRITES seconds back
 -- (unsuffixed), so an editor round-trip is lossless and unambiguous even
--- though "10m" was accepted on the way in. Only rendered indicators — where
--- space is tight and precision is not the point — humanise: the largest whole
--- unit that divides the value exactly, else seconds ("600" -> "10m",
--- "7200" -> "2h", "650" -> "650s").
+-- though "10m" was accepted on the way in. No surface renders a humanised
+-- cadence today; if one is added, it should show the largest whole unit that
+-- divides the value exactly, else seconds ("600" -> "10m", "650" -> "650s").
 
 ------------------------------------------------------------
 -- VisualColumn
@@ -1500,35 +1491,6 @@ value VisualColumn {
 -- losing the card's outer boundary, the second by losing board breadth.
 -- The trade is recorded here so that it is read rather than
 -- rediscovered.
---
--- == Scheduled badge ==
---
--- A task with schedule_interval_secs set carries a badge on its card's second
--- line: a clock glyph and the humanised cadence (⏱ 10m), in the same muted
--- chip style as Task.labels and rendered immediately before them. A task with
--- no schedule_interval_secs carries no badge at all — this is the ONLY thing
--- on the card that distinguishes a scheduled task from an ordinary one, since
--- a scheduled task sits idle in backlog between redispatches and is otherwise
--- pixel-identical to a task nobody has touched.
---
--- The cadence is humanised per "Interval literals" above (600 -> "10m").
--- pinned_branch gets no badge of its own: it is not a recurring behaviour a
--- glancing reader needs warning about, and a second chip on a line already
--- carrying the indicator plus labels would cost title-adjacent width. Like
--- base_branch and wrap_up_mode -- the other per-task settings the board does
--- not render -- it is read and written in the task editor
--- (tasks.allium: EditTask), which is the surface for a task's configuration.
---
--- Deliberately a chip and NOT a CardIndicator variant, even though the
--- indicator is the card's other second-line vocabulary. The indicator is a
--- single classification of the task's CURRENT lifecycle state, and every
--- variant of it must answer "Card border: cursor and state" — is this
--- alarming? Being scheduled is neither a lifecycle state nor alarming: it is
--- a standing property that coexists with running, review, stale and idle
--- alike. Folding it into the indicator would force it to displace whichever
--- state the card is actually in, which is exactly backwards — the badge is
--- most useful on an idle backlog card, and must not hide "⚠ crashed" on a
--- scheduled task whose last run died.
 --
 -- == Message flash ==
 --

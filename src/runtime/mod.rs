@@ -313,10 +313,6 @@ struct TuiRuntime {
     /// by refusing to start a new one while this slot is populated.
     editor_session: Arc<std::sync::Mutex<Option<editor::EditorSession>>>,
     feed_runner: Option<crate::feed::FeedRunner>,
-    /// Taken and started alongside `feed_runner`, for the same reason it is an
-    /// `Option`: a `TuiRuntime` built directly by a test must not spawn a
-    /// background loop.
-    scheduler_runner: Option<crate::scheduler::SchedulerRunner>,
     /// Fires the `FeedRunner`'s feed-command cache invalidation. Cloned from
     /// `feed_runner.epic_invalidate_tx()` at construction so both mutation-
     /// carrying MCP events (`Refresh` and `EpicChanged`) can reset the cache
@@ -508,23 +504,13 @@ impl TuiRuntime {
         // Build TuiRuntime.
         let (msg_tx, msg_rx) = mpsc::unbounded_channel::<Message>();
         let feed_runner =
-            crate::feed::FeedRunner::new(database.clone(), feed_notify_tx.clone(), runner.clone());
+            crate::feed::FeedRunner::new(database.clone(), feed_notify_tx, runner.clone());
         let feed_invalidate_tx = Some(feed_runner.epic_invalidate_tx());
         let feed_sync_guard = feed_runner.sync_guard();
         let task_svc = Arc::new(crate::service::TaskService::new(
             database.clone(),
             runner.clone(),
         ));
-        // Shares the runtime's own `task_svc`, deliberately: scheduled dispatch
-        // goes through the same seam as every other entry point, so it must
-        // also go through the same claim.
-        let scheduler_runner = crate::scheduler::SchedulerRunner::new(
-            database.clone(),
-            Arc::clone(&task_svc),
-            emb_svc.clone(),
-            feed_notify_tx,
-            runner.clone(),
-        );
         let runtime = TuiRuntime {
             task_svc,
             epic_svc: Arc::new(crate::service::EpicService::new(database.clone())),
@@ -534,7 +520,6 @@ impl TuiRuntime {
                 emb_svc.clone(),
             )),
             feed_runner: Some(feed_runner),
-            scheduler_runner: Some(scheduler_runner),
             feed_invalidate_tx,
             feed_sync_guard,
             feed_db: database.clone(),
@@ -749,9 +734,6 @@ async fn run_loop<B: Backend>(
     // runner being moved into its background task here.
     if let Some(feed_runner) = rt.feed_runner.take() {
         feed_runner.start();
-    }
-    if let Some(scheduler_runner) = rt.scheduler_runner.take() {
-        scheduler_runner.start();
     }
 
     execute_commands(app, startup_commands(), rt, terminal, key_rx).await?;

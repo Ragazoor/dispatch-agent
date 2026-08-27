@@ -164,8 +164,6 @@ async fn create_task_fixture_at(state: &Arc<McpState>, repo_path: &str) -> crate
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap()
@@ -201,8 +199,6 @@ async fn create_running_task_with_window_in(
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();

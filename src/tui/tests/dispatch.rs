@@ -1763,10 +1763,6 @@ fn quick_dispatch_status_uses_freshly_created_title() {
         stop_pending: false,
         live_shells: 0,
         oldest_live_shell_started_at: None,
-        schedule_interval_secs: None,
-        pinned_branch: None,
-        last_processed_sha: None,
-        last_scheduled_check_at: None,
     };
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Created {

@@ -2368,7 +2368,13 @@ async fn migrate_v51_drops_pr_workflow_states_table() {
 #[tokio::test]
 async fn migration_v38_feed_epic_columns() {
     let conn = Connection::open_in_memory().unwrap();
-    // Minimal v37 schema: just the tables that v38 ALTER TABLEs
+    // Minimal v37 schema: just the tables that v38 ALTER TABLEs, plus
+    // `epics.parent_epic_id` — a real v37 database has it (v34 added it), and
+    // v72's feed-subtree triggers name it. A fixture that omits it makes any
+    // later DROP COLUMN (or RENAME) on `tasks` fail: those re-resolve every
+    // trigger body on the table, and a trigger body is never resolved when it
+    // is created. ADD COLUMN does not re-resolve, which is why this fixture
+    // survived until v90.
     conn.execute_batch(
         "PRAGMA foreign_keys=OFF;
          PRAGMA user_version=37;
@@ -2391,6 +2397,7 @@ async fn migration_v38_feed_epic_columns() {
              description TEXT NOT NULL DEFAULT '',
              status TEXT NOT NULL DEFAULT 'backlog',
              sort_order INTEGER,
+             parent_epic_id INTEGER,
              updated_at TEXT NOT NULL DEFAULT (datetime('now')),
              created_at TEXT NOT NULL DEFAULT (datetime('now'))
          );",
@@ -2840,6 +2847,13 @@ async fn migration_v52_adds_verify_command_to_repo_paths() {
     {
         let conn = rusqlite::Connection::open(temp.path()).unwrap();
         conn.execute_batch(
+            // `epic_id`, `external_id` (v38) and `parent_epic_id` (v34) all
+            // predate v51, so a real database at this version has them. They
+            // are named by v72's feed-subtree triggers, and a later DROP COLUMN
+            // (or RENAME) on `tasks` re-resolves every trigger body on the
+            // table — so a fixture that omits them breaks migrations it has
+            // nothing to do with. ADD COLUMN does not re-resolve, which is why
+            // this fixture survived until v90.
             "CREATE TABLE tasks (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
@@ -2849,6 +2863,8 @@ async fn migration_v52_adds_verify_command_to_repo_paths() {
                 sub_status TEXT NOT NULL DEFAULT 'none',
                 base_branch TEXT NOT NULL DEFAULT 'main',
                 sort_order INTEGER,
+                epic_id INTEGER,
+                external_id TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -2857,6 +2873,7 @@ async fn migration_v52_adds_verify_command_to_repo_paths() {
                 title TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'backlog',
                 sort_order INTEGER,
+                parent_epic_id INTEGER,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3825,8 +3842,6 @@ async fn auto_run_plan_column_defaults_to_false() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -4109,4 +4124,123 @@ fn migration_v88_is_idempotent() {
     // time (the index is what the first run leaves behind).
     crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
     crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
+}
+
+/// v88's four columns and its partial index go away again: the scheduling
+/// feature was reverted wholesale (task #4407), so nothing reads them.
+///
+/// The index must be dropped BEFORE the columns — SQLite refuses `DROP COLUMN`
+/// on a column any index mentions, and `idx_tasks_scheduled` is partial on
+/// `schedule_interval_secs`.
+#[test]
+fn migration_v90_drops_the_scheduling_fields_and_index() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog'
+         );
+         INSERT INTO tasks(title) VALUES('pre-existing');",
+    )
+    .unwrap();
+    crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
+
+    crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn).unwrap();
+
+    let columns: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('tasks')")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    for name in [
+        "schedule_interval_secs",
+        "pinned_branch",
+        "last_processed_sha",
+        "last_scheduled_check_at",
+    ] {
+        assert!(
+            !columns.iter().any(|c| c == name),
+            "{name} must be dropped by migration v90"
+        );
+    }
+
+    let indexes: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master \
+             WHERE type = 'index' AND name = 'idx_tasks_scheduled'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexes, 0, "idx_tasks_scheduled must be dropped");
+
+    // The rows themselves survive — this drops columns, not data.
+    let title: String = conn
+        .query_row("SELECT title FROM tasks", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(title, "pre-existing");
+}
+
+/// `DROP COLUMN` makes SQLite re-resolve EVERY trigger on the table, not only
+/// the ones naming the dropped column — and a trigger body is not resolved
+/// when it is created. So `tasks` carrying v72's feed-subtree triggers is the
+/// interesting case for v90, and the triggers must still be there afterwards:
+/// dropping four unrelated columns may not cost the uniqueness invariant they
+/// enforce.
+#[test]
+fn migration_v90_leaves_the_feed_subtree_triggers_intact() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog',
+             epic_id INTEGER,
+             external_id TEXT
+         );
+         CREATE TABLE epics (
+             id INTEGER PRIMARY KEY,
+             parent_epic_id INTEGER,
+             feed_role TEXT NOT NULL DEFAULT 'none',
+             origin TEXT NOT NULL DEFAULT 'manual'
+         );",
+    )
+    .unwrap();
+    crate::db::migrations::migrate_v88_add_scheduling_fields(&conn).unwrap();
+    crate::db::migrations::migrate_v72_add_feed_task_subtree_unique_triggers(&conn).unwrap();
+
+    crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn)
+        .expect("v90 must survive the triggers SQLite re-resolves during DROP COLUMN");
+
+    let triggers: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' \
+             AND name IN ('enforce_feed_task_subtree_unique_insert', \
+                          'enforce_feed_task_subtree_unique_update')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(triggers, 2, "v90 must not cost the feed-subtree triggers");
+}
+
+/// Safe on a database that never ran v88's ALTERs (nothing to drop) and safe
+/// to run twice.
+#[test]
+fn migration_v90_is_idempotent_and_survives_a_missing_v88() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog'
+         );",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn).unwrap();
+    crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn).unwrap();
 }

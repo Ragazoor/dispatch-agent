@@ -29,8 +29,6 @@ struct OwnedCreateTaskRequest {
     tag: Option<crate::models::TaskTag>,
     wrap_up_mode: Option<WrapUpMode>,
     auto_run_plan: bool,
-    schedule_interval_secs: Option<i64>,
-    pinned_branch: Option<String>,
 }
 
 impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
@@ -47,8 +45,6 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             tag,
             wrap_up_mode,
             auto_run_plan,
-            schedule_interval_secs,
-            pinned_branch,
         } = r;
         Self {
             title: title.to_string(),
@@ -62,8 +58,6 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             tag,
             wrap_up_mode,
             auto_run_plan,
-            schedule_interval_secs,
-            pinned_branch: pinned_branch.map(str::to_string),
         }
     }
 }
@@ -152,10 +146,6 @@ struct OwnedTaskPatch {
     wrap_up_mode: Option<Option<WrapUpMode>>,
     auto_run_plan: Option<bool>,
     stop_pending: Option<bool>,
-    schedule_interval_secs: Option<Option<i64>>,
-    pinned_branch: Option<Option<String>>,
-    last_processed_sha: Option<Option<String>>,
-    last_scheduled_check_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
 }
 
 impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
@@ -182,10 +172,6 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             wrap_up_mode,
             auto_run_plan,
             stop_pending,
-            schedule_interval_secs,
-            pinned_branch,
-            last_processed_sha,
-            last_scheduled_check_at,
         } = *p;
         Self {
             status,
@@ -208,10 +194,6 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             wrap_up_mode,
             auto_run_plan,
             stop_pending,
-            schedule_interval_secs,
-            pinned_branch: pinned_branch.map(|o| o.map(str::to_string)),
-            last_processed_sha: last_processed_sha.map(|o| o.map(str::to_string)),
-            last_scheduled_check_at,
         }
     }
 }
@@ -260,28 +242,6 @@ impl super::super::TaskRead for Database {
         .await
     }
 
-    async fn list_scheduled_tasks(&self) -> Result<Vec<crate::models::Task>> {
-        self.db_call_read(move |conn| {
-            let mut stmt = conn
-                .prepare_cached(&format!(
-                    "SELECT {TASK_COLUMNS} FROM tasks \
-                     WHERE schedule_interval_secs IS NOT NULL \
-                       AND tmux_window IS NULL \
-                       AND status IN (?1, ?2) \
-                     ORDER BY id ASC"
-                ))
-                .context("Failed to prepare list_scheduled_tasks")?;
-            let rows = stmt
-                .query_map(
-                    params![TaskStatus::Backlog.as_str(), TaskStatus::Done.as_str()],
-                    row_to_task,
-                )
-                .context("Failed to query scheduled tasks")?;
-            collect_decodable(rows, "scheduled tasks").context("Failed to collect scheduled tasks")
-        })
-        .await
-    }
-
     async fn find_task_by_plan(&self, plan: &str) -> Result<Option<crate::models::Task>> {
         let plan = plan.to_string();
         self.db_call_read(move |conn| {
@@ -314,9 +274,8 @@ impl super::super::TaskCrud for Database {
             conn.execute(
                 "INSERT INTO tasks \
                  (title, description, repo_path, plan_path, status, sub_status, base_branch, \
-                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan, \
-                  schedule_interval_secs, pinned_branch) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     req.title,
                     req.description,
@@ -330,8 +289,6 @@ impl super::super::TaskCrud for Database {
                     req.tag.map(|t| t.as_str()),
                     req.wrap_up_mode.map(|m| m.as_str()),
                     req.auto_run_plan,
-                    req.schedule_interval_secs,
-                    req.pinned_branch,
                 ],
             )
             .context("Failed to insert task")?;
@@ -458,22 +415,6 @@ impl super::super::TaskCrud for Database {
             );
             set_field!(sets, values, patch.auto_run_plan, "auto_run_plan");
             set_field!(sets, values, patch.stop_pending, "stop_pending");
-            set_field!(
-                sets,
-                values,
-                patch.schedule_interval_secs,
-                "schedule_interval_secs"
-            );
-            set_field!(sets, values, patch.pinned_branch, "pinned_branch");
-            set_field!(sets, values, patch.last_processed_sha, "last_processed_sha");
-            set_field!(
-                sets,
-                values,
-                patch
-                    .last_scheduled_check_at
-                    .map(|opt| opt.map(super::format_datetime)),
-                "last_scheduled_check_at"
-            );
 
             sets.push("updated_at = datetime('now')");
             values.push(Box::new(id.0));
@@ -838,43 +779,6 @@ impl super::super::TaskCrud for Database {
                     ],
                 )
                 .context("Failed to claim backlog task")?;
-            Ok(rows == 1)
-        })
-        .await
-    }
-
-    async fn try_claim_scheduled_task(
-        &self,
-        id: TaskId,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<bool> {
-        let now = super::format_datetime(now);
-        self.db_call(move |conn| {
-            let running = TaskStatus::Running;
-            let claim_set = super::CLAIM_SET;
-            // `CLAIM_SET` again; only the WHERE differs. Every precondition of
-            // `DispatchScheduledTask` that a concurrent writer could
-            // invalidate is in this one statement, so the claim is the
-            // serialisation point — a second tick arriving mid-provision finds
-            // `status = running` and loses.
-            let rows = conn
-                .execute(
-                    &format!(
-                        "UPDATE tasks {claim_set} \
-                         WHERE id = ?4 AND status IN (?5, ?6) \
-                           AND tmux_window IS NULL \
-                           AND schedule_interval_secs IS NOT NULL"
-                    ),
-                    params![
-                        running.as_str(),
-                        SubStatus::default_for(running).as_str(),
-                        now,
-                        id.0,
-                        TaskStatus::Backlog.as_str(),
-                        TaskStatus::Done.as_str(),
-                    ],
-                )
-                .context("Failed to claim scheduled task")?;
             Ok(rows == 1)
         })
         .await

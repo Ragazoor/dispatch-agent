@@ -588,8 +588,6 @@ async fn route_routed_preserves_manual_task_on_parent() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -719,8 +717,6 @@ async fn route_routed_removes_merged_pr_keeps_manual() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1441,8 +1437,6 @@ async fn sync_grouped_feed_preserves_manual_task_in_dropped_sub_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();
@@ -1545,8 +1539,6 @@ async fn flat_sync_preserves_manual_sub_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
-            schedule_interval_secs: None,
-            pinned_branch: None,
         })
         .await
         .unwrap();

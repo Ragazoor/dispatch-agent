@@ -10,9 +10,6 @@ mod budget;
 mod epics;
 mod feeds;
 mod forms;
-pub(in crate::tui) use forms::{
-    schedule_interval_prompt, PINNED_BRANCH_PROMPT, SCHEDULE_GATE_PROMPT,
-};
 mod lifecycle;
 mod main_session;
 mod move_task;

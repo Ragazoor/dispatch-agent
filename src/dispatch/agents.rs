@@ -10,9 +10,9 @@ use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 use crate::tmux;
 
 use super::prompts::{
-    build_and_record_injections, build_pipeline_prompt, build_prompt, build_quick_dispatch_prompt,
-    build_research_prompt, compose_prompt_head, select_preamble, EpicContext, LearningInjections,
-    PromptContext, DISPATCH_PLUGIN_DIR,
+    build_and_record_injections, build_prompt, build_quick_dispatch_prompt, build_research_prompt,
+    compose_prompt_head, select_preamble, EpicContext, LearningInjections, PromptContext,
+    DISPATCH_PLUGIN_DIR,
 };
 use super::worktree::{provision_worktree, rollback_failed_provisioning, BaseRef, StartPoint};
 
@@ -261,26 +261,20 @@ fn dispatch_with_prompt(
     // Review tasks (pr-review / dependabot / renovate) that carry a PR URL base
     // their worktree on the PR's head branch so the agent sees the PR's code.
     // Soft-fall to the base branch on resolution failure or for fork PRs.
-    //
-    // Skipped entirely for a pinned task: `pr_head_branch` shells out to `gh`,
-    // and the answer could not be used anyway — pinning wins the match below.
-    let pr_branch: Option<String> = match (&task.pinned_branch, &task.tag, &task.url) {
-        (None, Some(tag), Some(url)) if tag.is_review() && url.is_pr() => {
+    let pr_branch: Option<String> = match (&task.tag, &task.url) {
+        (Some(tag), Some(url)) if tag.is_review() && url.is_pr() => {
             super::pr_head_branch(&url.url, runner)
         }
         _ => None,
     };
 
-    // Neither a PR head nor a pinned branch is compared against a local ref —
-    // a review must see exactly the PR's code, and a pinned branch is shared —
-    // so each picks its own `BaseRef` variant. `pinned_branch` takes priority:
-    // the two are never both set in practice, but pinning is the more specific
-    // configuration. Borrowing throughout: `pr_branch` is still needed for
+    // A PR head is never compared against a local ref of the same name — a
+    // review must see exactly the PR's code — so it picks its own `BaseRef`
+    // variant. Borrowing throughout: `pr_branch` is still needed for
     // `select_preamble` after provisioning, and `resolved` is unused hereafter.
-    let base_ref = match (task.pinned_branch.as_deref(), pr_branch.as_deref()) {
-        (Some(pinned), _) => BaseRef::Pinned(pinned),
-        (None, Some(branch)) => BaseRef::PrHead(branch),
-        (None, None) => BaseRef::Branch(&resolved),
+    let base_ref = match pr_branch.as_deref() {
+        Some(branch) => BaseRef::PrHead(branch),
+        None => BaseRef::Branch(&resolved),
     };
 
     let provision = provision_worktree(task, runner, Some(base_ref), SUBPROCESS_TIMEOUT)?;
@@ -432,52 +426,6 @@ pub fn quick_dispatch_agent(
     )
 }
 
-/// A **fresh** dispatch for a scheduled tick, used by
-/// [`crate::scheduler::SchedulerRunner`].
-///
-/// Deliberately not `resume_agent`: that does `claude --continue`, resuming a
-/// conversation from the previous tick. A scheduled tick is a new unit of work
-/// on new commits, so it needs a new prompt every time — built the same way as
-/// [`research_agent`] and [`quick_dispatch_agent`], through the shared
-/// [`dispatch_with_prompt`].
-///
-/// The pinned branch, when set, reaches `provision_worktree` through
-/// `dispatch_with_prompt`'s base-ref match, so no argument is threaded here.
-///
-/// Takes `injections` for the same reason `dispatch_agent` does: reached
-/// through `run_agent_for_mode`, the dispatch prologue has already run the
-/// retrieval and *recorded* it, so dropping the result here would both waste
-/// the inference and tell the knowledge base a learning was surfaced to an
-/// agent that never saw it. A pipeline agent fixing a broken branch wants the
-/// repo's pitfalls as much as any other.
-pub fn pipeline_agent(
-    task: &Task,
-    runner: &dyn ProcessRunner,
-    epic: Option<&EpicContext>,
-    injections: &LearningInjections<'_>,
-) -> Result<DispatchResult> {
-    dispatch_with_prompt(
-        task,
-        || {
-            let ctx = PromptContext {
-                learnings: injections.clone(),
-                ..PromptContext::default()
-            };
-            build_pipeline_prompt(
-                task.id,
-                &task.title,
-                task.pinned_branch.as_deref(),
-                &task.base_branch,
-                epic,
-                &ctx,
-            )
-        },
-        runner,
-        Some(&task.base_branch),
-        None,
-    )
-}
-
 /// Launch the agent [`DispatchMode`](crate::models::DispatchMode) selects,
 /// consuming the prologue's [`DispatchInputs`].
 ///
@@ -497,9 +445,6 @@ pub fn run_agent_for_mode(
             dispatch_agent(task, runner, epic_ctx.as_ref(), &injections)
         }
         crate::models::DispatchMode::Research => research_agent(task, runner, epic_ctx.as_ref()),
-        crate::models::DispatchMode::Pipeline => {
-            pipeline_agent(task, runner, epic_ctx.as_ref(), &injections)
-        }
     }
 }
 

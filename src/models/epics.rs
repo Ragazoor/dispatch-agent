@@ -388,10 +388,6 @@ mod tests {
             stop_pending: false,
             live_shells: 0,
             oldest_live_shell_started_at: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-            last_processed_sha: None,
-            last_scheduled_check_at: None,
         }
     }
 
@@ -623,10 +619,6 @@ mod tests {
             stop_pending: false,
             live_shells: 0,
             oldest_live_shell_started_at: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-            last_processed_sha: None,
-            last_scheduled_check_at: None,
         };
         assert!(task.epic_id.is_none());
     }
@@ -663,10 +655,6 @@ mod tests {
             stop_pending: false,
             live_shells: 0,
             oldest_live_shell_started_at: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-            last_processed_sha: None,
-            last_scheduled_check_at: None,
         };
         assert_eq!(task.epic_id, Some(EpicId(5)));
     }
@@ -766,10 +754,6 @@ mod tests {
             stop_pending: false,
             live_shells: 0,
             oldest_live_shell_started_at: None,
-            schedule_interval_secs: None,
-            pinned_branch: None,
-            last_processed_sha: None,
-            last_scheduled_check_at: None,
         }
     }
 

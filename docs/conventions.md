@@ -257,7 +257,6 @@ Settings/learning/usage writes remain reachable through `TaskReadStore` on purpo
 **Sanctioned direct-mutation consumers** (they manage their own invariants and hold a write-capable handle, exactly like the feed subsystem):
 
 - `FeedRunner` (`src/feed/`) — holds its own `Arc<dyn TaskStore>` and calls `recalculate_epic_status` itself.
-`SchedulerRunner` (`src/scheduler/`) is deliberately **not** on that list, despite being structurally parallel to `FeedRunner`. It holds a read-only `Arc<dyn TaskRead>` plus an `Arc<TaskService>`, and every write goes through the service — because all but one of them (`claim_scheduled_task`, the worktree/tmux record, the claim release) are writes `TaskService::dispatch` already owns. Only `stamp_scheduled_check` is scheduler-private, and it is a service method too. `FeedRunner`'s exemption rests on bulk upserts with no service equivalent; the scheduler has no such need.
 - `TuiRuntime::feed_db` — a write handle reserved for the manual `exec_trigger_epic_feed` path (the TUI's version of a feed tick).
 - Startup / CLI paths (`runtime::bootstrap`, `src/setup/`, `src/main.rs`) — use a concrete `&Database` / `Arc<Database>` before the read-only narrowing applies.
 

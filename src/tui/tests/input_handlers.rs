@@ -36,10 +36,6 @@ fn task_created_adds_to_list() {
         stop_pending: false,
         live_shells: 0,
         oldest_live_shell_started_at: None,
-        schedule_interval_secs: None,
-        pinned_branch: None,
-        last_processed_sha: None,
-        last_scheduled_check_at: None,
     };
     let mut app = App::new(vec![]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
@@ -74,14 +70,9 @@ fn repo_path_empty_uses_saved_path() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    // Skipping wrap-up drops into the schedule gate; declining that creates
-    // the task (tasks.allium: CreateTask, "The schedule step").
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
-    assert_eq!(app.input.mode, InputMode::InputScheduleGate);
+    // Skipping wrap-up is the form's last step; it creates the task.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitScheduleGate(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds3.iter().any(|c| matches!(
@@ -153,14 +144,9 @@ fn repo_path_nonempty_used_as_is() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    // Skipping wrap-up drops into the schedule gate; declining that completes
-    // creation (tasks.allium: CreateTask, "The schedule step").
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
-    assert_eq!(app.input.mode, InputMode::InputScheduleGate);
+    // Skipping wrap-up is the form's last step; it completes creation.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitScheduleGate(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(cmds3
@@ -184,8 +170,6 @@ fn task_edited_updates_fields() {
             base_branch: None,
             wrap_up_mode: None,
             url: None,
-            schedule_interval_secs: Some(600),
-            pinned_branch: Some("staging".into()),
         },
     )));
     assert_eq!(app.board.tasks[0].title, "New");
@@ -196,10 +180,6 @@ fn task_edited_updates_fields() {
         app.board.tasks[0].plan_path.as_deref(),
         Some("docs/plan.md")
     );
-    // The scheduling pair rides the same edit, so the card's scheduled badge
-    // appears with the edit rather than at the next DB refresh.
-    assert_eq!(app.board.tasks[0].schedule_interval_secs, Some(600));
-    assert_eq!(app.board.tasks[0].pinned_branch.as_deref(), Some("staging"));
 }
 
 #[test]
@@ -741,10 +721,6 @@ fn editor_result_task_edit_returns_finalize_command() {
         stop_pending: false,
         live_shells: 0,
         oldest_live_shell_started_at: None,
-        schedule_interval_secs: None,
-        pinned_branch: None,
-        last_processed_sha: None,
-        last_scheduled_check_at: None,
     };
     let mut app = App::new(vec![task.clone()]);
     let cmds = app.update(Message::Editor(
@@ -2038,12 +2014,9 @@ fn handle_key_text_input_repo_enter_selects_cursor_repo() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
-    // Declining the schedule gate is what commits the creation.
+    // Submitting the wrap-up step is what commits the creation.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitScheduleGate(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert!(cmds3.iter().any(|c| matches!(
         c,
@@ -2070,12 +2043,9 @@ fn handle_key_text_input_enter_submits_typed_text() {
         crate::tui::messages::InputMessage::SubmitBaseBranch("main".to_string()),
     ));
     assert_eq!(app.input.mode, InputMode::InputWrapUpMode);
-    app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
-    ));
-    // Declining the schedule gate is what commits the creation.
+    // Submitting the wrap-up step is what commits the creation.
     let cmds3 = app.update(Message::Input(
-        crate::tui::messages::InputMessage::SubmitScheduleGate(false),
+        crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
     ));
     assert!(cmds3.iter().any(|c| matches!(
         c,
@@ -2564,8 +2534,8 @@ fn submit_base_branch_transitions_to_wrap_up_mode() {
 }
 
 /// A draft parked at the wrap-up step — the shared starting point for every
-/// test of the form's tail (wrap-up picker, schedule gate, and the two
-/// configure steps beyond it).
+/// test of the form's tail. It is the form's last step, so submitting it
+/// creates the task.
 fn app_at_wrap_up_step() -> App {
     let mut app = make_app();
     app.input.mode = InputMode::InputWrapUpMode;
@@ -2597,10 +2567,7 @@ fn type_text(app: &mut App, text: &str) {
 fn wrap_up_mode_r_selects_rebase_and_creates_task() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Char('r')));
-    // The schedule gate is the form's last step; declining it is what commits
-    // the creation (tasks.allium: CreateTask, "The schedule step").
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = app.handle_key(make_key(KeyCode::Char('r')));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2615,10 +2582,7 @@ fn wrap_up_mode_r_selects_rebase_and_creates_task() {
 fn wrap_up_mode_p_selects_pr_and_creates_task() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Char('p')));
-    // The schedule gate is the form's last step; declining it is what commits
-    // the creation (tasks.allium: CreateTask, "The schedule step").
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = app.handle_key(make_key(KeyCode::Char('p')));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2633,10 +2597,7 @@ fn wrap_up_mode_p_selects_pr_and_creates_task() {
 fn wrap_up_mode_d_selects_done_and_creates_task() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Char('d')));
-    // The schedule gate is the form's last step; declining it is what commits
-    // the creation (tasks.allium: CreateTask, "The schedule step").
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
+    let cmds = app.handle_key(make_key(KeyCode::Char('d')));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2651,8 +2612,6 @@ fn wrap_up_mode_d_selects_done_and_creates_task() {
 fn wrap_up_mode_enter_skips_and_creates_task_with_no_mode() {
     let mut app = app_at_wrap_up_step();
 
-    app.handle_key(make_key(KeyCode::Enter));
-    // Enter again: the schedule gate's default is "not scheduled".
     let cmds = app.handle_key(make_key(KeyCode::Enter));
 
     assert_eq!(app.input.mode, InputMode::Normal);
@@ -2675,8 +2634,6 @@ fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
         draft.wrap_up_mode = Some(crate::models::WrapUpMode::Pr);
     }
 
-    app.handle_key(make_key(KeyCode::Enter));
-    // Enter again: the schedule gate's default is "not scheduled".
     let cmds = app.handle_key(make_key(KeyCode::Enter));
 
     let draft = insert_draft(&cmds).expect("expected Insert command");
@@ -2685,223 +2642,6 @@ fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
         Some(crate::models::WrapUpMode::Pr),
         "Enter should keep the copied wrap_up_mode, not clear it"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Schedule gate + schedule-interval / pinned-branch steps
-// ---------------------------------------------------------------------------
-
-#[test]
-fn wrap_up_mode_now_falls_through_to_the_schedule_gate_not_straight_to_creation() {
-    let mut app = app_at_wrap_up_step();
-
-    let cmds = app.handle_key(make_key(KeyCode::Char('r')));
-
-    assert_eq!(app.input.mode, InputMode::InputScheduleGate);
-    assert!(
-        insert_draft(&without_usage(cmds)).is_none(),
-        "the gate must be answered before the task is created"
-    );
-}
-
-/// The common path, and the whole reason the gate exists: one keypress and the
-/// task is created, with neither scheduling field set.
-#[test]
-fn schedule_gate_enter_creates_the_task_unscheduled() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Char('r')));
-
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    assert_eq!(app.input.mode, InputMode::Normal);
-    let draft = insert_draft(&cmds).expect("expected Insert command");
-    assert_eq!(draft.schedule_interval_secs, None);
-    assert_eq!(draft.pinned_branch, None);
-    assert_eq!(
-        draft.wrap_up_mode,
-        Some(crate::models::WrapUpMode::Rebase),
-        "passing through the gate must not disturb the earlier steps"
-    );
-}
-
-#[test]
-fn schedule_gate_s_opens_the_interval_step_without_creating_the_task() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Char('r')));
-
-    let cmds = app.handle_key(make_key(KeyCode::Char('s')));
-
-    assert_eq!(app.input.mode, InputMode::InputScheduleInterval);
-    assert!(insert_draft(&without_usage(cmds)).is_none());
-}
-
-/// Same contract as every other picker: an unrecognised key is ignored and the
-/// prompt stays open, rather than falling through to the default.
-#[test]
-fn schedule_gate_ignores_an_unrecognised_key() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Char('r')));
-
-    let cmds = app.handle_key(make_key(KeyCode::Char('z')));
-
-    assert_eq!(app.input.mode, InputMode::InputScheduleGate);
-    assert!(without_usage(cmds).is_empty());
-}
-
-#[test]
-fn schedule_gate_esc_cancels_creation() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Char('r')));
-
-    app.handle_key(make_key(KeyCode::Esc));
-
-    assert_eq!(app.input.mode, InputMode::Normal);
-    assert!(app.input.task_draft.is_none());
-}
-
-/// Drive the whole configure branch and check both fields land on the draft.
-#[test]
-fn configuring_both_fields_carries_them_onto_the_created_task() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Enter)); // wrap-up: skip
-    app.handle_key(make_key(KeyCode::Char('s'))); // gate: configure
-
-    type_text(&mut app, "600");
-    app.handle_key(make_key(KeyCode::Enter));
-    assert_eq!(app.input.mode, InputMode::InputPinnedBranch);
-    assert!(
-        app.input.buffer.is_empty(),
-        "the interval buffer must be cleared before the branch step reuses it"
-    );
-
-    type_text(&mut app, "staging");
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    assert_eq!(app.input.mode, InputMode::Normal);
-    let draft = insert_draft(&cmds).expect("expected Insert command");
-    assert_eq!(draft.schedule_interval_secs, Some(600));
-    assert_eq!(draft.pinned_branch, Some("staging".to_string()));
-}
-
-/// The shared interval grammar reaches the form, so a human types "10m".
-#[test]
-fn the_interval_step_accepts_a_suffixed_literal() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Enter));
-    app.handle_key(make_key(KeyCode::Char('s')));
-
-    type_text(&mut app, "10m");
-    app.handle_key(make_key(KeyCode::Enter));
-    let cmds = app.handle_key(make_key(KeyCode::Enter)); // skip pinned branch
-
-    let draft = insert_draft(&cmds).expect("expected Insert command");
-    assert_eq!(draft.schedule_interval_secs, Some(600));
-}
-
-/// Taking the "s" branch does not commit the user to setting both: Enter on an
-/// empty buffer leaves that one field null and advances.
-#[test]
-fn each_configure_step_is_individually_skippable() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Enter));
-    app.handle_key(make_key(KeyCode::Char('s')));
-
-    app.handle_key(make_key(KeyCode::Enter)); // skip the interval
-    assert_eq!(app.input.mode, InputMode::InputPinnedBranch);
-
-    type_text(&mut app, "staging");
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    let draft = insert_draft(&cmds).expect("expected Insert command");
-    assert_eq!(draft.schedule_interval_secs, None);
-    assert_eq!(draft.pinned_branch, Some("staging".to_string()));
-}
-
-/// The one form step that refuses to advance on non-empty input: the value
-/// drives a background loop the user will not be watching, so garbage must not
-/// be coerced or silently dropped.
-#[test]
-fn an_unparseable_interval_is_rejected_in_place() {
-    for bad in ["abc", "0", "-5", "10w"] {
-        let mut app = app_at_wrap_up_step();
-        app.handle_key(make_key(KeyCode::Enter));
-        app.handle_key(make_key(KeyCode::Char('s')));
-        type_text(&mut app, bad);
-
-        let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
-
-        assert_eq!(
-            app.input.mode,
-            InputMode::InputScheduleInterval,
-            "{bad:?} should not have advanced the step"
-        );
-        assert!(
-            insert_draft(&cmds).is_none(),
-            "{bad:?} should not have created a task"
-        );
-        assert_eq!(
-            app.input.buffer, bad,
-            "{bad:?} should stay in the buffer so it can be corrected"
-        );
-        assert!(
-            app.status.message.is_some(),
-            "{bad:?} should surface an error"
-        );
-    }
-}
-
-/// A rejected entry must be correctable in place rather than needing the form
-/// restarted.
-#[test]
-fn a_rejected_interval_can_be_corrected_and_resubmitted() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Enter));
-    app.handle_key(make_key(KeyCode::Char('s')));
-    type_text(&mut app, "abc");
-    app.handle_key(make_key(KeyCode::Enter));
-
-    for _ in 0..3 {
-        app.handle_key(make_key(KeyCode::Backspace));
-    }
-    type_text(&mut app, "5m");
-    app.handle_key(make_key(KeyCode::Enter));
-    assert_eq!(app.input.mode, InputMode::InputPinnedBranch);
-
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-    let draft = insert_draft(&cmds).expect("expected Insert command");
-    assert_eq!(draft.schedule_interval_secs, Some(300));
-}
-
-/// Neither step is a picker: every printable character is literal text, so a
-/// branch name containing a picker's navigation keys types through intact.
-#[test]
-fn the_branch_step_treats_every_printable_character_as_text() {
-    let mut app = app_at_wrap_up_step();
-    app.handle_key(make_key(KeyCode::Enter));
-    app.handle_key(make_key(KeyCode::Char('s')));
-    app.handle_key(make_key(KeyCode::Enter)); // skip the interval
-
-    type_text(&mut app, "jk-release/v2");
-    let cmds = app.handle_key(make_key(KeyCode::Enter));
-
-    let draft = insert_draft(&cmds).expect("expected Insert command");
-    assert_eq!(draft.pinned_branch, Some("jk-release/v2".to_string()));
-}
-
-#[test]
-fn esc_from_either_configure_step_cancels_creation() {
-    for mode in [
-        InputMode::InputScheduleInterval,
-        InputMode::InputPinnedBranch,
-    ] {
-        let mut app = app_at_wrap_up_step();
-        app.input.mode = mode.clone();
-
-        app.handle_key(make_key(KeyCode::Esc));
-
-        assert_eq!(app.input.mode, InputMode::Normal, "from {mode:?}");
-        assert!(app.input.task_draft.is_none(), "from {mode:?}");
-    }
 }
 
 // ---------------------------------------------------------------------------
