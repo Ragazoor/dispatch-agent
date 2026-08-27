@@ -66,6 +66,7 @@ to look.
 | `src/db/tests/{tasks,epics,learnings,settings,todos,usage,migrations,async_handle,read_pool}.rs` | Tests per domain, plus the async-handle and read-pool behaviour tests |
 | `src/dispatch/mod.rs` | Dispatch module root: PR-status polling via `gh` (`check_pr_status`, `pr_head_branch`) and local-path resolution (`resolve_repo_path`, `resolve_feed_item_repo_paths`); the pure URL/name parsing it builds on lives in `src/models/paths.rs` |
 | `src/dispatch/agents.rs` | The agent launchers — `dispatch_agent`, `research_agent`, `quick_dispatch_agent`, `resume_agent` — plus `fetch_verify_command` (a soft-fail settings read used by the `wrap_up` MCP handler, not by any launcher). Each launcher provisions a worktree, writes the prompt file, and starts `claude` inside a tmux window |
+| `src/dispatch/allium_specs.rs` | `repo_has_allium_specs` — the one directory read that decides whether a dispatch prompt names the Allium-first design step or `superpowers:brainstorming` (see `DesignStepMatchesTheReposSpecs` in `docs/specs/dispatch.allium`) |
 | `src/dispatch/prompts.rs` | Prompt construction: `build_prompt` (with-plan / no-plan / review variants), `build_quick_dispatch_prompt`, `build_research_prompt`, knowledge-block rendering |
 | `src/dispatch/prompts/` | Markdown bodies for the two review addenda (`pr-review.md`, `dependabot.md`), inlined via `include_str!` |
 | `src/dispatch/prompts_snapshots.rs` | Insta snapshot tests locking the rendered output of every `build_*_prompt` variant (snapshots in `src/dispatch/snapshots/`) |

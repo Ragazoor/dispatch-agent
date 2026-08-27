@@ -221,10 +221,10 @@ rule DispatchTask {
         --
         -- The branch reaches only the prompts that ask for a design step or
         -- emit the full trailing block: build_prompt and
-        -- build_quick_dispatch_prompt. DispatchResearchTask, the scheduled
-        -- pipeline prompt, and the dependabot / pr_review addenda already
-        -- emit a trimmed trailing block with no {allium_instruction} and
-        -- name no design step, so they are unaffected and need no branch.
+        -- build_quick_dispatch_prompt. DispatchResearchTask and the
+        -- dependabot / pr_review addenda already emit a trimmed trailing
+        -- block with no {allium_instruction} and name no design step, so
+        -- they are unaffected and need no branch.
         --
         -- Nothing on the kanban board changes: the action-hint label stays
         -- "dispatch" whichever design step the prompt names, per
