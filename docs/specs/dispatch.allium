@@ -164,6 +164,72 @@ rule DispatchTask {
         -- elicit-and-spec sequence, so the label named a workflow that no
         -- longer existed.
 
+    @guarantee DesignStepMatchesTheReposSpecs
+        -- The design step a prompt names depends on whether the task's
+        -- repository actually keeps Allium specs. A repository HAS Allium
+        -- specs when task.repo_path (tilde-expanded) holds at least one
+        -- `docs/specs/*.allium` file. The check is one directory read per
+        -- dispatch, against the parent repo rather than the freshly
+        -- provisioned worktree, and it is not persisted: nothing on
+        -- core/SavedRepoPath records it, so a repo that gains or loses its
+        -- specs changes prompt shape on its very next dispatch, with no
+        -- setting to update and no migration.
+        --
+        -- Every failure to see such a file counts as "no specs": a missing
+        -- docs/specs directory, an empty one, one holding no .allium file,
+        -- and an unreadable one all take the same branch. There is
+        -- deliberately no error arm — one rule, one answer — so the prompt
+        -- an agent receives never depends on which way a read failed.
+        --
+        -- Where the check cannot be attempted at all the answer is spec-first,
+        -- not brainstorming: a prompt assembled without the filesystem read is
+        -- built for a repo assumed to keep specs, because the cost of naming a
+        -- spec-first step in a repo that has none (an agent that asks where
+        -- docs/specs is) is smaller than the cost of the reverse (an agent that
+        -- silently skips the spec this repo does keep). Only the read itself is
+        -- entitled to answer "no specs". An empty task.repo_path is not such a
+        -- case — DispatchTask refuses to launch at all without one.
+        --
+        -- When the repo HAS specs: the no-plan addendum is
+        -- spec_first_instruction (the elicit -> tend -> propagate ->
+        -- implement -> weed sequence detailed below) and the trailing block
+        -- carries {allium_instruction}.
+        --
+        -- When the repo has NO specs: the no-plan addendum instead names
+        -- the `superpowers:brainstorming` skill as the design step, and
+        -- states the reason — this repo has no Allium specs — so the agent
+        -- does not read the missing spec-first sequence as an oversight.
+        -- {allium_instruction} is omitted from the trailing block, in BOTH
+        -- plan states, for the same reason: telling an agent that
+        -- `docs/specs/` is the source of truth for domain logic is false in
+        -- a repo with no such directory, and it would send the agent
+        -- looking for one.
+        --
+        -- The fallback names the skill and stops. It does not restate
+        -- brainstorming's own process, and it does not restate TDD —
+        -- {tdd_instruction} is in the trailing block either way. The
+        -- behaviour belongs to the skill the agent loads; a prompt that
+        -- paraphrases it can only drift from it.
+        --
+        -- What the two branches say identically: writing a docs/plans/ doc
+        -- and attaching it via update_task is the agent's judgement call,
+        -- not a requirement; and the design step is explicitly not the end
+        -- of the task — implementation must follow in the same session,
+        -- except for an epic-decomposition task, for which creating work
+        -- packages for its subtasks is the named alternative. Both branches
+        -- are therefore intermediate steps, never stopping points.
+        --
+        -- The branch reaches only the prompts that ask for a design step or
+        -- emit the full trailing block: build_prompt and
+        -- build_quick_dispatch_prompt. DispatchResearchTask, the scheduled
+        -- pipeline prompt, and the dependabot / pr_review addenda already
+        -- emit a trimmed trailing block with no {allium_instruction} and
+        -- name no design step, so they are unaffected and need no branch.
+        --
+        -- Nothing on the kanban board changes: the action-hint label stays
+        -- "dispatch" whichever design step the prompt names, per
+        -- OneNameForStartingATask above.
+
     @guidance
         -- == Subagent state reset ==
         -- A fresh dispatch clears every core/SubagentEntry left over from a
@@ -490,7 +556,9 @@ rule DispatchTask {
         --   {mode_addendum}                (mode-specific block)
         --   <blank>
         --   {tdd_instruction}              (shared verbatim)
-        --   {allium_instruction}           (shared verbatim)
+        --   {allium_instruction}           (only when the task's repo keeps
+        --                                    Allium specs — see
+        --                                    DesignStepMatchesTheReposSpecs)
         --   {mcp_tools_instruction}        (shared verbatim)
         --   {learning_tools_instruction}   (shared verbatim — one-line
         --                                    nudge to call query_learnings
@@ -522,7 +590,9 @@ rule DispatchTask {
         --
         -- DispatchTask emits one of two variants of build_prompt:
         --   * has_plan = false: preamble "Your task is:" and the addendum
-        --     is spec_first_instruction — an unconditional, ordered
+        --     is the design step for a repo that keeps Allium specs (see
+        --     DesignStepMatchesTheReposSpecs for the other branch) —
+        --     spec_first_instruction, an ordered
         --     sequence: interview the user with the allium:elicit skill,
         --     capture the agreed behaviour in docs/specs/*.allium, generate
         --     tests from the spec with allium:propagate, implement the

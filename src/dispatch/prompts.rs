@@ -218,6 +218,46 @@ epic-decomposition task, create work packages for its subtasks instead) and veri
 work before wrapping up."
 }
 
+/// The design instruction for a no-plan task in a repo that keeps **no** Allium
+/// specs (`docs/specs/*.allium` is absent or empty). Sending such an agent to
+/// `allium:elicit` would ask it to tend a garden that does not exist, so the
+/// design step is `superpowers:brainstorming` instead — see
+/// `DesignStepMatchesTheReposSpecs` in `docs/specs/dispatch.allium`.
+///
+/// It names the skill and stops. Brainstorming's own process is deliberately
+/// not paraphrased here: the agent loads the skill, and a prompt-side
+/// restatement can only drift from it. TDD is not restated either — it is in
+/// the trailing block either way.
+///
+/// The optional-plan and not-a-stopping-point clauses are the same commitments
+/// `spec_first_instruction` makes, including the epic-decomposition carve-out,
+/// so the two branches differ only in the design artefact.
+pub(super) fn brainstorm_instruction() -> &'static str {
+    "Design the solution with the `superpowers:brainstorming` skill before you write any \
+code. This repo has no Allium specs, so brainstorming is the design step.\n\
+\n\
+Writing a plan to docs/plans/ and attaching it with update_task is your judgement call, \
+not a requirement — do it only if the implementation is big enough that its steps are \
+worth recording.\n\
+\n\
+The design is not the end of the task — implement it in this same session (or, for an \
+epic-decomposition task, create work packages for its subtasks instead) and verify your \
+work before wrapping up."
+}
+
+/// The design step for a no-plan task, chosen by what the repo actually holds.
+///
+/// The single decision point, so the two builders that ask for a design step
+/// (`build_prompt`'s no-plan arm and `build_quick_dispatch_prompt`) cannot
+/// disagree about which branch a given repo takes.
+pub(super) fn design_instruction(has_allium_specs: bool) -> &'static str {
+    if has_allium_specs {
+        spec_first_instruction()
+    } else {
+        brainstorm_instruction()
+    }
+}
+
 /// Wrap-up instruction shared by every dispatched task agent. Wording is
 /// intentionally universal, but no longer treats writing a spec or attaching a
 /// plan as an independently sufficient stopping point: it must be followed by
@@ -245,19 +285,26 @@ update the spec using the `allium:tend` skill and verify alignment with `allium:
 /// Trailing metadata shared by every dispatched task agent prompt:
 /// `tdd + allium + mcp + learning + wrap_up`, separated by blank lines.
 /// Each `format!` in a builder ends with `{trailing}` where this helper plugs in.
-pub(super) fn trailing_block() -> String {
+pub(super) fn trailing_block(has_allium_specs: bool) -> String {
+    // Omitted wholesale for a repo with no specs: telling an agent that
+    // `docs/specs/` is the source of truth for domain logic is false there, and
+    // it would send the agent looking for a directory that does not exist. The
+    // omission applies in both plan states, so one repo never gets
+    // contradictory prompts depending on whether a plan is attached.
+    let allium = if has_allium_specs {
+        format!("{}\n\n", allium_instruction())
+    } else {
+        String::new()
+    };
     format!(
         "{tdd}\n\
 \n\
-{allium}\n\
-\n\
-{mcp}\n\
+{allium}{mcp}\n\
 \n\
 {learning}\n\
 \n\
 {wrap_up}",
         tdd = tdd_instruction(),
-        allium = allium_instruction(),
         mcp = mcp_tools_instruction(),
         learning = learning_tools_instruction(),
         wrap_up = wrap_up_instruction(),
@@ -346,7 +393,7 @@ pub(super) fn build_prompt(
     let addendum = match (ctx.tag, plan) {
         (Some(TaskTag::Dependabot), _) => dependabot_review_addendum(task_id),
         (Some(TaskTag::PrReview), _) => pr_review_addendum().to_string(),
-        (_, None) => spec_first_instruction().to_string(),
+        (_, None) => design_instruction(ctx.has_allium_specs).to_string(),
         (_, Some(path)) => {
             let tail = if ctx.auto_run_plan {
                 " and begin implementing it right away — the plan has already \
@@ -370,7 +417,7 @@ making any changes."
             learning = learning_tools_instruction(),
         )
     } else {
-        trailing_block()
+        trailing_block(ctx.has_allium_specs)
     };
 
     let block = task_block(task_id, title, description, epic);
@@ -428,7 +475,7 @@ descriptive `title` (and optionally `description`) to rename the task on the kan
 Then, before making any changes:\n\
 \n\
 {design}",
-        design = spec_first_instruction(),
+        design = design_instruction(ctx.has_allium_specs),
     );
 
     let block = task_block(task_id, title, description, epic);
@@ -438,7 +485,7 @@ Then, before making any changes:\n\
         &block,
         ctx,
         &addendum,
-        &trailing_block(),
+        &trailing_block(ctx.has_allium_specs),
     )
 }
 
@@ -489,11 +536,30 @@ impl<'a> From<&'a [Learning]> for LearningInjections<'a> {
 /// Bundle of all push-injected context for a dispatch prompt. Threaded through
 /// every `build_*_prompt` so individual builders never grow more positional
 /// parameters when a new context source lands.
-#[derive(Default)]
 pub struct PromptContext<'a> {
     pub learnings: LearningInjections<'a>,
     pub tag: Option<TaskTag>,
     pub auto_run_plan: bool,
+    /// Does the task's repository keep Allium specs? Decides which design step
+    /// the prompt names and whether `allium_instruction` is emitted — see
+    /// `DesignStepMatchesTheReposSpecs` in `docs/specs/dispatch.allium`.
+    /// Computed per dispatch by `super::allium_specs::repo_has_allium_specs`.
+    pub has_allium_specs: bool,
+}
+
+/// `Default` is hand-written for one field: `has_allium_specs` defaults to
+/// `true`, not `bool::default()`. A context assembled without the filesystem
+/// check must not silently downgrade a spec-keeping repo to brainstorming —
+/// the detection helper is the only thing entitled to answer `false`.
+impl Default for PromptContext<'_> {
+    fn default() -> Self {
+        Self {
+            learnings: LearningInjections::default(),
+            tag: None,
+            auto_run_plan: false,
+            has_allium_specs: true,
+        }
+    }
 }
 
 pub use crate::service::embeddings::RAG_SIMILARITY_THRESHOLD as DISPATCH_RAG_THRESHOLD;
@@ -941,12 +1007,220 @@ stubborn convergence, got: {text}"
         );
     }
 
-    /// `/brainstorming` must not survive in *any* rendered prompt. This is the
-    /// regression guard for task #4366 — a single named test cannot be
+    // -----------------------------------------------------------------------
+    // DesignStepMatchesTheReposSpecs (task #4409)
+    //
+    // A repo with no `docs/specs/*.allium` cannot be sent through an
+    // Allium-first design step, so its prompts name
+    // `superpowers:brainstorming` instead and drop `allium_instruction`.
+    // -----------------------------------------------------------------------
+
+    /// The fallback names the skill and states why it was chosen. It must not
+    /// paraphrase brainstorming's own process — the behaviour belongs to the
+    /// skill the agent loads, and a paraphrase can only drift from it.
+    #[test]
+    fn brainstorm_instruction_names_the_skill_and_says_why() {
+        let text = brainstorm_instruction();
+        assert!(
+            text.contains("superpowers:brainstorming"),
+            "the fallback should name the brainstorming skill, got: {text}"
+        );
+        assert!(
+            text.contains("no Allium specs"),
+            "the fallback should say why it is not the spec-first sequence, got: {text}"
+        );
+    }
+
+    #[test]
+    fn brainstorm_instruction_does_not_restate_the_skill_or_tdd() {
+        let text = brainstorm_instruction();
+        for token in [
+            "allium:elicit",
+            "allium:tend",
+            "allium:propagate",
+            "allium:weed",
+            "docs/specs/",
+            "/allium-loop",
+        ] {
+            assert!(
+                !text.contains(token),
+                "the fallback must not name {token} — there is no spec to work \
+from, got: {text}"
+            );
+        }
+        assert!(
+            !text.contains("failing test") && !text.contains("TDD"),
+            "TDD is in the trailing block either way; the fallback must not \
+restate it, got: {text}"
+        );
+    }
+
+    /// The two design steps differ only in the design artefact. Everything
+    /// about what is optional and what is not is identical.
+    #[test]
+    fn brainstorm_instruction_shares_the_optional_plan_and_no_stopping_point_clauses() {
+        let text = brainstorm_instruction();
+        assert!(
+            text.contains("judgement call") && text.contains("docs/plans/"),
+            "the plan doc should still be offered as the agent's call, got: {text}"
+        );
+        assert!(
+            text.contains("update_task"),
+            "the fallback should say how an optional plan gets attached, got: {text}"
+        );
+        assert!(
+            text.contains("not the end of the task"),
+            "the design step must not read as a stopping point, got: {text}"
+        );
+        assert!(
+            text.contains("work packages"),
+            "the epic-decomposition carve-out should match spec_first_instruction, \
+got: {text}"
+        );
+    }
+
+    #[test]
+    fn prompt_context_defaults_to_the_spec_first_branch() {
+        assert!(
+            PromptContext::default().has_allium_specs,
+            "an unknown repo must not be silently downgraded to brainstorming"
+        );
+    }
+
+    /// The whole point of task #4409: the no-plan design step follows the repo.
+    #[test]
+    fn no_plan_addendum_follows_the_repos_specs() {
+        let with_specs = build_prompt(TaskId(1), "t", "d", None, None, &PromptContext::default());
+        assert!(
+            with_specs.contains("allium:elicit") && !with_specs.contains("brainstorming"),
+            "a spec-keeping repo gets the spec-first sequence, got: {with_specs}"
+        );
+
+        let no_specs = PromptContext {
+            has_allium_specs: false,
+            ..PromptContext::default()
+        };
+        let text = build_prompt(TaskId(1), "t", "d", None, None, &no_specs);
+        assert!(
+            text.contains("superpowers:brainstorming"),
+            "a repo with no specs gets the brainstorming design step, got: {text}"
+        );
+        assert!(
+            !text.contains("allium:elicit"),
+            "a repo with no specs must not be sent to elicit a spec, got: {text}"
+        );
+    }
+
+    #[test]
+    fn quick_dispatch_design_step_follows_the_repos_specs() {
+        let no_specs = PromptContext {
+            has_allium_specs: false,
+            ..PromptContext::default()
+        };
+        let text = build_quick_dispatch_prompt(TaskId(1), "t", "d", None, &no_specs);
+        assert!(
+            text.contains("superpowers:brainstorming") && !text.contains("allium:elicit"),
+            "quick dispatch should share the no-spec design step, got: {text}"
+        );
+        // The rename step is unchanged — only the design step swaps.
+        assert!(
+            text.contains("call `update_task` with a"),
+            "quick dispatch should still ask the agent to rename the task, got: {text}"
+        );
+    }
+
+    /// Pointing an agent at `docs/specs/` as the source of truth is false in a
+    /// repo that has no such directory, and it would send the agent looking.
+    #[test]
+    fn trailing_block_omits_the_allium_instruction_when_the_repo_has_no_specs() {
+        let text = trailing_block(false);
+        assert!(
+            !text.contains("source of truth"),
+            "the allium instruction should be gone, got: {text}"
+        );
+        assert!(
+            !text.contains("docs/specs/"),
+            "no prompt line should point at docs/specs/, got: {text}"
+        );
+        // Everything else in the trailing block survives.
+        assert!(
+            text.contains(tdd_instruction()),
+            "tdd survives, got: {text}"
+        );
+        assert!(
+            text.contains(mcp_tools_instruction()),
+            "mcp survives, got: {text}"
+        );
+        assert!(
+            text.contains("query_learnings"),
+            "the knowledge-base nudge survives, got: {text}"
+        );
+        assert!(
+            text.contains(wrap_up_instruction()),
+            "wrap-up survives, got: {text}"
+        );
+
+        assert!(
+            trailing_block(true).contains(allium_instruction()),
+            "a spec-keeping repo keeps the allium instruction"
+        );
+    }
+
+    /// The trailing block is dropped in BOTH plan states, so one repo never
+    /// gets contradictory prompts depending on whether a plan is attached.
+    #[test]
+    fn with_plan_prompt_omits_the_allium_instruction_when_the_repo_has_no_specs() {
+        let no_specs = PromptContext {
+            has_allium_specs: false,
+            ..PromptContext::default()
+        };
+        let text = build_prompt(TaskId(1), "t", "d", Some("/p.md"), None, &no_specs);
+        assert!(
+            !text.contains("source of truth"),
+            "with-plan prompt should drop the allium instruction too, got: {text}"
+        );
+        // The plan addendum itself is untouched.
+        assert!(
+            text.contains("Plan: /p.md"),
+            "the plan addendum is unchanged, got: {text}"
+        );
+        assert!(
+            !text.contains("superpowers:brainstorming"),
+            "a task with a plan needs no design step, got: {text}"
+        );
+    }
+
+    /// Review addenda already emit a trimmed trailing block with no allium
+    /// line and no design step, so they need no branch — and must not grow one.
+    #[test]
+    fn review_addenda_are_unaffected_by_the_repos_specs() {
+        for tag in [TaskTag::Dependabot, TaskTag::PrReview] {
+            let ctx = PromptContext {
+                tag: Some(tag),
+                has_allium_specs: false,
+                ..PromptContext::default()
+            };
+            let text = build_prompt(TaskId(1), "t", "d", None, None, &ctx);
+            assert!(
+                !text.contains("brainstorming"),
+                "{tag:?}: a review agent gets no design step, got: {text}"
+            );
+        }
+    }
+
+    /// Brainstorming must not surface in *any* prompt for a repo that keeps
+    /// Allium specs — there it is the retired design step (task #4366), and the
+    /// spec-first sequence is the only one named. The no-spec branch that *does*
+    /// name it (task #4409) is covered by
+    /// `no_plan_addendum_follows_the_repos_specs`. A single named test cannot be
     /// blanket-accepted the way an `INSTA_UPDATE=always` snapshot can.
     #[test]
-    fn no_prompt_variant_names_the_retired_brainstorming_skill() {
+    fn no_prompt_variant_for_a_spec_keeping_repo_names_brainstorming() {
         let plain = PromptContext::default();
+        assert!(
+            plain.has_allium_specs,
+            "this test only speaks for the spec-keeping branch"
+        );
         let dependabot = PromptContext {
             tag: Some(TaskTag::Dependabot),
             ..PromptContext::default()
@@ -1081,7 +1355,7 @@ stopping point for epic-decomposition tasks, got: {text}"
 
     #[test]
     fn trailing_block_includes_knowledge_base_nudge() {
-        let text = trailing_block();
+        let text = trailing_block(true);
         assert!(
             text.contains("query_learnings"),
             "trailing block should reference query_learnings tool, got: {text}"
@@ -1101,8 +1375,7 @@ stopping point for epic-decomposition tasks, got: {text}"
         let l = seed(20, LearningScope::Repo, 1);
         let ctx = PromptContext {
             learnings: LearningInjections { ranked: vec![&l] },
-            tag: None,
-            auto_run_plan: false,
+            ..PromptContext::default()
         };
         let text = build_research_prompt(
             TaskId(7),
@@ -1218,8 +1491,7 @@ stopping point for epic-decomposition tasks, got: {text}"
         };
         let ctx = PromptContext {
             learnings: injections,
-            tag: None,
-            auto_run_plan: false,
+            ..PromptContext::default()
         };
         let text = build_prompt(TaskId(1), "title", "desc", None, None, &ctx);
         // Procedural learnings no longer appear as a verbatim prefix — prompt

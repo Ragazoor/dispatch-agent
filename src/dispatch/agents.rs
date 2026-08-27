@@ -9,6 +9,7 @@ use crate::models::{
 use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 use crate::tmux;
 
+use super::allium_specs::repo_has_allium_specs;
 use super::prompts::{
     build_and_record_injections, build_prompt, build_quick_dispatch_prompt, build_research_prompt,
     compose_prompt_head, select_preamble, EpicContext, LearningInjections, PromptContext,
@@ -367,6 +368,7 @@ pub fn dispatch_agent(
                 learnings: injections.clone(),
                 tag: task.tag,
                 auto_run_plan: task.auto_run_plan,
+                has_allium_specs: repo_has_allium_specs(&task.repo_path),
             };
             build_prompt(
                 task.id,
@@ -416,6 +418,7 @@ pub fn quick_dispatch_agent(
         || {
             let ctx = PromptContext {
                 learnings: injections.clone(),
+                has_allium_specs: repo_has_allium_specs(&task.repo_path),
                 ..PromptContext::default()
             };
             build_quick_dispatch_prompt(task.id, &task.title, &task.description, epic, &ctx)

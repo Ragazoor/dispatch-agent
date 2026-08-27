@@ -36,9 +36,11 @@ rebase/tend/implement/verify/weed work itself.
    2. **Recent context** — otherwise scan the recent conversation for a design/spec document
       created or referenced this session (e.g. an Allium spec just written or extended under
       `docs/specs/`, or a file under `docs/superpowers/specs/` or `docs/plans/`, or a path the
-      user just named). An `.allium` file is a first-class input here, not a fallback: the
-      dispatch prompt's own design step produces one, and handing the loop that spec is the
-      normal way a dispatched agent enters it. If exactly one clear candidate exists, use it and
+      user just named). An `.allium` file is a first-class input here, not a fallback: in a repo
+      that keeps Allium specs the dispatch prompt's own design step produces one, and handing the
+      loop that spec is the normal way a dispatched agent enters it. In a repo that keeps none,
+      the design step is brainstorming instead, so expect a `docs/plans/` doc here rather than a
+      spec. If exactly one clear candidate exists, use it and
       **tell the user which document was picked** so they can catch a wrong guess.
    3. **Ask** — if args and context yield nothing, or multiple candidates are ambiguous, ask for
       the doc path via AskUserQuestion.

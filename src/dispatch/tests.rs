@@ -3097,6 +3097,69 @@ fn dispatch_agent_prompt_includes_worktree_confinement() {
     assert_worktree_confinement(&read_prompt(&worktree_dir));
 }
 
+/// `DesignStepMatchesTheReposSpecs` (task #4409), end to end: the design step
+/// in the written prompt follows what the *repo* holds, not a default. The
+/// check reads the parent repo, so the worktree's own contents are irrelevant.
+#[test]
+fn dispatch_agent_prompt_design_step_follows_the_repos_allium_specs() {
+    let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let task = make_task(&repo_path);
+
+    // A bare repo with no docs/specs: brainstorming, and no allium line.
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+    let prompt = read_prompt(&worktree_dir);
+    assert!(
+        prompt.contains("superpowers:brainstorming"),
+        "a repo with no specs should get the brainstorming design step, got: {prompt}"
+    );
+    assert!(
+        !prompt.contains("allium:elicit"),
+        "a repo with no specs must not be sent to elicit a spec, got: {prompt}"
+    );
+    assert!(
+        !prompt.contains("source of truth"),
+        "a repo with no specs must not be pointed at docs/specs/, got: {prompt}"
+    );
+
+    // Same repo, now keeping a spec: the spec-first sequence, no brainstorming.
+    let spec_dir = std::path::Path::new(&repo_path).join("docs/specs");
+    std::fs::create_dir_all(&spec_dir).unwrap();
+    std::fs::write(spec_dir.join("domain.allium"), "-- allium: 3\n").unwrap();
+
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+    let prompt = read_prompt(&worktree_dir);
+    assert!(
+        prompt.contains("allium:elicit"),
+        "a spec-keeping repo should get the spec-first sequence, got: {prompt}"
+    );
+    assert!(
+        !prompt.contains("brainstorming"),
+        "a spec-keeping repo must not name brainstorming, got: {prompt}"
+    );
+}
+
+/// Quick dispatch shares the branch — it is the other prompt that names a
+/// design step.
+#[test]
+fn quick_dispatch_agent_prompt_design_step_follows_the_repos_allium_specs() {
+    let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    let task = make_task(&repo_path);
+
+    quick_dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+
+    let prompt = read_prompt(&worktree_dir);
+    assert!(
+        prompt.contains("superpowers:brainstorming"),
+        "quick dispatch into a spec-less repo should brainstorm, got: {prompt}"
+    );
+}
+
 #[test]
 fn research_agent_prompt_is_correct() {
     let (_dir, repo_path, worktree_dir) = make_test_repo_with_worktree("42-fix-bug");

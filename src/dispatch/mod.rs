@@ -4,6 +4,7 @@ use crate::models::{extract_github_repo, ReviewDecision};
 use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 
 mod agents;
+mod allium_specs;
 mod finish;
 pub(crate) mod git_output;
 /// Shared `MockProcessRunner` scripts for the dispatch call sequence. Lives here
