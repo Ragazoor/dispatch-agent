@@ -180,6 +180,51 @@ async fn set_negative_interval_rejected() {
     );
 }
 
+/// `0` used to be accepted here and documented as "poll every tick". It is now
+/// below the feed-cadence floor like any other sub-minimum value, and the
+/// refusal comes from the service rather than a handler-local check — so this
+/// asserts the floor is reachable through the MCP surface, not just in-process.
+#[tokio::test]
+async fn set_sub_floor_interval_rejected() {
+    for bad in [0, crate::models::MIN_FEED_INTERVAL_SECS - 1] {
+        let state = test_state().await;
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "set_managed_feed_config",
+                "arguments": {
+                    "reviews_command": "/scripts/fetch-reviews.sh",
+                    "reviews_interval_secs": bad
+                }
+            })),
+        )
+        .await;
+        let result = resp
+            .result
+            .as_ref()
+            .expect("expected isError result, got no result");
+        assert_eq!(
+            result["isError"],
+            json!(true),
+            "reviews_interval_secs = {bad} should be rejected, got: {resp:?}"
+        );
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("reviews_interval_secs"),
+            "the error must name the field the caller passed, got: {text}"
+        );
+
+        // Nothing persisted — not the interval, and not the command it arrived
+        // alongside.
+        assert_eq!(
+            state.db.get_reviews_feed_interval_secs().await.unwrap(),
+            None
+        );
+        assert_eq!(state.db.get_reviews_feed_command().await.unwrap(), None);
+    }
+}
+
 #[tokio::test]
 async fn set_provisions_managed_epics() {
     let state = test_state().await;

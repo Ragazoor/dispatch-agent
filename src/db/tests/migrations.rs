@@ -4244,3 +4244,141 @@ fn migration_v90_is_idempotent_and_survives_a_missing_v88() {
     crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn).unwrap();
     crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn).unwrap();
 }
+
+// --- v91: clamp pre-floor feed cadences (core.allium: "Interval literals") ---
+
+/// Rows written before the floor existed are brought into line once. Clamped UP
+/// rather than nulled so the value stays explicit — a later change to
+/// `default_feed_interval` must not silently retarget an epic whose cadence
+/// somebody once chose.
+#[test]
+fn v91_clamps_sub_floor_epic_feed_intervals_up_to_the_floor() {
+    use crate::models::MIN_FEED_INTERVAL_SECS as FLOOR;
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE epics (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             feed_interval_secs INTEGER
+         );
+         INSERT INTO epics (title, feed_interval_secs) VALUES
+           ('busy-loop', 0),
+           ('negative', -5),
+           ('just-under', 59),
+           ('at-floor', 60),
+           ('well-above', 300),
+           ('unset', NULL);",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v91_clamp_feed_intervals(&conn).unwrap();
+
+    let mut stmt = conn
+        .prepare("SELECT title, feed_interval_secs FROM epics ORDER BY title")
+        .unwrap();
+    let rows: Vec<(String, Option<i64>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    let get = |name: &str| -> Option<i64> {
+        rows.iter()
+            .find(|(t, _)| t == name)
+            .map(|(_, v)| *v)
+            .unwrap_or_else(|| panic!("row {name} missing"))
+    };
+
+    assert_eq!(get("busy-loop"), Some(FLOOR), "0 must clamp to the floor");
+    assert_eq!(get("negative"), Some(FLOOR), "-5 must clamp to the floor");
+    assert_eq!(get("just-under"), Some(FLOOR), "59 must clamp to the floor");
+    assert_eq!(
+        get("at-floor"),
+        Some(FLOOR),
+        "a value already at the floor must be left alone"
+    );
+    assert_eq!(
+        get("well-above"),
+        Some(300),
+        "a conforming value must not be dragged down to the floor"
+    );
+    assert_eq!(
+        get("unset"),
+        None,
+        "NULL means 'inherit the default' and must stay NULL, not become the floor"
+    );
+}
+
+/// The two managed-feed cadences live in the settings table, not on `epics`,
+/// and are copied onto managed epics by provisioning. The floor binds them too,
+/// so the migration must clean them as well — `0` was blessed here as "poll
+/// every tick" before the floor existed.
+#[test]
+fn v91_clamps_sub_floor_managed_feed_interval_settings() {
+    use crate::models::MIN_FEED_INTERVAL_SECS as FLOOR;
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE settings (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL
+         );
+         INSERT INTO settings (key, value) VALUES
+           ('reviews_feed_interval_secs', '0'),
+           ('cve_feed_interval_secs', '900'),
+           ('default_branch', 'main');",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v91_clamp_feed_intervals(&conn).unwrap();
+
+    let get = |key: &str| -> String {
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            rusqlite::params![key],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+
+    assert_eq!(
+        get("reviews_feed_interval_secs"),
+        FLOOR.to_string(),
+        "a sub-floor reviews cadence must clamp to the floor"
+    );
+    assert_eq!(
+        get("cve_feed_interval_secs"),
+        "900",
+        "a conforming cadence must be left alone"
+    );
+    assert_eq!(
+        get("default_branch"),
+        "main",
+        "an unrelated setting must not be touched"
+    );
+}
+
+/// Safe on a database missing the columns/tables entirely, and safe to run
+/// twice — the second run finds nothing left to clamp.
+#[test]
+fn migration_v91_is_idempotent_and_survives_missing_tables() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    crate::db::migrations::migrate_v91_clamp_feed_intervals(&conn).unwrap();
+
+    conn.execute_batch(
+        "CREATE TABLE epics (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             feed_interval_secs INTEGER
+         );
+         INSERT INTO epics (title, feed_interval_secs) VALUES ('busy', 0);",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v91_clamp_feed_intervals(&conn).unwrap();
+    crate::db::migrations::migrate_v91_clamp_feed_intervals(&conn).unwrap();
+
+    let after: Option<i64> = conn
+        .query_row("SELECT feed_interval_secs FROM epics", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, Some(crate::models::MIN_FEED_INTERVAL_SECS));
+}

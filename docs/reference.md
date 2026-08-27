@@ -198,6 +198,8 @@ updating a task.
 - **PR poll** (30s): `PR_POLL_INTERVAL` in `src/tui/mod.rs` — polls PR status for tasks in review.
 - **Message flash** (30s): `MESSAGE_FLASH_TTL` in `src/tui/mod.rs` — how long a task's card keeps flashing after it sends or receives a native cross-session message (task #4098; warm fill, plus a direction glyph — envelope for received, outgoing arrow for sent, both if it did both). The border is the resting neutral, never hued. Read by *both* `tick_message_flash` (the sweep, `src/tui/update/agent.rs`, which sweeps `AgentTracking::message_flash`/`message_flash_sent`) and the card renderer; they must share it or the map and the screen diverge. See "Message flash" in `docs/specs/core.allium`.
 - **Main-session poll** (5 ticks / 10s): `MAIN_SESSION_POLL_TICKS` in `src/tui/mod.rs` — tick-driven tmux liveness check behind the main-session status-bar indicator; wired in `handle_tick` (`src/tui/update/agent.rs`), mirrors `config.main_session_poll_interval` in `docs/specs/core.allium`.
+- **Default feed interval** (60s): `DEFAULT_FEED_INTERVAL` in `src/feed/mod.rs` — cadence for a feed epic with no explicit `feed_interval_secs`. Mirrors `config.default_feed_interval` in `docs/specs/core.allium`. Must never fall below the floor below; `the_default_interval_clears_the_floor` asserts it.
+- **Minimum feed interval** (60s): `MIN_FEED_INTERVAL_SECS` in `src/models/interval.rs` — the floor under every feed cadence, enforced once in the service (`validate_feed_interval`) and again as a read-side refusal in `FeedRunner`. Mirrors `config.min_feed_interval`; see "Interval literals" in `docs/specs/core.allium` for why it is not in the interval grammar.
 - **gg-chord timeout** (150ms): `GG_CHORD_TIMEOUT` in `src/tui/mod.rs` — double-tap window for the `gg` jump-to-top keybinding.
 - **Dispatch watchdog** (840s / 14 min): `DISPATCH_WATCHDOG_TIMEOUT` in `src/tui/mod.rs` — force-fails a task stuck in the `dispatching` set (see `docs/specs/dispatch.allium`: `DispatchingTimeout`). Derived as `SUBPROCESS_TIMEOUT` (`src/process.rs`, 120s) times `PROVISION_MAX_SUBPROCESS_CALLS` (`src/dispatch/worktree.rs`, 7) — not a 1:1 mirror — so the watchdog can't trip while `fetch_origin`'s retry budget is still legitimately working within `FetchPolicy::Required` (#4201).
 
@@ -208,7 +210,16 @@ an interval, parses its stdout as a JSON array of feed items, and upserts each
 as a task under the epic. The feed is the source of truth — a task whose
 `external_id` is absent from the latest emission is removed (manual tasks, which
 have no `external_id`, are never touched). Per-epic poll cadence is
-`feed_interval_secs`, falling back to the default feed interval (30s) when unset.
+`feed_interval_secs`, falling back to the default feed interval (60s) when unset.
+
+**The cadence has a floor of 60 seconds.** A feed command is a shell command on
+a timer, so anything faster is a busy loop against your own machine. Every write
+path enforces it — the MCP tools, epic creation, and the editor's
+`FEED_INTERVAL_SECS` section — and a value below it is rejected with an error
+naming the field. The runner also refuses to poll an epic whose stored cadence
+is below the floor, warning on each tick rather than quietly clamping. See
+"Interval literals" in `docs/specs/core.allium` for why the floor lives in the
+service and not in the interval grammar.
 
 Generic feeds come in two flavours, both upstream-agnostic: **flat** (one task
 per item under the epic) and **group_by_repo** (items bucketed into per-repo
@@ -234,7 +245,9 @@ dispatch provisions and reconciles the epic tree for you:
   separate epic with the ordinary flat upsert.
 
 Each script has an optional interval (`reviews_feed_interval_secs`,
-`cve_feed_interval_secs`); unset falls back to the default feed interval.
+`cve_feed_interval_secs`); unset falls back to the default feed interval. Both
+are bound by the same 60s floor — provisioning copies them onto the managed
+epics' `feed_interval_secs`, so they are not a separate kind of cadence.
 Reference templates ship in `scripts/` (`fetch-reviews.sh`, `fetch-cve.sh`) with
 empty repo/org placeholders — edit them before use.
 

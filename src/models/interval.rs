@@ -8,6 +8,22 @@
 //! Not used by the MCP/CLI surfaces: those take a JSON integer of seconds and
 //! never a string. This grammar is for humans typing into a field.
 
+/// The floor under every feed cadence, in seconds — `config.min_feed_interval`
+/// in `docs/specs/core.allium`.
+///
+/// A feed command is a shell command dispatch spawns on a timer, so a cadence
+/// below this is a busy loop against the user's own machine. Enforced in the
+/// epic service (`EpicService::create_epic` / `update_epic` /
+/// `write_managed_feed_settings`) so every write path inherits it, and again as
+/// a read-side refusal in `FeedRunner` for rows that arrived by a path which
+/// bypassed the service.
+///
+/// Deliberately NOT consulted by [`parse_interval_secs`]. See "Interval
+/// literals" in `docs/specs/core.allium`: the grammar's job is to parse a typed
+/// string, and the floor is a domain invariant of the field. A grammar that
+/// also enforced the floor would be a second place it could drift out of step.
+pub const MIN_FEED_INTERVAL_SECS: i64 = 60;
+
 /// The units a literal may carry, largest first.
 ///
 /// Scanned by [`parse_interval_secs`] for a typed suffix. One table, so a unit

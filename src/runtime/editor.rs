@@ -414,6 +414,12 @@ impl TuiRuntime {
             app.update(Message::System(crate::tui::messages::SystemMessage::Error(
                 Self::db_error("updating epic", e),
             )));
+            // Return before the optimistic update below. The write was refused
+            // — a sub-floor feed_interval_secs is the reachable case
+            // (epics.allium: EditEpic) — so applying it locally anyway would
+            // report an error while showing the user evidence it succeeded, and
+            // the board would only self-correct on the next DB refresh.
+            return vec![];
         }
         let mut updated = epic;
         updated.title = applied.title;
@@ -1173,5 +1179,82 @@ mod tests {
             )
             .await;
         assert!(cmds.is_empty());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod epic_edit_tests {
+    use super::*;
+    use crate::db::{Database, EpicCrud, EpicRead};
+    use crate::process::{MockProcessRunner, ProcessRunner};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    async fn runtime_and_app() -> (Arc<Database>, TuiRuntime, App) {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let runner: Arc<dyn ProcessRunner> = Arc::new(MockProcessRunner::new(vec![]));
+        let rt = crate::runtime::tests::make_runtime(db.clone(), tx, runner).await;
+        let app = App::new(vec![]);
+        (db, rt, app)
+    }
+
+    fn saved(title: &str, interval: &str) -> EditorOutcome {
+        EditorOutcome::Saved(format!(
+            "--- TITLE ---\n{title}\n--- DESCRIPTION ---\n\n--- FEED_COMMAND ---\ntrue\n--- FEED_INTERVAL_SECS ---\n{interval}\n"
+        ))
+    }
+
+    /// A sub-floor interval parses cleanly — the grammar only checks spelling —
+    /// and is then refused by the service. The refusal must not be followed by
+    /// the optimistic local update: reporting an error while rendering the
+    /// refused value tells the user the save failed against evidence it
+    /// succeeded, and only self-corrects on the next DB refresh.
+    /// (epics.allium: EditEpic)
+    #[tokio::test]
+    async fn a_refused_epic_edit_emits_no_edited_message_and_writes_nothing() {
+        let (db, rt, mut app) = runtime_and_app().await;
+        let epic = db.create_epic("Original", "", None).await.unwrap();
+
+        let commands = rt
+            .finalize_epic_edit(&mut app, epic.clone(), saved("Renamed", "10"))
+            .await;
+
+        assert!(
+            commands.is_empty(),
+            "a refused edit must not emit the Edited message, got {commands:?}"
+        );
+        assert!(
+            app.error_popup()
+                .is_some_and(|m| m.contains("feed_interval_secs")),
+            "the user must be told which field was refused, got {:?}",
+            app.error_popup()
+        );
+
+        let after = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.title, "Original",
+            "the title must not survive a refused edit"
+        );
+        assert_eq!(after.feed_interval_secs, None);
+    }
+
+    /// The accepting half, so the guard above cannot pass by refusing
+    /// everything.
+    #[tokio::test]
+    async fn an_epic_edit_at_the_floor_is_applied() {
+        let (db, rt, mut app) = runtime_and_app().await;
+        let epic = db.create_epic("Original", "", None).await.unwrap();
+
+        rt.finalize_epic_edit(&mut app, epic.clone(), saved("Renamed", "60"))
+            .await;
+
+        let after = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(after.title, "Renamed");
+        assert_eq!(
+            after.feed_interval_secs,
+            Some(crate::models::MIN_FEED_INTERVAL_SECS)
+        );
     }
 }

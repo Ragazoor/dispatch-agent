@@ -151,6 +151,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (88, migrate_v88_add_scheduling_fields),
     (89, migrate_v89_allow_pr_closed_for_review),
     (90, migrate_v90_drop_scheduling_fields),
+    (91, migrate_v91_clamp_feed_intervals),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -2290,6 +2291,66 @@ pub(super) fn migrate_v76_fix_feed_task_subtree_insert_trigger_self_conflict(
          END;",
     )
     .context("v76: failed to recreate insert trigger without self-conflict")?;
+
+    Ok(())
+}
+
+/// Clamp every stored feed cadence below `min_feed_interval` up to it.
+///
+/// A one-time data fix for rows written before the floor existed, when the
+/// integer write paths had no lower bound at all: a `0` made the feed runner
+/// respawn the command on every poll tick, and a negative wrapped into an
+/// effectively infinite cadence that silenced the feed. See "Interval literals"
+/// in `docs/specs/core.allium`.
+///
+/// Clamped UP rather than nulled so the value stays explicit — a later change
+/// to `default_feed_interval` must not silently retarget an epic whose cadence
+/// somebody once chose. `NULL` already means "inherit the default" and is left
+/// alone.
+///
+/// Two homes, because the cadence has two: the per-epic column, and the two
+/// managed-feed settings rows that provisioning copies onto managed epics.
+/// Missing tables/columns are tolerated so the migration is safe on any
+/// schema history, and it is idempotent — a second run finds nothing left
+/// below the floor.
+///
+/// This does not relieve any write path of validating. It cleans what already
+/// exists; `crate::service::validate_feed_interval` is what stops new rows.
+pub(super) fn migrate_v91_clamp_feed_intervals(conn: &Connection) -> Result<()> {
+    let floor = crate::models::MIN_FEED_INTERVAL_SECS;
+
+    if column_exists(conn, "epics", "feed_interval_secs") {
+        let clamped = conn
+            .execute(
+                "UPDATE epics SET feed_interval_secs = ?1
+                 WHERE feed_interval_secs IS NOT NULL AND feed_interval_secs < ?1",
+                params![floor],
+            )
+            .context("Failed to clamp sub-minimum epics.feed_interval_secs (migration v91)")?;
+        if clamped > 0 {
+            tracing::info!(
+                "Migration v91: clamped feed_interval_secs up to {floor}s on {clamped} epic(s)"
+            );
+        }
+    }
+
+    if table_exists(conn, "settings") {
+        // Stored as TEXT like every other settings value, so the comparison is
+        // cast rather than done on the string — '9' > '60' lexically.
+        let clamped = conn
+            .execute(
+                "UPDATE settings SET value = ?1
+                 WHERE key IN ('reviews_feed_interval_secs', 'cve_feed_interval_secs')
+                   AND CAST(value AS INTEGER) < ?2",
+                params![floor.to_string(), floor],
+            )
+            .context("Failed to clamp sub-minimum managed-feed intervals (migration v91)")?;
+        if clamped > 0 {
+            tracing::info!(
+                "Migration v91: clamped {clamped} managed-feed interval setting(s) up to {floor}s"
+            );
+        }
+    }
 
     Ok(())
 }

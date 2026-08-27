@@ -84,20 +84,11 @@ pub(super) async fn handle_set_managed_feed_config(
     };
     tracing::info!("MCP set_managed_feed_config");
 
-    // Reject negative intervals up front (0 is valid: "poll every tick").
-    for (label, field) in [
-        ("reviews_interval_secs", parsed.reviews_interval_secs),
-        ("cve_interval_secs", parsed.cve_interval_secs),
-    ] {
-        if let Some(Some(n)) = field {
-            if n < 0 {
-                return service_err_to_response(
-                    id,
-                    ServiceError::Validation(format!("{label} must be >= 0")),
-                );
-            }
-        }
-    }
+    // Interval validation is NOT done here. The floor is a domain invariant of
+    // the field rather than a property of this entry point, so it lives in the
+    // service (`validate_feed_interval`) where every write path inherits it —
+    // see "Interval literals" in docs/specs/core.allium. A handler-local check
+    // is exactly the shape that let a floor bind one surface and not another.
 
     // Persist only the provided fields; an omitted field (None) is left as-is.
     let write = crate::service::write_managed_feed_settings(
@@ -110,11 +101,12 @@ pub(super) async fn handle_set_managed_feed_config(
         },
     )
     .await;
+    // The service owns interval validation (core.allium: "Interval literals",
+    // CLAIM 2), so its error is passed through unwrapped: a sub-floor cadence
+    // must reach the caller as a -32602 validation error, not be relabelled
+    // internal.
     if let Err(e) = write {
-        return service_err_to_response(
-            id,
-            ServiceError::Internal(e.context("failed to persist managed feed config")),
-        );
+        return service_err_to_response(id, e);
     }
 
     // Re-materialise the managed epic tree so a newly-enabled feed provisions

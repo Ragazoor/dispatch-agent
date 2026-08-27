@@ -435,16 +435,35 @@ rule FeedTick {
     --
     -- Resolved interval =
     --   epic.feed_interval_secs (when set) else config.default_feed_interval
+    --
+    -- An epic whose STORED interval is below core/config.min_feed_interval is
+    -- not polled at all. It is skipped and a warning naming the epic is
+    -- emitted, on EVERY tick it remains misconfigured. Write-time validation
+    -- (epics.allium: CreateEpic, UpdateEpicViaMcp, SetManagedFeedConfig) is
+    -- what normally keeps such a row from existing, so reaching this branch
+    -- means the value arrived by a path that bypassed the service -- a
+    -- hand-edited database, or a bug -- and the runner must not make it
+    -- work anyway. Skipping rather than clamping is deliberate: a clamped
+    -- feed would run at a cadence nobody chose while looking healthy.
+    --
+    -- The floor also covers the negative case, which failed differently and
+    -- worse: a negative interval read as an effectively infinite one, so the
+    -- feed went permanently silent with nothing logged. Both now take the
+    -- same visible path.
 
     ensures:
         for epic in Epic where epic.is_feed:
-            let interval =
-                if epic.feed_interval_secs != null:
-                    seconds(epic.feed_interval_secs)
-                else:
-                    core/config.default_feed_interval
-            if elapsed_since_last_run(epic) >= interval:
-                FeedCycleRequested(epic: epic)
+            if epic.feed_interval_secs != null
+               and seconds(epic.feed_interval_secs) < core/config.min_feed_interval:
+                FeedIntervalBelowMinimumWarned(epic: epic)
+            else:
+                let interval =
+                    if epic.feed_interval_secs != null:
+                        seconds(epic.feed_interval_secs)
+                    else:
+                        core/config.default_feed_interval
+                if elapsed_since_last_run(epic) >= interval:
+                    FeedCycleRequested(epic: epic)
 
     @guidance
         -- Each epic's last_run timestamp is bumped before the spawn so
@@ -2060,6 +2079,16 @@ rule ManualFeedTrigger {
 invariant NoFlatFeedTasksOnReviewsParent {
     for epic in core/Epics where feed_role = reviews_parent:
         not epic.subtasks.any(t => t.external_id != null)
+}
+
+-- The floor binds the RESOLVED cadence, not merely the stored one, so the
+-- fallback an unset epic inherits must itself clear the floor. Were
+-- default_feed_interval to sink below min_feed_interval, leaving the field
+-- blank would poll faster than the fastest value a user is permitted to
+-- enter, and the floor would be advice rather than a bound. The two are equal
+-- today; raising the default is safe, lowering it past the floor is not.
+invariant DefaultFeedIntervalClearsTheFloor {
+    core/config.default_feed_interval >= core/config.min_feed_interval
 }
 
 ------------------------------------------------------------

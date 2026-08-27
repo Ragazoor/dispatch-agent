@@ -665,7 +665,18 @@ config {
     main_session_poll_interval: Duration = 10.seconds   -- cadence for the live tmux liveness check behind the main-session status-bar indicator (see dispatch.allium: MainSessionIndicator); a fixed multiple of tick_interval
     budget_poll_interval: Duration = 10.seconds
     budget_stale_after: Duration = 10.minutes
-    default_feed_interval: Duration = 30.seconds   -- default cadence for feed epics with no explicit feed_interval_secs (see feeds.allium)
+    -- The floor under every feed cadence, however it is spelled and whoever
+    -- writes it. A feed command is a shell command dispatch spawns on a timer;
+    -- a cadence below this turns that into a busy loop against the user's own
+    -- machine, which is never what anyone asked for. Enforced in the epic
+    -- service so every write path inherits it -- see "Interval literals" below
+    -- for why it lives there and not in the string grammar.
+    min_feed_interval: Duration = 60.seconds
+    -- Cadence for a feed epic with no explicit feed_interval_secs (see
+    -- feeds.allium). Equal to min_feed_interval today, and MUST NOT fall below
+    -- it: an unset field that polled faster than the fastest value a user is
+    -- permitted to enter would make the floor a lie.
+    default_feed_interval: Duration = 60.seconds
     -- Upper bound on ONE feed command's execution. The per-epic feed-cycle
     -- claim (feeds.allium: SerialisedFeedCycle) spans the whole exec, so
     -- without this bound a command that never exits would hold its epic's
@@ -760,20 +771,47 @@ config {
 --   - epics.allium: EditEpic's FEED_INTERVAL_SECS section
 --
 -- NOT bound by it: the MCP/CLI surfaces, which take a JSON integer of seconds
--- and never a string. The grammar is for humans typing into a field.
+-- and never a string. The grammar is for humans typing into a field. Those
+-- surfaces ARE bound by the floor below -- being exempt from the spelling rule
+-- is not being exempt from the domain invariant.
 --
--- == KNOWN GAP: positivity is not enforced everywhere ==
+-- == Two separate claims: spelling and floor ==
 --
--- Strict positivity is a property of the GRAMMAR above, so it binds only the
--- surface that parses a literal. The MCP integer path has no lower bound:
--- update_epic accepts feed_interval_secs = 0, and feeds.allium's poll loop
--- reads a zero interval as "always due", so the busy-loop the grammar refuses
--- is still reachable -- just not by typing.
+-- The grammar above and the floor below are DIFFERENT rules with different
+-- scopes, and conflating them is what left a gap here for as long as it did.
 --
--- That split is wrong, and it is recorded here rather than left implied by the
--- carve-out above. Positivity is a domain invariant of the field, not a
--- spelling rule: it belongs in the epic service's update validation, where
--- every entry point inherits it, leaving the grammar to only parse.
+-- CLAIM 1 -- the grammar is human-surface-only, and it only parses. Its job is
+-- to turn a typed string into a seconds count, and its strict positivity is a
+-- spelling rule: "0" and "-5" are not cadences a person means to type. It binds
+-- exactly the surfaces listed above, and nothing else. It does NOT know about
+-- config.min_feed_interval, so "10s" parses successfully and is then refused
+-- downstream. That is deliberate: a grammar that also enforced the domain floor
+-- would be a second place the floor could drift out of step.
+--
+-- CLAIM 2 -- the floor is universal. No stored feed cadence may be below
+-- config.min_feed_interval, whatever surface wrote it and however it was
+-- spelled. This is a domain invariant of the field, not a property of any one
+-- entry point, so it is enforced ONCE in the epic service (epics.allium:
+-- CreateEpic, UpdateEpic, SetManagedFeedConfig) where every write path
+-- inherits it. A value that reaches the poll loop below the floor anyway -- a
+-- hand-edited row, a writer that bypassed the service -- is refused at read
+-- rather than clamped: feeds.allium's FeedTick skips that epic and warns, on
+-- the grounds that a misconfigured feed should not run at all.
+--
+-- Rows that predate the floor were brought into line once, by migration v91:
+-- every stored cadence below min_feed_interval was CLAMPED UP to it, both on
+-- epics.feed_interval_secs and on the two managed-feed settings rows
+-- (reviews_feed_interval_secs, cve_feed_interval_secs). Clamped rather than
+-- nulled so the value stays explicit -- a later change to
+-- default_feed_interval must not silently retarget an epic whose cadence
+-- somebody once chose. This is a one-time data fix, not a second enforcement
+-- point: it does not relieve any write path of validating.
+--
+-- The floor exists because a feed command is a shell command on a timer.
+-- Below the floor the poll loop spawns it faster than a person could plausibly
+-- want, which is a busy loop against the user's own machine; and a negative
+-- value, before this rule existed, read as an effectively infinite interval
+-- and silenced the feed with no trace. Neither failure announced itself.
 --
 -- == How an interval is displayed back ==
 --

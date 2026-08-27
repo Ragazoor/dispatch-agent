@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::db::{self, EpicPatch};
 use crate::models::{sort_order_for_status_transition, Epic, EpicId, Task, TaskStatus};
 
-use super::{FieldUpdate, ServiceError};
+use super::{validate_feed_interval, FieldUpdate, ServiceError};
 
 // ---------------------------------------------------------------------------
 // UpdateEpicParams
@@ -154,6 +154,11 @@ impl EpicService {
     }
 
     pub async fn create_epic(&self, params: CreateEpicParams) -> Result<Epic, ServiceError> {
+        // Before the insert, not after: creation is bound as tightly as update,
+        // so an epic must not be able to be *born* below the floor and then be
+        // rejected on the follow-up patch, leaving a half-created epic behind.
+        validate_feed_interval("feed_interval_secs", params.feed_interval_secs)?;
+
         if let Some(parent_id) = params.parent_epic_id {
             self.db.get_epic(parent_id).await?.ok_or_else(|| {
                 ServiceError::NotFound(format!("Parent epic {} not found", parent_id.0))
@@ -318,6 +323,16 @@ impl EpicService {
                 "At least one field must be provided".into(),
             ));
         }
+
+        // Ahead of every write, so a refused cadence takes the whole update
+        // with it. The epic editor sends title and interval in one call, and a
+        // partial apply would save the title against a cadence the service
+        // refused (epics.allium: EditEpic).
+        //
+        // `Some(None)` — clear the field — is allowed through: it means
+        // "inherit config.default_feed_interval", which itself clears the
+        // floor, so clearing can never sink below it.
+        validate_feed_interval("feed_interval_secs", params.feed_interval_secs.flatten())?;
 
         let epic_id = params.epic_id;
         let existing = self.db.get_epic(epic_id).await?;
@@ -499,6 +514,7 @@ impl EpicService {
 mod tests {
     use super::*;
     use crate::db::{Database, EpicCrud, EpicRead};
+    use crate::models::MIN_FEED_INTERVAL_SECS;
 
     fn base_params(epic_id: EpicId) -> UpdateEpicParams {
         UpdateEpicParams {
@@ -655,6 +671,129 @@ mod tests {
         assert_eq!(epic.sort_order, Some(42));
         assert_eq!(epic.feed_command.as_deref(), Some("gh api repos/x/pulls"));
         assert_eq!(epic.feed_interval_secs, Some(300));
+    }
+
+    // --- the feed-cadence floor (core.allium: "Interval literals", CLAIM 2) ---
+
+    fn create_params_with_interval(interval: Option<i64>) -> CreateEpicParams {
+        CreateEpicParams {
+            title: "E".to_string(),
+            description: String::new(),
+            sort_order: None,
+            parent_epic_id: None,
+            feed_command: Some("true".to_string()),
+            feed_interval_secs: interval,
+        }
+    }
+
+    /// Creation is bound as tightly as update: validating only the update path
+    /// would leave an epic able to be *born* busy-looping.
+    #[tokio::test]
+    async fn create_epic_rejects_a_sub_floor_interval() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let svc = EpicService::new(db.clone());
+
+        // 0 busy-loops the runner; a negative used to wrap to a near-infinite
+        // interval and silence the feed; 59 is the off-by-one at the boundary.
+        for bad in [0, -5, MIN_FEED_INTERVAL_SECS - 1] {
+            let err = svc
+                .create_epic(create_params_with_interval(Some(bad)))
+                .await;
+            assert!(
+                matches!(err, Err(ServiceError::Validation(_))),
+                "creating with feed_interval_secs = {bad} should be rejected, got {err:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn create_epic_accepts_the_floor_itself_and_an_unset_interval() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let svc = EpicService::new(db.clone());
+
+        let at_floor = svc
+            .create_epic(create_params_with_interval(Some(MIN_FEED_INTERVAL_SECS)))
+            .await
+            .unwrap();
+        assert_eq!(at_floor.feed_interval_secs, Some(MIN_FEED_INTERVAL_SECS));
+
+        // Unset means "inherit the default", which itself clears the floor.
+        let unset = svc
+            .create_epic(create_params_with_interval(None))
+            .await
+            .unwrap();
+        assert_eq!(unset.feed_interval_secs, None);
+    }
+
+    #[tokio::test]
+    async fn update_epic_rejects_a_sub_floor_interval() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Test", "", None).await.unwrap();
+        let svc = EpicService::new(db.clone());
+
+        for bad in [0, -5, MIN_FEED_INTERVAL_SECS - 1] {
+            let err = svc
+                .update_epic(UpdateEpicParams {
+                    feed_interval_secs: Some(Some(bad)),
+                    ..base_params(epic.id)
+                })
+                .await;
+            assert!(
+                matches!(err, Err(ServiceError::Validation(_))),
+                "updating to feed_interval_secs = {bad} should be rejected, got {err:?}"
+            );
+        }
+    }
+
+    /// A rejected update must not have written anything — including the other
+    /// fields in the same call. The editor sends title and interval together,
+    /// so a partial apply would save a title against a refused cadence.
+    #[tokio::test]
+    async fn update_epic_rejecting_the_interval_writes_no_other_field() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Original", "", None).await.unwrap();
+        let svc = EpicService::new(db.clone());
+
+        let err = svc
+            .update_epic(UpdateEpicParams {
+                title: Some("Renamed".to_string()),
+                feed_interval_secs: Some(Some(10)),
+                ..base_params(epic.id)
+            })
+            .await;
+        assert!(matches!(err, Err(ServiceError::Validation(_))), "{err:?}");
+
+        let after = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.title, "Original",
+            "the title must not survive a rejected update"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_epic_accepts_the_floor_itself_and_clearing_the_interval() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Test", "", None).await.unwrap();
+        let svc = EpicService::new(db.clone());
+
+        svc.update_epic(UpdateEpicParams {
+            feed_interval_secs: Some(Some(MIN_FEED_INTERVAL_SECS)),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+        let after = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(after.feed_interval_secs, Some(MIN_FEED_INTERVAL_SECS));
+
+        // Explicit null clears to "inherit the default", never below the floor.
+        svc.update_epic(UpdateEpicParams {
+            feed_interval_secs: Some(None),
+            ..base_params(epic.id)
+        })
+        .await
+        .unwrap();
+        let cleared = db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(cleared.feed_interval_secs, None);
     }
 
     #[tokio::test]

@@ -68,6 +68,40 @@ impl From<anyhow::Error> for ServiceError {
 }
 
 // ---------------------------------------------------------------------------
+// The feed-cadence floor
+// ---------------------------------------------------------------------------
+
+/// Reject a feed cadence below [`crate::models::MIN_FEED_INTERVAL_SECS`].
+///
+/// The single enforcement point for the floor, called by every service write
+/// path that can set one: `EpicService::create_epic`, `EpicService::update_epic`
+/// and `write_managed_feed_settings`. `None` means "unset", which resolves to
+/// `config.default_feed_interval` and is always legal.
+///
+/// This lives in the service layer, not in the interval grammar, because the
+/// floor is a domain invariant of the field rather than a spelling rule — see
+/// "Interval literals" in `docs/specs/core.allium`, which states the two claims
+/// separately and says why. A grammar that also enforced the floor would be a
+/// second place it could drift out of step, and it would not bind the MCP
+/// integer paths at all.
+///
+/// `field` names the caller's own parameter, because the same invariant is
+/// spelled three ways across the surfaces (`feed_interval_secs`,
+/// `reviews_interval_secs`, `cve_interval_secs`) and an error naming the wrong
+/// one sends the reader looking in the wrong place.
+pub fn validate_feed_interval(field: &str, secs: Option<i64>) -> Result<(), ServiceError> {
+    match secs {
+        Some(s) if s < crate::models::MIN_FEED_INTERVAL_SECS => {
+            Err(ServiceError::Validation(format!(
+                "{field} must be at least {min} seconds (got {s})",
+                min = crate::models::MIN_FEED_INTERVAL_SECS
+            )))
+        }
+        _ => Ok(()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FieldUpdate — explicit set-or-clear for nullable string fields
 // ---------------------------------------------------------------------------
 

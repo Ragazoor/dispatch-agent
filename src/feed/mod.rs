@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::db::{RemovedFeedTask, TaskStore};
 use crate::mcp::McpEvent;
-use crate::models::EpicId;
+use crate::models::{EpicId, MIN_FEED_INTERVAL_SECS};
 use crate::process::ProcessRunner;
 
 pub(crate) use cycle::{FeedCycle, FeedCycleOutcome};
@@ -163,7 +163,19 @@ pub(crate) async fn cleanup_removed_feed_tasks(
     }
 }
 
-const DEFAULT_FEED_INTERVAL: Duration = Duration::from_secs(30);
+/// Cadence for a feed epic with no explicit `feed_interval_secs` —
+/// `config.default_feed_interval` in `docs/specs/core.allium`.
+///
+/// Equal to [`MIN_FEED_INTERVAL_SECS`] today and MUST NOT fall below it: the
+/// floor binds the *resolved* cadence, so an unset field that polled faster
+/// than the fastest value a user may enter would make the floor a lie.
+/// `the_default_interval_clears_the_floor` asserts the relation
+/// (feeds.allium: `DefaultFeedIntervalClearsTheFloor`). Raising this is safe;
+/// lowering it past the floor is not.
+///
+/// Kept a separate constant rather than derived from the floor: a future
+/// default of 120s must not drag the floor up with it.
+const DEFAULT_FEED_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Poll interval for the background feed task.
 /// Kept in `feed` (not reusing `TICK_INTERVAL` from `runtime`) so the two
@@ -316,10 +328,38 @@ impl FeedRunner {
                 continue;
             }
 
-            let interval = epic
-                .feed_interval_secs
-                .map(|s| Duration::from_secs(s as u64))
-                .unwrap_or(DEFAULT_FEED_INTERVAL);
+            // The feed-cadence floor, enforced on read (feeds.allium:
+            // FeedTick). Write-time validation is what normally keeps a
+            // sub-floor row from existing, so reaching this branch means the
+            // value arrived by a path that bypassed the service — a
+            // hand-edited database, or a bug — and the runner must not make it
+            // work anyway. Skipped rather than clamped: a clamped feed would
+            // run at a cadence nobody chose while looking healthy.
+            //
+            // This also covers the negative case, which failed differently and
+            // worse. The `as u64` this replaces wrapped a negative into an
+            // effectively infinite cadence, so the feed went permanently
+            // silent with nothing logged.
+            let interval = match epic.feed_interval_secs {
+                Some(s) if s < MIN_FEED_INTERVAL_SECS => {
+                    tracing::warn!(
+                        epic_id = epic.id.0,
+                        epic_title = %epic.title,
+                        feed_interval_secs = s,
+                        min_feed_interval_secs = MIN_FEED_INTERVAL_SECS,
+                        "FeedRunner: feed_interval_secs is below the minimum; \
+                         not polling this epic until it is corrected"
+                    );
+                    continue;
+                }
+                // The guard above proves `s >= MIN_FEED_INTERVAL_SECS`, which is
+                // positive, so this conversion is lossless. `unsigned_abs`
+                // rather than the `as u64` it replaces: `as` is what turned a
+                // negative into a near-infinite cadence, and if a later edit
+                // ever weakened the guard, `as` would silently do that again.
+                Some(s) => Duration::from_secs(s.unsigned_abs()),
+                None => DEFAULT_FEED_INTERVAL,
+            };
 
             let elapsed = self
                 .last_run
@@ -378,7 +418,7 @@ mod tests {
 
     use super::*;
     use crate::db::{Database, EpicCrud, EpicPatch, EpicRead, SettingsStore, TaskCrud};
-    use crate::models::{TaskStatus, TaskTag};
+    use crate::models::{TaskStatus, TaskTag, MIN_FEED_INTERVAL_SECS};
 
     use super::exec::AlwaysFailRunner;
 
@@ -912,6 +952,136 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
     }
 
+    // --- the feed-cadence floor (feeds.allium: FeedTick) ---
+
+    /// Make an epic due on the next `tick()` without touching its interval and
+    /// without sleeping: dropping its `last_run` entry makes `elapsed` read as
+    /// `Duration::MAX`, which beats any interval.
+    ///
+    /// This is the lever for "run the command again immediately". Setting the
+    /// interval to 0 used to serve that purpose, but a sub-floor interval is
+    /// now refused at read (`FeedTick`), so an interval of 0 tests the refusal
+    /// rather than the re-run.
+    fn force_due(runner: &mut FeedRunner, epic_id: EpicId) {
+        runner.last_run.remove(&epic_id);
+    }
+
+    /// The default an unset interval inherits must itself clear the floor —
+    /// otherwise a blank field polls faster than the fastest value a user is
+    /// permitted to enter. (feeds.allium: DefaultFeedIntervalClearsTheFloor)
+    #[test]
+    fn the_default_interval_clears_the_floor() {
+        assert!(
+            DEFAULT_FEED_INTERVAL >= Duration::from_secs(MIN_FEED_INTERVAL_SECS as u64),
+            "DEFAULT_FEED_INTERVAL ({DEFAULT_FEED_INTERVAL:?}) must not be below the floor \
+             of {MIN_FEED_INTERVAL_SECS}s"
+        );
+    }
+
+    /// Write-time validation is what normally keeps a sub-floor row from
+    /// existing, so this test writes one via `patch_epic` — the same bypass a
+    /// hand-edited database represents. The epic must not be polled at all:
+    /// clamping would run it at a cadence nobody chose while looking healthy.
+    #[tokio::test]
+    async fn tick_skips_an_epic_whose_stored_interval_is_below_the_floor() {
+        for bad in [0, MIN_FEED_INTERVAL_SECS - 1] {
+            let db = Arc::new(Database::open_in_memory().await.unwrap());
+            let epic = db.create_epic("Too Fast", "", None).await.unwrap();
+            db.patch_epic(
+                epic.id,
+                &EpicPatch::new()
+                    .feed_command(Some(
+                        r#"echo '[{"external_id":"1","title":"T","description":"","status":"backlog","tag":"bug"}]'"#,
+                    ))
+                    .feed_interval_secs(Some(bad)),
+            )
+            .await
+            .unwrap();
+
+            let (mut runner, mut rx) = make_runner(db.clone());
+            runner.tick().await;
+            runner.join_spawned_jobs().await;
+
+            assert!(
+                db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+                "interval {bad} is below the floor, so the command must not have run"
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                    .await
+                    .is_err(),
+                "a skipped epic must not emit a refresh"
+            );
+        }
+    }
+
+    /// A negative interval failed differently and worse than a zero one: `as
+    /// u64` wrapped it into an effectively infinite cadence, so the feed went
+    /// permanently silent with nothing logged. It now takes the same visible
+    /// skip path as any other sub-floor value.
+    #[tokio::test]
+    async fn tick_skips_an_epic_with_a_negative_interval_rather_than_wrapping() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("Negative", "", None).await.unwrap();
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new()
+                .feed_command(Some(
+                    r#"echo '[{"external_id":"1","title":"T","description":"","status":"backlog","tag":"bug"}]'"#,
+                ))
+                .feed_interval_secs(Some(-5)),
+        )
+        .await
+        .unwrap();
+
+        let (mut runner, mut rx) = make_runner(db.clone());
+        runner.tick().await;
+        runner.join_spawned_jobs().await;
+
+        assert!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().is_empty(),
+            "a negative interval must skip, not wrap into a huge one"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), rx.recv())
+                .await
+                .is_err(),
+            "a skipped epic must not emit a refresh"
+        );
+    }
+
+    /// The boundary from the other side: the floor itself is a legal cadence,
+    /// so an epic set exactly there polls normally.
+    #[tokio::test]
+    async fn tick_polls_an_epic_whose_interval_is_exactly_the_floor() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let epic = db.create_epic("At Floor", "", None).await.unwrap();
+        db.patch_epic(
+            epic.id,
+            &EpicPatch::new()
+                .feed_command(Some(
+                    r#"echo '[{"external_id":"1","title":"T","description":"","status":"backlog","tag":"bug"}]'"#,
+                ))
+                .feed_interval_secs(Some(MIN_FEED_INTERVAL_SECS)),
+        )
+        .await
+        .unwrap();
+
+        let (mut runner, mut rx) = make_runner(db.clone());
+        runner.tick().await;
+        tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("timed out waiting for the refresh")
+            .expect("channel closed");
+        runner.join_spawned_jobs().await;
+
+        assert_eq!(
+            db.list_tasks_for_epic(epic.id).await.unwrap().len(),
+            1,
+            "an interval at the floor is legal and must poll"
+        );
+    }
+
     #[tokio::test]
     async fn tick_null_feed_command_skipped() {
         let db = Arc::new(Database::open_in_memory().await.unwrap());
@@ -1280,9 +1450,7 @@ mod tests {
             &EpicPatch::new()
                 .feed_command(Some(
                     r#"echo '[{"external_id":"1","title":"T","description":"","status":"backlog","tag":"bug"}]'"#,
-                ))
-                // Zero interval so the second tick is eligible immediately.
-                .feed_interval_secs(Some(0)),
+                )),
         )
         .await
         .unwrap();
@@ -1302,6 +1470,9 @@ mod tests {
 
         drop(claim);
 
+        // The dropped tick still bumped last_run, so clear it to make the epic
+        // eligible again immediately.
+        force_due(&mut runner, epic.id);
         runner.tick().await;
         tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -1314,8 +1485,8 @@ mod tests {
         );
     }
 
-    /// B3 concurrency: two back-to-back zero-interval ticks must not drop the
-    /// task to a move/delete interleave.
+    /// B3 concurrency: two back-to-back ticks must not drop the task to a
+    /// move/delete interleave.
     ///
     /// Still race-free under SerialisedFeedCycle, and worth stating why: the
     /// claim is taken INSIDE the spawned job, not synchronously in `tick()`, so
@@ -1331,7 +1502,6 @@ mod tests {
             parent.id,
             &EpicPatch::new()
                 .feed_role(crate::models::FeedRole::ReviewsParent)
-                .feed_interval_secs(Some(0))
                 .feed_command(Some(
                     r#"echo '[{"external_id":"pr-1","title":"Team","description":"","url":"https://github.com/org/repo/pull/1","status":"backlog","tag":"pr-review","signals":["team-request"]}]'"#,
                 )),
@@ -1340,8 +1510,10 @@ mod tests {
         .unwrap();
 
         let (mut runner, mut rx) = make_runner(db.clone());
-        // Zero interval: both ticks run the feed and spawn a reconcile.
+        // Both ticks must run the feed and spawn a reconcile, so clear last_run
+        // between them to make the epic eligible again immediately.
         runner.tick().await;
+        force_due(&mut runner, parent.id);
         runner.tick().await;
         drain_events(&mut rx).await;
 
@@ -1633,9 +1805,7 @@ mod tests {
             &EpicPatch::new()
                 .feed_command(Some(
                     r#"echo '[{"external_id":"1","title":"T","description":"","status":"backlog","tag":"bug"}]'"#,
-                ))
-                // 0-second interval so the second tick re-runs the command.
-                .feed_interval_secs(Some(0)),
+                )),
         ).await
         .unwrap();
 
@@ -1651,6 +1821,8 @@ mod tests {
         assert_eq!(first.len(), 1);
         let first_id = first[0].id;
 
+        // Clear last_run so the second tick re-runs the command.
+        force_due(&mut runner, epic.id);
         runner.tick().await;
         tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await

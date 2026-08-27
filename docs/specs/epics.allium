@@ -64,17 +64,40 @@ rule EditEpic {
     -- ("Edit accepted with parse errors — ..."); the edit is still applied.
     -- Status, plan_path, sort_order and auto_dispatch are not editable
     -- via the epic editor.
+    --
+    -- The interval grammar and the interval FLOOR are enforced in different
+    -- places, and this section is where a user meets the seam. The grammar
+    -- only parses, so "10s" is a SUCCESSFUL parse — no parse error is
+    -- recorded — and is then refused on save by the floor
+    -- (core.allium: "Interval literals", CLAIM 2). A refusal is not the
+    -- parse-error path above: the save goes through UpdateEpic as one
+    -- validated call, so a refused interval rejects the WHOLE edit. No field
+    -- is applied, not even an unrelated title change in the same session, and
+    -- the validation error is surfaced as an error status message rather than
+    -- the "Edit accepted with parse errors" one.
+    --
+    -- A refused edit MUST leave the board showing the stored epic. Reporting
+    -- an error and then rendering the refused value is the worst of both: the
+    -- user is told the save failed while looking at evidence it succeeded, and
+    -- the display only self-corrects on the next DB refresh.
 
     ensures:
         let edited = EditorSession(epic)
-        if edited.title != "": epic.title = edited.title
-        if edited.description != "": epic.description = edited.description
+        -- A sub-floor interval refuses the whole edit, so every clause below
+        -- is guarded on acceptance: when the interval is refused NO field
+        -- changes, and the epic the board shows is the stored one.
+        let accepted = edited.feed_interval_secs = null
+                       or seconds(edited.feed_interval_secs) >= core/config.min_feed_interval
+        if accepted and edited.title != "": epic.title = edited.title
+        if accepted and edited.description != "": epic.description = edited.description
         -- feed fields clear on empty rather than retaining
-        if edited.feed_command != "": epic.feed_command = edited.feed_command
-        else: epic.feed_command = null
-        if edited.feed_interval_secs != null:
-            epic.feed_interval_secs = edited.feed_interval_secs
-        else: epic.feed_interval_secs = null
+        if accepted:
+            if edited.feed_command != "": epic.feed_command = edited.feed_command
+            else: epic.feed_command = null
+        if accepted:
+            if edited.feed_interval_secs != null:
+                epic.feed_interval_secs = edited.feed_interval_secs
+            else: epic.feed_interval_secs = null
 
     @guidance
         -- Unlike EditTask, the epic editor does not expose status.
@@ -96,6 +119,15 @@ rule EditEpic {
 rule CreateEpic {
     when: CreateEpic(title, description?, sort_order?, parent?,
                      feed_command?, feed_interval_secs?)
+
+    -- The universal feed-cadence floor (core.allium: "Interval literals",
+    -- CLAIM 2). A value below it is rejected with a validation error naming
+    -- the field and the minimum. Creation is bound as tightly as update:
+    -- validating only the update path would leave an epic able to be BORN
+    -- busy-looping.
+    requires:
+        if feed_interval_secs != null:
+            seconds(feed_interval_secs) >= core/config.min_feed_interval
 
     ensures: core/Epic.created(
         title: title,
@@ -390,6 +422,15 @@ rule UpdateEpicViaMcp {
     -- archive from the TUI.
     requires: status != archived
 
+    -- The universal feed-cadence floor (core.allium: "Interval literals",
+    -- CLAIM 2). A value below it is rejected with a validation error naming
+    -- the field and the minimum. Explicit null still clears the field: that
+    -- means "inherit config.default_feed_interval", which is itself at or
+    -- above the floor, so clearing can never sink below it.
+    requires:
+        if feed_interval_secs != omitted and feed_interval_secs != null:
+            seconds(feed_interval_secs) >= core/config.min_feed_interval
+
     -- parent_epic_id validation: parent must exist and no cycle may be introduced
     requires:
         if parent_epic_id != omitted and parent_epic_id != null:
@@ -503,15 +544,22 @@ rule SetManagedFeedConfigViaMcp {
                                   cve_command?, cve_interval_secs?)
 
     -- Each field is triple-state JSON: omitted = leave the stored value
-    -- unchanged; explicit null = clear to null; a value = set. A negative
-    -- interval is rejected with a -32602 validation error (0 is allowed and
-    -- means "poll every tick").
+    -- unchanged; explicit null = clear to null; a value = set.
+    --
+    -- Both intervals are bound by the universal feed-cadence floor
+    -- (core.allium: "Interval literals", CLAIM 2), rejected with a -32602
+    -- validation error naming the field and the minimum. These settings are
+    -- not a separate kind of cadence: they are COPIED onto the managed epics'
+    -- feed_interval_secs by ProvisionManagedEpics, so a value the floor would
+    -- refuse on an epic must not be reachable by writing it here instead.
+    -- Nothing about a dispatch-provisioned feed makes a busy loop cheaper than
+    -- a user-configured one.
     requires:
         if reviews_interval_secs != omitted and reviews_interval_secs != null:
-            reviews_interval_secs >= 0
+            seconds(reviews_interval_secs) >= core/config.min_feed_interval
     requires:
         if cve_interval_secs != omitted and cve_interval_secs != null:
-            cve_interval_secs >= 0
+            seconds(cve_interval_secs) >= core/config.min_feed_interval
 
     ensures:
         if reviews_command != omitted: config.reviews_feed_command = reviews_command

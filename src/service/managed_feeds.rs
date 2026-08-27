@@ -26,6 +26,7 @@ use anyhow::Result;
 
 use crate::db::{EpicCrud, EpicPatch};
 use crate::models::{Epic, EpicId, FeedRole, TaskStatus};
+use crate::service::ServiceError;
 
 /// Default display title for a freshly-created managed epic. Consulted only on
 /// creation — once an epic exists its title is owned by the user. The sub-epic
@@ -195,7 +196,20 @@ pub struct ManagedFeedSettingsPatch {
 pub async fn write_managed_feed_settings(
     db: &dyn crate::db::SettingsStore,
     patch: ManagedFeedSettingsPatch,
-) -> Result<()> {
+) -> std::result::Result<(), ServiceError> {
+    // Both intervals are checked before ANY of the four settings is written.
+    // These are separate rows, so a mid-way rejection would leave a command
+    // persisted against an interval that was refused. They are also not a
+    // separate kind of cadence: provisioning copies them onto the managed
+    // epics' `feed_interval_secs`, so the floor that binds an epic must bind
+    // them (epics.allium: SetManagedFeedConfig). `0` was blessed here as "poll
+    // every tick" before the floor existed.
+    crate::service::validate_feed_interval(
+        "reviews_interval_secs",
+        patch.reviews_interval_secs.flatten(),
+    )?;
+    crate::service::validate_feed_interval("cve_interval_secs", patch.cve_interval_secs.flatten())?;
+
     if let Some(v) = patch.reviews_command {
         db.set_reviews_feed_command(v.as_deref()).await?;
     }
@@ -235,6 +249,7 @@ pub async fn provision_managed_feeds_from_settings(db: &dyn crate::db::TaskStore
 mod tests {
     use super::*;
     use crate::db::{Database, EpicRead, SettingsStore};
+    use crate::models::MIN_FEED_INTERVAL_SECS;
 
     const REVIEWS: &str = "/scripts/fetch-reviews.sh";
     const CVE: &str = "/scripts/fetch-cve.sh";
@@ -429,5 +444,95 @@ mod tests {
             db.get_reviews_feed_command().await.unwrap().is_none(),
             "Some(None) must clear the setting"
         );
+    }
+
+    // --- the feed-cadence floor (core.allium: "Interval literals", CLAIM 2) ---
+
+    /// These settings are not a separate kind of cadence: they are copied onto
+    /// the managed epics' `feed_interval_secs`, so a value the floor refuses on
+    /// an epic must not be reachable by writing it here instead. `0` used to be
+    /// blessed here as "poll every tick".
+    #[tokio::test]
+    async fn write_managed_feed_settings_rejects_a_sub_floor_interval() {
+        for bad in [0, -5, MIN_FEED_INTERVAL_SECS - 1] {
+            let db = Database::open_in_memory().await.unwrap();
+
+            let reviews = write_managed_feed_settings(
+                &db,
+                ManagedFeedSettingsPatch {
+                    reviews_interval_secs: Some(Some(bad)),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(
+                matches!(reviews, Err(ServiceError::Validation(_))),
+                "reviews_interval_secs = {bad} should be rejected, got {reviews:?}"
+            );
+
+            let cve = write_managed_feed_settings(
+                &db,
+                ManagedFeedSettingsPatch {
+                    cve_interval_secs: Some(Some(bad)),
+                    ..Default::default()
+                },
+            )
+            .await;
+            assert!(
+                matches!(cve, Err(ServiceError::Validation(_))),
+                "cve_interval_secs = {bad} should be rejected, got {cve:?}"
+            );
+        }
+    }
+
+    /// A rejected interval must write nothing at all — not the command it
+    /// arrived alongside, and not the other feed's interval.
+    #[tokio::test]
+    async fn write_managed_feed_settings_rejecting_an_interval_writes_nothing() {
+        let db = Database::open_in_memory().await.unwrap();
+
+        let err = write_managed_feed_settings(
+            &db,
+            ManagedFeedSettingsPatch {
+                reviews_command: Some(Some(REVIEWS.to_string())),
+                reviews_interval_secs: Some(Some(10)),
+                cve_command: None,
+                cve_interval_secs: Some(Some(300)),
+            },
+        )
+        .await;
+        assert!(matches!(err, Err(ServiceError::Validation(_))), "{err:?}");
+
+        assert!(
+            db.get_reviews_feed_command().await.unwrap().is_none(),
+            "the command must not survive a rejected interval in the same call"
+        );
+        assert!(
+            db.get_cve_feed_interval_secs().await.unwrap().is_none(),
+            "the other feed's valid interval must not be written either"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_managed_feed_settings_accepts_the_floor_and_clearing() {
+        let db = Database::open_in_memory().await.unwrap();
+
+        write_managed_feed_settings(
+            &db,
+            ManagedFeedSettingsPatch {
+                reviews_interval_secs: Some(Some(MIN_FEED_INTERVAL_SECS)),
+                cve_interval_secs: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            db.get_reviews_feed_interval_secs().await.unwrap(),
+            Some(MIN_FEED_INTERVAL_SECS)
+        );
+        // Clearing means "inherit the default", which itself clears the floor.
+        assert_eq!(db.get_cve_feed_interval_secs().await.unwrap(), None);
     }
 }

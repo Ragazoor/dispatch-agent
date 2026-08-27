@@ -681,6 +681,51 @@ async fn update_epic_feed_interval_secs_set() {
     assert_eq!(updated.feed_interval_secs, Some(60));
 }
 
+/// The MCP integer path is the one that had no lower bound at all: it was how a
+/// `0` reached the column and made the feed runner respawn the command on every
+/// poll tick. The floor now binds it like every other write path.
+#[tokio::test]
+async fn update_epic_sub_floor_feed_interval_secs_rejected() {
+    for bad in [0, -5, crate::models::MIN_FEED_INTERVAL_SECS - 1] {
+        let state = test_state().await;
+        let epic = state
+            .db_write()
+            .create_epic("Feed Epic", "", None)
+            .await
+            .unwrap();
+
+        let resp = call(
+            &state,
+            "tools/call",
+            Some(json!({
+                "name": "update_epic",
+                "arguments": { "epic_id": epic.id.0, "feed_interval_secs": bad }
+            })),
+        )
+        .await;
+        let result = resp
+            .result
+            .as_ref()
+            .expect("expected isError result, got no result");
+        assert_eq!(
+            result["isError"],
+            json!(true),
+            "feed_interval_secs = {bad} should be rejected, got: {resp:?}"
+        );
+        let text = result["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("feed_interval_secs"),
+            "the error must name the field, got: {text}"
+        );
+
+        let after = state.db.get_epic(epic.id).await.unwrap().unwrap();
+        assert_eq!(
+            after.feed_interval_secs, None,
+            "a rejected interval must not be persisted"
+        );
+    }
+}
+
 #[tokio::test]
 async fn update_epic_feed_interval_secs_clear() {
     let state = test_state().await;
