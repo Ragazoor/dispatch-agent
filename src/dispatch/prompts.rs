@@ -181,36 +181,54 @@ call `rate_learning` (`helped` or `wrong`); use `/learnings` to record useful fi
 Use `delete_learning` to remove stale or incorrect entries by ID."
 }
 
-/// Instructions for writing a plan and attaching it to the task via MCP.
-pub(super) fn plan_and_attach_instruction() -> &'static str {
-    "Use /brainstorming to design the solution, then save the plan to docs/plans/ \
-and call update_task to attach it."
-}
-
-/// Dispatch instruction for no-plan tasks: conditionally suggests brainstorming
-/// based on agent judgment of task description clarity. Framed as an
-/// intermediate step, not a stopping point; `Research`/`Dependabot`/`PrReview`
-/// never reach this addendum (see `DispatchMode::for_task` and
-/// `TaskTag::is_review`), so no per-tag branch is needed here. Carries the
-/// same epic-decomposition carve-out as `wrap_up_instruction` so the two
-/// stay consistent about what counts as done.
-pub(super) fn plan_or_brainstorm_instruction() -> &'static str {
-    "Use /brainstorming to design the solution if the task description is vague or \
-underspecified. Otherwise write an implementation plan directly, save it to docs/plans/ \
-and call update_task to attach it. Attaching the plan is not the end of the task — \
-implement it in this same session (or, for an epic-decomposition task, create work \
-packages for its subtasks instead), following the TDD instruction below, and verify \
-your work before wrapping up."
+/// The design instruction for every task that arrives without a plan: an
+/// Allium-first, interview-driven sequence (elicit → spec → tests → code →
+/// weed) that replaced the older `/brainstorming` design-doc-then-plan step in
+/// task #4366.
+///
+/// Shared verbatim between the no-plan dispatch addendum and the quick-dispatch
+/// addendum, so the design step cannot drift apart between the two. A
+/// `docs/plans/` doc and a hand-off to `/allium-loop` are both named as the
+/// agent's judgement call rather than requirements — the spec, not a plan, is
+/// what this step is expected to produce.
+///
+/// Framed as an intermediate step, not a stopping point;
+/// `Research`/`Dependabot`/`PrReview` never reach this addendum (see
+/// `DispatchMode::for_task` and `TaskTag::is_review`), so no per-tag branch is
+/// needed here. Carries the same epic-decomposition carve-out as
+/// `wrap_up_instruction` so the two stay consistent about what counts as done.
+pub(super) fn spec_first_instruction() -> &'static str {
+    "Design the solution spec-first, in this order:\n\
+\n\
+1. Interview the user with the `allium:elicit` skill until the intended behaviour is \
+unambiguous. One question at a time.\n\
+2. Capture what you agreed in the relevant `docs/specs/*.allium` file, via `allium:tend`.\n\
+3. Generate tests from the spec with `allium:propagate` and confirm they fail before you \
+write any code.\n\
+4. Implement the minimum code that makes them pass.\n\
+5. Confirm spec and code agree with `allium:weed`.\n\
+\n\
+Two things are your judgement call, not requirements: write a plan to docs/plans/ and \
+attach it with update_task only if the implementation is big enough that its steps are \
+worth recording; and for a large or stubborn convergence, hand steps 3-5 to the \
+`/allium-loop` skill instead of running them inline.\n\
+\n\
+The spec is not the end of the task — implement it in this same session (or, for an \
+epic-decomposition task, create work packages for its subtasks instead) and verify your \
+work before wrapping up."
 }
 
 /// Wrap-up instruction shared by every dispatched task agent. Wording is
-/// intentionally universal, but no longer treats attaching a plan as an
-/// independently sufficient stopping point: it must be followed by
-/// implementation in the same session. Creating work packages on an epic
-/// remains a legitimate terminal state for a decomposition task, since that
-/// task's job is delegation, not implementation.
+/// intentionally universal, but no longer treats writing a spec or attaching a
+/// plan as an independently sufficient stopping point: it must be followed by
+/// implementation in the same session. The spec is named alongside the plan
+/// because `spec_first_instruction` makes a spec the normal output of the
+/// design step and a plan the optional one — naming only the plan would leave
+/// the more common artefact reading as a legitimate place to stop. Creating
+/// work packages on an epic remains a legitimate terminal state for a
+/// decomposition task, since that task's job is delegation, not implementation.
 pub(super) fn wrap_up_instruction() -> &'static str {
-    "Writing or attaching a plan for your own task is not a stopping point on \
+    "Writing a spec or attaching a plan for your own task is not a stopping point on \
 its own — implement it in the same session first. When your work is done — \
 finishing implementation, or (for an epic-decomposition task) creating work \
 packages for its subtasks — use the /wrap-up skill to commit any remaining \
@@ -328,7 +346,7 @@ pub(super) fn build_prompt(
     let addendum = match (ctx.tag, plan) {
         (Some(TaskTag::Dependabot), _) => dependabot_review_addendum(task_id),
         (Some(TaskTag::PrReview), _) => pr_review_addendum().to_string(),
-        (_, None) => plan_or_brainstorm_instruction().to_string(),
+        (_, None) => spec_first_instruction().to_string(),
         (_, Some(path)) => {
             let tail = if ctx.auto_run_plan {
                 " and begin implementing it right away — the plan has already \
@@ -407,10 +425,10 @@ pub(super) fn build_quick_dispatch_prompt(
 what they want to achieve. Once you understand the goal, call `update_task` with a \
 descriptive `title` (and optionally `description`) to rename the task on the kanban board.\n\
 \n\
-Then write a focused plan before making any changes:\n\
+Then, before making any changes:\n\
 \n\
-{attach}",
-        attach = plan_and_attach_instruction(),
+{design}",
+        design = spec_first_instruction(),
     );
 
     let block = task_block(task_id, title, description, epic);
@@ -888,23 +906,139 @@ mod tests {
     }
 
     #[test]
-    fn plan_or_brainstorm_instruction_frames_plan_as_intermediate_step() {
-        let text = plan_or_brainstorm_instruction();
+    fn spec_first_instruction_frames_the_spec_as_an_intermediate_step() {
+        let text = spec_first_instruction();
         assert!(
             text.contains("not the end of the task"),
-            "plan_or_brainstorm_instruction should make clear attaching a plan \
+            "spec_first_instruction should make clear writing the spec \
 doesn't finish the task, got: {text}"
         );
         assert!(
             text.contains("implement it"),
-            "plan_or_brainstorm_instruction should instruct the agent to implement \
-after attaching the plan, got: {text}"
+            "spec_first_instruction should instruct the agent to implement \
+after agreeing the spec, got: {text}"
         );
+    }
+
+    /// The whole point of task #4366: the design step is an Allium spec built
+    /// by interview, not a prose design doc produced by /brainstorming.
+    #[test]
+    fn spec_first_instruction_names_the_elicit_spec_test_implement_sequence() {
+        let text = spec_first_instruction();
+        for token in [
+            "allium:elicit",
+            "docs/specs/",
+            "allium:propagate",
+            "allium:weed",
+        ] {
+            assert!(
+                text.contains(token),
+                "spec_first_instruction should name {token}, got: {text}"
+            );
+        }
+        assert!(
+            !text.contains("/brainstorming"),
+            "spec_first_instruction must not name the retired /brainstorming skill, got: {text}"
+        );
+        // The sequence is ordered: elicit before the spec, spec before tests,
+        // tests before the alignment check.
+        let idx = |needle: &str| text.find(needle).expect("token present");
+        assert!(
+            idx("allium:elicit") < idx("docs/specs/"),
+            "interview comes before the spec, got: {text}"
+        );
+        assert!(
+            idx("docs/specs/") < idx("allium:propagate"),
+            "the spec comes before the tests it generates, got: {text}"
+        );
+        assert!(
+            idx("allium:propagate") < idx("allium:weed"),
+            "tests come before the alignment check, got: {text}"
+        );
+    }
+
+    /// Both escape hatches are the agent's judgement call. A prompt that reads
+    /// as *requiring* a plan doc is the behaviour this task removed.
+    #[test]
+    fn spec_first_instruction_makes_the_plan_doc_and_allium_loop_optional() {
+        let text = spec_first_instruction();
+        assert!(
+            text.contains("judgement call") || text.contains("not requirements"),
+            "spec_first_instruction should mark the optional steps as the agent's \
+call, got: {text}"
+        );
+        // A plan is still described well enough to write one when it helps.
+        assert!(
+            text.contains("docs/plans/") && text.contains("update_task"),
+            "spec_first_instruction should still say where an optional plan goes \
+and how to attach it, got: {text}"
+        );
+        assert!(
+            text.contains("only if"),
+            "the plan clause should be conditional, not an instruction, got: {text}"
+        );
+        assert!(
+            text.contains("/allium-loop"),
+            "spec_first_instruction should offer /allium-loop for a large or \
+stubborn convergence, got: {text}"
+        );
+    }
+
+    /// `/brainstorming` must not survive in *any* rendered prompt. This is the
+    /// regression guard for task #4366 — a single named test cannot be
+    /// blanket-accepted the way an `INSTA_UPDATE=always` snapshot can.
+    #[test]
+    fn no_prompt_variant_names_the_retired_brainstorming_skill() {
+        let plain = PromptContext::default();
+        let dependabot = PromptContext {
+            tag: Some(TaskTag::Dependabot),
+            ..PromptContext::default()
+        };
+        let pr_review = PromptContext {
+            tag: Some(TaskTag::PrReview),
+            ..PromptContext::default()
+        };
+        let variants = [
+            (
+                "dispatch no-plan",
+                build_prompt(TaskId(1), "t", "d", None, None, &plain),
+            ),
+            (
+                "dispatch with-plan",
+                build_prompt(TaskId(1), "t", "d", Some("/p.md"), None, &plain),
+            ),
+            (
+                "quick dispatch",
+                build_quick_dispatch_prompt(TaskId(1), "t", "d", None, &plain),
+            ),
+            (
+                "research",
+                build_research_prompt(TaskId(1), "t", "d", None, &plain),
+            ),
+            (
+                "pipeline",
+                build_pipeline_prompt(TaskId(1), "t", Some("staging"), "main", None, &plain),
+            ),
+            (
+                "dependabot",
+                build_prompt(TaskId(1), "t", "d", None, None, &dependabot),
+            ),
+            (
+                "pr review",
+                build_prompt(TaskId(1), "t", "d", None, None, &pr_review),
+            ),
+        ];
+        for (variant, text) in variants {
+            assert!(
+                !text.contains("brainstorm"),
+                "{variant} prompt must not mention brainstorming, got: {text}"
+            );
+        }
     }
 
     #[test]
     fn no_plan_addendum_instructs_implementation_for_every_working_tag() {
-        // plan_or_brainstorm_instruction is reused verbatim for every tag that
+        // spec_first_instruction is reused verbatim for every tag that
         // reaches it with no plan — Bug, Feature, Chore, Fix, and no tag.
         // Research never reaches this addendum with no plan (DispatchMode
         // diverts it to build_research_prompt instead), so no per-tag branch
@@ -941,6 +1075,13 @@ follow plan-attach, got: {text}"
             text.contains("not a stopping point"),
             "wrap_up_instruction should say attaching a plan alone is not a \
 stopping point, got: {text}"
+        );
+        // Since #4366 the spec, not the plan, is the usual output of the design
+        // step — so the spec has to be named here too, or the more common
+        // artefact reads as a legitimate place to stop.
+        assert!(
+            text.contains("spec"),
+            "wrap_up_instruction should also rule out stopping at the spec, got: {text}"
         );
         assert!(
             text.contains("finishing implementation"),
@@ -1196,10 +1337,10 @@ stopping point for epic-decomposition tasks, got: {text}"
             !text.contains("Always use TDD"),
             "dependabot prompt must omit the TDD instruction"
         );
-        // The standard plan-or-brainstorm addendum must be replaced.
+        // The standard spec-first addendum must be replaced.
         assert!(
-            !text.contains("/brainstorming"),
-            "dependabot prompt must omit the brainstorming addendum"
+            !text.contains("allium:elicit"),
+            "dependabot prompt must omit the spec-first design addendum"
         );
     }
 
@@ -1247,7 +1388,7 @@ stopping point for epic-decomposition tasks, got: {text}"
     }
 
     #[test]
-    fn build_prompt_with_pr_review_tag_omits_plan_and_brainstorm_instructions() {
+    fn build_prompt_with_pr_review_tag_omits_the_spec_first_design_addendum() {
         let ctx = PromptContext {
             tag: Some(TaskTag::PrReview),
             ..PromptContext::default()
@@ -1262,8 +1403,8 @@ stopping point for epic-decomposition tasks, got: {text}"
         );
 
         assert!(
-            !text.contains("/brainstorming"),
-            "pr-review prompt must NOT contain /brainstorming"
+            !text.contains("allium:elicit"),
+            "pr-review prompt must NOT contain the spec-first design addendum"
         );
         assert!(
             !text.contains("implementation plan"),

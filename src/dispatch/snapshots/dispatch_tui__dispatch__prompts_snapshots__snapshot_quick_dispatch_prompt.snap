@@ -11,9 +11,19 @@ Task:
 
 This is a quick-dispatched task with a placeholder title. Start by asking the user what they want to achieve. Once you understand the goal, call `update_task` with a descriptive `title` (and optionally `description`) to rename the task on the kanban board.
 
-Then write a focused plan before making any changes:
+Then, before making any changes:
 
-Use /brainstorming to design the solution, then save the plan to docs/plans/ and call update_task to attach it.
+Design the solution spec-first, in this order:
+
+1. Interview the user with the `allium:elicit` skill until the intended behaviour is unambiguous. One question at a time.
+2. Capture what you agreed in the relevant `docs/specs/*.allium` file, via `allium:tend`.
+3. Generate tests from the spec with `allium:propagate` and confirm they fail before you write any code.
+4. Implement the minimum code that makes them pass.
+5. Confirm spec and code agree with `allium:weed`.
+
+Two things are your judgement call, not requirements: write a plan to docs/plans/ and attach it with update_task only if the implementation is big enough that its steps are worth recording; and for a large or stubborn convergence, hand steps 3-5 to the `/allium-loop` skill instead of running them inline.
+
+The spec is not the end of the task — implement it in this same session (or, for an epic-decomposition task, create work packages for its subtasks instead) and verify your work before wrapping up.
 
 Always use TDD: express intended behaviour as tests first, then implement the minimum code to make them pass.
 
@@ -23,4 +33,4 @@ The dispatch MCP tools are available — use them to query and update this task 
 
 Knowledge base: when anything is unclear, call `query_learnings` to check the knowledge base before guessing or asking. When you act on a surfaced learning, call `rate_learning` (`helped` or `wrong`); use `/learnings` to record useful findings. Use `delete_learning` to remove stale or incorrect entries by ID.
 
-Writing or attaching a plan for your own task is not a stopping point on its own — implement it in the same session first. When your work is done — finishing implementation, or (for an epic-decomposition task) creating work packages for its subtasks — use the /wrap-up skill to commit any remaining changes and finalise the task.
+Writing a spec or attaching a plan for your own task is not a stopping point on its own — implement it in the same session first. When your work is done — finishing implementation, or (for an epic-decomposition task) creating work packages for its subtasks — use the /wrap-up skill to commit any remaining changes and finalise the task.

@@ -437,7 +437,7 @@ rule DispatchTaskViaMcp {
     @guidance
         -- Returns an error if task.status != backlog.
         -- A single DispatchTask call covers both has_plan = true
-        -- (with-plan prompt) and has_plan = false (brainstorm-or-plan
+        -- (with-plan prompt) and has_plan = false (spec-first
         -- prompt) variants — the prompt builder branches internally.
         -- dispatch_task is the only remaining MCP dispatch tool: it stays the
         -- explicit "dispatch this specific task" call, while epic chaining is

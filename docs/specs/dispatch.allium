@@ -148,6 +148,22 @@ rule DispatchTask {
     ensures: task.tmux_window = core/TmuxWindow.created(name: "task-" + task.id)
     ensures: AgentLaunched(task: task, mode: standard)
 
+    @guarantee OneNameForStartingATask
+        -- The action-hint label for this key on a BACKLOG task is
+        -- "dispatch", unconditionally — it does not vary on whether the task
+        -- has a plan attached. "Dispatch" is the name of the act of starting
+        -- a task, and that act is identical either way: the same worktree,
+        -- the same tmux window, the same agent. What the plan changes is only
+        -- what the prompt tells that agent to do first (see the unified
+        -- prompt skeleton below), which is not something the user is choosing
+        -- between when they press the key.
+        -- The no-plan label previously read "brainstorm", after the design
+        -- skill the no-plan prompt used to name. That made a prompt-internal
+        -- detail into a second user-facing verb for one action, and it
+        -- outlived the skill itself: the design step is now an Allium-first
+        -- elicit-and-spec sequence, so the label named a workflow that no
+        -- longer existed.
+
     @guidance
         -- == Subagent state reset ==
         -- A fresh dispatch clears every core/SubagentEntry left over from a
@@ -506,25 +522,42 @@ rule DispatchTask {
         --
         -- DispatchTask emits one of two variants of build_prompt:
         --   * has_plan = false: preamble "Your task is:" and the addendum
-        --     is plan_or_brainstorm_instruction (conditional: if vague
-        --     use /brainstorming, else write the plan directly under
-        --     docs/plans/ and attach via update_task). The addendum is
-        --     explicit that attaching the plan is not the end of the task:
-        --     implementation (TDD) must follow in the same session, not a
-        --     separate dispatch — except for an epic-decomposition task,
-        --     for which creating work packages for its subtasks is named as
-        --     the alternative (mirroring wrap_up_instruction's carve-out
-        --     below; there is no tag or field that identifies such a task,
-        --     so both instructions name the exception in prose rather than
-        --     branching on task state). This wording is otherwise NOT
-        --     tag-conditional — Bug, Feature, Chore, Fix, and no-tag all
-        --     reach this same addendum and all imply working code. Research
-        --     is excluded without a branch here: DispatchResearchTask
-        --     already diverts a no-plan research-tagged task to
-        --     build_research_prompt before build_prompt's addendum is ever
-        --     selected (see "only when the task has no plan" above), and
-        --     Dependabot/PrReview are overridden with their own review
-        --     addenda regardless of plan state (see the exceptions below).
+        --     is spec_first_instruction — an unconditional, ordered
+        --     sequence: interview the user with the allium:elicit skill,
+        --     capture the agreed behaviour in docs/specs/*.allium, generate
+        --     tests from the spec with allium:propagate, implement the
+        --     minimum code to pass them, then confirm alignment with
+        --     allium:weed. The Allium spec, not a prose design doc, is the
+        --     design artefact this variant asks for.
+        --     Two clauses in it are explicitly the agent's judgement call,
+        --     not requirements: writing a docs/plans/ doc and attaching it
+        --     via update_task (worth it only when the implementation is
+        --     large enough for the steps to be worth recording), and
+        --     handing the propagate/implement/weed steps to the
+        --     /allium-loop skill instead of running them inline (worth it
+        --     for large or stubborn convergences). Neither is enforced, and
+        --     the prompt says so — a plan-shaped artefact is no longer the
+        --     expected output of the design step at all.
+        --     There is no vague-vs-clear branch: the same sequence is
+        --     named however well-specified the description is, because the
+        --     elicit step is what establishes whether it was.
+        --     The addendum is explicit that the spec is not the end of the
+        --     task: implementation (TDD) must follow in the same session,
+        --     not a separate dispatch — except for an epic-decomposition
+        --     task, for which creating work packages for its subtasks is
+        --     named as the alternative (mirroring wrap_up_instruction's
+        --     carve-out below; there is no tag or field that identifies
+        --     such a task, so both instructions name the exception in prose
+        --     rather than branching on task state). This wording is
+        --     otherwise NOT tag-conditional — Bug, Feature, Chore, Fix, and
+        --     no-tag all reach this same addendum and all imply working
+        --     code. Research is excluded without a branch here:
+        --     DispatchResearchTask already diverts a no-plan
+        --     research-tagged task to build_research_prompt before
+        --     build_prompt's addendum is ever selected (see "only when the
+        --     task has no plan" above), and Dependabot/PrReview are
+        --     overridden with their own review addenda regardless of plan
+        --     state (see the exceptions below).
         --     This closes a gap where a bug/feature/chore-tagged agent read
         --     "write and attach a plan" plus the (then-universal) wrap-up
         --     wording as license to stop at a plan-only state instead of
@@ -542,16 +575,24 @@ rule DispatchTask {
         -- CreateQuickTask (build_quick_dispatch_prompt) is the exception:
         -- its preamble is "You are working interactively with the user."
         -- rather than "Your task is:" — quick dispatch begins as an
-        -- interactive conversation where the agent elicits the goal
-        -- before writing a plan.
+        -- interactive conversation where the agent establishes the goal
+        -- and renames the task, then follows the same
+        -- spec_first_instruction sequence as the no-plan variant above.
+        -- The instruction text is shared verbatim between the two, so the
+        -- design step cannot drift apart between them.
         -- task_block does NOT include a Tag: line — tag is metadata for
         -- the kanban board, not for prompt context (it would invite the
         -- agent to over-fit on labels rather than the description).
         -- wrap_up_instruction is shared by every dispatched agent so the
         -- whole task lifecycle terminates the same way regardless of mode.
-        -- It explicitly rules out plan-attach as a standalone stopping
-        -- point ("not a stopping point on its own — implement it in the
-        -- same session first"); the two stopping points it names are
+        -- It explicitly rules out writing a spec or attaching a plan as a
+        -- standalone stopping point ("not a stopping point on its own —
+        -- implement it in the same session first"); it names the spec as
+        -- well as the plan because spec_first_instruction makes a spec the
+        -- normal output of the design step and a plan the optional one,
+        -- so naming only the plan would leave the more common artefact
+        -- reading as a legitimate place to stop. The two stopping points
+        -- it names are
         -- finishing implementation and, for an epic-decomposition task
         -- only, creating work packages for its subtasks (that task's job
         -- is delegation, not implementation, so stopping there is
@@ -562,7 +603,7 @@ rule DispatchTask {
         -- presents findings interactively and does not terminate via
         -- the standard wrap-up flow.
         -- Dependabot exception: when task.tag = dependabot, build_prompt
-        -- replaces the plan_or_brainstorm addendum with a dependabot
+        -- replaces the spec_first addendum with a dependabot
         -- review runbook (vet the PR, classify the bump as patch/minor/
         -- major via semver, check CI, scan the changelog, auto-approve
         -- + merge if safe via `gh pr review --approve` and `gh pr merge
@@ -572,7 +613,7 @@ rule DispatchTask {
         -- tdd, no allium, and explicitly NO wrap_up_instruction, because
         -- the dependabot task is auto-cleaned when its PR merges (or
         -- the user takes over). PrReview exception: when task.tag =
-        -- pr_review, build_prompt replaces the plan_or_brainstorm
+        -- pr_review, build_prompt replaces the spec_first
         -- addendum with a minimal PR review runbook (check diff size
         -- via `gh pr diff`, run /review for small PRs or /review-pr for
         -- large PRs, do not call /wrap-up). The trailing block is also
@@ -846,8 +887,8 @@ rule RetryFresh {
     @guidance
         -- RetryFresh dispatches directly via the standard dispatch
         -- path. The unified prompt skeleton handles both has_plan = true
-        -- (review-and-implement) and has_plan = false (brainstorm-or-plan
-        -- conditional) variants without any branch in this rule.
+        -- (review-and-implement) and has_plan = false (spec-first)
+        -- variants without any branch in this rule.
 }
 
 -- == Main Session ==

@@ -18,19 +18,23 @@ async fn action_hints_backlog_task() {
         .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(
-        keys.contains(&"[Space]"),
-        "should have dispatch/brainstorm hint"
-    );
+    assert!(keys.contains(&"[Space]"), "should have dispatch hint");
     assert!(keys.contains(&"[e]"), "should have edit hint");
     assert!(keys.contains(&"[L]"), "should have move hint");
     assert!(!keys.contains(&"[H]"), "backlog has no back movement");
     assert!(keys.contains(&"[x]"), "should have archive hint");
     assert!(keys.contains(&"[n]"), "should have new hint");
     let text: String = hints.iter().map(|s| s.content.as_ref()).collect();
+    // "dispatch" is the one name for starting a task, whether or not a plan is
+    // attached. The label used to read "brainstorm" for a no-plan task, naming
+    // a design step that no longer exists (see task #4366).
     assert!(
-        text.contains("brainstorm"),
-        "backlog dispatch means brainstorm"
+        text.contains("dispatch"),
+        "starting a backlog task is always called dispatch, got: {text}"
+    );
+    assert!(
+        !text.contains("brainstorm"),
+        "the retired brainstorm label must not come back, got: {text}"
     );
 }
 

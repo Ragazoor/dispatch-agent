@@ -595,12 +595,12 @@ pub(in crate::tui) fn action_hints(
     if let Some(task) = task {
         match task.status {
             TaskStatus::Backlog => {
-                let space_label = if task.plan_path.is_some() {
-                    "dispatch"
-                } else {
-                    "brainstorm"
-                };
-                push_hint("Space", space_label);
+                // One name for starting a task, whether or not a plan is
+                // attached. The no-plan case used to read "brainstorm", naming
+                // a design step the dispatch prompt no longer has (#4366) —
+                // and the plan's presence changes what the agent is told to do
+                // first, not what the user is doing by pressing Space.
+                push_hint("Space", "dispatch");
                 push_hint("e", "edit");
                 push_hint("L", "move");
                 push_hint("x", "done");

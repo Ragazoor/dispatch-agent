@@ -4,7 +4,7 @@ use super::mock_sequence::{
 };
 use super::prompts::{
     allium_instruction, build_prompt, build_quick_dispatch_prompt, epic_preamble,
-    mcp_tools_instruction, plan_and_attach_instruction, reused_rebase_preamble, task_block,
+    mcp_tools_instruction, reused_rebase_preamble, spec_first_instruction, task_block,
     tdd_instruction, wrap_up_instruction, EpicContext, LearningInjections, PromptContext,
 };
 use super::worktree::{
@@ -55,8 +55,8 @@ fn mcp_tools_instruction_mentions_get_and_update() {
 }
 
 #[test]
-fn plan_and_attach_instruction_mentions_docs_plans_and_update_task() {
-    let instr = plan_and_attach_instruction();
+fn spec_first_instruction_mentions_docs_plans_and_update_task() {
+    let instr = spec_first_instruction();
     assert!(instr.contains("docs/plans/"));
     assert!(instr.contains("update_task"));
 }
@@ -286,7 +286,7 @@ fn build_prompt_without_plan_includes_wrap_up_universally() {
 }
 
 #[test]
-fn build_prompt_without_plan_includes_planning_instruction() {
+fn build_prompt_without_plan_says_where_an_optional_plan_goes() {
     let prompt = build_prompt(
         TaskId(1),
         "Task",
@@ -297,20 +297,16 @@ fn build_prompt_without_plan_includes_planning_instruction() {
     );
     assert!(
         prompt.contains("docs/plans/"),
-        "no-plan prompt should instruct agent to write a plan"
+        "no-plan prompt should say where a plan goes if the agent writes one"
     );
     assert!(
         prompt.contains("update_task"),
-        "no-plan prompt should instruct agent to attach plan via MCP"
-    );
-    assert!(
-        prompt.contains("ask") || prompt.contains("permission") || prompt.contains("proceed"),
-        "no-plan prompt should ask for permission before implementing"
+        "no-plan prompt should say how to attach that plan via MCP"
     );
 }
 
 #[test]
-fn build_prompt_without_plan_mentions_brainstorm_if_vague() {
+fn build_prompt_without_plan_sends_the_agent_to_elicit_a_spec() {
     let prompt = build_prompt(
         TaskId(1),
         "Task",
@@ -320,17 +316,19 @@ fn build_prompt_without_plan_mentions_brainstorm_if_vague() {
         &PromptContext::default(),
     );
     assert!(
-        prompt.contains("/brainstorming"),
-        "no-plan prompt should mention /brainstorming for vague descriptions"
+        prompt.contains("allium:elicit"),
+        "no-plan prompt should name the interview skill"
     );
     assert!(
-        prompt.contains("vague"),
-        "no-plan prompt should mention vagueness as the condition for brainstorming"
+        prompt.contains("docs/specs/"),
+        "no-plan prompt should name the Allium spec as the design artefact"
     );
 }
 
+/// The design step no longer *requires* a plan doc — it is offered as an
+/// option, conditional on the size of the implementation.
 #[test]
-fn build_prompt_without_plan_mentions_direct_plan_alternative() {
+fn build_prompt_without_plan_makes_the_plan_doc_optional() {
     let prompt = build_prompt(
         TaskId(1),
         "Task",
@@ -340,8 +338,12 @@ fn build_prompt_without_plan_mentions_direct_plan_alternative() {
         &PromptContext::default(),
     );
     assert!(
-        prompt.contains("implementation plan directly"),
-        "no-plan prompt should offer writing a plan directly for clear descriptions"
+        prompt.contains("only if the implementation is big enough"),
+        "no-plan prompt should condition the plan doc on implementation size"
+    );
+    assert!(
+        !prompt.contains("implementation plan directly"),
+        "no-plan prompt should no longer instruct writing a plan as the design output"
     );
 }
 
@@ -614,7 +616,7 @@ fn build_prompt_without_plan_omits_plan_section() {
 }
 
 #[test]
-fn build_quick_dispatch_prompt_includes_planning_instruction() {
+fn build_quick_dispatch_prompt_includes_the_spec_first_sequence() {
     let prompt = build_quick_dispatch_prompt(
         TaskId(42),
         "Quick task",
@@ -623,12 +625,12 @@ fn build_quick_dispatch_prompt_includes_planning_instruction() {
         &PromptContext::default(),
     );
     assert!(
-        prompt.contains("docs/plans/") || prompt.contains("plan"),
-        "quick dispatch prompt should instruct agent to write a plan before implementing"
+        prompt.contains("allium:elicit") && prompt.contains("docs/specs/"),
+        "quick dispatch prompt should send the agent through the spec-first design step"
     );
     assert!(
-        prompt.contains("ask") || prompt.contains("permission") || prompt.contains("proceed"),
-        "quick dispatch prompt should ask for permission before implementing"
+        prompt.contains("asking the user"),
+        "quick dispatch prompt should still open by asking the user what they want"
     );
 }
 
@@ -695,14 +697,18 @@ fn build_quick_dispatch_prompt_includes_epic_context() {
 }
 
 #[test]
-fn no_plan_prompts_reference_brainstorming_skill() {
+fn no_plan_prompts_reference_the_elicit_skill() {
     let standard = build_prompt(TaskId(1), "T", "D", None, None, &PromptContext::default());
     let quick = build_quick_dispatch_prompt(TaskId(1), "T", "D", None, &PromptContext::default());
 
     for (name, prompt) in [("standard-no-plan", standard), ("quick", quick)] {
         assert!(
-            prompt.contains("/brainstorming"),
-            "{name} prompt should reference /brainstorming skill"
+            prompt.contains("allium:elicit"),
+            "{name} prompt should reference the allium:elicit skill"
+        );
+        assert!(
+            !prompt.contains("/brainstorming"),
+            "{name} prompt should no longer reference the retired /brainstorming skill"
         );
     }
 }
@@ -782,17 +788,19 @@ fn every_prompt_uses_task_block_format() {
     }
 }
 
+/// Quick dispatch and the no-plan variant share one design instruction, so the
+/// design step cannot drift apart between them.
 #[test]
-fn quick_dispatch_uses_unconditional_plan_and_attach_instruction() {
+fn quick_dispatch_embeds_the_shared_spec_first_instruction() {
     let prompt =
         build_quick_dispatch_prompt(TaskId(1), "Quick task", "", None, &PromptContext::default());
     assert!(
-        prompt.contains(plan_and_attach_instruction()),
-        "quick-dispatch prompt should embed plan_and_attach_instruction verbatim"
+        prompt.contains(spec_first_instruction()),
+        "quick-dispatch prompt should embed spec_first_instruction verbatim"
     );
     assert!(
         !prompt.contains("vague or"),
-        "quick-dispatch must not use the conditional plan_or_brainstorm wording"
+        "no prompt should retain the retired vague-vs-clear branch"
     );
 }
 
@@ -809,15 +817,17 @@ fn wrap_up_instruction_universal_wording() {
     );
 }
 
+/// The instruction is a numbered sequence, so it is necessarily longer than the
+/// one-liner it replaced — but it must stay a compact runbook, not an essay.
 #[test]
-fn plan_and_attach_instruction_is_concise() {
-    let instruction = plan_and_attach_instruction();
+fn spec_first_instruction_stays_compact() {
+    let instruction = spec_first_instruction();
     assert!(
-        instruction.len() < 200,
-        "plan_and_attach_instruction should be concise (< 200 chars), got {} chars",
+        instruction.len() < 1200,
+        "spec_first_instruction should stay a compact runbook (< 1200 chars), got {} chars",
         instruction.len()
     );
-    assert!(instruction.contains("/brainstorming"));
+    assert!(instruction.contains("allium:elicit"));
     assert!(instruction.contains("update_task"));
     assert!(instruction.contains("docs/plans/"));
 }
