@@ -401,6 +401,7 @@ rule RecordLearningViaMcp {
     requires: scope = user implies scope_ref = null
     requires: scope in {repo, epic, task} implies scope_ref != null
     requires: not references_internal_code(summary) and not references_internal_code(detail)
+    requires: kind = procedural implies detail != null
 
     ensures: core/Learning.created(
         kind: kind,
@@ -442,25 +443,69 @@ rule RecordLearningViaMcp {
         --   - a `Type::method` citation (a PascalCase type plus a `::`-qualified
         --     method), or
         --   - a bare snake_case identifier with four or more underscores,
-        --     backticked or not.
-        -- These three shapes mirror three of check-doc-symbols.sh's four
+        --     backticked or not, or
+        --   - a call with empty parentheses — an identifier immediately
+        --     followed by "()", backticked or not, or
+        --   - a macro invocation — an identifier followed by "!", where the
+        --     identifier contains an underscore or the "!" is followed by an
+        --     opening bracket, or
+        --   - a source-file reference: a token carrying a file extension that
+        --     either contains a directory separator, or whose extension names
+        --     a programming language. A bare manifest or document filename
+        --     with no directory separator is NOT a source-file reference —
+        --     naming a root manifest or a spec file does not rot the way a
+        --     path into the source tree does. Tokens that look like a URL or
+        --     a hostname are exempt.
+        -- The first three shapes mirror three of check-doc-symbols.sh's four
         -- candidate shapes (pathsym, typesym, bare) — see that script's header
         -- comment. Unlike that script, this is an unconditional reject, not a
         -- phantom-existence check: a citation that currently resolves is just
         -- as exposed to future rot as one that never did, since nothing
         -- re-validates the knowledge base against the codebase on a schedule.
-        -- The fourth shape (a bare backticked snake_case span) is deliberately
-        -- NOT rejected: this project's MCP tool names (query_learnings,
-        -- wrap_up, exit_session, ...) are backticked snake_case with an
-        -- underscore, and are a stable public interface an agent should be
-        -- able to name in a learning, not the internal-code-detail this check
-        -- exists to keep out.
+        -- The script's fourth shape (a bare backticked snake_case span) is
+        -- deliberately NOT rejected: this project's MCP tool names
+        -- (query_learnings, wrap_up, exit_session, ...) are backticked
+        -- snake_case with an underscore, and are a stable public interface an
+        -- agent should be able to name in a learning, not the
+        -- internal-code-detail this check exists to keep out.
+        --
+        -- WHERE THE CHECK DELIBERATELY STOPS. A bare PascalCase word
+        -- (TuiRuntime, InputMode) and a short snake_case identifier
+        -- (handle_tick, make_task) are implementation detail and must not be
+        -- recorded, but they are NOT mechanically rejected. No regex separates
+        -- them from a product name (GitHub, BigQuery), an external library
+        -- name, or a lint name, and a filter that rejects those degrades the
+        -- prose it is meant to protect. Keeping them out is the /learnings
+        -- skill's job and the record_learning tool description's job, not the
+        -- validator's. The validator catches only shapes that prose never
+        -- produces; the copy carries the rule in full.
         -- There is no escape hatch (unlike check-doc-symbols.sh's
         -- allow-phantom-symbol: marker): the knowledge base has no human
         -- review step, so a free-text override embedded in agent-authored
         -- content would be unenforceable. An agent that needs to cite specific
         -- code should put it in the Allium spec or a Rust doc comment instead,
         -- both of which are gated and both of which have an escape hatch.
+        --
+        -- A procedural learning must carry a detail. Procedural entries exist
+        -- to steer other agents, and an instruction that says what to do and
+        -- never when to stop is not a guardrail — so the detail must name the
+        -- boundary: the case where the agent stops following the entry and
+        -- asks a human. Only the detail's PRESENCE is enforced; whether it
+        -- actually names a boundary is a convention carried by the /learnings
+        -- skill and the record_learning tool description. The other five kinds
+        -- are unaffected: a pitfall either bites or it does not, and demanding
+        -- a boundary there would be noise.
+        --
+        -- The tool description also carries the intake triage an agent applies
+        -- before writing prose about code: could you write a failing check for
+        -- a violation from the source alone, without knowing what the author
+        -- meant? If yes it is a lint rule and prose is the wrong home
+        -- anywhere — write the check, record nothing. If no it is judgment,
+        -- and prose is right. If the finding is that the code is shaped wrong
+        -- rather than that a rule exists, it is a smell and the fix is a
+        -- refactor, not a sentence. This is guidance, not a validated
+        -- precondition — nothing can check it mechanically, which is the
+        -- point of the question.
         -- Implemented in find_code_citation() / create_learning()
         -- (src/service/learnings.rs).
 }

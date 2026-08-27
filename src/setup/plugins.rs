@@ -1180,6 +1180,84 @@ mod tests {
         );
     }
 
+    /// The validator only catches shapes prose never produces — a bare
+    /// PascalCase or short snake_case name walks straight through it (task
+    /// #4402: no regex separates `TuiRuntime` from `GitHub`). The skill copy
+    /// is therefore the only thing keeping those out, so it has to state the
+    /// rule in full rather than deferring to what `record_learning` rejects.
+    #[test]
+    fn learnings_skill_forbids_naming_implementation_detail_a_validator_misses() {
+        let section = section_after(skill_body("learnings"), "### Do NOT record:")
+            .expect("learnings skill must have a 'Do NOT record' section");
+        for term in ["function", "type", "macro", "fixture", "file"] {
+            assert!(
+                section.contains(term),
+                "the Do NOT record list must name '{term}' among the things an entry \
+                 may not name — the validator does not catch all of them: {section}"
+            );
+        }
+        assert!(
+            section.contains("rejects only")
+                || section
+                    .to_lowercase()
+                    .contains("not everything here is rejected"),
+            "the list must tell the agent the validator is narrower than the rule, \
+             or an agent will read a successful call as approval: {section}"
+        );
+    }
+
+    /// Ported from the `kognic-knowledge` plugin's capture triage (task
+    /// #4402). Without it, "Do NOT record" is a list of categories an agent
+    /// has to pattern-match against; with it there is one question that
+    /// decides, and it routes a whole class of would-be entries to a lint
+    /// instead of to prose.
+    #[test]
+    fn learnings_skill_carries_the_machine_check_triage() {
+        let content = skill_body("learnings");
+        assert!(
+            content.contains("failing check"),
+            "the skill must ask whether a failing check could be written from the \
+             source alone: {content}"
+        );
+        assert!(
+            content.to_lowercase().contains("lint"),
+            "the triage's yes-branch must route to a lint rule rather than prose: {content}"
+        );
+        assert!(
+            content.to_lowercase().contains("smell"),
+            "the triage's third branch — wrongly-shaped code is a smell, and the fix \
+             is a refactor not a sentence — must survive: {content}"
+        );
+    }
+
+    /// `record_learning` enforces only that a procedural entry HAS a detail.
+    /// What the detail must contain — the case where the agent stops and asks
+    /// a human — is convention, and this copy is where it lives (task #4402,
+    /// ported from OKF's required `# Escalate` section).
+    #[test]
+    fn learnings_skill_requires_a_boundary_on_procedural_entries() {
+        let content = skill_body("learnings").to_lowercase();
+        assert!(
+            content.contains("procedural") && content.contains("ask a human"),
+            "the skill must say a procedural entry's detail names when to stop and \
+             ask a human: {content}"
+        );
+    }
+
+    /// The summary-writing guidance used to illustrate "name the specific
+    /// thing" with an example naming a Rust type — the exact habit task #4402
+    /// exists to break. An example teaches harder than a rule, so a stale one
+    /// here would quietly undo the section above it.
+    #[test]
+    fn learnings_skill_summary_guidance_names_no_symbol() {
+        let section = section_after(skill_body("learnings"), "### Writing a good summary")
+            .expect("learnings skill must have a summary-writing section");
+        assert!(
+            !section.contains("TaskPatch"),
+            "the summary example must not name a type — it models the banned habit: {section}"
+        );
+    }
+
     /// The scope table must not offer `project` — LearningScope has only
     /// user/repo/epic/task (task #4152: the row was stale, and an agent
     /// passing scope="project" gets a deserialization error).

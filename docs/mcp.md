@@ -73,7 +73,7 @@ JSON-RPC 2.0 §4.1 forbids replying to a Notification (a request with no `id`). 
 
 ## Debugging MCP handlers
 
-The MCP server listens on port 3142 by default (override with `DISPATCH_PORT`). When a handler misbehaves you can reproduce it without going through Claude Code:
+The MCP server listens on port 3142 by default (override with `DISPATCH_PORT`), on the `/mcp` path — posting to the bare origin gives a 404. `tools/call` also needs a caller-identity header: exactly one of `X-Caller-Task-Id` or `X-Caller-Kind`, never both. When a handler misbehaves you can reproduce it without going through Claude Code:
 
 ```bash
 # Tail server logs while the TUI runs (logs go to stderr; redirect when launching)
@@ -81,14 +81,16 @@ RUST_LOG=dispatch=debug cargo run -- tui 2> /tmp/dispatch.log
 tail -f /tmp/dispatch.log
 
 # Send a manual JSON-RPC request to a tool (e.g. list_tasks)
-curl -s -X POST http://127.0.0.1:3142 \
+curl -s -X POST http://127.0.0.1:3142/mcp \
   -H 'Content-Type: application/json' \
+  -H 'X-Caller-Task-Id: 42' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_tasks","arguments":{}}}' \
   | jq
 
 # Reproduce a failing update — substitute the offending arguments
-curl -s -X POST http://127.0.0.1:3142 \
+curl -s -X POST http://127.0.0.1:3142/mcp \
   -H 'Content-Type: application/json' \
+  -H 'X-Caller-Task-Id: 42' \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"update_task","arguments":{"task_id":42,"status":"done"}}}' \
   | jq
 ```

@@ -326,7 +326,7 @@ async fn record_learning_rejects_code_citation_in_summary() {
         })),
     )
     .await;
-    assert_error(&resp, "internal code");
+    assert_error(&resp, "implementation detail");
 
     let learnings = state
         .db

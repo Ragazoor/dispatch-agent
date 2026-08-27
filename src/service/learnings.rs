@@ -38,19 +38,90 @@ static BARE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap_or_else(|e| unreachable!("BARE_RE is a hardcoded pattern: {e}"))
 });
 
+// A call site: an identifier immediately followed by empty parentheses. Prose
+// does not produce this shape, so no carve-out is needed — not even for the
+// MCP tool names the bare-identifier rule deliberately lets through.
+static CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z_][A-Za-z0-9_]*\(\)")
+        .unwrap_or_else(|e| unreachable!("CALL_RE is a hardcoded pattern: {e}"))
+});
+
+// A macro invocation, in two shapes. The underscore in the first is what
+// separates `patch_struct!` from an exclamation mark in prose ("Never push to
+// main!"); the second needs no underscore because the bracket is unambiguous.
+static MACRO_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+!")
+        .unwrap_or_else(|e| unreachable!("MACRO_RE is a hardcoded pattern: {e}"))
+});
+
+static MACRO_BRACKET_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"([a-z_][a-z0-9_]*!)[\(\[\{]")
+        .unwrap_or_else(|e| unreachable!("MACRO_BRACKET_RE is a hardcoded pattern: {e}"))
+});
+
+// A candidate file reference: a token carrying an extension, optionally with
+// directory separators. Whether it is *rejected* depends on the two tests in
+// `find_file_reference` — this only finds the candidates.
+static FILEISH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[A-Za-z0-9_][A-Za-z0-9_./+-]*\.[A-Za-z][A-Za-z0-9]{0,9}")
+        .unwrap_or_else(|e| unreachable!("FILEISH_RE is a hardcoded pattern: {e}"))
+});
+
+// Extensions that name a programming language. A bare filename with one of
+// these is a source file wherever it lives, so it is rejected without needing
+// a directory separator. Everything else — `md`, `json`, `toml`, `yaml`,
+// `lock`, `allium` — is a document or a root manifest, and naming one does not
+// rot the way a path into the source tree does.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "py", "pyi", "scala", "sbt", "cs", "go", "java",
+    "kt", "kts", "rb", "php", "swift", "cc", "cpp", "hpp", "sql", "sh", "bash", "zsh", "tf",
+    "tfvars", "lua", "dart", "ex", "exs", "vue", "svelte",
+];
+
+/// Finds a file reference worth rejecting: a token with an extension that
+/// either contains a directory separator (a path into the tree) or whose
+/// extension names a programming language (a source file). Tokens that are
+/// part of a URL or a hostname are exempt — a link does not rot the way a
+/// path does, and rejecting one would cost more than it saves.
+fn find_file_reference(text: &str) -> Option<&str> {
+    FILEISH_RE.find_iter(text).find_map(|m| {
+        let token = m.as_str();
+        if token.starts_with("www.") || text[..m.start()].ends_with("//") {
+            return None;
+        }
+        let is_path = token.contains('/');
+        let is_source = token
+            .rsplit('.')
+            .next()
+            .is_some_and(|ext| SOURCE_EXTENSIONS.contains(&ext));
+        (is_path || is_source).then_some(token)
+    })
+}
+
 /// Detects an internal-code-shaped citation in learning text: a
 // allow-phantom-symbol: describes the citation shape itself, not a real reference
-/// `path.rs::symbol` reference, a `Type::method` reference, or a long (5+
-/// segment) bare snake_case identifier. Returns the offending substring on a
-/// match. See docs/specs/learnings.allium: RecordLearningViaMcp for the
-/// rationale, including why short backticked identifiers (MCP tool names)
-/// are deliberately not flagged.
+/// `path.rs::symbol` reference, a `Type::method` reference, a long (5+
+/// segment) bare snake_case identifier, a call with empty parentheses, a macro
+/// invocation, or a source-file reference. Returns the offending substring on
+/// a match. See docs/specs/learnings.allium: RecordLearningViaMcp for the
+/// rationale, including why short bare identifiers (MCP tool names, and
+/// PascalCase type names a regex cannot tell from a product name) are
+/// deliberately left to the /learnings skill rather than flagged here.
 fn find_code_citation(text: &str) -> Option<&str> {
     PATHSYM_RE
         .find(text)
         .or_else(|| TYPESYM_RE.find(text))
         .or_else(|| BARE_RE.find(text))
+        .or_else(|| CALL_RE.find(text))
+        .or_else(|| MACRO_RE.find(text))
         .map(|m| m.as_str())
+        .or_else(|| {
+            MACRO_BRACKET_RE
+                .captures(text)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str())
+        })
+        .or_else(|| find_file_reference(text))
 }
 
 /// Rejects `field` (the "summary" or "detail" text of a learning) if it
@@ -58,8 +129,8 @@ fn find_code_citation(text: &str) -> Option<&str> {
 fn reject_code_citation(field: &str, text: &str) -> Result<(), ServiceError> {
     if let Some(hit) = find_code_citation(text) {
         return Err(ServiceError::Validation(format!(
-            "learning {field} cites internal code (`{hit}`) — this rots silently since \
-             nothing re-checks the knowledge base against the codebase. Describe the \
+            "learning {field} names implementation detail (`{hit}`) — this rots silently \
+             since nothing re-checks the knowledge base against the codebase. Describe the \
              durable behavior in prose instead, or add the citation to the relevant \
              docs/specs/*.allium file or a Rust doc comment, both of which \
              check-doc-symbols.sh keeps accurate on every push."
@@ -121,6 +192,17 @@ impl LearningService {
         reject_code_citation("summary", &params.summary)?;
         if let Some(detail) = &params.detail {
             reject_code_citation("detail", detail)?;
+        } else if params.kind == LearningKind::Procedural {
+            // A procedural entry steers other agents, so it has to say where it
+            // stops applying. Only the detail's presence is enforced; that it
+            // actually names a boundary is a convention the /learnings skill
+            // and the tool description carry. See docs/specs/learnings.allium:
+            // RecordLearningViaMcp.
+            return Err(ServiceError::Validation(
+                "a procedural learning must carry a detail that says when to stop following \
+                 it and ask a human — an instruction with no boundary is not a guardrail"
+                    .into(),
+            ));
         }
         match params.scope {
             LearningScope::User => {
@@ -669,7 +751,7 @@ mod learning_tests {
     async fn create_learning_allows_tool_name_reference() {
         let svc = service().await;
         svc.create_learning(CreateLearningParams {
-            kind: LearningKind::Procedural,
+            kind: LearningKind::Convention,
             summary: "Call `query_learnings` before guessing, not after.".to_string(),
             detail: None,
             scope: LearningScope::User,
@@ -679,5 +761,164 @@ mod learning_tests {
         })
         .await
         .unwrap();
+    }
+
+    // -----------------------------------------------------------------
+    // Empty-parens calls, macro invocations and source-file references
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn find_code_citation_rejects_empty_parens_call() {
+        assert_eq!(
+            super::find_code_citation("Migration tests must build the store with in_memory_db()."),
+            Some("in_memory_db()")
+        );
+        assert_eq!(
+            super::find_code_citation("Assert on `recorded_calls()` rather than the queue."),
+            Some("recorded_calls()")
+        );
+    }
+
+    #[test]
+    fn find_code_citation_allows_parens_that_are_not_a_call() {
+        // A `()` not preceded by an identifier is a unit type or plain prose,
+        // not a call site.
+        assert_eq!(
+            super::find_code_citation("A delete returning Result<()> cannot say \"not found\"."),
+            None
+        );
+    }
+
+    #[test]
+    fn find_code_citation_rejects_macro_invocation() {
+        assert_eq!(
+            super::find_code_citation("The service_api_delegate! macro generates the impl."),
+            Some("service_api_delegate!")
+        );
+        // No underscore, but the bracket makes it unambiguous.
+        assert_eq!(
+            super::find_code_citation("Reach for vec![] over an explicit push loop."),
+            Some("vec!")
+        );
+    }
+
+    #[test]
+    fn find_code_citation_allows_an_exclamation_mark_in_prose() {
+        assert_eq!(
+            super::find_code_citation("Never push to main! Open a PR instead."),
+            None
+        );
+    }
+
+    #[test]
+    fn find_code_citation_rejects_a_path_into_the_tree() {
+        assert_eq!(
+            super::find_code_citation("The wire format is parsed in src/feed/ingest.rs."),
+            Some("src/feed/ingest.rs")
+        );
+        // A doc path rots the same way a source path does.
+        assert_eq!(
+            super::find_code_citation("Read docs/testing.md before adding a test target."),
+            Some("docs/testing.md")
+        );
+    }
+
+    #[test]
+    fn find_code_citation_rejects_a_bare_source_filename() {
+        assert_eq!(
+            super::find_code_citation("The poll loop lives in cycle.rs."),
+            Some("cycle.rs")
+        );
+    }
+
+    #[test]
+    fn find_code_citation_allows_a_bare_manifest_or_spec_filename() {
+        // No directory separator, and the extension names a document or a
+        // manifest rather than a language — these do not rot.
+        for text in [
+            "A fresh worktree needs npm ci because package-lock.json is not shared.",
+            "Version pins belong in Cargo.toml, not in a build script.",
+            "That convention is already in CLAUDE.md.",
+            "Shared feed-cycle behaviour is specified in feeds.allium.",
+        ] {
+            assert_eq!(super::find_code_citation(text), None, "text: {text}");
+        }
+    }
+
+    #[test]
+    fn find_code_citation_allows_a_git_ref_or_a_url() {
+        assert_eq!(
+            super::find_code_citation("Rebase onto origin/main before wrapping up."),
+            None
+        );
+        assert_eq!(
+            super::find_code_citation("The upstream issue is at https://github.com/foo/bar."),
+            None
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Procedural entries must state their boundary
+    // -----------------------------------------------------------------
+
+    #[tokio::test]
+    async fn create_learning_rejects_procedural_without_detail() {
+        let svc = service().await;
+        let err = svc
+            .create_learning(CreateLearningParams {
+                kind: LearningKind::Procedural,
+                summary: "Always sync the repo before starting work.".to_string(),
+                detail: None,
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: vec![],
+                source_task_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Validation(_)));
+    }
+
+    #[tokio::test]
+    async fn create_learning_allows_procedural_with_detail() {
+        let svc = service().await;
+        svc.create_learning(CreateLearningParams {
+            kind: LearningKind::Procedural,
+            summary: "Always sync the repo before starting work.".to_string(),
+            detail: Some(
+                "Stop and ask the user when the sync reports a conflict you did not cause."
+                    .to_string(),
+            ),
+            scope: LearningScope::User,
+            scope_ref: None,
+            tags: vec![],
+            source_task_id: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_learning_allows_other_kinds_without_detail() {
+        let svc = service().await;
+        for kind in [
+            LearningKind::Pitfall,
+            LearningKind::Convention,
+            LearningKind::Preference,
+            LearningKind::ToolRecommendation,
+            LearningKind::Landscape,
+        ] {
+            svc.create_learning(CreateLearningParams {
+                kind,
+                summary: "A summary that stands on its own without a detail.".to_string(),
+                detail: None,
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: vec![],
+                source_task_id: None,
+            })
+            .await
+            .unwrap();
+        }
     }
 }
