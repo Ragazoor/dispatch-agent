@@ -1598,7 +1598,24 @@ fn repo_cursor_resets_on_quick_dispatch_entry() {
 }
 
 #[test]
-fn detached_review_task_shows_awaiting_merge_header() {
+fn detached_review_task_without_a_pr_shows_parked_header() {
+    let mut task = make_task(1, TaskStatus::Review);
+    task.sub_status = SubStatus::AwaitingReview;
+    task.url = None;
+    task.worktree = Some("/repo/.worktrees/1-fix".to_string());
+    task.tmux_window = None; // detached
+    let mut app = App::new(vec![task]);
+    let buf = render_to_buffer(&mut app, 120, 20);
+    assert!(
+        buffer_contains(&buf, "parked"),
+        "detached review task with no PR should show 'parked' section header"
+    );
+}
+
+/// Detach state stops mattering once a PR exists — there is no longer a separate
+/// "awaiting merge" section.
+#[test]
+fn detached_review_task_with_a_pr_shows_awaiting_review_header() {
     let mut task = make_task(1, TaskStatus::Review);
     task.sub_status = SubStatus::AwaitingReview;
     task.url = Some(crate::models::TaskUrl::new(
@@ -1610,8 +1627,12 @@ fn detached_review_task_shows_awaiting_merge_header() {
     let mut app = App::new(vec![task]);
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(
-        buffer_contains(&buf, "awaiting merge"),
-        "detached review task should show 'awaiting merge' section header"
+        buffer_contains(&buf, "awaiting review"),
+        "detached review task with a PR should show 'awaiting review'"
+    );
+    assert!(
+        !buffer_contains(&buf, "parked"),
+        "detached review task with a PR should not be parked"
     );
 }
 
@@ -1632,42 +1653,76 @@ fn live_review_task_shows_awaiting_review_header() {
         "live review task should show 'awaiting review' section header"
     );
     assert!(
-        !buffer_contains(&buf, "awaiting merge"),
-        "live review task should not show 'awaiting merge'"
+        !buffer_contains(&buf, "parked"),
+        "live review task should not show 'parked'"
     );
 }
 
 #[test]
-fn detached_and_live_review_tasks_get_separate_sections() {
-    // Live task (has tmux window)
-    let mut live = make_task(1, TaskStatus::Review);
-    live.sub_status = SubStatus::AwaitingReview;
-    live.url = Some(crate::models::TaskUrl::new(
+fn parked_and_awaiting_review_tasks_get_separate_sections() {
+    // Has a PR — awaiting review, regardless of detach state.
+    let mut with_pr = make_task(1, TaskStatus::Review);
+    with_pr.sub_status = SubStatus::AwaitingReview;
+    with_pr.url = Some(crate::models::TaskUrl::new(
         "https://github.com/org/repo/pull/10",
         crate::models::UrlType::Pr,
     ));
-    live.worktree = Some("/repo/.worktrees/1-fix".to_string());
-    live.tmux_window = Some("1-fix".to_string());
+    with_pr.worktree = Some("/repo/.worktrees/1-fix".to_string());
+    with_pr.tmux_window = Some("1-fix".to_string());
 
-    // Detached task (no tmux window)
-    let mut detached = make_task(2, TaskStatus::Review);
-    detached.sub_status = SubStatus::AwaitingReview;
-    detached.url = Some(crate::models::TaskUrl::new(
-        "https://github.com/org/repo/pull/11",
-        crate::models::UrlType::Pr,
-    ));
-    detached.worktree = Some("/repo/.worktrees/2-feat".to_string());
-    detached.tmux_window = None;
+    // No PR and detached — parked.
+    let mut parked = make_task(2, TaskStatus::Review);
+    parked.sub_status = SubStatus::AwaitingReview;
+    parked.url = None;
+    parked.worktree = Some("/repo/.worktrees/2-feat".to_string());
+    parked.tmux_window = None;
 
-    let mut app = App::new(vec![live, detached]);
+    let mut app = App::new(vec![with_pr, parked]);
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(
         buffer_contains(&buf, "awaiting review"),
-        "should show 'awaiting review' for live task"
+        "should show 'awaiting review' for the task with a PR"
     );
     assert!(
-        buffer_contains(&buf, "awaiting merge"),
-        "should show 'awaiting merge' for detached task"
+        buffer_contains(&buf, "parked"),
+        "should show 'parked' for the detached task with no PR"
+    );
+}
+
+/// Changes I requested on someone else's PR are a different section from changes
+/// requested on mine, and they sort below every section that needs my attention.
+#[test]
+fn changes_requested_by_me_is_a_separate_section_below_my_own() {
+    let pr_url = |n: i64| {
+        Some(crate::models::TaskUrl::new(
+            format!("https://github.com/org/repo/pull/{n}"),
+            crate::models::UrlType::Pr,
+        ))
+    };
+
+    // Someone requested changes on my PR — I must fix it.
+    let mut mine = make_task(1, TaskStatus::Review);
+    mine.sub_status = SubStatus::ChangesRequested;
+    mine.tag = Some(crate::models::TaskTag::Feature);
+    mine.url = pr_url(10);
+
+    // I requested changes on someone else's PR — waiting on them.
+    let mut theirs = make_task(2, TaskStatus::Review);
+    theirs.sub_status = SubStatus::ChangesRequested;
+    theirs.tag = Some(crate::models::TaskTag::PrReview);
+    theirs.url = pr_url(11);
+
+    let mut app = App::new(vec![mine, theirs]);
+    let buf = render_to_buffer(&mut app, 120, 20);
+    let mine_row = buffer_find_row(&buf, "changes requested");
+    let theirs_row = buffer_find_row(&buf, "changes requested by me");
+    assert!(
+        mine_row.is_some() && theirs_row.is_some(),
+        "both sections should render; got {mine_row:?} and {theirs_row:?}"
+    );
+    assert!(
+        mine_row < theirs_row,
+        "'changes requested' should render above 'changes requested by me'"
     );
 }
 

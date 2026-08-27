@@ -74,13 +74,45 @@ enum SubStatus {
 
     -- review
     awaiting_review   -- PR created, no review decision yet
-                      -- UI splits this into two visual sections based on runtime state:
-                      --   "awaiting review" — tmux window alive (agent still active)
-                      --   "awaiting merge"  — tmux window gone (detached, just waiting for merge)
-    changes_requested -- reviewer requested changes
+    changes_requested -- reviewer requested changes. Covers both directions:
+                      -- changes requested on the user's own PR, and changes the
+                      -- user requested on someone else's. The UI separates the
+                      -- two — see "Derived review sections" below.
     approved          -- PR approved, ready to merge
     pr_closed         -- GitHub closed the PR without merging; task stays in review so a human can act
 }
+
+-- == Derived review sections ==
+--
+-- The Review column renders two section headers that are NOT SubStatus values.
+-- They are derived from the task row at render time, never persisted:
+--
+--   "parked"                  status = review and worktree != null and
+--                             tmux_window = null and not (url != null and
+--                             url.url_type = pr)
+--
+--                             The agent session has ended and there is no PR to
+--                             review or merge. sub_status is deliberately not
+--                             part of the condition: with no PR there is nothing
+--                             for a review decision to be about, so this
+--                             dominates any decision recorded without one.
+--
+--   "changes requested by me" sub_status = changes_requested and
+--                             tag in {pr_review, dependabot}
+--
+--                             Those tags mean the task reviews someone else's PR
+--                             rather than authoring one, so the changes were
+--                             requested BY the user and the ball is with the
+--                             other author.
+--
+-- Both are derived rather than stored so they self-correct: a parked task leaves
+-- the parked section the moment its tmux window reappears, with nothing to write
+-- back. Detach state alone does NOT create a section — a detached task that has
+-- a PR renders under plain "awaiting review", because once a PR exists only the
+-- review decision matters.
+--
+-- Implemented as DerivedSection alongside VisualColumn, on the same priority
+-- scale as SubStatus.column_priority.
 
 -- Valid SubStatus values per parent status (enforced in the DB by a CHECK
 -- constraint and in-code via SubStatus.is_valid_for):
@@ -780,10 +812,27 @@ config {
 --       1 | Active           | running       | active
 --       2 | Blocked          | running       | needs_input
 --       3 | Stale            | running       | stale, crashed, conflict
---       4 | PR Created       | review        | awaiting_review, conflict, pr_closed  (awaiting_review splits into "awaiting review" / "awaiting merge" sections by detach state)
+--       4 | PR Created       | review        | awaiting_review, conflict, pr_closed
 --       5 | Revise           | review        | changes_requested
 --       6 | Approved         | review        | approved
 --       7 | Done             | done          | none
+--
+-- Review-column section order (within nav column 2, top to bottom). Sections are
+-- ordered by how much they need the user, most first. Two are derived rather
+-- than stored — see "Derived review sections" under SubStatus above:
+--
+--   # | Section                            | Means
+--   --+------------------------------------+------------------------------------
+--   1 | conflict                           | rebase/merge conflict — blocked
+--   2 | pr closed                          | closed without merging — decide
+--   3 | changes requested                  | on the user's own PR — must fix
+--   4 | approved                           | ready to merge — one keystroke
+--   5 | awaiting review                    | nothing to do yet
+--   6 | parked                   (derived) | no PR, agent session ended
+--   7 | changes requested by me  (derived) | waiting on the other author
+--
+-- "approved" deliberately sorts ABOVE "awaiting review": an approved PR is
+-- actionable, an undecided one is not.
 --
 -- Navigation column layout (h/l cursor, left to right):
 --

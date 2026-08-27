@@ -57,7 +57,7 @@ pub mod budget;
 pub use budget::*;
 
 mod columns;
-pub use columns::VisualColumn;
+pub use columns::{task_column_priority, task_header_label, DerivedSection, VisualColumn};
 
 mod interval;
 pub use interval::{format_interval_secs, parse_interval_secs, INTERVAL_EXAMPLES};

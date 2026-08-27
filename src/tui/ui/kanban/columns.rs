@@ -156,9 +156,7 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
         // Substatus grouping headers (Running / Review columns only).
         if show_headers {
             let priority = match item {
-                ColumnItem::Task(t) => {
-                    crate::tui::display_column_priority(t.sub_status, t.is_detached())
-                }
+                ColumnItem::Task(t) => crate::models::task_column_priority(t),
                 ColumnItem::Epic(e) => epic_stats
                     .get(&e.id)
                     .map(|s| s.substatus.column_priority())
@@ -170,9 +168,7 @@ fn build_task_col_data(input: TaskColInput<'_>) -> TaskColData {
             if Some(priority) != current_priority {
                 current_priority = Some(priority);
                 let label = match item {
-                    ColumnItem::Task(t) => {
-                        crate::tui::display_header_label(t.sub_status, t.is_detached()).to_string()
-                    }
+                    ColumnItem::Task(t) => crate::models::task_header_label(t).to_string(),
                     ColumnItem::Epic(e) => epic_stats
                         .get(&e.id)
                         .map(|s| s.substatus.header_label())

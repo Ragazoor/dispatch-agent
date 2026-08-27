@@ -19,7 +19,8 @@ use chrono::{DateTime, Utc};
 #[cfg(test)]
 use crate::models::ReviewDecision;
 use crate::models::{
-    epic_substatus, Epic, EpicId, EpicSubstatus, SubStatus, Task, TaskId, TaskStatus, VisualColumn,
+    epic_substatus, task_column_priority, task_header_label, Epic, EpicId, EpicSubstatus,
+    SubStatus, Task, TaskId, TaskStatus, VisualColumn,
 };
 
 // ---------------------------------------------------------------------------
@@ -112,102 +113,6 @@ pub(in crate::tui) const DISPATCH_SPINNER_FRAMES: u8 = 10;
 /// and must be excluded from task-operation hotkeys.
 pub(in crate::tui) fn is_edge_column(col: usize) -> bool {
     col == TaskStatus::COLUMN_COUNT + 1
-}
-
-/// Sort priority below `SubStatus::Approved`, reserved for the detached
-/// display override below (see `display_column_priority`). Derived rather
-/// than a hardcoded literal so inserting a new `SubStatus` priority tier
-/// can't silently desync this from `SubStatus::Approved`'s actual slot.
-const DETACHED_AWAITING_REVIEW_PRIORITY: u8 = SubStatus::Approved.column_priority() + 1;
-
-/// Whether the detach-aware display override (see `display_column_priority`
-/// / `display_header_label`) applies: a detached `awaiting_review` task
-/// (agent session ended, PR not yet merged). `is_detached` is a presentation
-/// concern (derived from `Task::is_detached`), not part of the `SubStatus`
-/// domain model.
-fn is_detached_awaiting_review(sub_status: SubStatus, is_detached: bool) -> bool {
-    is_detached && sub_status == SubStatus::AwaitingReview
-}
-
-/// Column sort priority for a task's sub-status, with the detach-aware
-/// display override applied: a detached `awaiting_review` task sinks below
-/// `Approved` so it doesn't crowd out review items that still need
-/// attention.
-pub(in crate::tui) fn display_column_priority(sub_status: SubStatus, is_detached: bool) -> u8 {
-    if is_detached_awaiting_review(sub_status, is_detached) {
-        DETACHED_AWAITING_REVIEW_PRIORITY
-    } else {
-        sub_status.column_priority()
-    }
-}
-
-/// Section-header label for a task's sub-status, with the detach-aware
-/// display override applied: a detached `awaiting_review` task shows
-/// "awaiting merge" instead, since the agent session has ended and the task
-/// is just waiting on the PR to land.
-pub(in crate::tui) fn display_header_label(
-    sub_status: SubStatus,
-    is_detached: bool,
-) -> &'static str {
-    if is_detached_awaiting_review(sub_status, is_detached) {
-        "awaiting merge"
-    } else {
-        sub_status.header_label()
-    }
-}
-
-#[cfg(test)]
-mod display_priority_tests {
-    use super::*;
-
-    #[test]
-    fn detached_awaiting_review_sinks_below_approved() {
-        let priority = display_column_priority(SubStatus::AwaitingReview, true);
-        assert!(priority > SubStatus::Approved.column_priority());
-    }
-
-    #[test]
-    fn non_detached_awaiting_review_keeps_model_priority() {
-        assert_eq!(
-            display_column_priority(SubStatus::AwaitingReview, false),
-            SubStatus::AwaitingReview.column_priority()
-        );
-    }
-
-    #[test]
-    fn detach_flag_is_a_no_op_for_other_sub_statuses() {
-        for &ss in SubStatus::ALL {
-            if ss == SubStatus::AwaitingReview {
-                continue;
-            }
-            assert_eq!(
-                display_column_priority(ss, true),
-                ss.column_priority(),
-                "detach flag should not affect {ss:?}"
-            );
-            assert_eq!(
-                display_header_label(ss, true),
-                ss.header_label(),
-                "detach flag should not affect {ss:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn detached_awaiting_review_label_is_awaiting_merge() {
-        assert_eq!(
-            display_header_label(SubStatus::AwaitingReview, true),
-            "awaiting merge"
-        );
-    }
-
-    #[test]
-    fn non_detached_awaiting_review_keeps_model_label() {
-        assert_eq!(
-            display_header_label(SubStatus::AwaitingReview, false),
-            SubStatus::AwaitingReview.header_label()
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1487,7 +1392,7 @@ impl App {
             // Orphan tasks (epic not in board) sort last within each substatus group.
             let mut sorted_tasks = tasks;
             sorted_tasks.sort_by_key(|t| {
-                let priority = display_column_priority(t.sub_status, t.is_detached());
+                let priority = task_column_priority(t);
                 let epic_sk = match t.epic_id.and_then(|eid| epic_lookup.get(&eid)) {
                     Some(e) => e.sort_order.unwrap_or(e.id.0),
                     None => i64::MAX,
@@ -1504,17 +1409,13 @@ impl App {
             let mut current_epic_id: Option<EpicId> = None;
 
             for t in sorted_tasks {
-                let detached = t.is_detached();
-                let priority = display_column_priority(t.sub_status, detached);
+                let priority = task_column_priority(t);
                 let priority_changed = Some(priority) != current_priority;
                 if priority_changed {
                     current_priority = Some(priority);
                     current_epic_id = None;
                     if show_substatus_labels {
-                        items.push(ColumnItem::SubstatusLabel(display_header_label(
-                            t.sub_status,
-                            detached,
-                        )));
+                        items.push(ColumnItem::SubstatusLabel(task_header_label(t)));
                     }
                 }
 
@@ -1550,7 +1451,7 @@ impl App {
 
         items.sort_by_key(|item| match item {
             ColumnItem::Task(t) => (
-                display_column_priority(t.sub_status, t.is_detached()),
+                task_column_priority(t),
                 t.sort_order.unwrap_or(t.id.0),
                 t.id.0,
             ),
@@ -1681,7 +1582,7 @@ impl App {
 
         items.sort_by_key(|item| match item {
             ColumnItem::Task(t) => (
-                display_column_priority(t.sub_status, t.is_detached()),
+                task_column_priority(t),
                 t.sort_order.unwrap_or(t.id.0),
                 t.id.0,
             ),

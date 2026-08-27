@@ -10,19 +10,27 @@ use ratatui::{
     Terminal,
 };
 
+/// One row of a rendered buffer as a string. The single place that knows how a
+/// row is reconstructed from cells, so the three matchers below stay consistent
+/// if that ever changes (e.g. multi-width glyph handling).
+pub(in crate::tui) fn buffer_line(buf: &Buffer, y: u16) -> String {
+    let area = buf.area();
+    (area.left()..area.right())
+        .map(|x| buf[(x, y)].symbol())
+        .collect()
+}
+
 /// Check whether a rendered buffer contains the given text anywhere.
 pub(in crate::tui) fn buffer_contains(buf: &Buffer, text: &str) -> bool {
+    buffer_find_row(buf, text).is_some()
+}
+
+/// Row index of the first line in a rendered buffer containing the given text,
+/// or `None`. Use over [`buffer_contains`] when the assertion is about relative
+/// vertical order (e.g. which section header renders above which).
+pub(in crate::tui) fn buffer_find_row(buf: &Buffer, text: &str) -> Option<u16> {
     let area = buf.area();
-    for y in area.top()..area.bottom() {
-        let mut line = String::new();
-        for x in area.left()..area.right() {
-            line.push_str(buf[(x, y)].symbol());
-        }
-        if line.contains(text) {
-            return true;
-        }
-    }
-    false
+    (area.top()..area.bottom()).find(|&y| buffer_line(buf, y).contains(text))
 }
 
 /// Case-insensitive [`buffer_contains`]. Use when the assertion is "this text
@@ -32,16 +40,7 @@ pub(in crate::tui) fn buffer_contains(buf: &Buffer, text: &str) -> bool {
 pub(in crate::tui) fn buffer_contains_ignore_case(buf: &Buffer, text: &str) -> bool {
     let needle = text.to_lowercase();
     let area = buf.area();
-    for y in area.top()..area.bottom() {
-        let mut line = String::new();
-        for x in area.left()..area.right() {
-            line.push_str(buf[(x, y)].symbol());
-        }
-        if line.to_lowercase().contains(&needle) {
-            return true;
-        }
-    }
-    false
+    (area.top()..area.bottom()).any(|y| buffer_line(buf, y).to_lowercase().contains(&needle))
 }
 
 /// Helper: render the app into a test terminal and return the buffer.

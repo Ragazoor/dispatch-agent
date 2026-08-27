@@ -290,6 +290,12 @@ impl SubStatus {
                 priority: PRIORITY_CHANGES_REQUESTED,
                 header_label: "changes requested",
             },
+            // An approved PR is one keystroke from merging, so it outranks a PR
+            // that is merely awaiting a decision and needs nothing from anyone.
+            SubStatus::Approved => SubStatusProperties {
+                priority: PRIORITY_APPROVED,
+                header_label: "approved",
+            },
             // Active, AwaitingReview, and None share a sort slot: none of
             // them signals urgency the way Conflict/Crashed/Stale do.
             SubStatus::Active => SubStatusProperties {
@@ -304,10 +310,6 @@ impl SubStatus {
                 priority: PRIORITY_ACTIVE_SLOT,
                 header_label: "",
             },
-            SubStatus::Approved => SubStatusProperties {
-                priority: PRIORITY_APPROVED,
-                header_label: "approved",
-            },
         }
     }
 }
@@ -319,20 +321,20 @@ struct SubStatusProperties {
 }
 
 // Column-priority sort slots (lower = more urgent = top of column). Gaps are
-// intentional: they leave room for the presentation layer to insert display-
-// only overrides (see `display_column_priority` in `src/tui/mod.rs`) without
-// colliding with a named slot here.
+// intentional: they leave room to insert a new tier — a later sub-status, or a
+// `DerivedSection` in `src/models/columns.rs` — without renumbering the slots
+// around it and without colliding with a named slot here.
 const PRIORITY_URGENT: u8 = 0;
 // PrClosed sorts right after Conflict (Review-only; never coexists with the
 // Running-only tiers below, but still gets its own number so it doesn't
 // silently share a header group with any of them).
-const PRIORITY_PR_CLOSED: u8 = 1;
-const PRIORITY_CRASHED: u8 = 2;
-const PRIORITY_STALE: u8 = 3;
-const PRIORITY_NEEDS_INPUT: u8 = 4;
-const PRIORITY_CHANGES_REQUESTED: u8 = 5;
-const PRIORITY_ACTIVE_SLOT: u8 = 6;
-const PRIORITY_APPROVED: u8 = 7;
+const PRIORITY_PR_CLOSED: u8 = 5;
+const PRIORITY_CRASHED: u8 = 10;
+const PRIORITY_STALE: u8 = 20;
+const PRIORITY_NEEDS_INPUT: u8 = 30;
+const PRIORITY_CHANGES_REQUESTED: u8 = 40;
+const PRIORITY_APPROVED: u8 = 45;
+const PRIORITY_ACTIVE_SLOT: u8 = 50;
 
 define_str_enum!(SubStatus, "sub-status" {
     None => "none",
@@ -1421,7 +1423,7 @@ mod notification_kind_tests {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
-mod model_tests {
+pub(in crate::models) mod model_tests {
     use super::*;
     use chrono::Utc;
 
@@ -1674,18 +1676,53 @@ mod model_tests {
         );
     }
 
+    /// Asserted as a relative chain, not as literal integers: the slot numbers
+    /// carry gaps so the presentation layer can insert display-only overrides
+    /// between them, and pinning the literals makes every such insertion a
+    /// test edit.
     #[test]
     fn substatus_column_priority_matches_urgency_ordering() {
-        assert_eq!(SubStatus::Conflict.column_priority(), 0);
-        assert_eq!(SubStatus::PrClosed.column_priority(), 1);
-        assert_eq!(SubStatus::Crashed.column_priority(), 2);
-        assert_eq!(SubStatus::Stale.column_priority(), 3);
-        assert_eq!(SubStatus::NeedsInput.column_priority(), 4);
-        assert_eq!(SubStatus::ChangesRequested.column_priority(), 5);
-        assert_eq!(SubStatus::Active.column_priority(), 6);
-        assert_eq!(SubStatus::AwaitingReview.column_priority(), 6);
-        assert_eq!(SubStatus::None.column_priority(), 6);
-        assert_eq!(SubStatus::Approved.column_priority(), 7);
+        let chain = [
+            SubStatus::Conflict,
+            SubStatus::PrClosed,
+            SubStatus::Crashed,
+            SubStatus::Stale,
+            SubStatus::NeedsInput,
+            SubStatus::ChangesRequested,
+            SubStatus::Approved,
+            SubStatus::AwaitingReview,
+        ];
+        for pair in chain.windows(2) {
+            let (lower, higher) = (pair[0], pair[1]);
+            assert!(
+                lower.column_priority() < higher.column_priority(),
+                "{lower:?} should sort above {higher:?}"
+            );
+        }
+
+        // Shared slots.
+        assert_eq!(
+            SubStatus::StaleShell.column_priority(),
+            SubStatus::Stale.column_priority()
+        );
+        assert_eq!(
+            SubStatus::Active.column_priority(),
+            SubStatus::AwaitingReview.column_priority()
+        );
+        assert_eq!(
+            SubStatus::None.column_priority(),
+            SubStatus::AwaitingReview.column_priority()
+        );
+    }
+
+    /// The Review column's ordering pivot: an approved PR is one keystroke from
+    /// merging, so it sorts above a PR that is merely awaiting a decision.
+    #[test]
+    fn approved_sorts_above_awaiting_review() {
+        assert!(
+            SubStatus::Approved.column_priority() < SubStatus::AwaitingReview.column_priority(),
+            "approved should sort above awaiting review"
+        );
     }
 
     #[test]
@@ -1908,7 +1945,9 @@ mod model_tests {
 
     // --- DispatchMode / TaskTag ---
 
-    pub(super) fn make_task_with(plan: Option<&str>, tag: Option<TaskTag>) -> Task {
+    /// A bare Backlog task fixture: no worktree, no tmux window, no url.
+    /// Sibling `models` test modules build on it by overwriting fields.
+    pub(in crate::models) fn make_task_with(plan: Option<&str>, tag: Option<TaskTag>) -> Task {
         let now = chrono::Utc::now();
         Task {
             id: TaskId(1),
