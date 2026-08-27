@@ -79,13 +79,14 @@ enum SubStatus {
                       --   "awaiting merge"  — tmux window gone (detached, just waiting for merge)
     changes_requested -- reviewer requested changes
     approved          -- PR approved, ready to merge
+    pr_closed         -- GitHub closed the PR without merging; task stays in review so a human can act
 }
 
 -- Valid SubStatus values per parent status (enforced in the DB by a CHECK
 -- constraint and in-code via SubStatus.is_valid_for):
 --   backlog   : none
 --   running   : active | needs_input | stale | stale_shell | crashed | conflict
---   review    : awaiting_review | changes_requested | approved | conflict
+--   review    : awaiting_review | changes_requested | approved | conflict | pr_closed
 --   done      : none
 --   archived  : none
 --
@@ -779,7 +780,7 @@ config {
 --       1 | Active           | running       | active
 --       2 | Blocked          | running       | needs_input
 --       3 | Stale            | running       | stale, crashed, conflict
---       4 | PR Created       | review        | awaiting_review, conflict  (split into "awaiting review" / "awaiting merge" sections by detach state)
+--       4 | PR Created       | review        | awaiting_review, conflict, pr_closed  (awaiting_review splits into "awaiting review" / "awaiting merge" sections by detach state)
 --       5 | Revise           | review        | changes_requested
 --       6 | Approved         | review        | approved
 --       7 | Done             | done          | none

@@ -149,6 +149,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (86, migrate_v86_allow_stale_shell),
     (87, migrate_v87_add_peer_message_columns),
     (88, migrate_v88_add_scheduling_fields),
+    (89, migrate_v89_allow_pr_closed_for_review),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -1346,23 +1347,35 @@ pub(super) fn migrate_v85_create_task_shells(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Adds `'stale_shell'` to the tasks table's `(status, sub_status)` CHECK
-/// constraint's `running` branch, so `SubStatus::StaleShell` can actually be
-/// persisted. SQLite cannot alter an existing CHECK constraint in place, so
-/// this rebuilds the table the same way `migrate_v30_allow_conflict_for_review`
-/// did for the same reason.
+/// Rebuilds the `tasks` table with a new `(status, sub_status)` CHECK
+/// constraint clause, preserving every column (types, defaults, the
+/// `epic_id` FK) and every index/trigger. SQLite cannot alter an existing
+/// CHECK constraint in place, so widening it for a newly-valid sub_status
+/// (`migrate_v30_allow_conflict_for_review`, `migrate_v86_allow_stale_shell`,
+/// `migrate_v89_allow_pr_closed_for_review`, ...) means rebuilding the whole
+/// table. Shared by all such migrations so the rebuild mechanics — most
+/// importantly the runtime column/index/trigger introspection below — live
+/// in exactly one place.
 ///
-/// Unlike that migration, the column list, types, defaults, and the
-/// indexes/triggers to recreate are all discovered at runtime via
-/// `pragma_table_info`/`sqlite_master`, rather than hardcoded. A hardcoded
-/// full column list broke several migration tests that deliberately replay
-/// only a partial migration history against a synthetic seed schema (e.g.
-/// `migration_v38_feed_epic_columns`, `migration_v52_adds_verify_command_to_repo_paths`)
-/// — those tables never had `worktree`/`tag`/`url`/etc. added, since those
-/// columns' migrations predate the synthetic seed's starting point. Reading
-/// the actual current columns makes this migration correct against whatever
-/// subset of the schema actually exists, real or synthetic.
-pub(super) fn migrate_v86_allow_stale_shell(conn: &Connection) -> Result<()> {
+/// The column list, types, defaults, and the indexes/triggers to recreate
+/// are all discovered at runtime via `pragma_table_info`/`sqlite_master`,
+/// rather than hardcoded. A hardcoded full column list broke several
+/// migration tests that deliberately replay only a partial migration
+/// history against a synthetic seed schema (e.g. `migration_v38_feed_epic_columns`,
+/// `migration_v52_adds_verify_command_to_repo_paths`) — those tables never
+/// had `worktree`/`tag`/`url`/etc. added, since those columns' migrations
+/// predate the synthetic seed's starting point. Reading the actual current
+/// columns makes this correct against whatever subset of the schema
+/// actually exists, real or synthetic.
+///
+/// `check_clause` is the full `CHECK (...)` body (including the `CHECK (`
+/// and closing `)`); `label` names the calling migration for error context
+/// (e.g. `"v89"`).
+fn rebuild_tasks_table_with_check(
+    conn: &Connection,
+    check_clause: &str,
+    label: &str,
+) -> Result<()> {
     struct ColumnDef {
         name: String,
         decl_type: String,
@@ -1439,30 +1452,60 @@ pub(super) fn migrate_v86_allow_stale_shell(conn: &Connection) -> Result<()> {
     }
 
     conn.execute_batch(&format!(
-        "CREATE TABLE tasks_new (\n    {},\n    CHECK (\n        \
-             (status = 'backlog'  AND sub_status = 'none') OR\n        \
-             (status = 'running'  AND sub_status IN ('active','needs_input','stale','stale_shell','crashed','conflict')) OR\n        \
-             (status = 'review'   AND sub_status IN ('awaiting_review','changes_requested','approved','conflict')) OR\n        \
-             (status = 'done'     AND sub_status = 'none') OR\n        \
-             (status = 'archived' AND sub_status = 'none')\n    )\n);",
-        column_defs.join(",\n    ")
+        "CREATE TABLE tasks_new (\n    {},\n    {}\n);",
+        column_defs.join(",\n    "),
+        check_clause
     ))
-    .context("Failed to create tasks_new (migration v86)")?;
+    .with_context(|| format!("Failed to create tasks_new (migration {label})"))?;
 
     conn.execute_batch(&format!(
         "INSERT INTO tasks_new ({column_list}) SELECT {column_list} FROM tasks;"
     ))
-    .context("Failed to copy tasks rows into tasks_new (migration v86)")?;
+    .with_context(|| format!("Failed to copy tasks rows into tasks_new (migration {label})"))?;
 
     conn.execute_batch("DROP TABLE tasks; ALTER TABLE tasks_new RENAME TO tasks;")
-        .context("Failed to swap tasks_new into tasks (migration v86)")?;
+        .with_context(|| format!("Failed to swap tasks_new into tasks (migration {label})"))?;
 
     for sql in &extra_sql {
         conn.execute_batch(sql).with_context(|| {
-            format!("Failed to recreate a tasks index/trigger (migration v86): {sql}")
+            format!("Failed to recreate a tasks index/trigger (migration {label}): {sql}")
         })?;
     }
     Ok(())
+}
+
+/// Adds `'stale_shell'` to the tasks table's `(status, sub_status)` CHECK
+/// constraint's `running` branch, so `SubStatus::StaleShell` can actually be
+/// persisted. See `rebuild_tasks_table_with_check` for the rebuild mechanics.
+pub(super) fn migrate_v86_allow_stale_shell(conn: &Connection) -> Result<()> {
+    rebuild_tasks_table_with_check(
+        conn,
+        "CHECK (\n        \
+             (status = 'backlog'  AND sub_status = 'none') OR\n        \
+             (status = 'running'  AND sub_status IN ('active','needs_input','stale','stale_shell','crashed','conflict')) OR\n        \
+             (status = 'review'   AND sub_status IN ('awaiting_review','changes_requested','approved','conflict')) OR\n        \
+             (status = 'done'     AND sub_status = 'none') OR\n        \
+             (status = 'archived' AND sub_status = 'none')\n    )",
+        "v86",
+    )
+}
+
+/// Adds `'pr_closed'` to the tasks table's `(status, sub_status)` CHECK
+/// constraint's `review` branch, so `SubStatus::PrClosed` can actually be
+/// persisted (task #4382: a closed-without-merge PR now flags the task with
+/// `pr_closed` instead of moving it to `done`). See
+/// `rebuild_tasks_table_with_check` for the rebuild mechanics.
+pub(super) fn migrate_v89_allow_pr_closed_for_review(conn: &Connection) -> Result<()> {
+    rebuild_tasks_table_with_check(
+        conn,
+        "CHECK (\n        \
+             (status = 'backlog'  AND sub_status = 'none') OR\n        \
+             (status = 'running'  AND sub_status IN ('active','needs_input','stale','stale_shell','crashed','conflict')) OR\n        \
+             (status = 'review'   AND sub_status IN ('awaiting_review','changes_requested','approved','conflict','pr_closed')) OR\n        \
+             (status = 'done'     AND sub_status = 'none') OR\n        \
+             (status = 'archived' AND sub_status = 'none')\n    )",
+        "v89",
+    )
 }
 
 pub(super) fn migrate_v42_drop_epic_tag(conn: &Connection) -> Result<()> {

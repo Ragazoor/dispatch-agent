@@ -664,7 +664,7 @@ fn pr_merged_preserves_worktree() {
 }
 
 #[test]
-fn pr_closed_moves_to_done_and_detaches() {
+fn pr_closed_stays_in_review_and_marks_sub_status() {
     let mut task = make_task(1, TaskStatus::Review);
     task.tmux_window = Some("task-1".to_string());
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
@@ -680,8 +680,17 @@ fn pr_closed_moves_to_done_and_detaches() {
     )));
 
     let task = app.find_task(TaskId(1)).unwrap();
-    assert_eq!(task.status, TaskStatus::Done);
-    assert!(task.tmux_window.is_none(), "tmux window should be cleared");
+    assert_eq!(
+        task.status,
+        TaskStatus::Review,
+        "task should stay in review"
+    );
+    assert_eq!(task.sub_status, SubStatus::PrClosed);
+    assert_eq!(
+        task.tmux_window.as_deref(),
+        Some("task-1"),
+        "tmux window should not be torn down — the task isn't finishing"
+    );
     assert!(task.worktree.is_some(), "worktree should be preserved");
     assert!(task.url.is_some(), "url should be preserved");
     assert!(cmds.iter().any(|c| matches!(
@@ -692,6 +701,52 @@ fn pr_closed_moves_to_done_and_detaches() {
         c,
         Command::System(crate::tui::commands::SystemCommand::SendNotification { .. })
     )));
+    assert!(
+        !cmds.iter().any(|c| matches!(
+            c,
+            Command::Task(crate::tui::commands::TaskCommand::KillTmuxWindow { .. })
+        )),
+        "no tmux window teardown for a PR close — the task isn't done"
+    );
+}
+
+#[test]
+fn pr_closed_overrides_conflict_sub_status() {
+    let mut task = make_task(1, TaskStatus::Review);
+    task.sub_status = SubStatus::Conflict;
+    task.url = Some(crate::models::TaskUrl::new(
+        "https://github.com/org/repo/pull/42",
+        crate::models::UrlType::Pr,
+    ));
+    let mut app = App::new(vec![task]);
+
+    app.update(Message::Pr(crate::tui::messages::PrMessage::Closed(
+        TaskId(1),
+    )));
+
+    let task = app.find_task(TaskId(1)).unwrap();
+    assert_eq!(task.sub_status, SubStatus::PrClosed);
+}
+
+#[test]
+fn pr_closed_is_idempotent_once_already_marked() {
+    let mut task = make_task(1, TaskStatus::Review);
+    task.sub_status = SubStatus::PrClosed;
+    task.url = Some(crate::models::TaskUrl::new(
+        "https://github.com/org/repo/pull/42",
+        crate::models::UrlType::Pr,
+    ));
+    let mut app = App::new(vec![task]);
+    app.set_notifications_enabled(true);
+
+    let cmds = app.update(Message::Pr(crate::tui::messages::PrMessage::Closed(
+        TaskId(1),
+    )));
+
+    assert!(
+        cmds.is_empty(),
+        "a repeat Closed event on an already-pr_closed task should not re-persist or re-notify"
+    );
 }
 
 #[test]

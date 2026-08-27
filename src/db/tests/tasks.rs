@@ -1031,6 +1031,34 @@ async fn task_sub_status_persists() {
 }
 
 #[tokio::test]
+async fn task_sub_status_pr_closed_persists_for_review() {
+    let db = Database::open_in_memory().await.unwrap();
+    let id = db
+        .create_task(CreateTaskRequest {
+            title: "Test",
+            description: "desc",
+            repo_path: "/repo",
+            plan: None,
+            status: TaskStatus::Review,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+            schedule_interval_secs: None,
+            pinned_branch: None,
+        })
+        .await
+        .unwrap();
+    db.patch_task(id, &TaskPatch::default().sub_status(SubStatus::PrClosed))
+        .await
+        .unwrap();
+    let task = db.get_task(id).await.unwrap().unwrap();
+    assert_eq!(task.sub_status, SubStatus::PrClosed);
+}
+
+#[tokio::test]
 async fn task_sub_status_defaults_to_none() {
     let db = Database::open_in_memory().await.unwrap();
     let id = db

@@ -381,11 +381,13 @@ rule ConfirmDone {
         -- Done items (implementation detail: the negated current
         -- timestamp in milliseconds, so lower Integer values are more
         -- recent). The identical mechanism sets task.sort_order at every
-        -- other transition into done: PrMerged, PrClosed, and
-        -- ExitSession's non-pr branch (all in
-        -- pr-workflow.allium), and epics.allium's MoveEpicForward when
-        -- entering done. Leaving done (MoveTaskBackward, ArchiveTask when
-        -- the task was done) clears task.sort_order back to null.
+        -- other transition into done: PrMerged and ExitSession's non-pr
+        -- branch (both in pr-workflow.allium), and epics.allium's
+        -- MoveEpicForward when entering done. PrClosed (also in
+        -- pr-workflow.allium) is NOT one of these — a closed PR no longer
+        -- transitions the task into done, so it does not touch sort_order.
+        -- Leaving done (MoveTaskBackward, ArchiveTask when the task was
+        -- done) clears task.sort_order back to null.
 }
 
 -- == Multi-Selection ==

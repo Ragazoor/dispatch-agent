@@ -40,7 +40,11 @@ impl VisualColumn {
         VisualColumn {
             label: "PR Created",
             parent_status: TaskStatus::Review,
-            sub_statuses: &[SubStatus::AwaitingReview, SubStatus::Conflict],
+            sub_statuses: &[
+                SubStatus::AwaitingReview,
+                SubStatus::Conflict,
+                SubStatus::PrClosed,
+            ],
         },
         VisualColumn {
             label: "Revise",

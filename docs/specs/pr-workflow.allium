@@ -62,8 +62,9 @@ rule PollPrStatus {
     for task in core/Tasks where status = review and url != null and url.url_type = pr:
 
         -- Branch on GitHub's reported PR state:
-        --   Merged -> fire PrMerged; no sub_status update
-        --   Closed -> fire PrClosed; task moves to done
+        --   Merged -> fire PrMerged; task moves to done
+        --   Closed -> fire PrClosed; task stays in review, sub_status
+        --             becomes pr_closed
         --   Open   -> refresh sub_status from review_decision
         -- Only pr-typed urls are polled; tasks carrying a security_alert,
         -- issue, or other url are never polled for PR merge/close.
@@ -96,9 +97,9 @@ rule PollPrStatus {
         -- Tasks currently in sub_status = conflict are NOT overwritten
         -- by the review-decision update, so conflict state persists
         -- across polls until the user resolves it.
-        -- Closed-without-merge PRs: fire PrClosed which transitions the
-        -- task to done, mirroring PrMerged but with distinct notification
-        -- copy ("PR closed" vs "PR merged").
+        -- Closed-without-merge PRs: fire PrClosed every tick the PR stays
+        -- closed. Unlike PrMerged, this is NOT a terminal transition — the
+        -- task stays in review; see the PrClosed rule for what changes.
 }
 
 rule PrMerged {
@@ -133,32 +134,31 @@ rule PrClosed {
 
     requires: task.status = review
 
-    ensures: task.status = done
-    ensures: task.sub_status = core/SubStatus.default_for(done)
-    ensures: task.tmux_window = null
-    ensures: task.updated_at = now
-    ensures: task.sort_order = completion_recency_rank(now)
     ensures:
-        if notifications_enabled:
-            DesktopNotification(task: task, urgency: normal, about: pr_closed)
+        if task.sub_status != core/SubStatus.pr_closed:
+            task.sub_status = core/SubStatus.pr_closed
+            task.updated_at = now
+            if notifications_enabled:
+                DesktopNotification(task: task, urgency: normal, about: pr_closed)
 
     @guidance
         -- Fires when PR status polling detects a closed (not merged) PR.
-        -- Bypasses ConfirmDone automatically: a PR closed by a human on
-        -- GitHub is treated as sufficient intent to conclude the task.
-        -- Identical lifecycle to PrMerged — task moves to done, tmux
-        -- window is detached — but with distinct notification copy:
-        -- title "PR closed", body "<PR label> closed: <task title>".
-        -- Status bar shows "<PR label> closed — task #<id> moved to Done".
-        -- Tasks in sub_status = conflict are moved to done by this rule —
-        -- unlike the open-PR poll branch, there is no conflict guard here.
-        -- A closed PR is a terminal GitHub event that overrides conflict state.
-        -- Like other status-changing rules, the underlying patch flow
-        -- (src/service/tasks/crud.rs) triggers EpicStatusRecalculation on
-        -- the parent epic when the task belongs to one.
-        -- completion_recency_rank(now) is the same completion-recency
-        -- helper used by ConfirmDone (tasks.allium): more-recently-completed
-        -- tasks sort first among Done items.
+        -- Unlike PrMerged, this is NOT a terminal transition: task.status
+        -- stays review, and task.tmux_window / task.worktree / task.sort_order
+        -- are all left untouched — a closed PR doesn't end the task, it just
+        -- flags that a human should decide what to do next (reopen the PR,
+        -- push a new one, archive the task).
+        -- Idempotent: PollPrStatus re-fires PrClosed on every tick the PR
+        -- stays closed, but the guard on sub_status != pr_closed means the
+        -- notification and the persisted write only happen once, on the
+        -- transition into pr_closed — not on every subsequent tick.
+        -- Overrides sub_status = conflict unconditionally — unlike the
+        -- open-PR poll branch, there is no conflict guard here. A closed PR
+        -- is a stronger, more definitive GitHub signal than a local rebase
+        -- conflict, and the user needs to see it regardless.
+        -- Notification: title "PR closed", body "<PR label> closed: <task
+        -- title>". Status bar shows '<PR label> closed — task #<id> marked
+        -- "PR closed"'.
 }
 
 -- == Wrap Up ==
@@ -649,13 +649,15 @@ rule FinishTaskConflict {
 
     @guidance
         -- Conflict has the highest visual column priority (0, above
-        -- crashed at 1). It appears in the Stale visual column alongside
-        -- stale and crashed tasks.
+        -- pr_closed at 1 and crashed at 2). It appears in the Stale visual
+        -- column alongside stale and crashed tasks.
         -- Conflict is valid for both running and review tasks: both hit
         -- it during WrapUpRebase, which accepts either status.
         -- Staleness detection skips conflict tasks (they are not
         -- re-evaluated for inactivity).
-        -- PR review polling skips overwriting conflict sub_status.
+        -- PR review polling's open-PR branch skips overwriting conflict
+        -- sub_status — but its closed-PR branch (PrClosed, above) overrides
+        -- it unconditionally: a closed PR is a stronger signal.
         -- Wrap-up rebase clears conflict optimistically before rebasing.
         --
         -- This rule fires only for a genuine textual rebase conflict

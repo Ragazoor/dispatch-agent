@@ -167,6 +167,7 @@ pub enum SubStatus {
     AwaitingReview,
     ChangesRequested,
     Approved,
+    PrClosed,
 }
 
 impl SubStatus {
@@ -181,16 +182,20 @@ impl SubStatus {
         SubStatus::AwaitingReview,
         SubStatus::ChangesRequested,
         SubStatus::Approved,
+        SubStatus::PrClosed,
     ];
 
     /// Sub-statuses advertised by the `update_task` MCP tool's schema.
     /// Excludes `stale_shell`: a system-derived activity classification (see
     /// `ClassifyAgentActivity`), not a value an agent should choose to set.
-    /// Advertisement-only — the handler still accepts `stale_shell` if a
-    /// caller sends it anyway, same as any other `SubStatus` valid for the
-    /// effective status (mcp-task-tools.allium: `UpdateTaskViaMcp`). Kept as
-    /// its own const (rather than a hand-written schema literal) so the
-    /// advertised set can't silently drop a variant it should include.
+    /// Excludes `pr_closed` for the same reason: it's derived from GitHub PR
+    /// polling (`PollPrStatus`), not a value an agent should set by hand.
+    /// Advertisement-only — the handler still accepts `stale_shell` or
+    /// `pr_closed` if a caller sends it anyway, same as any other
+    /// `SubStatus` valid for the effective status (mcp-task-tools.allium:
+    /// `UpdateTaskViaMcp`). Kept as its own const (rather than a hand-written
+    /// schema literal) so the advertised set can't silently drop a variant
+    /// it should include.
     pub const MCP_ADVERTISED: &'static [SubStatus] = &[
         SubStatus::None,
         SubStatus::Active,
@@ -222,6 +227,7 @@ impl SubStatus {
                     | SubStatus::ChangesRequested
                     | SubStatus::Approved
                     | SubStatus::Conflict
+                    | SubStatus::PrClosed
             ),
             TaskStatus::Done => matches!(self, SubStatus::None),
             TaskStatus::Archived => matches!(self, SubStatus::None),
@@ -240,7 +246,7 @@ impl SubStatus {
     }
 
     /// Sort priority for column grouping (lower = more urgent = top of column).
-    pub fn column_priority(self) -> u8 {
+    pub const fn column_priority(self) -> u8 {
         self.properties().priority
     }
 
@@ -251,11 +257,15 @@ impl SubStatus {
 
     /// Per-variant display properties, consolidated into a single match so a
     /// new variant only touches this table rather than two parallel ones.
-    fn properties(self) -> SubStatusProperties {
+    const fn properties(self) -> SubStatusProperties {
         match self {
             SubStatus::Conflict => SubStatusProperties {
                 priority: PRIORITY_URGENT,
                 header_label: "conflict",
+            },
+            SubStatus::PrClosed => SubStatusProperties {
+                priority: PRIORITY_PR_CLOSED,
+                header_label: "pr closed",
             },
             SubStatus::Crashed => SubStatusProperties {
                 priority: PRIORITY_CRASHED,
@@ -313,12 +323,16 @@ struct SubStatusProperties {
 // only overrides (see `display_column_priority` in `src/tui/mod.rs`) without
 // colliding with a named slot here.
 const PRIORITY_URGENT: u8 = 0;
-const PRIORITY_CRASHED: u8 = 1;
-const PRIORITY_STALE: u8 = 2;
-const PRIORITY_NEEDS_INPUT: u8 = 3;
-const PRIORITY_CHANGES_REQUESTED: u8 = 4;
-const PRIORITY_ACTIVE_SLOT: u8 = 5;
-const PRIORITY_APPROVED: u8 = 6;
+// PrClosed sorts right after Conflict (Review-only; never coexists with the
+// Running-only tiers below, but still gets its own number so it doesn't
+// silently share a header group with any of them).
+const PRIORITY_PR_CLOSED: u8 = 1;
+const PRIORITY_CRASHED: u8 = 2;
+const PRIORITY_STALE: u8 = 3;
+const PRIORITY_NEEDS_INPUT: u8 = 4;
+const PRIORITY_CHANGES_REQUESTED: u8 = 5;
+const PRIORITY_ACTIVE_SLOT: u8 = 6;
+const PRIORITY_APPROVED: u8 = 7;
 
 define_str_enum!(SubStatus, "sub-status" {
     None => "none",
@@ -331,6 +345,7 @@ define_str_enum!(SubStatus, "sub-status" {
     AwaitingReview => "awaiting_review",
     ChangesRequested => "changes_requested",
     Approved => "approved",
+    PrClosed => "pr_closed",
 });
 
 // ---------------------------------------------------------------------------
@@ -1588,6 +1603,7 @@ mod model_tests {
         assert_eq!(SubStatus::AwaitingReview.as_str(), "awaiting_review");
         assert_eq!(SubStatus::ChangesRequested.as_str(), "changes_requested");
         assert_eq!(SubStatus::Approved.as_str(), "approved");
+        assert_eq!(SubStatus::PrClosed.as_str(), "pr_closed");
     }
 
     #[test]
@@ -1622,12 +1638,14 @@ mod model_tests {
         assert!(SubStatus::Crashed.is_valid_for(TaskStatus::Running));
         assert!(!SubStatus::AwaitingReview.is_valid_for(TaskStatus::Running));
 
-        // Review: AwaitingReview, ChangesRequested, Approved
+        // Review: AwaitingReview, ChangesRequested, Approved, PrClosed
         assert!(!SubStatus::None.is_valid_for(TaskStatus::Review));
         assert!(!SubStatus::Active.is_valid_for(TaskStatus::Review));
         assert!(SubStatus::AwaitingReview.is_valid_for(TaskStatus::Review));
         assert!(SubStatus::ChangesRequested.is_valid_for(TaskStatus::Review));
         assert!(SubStatus::Approved.is_valid_for(TaskStatus::Review));
+        assert!(SubStatus::PrClosed.is_valid_for(TaskStatus::Review));
+        assert!(!SubStatus::PrClosed.is_valid_for(TaskStatus::Running));
 
         // Done: only None
         assert!(SubStatus::None.is_valid_for(TaskStatus::Done));
@@ -1659,14 +1677,15 @@ mod model_tests {
     #[test]
     fn substatus_column_priority_matches_urgency_ordering() {
         assert_eq!(SubStatus::Conflict.column_priority(), 0);
-        assert_eq!(SubStatus::Crashed.column_priority(), 1);
-        assert_eq!(SubStatus::Stale.column_priority(), 2);
-        assert_eq!(SubStatus::NeedsInput.column_priority(), 3);
-        assert_eq!(SubStatus::ChangesRequested.column_priority(), 4);
-        assert_eq!(SubStatus::Active.column_priority(), 5);
-        assert_eq!(SubStatus::AwaitingReview.column_priority(), 5);
-        assert_eq!(SubStatus::None.column_priority(), 5);
-        assert_eq!(SubStatus::Approved.column_priority(), 6);
+        assert_eq!(SubStatus::PrClosed.column_priority(), 1);
+        assert_eq!(SubStatus::Crashed.column_priority(), 2);
+        assert_eq!(SubStatus::Stale.column_priority(), 3);
+        assert_eq!(SubStatus::NeedsInput.column_priority(), 4);
+        assert_eq!(SubStatus::ChangesRequested.column_priority(), 5);
+        assert_eq!(SubStatus::Active.column_priority(), 6);
+        assert_eq!(SubStatus::AwaitingReview.column_priority(), 6);
+        assert_eq!(SubStatus::None.column_priority(), 6);
+        assert_eq!(SubStatus::Approved.column_priority(), 7);
     }
 
     #[test]
@@ -1683,6 +1702,7 @@ mod model_tests {
             "changes requested"
         );
         assert_eq!(SubStatus::Approved.header_label(), "approved");
+        assert_eq!(SubStatus::PrClosed.header_label(), "pr closed");
     }
 
     // --- slugify ---

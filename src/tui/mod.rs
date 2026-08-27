@@ -115,8 +115,10 @@ pub(in crate::tui) fn is_edge_column(col: usize) -> bool {
 }
 
 /// Sort priority below `SubStatus::Approved`, reserved for the detached
-/// display override below (see `display_column_priority`).
-const DETACHED_AWAITING_REVIEW_PRIORITY: u8 = 7;
+/// display override below (see `display_column_priority`). Derived rather
+/// than a hardcoded literal so inserting a new `SubStatus` priority tier
+/// can't silently desync this from `SubStatus::Approved`'s actual slot.
+const DETACHED_AWAITING_REVIEW_PRIORITY: u8 = SubStatus::Approved.column_priority() + 1;
 
 /// Whether the detach-aware display override (see `display_column_priority`
 /// / `display_header_label`) applies: a detached `awaiting_review` task
