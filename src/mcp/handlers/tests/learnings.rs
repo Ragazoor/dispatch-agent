@@ -941,3 +941,56 @@ async fn query_learnings_soft_tag_boost_does_not_hard_filter() {
         "tag_filter must be soft (boost only), untagged learning should also appear: {text}"
     );
 }
+
+// --- tool description --------------------------------------------------------
+
+/// `record_learning`'s validator is deliberately narrow: it rejects only the
+/// shapes prose never produces, because no regex separates an internal symbol
+/// from a product name. Everything else in the rule — don't name the code, the
+/// machine-check triage, the boundary on a procedural entry — lives in prose,
+/// in two places: `plugin/skills/learnings/SKILL.md` and this description.
+///
+/// The skill copy is pinned by tests in `src/setup/plugins.rs`. This pins the
+/// other half. The description is the only surface guaranteed to be in front
+/// of an agent at the moment it calls the tool — an agent can reach
+/// `record_learning` without the `/learnings` skill loaded — and it is long
+/// enough to be a standing target for a trim. See docs/specs/learnings.allium:
+/// RecordLearningViaMcp.
+#[tokio::test]
+async fn record_learning_tool_description_carries_the_rule_the_validator_cannot() {
+    let state = test_state().await;
+    let resp = call(&state, "tools/list", None).await;
+    let tools = resp.result.unwrap()["tools"].as_array().unwrap().clone();
+    let description = tools
+        .iter()
+        .find(|t| t["name"] == "record_learning")
+        .expect("record_learning must be registered")["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for (needle, why) in [
+        (
+            "must not name the function",
+            "the don't-name-the-code rule, which the validator only partly enforces",
+        ),
+        (
+            "failing check",
+            "the machine-check triage that routes lintable findings away from prose",
+        ),
+        (
+            "lint rule",
+            "the triage's yes-branch, without which the question has no answer",
+        ),
+        (
+            "when to stop",
+            "the boundary a procedural entry's detail must state",
+        ),
+    ] {
+        assert!(
+            description.contains(needle),
+            "record_learning's description must carry {why} — expected {needle:?} in: \
+             {description}"
+        );
+    }
+}

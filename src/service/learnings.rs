@@ -20,6 +20,12 @@ use super::ServiceError;
 // Mirrors three of check-doc-symbols.sh's four candidate shapes (pathsym,
 // typesym, bare) — see docs/specs/learnings.allium: RecordLearningViaMcp for
 // why the fourth shape (bare backticked snake_case) is deliberately excluded.
+//
+// PATHSYM_RE is redundant as a *gate*: any text it matches also carries a `.rs`
+// token, which the file-reference check rejects on its own. It is kept because
+// it reports the whole citation as the offending substring, and an agent that
+// is told `src/feed/cycle.rs::run_feed_cycle` fixes the right thing faster than
+// one told `src/feed/cycle.rs`.
 static PATHSYM_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[A-Za-z0-9_./-]+\.rs::[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
         .unwrap_or_else(|e| unreachable!("PATHSYM_RE is a hardcoded pattern: {e}"))
@@ -49,13 +55,17 @@ static CALL_RE: LazyLock<Regex> = LazyLock::new(|| {
 // A macro invocation, in two shapes. The underscore in the first is what
 // separates `patch_struct!` from an exclamation mark in prose ("Never push to
 // main!"); the second needs no underscore because the bracket is unambiguous.
+//
+// They stay two patterns because the regex crate has no lookaround, so the
+// bracket has to be consumed rather than looked ahead at. Folding them into one
+// alternation with an optional bracket would reject a bare `main!` in prose.
 static MACRO_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)+!")
         .unwrap_or_else(|e| unreachable!("MACRO_RE is a hardcoded pattern: {e}"))
 });
 
 static MACRO_BRACKET_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([a-z_][a-z0-9_]*!)[\(\[\{]")
+    Regex::new(r"[a-z_][a-z0-9_]*![\(\[\{]")
         .unwrap_or_else(|e| unreachable!("MACRO_BRACKET_RE is a hardcoded pattern: {e}"))
 });
 
@@ -80,9 +90,10 @@ const SOURCE_EXTENSIONS: &[&str] = &[
 
 /// Finds a file reference worth rejecting: a token with an extension that
 /// either contains a directory separator (a path into the tree) or whose
-/// extension names a programming language (a source file). Tokens that are
-/// part of a URL or a hostname are exempt — a link does not rot the way a
-/// path does, and rejecting one would cost more than it saves.
+/// extension names a programming language (a source file). A token reached
+/// through a URL scheme, or carrying a `www.` prefix, is exempt — a link does
+/// not rot the way a path does. A bare hostname with a path is not exempt, and
+/// is rejected like any other path.
 fn find_file_reference(text: &str) -> Option<&str> {
     FILEISH_RE.find_iter(text).find_map(|m| {
         let token = m.as_str();
@@ -91,9 +102,8 @@ fn find_file_reference(text: &str) -> Option<&str> {
         }
         let is_path = token.contains('/');
         let is_source = token
-            .rsplit('.')
-            .next()
-            .is_some_and(|ext| SOURCE_EXTENSIONS.contains(&ext));
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| SOURCE_EXTENSIONS.contains(&ext));
         (is_path || is_source).then_some(token)
     })
 }
@@ -108,18 +118,17 @@ fn find_file_reference(text: &str) -> Option<&str> {
 /// PascalCase type names a regex cannot tell from a product name) are
 /// deliberately left to the /learnings skill rather than flagged here.
 fn find_code_citation(text: &str) -> Option<&str> {
-    PATHSYM_RE
-        .find(text)
-        .or_else(|| TYPESYM_RE.find(text))
-        .or_else(|| BARE_RE.find(text))
-        .or_else(|| CALL_RE.find(text))
-        .or_else(|| MACRO_RE.find(text))
+    [&*PATHSYM_RE, &*TYPESYM_RE, &*BARE_RE, &*CALL_RE, &*MACRO_RE]
+        .into_iter()
+        .find_map(|re| re.find(text))
         .map(|m| m.as_str())
+        // The bracket is matched so the pattern can find the macro without
+        // lookahead, but it is not part of the offending name. It is always a
+        // single ASCII character, so trimming it cannot split a code point.
         .or_else(|| {
             MACRO_BRACKET_RE
-                .captures(text)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str())
+                .find(text)
+                .map(|m| &text[m.start()..m.end() - 1])
         })
         .or_else(|| find_file_reference(text))
 }
@@ -165,6 +174,52 @@ pub struct CreateLearningParams {
     pub source_task_id: Option<TaskId>,
 }
 
+/// One guard per `requires:` clause on `RecordLearningViaMcp`
+/// (docs/specs/learnings.allium), in the order the spec states them. Keeping
+/// them as peers rather than nesting the kind-specific rule inside the
+/// citation check is what lets the next such rule land somewhere obvious.
+fn validate_create_params(params: &CreateLearningParams) -> Result<(), ServiceError> {
+    if params.summary.trim().is_empty() {
+        return Err(ServiceError::Validation("summary must not be empty".into()));
+    }
+
+    match params.scope {
+        LearningScope::User if params.scope_ref.is_some() => {
+            return Err(ServiceError::Validation(
+                "scope_ref must be null for user-scoped learnings".into(),
+            ));
+        }
+        LearningScope::Repo | LearningScope::Epic | LearningScope::Task
+            if params.scope_ref.is_none() =>
+        {
+            return Err(ServiceError::Validation(
+                "scope_ref is required for non-user-scoped learnings".into(),
+            ));
+        }
+        _ => {}
+    }
+
+    reject_code_citation("summary", &params.summary)?;
+    if let Some(detail) = &params.detail {
+        reject_code_citation("detail", detail)?;
+    }
+
+    // A procedural entry steers other agents, so it has to say where it stops
+    // applying. Only the detail's presence is enforced; that it actually names
+    // a boundary is a convention the /learnings skill and the record_learning
+    // tool description carry.
+    let has_detail = params.detail.as_ref().is_some_and(|d| !d.trim().is_empty());
+    if params.kind == LearningKind::Procedural && !has_detail {
+        return Err(ServiceError::Validation(
+            "a procedural learning must carry a detail that says when to stop following \
+             it and ask a human — an instruction with no boundary is not a guardrail"
+                .into(),
+        ));
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // LearningService
 // ---------------------------------------------------------------------------
@@ -186,40 +241,7 @@ impl LearningService {
         &self,
         params: CreateLearningParams,
     ) -> Result<LearningId, ServiceError> {
-        if params.summary.trim().is_empty() {
-            return Err(ServiceError::Validation("summary must not be empty".into()));
-        }
-        reject_code_citation("summary", &params.summary)?;
-        if let Some(detail) = &params.detail {
-            reject_code_citation("detail", detail)?;
-        } else if params.kind == LearningKind::Procedural {
-            // A procedural entry steers other agents, so it has to say where it
-            // stops applying. Only the detail's presence is enforced; that it
-            // actually names a boundary is a convention the /learnings skill
-            // and the tool description carry. See docs/specs/learnings.allium:
-            // RecordLearningViaMcp.
-            return Err(ServiceError::Validation(
-                "a procedural learning must carry a detail that says when to stop following \
-                 it and ask a human — an instruction with no boundary is not a guardrail"
-                    .into(),
-            ));
-        }
-        match params.scope {
-            LearningScope::User => {
-                if params.scope_ref.is_some() {
-                    return Err(ServiceError::Validation(
-                        "scope_ref must be null for user-scoped learnings".into(),
-                    ));
-                }
-            }
-            _ => {
-                if params.scope_ref.is_none() {
-                    return Err(ServiceError::Validation(
-                        "scope_ref is required for non-user-scoped learnings".into(),
-                    ));
-                }
-            }
-        }
+        validate_create_params(&params)?;
         let text = embed_text_for_learning(
             params.kind,
             &params.summary,
@@ -780,16 +802,6 @@ mod learning_tests {
     }
 
     #[test]
-    fn find_code_citation_allows_parens_that_are_not_a_call() {
-        // A `()` not preceded by an identifier is a unit type or plain prose,
-        // not a call site.
-        assert_eq!(
-            super::find_code_citation("A delete returning Result<()> cannot say \"not found\"."),
-            None
-        );
-    }
-
-    #[test]
     fn find_code_citation_rejects_macro_invocation() {
         assert_eq!(
             super::find_code_citation("The service_api_delegate! macro generates the impl."),
@@ -799,14 +811,6 @@ mod learning_tests {
         assert_eq!(
             super::find_code_citation("Reach for vec![] over an explicit push loop."),
             Some("vec!")
-        );
-    }
-
-    #[test]
-    fn find_code_citation_allows_an_exclamation_mark_in_prose() {
-        assert_eq!(
-            super::find_code_citation("Never push to main! Open a PR instead."),
-            None
         );
     }
 
@@ -831,30 +835,29 @@ mod learning_tests {
         );
     }
 
+    /// The prose the new shapes must NOT swallow. Every line here is something
+    /// an agent has a real reason to write, so a regression in any of them
+    /// costs an entry that should have been recorded — the failure mode the
+    /// filter is deliberately kept narrow to avoid.
     #[test]
-    fn find_code_citation_allows_a_bare_manifest_or_spec_filename() {
-        // No directory separator, and the extension names a document or a
-        // manifest rather than a language — these do not rot.
+    fn find_code_citation_allows_prose_and_stable_names() {
         for text in [
+            // `()` not preceded by an identifier is a unit type, not a call.
+            "A delete returning Result<()> cannot say \"not found\".",
+            // An exclamation mark in prose is not a macro.
+            "Never push to main! Open a PR instead.",
+            // No directory separator, and the extension names a document or a
+            // manifest rather than a language — these do not rot.
             "A fresh worktree needs npm ci because package-lock.json is not shared.",
             "Version pins belong in Cargo.toml, not in a build script.",
             "That convention is already in CLAUDE.md.",
             "Shared feed-cycle behaviour is specified in feeds.allium.",
+            // A git ref has no extension; a URL is exempt.
+            "Rebase onto origin/main before wrapping up.",
+            "The upstream issue is at https://github.com/foo/bar.",
         ] {
             assert_eq!(super::find_code_citation(text), None, "text: {text}");
         }
-    }
-
-    #[test]
-    fn find_code_citation_allows_a_git_ref_or_a_url() {
-        assert_eq!(
-            super::find_code_citation("Rebase onto origin/main before wrapping up."),
-            None
-        );
-        assert_eq!(
-            super::find_code_citation("The upstream issue is at https://github.com/foo/bar."),
-            None
-        );
     }
 
     // -----------------------------------------------------------------
@@ -899,15 +902,34 @@ mod learning_tests {
     }
 
     #[tokio::test]
+    async fn create_learning_rejects_procedural_with_a_blank_detail() {
+        let svc = service().await;
+        let err = svc
+            .create_learning(CreateLearningParams {
+                kind: LearningKind::Procedural,
+                summary: "Always sync the repo before starting work.".to_string(),
+                detail: Some("   \n  ".to_string()),
+                scope: LearningScope::User,
+                scope_ref: None,
+                tags: vec![],
+                source_task_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ServiceError::Validation(_)));
+    }
+
+    /// Driven off `LearningKind::ALL` rather than a hand-written list so a
+    /// seventh kind cannot quietly opt out of the assertion that only
+    /// `procedural` needs a detail.
+    #[tokio::test]
     async fn create_learning_allows_other_kinds_without_detail() {
         let svc = service().await;
-        for kind in [
-            LearningKind::Pitfall,
-            LearningKind::Convention,
-            LearningKind::Preference,
-            LearningKind::ToolRecommendation,
-            LearningKind::Landscape,
-        ] {
+        for kind in LearningKind::ALL
+            .iter()
+            .copied()
+            .filter(|k| *k != LearningKind::Procedural)
+        {
             svc.create_learning(CreateLearningParams {
                 kind,
                 summary: "A summary that stands on its own without a detail.".to_string(),

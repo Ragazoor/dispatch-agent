@@ -401,7 +401,7 @@ rule RecordLearningViaMcp {
     requires: scope = user implies scope_ref = null
     requires: scope in {repo, epic, task} implies scope_ref != null
     requires: not references_internal_code(summary) and not references_internal_code(detail)
-    requires: kind = procedural implies detail != null
+    requires: kind = procedural implies (detail != null and detail != "")
 
     ensures: core/Learning.created(
         kind: kind,
@@ -487,7 +487,9 @@ rule RecordLearningViaMcp {
         -- code should put it in the Allium spec or a Rust doc comment instead,
         -- both of which are gated and both of which have an escape hatch.
         --
-        -- A procedural learning must carry a detail. Procedural entries exist
+        -- A procedural learning must carry a non-blank detail (whitespace is
+        -- treated as absent, the same way an all-whitespace summary is).
+        -- Procedural entries exist
         -- to steer other agents, and an instruction that says what to do and
         -- never when to stop is not a guardrail — so the detail must name the
         -- boundary: the case where the agent stops following the entry and

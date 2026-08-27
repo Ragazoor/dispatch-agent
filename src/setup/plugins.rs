@@ -1197,10 +1197,7 @@ mod tests {
             );
         }
         assert!(
-            section.contains("rejects only")
-                || section
-                    .to_lowercase()
-                    .contains("not everything here is rejected"),
+            section.contains("rejects only"),
             "the list must tell the agent the validator is narrower than the rule, \
              or an agent will read a successful call as approval: {section}"
         );
@@ -1213,18 +1210,18 @@ mod tests {
     /// instead of to prose.
     #[test]
     fn learnings_skill_carries_the_machine_check_triage() {
-        let content = skill_body("learnings");
+        let content = skill_body("learnings").to_lowercase();
         assert!(
             content.contains("failing check"),
             "the skill must ask whether a failing check could be written from the \
              source alone: {content}"
         );
         assert!(
-            content.to_lowercase().contains("lint"),
+            content.contains("lint"),
             "the triage's yes-branch must route to a lint rule rather than prose: {content}"
         );
         assert!(
-            content.to_lowercase().contains("smell"),
+            content.contains("smell"),
             "the triage's third branch — wrongly-shaped code is a smell, and the fix \
              is a refactor not a sentence — must survive: {content}"
         );
