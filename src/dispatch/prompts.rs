@@ -285,30 +285,24 @@ update the spec using the `allium:tend` skill and verify alignment with `allium:
 /// Trailing metadata shared by every dispatched task agent prompt:
 /// `tdd + allium + mcp + learning + wrap_up`, separated by blank lines.
 /// Each `format!` in a builder ends with `{trailing}` where this helper plugs in.
+///
+/// `allium_instruction` is the one conditional line. It is omitted wholesale for
+/// a repo with no specs: telling an agent that `docs/specs/` is the source of
+/// truth for domain logic is false there, and it would send the agent looking
+/// for a directory that does not exist. The omission applies in both plan
+/// states, so one repo never gets contradictory prompts depending on whether a
+/// plan is attached.
 pub(super) fn trailing_block(has_allium_specs: bool) -> String {
-    // Omitted wholesale for a repo with no specs: telling an agent that
-    // `docs/specs/` is the source of truth for domain logic is false there, and
-    // it would send the agent looking for a directory that does not exist. The
-    // omission applies in both plan states, so one repo never gets
-    // contradictory prompts depending on whether a plan is attached.
-    let allium = if has_allium_specs {
-        format!("{}\n\n", allium_instruction())
-    } else {
-        String::new()
-    };
-    format!(
-        "{tdd}\n\
-\n\
-{allium}{mcp}\n\
-\n\
-{learning}\n\
-\n\
-{wrap_up}",
-        tdd = tdd_instruction(),
-        mcp = mcp_tools_instruction(),
-        learning = learning_tools_instruction(),
-        wrap_up = wrap_up_instruction(),
-    )
+    let mut lines = vec![tdd_instruction()];
+    if has_allium_specs {
+        lines.push(allium_instruction());
+    }
+    lines.extend([
+        mcp_tools_instruction(),
+        learning_tools_instruction(),
+        wrap_up_instruction(),
+    ]);
+    lines.join("\n\n")
 }
 
 /// Render the tiered-knowledge block placed between the task block and the

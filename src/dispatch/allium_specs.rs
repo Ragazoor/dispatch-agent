@@ -64,31 +64,30 @@ mod tests {
         dir
     }
 
+    /// The subject under test, taking the path the way a `Task` carries it.
+    fn has_specs(repo: &Path) -> bool {
+        repo_has_allium_specs(repo.to_str().expect("utf8 path"))
+    }
+
     #[test]
     fn true_when_docs_specs_holds_an_allium_file() {
         let repo = tempdir().expect("tempdir");
         let dir = spec_dir(repo.path());
         fs::write(dir.join("dispatch.allium"), "-- allium: 3\n").expect("write spec");
-        assert!(repo_has_allium_specs(
-            repo.path().to_str().expect("utf8 path")
-        ));
+        assert!(has_specs(repo.path()));
     }
 
     #[test]
     fn false_when_docs_specs_is_missing() {
         let repo = tempdir().expect("tempdir");
-        assert!(!repo_has_allium_specs(
-            repo.path().to_str().expect("utf8 path")
-        ));
+        assert!(!has_specs(repo.path()));
     }
 
     #[test]
     fn false_when_docs_specs_is_empty() {
         let repo = tempdir().expect("tempdir");
         spec_dir(repo.path());
-        assert!(!repo_has_allium_specs(
-            repo.path().to_str().expect("utf8 path")
-        ));
+        assert!(!has_specs(repo.path()));
     }
 
     #[test]
@@ -97,9 +96,7 @@ mod tests {
         let dir = spec_dir(repo.path());
         fs::write(dir.join("README.md"), "not a spec").expect("write file");
         fs::write(dir.join("notes.txt"), "not a spec either").expect("write file");
-        assert!(!repo_has_allium_specs(
-            repo.path().to_str().expect("utf8 path")
-        ));
+        assert!(!has_specs(repo.path()));
     }
 
     /// A spec nested one level deeper is not `docs/specs/*.allium`, and a
@@ -112,16 +109,14 @@ mod tests {
         fs::create_dir(dir.join("archive")).expect("create subdir");
         fs::write(dir.join("archive/old.allium"), "-- allium: 3\n").expect("write nested spec");
         fs::create_dir(dir.join("named.allium")).expect("create allium-named dir");
-        assert!(!repo_has_allium_specs(
-            repo.path().to_str().expect("utf8 path")
-        ));
+        assert!(!has_specs(repo.path()));
     }
 
     #[test]
     fn false_when_the_repo_path_does_not_exist() {
         let repo = tempdir().expect("tempdir");
         let missing = repo.path().join("no-such-repo");
-        assert!(!repo_has_allium_specs(missing.to_str().expect("utf8 path")));
+        assert!(!has_specs(&missing));
     }
 
     #[test]
@@ -129,7 +124,7 @@ mod tests {
         let repo = tempdir().expect("tempdir");
         let file = repo.path().join("a-file");
         fs::write(&file, "not a repo").expect("write file");
-        assert!(!repo_has_allium_specs(file.to_str().expect("utf8 path")));
+        assert!(!has_specs(&file));
     }
 
     #[test]
