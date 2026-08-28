@@ -21,6 +21,7 @@ use super::input_form::{
     confirm_retry_lines, input_base_branch_lines, input_description_lines,
     input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
     input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
+    FormStyles,
 };
 use super::palette::{
     header_label_focused, header_label_unfocused, mix, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
@@ -514,24 +515,24 @@ pub(super) fn wrapped_line_count(text: &str, width: usize) -> usize {
 }
 
 fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
-    let completed = Style::default().fg(FG);
-    let active = Style::default().fg(YELLOW).add_modifier(Modifier::BOLD);
-    let hint = Style::default().fg(MUTED);
+    let styles = FormStyles {
+        completed: Style::default().fg(FG),
+        active: Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
+        hint: Style::default().fg(MUTED),
+    };
 
     let lines: Vec<Line> = match &app.input.mode {
-        InputMode::InputTitle => input_title_lines(app, area, active, hint),
-        InputMode::InputTag => input_tag_lines(app, completed, active, hint),
-        InputMode::InputDescription => input_description_lines(app, completed, active, hint),
-        InputMode::InputRepoPath => input_repo_path_lines(app, area, completed, active, hint),
-        InputMode::InputBaseBranch => input_base_branch_lines(app, area, completed, active, hint),
-        InputMode::InputWrapUpMode => input_wrap_up_mode_lines(app, completed, active, hint),
-        InputMode::QuickDispatch => quick_dispatch_lines(app, area, active, hint),
-        InputMode::MainSessionDir => main_session_dir_lines(app, area, active, hint),
+        InputMode::InputTitle => input_title_lines(app, area, &styles),
+        InputMode::InputTag => input_tag_lines(app, &styles),
+        InputMode::InputDescription => input_description_lines(app, &styles),
+        InputMode::InputRepoPath => input_repo_path_lines(app, area, &styles),
+        InputMode::InputBaseBranch => input_base_branch_lines(app, area, &styles),
+        InputMode::InputWrapUpMode => input_wrap_up_mode_lines(app, &styles),
+        InputMode::QuickDispatch => quick_dispatch_lines(app, area, &styles),
+        InputMode::MainSessionDir => main_session_dir_lines(app, area, &styles),
         InputMode::ConfirmRetry(id) => confirm_retry_lines(app, *id),
-        InputMode::InputEpicTitle => input_epic_title_lines(app, area, active, hint),
-        InputMode::InputEpicDescription => {
-            input_epic_description_lines(app, completed, active, hint)
-        }
+        InputMode::InputEpicTitle => input_epic_title_lines(app, area, &styles),
+        InputMode::InputEpicDescription => input_epic_description_lines(app, &styles),
         _ => return false,
     };
 

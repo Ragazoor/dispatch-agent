@@ -14,6 +14,14 @@ fn dummy_style() -> Style {
     Style::default()
 }
 
+fn dummy_styles() -> FormStyles {
+    FormStyles {
+        completed: dummy_style(),
+        active: dummy_style(),
+        hint: dummy_style(),
+    }
+}
+
 #[test]
 fn input_description_shows_tag_when_set() {
     let mut app = make_test_app();
@@ -23,7 +31,7 @@ fn input_description_shows_tag_when_set() {
         ..Default::default()
     });
     app.input.set_buffer("some desc".into());
-    let lines = input_description_lines(&app, dummy_style(), dummy_style(), dummy_style());
+    let lines = input_description_lines(&app, &dummy_styles());
     let text: String = lines
         .iter()
         .map(|l| l.to_string())
@@ -42,7 +50,7 @@ fn input_description_shows_none_when_no_tag() {
         tag: None,
         ..Default::default()
     });
-    let lines = input_description_lines(&app, dummy_style(), dummy_style(), dummy_style());
+    let lines = input_description_lines(&app, &dummy_styles());
     let text: String = lines
         .iter()
         .map(|l| l.to_string())
@@ -65,7 +73,7 @@ fn input_repo_path_shows_tag_when_set() {
     });
     app.input.set_buffer("/some/path".into());
     let area = Rect::new(0, 0, 80, 24);
-    let lines = input_repo_path_lines(&app, area, dummy_style(), dummy_style(), dummy_style());
+    let lines = input_repo_path_lines(&app, area, &dummy_styles());
     let text: String = lines
         .iter()
         .map(|l| l.to_string())
@@ -91,7 +99,7 @@ fn input_repo_path_shows_none_when_no_tag() {
     });
     app.input.clear_buffer();
     let area = Rect::new(0, 0, 80, 24);
-    let lines = input_repo_path_lines(&app, area, dummy_style(), dummy_style(), dummy_style());
+    let lines = input_repo_path_lines(&app, area, &dummy_styles());
     let text: String = lines
         .iter()
         .map(|l| l.to_string())

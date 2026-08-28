@@ -1,6 +1,6 @@
 use super::palette::{CYAN, MUTED, RED};
 use crate::models::TaskId;
-use crate::tui::App;
+use crate::tui::{App, InputState};
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
@@ -39,6 +39,49 @@ impl RepoListCtx {
     fn visible_rows(&self) -> usize {
         super::shared::visible_rows(self.area_height as usize, self.height_offset as usize)
     }
+}
+
+/// The already-answered form fields, rendered once for every step that shows
+/// them back to the user. Owns the presentation fallbacks (`""` for a missing
+/// title, `"none"` for a missing tag) so they cannot diverge per step.
+struct DraftSummary {
+    title: String,
+    tag: String,
+    /// The description's first line, suffixed `" ..."` when more lines follow.
+    description_oneline: String,
+}
+
+impl DraftSummary {
+    fn from_input(input: &InputState) -> Self {
+        let draft = input.task_draft.as_ref();
+        let title = draft.map(|d| d.title.clone()).unwrap_or_default();
+        let tag = draft
+            .and_then(|d| d.tag.as_ref())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let description = draft.map(|d| d.description.as_str()).unwrap_or("");
+        let desc_first_line = description.lines().next().unwrap_or("").to_string();
+        let description_oneline = if description.contains('\n') {
+            format!("{desc_first_line} ...")
+        } else {
+            desc_first_line
+        };
+        Self {
+            title,
+            tag,
+            description_oneline,
+        }
+    }
+}
+
+/// The three styles a form step draws with: settled fields above the cursor,
+/// the active field, and trailing hint text. Bundled so the 11 step-renderer
+/// functions below take one reference instead of transposable positional
+/// `Style` params.
+pub(in crate::tui::ui) struct FormStyles {
+    pub completed: Style,
+    pub active: Style,
+    pub hint: Style,
 }
 
 /// Appends the filtered repo list and optional new-path entry to `lines`.
@@ -109,110 +152,74 @@ pub(in crate::tui::ui) fn append_repo_path_list<'a>(
 pub(in crate::tui) fn input_title_lines(
     app: &App,
     area: Rect,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'static>> {
     vec![
-        caret_field("  Title: ", app, area, active),
+        caret_field("  Title: ", app, area, styles.active),
         Line::from(""),
-        Line::from(Span::styled("  [Enter] confirm  [Esc] cancel", hint)),
+        Line::from(Span::styled("  [Enter] confirm  [Esc] cancel", styles.hint)),
     ]
 }
 
-pub(in crate::tui) fn input_tag_lines(
-    app: &App,
-    completed: Style,
-    active: Style,
-    hint: Style,
-) -> Vec<Line<'static>> {
-    let title = app
-        .input
-        .task_draft
-        .as_ref()
-        .map(|d| d.title.as_str())
-        .unwrap_or("");
+pub(in crate::tui) fn input_tag_lines(app: &App, styles: &FormStyles) -> Vec<Line<'static>> {
+    let summary = DraftSummary::from_input(&app.input);
     vec![
-        Line::from(Span::styled(format!("  Title: {title}"), completed)),
+        Line::from(Span::styled(
+            format!("  Title: {}", summary.title),
+            styles.completed,
+        )),
         Line::from(Span::styled(
             "  Tag: [b]ug  [f]eature  [c]hore  [e]pic  [p]r-review  [r]esearch  [x]fix  [Enter] none",
-            active,
+            styles.active,
         )),
         Line::from(""),
-        Line::from(Span::styled("  [Enter] skip  [Esc] cancel", hint)),
+        Line::from(Span::styled("  [Enter] skip  [Esc] cancel", styles.hint)),
     ]
 }
 
 pub(in crate::tui) fn input_description_lines(
     app: &App,
-    completed: Style,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'static>> {
-    let title = app
-        .input
-        .task_draft
-        .as_ref()
-        .map(|d| d.title.as_str())
-        .unwrap_or("");
-    let tag = app
-        .input
-        .task_draft
-        .as_ref()
-        .and_then(|d| d.tag.as_ref())
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "none".to_string());
+    let summary = DraftSummary::from_input(&app.input);
     vec![
-        Line::from(Span::styled(format!("  Title: {title}"), completed)),
-        Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
+        Line::from(Span::styled(
+            format!("  Title: {}", summary.title),
+            styles.completed,
+        )),
+        Line::from(Span::styled(
+            format!("  Tag: {}", summary.tag),
+            styles.completed,
+        )),
         Line::from(Span::styled(
             "  Description: opening $EDITOR...".to_string(),
-            active,
+            styles.active,
         )),
         Line::from(""),
-        Line::from(Span::styled("  [Esc] cancel", hint)),
+        Line::from(Span::styled("  [Esc] cancel", styles.hint)),
     ]
 }
 
 pub(in crate::tui) fn input_repo_path_lines<'a>(
     app: &'a App,
     area: Rect,
-    completed: Style,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'a>> {
-    let title = app
-        .input
-        .task_draft
-        .as_ref()
-        .map(|d| d.title.as_str())
-        .unwrap_or("");
-    let tag = app
-        .input
-        .task_draft
-        .as_ref()
-        .and_then(|d| d.tag.as_ref())
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let description = app
-        .input
-        .task_draft
-        .as_ref()
-        .map(|d| d.description.as_str())
-        .unwrap_or("");
-    let desc_first_line = description.lines().next().unwrap_or("");
-    let desc_display = if description.contains('\n') {
-        format!("{desc_first_line} ...")
-    } else {
-        desc_first_line.to_string()
-    };
+    let summary = DraftSummary::from_input(&app.input);
     let mut lines = vec![
-        Line::from(Span::styled(format!("  Title: {title}"), completed)),
-        Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
         Line::from(Span::styled(
-            format!("  Description: {desc_display}"),
-            completed,
+            format!("  Title: {}", summary.title),
+            styles.completed,
         )),
-        caret_field("  Repo path: ", app, area, active),
+        Line::from(Span::styled(
+            format!("  Tag: {}", summary.tag),
+            styles.completed,
+        )),
+        Line::from(Span::styled(
+            format!("  Description: {}", summary.description_oneline),
+            styles.completed,
+        )),
+        caret_field("  Repo path: ", app, area, styles.active),
     ];
     let filtered = crate::tui::filtered_repos(&app.board.repo_paths, &app.input.buffer);
     append_filtered_repos_with_new_entry(
@@ -223,13 +230,13 @@ pub(in crate::tui) fn input_repo_path_lines<'a>(
         &RepoListCtx {
             height_offset: 7,
             area_height: area.height,
-            hint,
+            hint: styles.hint,
         },
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        hint,
+        styles.hint,
     )));
     lines
 }
@@ -237,35 +244,9 @@ pub(in crate::tui) fn input_repo_path_lines<'a>(
 pub(in crate::tui) fn input_base_branch_lines<'a>(
     app: &'a App,
     area: Rect,
-    completed: Style,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'a>> {
-    let title = app
-        .input
-        .task_draft
-        .as_ref()
-        .map(|d| d.title.clone())
-        .unwrap_or_default();
-    let tag = app
-        .input
-        .task_draft
-        .as_ref()
-        .and_then(|d| d.tag.as_ref())
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let description = app
-        .input
-        .task_draft
-        .as_ref()
-        .map(|d| d.description.clone())
-        .unwrap_or_default();
-    let desc_first_line = description.lines().next().unwrap_or("").to_string();
-    let desc_display = if description.contains('\n') {
-        format!("{desc_first_line} ...")
-    } else {
-        desc_first_line
-    };
+    let summary = DraftSummary::from_input(&app.input);
     let repo_path = app
         .input
         .task_draft
@@ -273,14 +254,23 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
         .map(|d| d.repo_path.clone())
         .unwrap_or_default();
     let mut lines = vec![
-        Line::from(Span::styled(format!("  Title: {title}"), completed)),
-        Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
         Line::from(Span::styled(
-            format!("  Description: {desc_display}"),
-            completed,
+            format!("  Title: {}", summary.title),
+            styles.completed,
         )),
-        Line::from(Span::styled(format!("  Repo path: {repo_path}"), completed)),
-        caret_field("  Base branch: ", app, area, active),
+        Line::from(Span::styled(
+            format!("  Tag: {}", summary.tag),
+            styles.completed,
+        )),
+        Line::from(Span::styled(
+            format!("  Description: {}", summary.description_oneline),
+            styles.completed,
+        )),
+        Line::from(Span::styled(
+            format!("  Repo path: {repo_path}"),
+            styles.completed,
+        )),
+        caret_field("  Base branch: ", app, area, styles.active),
     ];
     let history = app.base_branches_for(&repo_path);
     let filtered = crate::tui::filtered_repos(history, &app.input.buffer);
@@ -292,13 +282,13 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
         &RepoListCtx {
             height_offset: 6,
             area_height: area.height,
-            hint,
+            hint: styles.hint,
         },
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        hint,
+        styles.hint,
     )));
     lines
 }
@@ -310,19 +300,18 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
 /// want exactly this list — which is also why the sibling step renderers above
 /// build their settled lines inline: none of them is the tail.
 fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
+    let summary = DraftSummary::from_input(&app.input);
     let draft = app.input.task_draft.as_ref();
-    let title = draft.map(|d| d.title.clone()).unwrap_or_default();
-    let tag = draft
-        .and_then(|d| d.tag.as_ref())
-        .map(|t| t.to_string())
-        .unwrap_or_else(|| "none".to_string());
     let repo_path = draft.map(|d| d.repo_path.clone()).unwrap_or_default();
     let base_branch = draft
         .map(|d| d.base_branch.clone())
         .unwrap_or_else(|| "main".to_string());
     vec![
-        Line::from(Span::styled(format!("  Title: {title}"), completed)),
-        Line::from(Span::styled(format!("  Tag: {tag}"), completed)),
+        Line::from(Span::styled(
+            format!("  Title: {}", summary.title),
+            completed,
+        )),
+        Line::from(Span::styled(format!("  Tag: {}", summary.tag), completed)),
         Line::from(Span::styled(format!("  Repo: {repo_path}"), completed)),
         Line::from(Span::styled(
             format!("  Base branch: {base_branch}"),
@@ -346,17 +335,15 @@ fn form_step_page<'a>(mut settled: Vec<Line<'a>>, active: Line<'a>, hint: Style)
 
 pub(in crate::tui) fn input_wrap_up_mode_lines(
     app: &App,
-    completed: Style,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'static>> {
     form_step_page(
-        answered_step_lines(app, completed),
+        answered_step_lines(app, styles.completed),
         Line::from(Span::styled(
             "  Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip",
-            active,
+            styles.active,
         )),
-        hint,
+        styles.hint,
     )
 }
 
@@ -366,13 +353,12 @@ fn repo_picker_lines<'a>(
     header: &'a str,
     prefix: &'a str,
     hint_text: &'a str,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'a>> {
     let mut lines = vec![
-        Line::from(Span::styled(header, active)),
+        Line::from(Span::styled(header, styles.active)),
         Line::from(""),
-        caret_field(&format!("  {prefix}: "), app, area, active),
+        caret_field(&format!("  {prefix}: "), app, area, styles.active),
     ];
     let filtered = crate::tui::filtered_repos(&app.board.repo_paths, &app.input.buffer);
     append_filtered_repos_with_new_entry(
@@ -383,19 +369,18 @@ fn repo_picker_lines<'a>(
         &RepoListCtx {
             height_offset: 7,
             area_height: area.height,
-            hint,
+            hint: styles.hint,
         },
     );
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(hint_text, hint)));
+    lines.push(Line::from(Span::styled(hint_text, styles.hint)));
     lines
 }
 
 pub(in crate::tui) fn main_session_dir_lines<'a>(
     app: &'a App,
     area: Rect,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'a>> {
     repo_picker_lines(
         app,
@@ -403,22 +388,23 @@ pub(in crate::tui) fn main_session_dir_lines<'a>(
         "  Main session — base repo:",
         "Path",
         "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        active,
-        hint,
+        styles,
     )
 }
 
 pub(in crate::tui) fn quick_dispatch_lines<'a>(
     app: &'a App,
     area: Rect,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'a>> {
     let filtered = crate::tui::filtered_repos(&app.board.repo_paths, &app.input.buffer);
     let mut lines = vec![
-        Line::from(Span::styled("  Quick Dispatch — select repo:", active)),
+        Line::from(Span::styled(
+            "  Quick Dispatch — select repo:",
+            styles.active,
+        )),
         Line::from(""),
-        caret_field("  Filter: ", app, area, active),
+        caret_field("  Filter: ", app, area, styles.active),
     ];
     append_filtered_repos_with_new_entry(
         &mut lines,
@@ -428,13 +414,13 @@ pub(in crate::tui) fn quick_dispatch_lines<'a>(
         &RepoListCtx {
             height_offset: 7,
             area_height: area.height,
-            hint,
+            hint: styles.hint,
         },
     );
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Type to filter · [↑/↓] navigate · [Enter] select · [Esc] cancel",
-        hint,
+        styles.hint,
     )));
     lines
 }
@@ -468,21 +454,18 @@ pub(in crate::tui) fn confirm_retry_lines(app: &App, id: TaskId) -> Vec<Line<'st
 pub(in crate::tui) fn input_epic_title_lines(
     app: &App,
     area: Rect,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'static>> {
     vec![
-        caret_field("  Title: ", app, area, active),
+        caret_field("  Title: ", app, area, styles.active),
         Line::from(""),
-        Line::from(Span::styled("  [Enter] confirm  [Esc] cancel", hint)),
+        Line::from(Span::styled("  [Enter] confirm  [Esc] cancel", styles.hint)),
     ]
 }
 
 pub(in crate::tui) fn input_epic_description_lines(
     app: &App,
-    completed: Style,
-    active: Style,
-    hint: Style,
+    styles: &FormStyles,
 ) -> Vec<Line<'static>> {
     let title = app
         .input
@@ -491,13 +474,13 @@ pub(in crate::tui) fn input_epic_description_lines(
         .map(|d| d.title.as_str())
         .unwrap_or("");
     vec![
-        Line::from(Span::styled(format!("  Title: {title}"), completed)),
+        Line::from(Span::styled(format!("  Title: {title}"), styles.completed)),
         Line::from(Span::styled(
             "  Description: opening $EDITOR...".to_string(),
-            active,
+            styles.active,
         )),
         Line::from(""),
-        Line::from(Span::styled("  [Esc] cancel", hint)),
+        Line::from(Span::styled("  [Esc] cancel", styles.hint)),
     ]
 }
 
@@ -521,6 +504,81 @@ mod tests {
             area_height,
             hint,
         }
+    }
+
+    // ---- DraftSummary -------------------------------------------------
+
+    #[test]
+    fn draft_summary_defaults_when_no_draft() {
+        let input = InputState::default();
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.title, "");
+        assert_eq!(summary.tag, "none");
+        assert_eq!(summary.description_oneline, "");
+    }
+
+    fn input_with_draft(draft: crate::tui::TaskDraft) -> InputState {
+        InputState {
+            task_draft: Some(draft),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn draft_summary_tag_none_falls_back_to_none() {
+        let input = input_with_draft(crate::tui::TaskDraft {
+            tag: None,
+            ..Default::default()
+        });
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.tag, "none");
+    }
+
+    #[test]
+    fn draft_summary_tag_some_uses_display() {
+        let input = input_with_draft(crate::tui::TaskDraft {
+            tag: Some(crate::models::TaskTag::Bug),
+            ..Default::default()
+        });
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.tag, crate::models::TaskTag::Bug.to_string());
+        assert_ne!(summary.tag, "none");
+    }
+
+    #[test]
+    fn draft_summary_oneline_equals_description_without_newline() {
+        let input = input_with_draft(crate::tui::TaskDraft {
+            description: "single line".to_string(),
+            ..Default::default()
+        });
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.description_oneline, "single line");
+    }
+
+    #[test]
+    fn draft_summary_oneline_truncates_multiline_with_ellipsis() {
+        let input = input_with_draft(crate::tui::TaskDraft {
+            description: "first line\nsecond line".to_string(),
+            ..Default::default()
+        });
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.description_oneline, "first line ...");
+    }
+
+    #[test]
+    fn draft_summary_title_reads_from_draft() {
+        let input = input_with_draft(crate::tui::TaskDraft {
+            title: "my task".to_string(),
+            ..Default::default()
+        });
+        let summary = DraftSummary::from_input(&input);
+
+        assert_eq!(summary.title, "my task");
     }
 
     // ---- append_repo_path_list -------------------------------------------
