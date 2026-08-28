@@ -10,7 +10,7 @@
 //! parsing and response shaping only.
 
 use crate::dispatch;
-use crate::models::{SubStatus, Task};
+use crate::models::{SubStatus, Task, TmuxWindow};
 use crate::service::UpdateTaskParams;
 
 use super::crud::TaskService;
@@ -113,7 +113,7 @@ impl TaskService {
     /// failed kill is swallowed: the close already persisted, and there is no
     /// recovery a caller could take — the window is either gone or visibly
     /// still there.
-    pub async fn kill_session_window(&self, window: String) {
+    pub async fn kill_session_window(&self, window: TmuxWindow) {
         let runner = self.runner.clone();
         let joined =
             tokio::task::spawn_blocking(move || crate::tmux::kill_window(&window, &*runner)).await;

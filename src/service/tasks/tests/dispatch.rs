@@ -73,7 +73,7 @@ mod dispatch_seam {
             Some(result.worktree_path.as_str())
         );
         assert_eq!(
-            stored.tmux_window.as_deref(),
+            stored.tmux_window.as_ref().map(|w| w.as_str()),
             Some(result.tmux_window.as_str())
         );
         // The `Dispatch` half of the mode routing: the standard agent is the

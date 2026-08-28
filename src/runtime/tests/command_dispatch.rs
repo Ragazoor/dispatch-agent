@@ -12,6 +12,7 @@
 // follow-on commands), never on the shape of the match, so they survive a
 // refactor of the dispatcher's internals.
 use super::*;
+use crate::models::test_tmux_window;
 use crate::tui::commands::{
     EditorCommand, FeedCommand, MainSessionCommand, PersistFields, PrCommand, RepoSyncCommand,
     SplitCommand, SystemCommand, TaskCommand, TodoCommand,
@@ -169,7 +170,7 @@ async fn dispatch_task_clear_worktree_pointer_clears_both_pointers() {
             task.id,
             &db::TaskPatch::new()
                 .worktree(Some("/repo/.worktrees/1-torn-down"))
-                .tmux_window(Some("task-1")),
+                .tmux_window(Some(&test_tmux_window("task-1"))),
         )
         .await
         .unwrap();
@@ -326,8 +327,9 @@ async fn dispatch_persist_setting_writes_both_kinds() {
 async fn dispatch_editor_pop_out_refuses_when_a_session_is_already_open() {
     let (rt, mut app) = test_runtime().await;
     let task = seed(&rt, "Already editing", models::TaskStatus::Backlog).await;
-    *rt.editor_session.lock().unwrap() =
-        Some(super::editor::EditorSession::occupied_for_test("edit-1"));
+    *rt.editor_session.lock().unwrap() = Some(super::editor::EditorSession::occupied_for_test(
+        &test_tmux_window("edit-1"),
+    ));
 
     dispatch_one(
         &rt,
@@ -907,7 +909,7 @@ async fn dispatch_split_enter_with_task_joins_that_task_window() {
 
     h.dispatch(Command::Split(SplitCommand::EnterWithTask {
         task_id: TaskId(1),
-        window: "task-1".into(),
+        window: test_tmux_window("task-1"),
     }))
     .await;
 
@@ -938,7 +940,7 @@ async fn dispatch_split_exit_with_a_window_to_restore_breaks_the_pane_out() {
 
     h.dispatch(Command::Split(SplitCommand::Exit {
         pane_id: "%2".into(),
-        restore_window: Some("task-1".into()),
+        restore_window: Some(test_tmux_window("task-1")),
     }))
     .await;
 
@@ -1000,7 +1002,7 @@ async fn dispatch_split_swap_hands_the_pane_to_the_incoming_task() {
 
     h.dispatch(Command::Split(SplitCommand::Swap {
         task_id: TaskId(1),
-        new_window: "task-1".into(),
+        new_window: test_tmux_window("task-1"),
         old_pane_id: Some("%2".into()),
         old_task: None,
     }))
@@ -1886,7 +1888,7 @@ async fn dispatch_task_check_window_reports_a_window_that_is_gone() {
 
     h.dispatch(Command::Task(TaskCommand::CheckWindow {
         id: TaskId(1),
-        window: "gone-window".into(),
+        window: test_tmux_window("gone-window"),
     }))
     .await;
 
@@ -1906,7 +1908,10 @@ async fn dispatch_task_batch_check_windows_reports_only_the_absent_one() {
     .await;
 
     h.dispatch(Command::Task(TaskCommand::BatchCheckWindows {
-        windows: vec![(TaskId(1), "task-1".into()), (TaskId(2), "task-2".into())],
+        windows: vec![
+            (TaskId(1), TmuxWindow::for_task(TaskId(1))),
+            (TaskId(2), TmuxWindow::for_task(TaskId(2))),
+        ],
     }))
     .await;
 
@@ -1946,7 +1951,7 @@ async fn dispatch_task_resume_relaunches_the_agent_window() {
             tmux_window,
         }) => {
             assert_eq!(tid, id);
-            assert_eq!(tmux_window, format!("task-{id}"));
+            assert_eq!(tmux_window, TmuxWindow::for_task(id));
         }
         other => panic!("expected Resumed, got {other:?}"),
     }
@@ -1959,7 +1964,7 @@ async fn dispatch_task_jump_to_tmux_selects_the_window() {
             .await;
 
     h.dispatch(Command::Task(TaskCommand::JumpToTmux {
-        window: "task-1".into(),
+        window: test_tmux_window("task-1"),
     }))
     .await;
 
@@ -1980,7 +1985,7 @@ async fn dispatch_task_jump_to_tmux_surfaces_a_failed_jump() {
     .await;
 
     h.dispatch(Command::Task(TaskCommand::JumpToTmux {
-        window: "task-1".into(),
+        window: test_tmux_window("task-1"),
     }))
     .await;
 
@@ -2027,7 +2032,7 @@ async fn dispatch_task_kill_tmux_window_kills_the_window() {
             .await;
 
     h.dispatch(Command::Task(TaskCommand::KillTmuxWindow {
-        window: "task-1".into(),
+        window: test_tmux_window("task-1"),
     }))
     .await;
 

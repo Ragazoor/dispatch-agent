@@ -2,7 +2,7 @@
 //! Integration test: full task lifecycle through App::update() with a real (in-memory) DB.
 
 use dispatch_tui::db::{self, CreateTaskRequest, Database, TaskCrud, TaskRead};
-use dispatch_tui::models::{DispatchMode, Task, TaskId, TaskStatus};
+use dispatch_tui::models::{DispatchMode, Task, TaskId, TaskStatus, TmuxWindow};
 use dispatch_tui::tui::{App, Command, Message, MoveDirection};
 
 async fn make_app() -> (App, Database) {
@@ -22,7 +22,7 @@ async fn execute(db: &Database, cmds: &[Command]) {
                         &db::TaskPatch::new()
                             .status(task.status)
                             .worktree(task.worktree.as_deref())
-                            .tmux_window(task.tmux_window.as_deref()),
+                            .tmux_window(task.tmux_window.as_ref()),
                     )
                     .await;
             }
@@ -91,13 +91,16 @@ async fn full_lifecycle() {
         dispatch_tui::tui::messages::TaskMessage::Dispatched {
             id: task_id,
             worktree: "/repo/.worktrees/1-fix-auth-bug".to_string(),
-            tmux_window: "task-1".to_string(),
+            tmux_window: TmuxWindow::for_task(TaskId(1)),
             switch_focus: false,
         },
     ));
     execute(&db, &cmds).await;
     assert_eq!(app.tasks()[0].status, TaskStatus::Running);
-    assert_eq!(app.tasks()[0].tmux_window.as_deref(), Some("task-1"));
+    assert_eq!(
+        app.tasks()[0].tmux_window.as_ref().map(|w| w.as_str()),
+        Some("task-1")
+    );
 
     // 4. WindowGone on a Running task → marks as crashed (tmux_window cleared, window is gone)
     let cmds = app.update(Message::Task(

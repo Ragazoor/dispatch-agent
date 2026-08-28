@@ -1807,11 +1807,26 @@ surface SandboxedAgentExecution {
 -- metacharacters can only produce a miss, never a match on another window.
 -- Verified against tmux 3.5a.
 --
--- One exception, by necessity: the prefix+Space keybinding that jumps back to
--- the board (see JumpBackToTuiWindow in split-pane.allium) is a command string
--- tmux executes later, so no pane identity resolved at registration time would
--- still be valid. That one target uses tmux's `=` sigil, which does work for
--- `select-window`.
+-- The guarantee rests on a second mechanism as well, upstream of that one: a
+-- window name is a constructed type (core.allium: TmuxWindow), so the two
+-- strings that are NOT names — the empty string and a pane id — can never
+-- become one. Both bypass the exact-name lookup and reach tmux unresolved, and
+-- the empty string is tmux's "current window", so while the name was a bare
+-- string either could arrive at these same helpers and silently retarget a
+-- kill, a send-keys or a set-option at whatever window the user happens to be
+-- focused on. They are deliberate non-names, outside this guarantee's scope
+-- rather than violations of it — which is why the resolution helper
+-- (`tmux::window_target`) still takes a plain string at that boundary: it
+-- accepts those two as well.
+--
+-- Two exceptions to "every target is a pane ID", both standing. First, by
+-- necessity: the prefix+Space keybinding that jumps back to the board (see
+-- JumpBackToTuiWindow in split-pane.allium) is a command string tmux executes
+-- later, so no pane identity resolved at registration time would still be
+-- valid. That one target uses tmux's `=` sigil, which does work for
+-- `select-window`. Second: renaming a window documents the empty string as
+-- meaning the current window, so that target passes through unresolved by
+-- design.
 
 -- BranchHistoryCapped: no repo retains more than
 -- config.max_base_branches_per_repo remembered base branches. This is a

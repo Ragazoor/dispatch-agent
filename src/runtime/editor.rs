@@ -14,6 +14,7 @@ use crate::editor::{
     format_editor_content, format_epic_for_editor, parse_editor_content, parse_epic_editor_output,
     TaskEditApplied,
 };
+use crate::models::TmuxWindow;
 use crate::process::ProcessRunner;
 #[cfg(test)]
 use crate::service::embeddings::EmbeddingService;
@@ -42,7 +43,7 @@ const MAX_CONSECUTIVE_QUERY_FAILURES: u32 = 5;
 /// error, assumes "still alive" for up to [`MAX_CONSECUTIVE_QUERY_FAILURES`]
 /// in a row, then gives up and reports "not alive".
 fn window_alive_with_bounded_retry(
-    window: &str,
+    window: &TmuxWindow,
     runner: &dyn ProcessRunner,
     consecutive_failures: &mut u32,
 ) -> bool {
@@ -68,7 +69,7 @@ pub const EDITOR_ALREADY_OPEN_MSG: &str = "Editor already open — close it firs
 /// best-effort kills the tmux window, covering TUI shutdown while an editor
 /// is still open.
 pub struct EditorSession {
-    pub window_name: String,
+    pub window_name: TmuxWindow,
     /// The temp path owning the file on disk. `Some` until the watcher task
     /// reads and consumes it.
     pub temp_path: Option<PathBuf>,
@@ -83,9 +84,9 @@ impl EditorSession {
     /// cleanup runner, so `Drop` is a no-op. Lets tests outside this module
     /// (notably `runtime::tests`) exercise the "one editor at a time" guard in
     /// `exec_pop_out_editor` without spawning a real editor window.
-    pub(super) fn occupied_for_test(window_name: &str) -> Self {
+    pub(super) fn occupied_for_test(window_name: &TmuxWindow) -> Self {
         Self {
-            window_name: window_name.to_string(),
+            window_name: window_name.clone(),
             temp_path: None,
             cleanup_runner: None,
         }
@@ -162,7 +163,7 @@ fn emit_pop_out_error(app: &mut App, message: String) {
 }
 
 /// Generate a unique tmux window name for a new editor session.
-fn new_window_name() -> String {
+fn new_window_name() -> TmuxWindow {
     // Nanoseconds since the process began are plenty unique for a single
     // dispatch run; collisions would require the same nanosecond tick.
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -170,7 +171,7 @@ fn new_window_name() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("dispatch-edit-{nanos}")
+    TmuxWindow::for_editor(nanos)
 }
 
 impl TuiRuntime {
@@ -265,7 +266,7 @@ impl TuiRuntime {
             );
 
             // Restore focus to the TUI window. Best-effort.
-            let _ = tmux::select_window(TUI_WINDOW_NAME, &*runner);
+            let _ = tmux::select_window(&TUI_WINDOW_NAME, &*runner);
 
             clear_session_slot(&session);
             // Clean up the tempfile explicitly now that we have the contents;
@@ -489,6 +490,7 @@ fn clear_session_slot(slot: &Arc<Mutex<Option<EditorSession>>>) {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::models::test_tmux_window;
     use std::cell::Cell;
 
     #[tokio::test]
@@ -543,7 +545,7 @@ mod tests {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"task-42\n")]);
         let mut failures = 0;
         assert!(window_alive_with_bounded_retry(
-            "task-42",
+            &test_tmux_window("task-42"),
             &mock,
             &mut failures
         ));
@@ -556,7 +558,7 @@ mod tests {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"other\n")]);
         let mut failures = 0;
         assert!(!window_alive_with_bounded_retry(
-            "task-42",
+            &test_tmux_window("task-42"),
             &mock,
             &mut failures
         ));
@@ -569,7 +571,7 @@ mod tests {
         let mock = MockProcessRunner::new(vec![Err(anyhow::anyhow!("tmux: command not found"))]);
         let mut failures = 0;
         assert!(
-            window_alive_with_bounded_retry("task-42", &mock, &mut failures),
+            window_alive_with_bounded_retry(&test_tmux_window("task-42"), &mock, &mut failures),
             "a single query failure should not be treated as the window closing"
         );
         assert_eq!(failures, 1);
@@ -586,13 +588,13 @@ mod tests {
         let mut failures = 0;
         for _ in 0..MAX_CONSECUTIVE_QUERY_FAILURES - 1 {
             assert!(window_alive_with_bounded_retry(
-                "task-42",
+                &test_tmux_window("task-42"),
                 &mock,
                 &mut failures
             ));
         }
         assert!(
-            !window_alive_with_bounded_retry("task-42", &mock, &mut failures),
+            !window_alive_with_bounded_retry(&test_tmux_window("task-42"), &mock, &mut failures),
             "a permanently broken tmux must eventually be treated as closed, \
              or watch_editor's loop would hang forever"
         );
@@ -607,13 +609,13 @@ mod tests {
         ]);
         let mut failures = 0;
         assert!(window_alive_with_bounded_retry(
-            "task-42",
+            &test_tmux_window("task-42"),
             &mock,
             &mut failures
         ));
         assert_eq!(failures, 1);
         assert!(window_alive_with_bounded_retry(
-            "task-42",
+            &test_tmux_window("task-42"),
             &mock,
             &mut failures
         ));
@@ -633,7 +635,7 @@ mod tests {
         assert!(path.exists());
 
         let session = EditorSession {
-            window_name: "test-window".to_string(),
+            window_name: test_tmux_window("test-window"),
             temp_path: Some(path.clone()),
             cleanup_runner: None,
         };
@@ -649,7 +651,7 @@ mod tests {
             MockProcessRunner::new(vec![MockProcessRunner::ok()]).with_windows(&["edit-window"]),
         );
         let session = EditorSession {
-            window_name: "edit-window".to_string(),
+            window_name: test_tmux_window("edit-window"),
             temp_path: None,
             cleanup_runner: Some(mock.clone()),
         };
@@ -769,7 +771,7 @@ mod tests {
 
         // Pre-populate the session slot.
         *rt.editor_session.lock().unwrap() = Some(EditorSession {
-            window_name: "already-open".into(),
+            window_name: test_tmux_window("already-open"),
             temp_path: None,
             cleanup_runner: None,
         });

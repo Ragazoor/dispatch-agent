@@ -2,10 +2,7 @@ use anyhow::{Context, Result};
 use std::fs;
 
 use crate::git::detect_default_branch;
-use crate::models::{
-    build_tmux_window_name, expand_tilde, parse_tmux_window_task_id, DispatchResult, ResumeResult,
-    Task, TaskId,
-};
+use crate::models::{expand_tilde, DispatchResult, ResumeResult, Task, TaskId, TmuxWindow};
 use crate::process::{ProcessRunner, SUBPROCESS_TIMEOUT};
 use crate::tmux;
 
@@ -22,14 +19,14 @@ use super::worktree::{provision_worktree, rollback_failed_provisioning, BaseRef,
 /// `--name task-42`. Deterministic and collision-free within dispatch's own
 /// id space, unlike Claude Code's default cwd-derived name — see
 /// `docs/superpowers/specs/2026-08-15-send-message-native-relay-design.md`.
-/// Built from [`build_tmux_window_name`] rather than re-deriving the string,
+/// Built from [`TmuxWindow::for_task`] rather than re-deriving the string,
 /// so the tmux window name and the messaging session name cannot drift apart
 /// — `parse_peer_message_target_name` (`src/service/tasks/crud.rs`) resolves
 /// an incoming `SendMessage`'s `to` field against this same convention.
 /// Leading space included so callers can splice it directly after
 /// [`DISPATCH_PLUGIN_DIR`] in a launch command string.
 fn session_name_flag(task_id: TaskId) -> String {
-    format!(" --name {}", build_tmux_window_name(task_id))
+    format!(" --name {}", TmuxWindow::for_task(task_id))
 }
 
 /// Width of the `dispatch agent-tree` companion pane, as a percentage of the
@@ -57,9 +54,12 @@ const AGENT_TREE_SUBCOMMAND: &str = "agent-tree";
 /// docs/specs/agent-tree.allium's `HideAgentTreePane`, including the accepted
 /// cost: a marker cannot be written to a pane that already exists, so a window
 /// open when this changed has an unmarked companion pane for the rest of its life.
-pub fn agent_tree_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Option<String>> {
+pub fn agent_tree_pane_id(
+    window: &TmuxWindow,
+    runner: &dyn ProcessRunner,
+) -> Result<Option<String>> {
     let panes = tmux::pane_ids_with_option_value(
-        window,
+        window.as_str(),
         tmux::PANE_ROLE_OPTION,
         tmux::PANE_ROLE_AGENT_TREE,
         runner,
@@ -78,8 +78,8 @@ pub fn agent_tree_pane_id(window: &str, runner: &dyn ProcessRunner) -> Result<Op
 /// pre-resolution to keep them from each re-resolving the name — but "every pane
 /// carrying a role at all". A future dispatch-created pane is covered the moment
 /// it is marked, without this function being taught about it.
-pub fn companion_pane_ids(window: &str, runner: &dyn ProcessRunner) -> Result<Vec<String>> {
-    tmux::pane_ids_with_option(window, tmux::PANE_ROLE_OPTION, runner)
+pub fn companion_pane_ids(window: &TmuxWindow, runner: &dyn ProcessRunner) -> Result<Vec<String>> {
+    tmux::pane_ids_with_option(window.as_str(), tmux::PANE_ROLE_OPTION, runner)
 }
 
 /// Split the agent's tmux window and launch `dispatch agent-tree <task_id>`
@@ -97,7 +97,7 @@ pub fn companion_pane_ids(window: &str, runner: &dyn ProcessRunner) -> Result<Ve
 /// critical path — a failure here is logged and does not fail the caller's
 /// dispatch/resume operation.
 fn spawn_agent_tree_pane(
-    tmux_window: &str,
+    tmux_window: &TmuxWindow,
     task_id: TaskId,
     worktree: Option<&str>,
     runner: &dyn ProcessRunner,
@@ -106,7 +106,7 @@ fn spawn_agent_tree_pane(
     // Passed as argv (`split-window --`), so the binary needs no shell quoting.
     let dispatch_bin = runner.agent_binaries().dispatch;
     let pane = match tmux::split_window_horizontal_running(
-        tmux_window,
+        tmux_window.as_str(),
         AGENT_TREE_PANE_PERCENT,
         &[&dispatch_bin, AGENT_TREE_SUBCOMMAND, &id_arg],
         worktree,
@@ -152,7 +152,7 @@ fn spawn_agent_tree_pane(
 /// design: a failure here is logged and yields `None`, which
 /// [`spawn_agent_tree_pane`] treats as "let the correction hook handle it"
 /// rather than as a reason to skip the pane.
-fn window_worktree(window: &str, runner: &dyn ProcessRunner) -> Option<String> {
+fn window_worktree(window: &TmuxWindow, runner: &dyn ProcessRunner) -> Option<String> {
     match tmux::window_dispatch_dir(window, runner) {
         Ok(dir) => dir,
         Err(e) => {
@@ -175,8 +175,8 @@ fn window_worktree(window: &str, runner: &dyn ProcessRunner) -> Option<String> {
 ///
 /// A no-op (not an error) for any window that isn't a task-agent window —
 /// pressing the toggle key in the board TUI's own window does nothing.
-pub fn toggle_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) -> Result<()> {
-    let Some(task_id) = parse_tmux_window_task_id(window) else {
+pub fn toggle_agent_tree_pane(window: &TmuxWindow, runner: &dyn ProcessRunner) -> Result<()> {
+    let Some(task_id) = window.task_id() else {
         return Ok(());
     };
     match agent_tree_pane_id(window, runner)? {
@@ -201,8 +201,8 @@ pub fn toggle_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) -> Resul
 /// A no-op for any window that isn't a task-agent window, or that carries no
 /// companion pane to begin with — best-effort throughout, like every other
 /// agent-tree pane operation.
-pub fn resync_agent_tree_pane(window: &str, runner: &dyn ProcessRunner) {
-    let Some(task_id) = parse_tmux_window_task_id(window) else {
+pub fn resync_agent_tree_pane(window: &TmuxWindow, runner: &dyn ProcessRunner) {
+    let Some(task_id) = window.task_id() else {
         return;
     };
     match agent_tree_pane_id(window, runner) {
@@ -533,7 +533,7 @@ pub fn resume_agent(
     worktree_path: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<ResumeResult> {
-    let tmux_window = build_tmux_window_name(task_id);
+    let tmux_window = TmuxWindow::for_task(task_id);
 
     if tmux::has_window(&tmux_window, runner).unwrap_or(false) {
         tracing::info!(
@@ -568,7 +568,7 @@ pub fn resume_agent(
 }
 
 /// The fixed tmux window name used for the main claude session.
-pub const MAIN_SESSION_WINDOW: &str = "dispatch-main";
+pub const MAIN_SESSION_WINDOW: TmuxWindow = TmuxWindow::from_static("dispatch-main");
 
 /// Whether the fixed main-session window is currently alive: a live tmux check
 /// on [`MAIN_SESSION_WINDOW`], never a persisted reference. A tmux query error
@@ -578,7 +578,7 @@ pub const MAIN_SESSION_WINDOW: &str = "dispatch-main";
 /// liveness poll so both agree on one definition. See docs/specs/dispatch.allium:
 /// MainSessionIndicator / OpenMainSession.
 pub fn main_session_window_alive(runner: &dyn ProcessRunner) -> bool {
-    tmux::has_window_or_assume_present(MAIN_SESSION_WINDOW, runner)
+    tmux::has_window_or_assume_present(&MAIN_SESSION_WINDOW, runner)
 }
 
 /// Launch a plain interactive `claude` session in a new tmux window.
@@ -588,30 +588,31 @@ pub fn main_session_window_alive(runner: &dyn ProcessRunner) -> bool {
 /// session with dispatch plugins available.
 ///
 /// Returns the name of the created tmux window.
-pub fn create_main_session(dir: &str, runner: &dyn ProcessRunner) -> Result<String> {
+pub fn create_main_session(dir: &str, runner: &dyn ProcessRunner) -> Result<TmuxWindow> {
     let window = MAIN_SESSION_WINDOW;
 
-    tmux::new_window(window, dir, runner).context("failed to create main session tmux window")?;
+    tmux::new_window(&window, dir, runner).context("failed to create main session tmux window")?;
 
     let claude = runner.agent_binaries().claude_quoted();
-    tmux::send_keys(window, &format!("{claude} {DISPATCH_PLUGIN_DIR}"), runner)
+    tmux::send_keys(&window, &format!("{claude} {DISPATCH_PLUGIN_DIR}"), runner)
         .context("failed to send keys to main session tmux window")?;
 
     tracing::info!(%window, %dir, "main session created");
 
-    Ok(window.to_string())
+    Ok(window)
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+    use crate::models::test_tmux_window;
     use crate::process::{AgentBinaries, MockProcessRunner};
 
     #[test]
     fn resync_agent_tree_pane_noop_for_non_task_window() {
         let mock = MockProcessRunner::new(vec![]);
-        resync_agent_tree_pane("dispatch-main", &mock);
+        resync_agent_tree_pane(&test_tmux_window("dispatch-main"), &mock);
         assert!(
             mock.recorded_calls().is_empty(),
             "no tmux calls expected for a non-task window name"
@@ -624,7 +625,7 @@ mod tests {
             // list-panes: one pane, running a plain shell — no companion
             MockProcessRunner::ok_with_stdout(b"%1 \n"),
         ]);
-        resync_agent_tree_pane("task-5", &mock);
+        resync_agent_tree_pane(&test_tmux_window("task-5"), &mock);
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1, "only the companion check should run");
     }
@@ -645,7 +646,7 @@ mod tests {
         ])
         .with_agent_binaries(AgentBinaries::stub());
 
-        resync_agent_tree_pane("task-5", &mock);
+        resync_agent_tree_pane(&test_tmux_window("task-5"), &mock);
 
         let split = &mock.recorded_calls()[3].1;
         assert!(
@@ -664,7 +665,7 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window relaunch
             MockProcessRunner::ok(),                     // set-option: the role marker
         ]);
-        resync_agent_tree_pane("task-5", &mock);
+        resync_agent_tree_pane(&test_tmux_window("task-5"), &mock);
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 5);
         assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%9"]);
@@ -710,7 +711,7 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"%20\n"), // split-window
             MockProcessRunner::ok(),                     // set-option: the role marker
         ]);
-        resync_agent_tree_pane("task-5", &mock);
+        resync_agent_tree_pane(&test_tmux_window("task-5"), &mock);
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 5);
         assert!(calls[3].1.contains(&"split-window".to_string()));
@@ -724,7 +725,7 @@ mod tests {
     #[test]
     fn resync_agent_tree_pane_soft_fails_when_companion_check_errors() {
         let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("list-panes error")]);
-        resync_agent_tree_pane("task-5", &mock);
+        resync_agent_tree_pane(&test_tmux_window("task-5"), &mock);
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1, "no further calls after a failed check");
     }
@@ -738,7 +739,7 @@ mod tests {
             MockProcessRunner::ok_with_stdout(b"%20\n"),
             MockProcessRunner::ok(), // set-option: the role marker
         ]);
-        resync_agent_tree_pane("task-5", &mock);
+        resync_agent_tree_pane(&test_tmux_window("task-5"), &mock);
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 5, "a respawn is still attempted");
         assert!(calls[3].1.contains(&"split-window".to_string()));
@@ -772,7 +773,7 @@ mod tests {
         // First call: tmux new-window
         assert!(calls[0].1.contains(&"new-window".to_string()));
         assert!(calls[0].1.iter().any(|a| a.contains("/home/user")));
-        assert!(calls[0].1.iter().any(|a| a == MAIN_SESSION_WINDOW));
+        assert!(calls[0].1.iter().any(|a| a == MAIN_SESSION_WINDOW.as_str()));
     }
 
     #[test]

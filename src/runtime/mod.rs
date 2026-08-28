@@ -29,7 +29,7 @@ const INPUT_PAUSE_SLEEP: Duration = Duration::from_millis(100);
 const EVENT_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Name used for the TUI's tmux window (visible in tmux status bar).
-const TUI_WINDOW_NAME: &str = "TUI";
+const TUI_WINDOW_NAME: TmuxWindow = TmuxWindow::from_static("TUI");
 
 /// Key (after the tmux prefix) that toggles a companion agent-tree pane's
 /// visibility in whichever agent window it's pressed in. Matches
@@ -46,7 +46,7 @@ const AGENT_TREE_TOGGLE_COMMAND: &str =
     "run-shell -b \"dispatch toggle-agent-tree-pane '#{window_name}'\"";
 
 use crate::db::{SettingsStore, TaskRead};
-use crate::models::TaskId;
+use crate::models::{TaskId, TmuxWindow};
 use crate::process::{ProcessRunner, RealProcessRunner};
 use crate::service::embeddings::EmbeddingService;
 use crate::service::FieldUpdate;
@@ -58,6 +58,14 @@ fn option_to_field_update(opt: Option<String>) -> FieldUpdate {
     match opt {
         Some(v) => FieldUpdate::Set(v),
         None => FieldUpdate::Clear,
+    }
+}
+
+/// [`option_to_field_update`] for the typed window field.
+fn option_to_tmux_window_update(opt: Option<TmuxWindow>) -> crate::service::TmuxWindowUpdate {
+    match opt {
+        Some(w) => crate::service::TmuxWindowUpdate::Set(w),
+        None => crate::service::TmuxWindowUpdate::Clear,
     }
 }
 
@@ -81,7 +89,7 @@ fn setup_tmux_for_tui(runner: &dyn ProcessRunner) {
     // target resolves to the session's focused window, which renames the wrong window
     // when the user has a different window active at startup.
     let target = tmux::current_pane_id(runner).unwrap_or_default();
-    let _ = tmux::rename_window(&target, TUI_WINDOW_NAME, runner);
+    let _ = tmux::rename_window(&target, &TUI_WINDOW_NAME, runner);
     // `=` anchors the target to an exact name match. tmux otherwise resolves a
     // `-t <name>` by prefix, so a window whose name merely starts with
     // TUI_WINDOW_NAME could absorb this jump. Unlike every other window target
@@ -99,11 +107,11 @@ fn setup_tmux_for_tui(runner: &dyn ProcessRunner) {
 }
 
 /// Tear down tmux TUI state: unbind the keys and restore the original window name.
-fn teardown_tmux_for_tui(original_name: Option<&str>, runner: &dyn ProcessRunner) {
+fn teardown_tmux_for_tui(original_name: Option<&TmuxWindow>, runner: &dyn ProcessRunner) {
     let _ = tmux::unbind_key("space", runner);
     let _ = tmux::unbind_key(AGENT_TREE_TOGGLE_KEY, runner);
     if let Some(name) = original_name {
-        let _ = tmux::rename_window(TUI_WINDOW_NAME, name, runner);
+        let _ = tmux::rename_window(TUI_WINDOW_NAME.as_str(), name, runner);
     }
 }
 
@@ -175,7 +183,10 @@ pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     // Set up tmux keybinding: Prefix+Space → jump back to this window.
     // Best-effort: failures don't prevent the TUI from starting.
     let tmux_runner = runtime.runner.clone();
-    let original_window_name = tmux::current_window_name(&*tmux_runner).ok();
+    let original_window_name = tmux::current_window_name(&*tmux_runner)
+        .ok()
+        .as_deref()
+        .and_then(TmuxWindow::parse);
     setup_tmux_for_tui(&*tmux_runner);
 
     // Create two channels:
@@ -235,7 +246,7 @@ pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
     .await;
 
     // Tear down tmux keybinding and restore the original window name.
-    teardown_tmux_for_tui(original_window_name.as_deref(), &*tmux_runner);
+    teardown_tmux_for_tui(original_window_name.as_ref(), &*tmux_runner);
 
     // Cleanup terminal
     disable_raw_mode()?;

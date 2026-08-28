@@ -731,6 +731,7 @@ pub(super) fn render_epic_item(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::models::test_tmux_window;
     use crate::models::SubStatus;
     use crate::tui::tests::{make_task, make_unprovisioned_task};
 
@@ -965,7 +966,7 @@ mod tests {
         let mut t = make_task(1, TaskStatus::Running);
         t.sub_status = SubStatus::Stale;
         t.worktree = Some("/repo/.worktrees/1-t".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.tmux_window = Some(test_tmux_window("task-1"));
         t.last_pre_tool_use_at = last_pre_tool_use_at;
         t
     }

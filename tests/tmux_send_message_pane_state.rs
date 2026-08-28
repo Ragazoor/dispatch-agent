@@ -20,6 +20,7 @@ mod tmux_harness;
 
 use std::path::PathBuf;
 
+use dispatch_tui::models::test_tmux_window;
 use dispatch_tui::notify::{self, DeliveryOutcome};
 
 use tmux_harness::{tmux_available_or_skip, typed_input, TmuxServer};
@@ -98,8 +99,14 @@ fn notify_tmux_sends_keys_when_the_real_pane_shows_the_ready_footer() {
     let runner = fx.server.runner();
     let worktree = fx.worktree();
 
-    let outcome = notify::notify_tmux(&runner, &worktree, WINDOW, "does-not-exist.md", "hello")
-        .expect("notify_tmux should succeed against a live window");
+    let outcome = notify::notify_tmux(
+        &runner,
+        &worktree,
+        &test_tmux_window(WINDOW),
+        "does-not-exist.md",
+        "hello",
+    )
+    .expect("notify_tmux should succeed against a live window");
 
     assert_eq!(outcome, DeliveryOutcome::Notified);
     assert!(
@@ -117,8 +124,14 @@ fn notify_tmux_withholds_keys_when_the_real_pane_shows_a_dialog() {
     let runner = fx.server.runner();
     let worktree = fx.worktree();
 
-    let outcome = notify::notify_tmux(&runner, &worktree, WINDOW, "does-not-exist.md", "hello")
-        .expect("notify_tmux should succeed (queued, not nudged) against a live window");
+    let outcome = notify::notify_tmux(
+        &runner,
+        &worktree,
+        &test_tmux_window(WINDOW),
+        "does-not-exist.md",
+        "hello",
+    )
+    .expect("notify_tmux should succeed (queued, not nudged) against a live window");
 
     assert_eq!(outcome, DeliveryOutcome::QueuedNoNudge);
     // No wait needed: `notify_tmux` is synchronous and never issues the

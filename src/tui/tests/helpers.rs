@@ -88,7 +88,7 @@ pub(in crate::tui) fn make_task(id: i64, status: TaskStatus) -> Task {
         title: format!("Task {id}"),
         status,
         worktree: provisioned.then(|| format!("/repo/.worktrees/{id}-task-{id}")),
-        tmux_window: provisioned.then(|| format!("task-{id}")),
+        tmux_window: provisioned.then(|| crate::models::TmuxWindow::for_task(TaskId(id))),
         sub_status: SubStatus::default_for(status),
         ..Default::default()
     }

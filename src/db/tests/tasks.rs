@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
+use crate::models::test_tmux_window;
 
 #[tokio::test]
 async fn create_and_get() {
@@ -780,13 +781,17 @@ async fn patch_task_sets_dispatch_fields() {
         })
         .await
         .unwrap();
+    let window = test_tmux_window("session:1-my-task");
     let patch = TaskPatch::new()
         .worktree(Some("/repo/.worktrees/1-my-task"))
-        .tmux_window(Some("session:1-my-task"));
+        .tmux_window(Some(&window));
     db.patch_task(id, &patch).await.unwrap();
     let task = db.get_task(id).await.unwrap().unwrap();
     assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-my-task"));
-    assert_eq!(task.tmux_window.as_deref(), Some("session:1-my-task"));
+    assert_eq!(
+        task.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("session:1-my-task")
+    );
 }
 
 #[tokio::test]
@@ -810,9 +815,10 @@ async fn patch_task_clears_dispatch_fields() {
         .await
         .unwrap();
     // Set dispatch fields first
+    let window = test_tmux_window("session:1-my-task");
     let patch = TaskPatch::new()
         .worktree(Some("/repo/.worktrees/1-my-task"))
-        .tmux_window(Some("session:1-my-task"));
+        .tmux_window(Some(&window));
     db.patch_task(id, &patch).await.unwrap();
     let task = db.get_task(id).await.unwrap().unwrap();
     assert!(task.worktree.is_some());
@@ -846,15 +852,19 @@ async fn patch_task_status_and_dispatch_together() {
         })
         .await
         .unwrap();
+    let window = test_tmux_window("session:1-my-task");
     let patch = TaskPatch::new()
         .status(TaskStatus::Running)
         .worktree(Some("/repo/.worktrees/1-my-task"))
-        .tmux_window(Some("session:1-my-task"));
+        .tmux_window(Some(&window));
     db.patch_task(id, &patch).await.unwrap();
     let task = db.get_task(id).await.unwrap().unwrap();
     assert_eq!(task.status, TaskStatus::Running);
     assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/1-my-task"));
-    assert_eq!(task.tmux_window.as_deref(), Some("session:1-my-task"));
+    assert_eq!(
+        task.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("session:1-my-task")
+    );
 }
 
 #[tokio::test]
@@ -1752,7 +1762,7 @@ async fn delete_stale_subtree_feed_tasks_returns_removed_rows_with_state() {
         stale_1,
         &TaskPatch::new()
             .worktree(Some("/repo/a/.worktrees/stale-1"))
-            .tmux_window(Some("dispatch:stale-1")),
+            .tmux_window(Some(&test_tmux_window("dispatch:stale-1"))),
     )
     .await
     .unwrap();
@@ -1784,7 +1794,10 @@ async fn delete_stale_subtree_feed_tasks_returns_removed_rows_with_state() {
     let one = reported(stale_1);
     assert_eq!(one.repo_path, "/repo/a");
     assert_eq!(one.worktree.as_deref(), Some("/repo/a/.worktrees/stale-1"));
-    assert_eq!(one.tmux_window.as_deref(), Some("dispatch:stale-1"));
+    assert_eq!(
+        one.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("dispatch:stale-1")
+    );
     let two = reported(stale_2);
     assert_eq!(two.repo_path, "/repo/a");
     assert_eq!(two.worktree.as_deref(), Some("/repo/a/.worktrees/stale-2"));
@@ -2948,7 +2961,9 @@ async fn task_patch_each_setter_marks_has_changes() {
     assert!(TaskPatch::new().repo_path("/r").has_changes());
     assert!(TaskPatch::new().worktree(Some("w")).has_changes());
     assert!(TaskPatch::new().worktree(None).has_changes());
-    assert!(TaskPatch::new().tmux_window(Some("tw")).has_changes());
+    assert!(TaskPatch::new()
+        .tmux_window(Some(&test_tmux_window("tw")))
+        .has_changes());
     assert!(TaskPatch::new().tmux_window(None).has_changes());
     assert!(TaskPatch::new().sub_status(SubStatus::Active).has_changes());
     let url = crate::models::TaskUrl::new("u", crate::models::UrlType::Other);
@@ -2973,6 +2988,10 @@ mod property_tests {
     use super::*;
     use proptest::prelude::*;
 
+    /// A `'static` window for the `'static`-lifetime patch below — `TaskPatch`
+    /// borrows its window, so a temporary would not outlive the returned patch.
+    static PATCH_WINDOW: crate::models::TmuxWindow = crate::models::TmuxWindow::from_static("w");
+
     /// Build a `TaskPatch` with the subset of fields indicated by `bits`.
     /// Each bit (0-12) maps to one field in `has_changes()` order.
     fn taskpatch_from_bits(bits: u16) -> TaskPatch<'static> {
@@ -2996,7 +3015,7 @@ mod property_tests {
             p = p.worktree(Some(".wt"));
         }
         if bits & (1 << 6) != 0 {
-            p = p.tmux_window(Some("w"));
+            p = p.tmux_window(Some(&PATCH_WINDOW));
         }
         if bits & (1 << 7) != 0 {
             p = p.sub_status(crate::models::SubStatus::Active);
@@ -3112,6 +3131,12 @@ mod property_tests {
                     .unwrap();
                 let baseline = db.get_task(id).await.unwrap().unwrap();
 
+                // Generated as strings, then lifted to the typed window field:
+                // `[a-z]{1,16}` is always a valid window name (non-empty, not a
+                // pane id), so no generated value is dropped by the lift.
+                let tmux_window: Option<Option<crate::models::TmuxWindow>> = tmux_window
+                    .map(|inner| inner.map(|s| test_tmux_window(&s)));
+
                 let mut p = TaskPatch::new();
                 if let Some(t)  = title.as_deref()       { p = p.title(t); }
                 if let Some(d)  = description.as_deref() { p = p.description(d); }
@@ -3119,7 +3144,7 @@ mod property_tests {
                 if let Some(bb) = base_branch.as_deref() { p = p.base_branch(bb); }
                 if let Some(ref pp) = plan_path   { p = p.plan_path(pp.as_deref()); }
                 if let Some(ref w)  = worktree    { p = p.worktree(w.as_deref()); }
-                if let Some(ref tw) = tmux_window { p = p.tmux_window(tw.as_deref()); }
+                if let Some(ref tw) = tmux_window { p = p.tmux_window(tw.as_ref()); }
                 // Map the generated string into a typed url (inferred type).
                 let url_typed: Option<Option<crate::models::TaskUrl>> = url.as_ref().map(|inner| {
                     inner
@@ -3534,7 +3559,7 @@ async fn patch_task_all_fields_round_trip() {
             .description("patched desc")
             .repo_path("/patched/repo")
             .worktree(Some(".worktrees/1394"))
-            .tmux_window(Some("session:1394"))
+            .tmux_window(Some(&test_tmux_window("session:1394")))
             .url(Some(&patch_url))
             .tag(Some(TaskTag::Feature))
             .sort_order(Some(42))
@@ -3565,7 +3590,7 @@ async fn patch_task_all_fields_round_trip() {
         "worktree"
     );
     assert_eq!(
-        task.tmux_window.as_deref(),
+        task.tmux_window.as_ref().map(|w| w.as_str()),
         Some("session:1394"),
         "tmux_window"
     );
@@ -4311,6 +4336,71 @@ async fn list_all_skips_row_with_unrecognised_status() {
     assert!(
         crate::db::decode_fallback_count() > before,
         "skipping a row must bump the decode-fallback counter"
+    );
+}
+
+/// A `tmux_window` value that is not a window name — a pane id, or the empty
+/// string — soft-fails to `None` rather than failing the row. The task then
+/// reads back as owning no window, which is exactly what a task whose agent is
+/// gone looks like; failing the row would drop the card from every bulk read.
+#[tokio::test]
+async fn malformed_stored_tmux_window_decodes_to_none() {
+    for stored in ["%3", ""] {
+        let db = in_memory_db().await;
+        let task = create_task_returning(&db, "windowed", "", "/repo", None, TaskStatus::Running)
+            .await
+            .unwrap();
+        db.db_call(move |conn| {
+            conn.execute(
+                "UPDATE tasks SET tmux_window = ?1 WHERE id = ?2",
+                rusqlite::params![stored, task.id.0],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let before = crate::db::decode_fallback_count();
+
+        let read = db.get_task(task.id).await.unwrap().unwrap();
+
+        assert_eq!(read.tmux_window, None, "stored {stored:?}");
+        assert_eq!(read.title, "windowed", "the rest of the row must survive");
+        // The empty string reads back as SQL NULL-equivalent "no window" too,
+        // but only a non-empty malformed value is a decode fallback worth
+        // counting — an empty column is indistinguishable from an unset one.
+        if !stored.is_empty() {
+            assert!(
+                crate::db::decode_fallback_count() > before,
+                "a malformed stored window must bump the decode-fallback counter"
+            );
+        }
+    }
+}
+
+/// A window name written by an older binary that this one has no opinion about
+/// still round-trips: `parse` only rejects the two strings that are not window
+/// names, so an unfamiliar-but-valid name is preserved verbatim.
+#[tokio::test]
+async fn unfamiliar_stored_tmux_window_round_trips() {
+    let db = in_memory_db().await;
+    let task = create_task_returning(&db, "windowed", "", "/repo", None, TaskStatus::Running)
+        .await
+        .unwrap();
+    db.db_call(move |conn| {
+        conn.execute(
+            "UPDATE tasks SET tmux_window = 'session:1-legacy' WHERE id = ?1",
+            rusqlite::params![task.id.0],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let read = db.get_task(task.id).await.unwrap().unwrap();
+
+    assert_eq!(
+        read.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("session:1-legacy")
     );
 }
 

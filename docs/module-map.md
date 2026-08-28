@@ -41,7 +41,7 @@ to look.
 | `src/models/ids.rs` | `define_id_newtype!` macro behind `TaskId`/`EpicId`/`LearningId`/`TodoId` |
 | `src/models/string_enum.rs` | `define_str_enum!` macro behind `TaskStatus`/`SubStatus`/`TaskTag`/`WrapUpMode` string conversions |
 | `src/models/paths.rs` | `expand_tilde`, plus the whole repo-grouping family — `repo_name_from_path`, `repo_name_from_url`, `extract_github_repo`, `UNKNOWN_REPO_GROUP`. Both grouping halves share the fallback, so they stay in one module; turning a repo name into a *local* path is the adapter's job (`resolve_repo_path`) |
-| `src/models/tmux_window.rs` | The `task-<id>` naming convention: `build_tmux_window_name` / `parse_tmux_window_task_id`. Lives in the model, not the adapter, because `TaskService` parses `SendMessage` targets through the same pair |
+| `src/models/tmux_window.rs` | `TmuxWindow`, the window-name newtype, and the `task-<id>` naming convention it owns (`TmuxWindow::for_task` / `TmuxWindow::task_id`). Lives in the model, not the adapter, because `TaskService` parses `SendMessage` targets through the same type |
 | `src/models/columns.rs` | `VisualColumn` kanban board layout |
 | `src/service/mod.rs` | Service module root: `ServiceError`, `FieldUpdate`, `UrlUpdate`, re-exports of all sub-module types |
 | `src/service/tasks/mod.rs` | `TaskService` — task business logic |

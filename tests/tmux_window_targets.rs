@@ -42,6 +42,7 @@ mod tmux_harness;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use dispatch_tui::models::test_tmux_window as w;
 use dispatch_tui::tmux;
 
 use tmux_harness::{
@@ -50,6 +51,10 @@ use tmux_harness::{
 
 /// The board TUI window — always the session's first (and initially active)
 /// window, matching the state during any board-initiated operation.
+///
+/// The fixture declares its topology as plain `&str` names — those are what
+/// reach the real tmux server through `tmux new-window -n` — and `w()` lifts
+/// one to the typed target the `tmux::` helpers take.
 const BOARD: &str = "board";
 
 struct Fixture {
@@ -147,7 +152,7 @@ impl Fixture {
     /// that same window has arrived too, so an absence can be asserted without
     /// sleeping out the full deadline.
     fn anchor_delivery(&self, index: usize, name: &str, text: &str) {
-        tmux::send_keys(name, text, &self.runner()).expect("control send_keys should succeed");
+        tmux::send_keys(&w(name), text, &self.runner()).expect("control send_keys should succeed");
         let got = self.read_when_written(index, name);
         assert!(
             got.contains(text),
@@ -171,7 +176,7 @@ fn send_keys_to_absent_prefix_window_errors_and_types_nothing() {
         return;
     };
 
-    let err = tmux::send_keys("task-4", "DANGER", &fx.runner())
+    let err = tmux::send_keys(&w("task-4"), "DANGER", &fx.runner())
         .expect_err("send_keys to an absent window must fail, not fall through to task-42");
     assert!(
         err.to_string().contains("task-4"),
@@ -195,7 +200,7 @@ fn send_keys_reaches_the_exactly_named_window_when_both_exist() {
         return;
     };
 
-    tmux::send_keys("task-4", "EXACT", &fx.runner()).expect("exact match must still work");
+    tmux::send_keys(&w("task-4"), "EXACT", &fx.runner()).expect("exact match must still work");
 
     let short = fx.read_when_written(1, "task-4");
     assert!(
@@ -215,7 +220,7 @@ fn send_keys_to_the_longer_name_is_unaffected_by_the_shorter_sibling() {
         return;
     };
 
-    tmux::send_keys("task-42", "LONG", &fx.runner()).expect("exact match must work");
+    tmux::send_keys(&w("task-42"), "LONG", &fx.runner()).expect("exact match must work");
 
     let long = fx.read_when_written(2, "task-42");
     assert!(long.contains("LONG"), "got: {long:?}");
@@ -236,7 +241,7 @@ fn kill_window_on_absent_prefix_window_errors_and_spares_sibling() {
         return;
     };
 
-    let err = tmux::kill_window("keep-9", &fx.runner())
+    let err = tmux::kill_window(&w("keep-9"), &fx.runner())
         .expect_err("kill_window on an absent window must fail, not kill keep-99");
     assert!(
         err.to_string().contains("keep-9"),
@@ -256,7 +261,7 @@ fn kill_window_kills_only_the_exactly_named_window() {
         return;
     };
 
-    tmux::kill_window("task-4", &fx.runner()).expect("exact match must still work");
+    tmux::kill_window(&w("task-4"), &fx.runner()).expect("exact match must still work");
 
     let names = fx.window_names();
     assert!(
@@ -279,7 +284,7 @@ fn select_window_on_absent_prefix_window_errors_and_keeps_focus() {
         return;
     };
 
-    tmux::select_window("task-4", &fx.runner())
+    tmux::select_window(&w("task-4"), &fx.runner())
         .expect_err("select_window on an absent window must fail, not jump to task-42");
 
     assert_eq!(
@@ -298,7 +303,7 @@ fn pane_id_for_window_on_absent_prefix_window_errors() {
         return;
     };
 
-    let got = tmux::pane_id_for_window("task-4", &fx.runner());
+    let got = tmux::pane_id_for_window(&w("task-4"), &fx.runner());
     let err = got.expect_err("must fail rather than return task-42's pane ID");
     assert!(
         err.to_string().contains("task-4"),
@@ -312,8 +317,8 @@ fn pane_id_for_window_returns_the_exactly_named_windows_pane() {
         return;
     };
 
-    let short = tmux::pane_id_for_window("task-4", &fx.runner()).unwrap();
-    let long = tmux::pane_id_for_window("task-42", &fx.runner()).unwrap();
+    let short = tmux::pane_id_for_window(&w("task-4"), &fx.runner()).unwrap();
+    let long = tmux::pane_id_for_window(&w("task-42"), &fx.runner()).unwrap();
 
     assert!(short.starts_with('%'), "expected a pane ID, got: {short:?}");
     assert_ne!(
@@ -341,7 +346,7 @@ fn set_window_dispatch_dir_on_absent_prefix_window_errors_and_leaves_sibling_alo
         return;
     };
 
-    tmux::set_window_dispatch_dir("task-4", "/tmp/wrong", &fx.runner())
+    tmux::set_window_dispatch_dir(&w("task-4"), "/tmp/wrong", &fx.runner())
         .expect_err("must fail rather than set @dispatch_dir on task-42");
 
     // A leaked @dispatch_dir on task-42 would make the split hook `cd` that
@@ -358,9 +363,9 @@ fn join_pane_on_absent_prefix_window_errors_and_spares_sibling() {
     let Some(fx) = setup_or_skip(&[BOARD, "task-42"]) else {
         return;
     };
-    let board_pane = tmux::pane_id_for_window(BOARD, &fx.runner()).unwrap();
+    let board_pane = tmux::pane_id_for_window(&w(BOARD), &fx.runner()).unwrap();
 
-    tmux::join_pane("task-4", &board_pane, &fx.runner())
+    tmux::join_pane(&w("task-4"), &board_pane, &fx.runner())
         .expect_err("must fail rather than pull task-42's pane into the board");
 
     assert!(
@@ -376,7 +381,7 @@ fn rename_window_on_absent_prefix_window_errors_and_spares_sibling() {
         return;
     };
 
-    tmux::rename_window("task-4", "renamed", &fx.runner())
+    tmux::rename_window("task-4", &w("renamed"), &fx.runner())
         .expect_err("must fail rather than rename task-42");
 
     let names = fx.window_names();
@@ -396,7 +401,7 @@ fn rename_window_resolves_the_target_not_the_new_name() {
         return;
     };
 
-    tmux::rename_window("task-42", "task-4", &fx.runner()).expect("rename should succeed");
+    tmux::rename_window("task-42", &w("task-4"), &fx.runner()).expect("rename should succeed");
 
     let names = fx.window_names();
     assert!(
@@ -413,9 +418,9 @@ fn rename_window_accepts_a_pane_id_target() {
     let Some(fx) = setup_or_skip(&[BOARD, "task-42"]) else {
         return;
     };
-    let pane = tmux::pane_id_for_window("task-42", &fx.runner()).unwrap();
+    let pane = tmux::pane_id_for_window(&w("task-42"), &fx.runner()).unwrap();
 
-    tmux::rename_window(&pane, "renamed", &fx.runner()).expect("pane-ID target should work");
+    tmux::rename_window(&pane, &w("renamed"), &fx.runner()).expect("pane-ID target should work");
 
     let names = fx.window_names();
     assert!(
@@ -439,14 +444,15 @@ fn duplicate_window_names_are_refused_rather_than_resolved_arbitrarily() {
         return;
     };
 
-    let err = tmux::set_window_dispatch_dir("dup", "/tmp/whichever", &fx.runner())
+    let err = tmux::set_window_dispatch_dir(&w("dup"), "/tmp/whichever", &fx.runner())
         .expect_err("an ambiguous name must be refused");
     assert!(
         err.to_string().contains("multiple tmux windows"),
         "error should explain the ambiguity, got: {err}"
     );
 
-    let err = tmux::kill_window("dup", &fx.runner()).expect_err("ambiguous kill must be refused");
+    let err =
+        tmux::kill_window(&w("dup"), &fx.runner()).expect_err("ambiguous kill must be refused");
     assert!(
         err.to_string().contains("multiple tmux windows"),
         "error should explain the ambiguity, got: {err}"

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{SubStatus, TaskId, TaskStatus, TaskTag};
+use crate::models::{test_tmux_window, SubStatus, TaskId, TaskStatus, TaskTag};
 // Palette constants come from the palette, never retyped as literals here: a
 // hand-copied RGB goes stale silently when the palette moves, which is the exact
 // drift the derived header labels were introduced to stop.
@@ -60,7 +60,7 @@ async fn action_hints_backlog_task_with_plan() {
 #[tokio::test]
 async fn action_hints_running_with_window() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("win-4".to_string());
+    task.tmux_window = Some(test_tmux_window("win-4"));
     let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
@@ -121,7 +121,7 @@ async fn action_hints_running_no_worktree_no_window() {
 #[tokio::test]
 async fn action_hints_review_with_window() {
     let mut task = make_task(6, TaskStatus::Review);
-    task.tmux_window = Some("win-6".to_string());
+    task.tmux_window = Some(test_tmux_window("win-6"));
     let hints = ui::action_hints(Some(&task), false, Color::Rgb(122, 162, 247));
     let keys: Vec<&str> = hints
         .iter()
@@ -239,7 +239,7 @@ async fn render_error_popup_shows_message() {
 #[tokio::test]
 async fn render_crashed_task_shows_label() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
+    task.tmux_window = Some(test_tmux_window("win-1"));
     task.sub_status = SubStatus::Crashed;
     let mut app = App::new(vec![task]);
     let buf = render_to_buffer(&mut app, 120, 20);
@@ -249,7 +249,7 @@ async fn render_crashed_task_shows_label() {
 #[tokio::test]
 async fn render_stale_task_shows_label() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
+    task.tmux_window = Some(test_tmux_window("win-1"));
     task.sub_status = SubStatus::Stale;
     let mut app = App::new(vec![task]);
     let buf = render_to_buffer(&mut app, 120, 20);
@@ -270,7 +270,7 @@ async fn running_card_with_worktree_no_window_shows_detached() {
 async fn running_card_with_window_shows_running_not_detached() {
     let mut task = make_task(1, TaskStatus::Running);
     task.worktree = Some("/repo/.worktrees/1-fix".to_string());
-    task.tmux_window = Some("1-fix".to_string());
+    task.tmux_window = Some(test_tmux_window("1-fix"));
     let mut app = App::new(vec![task]);
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "◉ running"), "expected '◉ running'");
@@ -304,7 +304,7 @@ async fn review_card_with_pr_attached_shows_filled_circle() {
         crate::models::UrlType::Pr,
     ));
     task.worktree = Some("/repo/.worktrees/1-fix".to_string());
-    task.tmux_window = Some("1-fix".to_string());
+    task.tmux_window = Some(test_tmux_window("1-fix"));
     let mut app = App::new(vec![task]);
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(buffer_contains(&buf, "● PR #42"), "expected '● PR #42'");
@@ -371,7 +371,7 @@ async fn render_v2_backlog_task_shows_status_icon() {
 #[tokio::test]
 async fn render_v2_running_task_shows_status_icon() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("win-1".to_string());
+    task.tmux_window = Some(test_tmux_window("win-1"));
     let mut app = App::new(vec![task]);
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(
@@ -1378,7 +1378,7 @@ async fn render_card_conflict_shows_rebase_conflict() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Conflict;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     app.update(Message::NavigateColumn(1)); // Running column
     let buf = render_to_buffer(&mut app, 120, 30);
@@ -1428,7 +1428,7 @@ async fn render_card_blocked_shows_blocked() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::NeedsInput;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     app.update(Message::NavigateColumn(1)); // Running column
     let buf = render_to_buffer(&mut app, 120, 30);
@@ -1443,7 +1443,7 @@ async fn render_card_running_shows_running() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     app.update(Message::NavigateColumn(1)); // Running column
     let buf = render_to_buffer(&mut app, 120, 30);
@@ -1457,7 +1457,7 @@ async fn render_card_running_shows_running() {
 async fn render_card_review_pr_shows_pr_number() {
     let mut task = make_task(1, TaskStatus::Review);
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     task.url = Some(crate::models::TaskUrl::new(
         "https://github.com/acme/app/pull/99",
         crate::models::UrlType::Pr,
@@ -1533,7 +1533,7 @@ async fn render_card_message_flash_shows_envelope() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     app.agents.message_flash.insert(TaskId(1), Instant::now());
     app.update(Message::NavigateColumn(1)); // Running column
@@ -1553,7 +1553,7 @@ fn app_with_aged_message_flash(age_secs: u64) -> App {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     let stamped = Instant::now()
         .checked_sub(Duration::from_secs(age_secs))
@@ -1606,7 +1606,7 @@ fn app_with_flash_on_a_non_cursor_card(age_secs: u64) -> App {
         let mut t = make_task(id, TaskStatus::Running);
         t.sub_status = SubStatus::Active;
         t.worktree = Some(format!("/repo/.worktrees/{id}-task"));
-        t.tmux_window = Some(format!("task-{id}"));
+        t.tmux_window = Some(test_tmux_window(&format!("task-{id}")));
         // Seed recent activity. These tests drive `handle_tick`, which reclassifies
         // an inactive Running task as Stale — and Stale now claims an amber state
         // border, which would put a colour on a frame this fixture means to keep
@@ -1690,7 +1690,7 @@ async fn render_card_message_flash_sent_shows_outgoing_glyph() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     app.agents
         .message_flash_sent
@@ -1712,7 +1712,7 @@ async fn render_card_message_flash_sent_expires_once_past_its_ttl() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     let ttl = crate::tui::MESSAGE_FLASH_TTL.as_secs();
     let stamped = Instant::now()
@@ -1742,7 +1742,7 @@ async fn a_sent_flash_expiring_marks_the_app_dirty() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     // Seed recent activity so `tick_sub_status` reclassifies nothing this
     // tick — otherwise its own `self.dirty = true` on a sub_status change
     // would mask the bug this test targets. Same reasoning as
@@ -1775,7 +1775,7 @@ async fn render_card_message_flash_shows_both_glyphs_when_sent_and_received() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Active;
     task.worktree = Some("/repo/.worktrees/1-task-1".to_string());
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     app.agents.message_flash.insert(TaskId(1), Instant::now());
     app.agents
@@ -2900,11 +2900,11 @@ async fn card_frame_carries_state_and_the_cursor_outranks_it() {
     let mut blocked = make_task(2, TaskStatus::Running);
     blocked.sub_status = SubStatus::NeedsInput;
     blocked.worktree = Some("/repo/.worktrees/2-task".to_string());
-    blocked.tmux_window = Some("task-2".to_string());
+    blocked.tmux_window = Some(test_tmux_window("task-2"));
     let mut healthy = make_task(3, TaskStatus::Running);
     healthy.sub_status = SubStatus::Active;
     healthy.worktree = Some("/repo/.worktrees/3-task".to_string());
-    healthy.tmux_window = Some("task-3".to_string());
+    healthy.tmux_window = Some(test_tmux_window("task-3"));
     healthy.last_pre_tool_use_at = Some(Utc::now());
 
     // Cursor on the *crashed* card: the case where the two rules collide.

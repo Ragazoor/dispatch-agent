@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::dispatch;
 use crate::models::{DispatchMode, DispatchResult, Task};
-use crate::service::{FieldUpdate, ServiceError, UpdateTaskParams};
+use crate::service::{FieldUpdate, ServiceError, TmuxWindowUpdate, UpdateTaskParams};
 
 use super::crud::TaskService;
 
@@ -140,7 +140,7 @@ impl TaskService {
                 // agent actually landed.
                 let params = UpdateTaskParams::for_task(task_id)
                     .worktree(FieldUpdate::Set(dr.worktree_path.clone()))
-                    .tmux_window(FieldUpdate::Set(dr.tmux_window.clone()));
+                    .tmux_window(TmuxWindowUpdate::Set(dr.tmux_window.clone()));
                 if let Err(e) = self.update_task(params).await {
                     tracing::warn!(
                         task_id = task_id.0,

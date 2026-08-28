@@ -5,7 +5,7 @@
 //! breaks the user-facing feedback contract is caught even if the
 //! TUI-internal helpers are refactored.
 
-use dispatch_tui::models::{Task, TaskId};
+use dispatch_tui::models::{Task, TaskId, TmuxWindow};
 use dispatch_tui::tui::{App, Message};
 
 fn make_task(id: i64, title: &str) -> Task {
@@ -53,7 +53,7 @@ async fn dispatching_status_visible_across_lifecycle_success() {
         dispatch_tui::tui::messages::TaskMessage::Dispatched {
             id: TaskId(7),
             worktree: "/repo/.worktrees/7-fix-login-bug".to_string(),
-            tmux_window: "task-7".to_string(),
+            tmux_window: TmuxWindow::for_task(TaskId(7)),
             switch_focus: false,
         },
     ));
@@ -103,7 +103,7 @@ async fn multiple_dispatches_show_pluralized_status() {
         dispatch_tui::tui::messages::TaskMessage::Dispatched {
             id: TaskId(1),
             worktree: "/wt/1".to_string(),
-            tmux_window: "task-1".to_string(),
+            tmux_window: TmuxWindow::for_task(TaskId(1)),
             switch_focus: false,
         },
     ));

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{TaskId, TaskStatus};
+use crate::models::{test_tmux_window, TaskId, TaskStatus};
 use crossterm::event::KeyCode;
 
 #[test]
@@ -37,7 +37,7 @@ fn confirm_done_kills_tmux_but_preserves_worktree() {
     let mut app = App::new(vec![{
         let mut t = make_task(1, TaskStatus::Review);
         t.worktree = Some("/repo/.worktrees/1-test".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.tmux_window = Some(test_tmux_window("task-1"));
         t
     }]);
     app.selection_mut().set_column(3);

@@ -95,7 +95,7 @@ patch_struct! {
         plain    description:  &'a str,
         plain    repo_path:    &'a str,
         nullable worktree:     &'a str,
-        nullable tmux_window:  &'a str,
+        nullable tmux_window:  &'a crate::models::TmuxWindow,
         plain    sub_status:   SubStatus,
         nullable url:          &'a crate::models::TaskUrl,
         nullable tag:          TaskTag,
@@ -150,7 +150,7 @@ pub struct RemovedFeedTask {
     pub id: TaskId,
     pub repo_path: String,
     pub worktree: Option<String>,
-    pub tmux_window: Option<String>,
+    pub tmux_window: Option<crate::models::TmuxWindow>,
 }
 
 // ---------------------------------------------------------------------------

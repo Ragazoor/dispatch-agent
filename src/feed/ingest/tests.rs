@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::db::{CreateTaskRequest, Database, EpicCrud, EpicPatch, EpicRead, TaskCrud, TaskPatch};
-use crate::models::{FeedRole, Signal, TaskStatus, TaskTag};
+use crate::models::{test_tmux_window, FeedRole, Signal, TaskStatus, TaskTag};
 
 fn make_item(external_id: &str, url: &str) -> FeedItem {
     FeedItem {
@@ -172,7 +172,7 @@ async fn route_routed_moves_task_preserving_state() {
             .status(TaskStatus::Running)
             .sub_status(crate::models::SubStatus::Active)
             .worktree(Some("/tmp/wt-pr-1"))
-            .tmux_window(Some("dispatch:7")),
+            .tmux_window(Some(&test_tmux_window("dispatch:7"))),
     )
     .await
     .unwrap();
@@ -200,7 +200,10 @@ async fn route_routed_moves_task_preserving_state() {
         "sub_status preserved"
     );
     assert_eq!(moved.worktree.as_deref(), Some("/tmp/wt-pr-1"));
-    assert_eq!(moved.tmux_window.as_deref(), Some("dispatch:7"));
+    assert_eq!(
+        moved.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("dispatch:7")
+    );
 
     assert!(
         db.list_tasks_for_epic(team).await.unwrap().is_empty(),
@@ -308,7 +311,7 @@ async fn moved_task_is_never_reported_as_removed() {
         task.id,
         &TaskPatch::new()
             .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-            .tmux_window(Some("dispatch:pr-1")),
+            .tmux_window(Some(&test_tmux_window("dispatch:pr-1"))),
     )
     .await
     .unwrap();
@@ -351,7 +354,10 @@ async fn moved_task_is_never_reported_as_removed() {
         Some("/repo/a/.worktrees/7-pr-1"),
         "the move must preserve the in-flight worktree"
     );
-    assert_eq!(moved.tmux_window.as_deref(), Some("dispatch:pr-1"));
+    assert_eq!(
+        moved.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("dispatch:pr-1")
+    );
 }
 
 /// A PR that genuinely leaves the emission (merged/closed) IS reported, so the
@@ -388,7 +394,7 @@ async fn absent_task_with_worktree_is_reported_as_removed() {
         task.id,
         &TaskPatch::new()
             .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-            .tmux_window(Some("dispatch:pr-1")),
+            .tmux_window(Some(&test_tmux_window("dispatch:pr-1"))),
     )
     .await
     .unwrap();
@@ -410,7 +416,7 @@ async fn absent_task_with_worktree_is_reported_as_removed() {
         Some("/repo/a/.worktrees/7-pr-1")
     );
     assert_eq!(
-        outcome.removed[0].tmux_window.as_deref(),
+        outcome.removed[0].tmux_window.as_ref().map(|w| w.as_str()),
         Some("dispatch:pr-1")
     );
 }
@@ -432,7 +438,7 @@ async fn flat_sync_reports_removed_task_with_worktree() {
         task.id,
         &TaskPatch::new()
             .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-            .tmux_window(Some("dispatch:pr-1")),
+            .tmux_window(Some(&test_tmux_window("dispatch:pr-1"))),
     )
     .await
     .unwrap();
@@ -499,7 +505,7 @@ async fn route_routed_rescues_flat_task_stranded_on_parent() {
             .status(TaskStatus::Running)
             .sub_status(crate::models::SubStatus::Active)
             .worktree(Some("/tmp/wt-pr-1"))
-            .tmux_window(Some("dispatch:7")),
+            .tmux_window(Some(&test_tmux_window("dispatch:7"))),
     )
     .await
     .unwrap();
@@ -527,7 +533,10 @@ async fn route_routed_rescues_flat_task_stranded_on_parent() {
         "sub_status preserved"
     );
     assert_eq!(moved.worktree.as_deref(), Some("/tmp/wt-pr-1"));
-    assert_eq!(moved.tmux_window.as_deref(), Some("dispatch:7"));
+    assert_eq!(
+        moved.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("dispatch:7")
+    );
 }
 
 /// Bug B (parent-stranded stale delete): a feed task stranded on the parent
@@ -1618,7 +1627,7 @@ async fn additive_role_routed_sync_keeps_a_task_absent_from_the_emission() {
             .status(TaskStatus::Running)
             .sub_status(crate::models::SubStatus::Active)
             .worktree(Some("/tmp/wt-pr-1"))
-            .tmux_window(Some("dispatch:7")),
+            .tmux_window(Some(&test_tmux_window("dispatch:7"))),
     )
     .await
     .unwrap();

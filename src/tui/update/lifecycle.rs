@@ -1,6 +1,6 @@
 //! Task lifecycle handlers: move, dispatch, create, delete, detail, flatten, done.
 
-use crate::models::{DispatchMode, EpicId, SubStatus, Task, TaskId, TaskStatus};
+use crate::models::{DispatchMode, EpicId, SubStatus, Task, TaskId, TaskStatus, TmuxWindow};
 
 use super::super::commands::CleanupFollowUp;
 use super::super::types::*;
@@ -250,7 +250,7 @@ impl App {
         &mut self,
         id: TaskId,
         worktree: String,
-        tmux_window: String,
+        tmux_window: TmuxWindow,
         switch_focus: bool,
     ) -> Vec<Command> {
         self.unmark_dispatching(id);

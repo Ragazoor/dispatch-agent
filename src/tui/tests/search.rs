@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{EpicId, TaskStatus};
+use crate::models::{test_tmux_window, EpicId, TaskStatus};
 
 fn test_task(id: i64, title: &str) -> Task {
     test_task_repo(id, title, "/repo")
@@ -326,7 +326,7 @@ fn epic_search_matches_task_hidden_by_only_active_is_not_a_dead_end() {
     let mut matching = epic_child(10, 1, "Fix login bug");
     matching.tmux_window = None;
     let mut active = epic_child(11, 1, "Update invoices");
-    active.tmux_window = Some("task-11".to_string());
+    active.tmux_window = Some(test_tmux_window("task-11"));
     let mut app = App::new(vec![matching, active]);
     app.board.epics = vec![make_epic_with_title(1, "Billing rework")];
     app.filter.only_active = true;
@@ -509,9 +509,9 @@ fn search_on_epics_composes_with_repo_filter() {
 #[test]
 fn search_on_epics_composes_with_only_active_filter() {
     let mut matching = epic_child(10, 1, "Fix login bug");
-    matching.tmux_window = Some("task-10".to_string());
+    matching.tmux_window = Some(test_tmux_window("task-10"));
     let mut non_matching = epic_child(11, 2, "Update invoices");
-    non_matching.tmux_window = Some("task-11".to_string());
+    non_matching.tmux_window = Some(test_tmux_window("task-11"));
     let mut app = App::new(vec![matching, non_matching]);
     app.board.epics = vec![
         make_epic_with_title(1, "Login redesign"),

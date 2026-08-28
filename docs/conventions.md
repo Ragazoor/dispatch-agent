@@ -108,7 +108,7 @@ pub enum FieldUpdate {
 }
 ```
 
-Used in `UpdateTaskParams` for `worktree` and `tmux_window`. When adding a new nullable string field to `UpdateTaskParams`, use `Option<FieldUpdate>` rather than `Option<Option<String>>`.
+Used in `UpdateTaskParams` for `worktree`. When adding a new nullable string field to `UpdateTaskParams`, use `Option<FieldUpdate>` rather than `Option<Option<String>>`. `tmux_window` used to be one of these and no longer is — see `TmuxWindowUpdate` below.
 
 **When to use:** if the caller can clear the field to NULL (nullable column, user-clearable), use `FieldUpdate`. If the field is non-nullable or the update path only ever sets a value, use a plain `String` (or `Option<String>` to mean "don't touch / set"). Reserve the three-state pattern for genuinely tri-valued updates.
 
@@ -126,6 +126,12 @@ pub enum UrlUpdate {
 It mirrors `FieldUpdate` (same three-state semantics, same `Some(Some(_))`/`Some(None)`/`None` bridge to the DB patch) and is consumed in `src/service/tasks/crud.rs`.
 
 **When `UrlUpdate` vs `FieldUpdate`:** use `UrlUpdate` for the typed task URL specifically — it keeps `url` and `url_type` in lockstep (e.g. `crud.rs` inspects `UrlUpdate::Set(u) if u.is_pr()` to drive PR-specific behaviour). Use `FieldUpdate` for plain nullable *string* fields. The distinction is not compiler-flagged: a contributor who assumes the URL uses `FieldUpdate` will not get a type error pointing them here, so reach for `UrlUpdate` whenever the field is the task URL.
+
+## `TmuxWindowUpdate` — the typed-window sibling
+
+`UpdateTaskParams.tmux_window` is an `Option<TmuxWindowUpdate>` for the same reason `url` is an `Option<UrlUpdate>`: the field is not a plain string. `TmuxWindowUpdate::Set` carries a `TmuxWindow` (`src/models/tmux_window.rs`), so a repo path, a branch name or a half-typed window name is a compile error rather than a target tmux resolves by *prefix* onto some other task's window. Read that type's doc comment before touching this — it explains which two strings it excludes and why.
+
+The DB boundary is where it becomes text again: `TaskPatch.tmux_window` is `Option<Option<&TmuxWindow>>`, serialised with `as_str()`, and read back through `read_tmux_window` (`src/db/queries/mod.rs`), which soft-fails a malformed stored value to `None` rather than failing the row.
 
 ## `TaskPatch` / `EpicPatch` — double-Option in the DB layer
 
@@ -628,4 +634,4 @@ A `file:NN` citation is only **bounds-checked**: `check-doc-paths.sh` confirms t
 
 What is still not caught, and still needs a `grep` when you rename or delete something: a bare **PascalCase** type name with no `::` (indistinguishable from an Allium block name), a bare snake_case name of four words or fewer (below the noise floor — see the threshold note in the script), and any `file:NN` line number, which remains bounds-only. A `Type::method` check is also a *phantom* check, not a path check: it confirms both halves exist somewhere, not that the method hangs off that type.
 
-The costliest uncaught shape is the **prose split**: a backticked symbol with its file in parentheses, `` `parse_tmux_window_task_id` (src/models/tmux_window.rs) ``. Both halves pass independently — the path exists, the symbol resolves *somewhere* — but nothing ties them together, so moving the symbol leaves the citation stale with both checkers fully green. #4215 hit exactly this: the same rename left three `path::symbol` citations that the checker caught immediately, and two parenthesized-prose ones that survived a clean run of both gates and were only found by review. When you move a symbol, `grep` its bare name across `docs/` — a green hook is not evidence that prose citations followed it.
+The costliest uncaught shape is the **prose split**: a backticked symbol with its file in parentheses, `` `TmuxWindow::task_id` (src/models/tmux_window.rs) ``. Both halves pass independently — the path exists, the symbol resolves *somewhere* — but nothing ties them together, so moving the symbol leaves the citation stale with both checkers fully green. #4215 hit exactly this: the same rename left three `path::symbol` citations that the checker caught immediately, and two parenthesized-prose ones that survived a clean run of both gates and were only found by review. When you move a symbol, `grep` its bare name across `docs/` — a green hook is not evidence that prose citations followed it.

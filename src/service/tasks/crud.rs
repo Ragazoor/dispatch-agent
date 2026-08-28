@@ -58,14 +58,14 @@ fn with_status_transition(
 /// first — `ListAgents`/`SendMessage` append one when more than one live
 /// agent answers to a name, even though dispatch's own `task-<id>` names are
 /// unique by construction and should rarely need it — then delegates to
-/// [`crate::models::parse_tmux_window_task_id`], the same parser tmux window
-/// names go through, so the two can't drift apart into two spellings of one
-/// convention. `None` for any value that doesn't match this shape — a
+/// [`TmuxWindow::task_id`](crate::models::TmuxWindow::task_id), the same parser
+/// tmux window names go through, so the two can't drift apart into two
+/// spellings of one convention. `None` for any value that doesn't match this shape — a
 /// message addressed to a session dispatch didn't launch, or one the sender
 /// renamed itself away from.
 fn parse_peer_message_target_name(to: &str) -> Option<TaskId> {
     let name = to.split(' ').next().unwrap_or(to);
-    crate::models::parse_tmux_window_task_id(name)
+    crate::models::TmuxWindow::parse(name)?.task_id()
 }
 
 /// Result of [`TaskService::update_task`]. Carries the updated task id plus
@@ -111,7 +111,7 @@ pub struct ClosedSession {
     /// caller is the MCP `exit_session` handler, which holds no in-memory copy
     /// of the task to write back to. It notifies task-changed and the board
     /// re-reads the row.
-    pub window: Option<String>,
+    pub window: Option<crate::models::TmuxWindow>,
 }
 
 pub struct TaskService {

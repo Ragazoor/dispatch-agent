@@ -1,7 +1,7 @@
 use super::*;
 
 impl TuiRuntime {
-    pub(super) fn exec_jump_to_tmux(&self, app: &mut App, window: String) {
+    pub(super) fn exec_jump_to_tmux(&self, app: &mut App, window: TmuxWindow) {
         if let Err(e) = tmux::select_window(&window, &*self.runner) {
             app.update(Message::System(crate::tui::messages::SystemMessage::Error(
                 format!("Jump failed: {e:#}"),
@@ -19,7 +19,7 @@ impl TuiRuntime {
             Failed(String),
         }
 
-        let window = dispatch::MAIN_SESSION_WINDOW.to_string();
+        let window = dispatch::MAIN_SESSION_WINDOW;
         let runner = Arc::clone(&self.runner);
         // Both tmux calls (has_window + select_window) are wrapped in a single
         // spawn_blocking so neither stalls the tokio event loop.
@@ -136,11 +136,11 @@ impl TuiRuntime {
     pub(super) fn exec_enter_split_mode_with_task(
         &self,
         task_id: TaskId,
-        window: &str,
+        window: &TmuxWindow,
     ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
         let runner = Arc::clone(&self.runner);
-        let window = window.to_owned();
+        let window = window.clone();
         tokio::task::spawn_blocking(move || {
             let dispatch_pane = match tmux::current_pane_id(&*runner) {
                 Ok(id) => id,
@@ -175,12 +175,12 @@ impl TuiRuntime {
     pub(super) fn exec_exit_split_mode(
         &self,
         pane_id: &str,
-        restore_window: Option<&str>,
+        restore_window: Option<&TmuxWindow>,
     ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
         let runner = Arc::clone(&self.runner);
         let pane_id = pane_id.to_owned();
-        let restore_window = restore_window.map(str::to_owned);
+        let restore_window = restore_window.cloned();
         tokio::task::spawn_blocking(move || {
             if let Some(window_name) = restore_window {
                 if let Err(e) = tmux::break_pane_to_window(&pane_id, &window_name, &*runner) {
@@ -204,15 +204,15 @@ impl TuiRuntime {
     pub(super) fn exec_swap_split_pane(
         &self,
         task_id: TaskId,
-        new_window: &str,
+        new_window: &TmuxWindow,
         old_pane_id: Option<&str>,
-        old_task: Option<(&str, &str)>,
+        old_task: Option<(&TmuxWindow, &str)>,
     ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
         let runner = Arc::clone(&self.runner);
-        let new_window = new_window.to_owned();
+        let new_window = new_window.clone();
         let old_pane_id = old_pane_id.map(str::to_owned);
-        let old_task = old_task.map(|(window, worktree)| (window.to_owned(), worktree.to_owned()));
+        let old_task = old_task.map(|(window, worktree)| (window.clone(), worktree.to_owned()));
 
         tokio::task::spawn_blocking(move || {
             let Some(right_pane) = old_pane_id else {
@@ -224,7 +224,7 @@ impl TuiRuntime {
                 &right_pane,
                 old_task
                     .as_ref()
-                    .map(|(window, worktree)| (window.as_str(), worktree.as_str())),
+                    .map(|(window, worktree)| (window, worktree.as_str())),
                 &*runner,
             ) {
                 Ok(new_pane_id) => {
@@ -271,7 +271,7 @@ impl TuiRuntime {
         })
     }
 
-    pub(super) fn exec_kill_tmux_window(&self, window: String) -> tokio::task::JoinHandle<()> {
+    pub(super) fn exec_kill_tmux_window(&self, window: TmuxWindow) -> tokio::task::JoinHandle<()> {
         let runner = self.runner.clone();
 
         tokio::task::spawn_blocking(move || {

@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
+use crate::models::test_tmux_window;
 
 use crate::dispatch::mock_sequence::DispatchScript;
 use crate::mcp::handlers::tasks::WrapUpAction;
@@ -809,7 +810,7 @@ async fn exit_session_successful_close_kills_the_tmux_window() {
     // (`window_target` in `src/tmux.rs`) before issuing `kill-window`, so the
     // command carries `%N`, not the literal window name — resolve the same way
     // `MockProcessRunner`'s permissive `AnyName` lookup would have.
-    let pane_id = fx.runner.pane_id_of(&window);
+    let pane_id = fx.runner.pane_id_of(window.as_str());
     let kills = fx.kill_window_calls();
     assert_eq!(
         kills.len(),
@@ -1048,7 +1049,7 @@ async fn wrap_up_rebase_preserves_tmux_window() {
         task_id,
         &db::TaskPatch::new()
             .worktree(Some("/repo/.worktrees/1-rebase-preserve"))
-            .tmux_window(Some("task-99")),
+            .tmux_window(Some(&test_tmux_window("task-99"))),
     )
     .await
     .unwrap();

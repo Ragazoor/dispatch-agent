@@ -8,7 +8,7 @@
 //! - [`string_enum`] — the `define_str_enum!` macro behind status/tag/mode string conversions
 //! - [`paths`] — path utilities (`expand_tilde`) and the repo-grouping family
 //!   (`repo_name_from_path`/`repo_name_from_url`/`extract_github_repo`)
-//! - [`tmux_window`] — the `task-<id>` window/session naming convention
+//! - [`tmux_window`] — [`TmuxWindow`], the `task-<id>` window/session naming convention
 //! - [`tasks`] — tasks, statuses, tags, dispatch mode, slugify, age formatting
 //! - [`epics`] — epics, epic sub-status, descendant traversal
 //! - [`review`] — review decisions, PR-URL parsing
@@ -34,7 +34,10 @@ pub use paths::{
 };
 
 mod tmux_window;
-pub use tmux_window::{build_tmux_window_name, parse_tmux_window_task_id};
+pub(crate) use tmux_window::is_pane_id;
+#[cfg(any(test, feature = "test-support"))]
+pub use tmux_window::test_tmux_window;
+pub use tmux_window::TmuxWindow;
 
 pub mod learnings;
 pub use learnings::*;

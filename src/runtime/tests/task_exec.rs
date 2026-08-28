@@ -2,6 +2,7 @@
 /// tests that accumulated under this banner over time — the name reflects the
 /// original section, not its full current scope.
 use super::*;
+use crate::models::test_tmux_window;
 
 #[tokio::test]
 async fn exec_save_base_branch_records_and_updates_app_state() {
@@ -215,7 +216,7 @@ async fn exec_jump_to_tmux_calls_select_window() {
     let tasks = db.list_all().await.unwrap();
     let mut app = App::new(tasks);
 
-    rt.exec_jump_to_tmux(&mut app, "my-window".to_string());
+    rt.exec_jump_to_tmux(&mut app, test_tmux_window("my-window"));
 
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 1);
@@ -470,7 +471,7 @@ async fn exec_check_window_sends_window_gone_when_absent() {
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 
-    rt.exec_check_window(TaskId(1), "gone-window".to_string());
+    rt.exec_check_window(TaskId(1), test_tmux_window("gone-window"));
 
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
         .await
@@ -495,7 +496,7 @@ async fn exec_check_window_sends_nothing_when_present() {
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 
-    rt.exec_check_window(TaskId(1), "task-1".to_string())
+    rt.exec_check_window(TaskId(1), test_tmux_window("task-1"))
         .await
         .unwrap();
     assert!(
@@ -516,7 +517,7 @@ async fn exec_check_window_sends_nothing_when_query_fails() {
     ))]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 
-    rt.exec_check_window(TaskId(1), "task-1".to_string())
+    rt.exec_check_window(TaskId(1), test_tmux_window("task-1"))
         .await
         .unwrap();
 
@@ -537,8 +538,8 @@ async fn exec_batch_check_windows_sends_window_gone_only_for_absent() {
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
     rt.exec_batch_check_windows(vec![
-        (TaskId(1), "task-1".to_string()),
-        (TaskId(2), "task-2".to_string()),
+        (TaskId(1), TmuxWindow::for_task(TaskId(1))),
+        (TaskId(2), TmuxWindow::for_task(TaskId(2))),
     ])
     .await
     .unwrap();
@@ -572,8 +573,8 @@ async fn exec_batch_check_windows_sends_nothing_when_all_present() {
     let rt = make_runtime(db.clone(), tx, mock).await;
 
     rt.exec_batch_check_windows(vec![
-        (TaskId(1), "task-1".to_string()),
-        (TaskId(2), "task-2".to_string()),
+        (TaskId(1), TmuxWindow::for_task(TaskId(1))),
+        (TaskId(2), TmuxWindow::for_task(TaskId(2))),
     ])
     .await
     .unwrap();
@@ -596,7 +597,7 @@ async fn exec_batch_check_windows_stays_silent_when_tmux_cannot_be_spawned() {
     ))]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 
-    rt.exec_batch_check_windows(vec![(TaskId(1), "task-1".to_string())])
+    rt.exec_batch_check_windows(vec![(TaskId(1), TmuxWindow::for_task(TaskId(1)))])
         .await
         .unwrap();
 
@@ -617,7 +618,7 @@ async fn exec_jump_to_tmux_failure_shows_error() {
     let tasks = db.list_all().await.unwrap();
     let mut app = App::new(tasks);
 
-    rt.exec_jump_to_tmux(&mut app, "nonexistent-window".to_string());
+    rt.exec_jump_to_tmux(&mut app, test_tmux_window("nonexistent-window"));
 
     assert!(app.error_popup().is_some());
 }
@@ -644,7 +645,7 @@ async fn cleanup_fixture(
 async fn cleanup_fixture_owning(
     script: Vec<anyhow::Result<std::process::Output>>,
     worktree: Option<&str>,
-    window: Option<&str>,
+    window: Option<&crate::models::TmuxWindow>,
 ) -> (
     TuiRuntime,
     models::TaskId,
@@ -803,7 +804,7 @@ async fn exec_cleanup_kills_the_window_of_a_task_with_no_worktree() {
             MockProcessRunner::ok(),                        // tmux kill-window
         ],
         None,
-        Some("task-1"),
+        Some(&test_tmux_window("task-1")),
     )
     .await;
 
@@ -811,7 +812,7 @@ async fn exec_cleanup_kills_the_window_of_a_task_with_no_worktree() {
         id,
         "/repo".into(),
         None,
-        Some("task-1".into()),
+        Some(test_tmux_window("task-1")),
         crate::tui::commands::CleanupFollowUp::DeleteRow,
     )
     .await
@@ -852,7 +853,7 @@ async fn exec_cleanup_window_only_kill_failure_still_applies_the_follow_up() {
             MockProcessRunner::fail("can't find window"),   // kill-window fails
         ],
         None,
-        Some("task-1"),
+        Some(&test_tmux_window("task-1")),
     )
     .await;
 
@@ -860,7 +861,7 @@ async fn exec_cleanup_window_only_kill_failure_still_applies_the_follow_up() {
         id,
         "/repo".into(),
         None,
-        Some("task-1".into()),
+        Some(test_tmux_window("task-1")),
         crate::tui::commands::CleanupFollowUp::DeleteRow,
     )
     .await
@@ -920,7 +921,7 @@ async fn exec_cleanup_tears_down_even_if_another_row_names_the_worktree() {
         id,
         "/repo".into(),
         Some(worktree.into()),
-        Some("task-1".into()),
+        Some(test_tmux_window("task-1")),
         crate::tui::commands::CleanupFollowUp::DeleteRow,
     )
     .await
@@ -1378,7 +1379,7 @@ async fn exec_resume_sends_resumed_message() {
         panic!("Expected Resumed, got: {msg:?}");
     };
     assert_eq!(tid, id);
-    assert_eq!(tmux_window, format!("task-{id}"));
+    assert_eq!(tmux_window, test_tmux_window(&format!("task-{id}")));
 }
 
 #[tokio::test]
@@ -1425,7 +1426,7 @@ async fn exec_kill_tmux_window_failure_does_not_send_error() {
     ]));
     let rt = make_runtime(db.clone(), tx, mock).await;
 
-    rt.exec_kill_tmux_window("task-99".to_string())
+    rt.exec_kill_tmux_window(test_tmux_window("task-99"))
         .await
         .unwrap();
 

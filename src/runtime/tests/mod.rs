@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
+use crate::models::test_tmux_window;
 
 // `db` is the concrete `Arc<Database>` in this fixture (see `test_db`), so the
 // store traits must be in scope for their methods to resolve on it.
@@ -50,7 +51,10 @@ async fn setup_tmux_for_tui_renames_window_and_binds_key() {
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 4);
     assert_eq!(calls[0].1, vec!["display-message", "-p", "#{pane_id}"]);
-    assert_eq!(calls[1].1, vec!["rename-window", "-t", "", TUI_WINDOW_NAME]);
+    assert_eq!(
+        calls[1].1,
+        vec!["rename-window", "-t", "", TUI_WINDOW_NAME.as_str()]
+    );
     // `=` anchors the target to an exact name match. This binding is executed by
     // tmux itself, so it cannot use the pane-ID resolution `tmux::window_target`
     // applies elsewhere — a pane ID captured at bind time would go stale. tmux's
@@ -79,8 +83,8 @@ async fn teardown_tmux_for_tui_unbinds_and_restores_name() {
         MockProcessRunner::ok(), // unbind_key (agent-tree toggle)
         MockProcessRunner::ok(), // rename_window
     ])
-    .with_windows(&[TUI_WINDOW_NAME]);
-    teardown_tmux_for_tui(Some("my-shell"), &mock);
+    .with_windows(&[TUI_WINDOW_NAME.as_str()]);
+    teardown_tmux_for_tui(Some(&test_tmux_window("my-shell")), &mock);
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 3);
     assert_eq!(calls[0].1, vec!["unbind-key", "space"]);
@@ -92,7 +96,7 @@ async fn teardown_tmux_for_tui_unbinds_and_restores_name() {
         vec![
             "rename-window",
             "-t",
-            &mock.pane_id_of(TUI_WINDOW_NAME),
+            &mock.pane_id_of(TUI_WINDOW_NAME.as_str()),
             "my-shell",
         ]
     );

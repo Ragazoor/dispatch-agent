@@ -5,6 +5,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::models::test_tmux_window;
 use crate::repo_sync::{AheadBehind, RepoSyncMeasurement, RepoSyncState, SyncOutcome};
 use crate::tui::commands::RepoSyncCommand;
 use crate::tui::messages::RepoSyncMessage;
@@ -97,7 +98,7 @@ fn dispatching_a_task_requests_a_non_fetching_refresh() {
         crate::tui::messages::TaskMessage::Dispatched {
             id: TaskId(1),
             worktree: "/repo/.worktrees/1-task".to_string(),
-            tmux_window: "task-1".to_string(),
+            tmux_window: test_tmux_window("task-1"),
             switch_focus: false,
         },
     ));
@@ -121,7 +122,7 @@ fn resuming_a_task_requests_no_refresh() {
     let mut app = make_app();
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Resumed {
         id: TaskId(1),
-        tmux_window: "task-1".to_string(),
+        tmux_window: test_tmux_window("task-1"),
     }));
     assert!(
         !cmds

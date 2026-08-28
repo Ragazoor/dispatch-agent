@@ -108,6 +108,34 @@ pub(super) fn collect_decodable<T>(
     Ok(out)
 }
 
+/// Decode a `tmux_window` column into [`crate::models::TmuxWindow`].
+///
+/// A stored name that is not a window name — empty, or a pane ID left by some
+/// older writer — **soft-fails to `None`** rather than failing the row: the
+/// task then reads back as owning no window, which is exactly what a task whose
+/// agent is gone looks like, and the board still renders. Failing the row would
+/// drop the card from every bulk read instead (see the decode-failure-policy
+/// section of `docs/conventions.md`).
+pub(super) fn read_tmux_window<I: rusqlite::RowIndex>(
+    row: &rusqlite::Row<'_>,
+    idx: I,
+) -> rusqlite::Result<Option<crate::models::TmuxWindow>> {
+    let Some(raw) = row.get::<_, Option<String>>(idx)? else {
+        return Ok(None);
+    };
+    // `from_owned` rather than `parse`: rusqlite already handed us the `String`,
+    // and this runs per row on every board read. It gives the value back when it
+    // rejects one, so the warning can still name it.
+    match crate::models::TmuxWindow::from_owned(raw) {
+        Ok(window) => Ok(Some(window)),
+        Err(raw) => {
+            let count = bump_decode_fallback();
+            tracing::warn!(count, raw, "ignoring malformed stored tmux_window");
+            Ok(None)
+        }
+    }
+}
+
 /// Column list shared by all task SELECT queries. Pair with `row_to_task`.
 pub(super) const TASK_COLUMNS: &str =
     "id, title, description, repo_path, status, worktree, tmux_window, \
@@ -226,7 +254,7 @@ pub(super) fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         repo_path: row.get("repo_path")?,
         status,
         worktree: row.get("worktree")?,
-        tmux_window: row.get("tmux_window")?,
+        tmux_window: read_tmux_window(row, "tmux_window")?,
         plan_path: row.get("plan_path")?,
         epic_id: row.get::<_, Option<i64>>("epic_id")?.map(EpicId),
         sub_status: parse_sub_status(&row.get::<_, String>("sub_status")?)?,

@@ -262,7 +262,7 @@ mod tests {
 mod derived_section_tests {
     use super::*;
     use crate::models::tasks::model_tests::make_task_with;
-    use crate::models::{TaskTag, TaskUrl, UrlType};
+    use crate::models::{test_tmux_window, TaskTag, TaskUrl, UrlType};
 
     /// A Review task, provisioned and live (worktree + tmux window), no url.
     fn review_task(sub_status: SubStatus, tag: Option<TaskTag>) -> Task {
@@ -270,7 +270,7 @@ mod derived_section_tests {
         t.status = TaskStatus::Review;
         t.sub_status = sub_status;
         t.worktree = Some("/repo/.worktrees/1-task".to_string());
-        t.tmux_window = Some("task-1".to_string());
+        t.tmux_window = Some(test_tmux_window("task-1"));
         t
     }
 

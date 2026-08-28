@@ -804,6 +804,13 @@ async fn cmd_plan(db: &std::path::Path, id: i64, path: PathBuf) -> Result<()> {
 fn cmd_toggle_agent_tree_pane(db: &std::path::Path, window: String) -> Result<()> {
     let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
     let _ = init_app_log_subscriber(data_dir);
+    // tmux substitutes `#{window_name}` into the keybinding, so this is the
+    // border where an arbitrary argv string becomes a window name. A value that
+    // is not one (empty, or a pane id) has no window to toggle a pane in.
+    let Some(window) = dispatch_tui::models::TmuxWindow::parse(&window) else {
+        tracing::warn!(%window, "agent-tree toggle called with a non-window target");
+        return Ok(());
+    };
     let runner = dispatch_tui::process::RealProcessRunner;
     if let Err(e) = dispatch::toggle_agent_tree_pane(&window, &runner) {
         tracing::warn!(%window, error = %e, "failed to toggle agent-tree companion pane");

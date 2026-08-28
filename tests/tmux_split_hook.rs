@@ -25,6 +25,7 @@ mod tmux_harness;
 
 use std::path::{Path, PathBuf};
 
+use dispatch_tui::models::test_tmux_window as win;
 use dispatch_tui::tmux;
 
 use tmux_harness::{
@@ -114,7 +115,7 @@ fn setup(worktree_name: &str) -> Fixture {
     ]);
 
     let runner = server.runner();
-    tmux::set_window_dispatch_dir(AGENT_WINDOW, worktree.to_str().unwrap(), &runner).unwrap();
+    tmux::set_window_dispatch_dir(&win(AGENT_WINDOW), worktree.to_str().unwrap(), &runner).unwrap();
     tmux::ensure_split_hook(&runner).unwrap();
 
     // Both panes must be up before any test asserts on what did *not* reach
@@ -386,11 +387,11 @@ fn window_dispatch_dir_reads_back_what_was_written() {
     let runner = fx.server.runner();
 
     assert_eq!(
-        tmux::window_dispatch_dir(AGENT_WINDOW, &runner).unwrap(),
+        tmux::window_dispatch_dir(&win(AGENT_WINDOW), &runner).unwrap(),
         Some(fx.worktree.to_str().unwrap().to_string()),
     );
     assert_eq!(
-        tmux::window_dispatch_dir(BOARD_WINDOW, &runner).unwrap(),
+        tmux::window_dispatch_dir(&win(BOARD_WINDOW), &runner).unwrap(),
         None,
         "a window that was never given a worktree must report none"
     );

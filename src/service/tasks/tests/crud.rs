@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::test_tmux_window;
 
 // -- TaskService ----------------------------------------------------------
 
@@ -1061,17 +1062,17 @@ async fn get_epic_with_subtasks() {
 async fn running_task_with_window(
     db: &Arc<dyn db::TaskStore>,
     epic_id: Option<EpicId>,
-) -> (TaskId, String) {
+) -> (TaskId, crate::models::TmuxWindow) {
     let svc = task_svc(db);
     let mut params = make_task_params("/repo");
     params.epic_id = epic_id;
     let id = svc.create_task(params).await.unwrap();
-    let window = format!("task-{}", id.0);
+    let window = crate::models::TmuxWindow::for_task(id);
     svc.update_task(
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Running)
             .worktree(FieldUpdate::Set("/repo/.worktrees/wt".to_string()))
-            .tmux_window(FieldUpdate::Set(window.clone())),
+            .tmux_window(crate::service::TmuxWindowUpdate::Set(window.clone())),
     )
     .await
     .unwrap();
@@ -1684,14 +1685,19 @@ async fn update_task_sets_worktree_and_tmux_window() {
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Running)
             .worktree(FieldUpdate::Set("/repo/.worktrees/feat".into()))
-            .tmux_window(FieldUpdate::Set("task-1".into())),
+            .tmux_window(crate::service::TmuxWindowUpdate::Set(test_tmux_window(
+                "task-1",
+            ))),
     )
     .await
     .unwrap();
 
     let task = svc.get_task(id).await.unwrap();
     assert_eq!(task.worktree.as_deref(), Some("/repo/.worktrees/feat"));
-    assert_eq!(task.tmux_window.as_deref(), Some("task-1"));
+    assert_eq!(
+        task.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("task-1")
+    );
 }
 
 #[tokio::test]
@@ -1721,7 +1727,9 @@ async fn update_task_clears_worktree() {
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Running)
             .worktree(FieldUpdate::Set("/repo/.worktrees/feat".into()))
-            .tmux_window(FieldUpdate::Set("task-1".into())),
+            .tmux_window(crate::service::TmuxWindowUpdate::Set(test_tmux_window(
+                "task-1",
+            ))),
     )
     .await
     .unwrap();
@@ -1731,7 +1739,7 @@ async fn update_task_clears_worktree() {
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Done)
             .worktree(FieldUpdate::Clear)
-            .tmux_window(FieldUpdate::Clear),
+            .tmux_window(crate::service::TmuxWindowUpdate::Clear),
     )
     .await
     .unwrap();
@@ -3897,7 +3905,9 @@ async fn the_successor_inherits_the_operators_settings_and_none_of_the_run() {
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Running)
             .worktree(FieldUpdate::Set("/repo/.worktrees/wt".to_string()))
-            .tmux_window(FieldUpdate::Set("task-x".to_string())),
+            .tmux_window(crate::service::TmuxWindowUpdate::Set(test_tmux_window(
+                "task-x",
+            ))),
     )
     .await
     .unwrap();
@@ -4110,7 +4120,9 @@ async fn a_skipped_respawn_does_not_contaminate_the_close_result() {
     svc.update_task(
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Running)
-            .tmux_window(FieldUpdate::Set("task-x".to_string())),
+            .tmux_window(crate::service::TmuxWindowUpdate::Set(test_tmux_window(
+                "task-x",
+            ))),
     )
     .await
     .unwrap();
@@ -4120,7 +4132,7 @@ async fn a_skipped_respawn_does_not_contaminate_the_close_result() {
         .await
         .expect("the close succeeded; the respawn is a follow-on, not part of it");
 
-    assert_eq!(closed.window.as_deref(), Some("task-x"));
+    assert_eq!(closed.window.as_ref().map(|w| w.as_str()), Some("task-x"));
     let task = svc.get_task(id).await.unwrap();
     assert_eq!(task.status, TaskStatus::Done, "the completion sticks");
     assert!(

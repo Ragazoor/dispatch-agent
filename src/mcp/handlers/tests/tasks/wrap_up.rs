@@ -2,6 +2,7 @@
 use super::*;
 use crate::dispatch::mock_sequence::DispatchScript;
 use crate::mcp::handlers::tasks::WrapUpAction;
+use crate::models::test_tmux_window;
 
 /// Asserts a `wrap_up` response does not tell the agent to run `/retro`.
 ///
@@ -487,7 +488,7 @@ async fn wrap_up_done_returns_exit_token() {
         task_id,
         &db::TaskPatch::new()
             .worktree(Some("/repo/.worktrees/1-t"))
-            .tmux_window(Some("task-1")),
+            .tmux_window(Some(&test_tmux_window("task-1"))),
     )
     .await
     .unwrap();
@@ -1546,9 +1547,12 @@ async fn exit_session_full_flow_rebase() {
         None,
     ));
     let task_id = create_wrappable_task(&db).await;
-    db.patch_task(task_id, &db::TaskPatch::new().tmux_window(Some("task-1")))
-        .await
-        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().tmux_window(Some(&test_tmux_window("task-1"))),
+    )
+    .await
+    .unwrap();
 
     // Rebase
     let wrap_resp = call(
@@ -1614,9 +1618,12 @@ async fn wrap_up_second_call_overwrites_token() {
         None,
     ));
     let task_id = create_wrappable_task(&db).await;
-    db.patch_task(task_id, &db::TaskPatch::new().tmux_window(Some("task-1")))
-        .await
-        .unwrap();
+    db.patch_task(
+        task_id,
+        &db::TaskPatch::new().tmux_window(Some(&test_tmux_window("task-1"))),
+    )
+    .await
+    .unwrap();
 
     call(
         &state,
@@ -1767,9 +1774,10 @@ async fn wrap_up_rebase_does_not_kill_window() {
         .unwrap();
 
     // Set up worktree + tmux_window so is_wrappable passes.
+    let window = test_tmux_window("task-rebase-window");
     let patch = crate::db::TaskPatch::new()
         .worktree(Some("/repo/.worktrees/task-rebase"))
-        .tmux_window(Some("task-rebase-window"));
+        .tmux_window(Some(&window));
     state.db_write().patch_task(task_id, &patch).await.unwrap();
 
     // wrap_up calls finish_task which runs git commands. With MockProcessRunner
@@ -2009,7 +2017,7 @@ async fn wrap_up_then_exit_session_end_to_end() {
         task_id,
         &crate::db::TaskPatch::new()
             .worktree(Some("/repo/.worktrees/e2e"))
-            .tmux_window(Some("e2e-window")),
+            .tmux_window(Some(&test_tmux_window("e2e-window"))),
     )
     .await
     .unwrap();
@@ -2117,7 +2125,7 @@ async fn wrap_up_done_defers_done_transition_to_exit_session() {
         task_id,
         &db::TaskPatch::new()
             .worktree(Some("/repo/.worktrees/1-done-task"))
-            .tmux_window(Some("task-1")),
+            .tmux_window(Some(&test_tmux_window("task-1"))),
     )
     .await
     .unwrap();
@@ -2224,7 +2232,7 @@ async fn wrap_up_done_recalculates_epic_status() {
         task_id,
         &db::TaskPatch::new()
             .worktree(Some("/repo/.worktrees/1-t"))
-            .tmux_window(Some("task-1")),
+            .tmux_window(Some(&test_tmux_window("task-1"))),
     )
     .await
     .unwrap();
@@ -2310,7 +2318,7 @@ async fn wrap_up_pr_recalculates_epic_status() {
             task_id,
             &db::TaskPatch::new()
                 .worktree(Some("/repo/.worktrees/1-t"))
-                .tmux_window(Some("task-1")),
+                .tmux_window(Some(&test_tmux_window("task-1"))),
         )
         .await
         .unwrap();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::test_tmux_window;
 
 mod epic_tests {
     use super::*;
@@ -418,7 +419,7 @@ mod feed_epic_trigger {
             task.id,
             &db::TaskPatch::new()
                 .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-                .tmux_window(Some("dispatch:pr-1")),
+                .tmux_window(Some(&test_tmux_window("dispatch:pr-1"))),
         )
         .await
         .unwrap();

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
+use crate::models::{test_tmux_window, EpicId, SubStatus, TaskId, TaskStatus};
 use crate::tui::commands::SettingsCommand;
 use crate::tui::ui::palette::{FG, MUTED, RED, YELLOW};
 use crossterm::event::KeyCode;
@@ -260,7 +260,7 @@ fn delete_task_with_worktree_gates_the_row_delete_on_cleanup() {
     let mut app = make_app();
     let task = app.find_task_mut(TaskId(4)).unwrap();
     task.worktree = Some("/repo/.worktrees/4-task".to_string());
-    task.tmux_window = Some("task-4".to_string());
+    task.tmux_window = Some(test_tmux_window("task-4"));
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Delete(
         TaskId(4),
@@ -330,7 +330,7 @@ fn error_sets_error_popup() {
 fn move_backward_from_running_detaches_but_keeps_worktree() {
     let mut task = make_task(4, TaskStatus::Running);
     task.worktree = Some("/repo/.worktrees/4-task-4".to_string());
-    task.tmux_window = Some("task-4".to_string());
+    task.tmux_window = Some(test_tmux_window("task-4"));
     let mut app = App::new(vec![task]);
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
@@ -412,7 +412,7 @@ fn single_move_to_done_records_the_task_in_pending_done() {
 fn move_forward_to_done_with_live_window_enters_confirm_mode() {
     let mut task = make_task(5, TaskStatus::Review);
     task.worktree = Some("/repo/.worktrees/5-task-5".to_string());
-    task.tmux_window = Some("task-5".to_string());
+    task.tmux_window = Some(test_tmux_window("task-5"));
     let mut app = App::new(vec![task]);
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Move {
@@ -429,7 +429,7 @@ fn move_forward_to_done_with_live_window_enters_confirm_mode() {
 #[test]
 fn space_key_with_live_window_jumps() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("task-4".to_string());
+    task.tmux_window = Some(test_tmux_window("task-4"));
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(2); // Running = nav col 2
     let cmds = app.handle_key(make_key(KeyCode::Char(' ')));
@@ -492,9 +492,12 @@ fn resumed_sets_tmux_window() {
     let mut app = App::new(vec![task]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Resumed {
         id: TaskId(4),
-        tmux_window: "win-4".to_string(),
+        tmux_window: test_tmux_window("win-4"),
     }));
-    assert_eq!(app.board.tasks[0].tmux_window.as_deref(), Some("win-4"));
+    assert_eq!(
+        app.board.tasks[0].tmux_window.as_ref().map(|w| w.as_str()),
+        Some("win-4")
+    );
     assert_eq!(cmds.len(), 2);
     assert!(matches!(
         &cmds[0],
@@ -511,7 +514,7 @@ fn resumed_unknown_id_is_noop() {
     let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Resumed {
         id: TaskId(999),
-        tmux_window: "win".to_string(),
+        tmux_window: test_tmux_window("win"),
     }));
     assert!(cmds.is_empty());
 }
@@ -525,12 +528,15 @@ fn resumed_sets_status_to_running() {
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Resumed {
         id: TaskId(4),
-        tmux_window: "task-4".to_string(),
+        tmux_window: test_tmux_window("task-4"),
     }));
 
     let task = app.board.tasks.iter().find(|t| t.id == TaskId(4)).unwrap();
     assert_eq!(task.status, TaskStatus::Running);
-    assert_eq!(task.tmux_window.as_deref(), Some("task-4"));
+    assert_eq!(
+        task.tmux_window.as_ref().map(|w| w.as_str()),
+        Some("task-4")
+    );
     assert_eq!(cmds.len(), 2);
     assert!(
         matches!(&cmds[0], Command::Task(crate::tui::commands::TaskCommand::Persist(t)) if t.status == TaskStatus::Running)
@@ -1379,7 +1385,7 @@ fn w_key_on_non_review_task_is_noop() {
 #[test]
 fn tick_skips_already_stale_tasks() {
     let mut app = App::new(vec![make_task(3, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("win-3".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("win-3"));
     app.board.tasks[0].sub_status = SubStatus::Stale;
 
     let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
@@ -1394,7 +1400,7 @@ fn tick_skips_already_stale_tasks() {
 #[test]
 fn tick_skips_already_crashed_tasks() {
     let mut app = App::new(vec![make_task(3, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("win-3".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("win-3"));
     app.board.tasks[0].sub_status = SubStatus::Crashed;
 
     let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
@@ -1407,7 +1413,7 @@ fn tick_skips_already_crashed_tasks() {
 #[test]
 fn tick_skips_conflict_tasks_for_stale_detection() {
     let mut app = App::new(vec![make_task(3, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("win-3".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("win-3"));
     app.board.tasks[0].sub_status = SubStatus::Conflict;
 
     let cmds = app.update(Message::System(crate::tui::messages::SystemMessage::Tick));
@@ -1470,7 +1476,7 @@ fn shift_l_with_mixed_selection_moves_tasks_only() {
 #[test]
 fn detach_tmux_single_sets_confirm_mode() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Review)]);
-    app.board.tasks[0].tmux_window = Some("task-1".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("task-1"));
 
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::DetachTmux(TaskId(1)),
@@ -1488,7 +1494,7 @@ fn detach_tmux_single_sets_confirm_mode() {
 fn detach_tmux_running_task_with_window_is_detachable() {
     // Running tasks with a tmux window should pass the detach filter.
     let mut app = App::new(vec![make_task(1, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("task-1".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("task-1"));
 
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::DetachTmux(TaskId(1)),
@@ -1521,8 +1527,8 @@ fn batch_detach_tmux() {
         make_task(1, TaskStatus::Review),
         make_task(2, TaskStatus::Review),
     ]);
-    app.board.tasks[0].tmux_window = Some("task-1".to_string());
-    app.board.tasks[1].tmux_window = Some("task-2".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("task-1"));
+    app.board.tasks[1].tmux_window = Some(test_tmux_window("task-2"));
 
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::BatchDetachTmux(vec![TaskId(1), TaskId(2)]),
@@ -1645,7 +1651,7 @@ fn live_review_task_shows_awaiting_review_header() {
         crate::models::UrlType::Pr,
     ));
     task.worktree = Some("/repo/.worktrees/1-fix".to_string());
-    task.tmux_window = Some("1-fix".to_string()); // live
+    task.tmux_window = Some(test_tmux_window("1-fix")); // live
     let mut app = App::new(vec![task]);
     let buf = render_to_buffer(&mut app, 120, 20);
     assert!(
@@ -1668,7 +1674,7 @@ fn parked_and_awaiting_review_tasks_get_separate_sections() {
         crate::models::UrlType::Pr,
     ));
     with_pr.worktree = Some("/repo/.worktrees/1-fix".to_string());
-    with_pr.tmux_window = Some("1-fix".to_string());
+    with_pr.tmux_window = Some(test_tmux_window("1-fix"));
 
     // No PR and detached — parked.
     let mut parked = make_task(2, TaskStatus::Review);
@@ -1738,7 +1744,7 @@ fn is_detached_returns_true_for_review_without_window() {
 fn is_detached_returns_false_with_window() {
     let mut task = make_task(1, TaskStatus::Review);
     task.worktree = Some("/repo/.worktrees/1-fix".to_string());
-    task.tmux_window = Some("1-fix".to_string());
+    task.tmux_window = Some(test_tmux_window("1-fix"));
     assert!(!task.is_detached());
 }
 
@@ -1814,7 +1820,7 @@ fn tick_without_split_does_not_check_pane() {
 #[test]
 fn tick_skips_capture_for_split_pinned_task() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("task-4".to_string());
+    task.tmux_window = Some(test_tmux_window("task-4"));
     let mut app = App::new(vec![task]);
 
     // Pin task 4 in split mode

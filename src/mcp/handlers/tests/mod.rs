@@ -205,10 +205,10 @@ async fn create_running_task_with_window_in(
         .await
         .unwrap();
     let worktree = format!("{repo_path}/.worktrees/{}-running-task", task_id.0);
-    let window = format!("task-{}", task_id.0);
+    let window = crate::models::TmuxWindow::for_task(task_id);
     let patch = crate::db::TaskPatch::new()
         .worktree(Some(worktree.as_str()))
-        .tmux_window(Some(window.as_str()));
+        .tmux_window(Some(&window));
     state.db_write().patch_task(task_id, &patch).await.unwrap();
     task_id
 }

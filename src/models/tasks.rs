@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::{EpicId, UrlType};
+use super::{EpicId, TmuxWindow, UrlType};
 use crate::define_id_newtype;
 use crate::define_str_enum;
 
@@ -365,7 +365,7 @@ pub struct Task {
     pub repo_path: String,
     pub status: TaskStatus,
     pub worktree: Option<String>,
-    pub tmux_window: Option<String>,
+    pub tmux_window: Option<TmuxWindow>,
     pub plan_path: Option<String>,
     pub epic_id: Option<EpicId>,
     pub sub_status: SubStatus,
@@ -762,7 +762,7 @@ define_str_enum!(WrapUpMode, "wrap-up mode" {
 #[derive(Debug, Clone)]
 pub struct DispatchResult {
     pub worktree_path: String,
-    pub tmux_window: String,
+    pub tmux_window: TmuxWindow,
 }
 
 // ---------------------------------------------------------------------------
@@ -771,7 +771,7 @@ pub struct DispatchResult {
 
 #[derive(Debug, Clone)]
 pub struct ResumeResult {
-    pub tmux_window: String,
+    pub tmux_window: TmuxWindow,
 }
 
 // ---------------------------------------------------------------------------

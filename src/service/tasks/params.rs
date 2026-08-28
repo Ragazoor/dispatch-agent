@@ -26,7 +26,7 @@ pub struct UpdateTaskParams {
     pub sub_status: Option<SubStatus>,
     pub epic_id: Option<EpicId>,
     pub worktree: Option<FieldUpdate>,
-    pub tmux_window: Option<FieldUpdate>,
+    pub tmux_window: Option<crate::service::TmuxWindowUpdate>,
     pub base_branch: Option<String>,
     /// Outer `Some` means "write this column", inner value is the value to write
     /// (with `None` meaning clear-to-NULL).
@@ -177,7 +177,7 @@ impl UpdateTaskParams {
         self
     }
 
-    pub fn tmux_window(mut self, tmux_window: FieldUpdate) -> Self {
+    pub fn tmux_window(mut self, tmux_window: crate::service::TmuxWindowUpdate) -> Self {
         self.tmux_window = Some(tmux_window);
         self
     }
@@ -248,7 +248,9 @@ pub struct ListTasksFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{EpicId, SubStatus, TaskId, TaskStatus, TaskTag, WrapUpMode};
+    use crate::models::{
+        test_tmux_window, EpicId, SubStatus, TaskId, TaskStatus, TaskTag, WrapUpMode,
+    };
     use crate::service::FieldUpdate;
 
     #[test]
@@ -344,8 +346,9 @@ mod tests {
             ),
             (
                 "tmux_window",
-                UpdateTaskParams::for_task(TaskId(1))
-                    .tmux_window(FieldUpdate::Set("tw".to_string())),
+                UpdateTaskParams::for_task(TaskId(1)).tmux_window(
+                    crate::service::TmuxWindowUpdate::Set(test_tmux_window("tw")),
+                ),
             ),
             (
                 "base_branch",

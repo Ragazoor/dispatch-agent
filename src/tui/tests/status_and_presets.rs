@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{SubStatus, TaskId, TaskStatus};
+use crate::models::{test_tmux_window, SubStatus, TaskId, TaskStatus};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ fn resumed_sets_success_status_message() {
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Resumed {
         id: TaskId(4),
-        tmux_window: "win-4".to_string(),
+        tmux_window: test_tmux_window("win-4"),
     }));
 
     assert_eq!(app.status.message.as_deref(), Some("Task 4 resumed"),);
@@ -661,7 +661,7 @@ fn render_input_form_confirm_retry_shows_options() {
     let crashed_task = Task {
         title: "Crashed task".to_string(),
         worktree: Some("/tmp/wt".to_string()),
-        tmux_window: Some("win5".to_string()),
+        tmux_window: Some(test_tmux_window("win5")),
         sub_status: SubStatus::Crashed,
         ..make_task(5, TaskStatus::Running)
     };
@@ -860,7 +860,7 @@ fn dispatching_status_cleared_on_dispatched() {
         crate::tui::messages::TaskMessage::Dispatched {
             id: TaskId(1),
             worktree: "/wt".to_string(),
-            tmux_window: "win-1".to_string(),
+            tmux_window: test_tmux_window("win-1"),
             switch_focus: false,
         },
     ));
@@ -915,7 +915,7 @@ fn dispatching_status_persists_when_one_completes() {
         crate::tui::messages::TaskMessage::Dispatched {
             id: TaskId(1),
             worktree: "/wt".to_string(),
-            tmux_window: "win-1".to_string(),
+            tmux_window: test_tmux_window("win-1"),
             switch_focus: false,
         },
     ));
@@ -1012,7 +1012,7 @@ mod property_tests {
                         app.update(Message::Task(crate::tui::messages::TaskMessage::Dispatched {
                             id: TaskId(id),
                             worktree: format!("/wt/{id}"),
-                            tmux_window: format!("win-{id}"),
+                            tmux_window: test_tmux_window(&format!("win-{id}")),
                             switch_focus: false,
                         }));
                     }

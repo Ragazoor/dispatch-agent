@@ -166,6 +166,26 @@ impl UrlUpdate {
     }
 }
 
+/// Set-or-clear for the typed tmux-window field. Mirrors [`UrlUpdate`] but
+/// carries a [`TmuxWindow`](crate::models::TmuxWindow), so a caller cannot
+/// point a task at a repo path, a branch name, or a half-typed window name —
+/// see that type for why a bare `String` there is a live hazard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TmuxWindowUpdate {
+    Set(crate::models::TmuxWindow),
+    Clear,
+}
+
+impl TmuxWindowUpdate {
+    /// `Set(w)` → `Some(&w)`, `Clear` → `None`, for the DB patch builder.
+    pub fn as_option(&self) -> Option<&crate::models::TmuxWindow> {
+        match self {
+            TmuxWindowUpdate::Set(w) => Some(w),
+            TmuxWindowUpdate::Clear => None,
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod error_tests {

@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
+use crate::models::{test_tmux_window, EpicId, SubStatus, TaskId, TaskStatus};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier};
 
@@ -565,7 +565,7 @@ fn delete_epic_tears_down_a_subtask_that_owns_only_a_window() {
     let mut subtask = make_task(1, TaskStatus::Running);
     subtask.epic_id = Some(EpicId(10));
     subtask.worktree = None;
-    subtask.tmux_window = Some("task-1".to_string());
+    subtask.tmux_window = Some(test_tmux_window("task-1"));
     app.board.tasks = vec![subtask];
 
     let cmds = app.update(Message::Epic(crate::tui::messages::EpicMessage::Delete(
@@ -1023,7 +1023,7 @@ fn space_key_on_epic_enters_epic_view() {
     // Even with subtasks that have tmux windows, space enters epic view
     let mut subtask = make_task(1, TaskStatus::Review);
     subtask.epic_id = Some(EpicId(10));
-    subtask.tmux_window = Some("win-1".to_string());
+    subtask.tmux_window = Some(test_tmux_window("win-1"));
     app.board.tasks = vec![subtask];
 
     app.selection_mut().set_column(3);
@@ -1046,7 +1046,7 @@ fn shift_g_on_single_item_column_with_epic_is_noop() {
     let mut subtask = make_task(1, TaskStatus::Running);
     subtask.epic_id = Some(EpicId(10));
     subtask.sub_status = SubStatus::NeedsInput;
-    subtask.tmux_window = Some("win-1".to_string());
+    subtask.tmux_window = Some(test_tmux_window("win-1"));
     app.board.tasks = vec![subtask];
 
     app.selection_mut().set_column(2);
@@ -3288,7 +3288,7 @@ fn reparent_target_epics_excludes_only_active_filtered_epic() {
     ];
     let mut active = make_task(1, TaskStatus::Running);
     active.epic_id = Some(EpicId(20));
-    active.tmux_window = Some("sess:1".to_string());
+    active.tmux_window = Some(test_tmux_window("sess:1"));
     let mut inactive = make_task(2, TaskStatus::Running);
     inactive.epic_id = Some(EpicId(30));
     inactive.tmux_window = None; // no live session — what only_active filters on

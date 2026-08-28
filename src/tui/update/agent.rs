@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::time::Instant;
 
-use crate::models::{SubStatus, Task, TaskId, TaskStatus};
+use crate::models::{SubStatus, Task, TaskId, TaskStatus, TmuxWindow};
 
 use super::super::types::*;
 use super::super::{
@@ -301,7 +301,7 @@ impl App {
             .pinned_task_id
             .filter(|_| self.board.split.active);
 
-        let windows_to_check: Vec<(crate::models::TaskId, String)> = self
+        let windows_to_check: Vec<(crate::models::TaskId, TmuxWindow)> = self
             .board
             .tasks
             .iter()
@@ -574,7 +574,7 @@ impl App {
     pub(in crate::tui) fn handle_resumed(
         &mut self,
         id: TaskId,
-        tmux_window: String,
+        tmux_window: TmuxWindow,
     ) -> Vec<Command> {
         if let Some(task) = self.find_task_mut(id) {
             task.tmux_window = Some(tmux_window);

@@ -510,12 +510,20 @@ rule HideAgentTreePane {
         -- previously claimed: see "What this replaced" above.
         --
         -- A window name that doesn't parse as `task-<id>` (the inverse of
-        -- build_tmux_window_name — the board's own TUI window, the
+        -- TmuxWindow::for_task — the board's own TUI window, the
         -- unimplemented main-session window, anything else) never reaches the
         -- `exists pane` check at all: toggle_agent_tree_pane
         -- (src/dispatch/agents.rs) short-circuits to a no-op before issuing
         -- any tmux call, which stands in for "not exists pane" without a
         -- record to test.
+        --
+        -- An argv string that is not a window NAME at all is a third no-op,
+        -- one step earlier still. The keybinding hands this process whatever
+        -- tmux expanded #{window_name} into, so that argument is parsed at the
+        -- border (cmd_toggle_agent_tree_pane in src/main.rs); the empty string
+        -- and a pane id are not window names (see core.allium: TmuxWindow), and
+        -- for either the process logs and returns without issuing any tmux
+        -- call.
 }
 
 rule ShowAgentTreePane {

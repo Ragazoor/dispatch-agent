@@ -21,7 +21,7 @@ use serde_json::json;
 use dispatch_tui::db::{self, CreateTaskRequest, Database, TaskCrud};
 use dispatch_tui::mcp::identity::HEADER_KIND;
 use dispatch_tui::mcp::McpDeps;
-use dispatch_tui::models::TaskStatus;
+use dispatch_tui::models::{test_tmux_window, TaskStatus};
 use dispatch_tui::process::{MockProcessRunner, ProcessRunner};
 use dispatch_tui::service::embeddings::EmbeddingService;
 use dispatch_tui::service::{TaskService, UpdateTaskParams};
@@ -79,7 +79,7 @@ async fn subscribe_then_finish_delivers_notification() {
         watcher_id,
         &db::TaskPatch::new()
             .worktree(Some(&watcher_worktree))
-            .tmux_window(Some("task-watcher")),
+            .tmux_window(Some(&test_tmux_window("task-watcher"))),
     )
     .await
     .unwrap();

@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::models::TmuxWindow;
 use crate::process::ProcessRunner;
 
 /// Process-wide counter appended to message filenames so two `deliver()`
@@ -86,17 +87,17 @@ fn pane_shows_ready_for_input(captured: &str) -> bool {
 pub fn notify_tmux(
     runner: &dyn ProcessRunner,
     worktree: &str,
-    tmux_window: &str,
+    tmux_window: &TmuxWindow,
     filename: &str,
     text: &str,
 ) -> Result<DeliveryOutcome, String> {
     // Resolved once and reused for both calls below — `capture_pane` and
-    // `send_keys` would otherwise each independently re-resolve the same
+    // `send_keys_at` would otherwise each independently re-resolve the same
     // window name, running `window_target`'s `list-panes` subprocess twice
     // for one notification. Passing the already-resolved pane id through
     // costs nothing extra: `window_target` short-circuits immediately for a
     // target already shaped like one.
-    let target = match crate::tmux::window_target(tmux_window, runner) {
+    let target = match crate::tmux::window_target(tmux_window.as_str(), runner) {
         Ok(target) => target,
         Err(e) => {
             let _ = std::fs::remove_file(format!("{worktree}/.claude-messages/{filename}"));
@@ -113,7 +114,7 @@ pub fn notify_tmux(
     if !pane_shows_ready_for_input(&captured) {
         return Ok(DeliveryOutcome::QueuedNoNudge);
     }
-    if let Err(e) = crate::tmux::send_keys(&target, text, runner) {
+    if let Err(e) = crate::tmux::send_keys_at(&target, text, runner) {
         let _ = std::fs::remove_file(format!("{worktree}/.claude-messages/{filename}"));
         return Err(format!("failed to send notification to target agent: {e}"));
     }
@@ -145,7 +146,7 @@ pub(crate) mod test_fixtures {
 pub async fn deliver(
     runner: Arc<dyn ProcessRunner>,
     worktree: String,
-    tmux_window: String,
+    tmux_window: TmuxWindow,
     file_prefix: String,
     body: String,
     notification_text: impl FnOnce(&str) -> String + Send + 'static,
@@ -163,6 +164,7 @@ pub async fn deliver(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::models::test_tmux_window;
     use crate::process::MockProcessRunner;
 
     use super::test_fixtures::READY_PANE;
@@ -219,7 +221,14 @@ mod tests {
             MockProcessRunner::ok(),                       // send-keys Enter
         ]);
 
-        let outcome = notify_tmux(&runner, worktree, "task-1", &filename, "notify text").unwrap();
+        let outcome = notify_tmux(
+            &runner,
+            worktree,
+            &test_tmux_window("task-1"),
+            &filename,
+            "notify text",
+        )
+        .unwrap();
 
         assert_eq!(outcome, DeliveryOutcome::Notified);
         let calls = runner.recorded_calls();
@@ -239,7 +248,14 @@ mod tests {
             MockProcessRunner::ok_with_stdout(DIALOG_PANE), // capture-pane
         ]);
 
-        let outcome = notify_tmux(&runner, worktree, "task-1", &filename, "notify text").unwrap();
+        let outcome = notify_tmux(
+            &runner,
+            worktree,
+            &test_tmux_window("task-1"),
+            &filename,
+            "notify text",
+        )
+        .unwrap();
 
         assert_eq!(outcome, DeliveryOutcome::QueuedNoNudge);
         let calls = runner.recorded_calls();
@@ -264,7 +280,14 @@ mod tests {
 
         let runner = MockProcessRunner::new(vec![Err(anyhow::anyhow!("tmux not found"))]);
 
-        let err = notify_tmux(&runner, worktree, "task-1", &filename, "notify text").unwrap_err();
+        let err = notify_tmux(
+            &runner,
+            worktree,
+            &test_tmux_window("task-1"),
+            &filename,
+            "notify text",
+        )
+        .unwrap_err();
         assert!(err.contains("failed to send notification"));
         assert!(
             !std::path::Path::new(&path).exists(),
@@ -303,7 +326,7 @@ mod tests {
         let outcome = deliver(
             runner,
             worktree.clone(),
-            "task-1".to_string(),
+            test_tmux_window("task-1"),
             "prefix".to_string(),
             "body".to_string(),
             |filename| format!("see {filename}"),
@@ -327,7 +350,7 @@ mod tests {
         let err = deliver(
             runner,
             worktree,
-            "task-1".to_string(),
+            test_tmux_window("task-1"),
             "prefix".to_string(),
             "body".to_string(),
             |_filename| panic!("boom"),

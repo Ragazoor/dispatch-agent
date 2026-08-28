@@ -15,11 +15,13 @@ use std::path::PathBuf;
 
 use dispatch_tui::agent_tree_editor::open_in_editor;
 use dispatch_tui::dispatch;
+use dispatch_tui::models::test_tmux_window;
 use dispatch_tui::tmux::{PANE_ROLE_AGENT_TREE, PANE_ROLE_EDITOR, PANE_ROLE_OPTION};
 
 use tmux_harness::{await_stub_line, stub_lines, tmux_available_or_skip, StubLine, TmuxServer};
 
 const WINDOW: &str = "task-42";
+
 /// The stand-in for `$EDITOR`. A harness stub, so it records its own cwd and argv
 /// and then holds its pane open — a real editor would want a tty, and a command
 /// that exits would close the pane mid-assertion.
@@ -56,7 +58,8 @@ fn setup_or_skip() -> Option<Fixture> {
     // hand-rolled split: the role marker every lookup here depends on is written
     // by that path, so a fixture that split and marked the pane itself would
     // assert against its own setup instead of against production.
-    dispatch::toggle_agent_tree_pane(WINDOW, &server.runner()).expect("split companion pane");
+    dispatch::toggle_agent_tree_pane(&test_tmux_window(WINDOW), &server.runner())
+        .expect("split companion pane");
     let tree_pane = server
         .pane_ids(WINDOW)
         .into_iter()
@@ -243,7 +246,8 @@ fn the_toggle_kills_the_tree_pane_not_the_agents_when_the_tree_has_focus() {
     let Some(fx) = setup_or_skip() else { return };
     fx.server.tmux_ok(&["select-pane", "-t", &fx.tree_pane]);
 
-    dispatch::toggle_agent_tree_pane(WINDOW, &fx.server.runner()).expect("toggle");
+    dispatch::toggle_agent_tree_pane(&test_tmux_window(WINDOW), &fx.server.runner())
+        .expect("toggle");
 
     assert!(
         !fx.server.pane_exists(&fx.tree_pane),
@@ -261,7 +265,8 @@ fn the_toggle_kills_the_tree_pane_with_an_editor_pane_open() {
     fx.open("src/lib.rs");
     let editor = fx.editor_pane().expect("editor pane");
 
-    dispatch::toggle_agent_tree_pane(WINDOW, &fx.server.runner()).expect("toggle");
+    dispatch::toggle_agent_tree_pane(&test_tmux_window(WINDOW), &fx.server.runner())
+        .expect("toggle");
 
     assert!(!fx.server.pane_exists(&fx.tree_pane), "tree pane must go");
     assert!(fx.server.pane_exists(&editor), "editor pane must stay");
@@ -281,7 +286,12 @@ fn pinning_drains_both_the_tree_and_the_editor_pane() {
     fx.server.tmux_ok(&["new-window", "-d", "-n", "board"]);
     let board_pane = fx.server.active_pane_id("board").expect("board pane");
 
-    dispatch::join_task_window_into_pane(WINDOW, &board_pane, &fx.server.runner()).expect("pin");
+    dispatch::join_task_window_into_pane(
+        &test_tmux_window(WINDOW),
+        &board_pane,
+        &fx.server.runner(),
+    )
+    .expect("pin");
 
     assert!(
         !fx.server.pane_exists(&fx.tree_pane),

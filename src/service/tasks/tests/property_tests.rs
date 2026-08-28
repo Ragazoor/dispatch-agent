@@ -1,5 +1,7 @@
 use super::*;
 use crate::db::{CreateTaskRequest, EpicPatch};
+use crate::models::test_tmux_window;
+use crate::service::TmuxWindowUpdate;
 use proptest::prelude::*;
 
 /// The non-archived task statuses an epic rolls up over, plus `Archived`,
@@ -64,6 +66,17 @@ fn field_update_strategy() -> impl Strategy<Value = Option<FieldUpdate>> {
     ]
 }
 
+/// [`field_update_strategy`] for the typed window field. The `Set` arm draws
+/// from a non-empty alphabet with no `%`, so every generated name is one
+/// [`crate::models::TmuxWindow::parse`] accepts.
+fn tmux_window_update_strategy() -> impl Strategy<Value = Option<TmuxWindowUpdate>> {
+    prop_oneof![
+        Just(None),
+        Just(Some(TmuxWindowUpdate::Clear)),
+        "[a-zA-Z0-9-]{1,32}".prop_map(|s| Some(TmuxWindowUpdate::Set(test_tmux_window(&s)))),
+    ]
+}
+
 proptest! {
     /// `FieldUpdate` round-trips through the canonical mapping cleanly.
     #[test]
@@ -83,7 +96,7 @@ proptest! {
     #[test]
     fn build_task_patch_maps_field_updates(
         worktree in field_update_strategy(),
-        tmux_window in field_update_strategy(),
+        tmux_window in tmux_window_update_strategy(),
     ) {
         let mut params = UpdateTaskParams::for_task(TaskId(1));
         if let Some(ref w) = worktree    { params = params.worktree(w.clone()); }
@@ -97,13 +110,19 @@ proptest! {
                 FieldUpdate::Clear  => None,
             })
         };
+        let expect_window = |fu: &Option<TmuxWindowUpdate>| -> Option<Option<String>> {
+            fu.as_ref().map(|x| match x {
+                TmuxWindowUpdate::Set(w) => Some(w.as_str().to_string()),
+                TmuxWindowUpdate::Clear  => None,
+            })
+        };
         prop_assert_eq!(
             patch.worktree.map(|o| o.map(|s| s.to_string())),
             expect(&worktree)
         );
         prop_assert_eq!(
-            patch.tmux_window.map(|o| o.map(|s| s.to_string())),
-            expect(&tmux_window)
+            patch.tmux_window.map(|o| o.map(|w| w.as_str().to_string())),
+            expect_window(&tmux_window)
         );
     }
 

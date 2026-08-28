@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
 use crate::dispatch::mock_sequence::DispatchScript;
+use crate::models::test_tmux_window;
 
 // -- update_task boundary parity ---------------------------------------------
 //
@@ -2576,7 +2577,7 @@ async fn get_task_shows_all_fields() {
             task_id,
             &db::TaskPatch::new()
                 .worktree(Some("/repo/.worktrees/1-full"))
-                .tmux_window(Some("task-1"))
+                .tmux_window(Some(&test_tmux_window("task-1")))
                 .url(Some(&full_url))
                 .tag(Some(crate::models::TaskTag::Feature))
                 .sort_order(Some(10)),

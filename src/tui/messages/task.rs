@@ -1,6 +1,6 @@
 //! Task lifecycle, dispatch, retry, selection, detach messages.
 
-use crate::models::{DispatchMode, EpicId, Task, TaskId};
+use crate::models::{DispatchMode, EpicId, Task, TaskId, TmuxWindow};
 
 use super::super::commands::CleanupFollowUp;
 use super::super::types::{Command, MoveDirection, TaskDraft, TaskEdit, TreeNav};
@@ -24,7 +24,7 @@ pub enum TaskMessage {
     Dispatched {
         id: TaskId,
         worktree: String,
-        tmux_window: String,
+        tmux_window: TmuxWindow,
         switch_focus: bool,
     },
     Created {
@@ -41,7 +41,7 @@ pub enum TaskMessage {
     Resume(TaskId),
     Resumed {
         id: TaskId,
-        tmux_window: String,
+        tmux_window: TmuxWindow,
     },
     /// A dispatch that **held** the claim failed or panicked. Drains the spinner
     /// *and* releases the claim.

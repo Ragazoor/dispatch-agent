@@ -1,7 +1,7 @@
 //! Task-domain side-effect commands.
 
 use crate::models::{
-    DispatchMode, DrainMode, EpicId, SubStatus, Task, TaskId, TaskStatus, TaskUrl,
+    DispatchMode, DrainMode, EpicId, SubStatus, Task, TaskId, TaskStatus, TaskUrl, TmuxWindow,
 };
 
 use super::super::types::TaskDraft;
@@ -22,7 +22,7 @@ pub struct PersistFields {
     pub status: TaskStatus,
     pub sub_status: SubStatus,
     pub worktree: Option<String>,
-    pub tmux_window: Option<String>,
+    pub tmux_window: Option<TmuxWindow>,
     pub url: Option<TaskUrl>,
     pub sort_order: Option<i64>,
 }
@@ -118,7 +118,7 @@ pub enum TaskCommand {
         id: TaskId,
         repo_path: String,
         worktree: Option<String>,
-        tmux_window: Option<String>,
+        tmux_window: Option<TmuxWindow>,
         follow_up: CleanupFollowUp,
     },
     /// Clear a task's `worktree` and `tmux_window` columns. Emitted by
@@ -127,19 +127,19 @@ pub enum TaskCommand {
     ClearWorktreePointer(TaskId),
     CheckWindow {
         id: TaskId,
-        window: String,
+        window: TmuxWindow,
     },
     /// Check all task windows in a single tmux list-windows call. Reduces N
     /// process forks per tick to 1.
     BatchCheckWindows {
-        windows: Vec<(TaskId, String)>,
+        windows: Vec<(TaskId, TmuxWindow)>,
     },
     Resume {
         id: TaskId,
         worktree: Option<String>,
     },
     JumpToTmux {
-        window: String,
+        window: TmuxWindow,
     },
     QuickDispatch {
         draft: TaskDraft,
@@ -153,7 +153,7 @@ pub enum TaskCommand {
         epic_id: Option<EpicId>,
     },
     KillTmuxWindow {
-        window: String,
+        window: TmuxWindow,
     },
     PatchSubStatus {
         id: TaskId,

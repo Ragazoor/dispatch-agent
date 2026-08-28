@@ -1,5 +1,6 @@
 // -- watchers ---------------------------------------------------------------
 use super::*;
+use crate::models::test_tmux_window;
 use crate::service::tasks::watchers::SubscribeOutcome;
 
 /// Shared with `src/notify.rs`'s own tests, so the two can't drift into
@@ -115,7 +116,7 @@ async fn update_task_to_done_notifies_live_watcher() {
         watcher,
         &db::TaskPatch::new()
             .worktree(Some(&worktree))
-            .tmux_window(Some("task-watcher")),
+            .tmux_window(Some(&test_tmux_window("task-watcher"))),
     )
     .await
     .unwrap();
@@ -195,7 +196,7 @@ async fn delete_task_notifies_watchers_of_deletion() {
         watcher,
         &db::TaskPatch::new()
             .worktree(Some(&worktree))
-            .tmux_window(Some("task-watcher")),
+            .tmux_window(Some(&test_tmux_window("task-watcher"))),
     )
     .await
     .unwrap();
@@ -255,7 +256,7 @@ async fn delete_task_does_not_notify_watcher_when_target_already_finished_via_by
         watcher,
         &db::TaskPatch::new()
             .worktree(Some(&worktree))
-            .tmux_window(Some("task-watcher")),
+            .tmux_window(Some(&test_tmux_window("task-watcher"))),
     )
     .await
     .unwrap();

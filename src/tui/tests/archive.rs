@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{EpicId, SubStatus, TaskId, TaskStatus};
+use crate::models::{test_tmux_window, EpicId, SubStatus, TaskId, TaskStatus};
 use crate::tui::commands::CleanupFollowUp;
 use crossterm::event::KeyCode;
 
@@ -55,7 +55,7 @@ fn confirm_x_on_backlog_task_moves_to_done_not_archived() {
 fn x_key_on_running_task_moves_to_done_and_preserves_worktree() {
     let mut task = make_task(1, TaskStatus::Running);
     task.worktree = Some("/wt/1-test".to_string());
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(test_tmux_window("dev:1-test"));
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(2); // Running (nav col 2)
 
@@ -279,7 +279,7 @@ fn archive_task_sets_status_and_emits_persist() {
 fn archive_task_with_worktree_emits_cleanup() {
     let mut task = make_task(1, TaskStatus::Running);
     task.worktree = Some("/wt/1-test".to_string());
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(test_tmux_window("dev:1-test"));
     let mut app = App::new(vec![task]);
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Archive(
@@ -308,7 +308,7 @@ fn archive_task_with_worktree_emits_cleanup() {
 fn archive_task_persists_a_snapshot_that_retains_the_worktree() {
     let mut task = make_task(1, TaskStatus::Running);
     task.worktree = Some("/wt/1-test".to_string());
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(test_tmux_window("dev:1-test"));
     let mut app = App::new(vec![task]);
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Archive(
@@ -329,7 +329,7 @@ fn archive_task_persists_a_snapshot_that_retains_the_worktree() {
         "the persisted snapshot must retain the worktree until removal succeeds"
     );
     assert_eq!(
-        persisted.tmux_window.as_deref(),
+        persisted.tmux_window.as_ref().map(|w| w.as_str()),
         Some("dev:1-test"),
         "the persisted snapshot must retain the tmux window too"
     );
@@ -458,7 +458,7 @@ fn cleanup_succeeded_with_nothing_follow_up_writes_nothing() {
 fn archive_task_with_window_but_no_worktree_emits_cleanup() {
     let mut task = make_task(1, TaskStatus::Running);
     task.worktree = None;
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(test_tmux_window("dev:1-test"));
     let mut app = App::new(vec![task]);
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Archive(
@@ -478,7 +478,7 @@ fn archive_task_with_window_but_no_worktree_emits_cleanup() {
         .expect("archiving a task that still owns a tmux window must tear it down");
     assert_eq!(worktree, None, "there is no worktree to remove");
     assert_eq!(
-        window.as_deref(),
+        window.as_ref().map(|w| w.as_str()),
         Some("dev:1-test"),
         "the window to kill must travel with the command"
     );
@@ -490,7 +490,7 @@ fn archive_task_with_window_but_no_worktree_emits_cleanup() {
 #[test]
 fn delete_task_with_window_but_no_worktree_tears_down_the_window() {
     let mut task = make_task(1, TaskStatus::Archived);
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(test_tmux_window("dev:1-test"));
     let mut app = App::new(vec![task]);
 
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Delete(
@@ -505,7 +505,9 @@ fn delete_task_with_window_but_no_worktree_tears_down_the_window() {
                 tmux_window,
                 follow_up,
                 ..
-            }) if tmux_window.as_deref() == Some("dev:1-test") => Some(*follow_up),
+            }) if tmux_window.as_ref().map(|w| w.as_str()) == Some("dev:1-test") => {
+                Some(*follow_up)
+            }
             _ => None,
         })
         .expect("deleting a task that still owns a tmux window must tear it down");
@@ -543,7 +545,7 @@ fn archive_task_without_worktree_or_window_no_cleanup() {
 #[test]
 fn archive_clears_agent_tracking() {
     let mut task = make_task(1, TaskStatus::Running);
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(test_tmux_window("dev:1-test"));
     task.sub_status = SubStatus::Stale;
     let mut app = App::new(vec![task]);
     app.agents.notified_review.insert(TaskId(1));
@@ -645,7 +647,7 @@ fn full_archive_flow() {
     // A Done task still holding its worktree — 'x' archives from Done.
     let mut task = make_task(1, TaskStatus::Done);
     task.worktree = Some("/wt/1-test".to_string());
-    task.tmux_window = Some("dev:1-test".to_string());
+    task.tmux_window = Some(test_tmux_window("dev:1-test"));
     let mut app = App::new(vec![task, make_task(2, TaskStatus::Backlog)]);
 
     // Navigate to the Done column (nav col 4)

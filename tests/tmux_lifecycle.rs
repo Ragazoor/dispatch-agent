@@ -27,7 +27,7 @@ mod tmux_harness;
 use std::path::{Path, PathBuf};
 
 use dispatch_tui::dispatch;
-use dispatch_tui::models::{Task, TaskId};
+use dispatch_tui::models::{Task, TaskId, TmuxWindow};
 use dispatch_tui::process::ProcessRunner;
 use dispatch_tui::tmux;
 
@@ -198,8 +198,8 @@ fn task(id: i64, repo: &Path) -> Task {
 }
 
 impl Fixture {
-    fn window(&self, id: i64) -> String {
-        format!("task-{id}")
+    fn window(&self, id: i64) -> TmuxWindow {
+        TmuxWindow::for_task(TaskId(id))
     }
 
     /// Dispatch a task through the production entry point.
@@ -224,7 +224,7 @@ impl Fixture {
     }
 
     /// Pin `window`'s agent pane into the board window. Returns the pinned pane.
-    fn pin(&self, window: &str) -> String {
+    fn pin(&self, window: &TmuxWindow) -> String {
         dispatch::join_task_window_into_pane(window, &self.board_pane(), &self.server.runner())
             .expect("join_task_window_into_pane")
     }
@@ -233,7 +233,12 @@ impl Fixture {
     /// displaced window back to `old_task`'s window name and rewriting its
     /// `@dispatch_dir` to `old_task`'s worktree — `(window_name,
     /// worktree_path)` of the outgoing task, when it has one.
-    fn swap(&self, into_window: &str, pane: &str, old_task: Option<(&str, &str)>) -> String {
+    fn swap(
+        &self,
+        into_window: &TmuxWindow,
+        pane: &str,
+        old_task: Option<(&TmuxWindow, &str)>,
+    ) -> String {
         dispatch::swap_task_window_into_pane(into_window, pane, old_task, &self.server.runner())
             .expect("swap_task_window_into_pane")
     }
@@ -241,10 +246,18 @@ impl Fixture {
     /// An agent window with no companion pane — the state after the user toggles
     /// the tree pane off. Its pane holds open on `cat` so it cannot vanish
     /// mid-assertion.
-    fn bare_agent_window(&self, id: i64) -> String {
+    fn bare_agent_window(&self, id: i64) -> TmuxWindow {
         let window = self.window(id);
-        self.server
-            .tmux_ok(&["new-window", "-d", "-n", &window, "--", "sh", "-c", "cat"]);
+        self.server.tmux_ok(&[
+            "new-window",
+            "-d",
+            "-n",
+            window.as_str(),
+            "--",
+            "sh",
+            "-c",
+            "cat",
+        ]);
         window
     }
 
@@ -391,7 +404,7 @@ fn dispatch_creates_agent_window_named_for_the_task() {
 
     assert_eq!(result.tmux_window, fx.window(TASK_ID));
     assert!(
-        fx.server.has_window(&fx.window(TASK_ID)),
+        fx.server.has_window(fx.window(TASK_ID).as_str()),
         "expected a task-{TASK_ID} window, got: {:?}",
         fx.server.window_names()
     );
@@ -407,7 +420,7 @@ fn dispatch_agent_window_starts_in_the_worktree_not_the_parent_repo() {
     let result = fx.dispatch(TASK_ID);
     let agent_pane = fx
         .server
-        .active_pane_id(&fx.window(TASK_ID))
+        .active_pane_id(fx.window(TASK_ID).as_str())
         .expect("agent pane");
 
     let cwd = fx.server.pane_cwd(&agent_pane);
@@ -445,7 +458,7 @@ fn dispatch_opens_the_companion_agent_tree_pane() {
     fx.await_companion(TASK_ID);
     let window = fx.window(TASK_ID);
     assert_eq!(
-        fx.server.pane_count(&window),
+        fx.server.pane_count(window.as_str()),
         2,
         "agent window should hold the agent pane plus its companion"
     );
@@ -456,11 +469,14 @@ fn dispatch_opens_the_companion_agent_tree_pane() {
     // agreeing with production about the wrong pane.
     let companion = fx
         .server
-        .pane_ids(&window)
+        .pane_ids(window.as_str())
         .into_iter()
         .find(|id| fx.server.pane_start_command(id).contains("agent-tree"))
         .expect("companion pane");
-    let agent = fx.server.active_pane_id(&window).expect("agent pane");
+    let agent = fx
+        .server
+        .active_pane_id(window.as_str())
+        .expect("agent pane");
     assert_eq!(
         fx.server
             .pane_option(&companion, dispatch_tui::tmux::PANE_ROLE_OPTION),
@@ -486,10 +502,10 @@ fn dispatch_companion_pane_is_on_the_left() {
     let companion = fx.await_companion(TASK_ID);
 
     assert_eq!(
-        fx.server.leftmost_pane_id(&window).as_deref(),
+        fx.server.leftmost_pane_id(window.as_str()).as_deref(),
         Some(companion.pane.as_str()),
         "companion pane should be leftmost; panes: {:?}",
-        fx.server.pane_lefts(&window)
+        fx.server.pane_lefts(window.as_str())
     );
 }
 
@@ -502,7 +518,7 @@ fn dispatch_sets_dispatch_dir_on_the_agent_window() {
     assert_eq!(
         canonical(
             &fx.server
-                .window_option(&fx.window(TASK_ID), "@dispatch_dir")
+                .window_option(fx.window(TASK_ID).as_str(), "@dispatch_dir")
         ),
         canonical(&result.worktree_path),
         "@dispatch_dir is the split hook's precondition"
@@ -527,12 +543,12 @@ fn dispatch_never_types_into_the_board_window() {
 fn resume_creates_a_new_window_for_a_worktree_without_one() {
     let Some(fx) = setup_or_skip() else { return };
     let worktree = fx.add_worktree(TASK_ID);
-    assert!(!fx.server.has_window(&fx.window(TASK_ID)));
+    assert!(!fx.server.has_window(fx.window(TASK_ID).as_str()));
 
     let result = fx.resume(TASK_ID, &worktree);
 
     assert_eq!(result.tmux_window, fx.window(TASK_ID));
-    assert!(fx.server.has_window(&fx.window(TASK_ID)));
+    assert!(fx.server.has_window(fx.window(TASK_ID).as_str()));
 }
 
 /// The stale-field/live-window case this whole change fixes: the worktree's
@@ -553,13 +569,13 @@ fn resume_reattaches_to_a_live_window_without_creating_a_duplicate() {
         fx.server
             .window_names()
             .iter()
-            .filter(|n| **n == window)
+            .filter(|n| n.as_str() == window.as_str())
             .count(),
         1,
         "resume must not create a second window sharing the live one's name"
     );
     assert_eq!(
-        fx.server.pane_count(&window),
+        fx.server.pane_count(window.as_str()),
         1,
         "resume must not spawn a companion pane into an already-live window"
     );
@@ -590,7 +606,9 @@ fn resume_reaches_the_agent_pane_with_continue() {
         "claude must continue from inside the worktree; line: {line:?}"
     );
     assert_eq!(
-        fx.server.active_pane_id(&fx.window(TASK_ID)).as_deref(),
+        fx.server
+            .active_pane_id(fx.window(TASK_ID).as_str())
+            .as_deref(),
         Some(line.pane.as_str()),
         "--continue must reach the agent's own pane, not the companion"
     );
@@ -604,7 +622,7 @@ fn resume_opens_the_companion_pane() {
     fx.resume(TASK_ID, &worktree);
 
     fx.await_companion(TASK_ID);
-    assert_eq!(fx.server.pane_count(&fx.window(TASK_ID)), 2);
+    assert_eq!(fx.server.pane_count(fx.window(TASK_ID).as_str()), 2);
 }
 
 #[test]
@@ -639,11 +657,14 @@ fn pin_joins_the_agent_pane_and_kills_the_leftover_companion() {
     // wrong pane — which is the failure mode #3856 was about.
     let companion = fx
         .server
-        .pane_ids(&window)
+        .pane_ids(window.as_str())
         .into_iter()
         .find(|id| fx.server.pane_start_command(id).contains("agent-tree"))
         .expect("companion pane should exist before pinning");
-    let agent_pane = fx.server.active_pane_id(&window).expect("agent pane");
+    let agent_pane = fx
+        .server
+        .active_pane_id(window.as_str())
+        .expect("agent pane");
 
     let joined = fx.pin(&window);
 
@@ -666,7 +687,10 @@ fn pin_joins_the_agent_pane_and_kills_the_leftover_companion() {
 fn pin_of_a_task_without_a_companion_pane_joins_cleanly() {
     let Some(fx) = setup_or_skip() else { return };
     let window = fx.bare_agent_window(TASK_ID);
-    let agent_pane = fx.server.active_pane_id(&window).expect("agent pane");
+    let agent_pane = fx
+        .server
+        .active_pane_id(window.as_str())
+        .expect("agent pane");
 
     let joined = fx.pin(&window);
 
@@ -711,7 +735,7 @@ fn swap_replaces_the_pinned_task_and_resyncs_the_companion() {
         companion.cwd
     );
     assert!(
-        fx.server.has_window(&fx.window(a)),
+        fx.server.has_window(fx.window(a).as_str()),
         "the outgoing task's window should exist under its own name again; got {:?}",
         fx.server.window_names()
     );
@@ -749,17 +773,20 @@ fn unpin_breaks_the_pane_back_into_its_own_window() {
     let Some(fx) = setup_or_skip() else { return };
     let window = fx.bare_agent_window(TASK_ID);
     let pinned = fx.pin(&window);
-    assert!(!fx.server.has_window(&window), "window consumed by the pin");
+    assert!(
+        !fx.server.has_window(window.as_str()),
+        "window consumed by the pin"
+    );
 
     tmux::break_pane_to_window(&pinned, &window, &fx.server.runner()).expect("unpin");
 
     assert!(
-        fx.server.has_window(&window),
+        fx.server.has_window(window.as_str()),
         "unpin should restore the task's own window; got {:?}",
         fx.server.window_names()
     );
     assert_eq!(
-        fx.server.pane_ids(&window),
+        fx.server.pane_ids(window.as_str()),
         vec![pinned],
         "the same pane should be restored, not a fresh one"
     );
@@ -795,12 +822,12 @@ fn killing_the_agent_window_removes_all_its_panes() {
     fx.dispatch(TASK_ID);
     let window = fx.window(TASK_ID);
     fx.await_companion(TASK_ID);
-    let panes = fx.server.pane_ids(&window);
+    let panes = fx.server.pane_ids(window.as_str());
     assert_eq!(panes.len(), 2, "expected agent + companion");
 
     tmux::kill_window_if_present(&window, &fx.server.runner()).expect("kill window");
 
-    assert!(!fx.server.has_window(&window));
+    assert!(!fx.server.has_window(window.as_str()));
     for pane in panes {
         assert!(
             !fx.server.pane_exists(&pane),
@@ -821,7 +848,7 @@ fn killing_the_agent_window_leaves_the_worktree_intact() {
 
     tmux::kill_window_if_present(&fx.window(TASK_ID), &fx.server.runner()).expect("kill window");
 
-    assert!(!fx.server.has_window(&fx.window(TASK_ID)));
+    assert!(!fx.server.has_window(fx.window(TASK_ID).as_str()));
     assert!(worktree.is_dir(), "worktree directory must survive");
     assert!(
         worktree.join(".git").exists(),
@@ -857,10 +884,10 @@ fn main_session_window_has_a_single_pane() {
     // before a companion split would have happened.
     stub_for(&fx, "claude");
     assert_eq!(
-        fx.server.pane_count(&window),
+        fx.server.pane_count(window.as_str()),
         1,
         "main session must not get a companion pane; panes: {:?}",
-        fx.server.pane_lefts(&window)
+        fx.server.pane_lefts(window.as_str())
     );
 }
 
@@ -877,7 +904,7 @@ fn splitting_the_main_session_window_is_never_corrected() {
         dispatch::create_main_session(fx.dir.path().to_str().unwrap(), &fx.server.runner())
             .expect("create_main_session");
     assert_eq!(
-        fx.server.window_option(&window, "@dispatch_dir"),
+        fx.server.window_option(window.as_str(), "@dispatch_dir"),
         "",
         "main session must carry no @dispatch_dir"
     );
@@ -886,7 +913,7 @@ fn splitting_the_main_session_window_is_never_corrected() {
     // hook skip them, and it is precisely the hook's behaviour under test here.
     let main_log = fx.dir.path().join("main_split.log");
     let main_pane = tmux::split_window_horizontal_running(
-        &window,
+        window.as_str(),
         30,
         &["sh", "-c", &capture_cmd(&main_log)],
         None,
@@ -899,7 +926,7 @@ fn splitting_the_main_session_window_is_never_corrected() {
     // split had coming would have arrived too.
     let agent_log = fx.dir.path().join("agent_split.log");
     let agent_pane = tmux::split_window_horizontal_running(
-        &fx.window(TASK_ID),
+        fx.window(TASK_ID).as_str(),
         30,
         &["sh", "-c", &capture_cmd(&agent_log)],
         None,

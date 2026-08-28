@@ -142,7 +142,7 @@ pub(crate) async fn cleanup_removed_feed_tasks(
                 if let Err(failure) = crate::dispatch::teardown_task(
                     &task.repo_path,
                     task.worktree.as_deref(),
-                    task.tmux_window.as_deref(),
+                    task.tmux_window.as_ref(),
                     &*runner,
                 ) {
                     tracing::warn!(
@@ -431,7 +431,7 @@ mod tests {
 
     use super::*;
     use crate::db::{Database, EpicCrud, EpicPatch, EpicRead, SettingsStore, TaskCrud};
-    use crate::models::{TaskStatus, TaskTag, MIN_FEED_INTERVAL_SECS};
+    use crate::models::{test_tmux_window, TaskStatus, TaskTag, MIN_FEED_INTERVAL_SECS};
 
     use super::exec::AlwaysFailRunner;
 
@@ -687,7 +687,7 @@ mod tests {
             task.id,
             &TaskPatch::new()
                 .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-                .tmux_window(Some("dispatch:pr-1")),
+                .tmux_window(Some(&test_tmux_window("dispatch:pr-1"))),
         )
         .await
         .unwrap();
@@ -782,7 +782,7 @@ mod tests {
                 .status(TaskStatus::Running)
                 .sub_status(crate::models::SubStatus::Active)
                 .worktree(Some("/repo/a/.worktrees/7-pr-1"))
-                .tmux_window(Some("dispatch:pr-1")),
+                .tmux_window(Some(&test_tmux_window("dispatch:pr-1"))),
         )
         .await
         .unwrap();
@@ -2081,7 +2081,7 @@ mod tests {
             id: TaskId(id),
             repo_path: repo.to_string(),
             worktree: worktree.map(str::to_string),
-            tmux_window: window.map(str::to_string),
+            tmux_window: window.map(test_tmux_window),
         }
     }
 

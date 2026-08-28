@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::test_tmux_window;
 
 mod frame_rate_cap {
     use super::*;
@@ -138,7 +139,7 @@ async fn apply_loop_event_tick_triggers_window_sweep() {
     // Give the task a live tmux window so the tick has something to sweep.
     db.patch_task(
         id,
-        &crate::db::TaskPatch::new().tmux_window(Some("dispatch:1")),
+        &crate::db::TaskPatch::new().tmux_window(Some(&test_tmux_window("dispatch:1"))),
     )
     .await
     .unwrap();
@@ -505,7 +506,7 @@ mod run_blocking_dispatch {
         tasks::run_blocking_dispatch(models::TaskId(7), "Dispatch", true, tx, || {
             Ok(models::DispatchResult {
                 worktree_path: "/wt".into(),
-                tmux_window: "win".into(),
+                tmux_window: test_tmux_window("win"),
             })
         });
 
@@ -518,7 +519,7 @@ mod run_blocking_dispatch {
             }) => {
                 assert_eq!(id, models::TaskId(7));
                 assert_eq!(worktree, "/wt");
-                assert_eq!(tmux_window, "win");
+                assert_eq!(tmux_window.as_str(), "win");
                 assert!(switch_focus);
             }
             other => panic!("expected Dispatched, got {other:?}"),

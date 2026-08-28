@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::helpers::{make_app, make_task};
-use crate::models::{SubStatus, TaskId, TaskStatus};
+use crate::models::{test_tmux_window, SubStatus, TaskId, TaskStatus};
 use crate::tui::messages::{SystemMessage, TaskMessage};
 use crate::tui::types::Message;
 
@@ -19,7 +19,7 @@ fn handle_tick_emits_one_batch_window_check_for_multiple_windowed_tasks() {
     let mut app = make_app();
     // Give three tasks tmux windows.
     for task in app.board.tasks.iter_mut().take(3) {
-        task.tmux_window = Some(format!("win-{}", task.id.0));
+        task.tmux_window = Some(test_tmux_window(&format!("win-{}", task.id.0)));
     }
 
     let cmds = app.update(Message::System(SystemMessage::Tick));
@@ -90,7 +90,7 @@ fn handle_tick_batch_window_check_contains_all_windowed_tasks() {
     let mut app = make_app();
     let mut windowed_ids = Vec::new();
     for task in app.board.tasks.iter_mut().take(3) {
-        task.tmux_window = Some(format!("win-{}", task.id.0));
+        task.tmux_window = Some(test_tmux_window(&format!("win-{}", task.id.0)));
         windowed_ids.push(task.id);
     }
 
@@ -179,7 +179,7 @@ fn tick_emits_single_batch_patch_sub_status_for_multiple_updates() {
         .iter_mut()
         .filter(|t| t.status == TaskStatus::Running)
     {
-        task.tmux_window = Some("win".into());
+        task.tmux_window = Some(test_tmux_window("win"));
         task.last_pre_tool_use_at = Some(stale_time);
         task.sub_status = SubStatus::Active; // will be reclassified to Stale
     }
@@ -229,7 +229,7 @@ fn tick_emits_no_batch_patch_sub_status_when_no_sub_status_changes() {
         .iter_mut()
         .filter(|t| t.status == TaskStatus::Running)
     {
-        task.tmux_window = Some("win".into());
+        task.tmux_window = Some(test_tmux_window("win"));
         task.last_pre_tool_use_at = Some(chrono::Utc::now());
         task.sub_status = SubStatus::Active;
     }
@@ -268,7 +268,7 @@ fn tick_batch_patch_sub_status_contains_all_pending_updates() {
         .iter_mut()
         .filter(|t| t.status == TaskStatus::Running)
     {
-        task.tmux_window = Some("win".into());
+        task.tmux_window = Some(test_tmux_window("win"));
         task.last_pre_tool_use_at = Some(stale_time);
         task.sub_status = SubStatus::Active;
         reclassified_ids.push(task.id);

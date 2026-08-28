@@ -179,7 +179,7 @@ impl TuiRuntime {
             .status(fields.status)
             .sub_status(fields.sub_status)
             .worktree(option_to_field_update(fields.worktree))
-            .tmux_window(option_to_field_update(fields.tmux_window));
+            .tmux_window(option_to_tmux_window_update(fields.tmux_window));
         // No UrlUpdate::Clear is emitted for the None branch intentionally: no
         // runtime/persist flow removes a task URL. If that ever changes, emit
         //   p = p.url(crate::service::UrlUpdate::Clear);
@@ -446,7 +446,7 @@ impl TuiRuntime {
     pub(super) fn exec_check_window(
         &self,
         id: TaskId,
-        window: String,
+        window: TmuxWindow,
     ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
@@ -467,7 +467,7 @@ impl TuiRuntime {
     /// then send `WindowGone` for any task whose window is absent.
     pub(super) fn exec_batch_check_windows(
         &self,
-        windows: Vec<(TaskId, String)>,
+        windows: Vec<(TaskId, TmuxWindow)>,
     ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
         let runner = self.runner.clone();
@@ -479,7 +479,7 @@ impl TuiRuntime {
                     Err(_) => return,
                 };
             for (id, window) in windows {
-                if !live.contains(&window) {
+                if !live.contains(window.as_str()) {
                     let _ = tx.send(Message::Task(
                         crate::tui::messages::TaskMessage::WindowGone(id),
                     ));
@@ -746,7 +746,7 @@ impl TuiRuntime {
             .update_task(
                 crate::service::UpdateTaskParams::for_task(id)
                     .worktree(FieldUpdate::Clear)
-                    .tmux_window(FieldUpdate::Clear),
+                    .tmux_window(crate::service::TmuxWindowUpdate::Clear),
             )
             .await
         {
@@ -783,7 +783,7 @@ impl TuiRuntime {
         id: TaskId,
         repo_path: String,
         worktree: Option<String>,
-        tmux_window: Option<String>,
+        tmux_window: Option<TmuxWindow>,
         follow_up: crate::tui::commands::CleanupFollowUp,
     ) -> tokio::task::JoinHandle<()> {
         let tx = self.msg_tx.clone();
@@ -793,7 +793,7 @@ impl TuiRuntime {
             let result = dispatch::teardown_task(
                 &repo_path,
                 worktree.as_deref(),
-                tmux_window.as_deref(),
+                tmux_window.as_ref(),
                 &*runner,
             );
             let msg = match result {

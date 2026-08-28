@@ -106,7 +106,7 @@ fn dispatch_split(
         Exit {
             pane_id,
             restore_window,
-        } => drop(rt.exec_exit_split_mode(&pane_id, restore_window.as_deref())),
+        } => drop(rt.exec_exit_split_mode(&pane_id, restore_window.as_ref())),
         Swap {
             task_id,
             new_window,
@@ -119,7 +119,7 @@ fn dispatch_split(
                 old_pane_id.as_deref(),
                 old_task
                     .as_ref()
-                    .map(|(window, worktree)| (window.as_str(), worktree.as_str())),
+                    .map(|(window, worktree)| (window, worktree.as_str())),
             ),
         ),
         FocusPane { pane_id } => drop(rt.exec_focus_split_pane(pane_id)),

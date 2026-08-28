@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::test_tmux_window;
 
 #[tokio::test]
 async fn exec_enter_split_mode_opens_pane() {
@@ -65,7 +66,7 @@ async fn exec_enter_split_mode_with_task_joins_pane() {
     );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+    rt.exec_enter_split_mode_with_task(TaskId(1), &test_tmux_window("task-1"))
         .await
         .unwrap();
     let calls = mock.recorded_calls();
@@ -113,7 +114,7 @@ async fn exec_enter_split_mode_with_task_kills_leftover_companion_panes_after_jo
     );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+    rt.exec_enter_split_mode_with_task(TaskId(1), &test_tmux_window("task-1"))
         .await
         .unwrap();
     let calls = mock.recorded_calls();
@@ -152,7 +153,7 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_check_fails(
     );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+    rt.exec_enter_split_mode_with_task(TaskId(1), &test_tmux_window("task-1"))
         .await
         .unwrap();
     let calls = mock.recorded_calls();
@@ -190,7 +191,7 @@ async fn exec_enter_split_mode_with_task_succeeds_even_if_companion_kill_fails()
     );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-    rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+    rt.exec_enter_split_mode_with_task(TaskId(1), &test_tmux_window("task-1"))
         .await
         .unwrap();
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -215,7 +216,9 @@ async fn exec_exit_split_mode_with_restore_breaks_pane() {
     ]));
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-    rt.exec_exit_split_mode("%2", Some("task-1")).await.unwrap();
+    rt.exec_exit_split_mode("%2", Some(&test_tmux_window("task-1")))
+        .await
+        .unwrap();
     let calls = mock.recorded_calls();
     assert!(calls[0].1.contains(&"break-pane".to_string()));
     let msg = tokio::time::timeout(TEST_TIMEOUT, rx.recv())
@@ -358,7 +361,7 @@ async fn exec_swap_split_pane_uses_swap_pane() {
     );
     let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-    rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
+    rt.exec_swap_split_pane(TaskId(1), &test_tmux_window("task-1"), Some("%2"), None)
         .await
         .unwrap();
     let calls = mock.recorded_calls();
@@ -413,9 +416,9 @@ async fn exec_swap_split_pane_renames_old_task_window() {
 
     rt.exec_swap_split_pane(
         TaskId(3),
-        "task-3",
+        &test_tmux_window("task-3"),
         Some("%2"),
-        Some(("task-2", "/repo/.worktrees/2-some-task")),
+        Some((&test_tmux_window("task-2"), "/repo/.worktrees/2-some-task")),
     )
     .await
     .unwrap();
@@ -541,7 +544,7 @@ mod split_mode_via_msg_tx {
         );
         let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-        rt.exec_enter_split_mode_with_task(TaskId(1), "task-1")
+        rt.exec_enter_split_mode_with_task(TaskId(1), &test_tmux_window("task-1"))
             .await
             .unwrap();
 
@@ -572,7 +575,9 @@ mod split_mode_via_msg_tx {
         ]));
         let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-        rt.exec_exit_split_mode("%2", Some("task-1")).await.unwrap();
+        rt.exec_exit_split_mode("%2", Some(&test_tmux_window("task-1")))
+            .await
+            .unwrap();
 
         let calls = mock.recorded_calls();
         assert!(calls[0].1.contains(&"break-pane".to_string()));
@@ -629,7 +634,7 @@ mod split_mode_via_msg_tx {
         );
         let rt = make_runtime(db.clone(), tx, mock.clone()).await;
 
-        rt.exec_swap_split_pane(TaskId(1), "task-1", Some("%2"), None)
+        rt.exec_swap_split_pane(TaskId(1), &test_tmux_window("task-1"), Some("%2"), None)
             .await
             .unwrap();
 

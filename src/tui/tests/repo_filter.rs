@@ -1,5 +1,5 @@
 use super::*;
-use crate::models::{Epic, EpicId, SubStatus, TaskId, TaskStatus};
+use crate::models::{test_tmux_window, Epic, EpicId, SubStatus, TaskId, TaskStatus};
 use crate::tui::commands::SettingsCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1047,7 +1047,7 @@ fn filter_state_task_matches_only_active_false_always_passes() {
     let mut t = make_task(1, TaskStatus::Running);
     t.tmux_window = None;
     assert!(state.task_matches(&t));
-    t.tmux_window = Some("dispatch:1".to_string());
+    t.tmux_window = Some(test_tmux_window("dispatch:1"));
     assert!(state.task_matches(&t));
 }
 
@@ -1063,7 +1063,7 @@ fn filter_state_task_matches_only_active_true_requires_tmux_window() {
     t.tmux_window = None;
     assert!(!state.task_matches(&t));
 
-    t.tmux_window = Some("dispatch:1".to_string());
+    t.tmux_window = Some(test_tmux_window("dispatch:1"));
     assert!(state.task_matches(&t));
 }
 
@@ -1355,7 +1355,7 @@ fn enter_sub_epic_from_epic_view_nests_parent() {
 fn only_active_filter_hides_tasks_without_tmux_window() {
     let mut app = App::new(vec![]);
     let mut t1 = make_task(1, TaskStatus::Running);
-    t1.tmux_window = Some("dispatch:1".to_string());
+    t1.tmux_window = Some(test_tmux_window("dispatch:1"));
     let mut t2 = make_task(2, TaskStatus::Running);
     t2.tmux_window = None;
     let mut t3 = make_task(3, TaskStatus::Backlog);
@@ -1372,7 +1372,7 @@ fn only_active_filter_hides_tasks_without_tmux_window() {
 fn only_active_filter_off_shows_all_tasks() {
     let mut app = App::new(vec![]);
     let mut t1 = make_task(1, TaskStatus::Running);
-    t1.tmux_window = Some("dispatch:1".to_string());
+    t1.tmux_window = Some(test_tmux_window("dispatch:1"));
     let mut t2 = make_task(2, TaskStatus::Backlog);
     t2.tmux_window = None;
     app.board.tasks = vec![t1, t2];
@@ -1436,7 +1436,7 @@ fn only_active_filter_shows_epic_with_active_task() {
     epic.status = TaskStatus::Backlog;
     let mut t = make_task(1, TaskStatus::Backlog);
     t.epic_id = Some(EpicId(10));
-    t.tmux_window = Some("dispatch:1".to_string());
+    t.tmux_window = Some(test_tmux_window("dispatch:1"));
     app.board.epics = vec![epic];
     app.board.tasks = vec![t];
     app.filter.only_active = true;
@@ -1477,7 +1477,7 @@ fn only_active_filter_column_item_count_excludes_inactive_epics() {
 
     let mut t = make_task(1, TaskStatus::Backlog);
     t.epic_id = Some(EpicId(10));
-    t.tmux_window = Some("dispatch:1".to_string());
+    t.tmux_window = Some(test_tmux_window("dispatch:1"));
 
     app.board.epics = vec![epic_active, epic_inactive];
     app.board.tasks = vec![t];
@@ -1505,7 +1505,7 @@ fn only_active_filter_shows_root_epic_when_grandchild_task_is_active() {
 
     let mut t = make_task(1, TaskStatus::Backlog);
     t.epic_id = Some(EpicId(20));
-    t.tmux_window = Some("dispatch:1".to_string());
+    t.tmux_window = Some(test_tmux_window("dispatch:1"));
 
     app.board.epics = vec![root_epic, sub_epic];
     app.board.tasks = vec![t];

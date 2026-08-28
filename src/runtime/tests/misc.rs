@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::test_tmux_window;
 
 mod filter_presets {
     use super::*;
@@ -155,7 +156,9 @@ mod browser_and_tmux_window {
         );
         let rt = make_runtime(db, tx, mock.clone()).await;
 
-        rt.exec_kill_tmux_window("task-1".into()).await.unwrap();
+        rt.exec_kill_tmux_window(test_tmux_window("task-1"))
+            .await
+            .unwrap();
         let calls = mock.recorded_calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, "tmux");
@@ -173,7 +176,7 @@ mod browser_and_tmux_window {
         )]));
         let rt = make_runtime(db, tx, mock).await;
 
-        rt.exec_kill_tmux_window("gone-window".into())
+        rt.exec_kill_tmux_window(test_tmux_window("gone-window"))
             .await
             .unwrap();
 

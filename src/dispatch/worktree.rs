@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::time::Duration;
 
-use crate::models::{build_tmux_window_name, expand_tilde, slugify, Task};
+use crate::models::{expand_tilde, slugify, Task, TmuxWindow};
 use crate::process::ProcessRunner;
 use crate::tmux;
 
@@ -86,7 +86,7 @@ impl StartPoint {
 #[derive(Debug)]
 pub(super) struct ProvisionResult {
     pub(super) worktree_path: String,
-    pub(super) tmux_window: String,
+    pub(super) tmux_window: TmuxWindow,
     /// `Some(...)` when `origin/<base>` could not be made current: either there
     /// is no such ref (and the local branch was used instead), or the worktree
     /// was being reused and origin turned out to be unreachable. Injected into
@@ -322,7 +322,7 @@ struct WorktreePaths {
     repo_path: String,
     worktree_name: String,
     worktree_path: String,
-    tmux_window: String,
+    tmux_window: TmuxWindow,
 }
 
 /// Derive a task's worktree and tmux-window names from its repo path and
@@ -332,7 +332,7 @@ fn worktree_paths(task: &Task) -> Result<WorktreePaths> {
     let slug = slugify(&task.title);
     let worktree_name = format!("{}-{slug}", task.id);
     let worktree_path = format!("{repo_path}/.worktrees/{worktree_name}");
-    let tmux_window = build_tmux_window_name(task.id);
+    let tmux_window = TmuxWindow::for_task(task.id);
     Ok(WorktreePaths {
         repo_path,
         worktree_name,
@@ -549,7 +549,7 @@ pub(super) fn provision_worktree(
 pub fn teardown_task(
     repo_path: &str,
     worktree_path: Option<&str>,
-    tmux_window: Option<&str>,
+    tmux_window: Option<&TmuxWindow>,
     runner: &dyn ProcessRunner,
 ) -> Result<(), TeardownFailure> {
     tracing::info!(?worktree_path, ?tmux_window, "tearing down task");
@@ -654,7 +654,7 @@ fn remove_worktree_and_branch(
 pub(super) fn rollback_failed_provisioning(
     repo_path: &str,
     worktree_path: &str,
-    tmux_window: &str,
+    tmux_window: &TmuxWindow,
     reused_worktree: bool,
     runner: &dyn ProcessRunner,
 ) {
@@ -662,7 +662,7 @@ pub(super) fn rollback_failed_provisioning(
     if let Err(e) = teardown_task(repo_path, worktree_arg, Some(tmux_window), runner) {
         tracing::warn!(
             worktree_path,
-            tmux_window,
+            %tmux_window,
             error = %e,
             "failed to roll back a failed dispatch"
         );

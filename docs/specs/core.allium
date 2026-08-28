@@ -19,6 +19,12 @@ external entity Worktree {
     branch: String
 }
 
+-- A window NAME, and only a name: two strings are excluded because tmux does
+-- not treat them as one. The empty string is tmux's "current window", and a
+-- pane id ("%42") addresses a pane directly; both reach tmux as
+-- already-resolved targets, bypassing name lookup entirely (see
+-- dispatch.allium: TmuxWindowTargetedExactly). Every other non-empty string
+-- is a name, including the board's own window and legacy names.
 external entity TmuxWindow {
     name: String
 }
@@ -236,6 +242,12 @@ enum WrapUpMode { rebase | pr | done }
 -- system-assigned and never user-supplied, an unknown value signals a
 -- forward-compatibility gap, not the data-integrity bug the hard-fail rule
 -- guards against.
+--
+-- Exception: tmux_window soft-fails too, for a different reason — corruption
+-- tolerance, not forward compatibility. A stored value that is not a window
+-- name (see TmuxWindow) logs a warning and reads back as no window at all,
+-- which is exactly what a task whose agent is gone looks like, so the board
+-- still renders it; failing the row would drop the card from every bulk read.
 
 ------------------------------------------------------------
 -- Entities and Variants

@@ -75,7 +75,7 @@ fn removed_feed_task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Remov
         id: TaskId(row.get(0)?),
         repo_path: row.get(1)?,
         worktree: row.get(2)?,
-        tmux_window: row.get(3)?,
+        tmux_window: super::read_tmux_window(row, 3)?,
     })
 }
 
@@ -135,7 +135,7 @@ struct OwnedTaskPatch {
     description: Option<String>,
     repo_path: Option<String>,
     worktree: Option<Option<String>>,
-    tmux_window: Option<Option<String>>,
+    tmux_window: Option<Option<crate::models::TmuxWindow>>,
     sub_status: Option<SubStatus>,
     url: Option<Option<crate::models::TaskUrl>>,
     tag: Option<Option<crate::models::TaskTag>>,
@@ -185,7 +185,7 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             description: description.map(str::to_string),
             repo_path: repo_path.map(str::to_string),
             worktree: worktree.map(|o| o.map(str::to_string)),
-            tmux_window: tmux_window.map(|o| o.map(str::to_string)),
+            tmux_window: tmux_window.map(|o| o.cloned()),
             sub_status,
             url: url.map(|o| o.cloned()),
             tag,
@@ -393,7 +393,12 @@ impl super::super::TaskCrud for Database {
             set_field!(sets, values, patch.repo_path, "repo_path");
             set_field!(sets, values, patch.plan_path, "plan_path");
             set_field!(sets, values, patch.worktree, "worktree");
-            set_field!(sets, values, patch.tmux_window, "tmux_window");
+            set_field!(
+                sets,
+                values,
+                patch.tmux_window.map(|o| o.map(|w| w.into_string())),
+                "tmux_window"
+            );
             set_field!(
                 sets,
                 values,

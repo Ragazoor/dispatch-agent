@@ -18,6 +18,7 @@
 
 use anyhow::{Context, Result};
 
+use crate::models::TmuxWindow;
 use crate::process::ProcessRunner;
 use crate::tmux;
 
@@ -29,7 +30,7 @@ use super::agents::companion_pane_ids;
 ///
 /// Returns the joined pane's id (tmux preserves pane ids across a move).
 pub fn join_task_window_into_pane(
-    window: &str,
+    window: &TmuxWindow,
     target_pane: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<String> {
@@ -91,9 +92,9 @@ pub fn join_task_window_into_pane(
 ///
 /// Returns the pane id of the task swapped in.
 pub fn swap_task_window_into_pane(
-    new_window: &str,
+    new_window: &TmuxWindow,
     right_pane: &str,
-    old_task: Option<(&str, &str)>,
+    old_task: Option<(&TmuxWindow, &str)>,
     runner: &dyn ProcessRunner,
 ) -> Result<String> {
     // 1. Resolve the incoming task's pane before swapping.
@@ -113,7 +114,8 @@ pub fn swap_task_window_into_pane(
     // 3. Rename or kill the standalone window that now holds the old content.
     match old_task {
         Some((old_name, old_worktree)) => {
-            tmux::rename_window(new_window, old_name, runner).context("rename window failed")?;
+            tmux::rename_window(new_window.as_str(), old_name, runner)
+                .context("rename window failed")?;
             // The renamed window's @dispatch_dir still names the incoming
             // task's worktree — a rename does not touch window options, only
             // the window's name. Rewrite it to the outgoing task's worktree
@@ -128,7 +130,7 @@ pub fn swap_task_window_into_pane(
             // point, so a failure here is logged, never propagated.
             if let Err(e) = tmux::set_window_dispatch_dir(old_name, old_worktree, runner) {
                 tracing::warn!(
-                    window = old_name,
+                    window = %old_name,
                     error = %e,
                     "failed to rewrite @dispatch_dir after swap; companion may resync into the wrong worktree"
                 );

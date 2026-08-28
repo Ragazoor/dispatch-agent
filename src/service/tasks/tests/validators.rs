@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::test_tmux_window;
 
 // --- FieldUpdate ---
 
@@ -38,13 +39,15 @@ async fn update_task_worktree_set_persists() {
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Running)
             .worktree(FieldUpdate::Set("/wt".to_string()))
-            .tmux_window(FieldUpdate::Set("win".to_string())),
+            .tmux_window(crate::service::TmuxWindowUpdate::Set(test_tmux_window(
+                "win",
+            ))),
     )
     .await
     .unwrap();
     let task = db.get_task(TaskId(id.0)).await.unwrap().unwrap();
     assert_eq!(task.worktree.as_deref(), Some("/wt"));
-    assert_eq!(task.tmux_window.as_deref(), Some("win"));
+    assert_eq!(task.tmux_window.as_ref().map(|w| w.as_str()), Some("win"));
 }
 
 #[tokio::test]
@@ -72,7 +75,9 @@ async fn update_task_worktree_clear_sets_null() {
         UpdateTaskParams::for_task(id)
             .status(TaskStatus::Running)
             .worktree(FieldUpdate::Set("/wt".to_string()))
-            .tmux_window(FieldUpdate::Set("win".to_string())),
+            .tmux_window(crate::service::TmuxWindowUpdate::Set(test_tmux_window(
+                "win",
+            ))),
     )
     .await
     .unwrap();
@@ -80,7 +85,7 @@ async fn update_task_worktree_clear_sets_null() {
     svc.update_task(
         UpdateTaskParams::for_task(id)
             .worktree(FieldUpdate::Clear)
-            .tmux_window(FieldUpdate::Clear),
+            .tmux_window(crate::service::TmuxWindowUpdate::Clear),
     )
     .await
     .unwrap();

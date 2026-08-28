@@ -1,6 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use super::*;
-use crate::models::{EpicId, SubStatus, TaskId, TaskStatus, TaskTag};
+use crate::models::{test_tmux_window, EpicId, SubStatus, TaskId, TaskStatus, TaskTag};
 use crate::tui::commands::SettingsCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -452,7 +452,7 @@ fn e_key_directly_emits_edit_task() {
 #[test]
 fn confirm_retry_r_key_emits_resume() {
     let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("task-4".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("task-4"));
     app.board.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
 
@@ -467,7 +467,7 @@ fn confirm_retry_r_key_emits_resume() {
 #[test]
 fn confirm_retry_f_key_emits_fresh() {
     let mut app = App::new(vec![make_task(4, TaskStatus::Running)]);
-    app.board.tasks[0].tmux_window = Some("task-4".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("task-4"));
     app.board.tasks[0].worktree = Some("/repo/.worktrees/4-task-4".to_string());
     app.input.mode = InputMode::ConfirmRetry(TaskId(4));
 
@@ -1358,7 +1358,7 @@ fn handle_key_confirm_retry_resume() {
     let mut app = make_app();
     let mut task = make_task(10, TaskStatus::Running);
     task.worktree = Some("/repo/.worktrees/10-test".to_string());
-    task.tmux_window = Some("main:10-test".to_string());
+    task.tmux_window = Some(test_tmux_window("main:10-test"));
     app.board.tasks.push(task);
     app.input.mode = InputMode::ConfirmRetry(TaskId(10));
 
@@ -1380,7 +1380,7 @@ fn handle_key_confirm_retry_fresh() {
     let mut app = make_app();
     let mut task = make_task(10, TaskStatus::Running);
     task.worktree = Some("/repo/.worktrees/10-test".to_string());
-    task.tmux_window = Some("main:10-test".to_string());
+    task.tmux_window = Some(test_tmux_window("main:10-test"));
     app.board.tasks.push(task);
     app.input.mode = InputMode::ConfirmRetry(TaskId(10));
 
@@ -1500,7 +1500,7 @@ fn handle_key_normal_activate_running_task_with_window_jumps() {
         .iter_mut()
         .find(|t| t.id == TaskId(3))
         .unwrap();
-    task_3.tmux_window = Some("main:task-3".to_string());
+    task_3.tmux_window = Some(test_tmux_window("main:task-3"));
 
     let cmds = without_usage(app.handle_key(make_key(KeyCode::Char(' '))));
     // Space jumps to the live window rather than dispatching.
@@ -1537,7 +1537,7 @@ fn handle_key_normal_g_starts_pending_chord_without_firing() {
         .iter_mut()
         .find(|t| t.id == TaskId(3))
         .unwrap();
-    task.tmux_window = Some("main:task-3".to_string());
+    task.tmux_window = Some(test_tmux_window("main:task-3"));
     app.selection_mut().set_column(2);
     app.selection_mut().set_row(2, 0);
 
@@ -1617,7 +1617,7 @@ fn handle_key_normal_g_idle_backstop_clears_pending_chord() {
         .iter_mut()
         .find(|t| t.id == TaskId(3))
         .unwrap();
-    task.tmux_window = Some("main:task-3".to_string());
+    task.tmux_window = Some(test_tmux_window("main:task-3"));
     app.selection_mut().set_column(2);
     app.selection_mut().set_row(2, 0);
 
@@ -1712,7 +1712,7 @@ fn esc_clears_mixed_selection() {
 #[test]
 fn confirm_detach_tmux_clears_window() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Review)]);
-    app.board.tasks[0].tmux_window = Some("task-1".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("task-1"));
     app.board.tasks[0].sub_status = SubStatus::Stale;
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::DetachTmux(TaskId(1)),
@@ -1748,7 +1748,7 @@ fn confirm_detach_tmux_clears_window() {
 #[test]
 fn confirm_detach_tmux_emits_a_draining_subagent_clear() {
     let mut app = App::new(vec![make_task(1, TaskStatus::Review)]);
-    app.board.tasks[0].tmux_window = Some("task-1".to_string());
+    app.board.tasks[0].tmux_window = Some(test_tmux_window("task-1"));
     app.update(Message::Task(
         crate::tui::messages::TaskMessage::DetachTmux(TaskId(1)),
     ));
@@ -1771,7 +1771,7 @@ fn confirm_detach_tmux_emits_a_draining_subagent_clear() {
 #[test]
 fn confirm_detach_tmux_y_detaches() {
     let mut task = make_task(3, TaskStatus::Review);
-    task.tmux_window = Some("task-3".to_string());
+    task.tmux_window = Some(test_tmux_window("task-3"));
     let mut app = App::new(vec![task]);
     app.input.mode = InputMode::ConfirmDetachTmux(vec![TaskId(3)]);
     let cmds = app.handle_key(make_key(KeyCode::Char('y')));
@@ -1867,7 +1867,7 @@ fn handle_key_normal_move_backward_via_handle_key() {
 #[test]
 fn handle_key_normal_detach_tmux_review_task() {
     let mut task = make_task(10, TaskStatus::Review);
-    task.tmux_window = Some("main:10-test".to_string());
+    task.tmux_window = Some(test_tmux_window("main:10-test"));
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(3);
     app.selection_mut().set_row(3, 0);
@@ -1889,7 +1889,7 @@ fn handle_key_normal_detach_tmux_no_window_is_noop() {
 fn handle_key_normal_detach_tmux_running_task_with_window_prompts() {
     // Running tasks with a tmux window should also be detachable via T.
     let mut task = make_task(20, TaskStatus::Running);
-    task.tmux_window = Some("main:20-running".to_string());
+    task.tmux_window = Some(test_tmux_window("main:20-running"));
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(2); // Running column
     app.selection_mut().set_row(2, 0);
@@ -2661,7 +2661,7 @@ fn wrap_up_mode_enter_keeps_prefilled_value_from_copy_task() {
 #[test]
 fn space_key_on_split_pinned_task_focuses_pane() {
     let mut task = make_task(4, TaskStatus::Running);
-    task.tmux_window = Some("task-4".to_string());
+    task.tmux_window = Some(test_tmux_window("task-4"));
     let mut app = App::new(vec![task]);
     app.board.split.active = true;
     app.board.split.right_pane_id = Some("%42".to_string());
@@ -2692,7 +2692,7 @@ fn space_key_on_epic_enters_epic_view() {
 #[test]
 fn space_on_task_in_active_split_swaps_pane() {
     let mut task = make_task(3, TaskStatus::Running);
-    task.tmux_window = Some("task-3".to_string());
+    task.tmux_window = Some(test_tmux_window("task-3"));
     let mut app = App::new(vec![task]);
     app.board.split.active = true;
     app.board.split.right_pane_id = Some("%10".to_string());
@@ -2712,7 +2712,7 @@ fn space_on_task_in_active_split_swaps_pane() {
 fn capital_s_is_inert() {
     // [S] retired in favour of Space-in-split-mode: no arm, no hint.
     let mut task = make_task(1, TaskStatus::Backlog);
-    task.tmux_window = Some("task-1".to_string());
+    task.tmux_window = Some(test_tmux_window("task-1"));
     let mut app = App::new(vec![task]);
     app.selection_mut().set_column(1);
 
@@ -2731,7 +2731,7 @@ fn capital_g_on_epic_is_noop() {
     let mut running_blocked = make_task(2, TaskStatus::Running);
     running_blocked.epic_id = Some(EpicId(10));
     running_blocked.sub_status = SubStatus::Stale;
-    running_blocked.tmux_window = Some("task-blocked".to_string());
+    running_blocked.tmux_window = Some(test_tmux_window("task-blocked"));
 
     let mut app = App::new(vec![anchor_task, running_blocked]);
     app.board.epics = vec![make_epic(10)];

@@ -11,6 +11,7 @@ use super::worktree::{
     provision_worktree, BaseRef, StartPoint, FETCH_MAX_ATTEMPTS, PROVISION_MAX_SUBPROCESS_CALLS,
 };
 use super::*;
+use crate::models::test_tmux_window;
 
 use crate::models::{EpicId, Task, TaskId};
 use crate::process::{AgentBinaries, MockProcessRunner, SUBPROCESS_TIMEOUT};
@@ -395,7 +396,7 @@ fn toggle_kills_the_tree_pane_even_when_the_tree_pane_is_active() {
     ])
     .with_windows(&["task-42"]);
 
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
 
     let calls = mock.recorded_calls();
     assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%2"]);
@@ -413,7 +414,7 @@ fn toggle_with_an_editor_pane_open_kills_only_the_tree_pane() {
     ])
     .with_windows(&["task-42"]);
 
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
 
     let calls = mock.recorded_calls();
     assert_eq!(
@@ -438,7 +439,7 @@ fn toggle_ignores_an_unmarked_pane_and_splits_a_tree_pane() {
     ])
     .with_windows(&["task-42"]);
 
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
 
     let calls = mock.recorded_calls();
     assert_eq!(calls[2].1[0], "split-window", "calls: {calls:?}");
@@ -458,7 +459,7 @@ fn toggle_splits_a_tree_pane_when_the_window_has_none() {
     ])
     .with_windows(&["task-42"]);
 
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
 
     assert_eq!(mock.recorded_calls()[2].1[0], "split-window");
 }
@@ -475,7 +476,7 @@ fn the_spawned_tree_pane_is_marked_with_its_role() {
     ])
     .with_windows(&["task-42"]);
 
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
 
     let calls = mock.recorded_calls();
     assert_eq!(
@@ -506,7 +507,7 @@ fn a_failing_role_marker_write_does_not_fail_the_toggle() {
     ])
     .with_windows(&["task-42"]);
 
-    assert!(toggle_agent_tree_pane("task-42", &mock).is_ok());
+    assert!(toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).is_ok());
     // The failure must land on the marker write, not on an earlier call — this
     // test is worthless if the split is what failed.
     let calls = mock.recorded_calls();
@@ -516,7 +517,7 @@ fn a_failing_role_marker_write_does_not_fail_the_toggle() {
 #[test]
 fn toggle_is_a_no_op_for_a_window_that_is_not_a_task_window() {
     let mock = MockProcessRunner::new(vec![]).with_queued_window_lookup();
-    toggle_agent_tree_pane("TUI", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("TUI"), &mock).unwrap();
     assert!(mock.recorded_calls().is_empty());
 }
 
@@ -530,7 +531,7 @@ fn companion_pane_ids_returns_both_the_tree_and_the_editor_pane() {
     )])
     .with_windows(&["task-42"]);
 
-    let found = companion_pane_ids("task-42", &mock).unwrap();
+    let found = companion_pane_ids(&test_tmux_window("task-42"), &mock).unwrap();
 
     assert_eq!(found, vec!["%2".to_string(), "%3".to_string()]);
 }
@@ -546,7 +547,7 @@ fn companion_pane_ids_asks_tmux_once() {
     )])
     .with_windows(&["task-42"]);
 
-    companion_pane_ids("task-42", &mock).unwrap();
+    companion_pane_ids(&test_tmux_window("task-42"), &mock).unwrap();
 
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 1, "calls: {calls:?}");
@@ -558,7 +559,9 @@ fn companion_pane_ids_is_empty_for_a_window_with_only_an_agent_pane() {
     let mock = MockProcessRunner::new(vec![MockProcessRunner::ok_with_stdout(b"%1 \n")])
         .with_windows(&["task-42"]);
 
-    assert!(companion_pane_ids("task-42", &mock).unwrap().is_empty());
+    assert!(companion_pane_ids(&test_tmux_window("task-42"), &mock)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -2036,7 +2039,7 @@ fn cleanup_kills_window_and_removes_worktree() {
     teardown_task(
         "/repo",
         Some("/repo/.worktrees/42-fix-bug"),
-        Some("task-42"),
+        Some(&test_tmux_window("task-42")),
         &mock,
     )
     .unwrap();
@@ -2724,7 +2727,7 @@ fn cleanup_skips_kill_when_window_not_found() {
     teardown_task(
         "/repo",
         Some("/repo/.worktrees/42-fix-bug"),
-        Some("task-42"),
+        Some(&test_tmux_window("task-42")),
         &mock,
     )
     .unwrap();
@@ -2806,7 +2809,7 @@ fn teardown_task_kills_window_when_there_is_no_worktree() {
         MockProcessRunner::ok(),                         // tmux kill-window
     ]);
 
-    teardown_task("/repo", None, Some("task-42"), &mock).unwrap();
+    teardown_task("/repo", None, Some(&test_tmux_window("task-42")), &mock).unwrap();
 
     let calls = mock.recorded_calls();
     assert!(
@@ -2889,7 +2892,7 @@ fn teardown_task_kill_window_failure_propagates() {
     let err = teardown_task(
         "/repo",
         Some("/repo/.worktrees/42-fix-bug"),
-        Some("task-42"),
+        Some(&test_tmux_window("task-42")),
         &mock,
     )
     .unwrap_err();
@@ -2924,7 +2927,7 @@ fn teardown_task_has_window_runner_error_warns_and_continues() {
     teardown_task(
         "/repo",
         Some("/repo/.worktrees/42-fix-bug"),
-        Some("task-42"),
+        Some(&test_tmux_window("task-42")),
         &mock,
     )
     .unwrap();
@@ -3330,7 +3333,7 @@ fn resume_agent_reattaches_to_live_window_without_creating_duplicate() {
         result.is_ok(),
         "resume_agent should succeed by reattaching, not erroring: {result:?}"
     );
-    assert_eq!(result.unwrap().tmux_window, "task-42");
+    assert_eq!(result.unwrap().tmux_window, test_tmux_window("task-42"));
 
     script.assert_matches(&mock.recorded_calls());
 }
@@ -3365,7 +3368,7 @@ fn resume_agent_has_window_runner_error_falls_back_to_creating_a_window() {
 #[test]
 fn toggle_agent_tree_pane_is_noop_for_non_task_window() {
     let mock = MockProcessRunner::new(vec![]);
-    toggle_agent_tree_pane("TUI", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("TUI"), &mock).unwrap();
     assert_eq!(mock.recorded_calls().len(), 0, "should issue no tmux calls");
 }
 
@@ -3378,7 +3381,7 @@ fn toggle_agent_tree_pane_hides_when_companion_pane_present() {
         MockProcessRunner::ok_with_stdout(b"%3 \n%77 agent_tree\n"), // list-panes
         MockProcessRunner::ok(),                                     // kill-pane
     ]);
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[1].1, vec!["kill-pane", "-t", "%77"]);
@@ -3392,7 +3395,7 @@ fn toggle_agent_tree_pane_shows_when_no_companion_pane() {
         MockProcessRunner::ok_with_stdout(COMPANION_PANE_ID), // split-window
         MockProcessRunner::ok(),                     // set-option: the role marker
     ]);
-    toggle_agent_tree_pane("task-42", &mock).unwrap();
+    toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap();
     let calls = mock.recorded_calls();
     assert_eq!(calls.len(), 4);
     assert_eq!(calls[2].0, "tmux");
@@ -3425,7 +3428,7 @@ fn toggle_agent_tree_pane_shows_when_no_companion_pane() {
 #[test]
 fn toggle_agent_tree_pane_propagates_list_panes_query_failure() {
     let mock = MockProcessRunner::new(vec![MockProcessRunner::fail("no such window")]);
-    let err = toggle_agent_tree_pane("task-42", &mock).unwrap_err();
+    let err = toggle_agent_tree_pane(&test_tmux_window("task-42"), &mock).unwrap_err();
     assert!(err.to_string().contains("list-panes failed"), "got: {err}");
 }
 

@@ -340,7 +340,7 @@ macro_rules! task_service_api {
             /// Kill the tmux window a closed session left behind. Keeps the
             /// only tmux call the MCP layer needs behind the service boundary
             /// — see `ExitSession` in `docs/specs/pr-workflow.allium`.
-            async fn kill_session_window(&self, window: String) -> ();
+            async fn kill_session_window(&self, window: $crate::models::TmuxWindow) -> ();
 
             /// Undo an unprovisioned claim, returning the subtask to `Backlog`.
             /// Conditional on the task still being claimed-and-unprovisioned;
