@@ -50,6 +50,15 @@ fastembed = { version = "5", default-features = false, features = [
 insta = "1"
 proptest = "1"
 tower = { version = "0.4", features = ["util"] }
+# Self-dependency with test-support on, so `tests/` targets can see
+# `MockProcessRunner`. `cargo test` unifies this with the lib build; a plain
+# `cargo build` does not, so the mock stays out of the release binary.
+dispatch-tui = { path = ".", features = ["test-support"] }
+
+[features]
+# Exposes `MockProcessRunner` and the `ExitStatus` helpers to integration tests.
+# Off in release builds; `cargo test` turns it on via the self dev-dependency above.
+test-support = []
 
 [lints.clippy]
 # Added by task #602 (2026-05-07): surfaces accidental panics in production paths

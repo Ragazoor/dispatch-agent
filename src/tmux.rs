@@ -86,6 +86,7 @@ fn window_filter(window: &str) -> String {
 /// Exists for `MockProcessRunner`, which answers the lookup without a tmux
 /// server and so needs to know which window is being asked for. Keeping the
 /// construction and the inversion adjacent is what stops them drifting apart.
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn window_name_in_lookup<'a>(args: &[&'a str]) -> Option<&'a str> {
     match args {
         ["list-panes", "-a", "-f", filter, "-F", format] if *format == WINDOW_PANE_FORMAT => {

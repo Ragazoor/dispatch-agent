@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::VecDeque;
 use std::process::Output;
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -307,6 +309,7 @@ impl ProcessRunner for RealProcessRunner {
 /// otherwise act on a different task's window (see `tmux::window_target`). That
 /// makes the lookup a precondition of nearly every tmux call in the codebase —
 /// so how the mock answers it is a decision worth naming rather than burying.
+#[cfg(any(test, feature = "test-support"))]
 enum WindowLookup {
     /// Resolve whatever name is asked for, assigning pane IDs `%0`, `%1`, … in
     /// first-seen order. Answered out of band: not taken from the positional
@@ -332,6 +335,7 @@ enum WindowLookup {
     Queued,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 pub struct MockProcessRunner {
     calls: Mutex<Vec<(String, Vec<String>)>>,
     /// The timeout each recorded call was made with, positionally aligned with
@@ -343,6 +347,7 @@ pub struct MockProcessRunner {
     binaries: AgentBinaries,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl MockProcessRunner {
     /// Construct a runner. tmux window-name lookups resolve permissively — see
     /// [`WindowLookup::AnyName`] for why that is the default, and
@@ -579,6 +584,7 @@ impl MockProcessRunner {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl ProcessRunner for MockProcessRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output> {
         let (delay, response) = self.record_and_pop(program, args, None);
@@ -608,20 +614,20 @@ impl ProcessRunner for MockProcessRunner {
 // Helpers for constructing ExitStatus in tests (Unix only)
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
+#[cfg(all(unix, any(test, feature = "test-support")))]
 pub fn exit_ok() -> std::process::ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     std::process::ExitStatus::from_raw(0)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, any(test, feature = "test-support")))]
 pub fn exit_fail() -> std::process::ExitStatus {
     exit_code(1)
 }
 
 /// An `ExitStatus` carrying a specific exit code, for callers that classify on
 /// the code rather than the message (e.g. `git ls-remote --exit-code`).
-#[cfg(unix)]
+#[cfg(all(unix, any(test, feature = "test-support")))]
 pub fn exit_code(code: i32) -> std::process::ExitStatus {
     use std::os::unix::process::ExitStatusExt;
     // Raw status word: the exit code lives in the high byte.

@@ -618,6 +618,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "dispatch-tui",
  "fastembed",
  "include_dir",
  "insta",
