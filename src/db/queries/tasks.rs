@@ -271,35 +271,76 @@ impl super::super::TaskRead for Database {
     }
 }
 
+/// Insert one `tasks` row and return its id. Shared by `create_task` and
+/// `respawn_phoenix_successor` so the column list has one place to update;
+/// `labels_json` is `None` for every hand-created task (the column defaults
+/// to empty) and `Some` only for a phoenix successor, which is the one path
+/// that must set labels at insert time rather than via a follow-up patch.
+fn insert_task_row(
+    conn: &rusqlite::Connection,
+    req: &OwnedCreateTaskRequest,
+    labels_json: Option<&str>,
+) -> Result<TaskId> {
+    let sub_status = SubStatus::default_for(req.status);
+    conn.execute(
+        "INSERT INTO tasks \
+         (title, description, repo_path, plan_path, status, sub_status, base_branch, \
+          epic_id, sort_order, tag, wrap_up_mode, auto_run_plan, phoenix, labels) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            req.title,
+            req.description,
+            req.repo_path,
+            req.plan,
+            req.status.as_str(),
+            sub_status.as_str(),
+            req.base_branch,
+            req.epic_id.map(|e| e.0),
+            req.sort_order,
+            req.tag.map(|t| t.as_str()),
+            req.wrap_up_mode.map(|m| m.as_str()),
+            req.auto_run_plan,
+            req.phoenix,
+            labels_json.unwrap_or("[]"),
+        ],
+    )
+    .context("Failed to insert task")?;
+    Ok(TaskId(conn.last_insert_rowid()))
+}
+
 #[async_trait::async_trait]
 impl super::super::TaskCrud for Database {
     async fn create_task(&self, req: CreateTaskRequest<'_>) -> Result<TaskId> {
         let req = OwnedCreateTaskRequest::from(req);
+        self.db_call(move |conn| insert_task_row(conn, &req, None))
+            .await
+    }
+
+    async fn respawn_phoenix_successor(
+        &self,
+        predecessor: TaskId,
+        req: CreateTaskRequest<'_>,
+        labels: &[String],
+    ) -> Result<TaskId> {
+        let req = OwnedCreateTaskRequest::from(req);
+        let labels_json = write_json_string_vec(labels)?;
         self.db_call(move |conn| {
-            let sub_status = SubStatus::default_for(req.status);
-            conn.execute(
-                "INSERT INTO tasks \
-                 (title, description, repo_path, plan_path, status, sub_status, base_branch, \
-                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan, phoenix) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    req.title,
-                    req.description,
-                    req.repo_path,
-                    req.plan,
-                    req.status.as_str(),
-                    sub_status.as_str(),
-                    req.base_branch,
-                    req.epic_id.map(|e| e.0),
-                    req.sort_order,
-                    req.tag.map(|t| t.as_str()),
-                    req.wrap_up_mode.map(|m| m.as_str()),
-                    req.auto_run_plan,
-                    req.phoenix,
-                ],
-            )
-            .context("Failed to insert task")?;
-            Ok(TaskId(conn.last_insert_rowid()))
+            let tx = conn.unchecked_transaction()?;
+            let successor_id = insert_task_row(&tx, &req, Some(&labels_json))
+                .context("Failed to insert phoenix successor")?;
+
+            let rows = tx
+                .execute(
+                    "UPDATE tasks SET phoenix = 0 WHERE id = ?1",
+                    params![predecessor.0],
+                )
+                .context("Failed to clear predecessor phoenix flag")?;
+            if rows == 0 {
+                anyhow::bail!("predecessor task {} not found", predecessor);
+            }
+
+            tx.commit()?;
+            Ok(successor_id)
         })
         .await
     }

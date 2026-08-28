@@ -153,6 +153,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (90, migrate_v90_drop_scheduling_fields),
     (91, migrate_v91_clamp_feed_intervals),
     (92, migrate_v92_add_phoenix),
+    (93, migrate_v93_fix_root_epic_feed_role_uniqueness),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -237,6 +238,53 @@ fn migrate_v77_add_auto_run_plan(conn: &Connection) -> Result<()> {
 pub(super) fn migrate_v92_add_phoenix(conn: &Connection) -> Result<()> {
     conn.execute_batch("ALTER TABLE tasks ADD COLUMN phoenix BOOLEAN NOT NULL DEFAULT 0")
         .context("Failed to add phoenix column to tasks")
+}
+
+/// v65's `idx_epics_parent_feed_role` indexes raw `parent_epic_id`, but SQLite
+/// treats every `NULL` in a unique index as distinct from every other `NULL` —
+/// so it never actually deduplicated root-level managed epics (those with no
+/// parent, e.g. `reviews-parent`/`cve`), only sub-epics. Rebuild it over
+/// `COALESCE(parent_epic_id, -1)` so root epics collide on `feed_role` too;
+/// -1 is never a real epic id (autoincrement rowids start at 1).
+///
+/// A database that already has duplicate root-level managed epics (only
+/// reachable by having lost the exact startup race this fixes, before it was
+/// fixed) would fail `CREATE UNIQUE INDEX`. Rather than delete or merge a
+/// user's epics automatically, skip index creation and warn — the existing
+/// duplicates are a pre-existing condition this migration does not make
+/// worse, and can be resolved manually.
+fn migrate_v93_fix_root_epic_feed_role_uniqueness(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "epics") || !column_exists(conn, "epics", "parent_epic_id") {
+        return Ok(());
+    }
+    conn.execute_batch("DROP INDEX IF EXISTS idx_epics_parent_feed_role;")
+        .context("Failed to drop old feed_role unique index (migration v93)")?;
+    let has_duplicates: bool = conn
+        .query_row(
+            "SELECT EXISTS (
+                 SELECT 1 FROM epics
+                 WHERE feed_role <> 'none'
+                 GROUP BY COALESCE(parent_epic_id, -1), feed_role
+                 HAVING COUNT(*) > 1
+             )",
+            [],
+            |r| r.get(0),
+        )
+        .context("Failed to check for duplicate managed epics (migration v93)")?;
+    if has_duplicates {
+        tracing::warn!(
+            "migration v93: found duplicate managed-role epics (same parent + feed_role); \
+             leaving idx_epics_parent_feed_role unbuilt rather than deleting data. \
+             Resolve manually by reassigning or clearing feed_role on the duplicates."
+        );
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_epics_parent_feed_role
+             ON epics(COALESCE(parent_epic_id, -1), feed_role)
+             WHERE feed_role <> 'none';",
+    )
+    .context("Failed to add fixed feed_role unique index (migration v93)")
 }
 
 fn migrate_v1_add_plan_column(conn: &Connection) -> Result<()> {

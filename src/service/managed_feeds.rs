@@ -142,15 +142,21 @@ async fn ensure_role_epic(
         return Ok(Some(epic.id));
     }
 
-    let created = db.create_epic(managed_role_title(role), "", parent).await?;
-    let mut patch = EpicPatch::new().feed_role(role);
-    if let Some(cmd) = command {
-        patch = patch
-            .feed_command(Some(cmd))
-            .feed_interval_secs(interval_secs);
-    }
-    db.patch_epic(created.id, &patch).await?;
-    Ok(Some(created.id))
+    // Single insert with feed_role set from the start: two instances racing
+    // to provision the same (parent, role) collide on the partial unique
+    // index, and the loser's insert re-selects the winner's row rather than
+    // leaving a `feed_role = 'none'` orphan behind (see
+    // EpicCrud::create_managed_role_epic).
+    let id = db
+        .create_managed_role_epic(
+            managed_role_title(role),
+            parent,
+            role,
+            command,
+            interval_secs,
+        )
+        .await?;
+    Ok(Some(id))
 }
 
 /// The four managed-feed settings, read from the settings table and fed to

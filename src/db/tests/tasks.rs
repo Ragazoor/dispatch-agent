@@ -244,6 +244,103 @@ async fn create_task_returning_with_plan() {
 }
 
 #[tokio::test]
+async fn respawn_phoenix_successor_creates_task_with_labels_in_one_insert() {
+    let db = in_memory_db().await;
+    let predecessor = db
+        .create_task(CreateTaskRequest {
+            title: "Weekly audit",
+            description: "d",
+            repo_path: "/repo",
+            plan: None,
+            status: TaskStatus::Done,
+            base_branch: "main",
+            epic_id: None,
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+            phoenix: true,
+        })
+        .await
+        .unwrap();
+
+    let labels = vec!["scala-common".to_string(), "security".to_string()];
+    let successor_id = db
+        .respawn_phoenix_successor(
+            predecessor,
+            CreateTaskRequest {
+                title: "Weekly audit",
+                description: "d",
+                repo_path: "/repo",
+                plan: None,
+                status: TaskStatus::Backlog,
+                base_branch: "main",
+                epic_id: None,
+                sort_order: None,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+                phoenix: true,
+            },
+            &labels,
+        )
+        .await
+        .unwrap();
+
+    let successor = db.get_task(successor_id).await.unwrap().unwrap();
+    assert_eq!(
+        successor.labels, labels,
+        "labels land as part of the single insert, not a follow-up patch"
+    );
+
+    let predecessor_task = db.get_task(predecessor).await.unwrap().unwrap();
+    assert!(
+        !predecessor_task.phoenix,
+        "the flag clears in the same transaction as the successor's creation"
+    );
+}
+
+#[tokio::test]
+async fn respawn_phoenix_successor_rolls_back_if_predecessor_is_gone() {
+    let db = in_memory_db().await;
+    // Far from any id sqlite would ever assign to the successor's own insert,
+    // so the UPDATE below cannot accidentally hit the just-inserted successor
+    // and must genuinely match zero rows.
+    let predecessor = TaskId(999_999);
+
+    let result = db
+        .respawn_phoenix_successor(
+            predecessor,
+            CreateTaskRequest {
+                title: "Weekly audit",
+                description: "d",
+                repo_path: "/repo",
+                plan: None,
+                status: TaskStatus::Backlog,
+                base_branch: "main",
+                epic_id: None,
+                sort_order: None,
+                tag: None,
+                wrap_up_mode: None,
+                auto_run_plan: false,
+                phoenix: true,
+            },
+            &[],
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "a predecessor that vanished mid-flight must fail the whole call"
+    );
+
+    let all = db.list_all().await.unwrap();
+    assert!(
+        all.is_empty(),
+        "no orphaned successor left behind when the transaction rolls back"
+    );
+}
+
+#[tokio::test]
 async fn patch_task_applies_all_fields() {
     let db = in_memory_db().await;
     let id = db

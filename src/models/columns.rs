@@ -347,6 +347,16 @@ mod derived_section_tests {
         assert_eq!(task_header_label(&t), "awaiting review");
     }
 
+    /// Sub-status is deliberately not part of the parked condition: with no PR
+    /// there is nothing for a conflict to be about either, so parked wins.
+    #[test]
+    fn parked_wins_over_conflict() {
+        let mut t = detached_review_task();
+        t.sub_status = SubStatus::Conflict;
+        assert_eq!(DerivedSection::for_task(&t), Some(DerivedSection::Parked));
+        assert_eq!(task_header_label(&t), "parked");
+    }
+
     /// Parked is defined by having no PR at all, so it dominates any review
     /// decision that was somehow recorded without one.
     #[test]

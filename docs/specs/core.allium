@@ -339,12 +339,13 @@ entity Task {
     is_crashed: sub_status = crashed
     is_detached: worktree != null and tmux_window = null
                  and status in {running, review}
-                 and sub_status != conflict
+    -- sub_status is deliberately not part of this condition, the same way it
+    -- is not part of Parked's (see "Derived review sections" above): a caller
+    -- that needs to treat conflict specially checks sub_status first (e.g.
+    -- the card indicator, which tests conflict before is_detached).
     -- A task that looks live but was never provisioned (or lost its
     -- provisioning), so there is nothing to resume. Mutually exclusive with
-    -- is_detached, which requires a worktree — but not its complement: a
-    -- running task with a worktree, no window and sub_status = conflict is
-    -- neither.
+    -- is_detached, which requires a worktree.
     -- Surfaced on the card by UnprovisionedIndicator in dispatch.allium.
     is_unprovisioned: worktree = null and tmux_window = null
                       and status in {running, review}
@@ -452,11 +453,21 @@ entity Epic {
     is_root: parent = null
     is_feed: feed_command != null
 
-    -- DB-level invariant from migration v65: at most one sub-epic per
-    -- (parent, feed_role) when feed_role != none. Ordinary epics
-    -- (feed_role = none) are exempt — any number may share a parent.
-    -- Enforced in the DB by a partial unique index on (parent_id, feed_role)
-    -- WHERE feed_role != 'none'.
+    -- DB-level invariant: at most one epic per (parent, feed_role) when
+    -- feed_role != none. Ordinary epics (feed_role = none) are exempt — any
+    -- number may share a parent. Enforced in the DB by a partial unique index
+    -- on (parent_id, feed_role) WHERE feed_role != 'none', indexed as
+    -- COALESCE(parent_id, -1) rather than raw parent_id (migration v93).
+    --
+    -- v65 built the index on raw parent_id and it never actually protected
+    -- root-level epics (reviews_parent, cve): SQLite treats every NULL in a
+    -- unique index as distinct from every other NULL, so two root epics with
+    -- the same feed_role and parent_id = null did not collide. v93 rebuilds
+    -- the index over COALESCE(parent_id, -1) so root epics collide too; -1 is
+    -- never a real epic id. A database that already held duplicate root-level
+    -- managed epics before v93 ran keeps them and runs without this index
+    -- (see ProvisionManagedEpics' race-safety note in epics.allium) — v93
+    -- warns rather than deleting or merging data it did not create.
     invariant UniqueFeedRolePerParent {
         for a in Epics:
             for b in Epics:
@@ -845,8 +856,10 @@ config {
 -- 1. VisualColumn indices (0–7): 8 sub-columns for task-status rendering,
 --    each corresponding to a (parent_status, sub_status) pair or set.
 --
--- 2. Navigation column indices (0–5): the h/l cursor positions. Running and
+-- 2. Navigation column indices (1–5): the h/l cursor positions. Running and
 --    Review sub-columns are grouped under a single navigation position each.
+--    The two spaces are offset by one: nav index 0 is not a column at all,
+--    and handlers handed it return without acting.
 --
 -- VisualColumn layout (task-status rendering, left to right):
 --
@@ -861,7 +874,7 @@ config {
 --       6 | Approved         | review        | approved
 --       7 | Done             | done          | none
 --
--- Review-column section order (within nav column 2, top to bottom). Sections are
+-- Review-column section order (within nav column 3, top to bottom). Sections are
 -- ordered by how much they need the user, most first. Two are derived rather
 -- than stored — see "Derived review sections" under SubStatus above:
 --
@@ -882,25 +895,25 @@ config {
 --
 --   nav# | Label            | kind         | vcol range
 --   -----+------------------+--------------+----------
---      0 | Backlog          | task-status  | vcol 0
---      1 | Running          | task-status  | vcols 1–3
---      2 | Review           | task-status  | vcols 4–6
---      3 | Done             | task-status  | vcol 7
---      4 | Archive          | edge         | —
+--      1 | Backlog          | task-status  | vcol 0
+--      2 | Running          | task-status  | vcols 1–3
+--      3 | Review           | task-status  | vcols 4–6
+--      4 | Done             | task-status  | vcol 7
+--      5 | Archive          | edge         | —
 --
 -- Edge column (Archive):
---   - Archive (nav index 4) is the rightmost navigation column. It is only
+--   - Archive (nav index 5) is the rightmost navigation column. It is only
 --     rendered when it has keyboard focus (dynamic visibility). When focused
 --     it shows archived tasks; when unfocused it is invisible.
 --   - The edge column has no parent_status or sub_statuses; it is
 --     outside the task-status model.
 --
 -- Navigation:
---   - h/l (or Left/Right) moves the cursor between nav indices 0–4.
---   - At nav index 0 (Backlog), h/Left is a no-op (already at leftmost edge).
---   - At nav index 4 (Archive), l/Right is a no-op (already at rightmost edge).
+--   - h/l (or Left/Right) moves the cursor between nav indices 1–5.
+--   - At nav index 1 (Backlog), h/Left is a no-op (already at leftmost edge).
+--   - At nav index 5 (Archive), l/Right is a no-op (already at rightmost edge).
 --   - h/Left closes the Archive column (navigates left to Done).
---   - In ViewMode::Epic the nav index is clamped to [0, 3]: Archive is not
+--   - In ViewMode::Epic the nav index is clamped to [1, 4]: Archive is not
 --     reachable from the epic view.
 --   - The edge column persists across data refreshes: a RefreshTasks event
 --     does not move the cursor out of the edge column.
@@ -930,9 +943,18 @@ config {
 --   - `gg`/`G` are pure aliases of `[`/`]`: they carry no new semantics.
 --     They share the same behaviour on an empty column (a no-op that
 --     leaves cursor/scroll/toggle untouched), the same release of the
---     select-all cursor position on a real move, and the same behaviour in the Archive edge
---     column and in ViewMode::Epic. Jump-to-top/bottom are available on
---     the main board and in epic view.
+--     select-all cursor position on a real move, and the same behaviour in
+--     ViewMode::Epic. Jump-to-top/bottom are available on the main board
+--     and in epic view.
+--   - The Archive edge column is OUTSIDE that parity. It has its own key
+--     handler with its own small binding set (j/k and Down/Up; h/Left/Esc
+--     to leave; `[`/`]`; x to delete; e to edit; q to quit) and every
+--     other key is ignored. `g` and `G` are among the ignored ones, so
+--     jump-to-top/bottom in the archive is reachable by `[`/`]` only —
+--     the `gg` chord never starts there, and `G` does nothing. When
+--     reached that way the jump moves the archive row cursor and no-ops on
+--     an empty archive, matching the task columns; it has no select-all
+--     toggle to release.
 --   - G/gg are deliberately scoped to the main board and epic view only.
 --     Overlays that bind g/Enter to their own actions (e.g. the Todos
 --     overlay's "jump to linked item") keep those bindings; this
@@ -959,8 +981,9 @@ config {
 --     resolves. This is a defensive simplification to stop a stale chord
 --     leaking across an unrelated view transition; it is not expected to
 --     be user-visible.
---   - `G` (jump-to-bottom) has no such conflict and no chord: it is a
---     direct, unconditional alias for `]`.
+--   - `G` (jump-to-bottom) has no such conflict and no chord: wherever it
+--     is bound it is a direct alias for `]`. It is bound on the main board
+--     and in epic view, and not in the Archive edge column.
 --
 -- `space` (jump to the selected task's tmux window, or enter the
 -- selected epic):
@@ -1000,13 +1023,16 @@ value VisualColumn {
 -- Every task-status navigation column has an identity colour, drawn from
 -- the palette and constant regardless of focus:
 --
---   nav# | Column   | identity colour
---   -----+----------+----------------
---      0 | Backlog  | BLUE
---      1 | Running  | YELLOW
---      2 | Review   | PURPLE
---      3 | Done     | GREEN
---      4 | Archive  | ARCHIVE_STRIPE (a muted blue-grey)
+--   Column   | identity colour
+--   ---------+----------------
+--   Backlog  | BLUE
+--   Running  | YELLOW
+--   Review   | PURPLE
+--   Done     | GREEN
+--   Archive  | ARCHIVE_STRIPE (a muted blue-grey)
+--
+-- Keyed by task status, not by nav index — see "Navigation column indices"
+-- above for the (1-indexed) index space this table does not use.
 --
 -- Archive's identity is its own token, not the palette's generic grey.
 -- MUTED is that generic grey — used for de-emphasised text throughout

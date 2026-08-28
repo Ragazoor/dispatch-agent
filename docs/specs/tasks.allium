@@ -51,9 +51,21 @@ rule CreateTask {
         -- single-keypress picker. The accepted keys are: b -> Bug,
         -- f -> Feature, c -> Chore, p -> PrReview, r -> Research,
         -- x -> Fix. Enter means no tag; Esc cancels creation. Any other
-        -- key is silently ignored and the picker stays open. Note the
-        -- picker's on-screen hint text currently advertises a different,
-        -- smaller key set than the handler accepts.
+        -- key is silently ignored and the picker stays open.
+        --
+        -- That accepted set is advertised by THREE separate hint strings, one
+        -- per surface the picker step is visible on, each a literal of its
+        -- own with nothing deriving it from the handler's match:
+        --   1. the transient status message set when the step is entered;
+        --   2. the input-panel form hint (the active line of the "New Task"
+        --      wizard panel);
+        --   3. the status-bar hint rendered while InputTag is the mode.
+        -- All three must advertise exactly the handler's accepted set,
+        -- b/f/c/p/r/x plus Enter for none, and no key outside it. Nothing
+        -- structural enforces the agreement — the drift this replaces was
+        -- two of the three offering an "[e]pic" key the handler never
+        -- accepted, and the status bar omitting p/r/x entirely — so a new tag
+        -- means editing all three sites and the handler.
         -- base_branch is set from user input during TUI task creation
         -- (InputBaseBranch step). That step renders the BaseBranchPicker
         -- surface (see dispatch.allium): a fuzzy picker over the branches
@@ -349,8 +361,18 @@ rule ConfirmDone {
         -- MoveEpicForward when entering done. PrClosed (also in
         -- pr-workflow.allium) is NOT one of these — a closed PR no longer
         -- transitions the task into done, so it does not touch sort_order.
-        -- Leaving done (MoveTaskBackward, ArchiveTask when the task was
-        -- done) clears task.sort_order back to null.
+        --
+        -- The clear is the general mirror of the set, not a per-rule opt-in:
+        -- ANY status write that takes a task out of done clears
+        -- task.sort_order back to null, and any write that brings it in sets
+        -- the rank. The pair is computed once from (prior, next) inside the
+        -- task-update seam every status write passes through, so it fires for
+        -- every such transition without each rule naming it. Named examples,
+        -- not an exhaustive list: MoveTaskBackward, ArchiveTask when the task
+        -- was done, ResumeTask's done -> running, and the MCP update_task tool
+        -- moving a done task to backlog, running or review
+        -- (mcp-task-tools.allium). A write where neither side is done (or both
+        -- are) leaves sort_order alone.
 }
 
 -- == Phoenix ==
@@ -486,6 +508,14 @@ rule PhoenixRespawn {
         -- epic back out of done, per EpicStatusRecalculation (epics.allium).
         -- That is correct — the epic genuinely has open work again — and it is
         -- the mechanism by which a recurring subtask keeps its epic alive.
+        --
+        -- Like CreateTask (above), when the inherited epic is a grouped root
+        -- (group_by_repo = true) the successor is routed to the matching
+        -- per-repo sub-epic via route_target, using repo_path as the routing
+        -- key, rather than landing in that root verbatim. repo_path and
+        -- plan_path are also re-resolved (tilde-expanded / canonicalised)
+        -- rather than copied as stored strings — again mirroring CreateTask's
+        -- own pre-processing of operator-supplied paths.
         --
         -- The successor is never auto-dispatched. AutoDispatchNextSubtask
         -- (epics.allium) skips phoenix subtasks outright, so a phoenix task
@@ -680,6 +710,14 @@ rule MoveTaskToEpic {
         -- on a task card (when `m` is pressed on an epic card it runs the
         -- epic ReparentEpic flow instead — see epics.allium). Operates on
         -- the single selected, non-archived task.
+        --
+        -- The non-archived precondition is enforced by the TUI input layer
+        -- (the `m` keybinding returns early for an archived task), not by the
+        -- handler itself — the same split as DeleteTask's archived-status
+        -- precondition below. The epic-existence precondition IS enforced by
+        -- the handler. Consequently the MCP relink path (update_task with an
+        -- epic_id, mcp-task-tools.allium) can move an archived task, since it
+        -- does not go through the keybinding.
         --
         -- A collapsible tree overlay lists only epics that are relevant
         -- targets: it excludes epics in Done or Archived status and epics
@@ -1055,7 +1093,7 @@ rule DeleteTask {
         -- right of Done. Press l from the Done column to reveal it; press
         -- h, Left, or Esc to return to Done. The archive is not shown as
         -- a regular kanban column — it appears as an overlay panel when
-        -- the virtual archive column (index 4) is selected.
+        -- the virtual archive column (nav index 5) is selected.
 }
 
 -- == Copy Task ==

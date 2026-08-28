@@ -46,6 +46,53 @@ async fn create_repo_group_sub_epic_is_idempotent_and_unarchives() {
 }
 
 #[tokio::test]
+async fn create_managed_role_epic_is_idempotent() {
+    let db = crate::db::Database::open_in_memory().await.unwrap();
+
+    let a1 = db
+        .create_managed_role_epic(
+            "PR Reviews",
+            None,
+            crate::models::FeedRole::ReviewsParent,
+            Some("/scripts/fetch-reviews.sh"),
+            Some(300),
+        )
+        .await
+        .unwrap();
+    let a2 = db
+        .create_managed_role_epic(
+            "PR Reviews",
+            None,
+            crate::models::FeedRole::ReviewsParent,
+            Some("/scripts/fetch-reviews.sh"),
+            Some(300),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        a1, a2,
+        "a lost race on (parent, feed_role) must be a no-op, not a duplicate"
+    );
+
+    let epic = db.get_epic(a1).await.unwrap().unwrap();
+    assert_eq!(epic.feed_role, crate::models::FeedRole::ReviewsParent);
+    assert_eq!(
+        epic.feed_command.as_deref(),
+        Some("/scripts/fetch-reviews.sh")
+    );
+    assert_eq!(epic.feed_interval_secs, Some(300));
+
+    let all = db.list_epics().await.unwrap();
+    assert_eq!(
+        all.iter()
+            .filter(|e| e.feed_role == crate::models::FeedRole::ReviewsParent)
+            .count(),
+        1,
+        "no orphaned untagged epic left behind by the lost race"
+    );
+}
+
+#[tokio::test]
 async fn create_epic_defaults_feed_role_none() {
     let db = in_memory_db().await;
     let epic = db.create_epic("E", "", None).await.unwrap();

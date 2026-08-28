@@ -8,9 +8,10 @@ use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 
 use crate::models::{
-    Epic, EpicId, FeedItem, Learning, LearningId, LearningKind, LearningRetrieval, LearningScope,
-    LearningStatus, LearningVerdict, RetrievalSource, ShellDrain, StopOutcome, SubStatus,
-    SubagentDrain, Task, TaskId, TaskStatus, TaskTag, Todo, TodoId, UserPromptOutcome, WrapUpMode,
+    Epic, EpicId, FeedItem, FeedRole, Learning, LearningId, LearningKind, LearningRetrieval,
+    LearningScope, LearningStatus, LearningVerdict, RetrievalSource, ShellDrain, StopOutcome,
+    SubStatus, SubagentDrain, Task, TaskId, TaskStatus, TaskTag, Todo, TodoId, UserPromptOutcome,
+    WrapUpMode,
 };
 
 /// Number of decode soft-fails since process start: unknown enum values that
@@ -203,6 +204,17 @@ pub trait TaskRead: Send + Sync {
 #[async_trait::async_trait]
 pub trait TaskCrud: TaskRead {
     async fn create_task(&self, req: CreateTaskRequest<'_>) -> Result<TaskId>;
+    /// `PhoenixRespawn`, made atomic: inserts the successor (with `labels` set
+    /// directly, not a follow-up patch) and clears `predecessor`'s `phoenix`
+    /// flag in one transaction. Either both happen or neither does — a failure
+    /// rolls back the insert too, so `TheFlagIsTheReceipt` holds literally and
+    /// a retry after a failure cannot create a second successor.
+    async fn respawn_phoenix_successor(
+        &self,
+        predecessor: TaskId,
+        req: CreateTaskRequest<'_>,
+        labels: &[String],
+    ) -> Result<TaskId>;
     async fn delete_task(&self, id: TaskId) -> Result<()>;
     async fn patch_task(&self, id: TaskId, patch: &TaskPatch<'_>) -> Result<()>;
     /// Atomically set `pr_learnings_gate_shown_at` to now if it is currently null.
@@ -472,6 +484,19 @@ pub trait EpicCrud: EpicRead {
     /// Race-safe via the partial unique index; reuses (and unarchives) an
     /// existing match rather than creating a duplicate.
     async fn create_repo_group_sub_epic(&self, parent_id: EpicId, title: &str) -> Result<EpicId>;
+    /// Create a managed-feed-role epic in a single insert, `feed_role` set from
+    /// the start. Race-safe via the partial unique index on
+    /// `(parent_epic_id, feed_role)`: a lost race re-selects and returns the
+    /// winner's id rather than leaving an orphaned, untagged epic behind — see
+    /// [`Self::create_repo_group_sub_epic`] for the same pattern.
+    async fn create_managed_role_epic(
+        &self,
+        title: &str,
+        parent_epic_id: Option<EpicId>,
+        role: FeedRole,
+        feed_command: Option<&str>,
+        feed_interval_secs: Option<i64>,
+    ) -> Result<EpicId>;
     async fn patch_epic(&self, id: EpicId, patch: &EpicPatch<'_>) -> Result<()>;
     async fn delete_epic(&self, id: EpicId) -> Result<()>;
     async fn set_task_epic_id(&self, task_id: TaskId, epic_id: Option<EpicId>) -> Result<()>;

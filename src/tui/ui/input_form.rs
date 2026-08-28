@@ -169,7 +169,7 @@ pub(in crate::tui) fn input_tag_lines(app: &App, styles: &FormStyles) -> Vec<Lin
             styles.completed,
         )),
         Line::from(Span::styled(
-            "  Tag: [b]ug  [f]eature  [c]hore  [e]pic  [p]r-review  [r]esearch  [x]fix  [Enter] none",
+            "  Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none",
             styles.active,
         )),
         Line::from(""),

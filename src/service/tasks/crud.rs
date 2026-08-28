@@ -438,6 +438,23 @@ impl TaskService {
         Ok(Some(ss))
     }
 
+    /// Expand `~` in a repo path and canonicalise a plan path, the same
+    /// operator-supplied-path pre-processing every task creation does — shared
+    /// by `create_task_returning` and `respawn_phoenix` so a future change to
+    /// path handling can't update one call site and silently skip the other.
+    fn normalize_repo_and_plan(
+        repo_path: &str,
+        plan_path: Option<&str>,
+    ) -> (String, Option<String>) {
+        let repo_path = crate::models::expand_tilde(repo_path);
+        let plan = plan_path.map(|p| {
+            std::fs::canonicalize(p)
+                .map(|abs| abs.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| p.to_string())
+        });
+        (repo_path, plan)
+    }
+
     /// Resolve the actual epic a task should land in: if `epic_id` targets a
     /// group_by_repo (non-feed) epic, route into its per-repo sub-epic; else
     /// return `epic_id` unchanged. `None` stays `None`.
@@ -519,13 +536,8 @@ impl TaskService {
         &self,
         params: CreateTaskParams,
     ) -> Result<Task, ServiceError> {
-        let repo_path = crate::models::expand_tilde(&params.repo_path);
-
-        let plan = params.plan_path.as_deref().map(|p| {
-            std::fs::canonicalize(p)
-                .map(|abs| abs.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| p.to_string())
-        });
+        let (repo_path, plan) =
+            Self::normalize_repo_and_plan(&params.repo_path, params.plan_path.as_deref());
 
         let base_branch = params.base_branch.as_deref().unwrap_or(DEFAULT_BASE_BRANCH);
 
@@ -603,26 +615,19 @@ impl TaskService {
             return;
         }
 
-        let successor = self
-            .create_task_returning(CreateTaskParams {
-                title: task.title.clone(),
-                description: task.description.clone(),
-                repo_path: task.repo_path.clone(),
-                plan_path: task.plan_path.clone(),
-                epic_id: task.epic_id,
-                // Left unset so the copy sorts by its own id, at the bottom of
-                // backlog, rather than inheriting a position in a column the
-                // predecessor has left.
-                sort_order: None,
-                tag: task.tag,
-                base_branch: Some(task.base_branch.clone()),
-                wrap_up_mode: task.wrap_up_mode,
-                auto_run_plan: task.auto_run_plan,
-                phoenix: true,
-            })
-            .await;
-        let successor = match successor {
-            Ok(t) => t,
+        // Mirrors `create_task_returning`'s own pre-processing (repo-group
+        // routing, and path normalisation via the same shared helper), but
+        // the actual writes go through `respawn_phoenix_successor` instead of
+        // `create_task` so the successor's creation and the predecessor's
+        // flag clear land in one transaction — see that method's doc comment
+        // for why: `TheFlagIsTheReceipt` needs to be literally atomic, not
+        // just usually true, or a failure between the two steps leaves a
+        // landed successor with the flag still set, and re-entering Done
+        // creates a second one.
+        let (repo_path, plan) =
+            Self::normalize_repo_and_plan(&task.repo_path, task.plan_path.as_deref());
+        let effective_epic_id = match self.resolve_routed_epic(task.epic_id, &repo_path).await {
+            Ok(id) => id,
             Err(e) => {
                 tracing::error!(
                     task_id = task_id.0,
@@ -633,29 +638,41 @@ impl TaskService {
             }
         };
 
-        // `labels` has no field on `CreateTaskRequest` — only the feed upsert
-        // writes it at insert time — so it is carried across as a follow-up
-        // patch. Skipped entirely for the empty vec every hand-created task has.
-        if !task.labels.is_empty() {
-            if let Err(e) = self
-                .db
-                .patch_task(successor.id, &db::TaskPatch::new().labels(&task.labels))
-                .await
-            {
-                tracing::error!(task_id = successor.id.0, error = %e, "phoenix respawn: labels not carried");
-            }
-        }
-
-        if let Err(e) = self
+        let successor_id = self
             .db
-            .patch_task(task_id, &db::TaskPatch::new().phoenix(false))
-            .await
-        {
+            .respawn_phoenix_successor(
+                task_id,
+                CreateTaskRequest {
+                    title: &task.title,
+                    description: &task.description,
+                    repo_path: &repo_path,
+                    plan: plan.as_deref(),
+                    status: TaskStatus::Backlog,
+                    base_branch: &task.base_branch,
+                    epic_id: effective_epic_id,
+                    // Left unset so the copy sorts by its own id, at the
+                    // bottom of backlog, rather than inheriting a position in
+                    // a column the predecessor has left.
+                    sort_order: None,
+                    tag: task.tag,
+                    wrap_up_mode: task.wrap_up_mode,
+                    auto_run_plan: task.auto_run_plan,
+                    phoenix: true,
+                },
+                &task.labels,
+            )
+            .await;
+        if let Err(e) = successor_id {
             tracing::error!(
                 task_id = task_id.0,
                 error = %e,
-                "phoenix respawn: successor created but the flag was not cleared"
+                "phoenix respawn failed; the task stays Done and keeps its flag"
             );
+            return;
+        }
+
+        if let Some(eid) = effective_epic_id {
+            self.recalculate_epic(eid).await;
         }
     }
 

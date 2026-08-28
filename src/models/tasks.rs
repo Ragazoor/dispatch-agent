@@ -424,12 +424,10 @@ pub struct Task {
 
 impl Task {
     /// Whether this task has a worktree but no tmux window (agent session ended).
-    /// Excludes conflict state which is handled separately.
     pub fn is_detached(&self) -> bool {
         self.worktree.is_some()
             && self.tmux_window.is_none()
             && matches!(self.status, TaskStatus::Running | TaskStatus::Review)
-            && self.sub_status != SubStatus::Conflict
     }
 
     /// Whether this task looks live but has nothing behind it: Running/Review

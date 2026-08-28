@@ -182,6 +182,53 @@ impl super::super::EpicCrud for Database {
         .await
     }
 
+    async fn create_managed_role_epic(
+        &self,
+        title: &str,
+        parent_epic_id: Option<EpicId>,
+        role: crate::models::FeedRole,
+        feed_command: Option<&str>,
+        feed_interval_secs: Option<i64>,
+    ) -> Result<EpicId> {
+        let title = title.to_string();
+        let role_str = role.as_str();
+        let feed_command = feed_command.map(|c| c.to_string());
+        self.db_call(move |conn| {
+            match conn.execute(
+                "INSERT INTO epics \
+                     (title, description, parent_epic_id, auto_dispatch, feed_role, feed_command, feed_interval_secs) \
+                 VALUES (?1, '', ?2, 0, ?3, ?4, ?5)",
+                params![
+                    title,
+                    parent_epic_id.map(|e| e.0),
+                    role_str,
+                    feed_command,
+                    feed_interval_secs,
+                ],
+            ) {
+                Ok(_) => Ok(EpicId(conn.last_insert_rowid())),
+                // Lost a race: another writer inserted the same (parent,role)
+                // first. The partial unique index rejected us — re-select and
+                // return the winner's id, a true no-op.
+                Err(rusqlite::Error::SqliteFailure(e, _))
+                    if e.code == rusqlite::ErrorCode::ConstraintViolation =>
+                {
+                    let id = conn
+                        .query_row(
+                            "SELECT id FROM epics \
+                             WHERE parent_epic_id IS ?1 AND feed_role = ?2",
+                            params![parent_epic_id.map(|e| e.0), role_str],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .context("re-select after unique violation")?;
+                    Ok(EpicId(id))
+                }
+                Err(e) => Err(anyhow::Error::from(e).context("insert managed-role epic")),
+            }
+        })
+        .await
+    }
+
     async fn patch_epic(&self, id: EpicId, patch: &EpicPatch<'_>) -> Result<()> {
         if !patch.has_changes() {
             return Ok(());

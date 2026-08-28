@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3d445b32e64ecf6c11a5784c8495c6e0e7007d9c89a0c4e685c56d5e8f1252a6 # shrinks to sort_order = None
+cc eee4fccf25848db68cdf96d50eaf72c7c2d85190583cd2349216b5f32f7b47ac # shrinks to title = None, description = None, repo_path = None, base_branch = None, plan_path = None, worktree = None, tmux_window = None, url = None, external_id = None

@@ -1742,13 +1742,15 @@ fn is_detached_returns_false_with_window() {
     assert!(!task.is_detached());
 }
 
+/// `is_detached` no longer special-cases conflict — callers that need to
+/// treat conflict separately (e.g. card rendering) check `sub_status` first.
 #[test]
-fn is_detached_returns_false_for_conflict() {
+fn is_detached_returns_true_for_conflict() {
     let mut task = make_task(1, TaskStatus::Running);
     task.sub_status = SubStatus::Conflict;
     task.worktree = Some("/repo/.worktrees/1-fix".to_string());
     task.tmux_window = None;
-    assert!(!task.is_detached());
+    assert!(task.is_detached());
 }
 
 #[test]

@@ -4958,6 +4958,26 @@ async fn the_successor_inherits_the_operators_settings_and_none_of_the_run() {
     );
 }
 
+/// Labels land as part of the successor's own creation, not a follow-up patch
+/// that could fail independently and silently drop them.
+#[tokio::test]
+async fn the_successor_inherits_labels() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+    let labels = vec!["scala-common".to_string(), "security".to_string()];
+    db.patch_task(id, &db::TaskPatch::new().labels(&labels))
+        .await
+        .unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    let s = successor_of(&db, id).await.unwrap();
+    assert_eq!(s.labels, labels);
+}
+
 #[tokio::test]
 async fn an_ordinary_task_entering_done_spawns_nothing() {
     let db = test_db().await;

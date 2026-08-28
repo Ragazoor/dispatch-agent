@@ -191,7 +191,7 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::InputRepoPath => hint("Creating task: enter repo path", YELLOW),
         InputMode::InputTag => hint_text(
             app,
-            "Tag: [b]ug  [f]eature  [c]hore  [e]pic  [Enter] none",
+            "Tag: [b]ug  [f]eature  [c]hore  [p]r-review  [r]esearch  [x]fix  [Enter] none",
             YELLOW,
         ),
         InputMode::ConfirmDelete => hint_text(app, "Delete? [y/n]", RED),

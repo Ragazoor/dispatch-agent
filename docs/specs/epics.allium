@@ -129,6 +129,11 @@ rule CreateEpic {
         if feed_interval_secs != null:
             seconds(feed_interval_secs) >= core/config.min_feed_interval
 
+    -- parent, when given, must refer to an existing epic. Checked before the
+    -- insert, so a bad parent yields a not-found error and no epic at all.
+    requires:
+        if parent != null: core/Epic.exists(parent)
+
     ensures: core/Epic.created(
         title: title,
         description: description,
@@ -141,10 +146,21 @@ rule CreateEpic {
         updated_at: now
     )
 
+    -- A new backlog child changes the parent's active_sub_epics set, so the
+    -- parent is recalculated immediately after the insert (e.g. a Done parent
+    -- with a freshly-attached Backlog child regresses right away).
+    ensures:
+        if parent != null: RecalculateEpicStatus(parent)
+
     @guidance
         -- Invariant: the returned Epic reflects every field the caller
         -- supplied. A caller must never see an Epic reporting a field as
         -- unset when it passed a value for it.
+        --
+        -- CreateEpicViaMcp (below) is not a second implementation: both rules
+        -- witness the one service entry point, which is where the
+        -- parent-existence check and the parent recalculation live. The two
+        -- rules differ only in which parameters the surface exposes.
         --
         -- Known implementation limitation (not design intent): the current
         -- insert cannot express sort_order, feed_command or
@@ -932,9 +948,13 @@ rule ToggleGroupByRepo {
         -- For feed epics the flag still flips but no migration fires
         -- SYNCHRONOUSLY from the keypress: repo-grouping is driven by the feed
         -- ingestion itself, so triggering a migration directly from the toggle
-        -- would duplicate that code path. RegroupEpic and FlattenEpic carry
-        -- their own requires: epic.feed_command = null, so they are never
-        -- reached for a feed epic even though the toggle is permitted.
+        -- would duplicate that code path. The non-feed guard lives HERE, in
+        -- this toggle handler, and nowhere else: it re-reads the epic after the
+        -- flag write and only calls RegroupEpic/FlattenEpic when
+        -- feed_command = null. The two migration rules do not re-check it
+        -- themselves (see their own guidance), so a feed epic is spared a
+        -- migration because this caller declines to ask for one, not because
+        -- the migration would refuse.
         -- Instead, BOTH directions are reconciled on the NEXT feed sync (auto
         -- poll or manual "r"), not synchronously on toggle:
         --   * turning ON  → GroupedFeedUpsert migrates pre-existing flat tasks
@@ -955,9 +975,23 @@ rule RegroupEpic {
     ensures:
         for task in epic.subtasks where task.status != archived:
             task.epic = route_target(epic, task.repo_path)
+            RecalculateEpicStatus(task.epic)
     ensures: RecalculateEpicStatus(epic)
 
     @guidance
+        -- Each destination sub-epic is recalculated as tasks land in it (not
+        -- only the grouped root): a sub-epic that just received tasks must
+        -- leave done/archived if it had settled there empty.
+        --
+        -- Both preconditions above are enforced by the TUI caller
+        -- (ToggleGroupByRepo, which flips the flag and then picks
+        -- RegroupEpic vs FlattenEpic by its new value, and only for a
+        -- non-feed epic), not by the handler itself: the migration is an
+        -- unconditional walk over the epic's tasks. Same precedent as
+        -- DeleteTask's archived-status precondition (tasks.allium).
+        -- There is no second caller today; a new one would have to
+        -- re-establish both guards for itself.
+        --
         -- route_target(epic, repo_path) returns the existing per-repo
         -- sub-epic for that repo path, creating one (with origin =
         -- repo_group) if none exists yet. The sub-epic title is derived
@@ -995,10 +1029,26 @@ rule FlattenEpic {
             for task in sub.subtasks: task.epic = epic
             -- (sub.subtasks.count evaluated after the task-move above, i.e. post-state)
             -- reduces to: sub had no nested sub-epics and all its tasks were just moved out.
-            if sub.subtasks.count = 0 and sub.sub_epics.count = 0: DeleteEpic(sub)
+            if sub.subtasks.count = 0 and sub.sub_epics.count = 0:
+                DeleteEpic(sub)
+            else:
+                RecalculateEpicStatus(sub)
     ensures: RecalculateEpicStatus(epic)
 
     @guidance
+        -- Every one of the sub-epic's own direct tasks is moved to the root
+        -- before the emptiness check runs, so the only way it is left
+        -- non-empty (DeleteEpic skipped) is nested sub-epics of its own —
+        -- flatten_epic re-homes only direct tasks, one level. A sub-epic left
+        -- non-empty this way IS still recalculated (the same shared cleanup
+        -- helper recalculates whichever branch it takes: delete, or
+        -- recalculate-and-keep), so its status reflects the tasks it just
+        -- lost even though it survives.
+        --
+        -- As with RegroupEpic, both preconditions above are enforced by the
+        -- TUI caller (ToggleGroupByRepo), not by the handler itself: the
+        -- re-home walk runs unconditionally on whatever epic it is handed.
+        --
         -- Moves all tasks from repo-group sub-epics back to the parent
         -- epic. Only non-archived sub-epics (origin = repo_group) are
         -- affected; sub-epics the user created manually are left alone.
@@ -1155,11 +1205,19 @@ rule ProvisionManagedEpics {
         -- provisioning expects them: each role is looked up as
         -- (feed_role, expected parent), and the
         -- core/Epic.UniqueFeedRolePerParent invariant (a partial unique
-        -- index on (parent, feed_role) WHERE feed_role != none) makes a
-        -- duplicate AT THAT SAME PARENT physically impossible. Two instances
-        -- starting up concurrently therefore cannot both insert the same role
-        -- sub-epic — the second insert loses to the unique index and is
-        -- a no-op rather than a duplicate.
+        -- index on (parent, feed_role) WHERE feed_role != none, keyed as
+        -- COALESCE(parent, -1) so root-level roles collide too — see that
+        -- invariant in core.allium for why) makes a duplicate AT THAT SAME
+        -- PARENT physically impossible. Two instances starting up
+        -- concurrently therefore cannot both insert the same role sub-epic:
+        -- `EpicCrud::create_managed_role_epic` inserts feed_role in the same
+        -- statement as the row itself, and the second insert loses to the
+        -- unique index and re-selects the winner rather than creating a
+        -- duplicate. The one exception is a database that already held
+        -- duplicate managed epics before the index was fixed to be
+        -- NULL-safe — that index was never built for it, so its
+        -- provisioning stays unprotected until the duplicates are resolved
+        -- manually.
         --
         -- Reparenting caveat (known consequence of the parent half of the
         -- key). Idempotency is NOT position-independent. If a user reparents
