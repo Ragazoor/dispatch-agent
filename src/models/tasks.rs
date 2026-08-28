@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc}; // PROBE-MARKER-2
 use serde::{Deserialize, Serialize};
 
 use super::{EpicId, UrlType};
@@ -558,6 +558,51 @@ where
         }
     }
     Ok(signals)
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn default_task_has_sensible_placeholder_values() {
+        let task = Task::default();
+        assert_eq!(task.id, TaskId(0));
+        assert_eq!(task.title, "");
+        assert_eq!(task.description, "");
+        assert_eq!(task.repo_path, "/repo");
+        assert_eq!(task.status, TaskStatus::Backlog);
+        assert_eq!(task.sub_status, SubStatus::None);
+        assert_eq!(task.base_branch, "main");
+        assert!(task.labels.is_empty());
+        assert!(task.worktree.is_none());
+        assert!(task.tmux_window.is_none());
+        assert!(task.plan_path.is_none());
+        assert!(task.epic_id.is_none());
+        assert!(task.url.is_none());
+        assert!(task.tag.is_none());
+        assert!(task.sort_order.is_none());
+        assert!(task.external_id.is_none());
+        assert!(task.last_pre_tool_use_at.is_none());
+        assert!(task.last_notification_at.is_none());
+        assert!(task.last_peer_message_sent_at.is_none());
+        assert!(task.last_peer_message_received_at.is_none());
+        assert!(task.wrap_up_mode.is_none());
+        assert!(!task.auto_run_plan);
+        assert!(!task.phoenix);
+        assert_eq!(task.live_subagents, 0);
+        assert!(!task.stop_pending);
+        assert_eq!(task.live_shells, 0);
+        assert!(task.oldest_live_shell_started_at.is_none());
+    }
+}
+
+#[cfg(test)]
+mod default_tests_marker_check {
+    #[test]
+    fn marker() {
+        assert!(true);
+    }
 }
 
 // ---------------------------------------------------------------------------
