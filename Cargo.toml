@@ -29,9 +29,22 @@ tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
 tui-tree-widget = "0.23"
-fastembed = "5"
-sha2 = "0.10"
-ignore = "0.4"
+# Task #4447: `default-features = false` drops two-thirds of the build tree, so
+# keep it off when bumping the major — re-enabling defaults silently restores both:
+#   - `image-models`: we only ever construct a `TextEmbedding`
+#     (`src/service/embeddings.rs`), so the `image` crate and its encoder subtree
+#     (ravif/rav1e/…) is pure build-time weight.
+#   - `hf-hub-native-tls`: hf-hub's `native-tls` hard-enables `dep:reqwest`, which
+#     the model download never uses — it goes over `ureq`. The rustls variants
+#     below leave `reqwest` optional and unselected.
+# Consequence of rustls: the one-time model/ort download trusts bundled
+# `webpki-roots`, not the OS trust store, so an OS-installed corporate CA is
+# ignored. `cargo test` cannot catch a regression here — every test builds the
+# `new_noop` stub, so the real download path is only exercised by running the app.
+fastembed = { version = "5", default-features = false, features = [
+    "ort-download-binaries-rustls-tls",
+    "hf-hub-rustls-tls",
+] }
 
 [dev-dependencies]
 insta = "1"
