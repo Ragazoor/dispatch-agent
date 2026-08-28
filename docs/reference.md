@@ -405,6 +405,54 @@ Some tmux configs don't forward the modifier on arrow keys unless `xterm-keys` i
 on. Either add `set -g xterm-keys on` to your `~/.tmux.conf`, or use the
 modifier-free fallbacks `Alt+←`/`Alt+→` or readline-style `Alt+B`/`Alt+F`.
 
+### Sandbox (historical)
+
+**Dispatch-spawned sessions no longer run under Claude Code's sandbox** (see
+`SandboxDisabledForDockerAndUnixSockets` in `docs/specs/dispatch.allium`), so
+none of this applies to a dispatched agent's normal `cargo test` run. It still
+applies if you enable Claude Code's sandbox yourself outside of dispatch (e.g.
+in your own `~/.claude/settings.json`), or if you're running against a stale
+`~/.claude/dispatch-statusline.json` from before that change.
+
+**Under the sandbox, `tmux_*` test targets fail rather than skip.** `tmux` *is*
+on `PATH`, so the "tmux not available" skip never fires; the harness starts a
+server, the sandbox blocks the unix socket, and every test in the target dies
+with `error connecting to /tmp/tmux-<uid>/… (Operation not permitted)`. `cargo
+test` then stops at that target — `tests/tmux_editor_pane.rs` is an early one —
+leaving the six later targets unrun. That is the sandbox, not your change:
+re-run with the sandbox disabled, and add `--no-fail-fast` so one blocked
+target can't hide the rest.
+
+**`apply-seccomp: unshare(CLONE_NEWUSER): Invalid argument` is the sandbox, not
+your command.** A plain `grep`/`ls`/`cargo` can die with that string and no
+output. It names neither the sandbox nor a path, and it fires intermittently
+on commands that are otherwise perfectly sandbox-safe — retry, or re-run with
+the sandbox disabled, but don't go hunting for what you touched. Redirect
+targets need the same care: bare `/tmp` is not writable and `$TMPDIR` isn't
+reliably expanded, so `mkdir -p /tmp/claude-1000/<something>` first.
+
+**`git fetch`/`git push` over an SSH remote used to fail under the sandbox**
+even with `github.com`/`api.github.com` in `sandbox.network.allowedDomains` —
+that allowlist matches HTTP(S) domains, not SSH hosts, so an SSH remote (e.g. a
+custom `~/.ssh/config` alias) was blocked regardless. Fixed at the time by
+adding `git fetch *`/`git push *` to `sandbox.excludedCommands`; that exception
+(along with the one below) is now moot since dispatch-spawned sessions don't
+run under the sandbox at all. Still relevant if you enable Claude Code's
+sandbox yourself outside of dispatch: a session running against a stale
+`~/.claude/dispatch-statusline.json` from before that change still hits a
+`socat`/gateway error on `git fetch origin main` and needs the sandbox
+disabled to work around it.
+
+**Gradle builds resolving from GCP Artifact Registry (e.g.
+`europe-west1-maven.pkg.dev`) used to fail under the sandbox** even for repos
+using the `artifactregistry-gradle-plugin` — `*.pkg.dev` wasn't in
+`sandbox.network.allowedDomains`, and `~/.config/gcloud` (needed for the
+plugin's `gcloud auth print-access-token` call) was in the credential
+read-deny list. Fixed at the time by adding `*.pkg.dev` to `allowedDomains`
+and removing `~/.config/gcloud` from the deny list; those exceptions are now
+moot for the same reason as above. Same stale-`dispatch-statusline.json`
+caveat applies if you enable the sandbox yourself outside of dispatch.
+
 ## Learning Store
 
 Dispatch maintains a learning store — approved knowledge that is injected into agent prompts automatically and can be queried or recorded via MCP tools.

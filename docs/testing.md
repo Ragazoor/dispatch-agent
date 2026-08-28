@@ -1,8 +1,10 @@
 # Testing
 
 Everything about running, writing, and placing tests in this repo. `CLAUDE.md`
-keeps only the two facts that change what you type at the prompt (the suite
-needs `tmux`; never pipe `cargo test` into `tail`); the rest lives here.
+keeps only the facts that change what you type at the prompt or how you wait
+for it (the suite needs `tmux`; never pipe `cargo test` into `tail`; the lib
+target runs in ~10s, a cold full run in ~80s, so run it in the foreground);
+the rest lives here.
 
 ## Running tests
 
@@ -160,6 +162,6 @@ CI's `coverage` job runs `cargo tarpaulin --engine llvm --out xml --out stdout -
 
 **The engine is part of the measurement.** On the same tree, `--engine llvm` scored 90.28% (14846/16445 lines) and the default `Auto` engine 88.54% — a ~1.8-point instrumentation difference with no code change behind it. The floor is calibrated against llvm, which is why CI pins it; quote the engine whenever you quote a number, and don't compare a local default-engine run against the CI floor.
 
-The floor is 88, deliberately ~2 points below the measured figure (90.28%, 2026-08-16). It is a regression tripwire, not a target: raise it by hand when a step-change in coverage makes the headroom pointless, never automatically to whatever the last run scored. Don't chase 100% on render-heavy code or `src/setup/`'s OS-interaction branches (hooks, filesystem writes) — a single file below the average is not by itself a problem.
+The floor is 88, deliberately ~2 points below the measured figure (91.56%, 2026-08-28). It is a regression tripwire, not a target: raise it by hand when a step-change in coverage makes the headroom pointless, never automatically to whatever the last run scored. Don't chase 100% on render-heavy code or `src/setup/`'s OS-interaction branches (hooks, filesystem writes) — a single file below the average is not by itself a problem.
 
 Coverage is not in the pre-push hook; every *other* CI gate is, and `tests/ci_gates.rs` asserts the hook's script list and the workflow's stay in sync.

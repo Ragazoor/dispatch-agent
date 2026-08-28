@@ -12,21 +12,17 @@ cargo test
 cargo run -- tui
 ```
 
-**This repo's verify command is `cargo test`** — the thing every dispatched agent must run green before declaring work complete.
+**This repo has a verify command every dispatched agent must run green before declaring work complete — read it from `get_task`'s *Verify command* line, never from this file.** See "Verify Command" below.
 
-**Dispatch-spawned sessions no longer run under Claude Code's sandbox** (as of task #4373) — Docker-based test suites (Testcontainers etc.) need Unix-socket access to the Docker daemon, which the sandbox has no way to grant narrower than an all-or-nothing switch, so `sandbox.enabled` in `~/.claude/dispatch-statusline.json` is now `false` for every dispatch-spawned session. See `SandboxDisabledForDockerAndUnixSockets` in `docs/specs/dispatch.allium`. The sandbox notes below describe past sandbox-specific failures and still apply if you've enabled Claude Code's sandbox yourself outside of dispatch (e.g. in your own `~/.claude/settings.json`), or if you're running against a stale `dispatch-statusline.json` from before this change.
+**Dispatch-spawned sessions do not run under Claude Code's sandbox** — see `SandboxDisabledForDockerAndUnixSockets` in `docs/specs/dispatch.allium`. If you've enabled the sandbox yourself outside of dispatch, see "Sandbox (historical)" in [docs/reference.md](docs/reference.md).
 
 **The full suite needs `tmux` on `PATH`.** Without it the `tmux_*` targets print `skipping: tmux not available on PATH` and pass, so a green local run isn't proof they ran.
 
-**Under the sandbox those targets fail rather than skip.** `tmux` *is* on `PATH`, so the skip never fires; the harness starts a server, the sandbox blocks the unix socket, and every test in the target dies with `error connecting to /tmp/tmux-<uid>/… (Operation not permitted)`. `cargo test` then stops at that target — `tests/tmux_editor_pane.rs` is an early one — leaving the six later targets unrun. That is the sandbox, not your change: re-run with the sandbox disabled, and add `--no-fail-fast` so one blocked target can't hide the rest.
-
 **Don't pipe `cargo test` into `tail`/`head`/`grep`.** A pipeline's exit code is the last command's, so a failing suite reads as a clean pass. Redirect instead: `cargo test > /tmp/t.txt 2>&1; echo $?`.
 
-**`apply-seccomp: unshare(CLONE_NEWUSER): Invalid argument` is the sandbox, not your command.** A plain `grep`/`ls`/`cargo` can die with that string and no output. It names neither the sandbox nor a path, and it fires intermittently on commands that are otherwise perfectly sandbox-safe — retry, or re-run with the sandbox disabled, but don't go hunting for what you touched. Redirect targets need the same care: bare `/tmp` is not writable and `$TMPDIR` isn't reliably expanded, so `mkdir -p /tmp/claude-1000/<something>` first.
+**The lib target runs in ~10s; a cold full run (including compile) is ~80s.** Run it in the foreground — don't background it.
 
-**`git fetch`/`git push` over an SSH remote used to fail under the sandbox** even with `github.com`/`api.github.com` in `sandbox.network.allowedDomains` — that allowlist matches HTTP(S) domains, not SSH hosts, so an SSH remote (e.g. a custom `~/.ssh/config` alias) was blocked regardless. Fixed at the time by adding `git fetch *`/`git push *` to `sandbox.excludedCommands`; that exception (along with the others below) is now moot since dispatch-spawned sessions don't run under the sandbox at all — see `SandboxDisabledForDockerAndUnixSockets` in `docs/specs/dispatch.allium`. Still relevant if you enable Claude Code's sandbox yourself outside of dispatch: a session running against a stale `~/.claude/dispatch-statusline.json` from before that change still hits a `socat`/gateway error on `git fetch origin main` and needs the sandbox disabled to work around it.
-
-**Gradle builds resolving from GCP Artifact Registry (e.g. `europe-west1-maven.pkg.dev`) used to fail under the sandbox** even for repos using the `artifactregistry-gradle-plugin` — `*.pkg.dev` wasn't in `sandbox.network.allowedDomains`, and `~/.config/gcloud` (needed for the plugin's `gcloud auth print-access-token` call) was in the credential read-deny list. Fixed at the time by adding `*.pkg.dev` to `allowedDomains` and removing `~/.config/gcloud` from the deny list; those exceptions are now moot for the same reason as above — see `SandboxDisabledForDockerAndUnixSockets` in `docs/specs/dispatch.allium`. Same stale-`dispatch-statusline.json` caveat applies if you enable the sandbox yourself outside of dispatch.
+**Local coverage**: `cargo tarpaulin --engine llvm --out stdout`. The default `Auto` engine reads ~1.8 points lower than `llvm`, so don't compare an `Auto` run against the CI floor.
 
 Everything else about tests — the per-target command list, snapshot workflow, where a new test belongs, the no-wall-clock-sleep rule, coverage — is in [docs/testing.md](docs/testing.md).
 
@@ -70,7 +66,7 @@ Logs do not go to stderr — stderr belongs to the TUI. They append to `app.log`
 
 **tmux**, **git**, **gh**, and **claude** must be on `PATH` at runtime. There is **no startup preflight** — nothing checks binary availability, so a missing binary surfaces as a failed shell command mid-operation. Per-binary detail (which module calls what, and the two load-bearing `claude` flags) is under "External Dependencies" in [docs/reference.md](docs/reference.md).
 
-Dispatched agents run under Claude Code's sandbox mode (`SandboxedAgentExecution` in `docs/specs/dispatch.allium`). On Linux/WSL2 that needs `bubblewrap` and `socat` on `PATH` (`sudo dnf install bubblewrap socat` on Fedora); **if either is missing, Claude Code warns and silently falls back to running unsandboxed** rather than failing to start.
+Dispatched agents do not run under Claude Code's sandbox mode (see "Build & Test" above). `bubblewrap` and `socat` on `PATH` (`sudo dnf install bubblewrap socat` on Fedora) only matter if you re-enable the sandbox yourself — see `SandboxedAgentExecution` in `docs/specs/dispatch.allium`; if either is missing, Claude Code warns and silently falls back to running unsandboxed rather than failing to start.
 
 POSIX-only. Embeddings/RAG (`src/service/embeddings.rs`) run **locally** — `fastembed` does inference in-process, no API key, no per-call network I/O. The only network activity is a one-time model download on first init.
 
@@ -132,11 +128,15 @@ This file is intentionally slim — it is loaded into every agent's context. Rea
 
 > **Render-panic policy**: a guarded `unreachable!()` in a render match arm is fine when an upstream filter/type already rules that arm out (e.g. `ColumnItem` variants stripped before the match in `src/tui/ui/kanban/columns.rs`) — but MCP handlers and `src/tui/input.rs` must never panic, guarded or not. See "Rendering purity" in `docs/conventions.md`.
 
-> **Workhorse macros**: `patch_struct!` (`src/db/mod.rs::patch_struct`) generates `TaskPatch`/`EpicPatch`; `mcp_tools!` (`src/mcp/handlers/dispatch.rs::mcp_tools`) generates the MCP tool registry. Read the macro's doc comment before adding a patch field or an MCP tool by hand.
+> **Workhorse macros**: `patch_struct!` (`src/db/mod.rs::patch_struct`) generates `TaskPatch`/`EpicPatch`; `mcp_tools!` (`src/mcp/handlers/dispatch.rs::mcp_tools`) generates the MCP tool registry; the `service_api!` family in `src/service/api.rs` (`task_service_api!`/`epic_service_api!`/`todo_service_api!`/`learning_service_api!`) generates each `*ServiceApi` trait, impl, and test stub. Read the module doc comment before adding a patch field, an MCP tool, or a service-seam method by hand.
 
 > **Unsafe policy**: any `unsafe` block requires a `// SAFETY:` comment justifying why the invariant holds, plus reviewer sign-off. Full policy in `docs/conventions.md`.
 
 > **Tag system**: `TaskTag` is a kanban label with exactly two behavioural readers (`DispatchMode::for_task` and `TaskTag::is_review`). See "Tag system" in `docs/conventions.md` before assuming a tag does anything.
+
+> **Read-side layering** (convention, not compiler-enforced): zero `tui → db`, `tui → tmux`, `mcp → tui`, or `service → tui` references; `models` is a true leaf. Keep new read paths on the same seam the rest of the layer uses.
+
+> **`#[cfg(test)]` gating**: test-only scaffolding is gated behind `#[cfg(test)]`, except `MockProcessRunner` in `src/process.rs` — nine `tests/` targets depend on it and can't see `cfg(test)` items.
 
 > **Timing constants**: tick interval, DB refresh, status TTL, PR poll, message flash, main-session poll, the gg-chord timeout, and the dispatch watchdog are documented in "Timing Constants" in `docs/reference.md`.
 
