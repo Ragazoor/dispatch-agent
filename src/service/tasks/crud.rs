@@ -217,8 +217,18 @@ impl TaskService {
         // that just left Done permanently pinned to the top of whatever
         // column it lands in next. Applied after `build_task_patch` for that
         // reason.
-        if let (Some(new_status), Some(p)) = (params.status, prior.as_ref()) {
-            patch = with_status_transition(patch, p.status, new_status, self.clock.now());
+        // The (prior, next) pair every status-derived rule in this method reads:
+        // `Some` exactly when this call moves the status and the prior row was
+        // readable. Bound once because the rules that consume it sit on both
+        // sides of the write — `with_status_transition` before it, the phoenix
+        // respawn after — and re-deriving it at each would let the two drift on
+        // what counts as a status change.
+        let status_transition = params
+            .status
+            .zip(prior.as_ref().map(|p| p.status))
+            .map(|(next, prior)| (prior, next));
+        if let Some((prior_status, new_status)) = status_transition {
+            patch = with_status_transition(patch, prior_status, new_status, self.clock.now());
         }
 
         // Resolve grouping target for an explicit epic relink (before the write).
@@ -260,6 +270,13 @@ impl TaskService {
 
         if params.status.is_some() {
             self.recalculate_epic_for_task(task_id).await;
+        }
+
+        // PhoenixRespawn (tasks.allium). After the status write, never as part
+        // of it — see `respawn_phoenix`.
+        if let Some((prior_status, new_status)) = status_transition {
+            self.respawn_phoenix(task_id, prior_status, new_status)
+                .await;
         }
 
         Ok(UpdateTaskResult {
@@ -324,6 +341,12 @@ impl TaskService {
         self.notify_watchers_after_status_write(Some(&prior), Some(status))
             .await;
         self.recalculate_epic_for_task(task_id).await;
+        // PhoenixRespawn (tasks.allium), on the same terms: the rebase/done
+        // branch lands in Done and respawns, the pr branch lands in Review and
+        // does not. `respawn_phoenix` swallows its own failures, which is what
+        // keeps this method's `Err` meaning exactly "the terminal write did not
+        // land" — the property the caller gates its tmux teardown on.
+        self.respawn_phoenix(task_id, prior.status, status).await;
 
         Ok(ClosedSession {
             window: prior.tmux_window,
@@ -524,6 +547,7 @@ impl TaskService {
                 tag: params.tag,
                 wrap_up_mode: params.wrap_up_mode,
                 auto_run_plan: params.auto_run_plan,
+                phoenix: params.phoenix,
             })
             .await?;
 
@@ -532,6 +556,107 @@ impl TaskService {
         }
 
         self.get_task(task_id).await
+    }
+
+    /// `PhoenixRespawn` (`docs/specs/tasks.allium`): a phoenix task entering
+    /// Done creates a fresh Backlog copy of itself, and the flag MOVES to that
+    /// copy.
+    ///
+    /// Called after — never as part of — the status write, by both of this
+    /// service's status-writing paths ([`update_task`](Self::update_task) and
+    /// [`close_session`](Self::close_session)). That ordering is
+    /// `DoneOutranksTheRespawn`: the completion is what the operator asked for
+    /// and the respawn is a follow-on, so a failure here must not roll the
+    /// transition back — and, for `close_session` specifically, must not turn
+    /// into an `Err` its caller would read as "the terminal write did not
+    /// land". Hence the return type: every failure is logged at ERROR and
+    /// swallowed.
+    ///
+    /// It reads the task back rather than taking the pre-patch snapshot,
+    /// because the same call that completes a task may also have changed what
+    /// the successor should inherit — `phoenix` itself included, which is what
+    /// lets a single editor save turn the flag on and complete the task.
+    ///
+    /// `TheFlagIsTheReceipt`: the predecessor's flag is cleared only once the
+    /// successor row exists. So a surviving flag in Done means the copy did not
+    /// land (`Task::respawn_failed`), re-entering Done retries, and a
+    /// Done -> Review -> Done round-trip cannot duplicate.
+    async fn respawn_phoenix(&self, task_id: TaskId, prior: TaskStatus, next: TaskStatus) {
+        // `transitions_to done`: an actual change of value, so a no-op patch
+        // rewriting Done over Done never re-fires.
+        if next != TaskStatus::Done || prior == TaskStatus::Done {
+            return;
+        }
+
+        let task = match self.db.get_task(task_id).await {
+            Ok(Some(t)) => t,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::error!(task_id = task_id.0, error = %e, "phoenix respawn: re-read failed");
+                return;
+            }
+        };
+        // `FeedTasksAreExempt`: a feed epic reconciles its own rows, so a copy
+        // would either duplicate the row the feed is about to re-ingest or be
+        // deleted as stale by that same reconciliation.
+        if !task.phoenix || task.external_id.is_some() {
+            return;
+        }
+
+        let successor = self
+            .create_task_returning(CreateTaskParams {
+                title: task.title.clone(),
+                description: task.description.clone(),
+                repo_path: task.repo_path.clone(),
+                plan_path: task.plan_path.clone(),
+                epic_id: task.epic_id,
+                // Left unset so the copy sorts by its own id, at the bottom of
+                // backlog, rather than inheriting a position in a column the
+                // predecessor has left.
+                sort_order: None,
+                tag: task.tag,
+                base_branch: Some(task.base_branch.clone()),
+                wrap_up_mode: task.wrap_up_mode,
+                auto_run_plan: task.auto_run_plan,
+                phoenix: true,
+            })
+            .await;
+        let successor = match successor {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::error!(
+                    task_id = task_id.0,
+                    error = %e,
+                    "phoenix respawn failed; the task stays Done and keeps its flag"
+                );
+                return;
+            }
+        };
+
+        // `labels` has no field on `CreateTaskRequest` — only the feed upsert
+        // writes it at insert time — so it is carried across as a follow-up
+        // patch. Skipped entirely for the empty vec every hand-created task has.
+        if !task.labels.is_empty() {
+            if let Err(e) = self
+                .db
+                .patch_task(successor.id, &db::TaskPatch::new().labels(&task.labels))
+                .await
+            {
+                tracing::error!(task_id = successor.id.0, error = %e, "phoenix respawn: labels not carried");
+            }
+        }
+
+        if let Err(e) = self
+            .db
+            .patch_task(task_id, &db::TaskPatch::new().phoenix(false))
+            .await
+        {
+            tracing::error!(
+                task_id = task_id.0,
+                error = %e,
+                "phoenix respawn: successor created but the flag was not cleared"
+            );
+        }
     }
 
     pub async fn delete_task(&self, task_id: TaskId) -> Result<(), ServiceError> {

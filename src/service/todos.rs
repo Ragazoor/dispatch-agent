@@ -293,6 +293,7 @@ mod tests {
                 sort_order: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();
@@ -450,6 +451,7 @@ mod tests {
                 sort_order: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();

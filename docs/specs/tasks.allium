@@ -26,7 +26,7 @@ given {
 -- == Task Creation ==
 
 rule CreateTask {
-    when: CreateTask(title, description, repo_path, plan?, epic?, tag?, sort_order?, base_branch?, wrap_up_mode?, auto_run_plan?)
+    when: CreateTask(title, description, repo_path, plan?, epic?, tag?, sort_order?, base_branch?, wrap_up_mode?, auto_run_plan?, phoenix?)
 
     ensures: core/Task.created(
         title: title,
@@ -41,6 +41,7 @@ rule CreateTask {
         base_branch: base_branch ?? core/config.default_branch,
         wrap_up_mode: wrap_up_mode,
         auto_run_plan: auto_run_plan ?? false,
+        phoenix: phoenix ?? false,
         created_at: now,
         updated_at: now
     )
@@ -68,6 +69,16 @@ rule CreateTask {
         -- wrap_up_mode is set during the TUI creation form (InputWrapUpMode
         -- step, after InputBaseBranch) or via the MCP create_task tool.
         -- When null, the wrap-up path is decided at wrap-up time.
+        --
+        -- phoenix is set during the TUI creation form (InputPhoenix step, the
+        -- last one, after InputWrapUpMode) or via the MCP create_task tool. It
+        -- defaults to false, and the step is a y/N confirm: Enter alone means
+        -- no, so the ordinary task takes one extra keypress and no decision.
+        -- Quick-dispatch (CreateQuickTask) does not offer it — a quick task is
+        -- a one-off by construction, and the agent can set the flag through
+        -- update_task once it knows what the work is.
+        -- What the flag then does is PhoenixRespawn, below; setting it at
+        -- creation has no effect until the task first reaches done.
         --
         -- auto_run_plan defaults to false. When true, a dispatched agent
         -- with a plan skips the "summarize and ask permission" step (see
@@ -336,6 +347,146 @@ rule ConfirmDone {
         -- transitions the task into done, so it does not touch sort_order.
         -- Leaving done (MoveTaskBackward, ArchiveTask when the task was
         -- done) clears task.sort_order back to null.
+}
+
+-- == Phoenix ==
+
+-- A phoenix task is a recurring task with no schedule. Entering done creates a
+-- fresh backlog copy of it, and the flag MOVES to that copy. Nothing runs the
+-- copy: it waits in backlog until a human dispatches it, which is the whole
+-- point — the recurrence is in the queueing, not in the running.
+--
+-- WhyNotATag. phoenix is its own Boolean on core/Task rather than a TaskTag
+-- variant, because a tag already answers a different question: it selects the
+-- dispatch prompt (DispatchMode::for_task) and marks review work
+-- (TaskTag::is_review), and phoenix has nothing to say about either. Making it
+-- a tag would also make it exclusive with bug/chore/feature, and a recurring
+-- chore is the ordinary case, not an edge one.
+--
+-- TheFlagIsTheReceipt. There is no second field recording "this one already
+-- respawned". PhoenixRespawn clears the flag exactly when the successor was
+-- created, so the flag's own presence carries that fact:
+--
+--   * cleared -> the successor exists; re-entering done does nothing.
+--   * still set, in done -> the successor does NOT exist. This is
+--     core/Task.respawn_failed, rendered as a red ⚠ card indicator (see
+--     core.allium: "Phoenix marker"), and re-entering done retries.
+--
+-- Two properties fall out of this and neither should be re-derived some other
+-- way. A done -> review -> done round-trip cannot spawn a duplicate, because
+-- the first pass cleared the flag. And a failed respawn is never silent,
+-- because the thing that would have recorded the failure is the thing that was
+-- not cleared.
+--
+-- DoneOutranksTheRespawn. The done transition is what the operator asked for;
+-- the respawn is a follow-on. A failed respawn therefore does NOT roll the
+-- transition back — the task is done, the flag stays, and the card says so.
+-- Rolling back would mean a transient database error could block completing a
+-- task, which is strictly worse than a recurrence the operator can see is
+-- missing and retry with two keypresses.
+
+rule PhoenixRespawn {
+    when: task: core/Task.status transitions_to done
+
+    requires: task.phoenix
+    -- Feed-owned rows are exempt: see FeedTasksAreExempt below.
+    requires: task.external_id = null
+
+    -- Whether the successor row was actually created. Bound in the let block,
+    -- ArchiveTask-style, because the postcondition below branches on it: the
+    -- flag clear is owed on success and withheld on failure.
+    let respawned = successor_created(task)
+
+    ensures:
+        if respawned:
+            core/Task.created(
+                title: task.title,
+                description: task.description,
+                repo_path: task.repo_path,
+                status: backlog,
+                sub_status: core/SubStatus.default_for(backlog),
+                plan_path: task.plan_path,
+                auto_run_plan: task.auto_run_plan,
+                epic: task.epic,
+                tag: task.tag,
+                labels: task.labels,
+                base_branch: task.base_branch,
+                wrap_up_mode: task.wrap_up_mode,
+                phoenix: true,
+                created_at: now,
+                updated_at: now
+            )
+            task.phoenix = false
+        else:
+            task.phoenix = task.phoenix
+
+    @guidance
+        -- EveryRouteIntoDone. The trigger is the status transition itself, not
+        -- any one operator action, so all five routes respawn: ConfirmDone (the
+        -- 'x' key and a forward move out of review), the STATUS section of
+        -- EditTask, ExitSession's rebase and done branches, and PrMerged (both
+        -- in pr-workflow.allium). transitions_to fires only on an actual change
+        -- of value, so a no-op patch that rewrites done over done never
+        -- re-fires — the same property DetectTaskDone relies on
+        -- (task-watchers.allium).
+        --
+        -- Where it hooks. core/Task.status has exactly two writing paths in the
+        -- service layer, TaskService::update_task and TaskService::close_session
+        -- (src/service/tasks/crud.rs), and every route above reaches one of
+        -- them: the TUI persists through update_task, and exit_session closes
+        -- through close_session. Both already funnel their prior-status-derived
+        -- writes through with_status_transition; the respawn is NOT one of those,
+        -- because it is a row creation rather than a field on the patch, so it
+        -- is a step after the status write rather than part of it. That ordering
+        -- is what DoneOutranksTheRespawn requires.
+        --
+        -- FeedTasksAreExempt. A task carrying an external_id is owned by a feed
+        -- epic, which recreates and reconciles its own rows on every poll (see
+        -- feeds.allium). A phoenix copy would either duplicate the row the feed
+        -- is about to re-ingest, or be deleted as stale by the same
+        -- reconciliation — so the flag is ignored on those rows rather than
+        -- fighting the feed. This costs nothing in practice: FeedRunner writes
+        -- status through its own sanctioned DB handle, bypassing the two service
+        -- funnels entirely, so a feed-driven auto-completion would not reach
+        -- this rule even without the precondition. The precondition is what
+        -- makes the exemption a decision instead of an accident, and it also
+        -- covers a feed row completed by hand from the TUI, which DOES reach
+        -- here. Same bypass, same reasoning, as the known limitation recorded
+        -- under "Feed-Synced Auto-Completion" in task-watchers.allium.
+        --
+        -- WhatTheSuccessorInherits. Everything the operator configured, and
+        -- nothing the previous run produced. Carried across: title (verbatim,
+        -- with no "Copy of:" prefix and no run counter — the predecessor sits in
+        -- done and the successor in backlog, so the columns disambiguate them),
+        -- description, repo_path, tag, labels, base_branch, wrap_up_mode, epic,
+        -- plan_path and auto_run_plan.
+        --
+        -- Deliberately NOT carried: worktree, tmux_window and url, which belong
+        -- to the run that just finished; external_id, which the precondition
+        -- already rules out; sort_order, left null so the copy sorts by its own
+        -- id and lands at the bottom of backlog rather than inheriting a
+        -- position from a task that is no longer in that column; and every
+        -- agent-health field, which defaults for a task no agent has touched.
+        --
+        -- plan_path is carried even though CopyTask deliberately drops it. The
+        -- cases differ: CopyTask makes a new piece of work that happens to
+        -- resemble an old one, while a phoenix successor IS the same work coming
+        -- round again, and a recurring task's checklist is the reason to make it
+        -- recurring. The cost is a stale pointer when the plan lived only inside
+        -- the predecessor's worktree and that worktree is later archived away; a
+        -- plan committed into the repo, which is where this repo keeps them, is
+        -- unaffected.
+        --
+        -- EpicMembershipIsInherited, and it has a visible consequence: a backlog
+        -- subtask appearing under an epic that had just gone done pulls that
+        -- epic back out of done, per EpicStatusRecalculation (epics.allium).
+        -- That is correct — the epic genuinely has open work again — and it is
+        -- the mechanism by which a recurring subtask keeps its epic alive.
+        --
+        -- The successor is never auto-dispatched. AutoDispatchNextSubtask
+        -- (epics.allium) skips phoenix subtasks outright, so a phoenix task
+        -- inside an auto_dispatch epic cannot chain into itself forever. See
+        -- that rule for why the guard lives there rather than here.
 }
 
 -- == Multi-Selection ==
@@ -923,14 +1074,25 @@ rule CopyTask {
     @guidance
         -- Copies a subset of fields from the source task, including the
         -- wrap_up_mode preference. Fields that are NOT copied: plan,
-        -- worktree, tmux_window, url, epic, sort_order, base_branch.
+        -- worktree, tmux_window, url, epic, sort_order, base_branch, phoenix.
         -- auto_run_plan is NOT copied — like plan_path, it's tied to a
         -- specific (unshared) plan file, and this field is set by skills
         -- (decompose-review) rather than being a human TUI preference.
+        -- phoenix is NOT copied, and it is the one omission that is a policy
+        -- rather than a technicality: `c` is a single keypress, and silently
+        -- starting a SECOND recurring chain from it — one that then outlives
+        -- every task either chain produces — is not a thing a copy key should
+        -- be able to do by accident. Contrast PhoenixRespawn's successor, which
+        -- DOES carry the flag: there the recurrence is the operation.
+        -- The copy flow's tail runs InputPhoenix like the creation form does
+        -- (see below), so opting the copy in is still one keypress — it is just
+        -- a keypress the operator has to make. The step's draft value is false
+        -- whatever the source held, unlike wrap_up_mode's, which the source
+        -- seeds.
         -- The new task is a clean backlog item with no agent history.
         --
         -- The copy flow runs the tail of the manual creation form:
-        -- InputRepoPath -> InputBaseBranch -> InputWrapUpMode. The user is
+        -- InputRepoPath -> InputBaseBranch -> InputWrapUpMode -> InputPhoenix. The user is
         -- prompted to confirm or edit the repo_path before the task is
         -- created (the source's repo_path is pre-filled as default).
         -- base_branch is NOT copied from the source task and is NOT taken
@@ -956,14 +1118,23 @@ rule EditTask {
     -- run with no shell, so `EDITOR="vim -p"` works) — with a
     -- structured file containing the task's
     -- title, description, repo_path, status, plan, tag, base_branch,
-    -- wrap_up_mode, url and url_type.
+    -- wrap_up_mode, phoenix, url and url_type.
     -- The sections are delimited by `--- SECTION ---` markers
     -- (TITLE, DESCRIPTION, REPO_PATH, STATUS, PLAN, TAG, BASE_BRANCH,
-    -- WRAP_UP_MODE, URL, URL_TYPE).
+    -- WRAP_UP_MODE, PHOENIX, URL, URL_TYPE).
     -- The user edits the file; on save, fields are parsed back.
     -- Empty title/description/repo_path retain their previous values.
     -- Empty plan or tag clears the field. Empty base_branch retains the
     -- previous value. Empty wrap_up_mode clears the preference.
+    -- PHOENIX joins the enum-ish sections under the same one parse rule: it
+    -- accepts a boolean spelled any of true/false, yes/no, on/off or 1/0,
+    -- case-insensitively, and an empty or unparseable section yields no value —
+    -- which for this field means false, the same "clear it" the TAG and
+    -- WRAP_UP_MODE sections mean. The wide spelling set is the mitigation for
+    -- that: it makes an unparseable PHOENIX section, and so an accidentally
+    -- cleared recurrence, something a human has to work at. As with the other
+    -- enum-ish sections, unparseable input additionally records a parse error
+    -- and the edit still applies.
     -- The enum-ish sections (STATUS, TAG, WRAP_UP_MODE, URL_TYPE) all share
     -- one parse rule: an empty section and an unparseable section are
     -- treated identically — the section yields no value. Unparseable input
@@ -1022,6 +1193,7 @@ rule EditTask {
         else: task.tag = null
         if edited.base_branch != "": task.base_branch = edited.base_branch
         task.wrap_up_mode = edited.wrap_up_mode
+        task.phoenix = edited.phoenix ?? false
         -- url updated from the URL/URL_TYPE sections per the semantics
         -- in the comment above; left untouched when unchanged.
         let desired_url =
@@ -1054,6 +1226,22 @@ rule EditTask {
         -- editor is already open is a no-op with a status message.
         -- A confirmation prompt (ConfirmEditTask) is shown before
         -- the editor is invoked.
+        -- Setting STATUS to done on a phoenix task respawns it, exactly as
+        -- the 'x' key would: PhoenixRespawn triggers on the transition, not
+        -- on the operator action, and the editor routes through update_task
+        -- like every other path. The PHOENIX value the same save writes is
+        -- the one the respawn reads, so turning the flag ON and completing
+        -- the task in a single edit does spawn the successor.
+        --
+        -- Turning PHOENIX on WITHOUT moving the task is the one way to reach
+        -- core/Task.respawn_failed without anything having failed: the task
+        -- sits in done carrying a flag no respawn ever consumed, so its card
+        -- shows the red ⚠ indicator. Left as-is deliberately. The indicator's
+        -- claim — this task still owes a respawn — is true, and the recovery
+        -- is the same one a genuine failure needs: move it out of done and
+        -- back in. Suppressing it would mean tracking WHY the flag is set,
+        -- which is the bookkeeping field TheFlagIsTheReceipt exists to avoid.
+        --
         -- The sort_order side effect mirrors ConfirmDone's entering-done
         -- set and MoveTaskBackward's leaving-done clear (both in this
         -- file), and UpdateEpicViaMcp's entering/leaving-done clause in

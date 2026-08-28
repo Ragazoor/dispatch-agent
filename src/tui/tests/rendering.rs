@@ -844,6 +844,7 @@ async fn stress_db_with_many_tasks() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();

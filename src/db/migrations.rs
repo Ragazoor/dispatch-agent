@@ -152,6 +152,7 @@ pub(super) const MIGRATIONS: &[Migration] = &[
     (89, migrate_v89_allow_pr_closed_for_review),
     (90, migrate_v90_drop_scheduling_fields),
     (91, migrate_v91_clamp_feed_intervals),
+    (92, migrate_v92_add_phoenix),
 ];
 
 /// The schema version a fresh database ends up at after all migrations run.
@@ -222,6 +223,20 @@ fn migrate_v53_add_wrap_up_mode(conn: &Connection) -> Result<()> {
 fn migrate_v77_add_auto_run_plan(conn: &Connection) -> Result<()> {
     conn.execute_batch("ALTER TABLE tasks ADD COLUMN auto_run_plan BOOLEAN NOT NULL DEFAULT 0")
         .context("Failed to add auto_run_plan column to tasks")
+}
+
+/// A phoenix task recreates itself on completion: entering Done spawns a fresh
+/// Backlog copy and the flag moves to it (`PhoenixRespawn` in
+/// `docs/specs/tasks.allium`). `NOT NULL DEFAULT 0` backfills every existing
+/// row to "not recurring", which is what they all are.
+///
+/// `ADD COLUMN` — unlike `DROP COLUMN`, it does not make SQLite re-resolve the
+/// table's triggers, so the `tasks` feed-subtree triggers are untouched here.
+/// See `migrate_v90_drop_scheduling_fields` for the hazard that applies the
+/// other way round.
+pub(super) fn migrate_v92_add_phoenix(conn: &Connection) -> Result<()> {
+    conn.execute_batch("ALTER TABLE tasks ADD COLUMN phoenix BOOLEAN NOT NULL DEFAULT 0")
+        .context("Failed to add phoenix column to tasks")
 }
 
 fn migrate_v1_add_plan_column(conn: &Connection) -> Result<()> {

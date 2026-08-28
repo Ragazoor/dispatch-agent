@@ -35,6 +35,9 @@ pub struct UpdateTaskParams {
     pub wrap_up_mode: Option<Option<WrapUpMode>>,
     /// `None` = leave untouched; `Some(v)` = write `v`.
     pub auto_run_plan: Option<bool>,
+    /// `None` = leave untouched; `Some(v)` = write `v`. Arms or disarms the
+    /// recurrence; see `PhoenixRespawn` in `docs/specs/tasks.allium`.
+    pub phoenix: Option<bool>,
 }
 
 impl UpdateTaskParams {
@@ -68,6 +71,7 @@ impl UpdateTaskParams {
             last_pre_tool_use_at,
             wrap_up_mode,
             auto_run_plan,
+            phoenix,
         } = self;
 
         [
@@ -87,6 +91,7 @@ impl UpdateTaskParams {
             ("last_pre_tool_use_at", last_pre_tool_use_at.is_some()),
             ("wrap_up_mode", wrap_up_mode.is_some()),
             ("auto_run_plan", auto_run_plan.is_some()),
+            ("phoenix", phoenix.is_some()),
         ]
         .into_iter()
         .filter_map(|(name, is_set)| is_set.then_some(name))
@@ -113,6 +118,7 @@ impl UpdateTaskParams {
             last_pre_tool_use_at: None,
             wrap_up_mode: None,
             auto_run_plan: None,
+            phoenix: None,
         }
     }
 
@@ -191,6 +197,11 @@ impl UpdateTaskParams {
         self
     }
 
+    pub fn phoenix(mut self, value: bool) -> Self {
+        self.phoenix = Some(value);
+        self
+    }
+
     pub fn auto_run_plan(mut self, value: bool) -> Self {
         self.auto_run_plan = Some(value);
         self
@@ -212,6 +223,10 @@ pub struct CreateTaskParams {
     pub base_branch: Option<String>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
+    /// Arms the recurrence at creation. Defaults to `false` everywhere except
+    /// the phoenix respawn itself, which passes `true` so the flag moves to the
+    /// successor. See `PhoenixRespawn` in `docs/specs/tasks.allium`.
+    pub phoenix: bool,
 }
 
 // ---------------------------------------------------------------------------

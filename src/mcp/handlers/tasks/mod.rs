@@ -148,6 +148,12 @@ mcp_args! {
         "type": "boolean",
         "description": "When true and the task has a plan_path, the dispatched agent implements the plan immediately instead of asking for confirmation first."
     };
+
+    #[serde(default)]
+    optional phoenix: Option<bool> = [set(phoenix)] {
+        "type": "boolean",
+        "description": "When true, completing this task automatically recreates it as a fresh backlog copy carrying the same settings, and the flag moves to that copy. A recurring task with no schedule — nothing dispatches the copy, you do."
+    };
 }
 
 #[derive(Deserialize)]
@@ -191,6 +197,8 @@ pub(super) struct CreateTaskWithEpicArgs {
     pub(super) wrap_up_mode: Option<WrapUpMode>,
     #[serde(default)]
     pub(super) auto_run_plan: bool,
+    #[serde(default)]
+    pub(super) phoenix: bool,
 }
 
 // WrapUpAction lives in `crate::mcp` — it's shared between wrap_up (which
@@ -326,6 +334,12 @@ fn format_task_detail(
     if let Some(wrap_up_mode) = task.wrap_up_mode {
         text.push_str(&format!("\nWrap-up mode: {wrap_up_mode}"));
     }
+    // Rendered only when set: it tells a wrapping-up agent it is finishing THIS
+    // run of a recurring task, not the task itself, so notes for its successor
+    // belong in the description and not only in the commit.
+    if task.phoenix {
+        text.push_str("\nPhoenix: yes — completing this task recreates it as a fresh backlog copy");
+    }
     text.push_str(&format!(
         "\nCreated: {}",
         task.created_at.format("%Y-%m-%d %H:%M:%S UTC")
@@ -446,6 +460,7 @@ mod tests {
             last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
             live_subagents: 0,
             stop_pending: false,
             live_shells: 0,

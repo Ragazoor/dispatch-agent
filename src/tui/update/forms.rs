@@ -62,6 +62,7 @@ impl App {
                 tag: None,
                 base_branch: "main".to_string(),
                 wrap_up_mode: None,
+                phoenix: false,
             });
             self.input.mode = InputMode::InputTag;
             self.set_status(
@@ -149,6 +150,19 @@ impl App {
         // Enter-to-skip instead of being silently dropped.
         if let (Some(ref mut draft), Some(m)) = (self.input.task_draft.as_mut(), mode) {
             draft.wrap_up_mode = Some(m);
+        }
+        self.input.mode = InputMode::InputPhoenix;
+        self.set_status("Phoenix — recreate this task when it's done? [y/N]".to_string());
+        vec![]
+    }
+
+    /// The form's last step. Unlike wrap_up_mode's, this does NOT seed from a
+    /// copied source task: `CopyTask` deliberately does not carry the flag (see
+    /// docs/specs/tasks.allium), so the draft answers this question fresh even
+    /// when the source was a phoenix.
+    pub(in crate::tui) fn handle_submit_phoenix(&mut self, on: bool) -> Vec<Command> {
+        if let Some(ref mut draft) = self.input.task_draft {
+            draft.phoenix = on;
         }
         self.finish_task_creation()
     }

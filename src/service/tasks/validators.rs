@@ -63,6 +63,9 @@ pub(super) fn build_task_patch<'a>(
     if let Some(v) = params.auto_run_plan {
         patch = patch.auto_run_plan(v);
     }
+    if let Some(v) = params.phoenix {
+        patch = patch.phoenix(v);
+    }
     patch
 }
 

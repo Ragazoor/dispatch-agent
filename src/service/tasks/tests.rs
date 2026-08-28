@@ -55,6 +55,7 @@ fn make_task_params(repo_path: &str) -> CreateTaskParams {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     }
 }
 
@@ -77,6 +78,7 @@ async fn create_and_get_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -103,6 +105,7 @@ async fn create_task_with_tag() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -129,6 +132,7 @@ async fn create_task_with_sort_order() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -154,6 +158,7 @@ async fn update_task_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -186,6 +191,7 @@ async fn update_task_no_fields_returns_error() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -214,6 +220,7 @@ async fn update_task_params_builder_compiles() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -243,6 +250,7 @@ async fn update_task_invalid_substatus_for_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -418,6 +426,7 @@ async fn list_tasks_with_filter() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -479,6 +488,7 @@ async fn update_task_with_epic_linkage() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -524,6 +534,7 @@ async fn update_task_status_recalculates_parent_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -581,6 +592,7 @@ async fn update_task_relink_recalculates_old_and_new_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -640,6 +652,7 @@ async fn make_task(svc: &TaskService, epic_id: Option<EpicId>) -> TaskId {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap()
@@ -938,6 +951,7 @@ async fn list_epics_with_progress() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -991,6 +1005,7 @@ async fn list_epics_with_progress_multiple_epics() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1006,6 +1021,7 @@ async fn list_epics_with_progress_multiple_epics() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1022,6 +1038,7 @@ async fn list_epics_with_progress_multiple_epics() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1072,6 +1089,7 @@ async fn update_task_status_recalculates_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1115,6 +1133,7 @@ async fn get_epic_with_subtasks() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1305,6 +1324,7 @@ async fn epic_with_backlog_subtasks(
                 base_branch: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();
@@ -1578,6 +1598,7 @@ async fn create_task_returning_gives_full_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1605,6 +1626,7 @@ async fn create_task_with_auto_run_plan_true_persists() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: true,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1641,6 +1663,7 @@ async fn create_task_returning_with_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1678,6 +1701,7 @@ async fn create_task_returning_sets_all_optional_fields_atomically() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1706,6 +1730,7 @@ async fn delete_task_removes_it() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1743,6 +1768,7 @@ async fn update_task_sets_worktree_and_tmux_window() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1778,6 +1804,7 @@ async fn update_task_clears_worktree() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1826,6 +1853,7 @@ async fn update_task_allows_done_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1901,6 +1929,7 @@ async fn update_task_worktree_set_persists() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1933,6 +1962,7 @@ async fn update_task_worktree_clear_sets_null() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1974,6 +2004,7 @@ async fn update_task_pr_url_set_and_clear() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2031,6 +2062,7 @@ async fn list_tasks_filters_by_epic_id() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2047,6 +2079,7 @@ async fn list_tasks_filters_by_epic_id() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2079,6 +2112,7 @@ async fn list_tasks_excludes_archived_by_default() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2112,6 +2146,7 @@ async fn list_tasks_filters_by_repo_paths() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -2127,6 +2162,7 @@ async fn list_tasks_filters_by_repo_paths() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -2159,6 +2195,7 @@ async fn list_tasks_excludes_caller_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2174,6 +2211,7 @@ async fn list_tasks_excludes_caller_task() {
         base_branch: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -2320,6 +2358,7 @@ async fn update_task_toctou_last_write_wins() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2374,6 +2413,7 @@ async fn update_task_sub_status_validated_against_persisted_status() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2703,6 +2743,7 @@ async fn record_hook_event_noop_for_non_running_task() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3732,6 +3773,7 @@ mod property_tests {
                         tag: None,
                         wrap_up_mode: None,
                         auto_run_plan: false,
+                        phoenix: false,
                     })
                     .await
                     .unwrap();
@@ -3932,6 +3974,7 @@ async fn update_task_propagates_db_error_on_prior_task_read() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3994,6 +4037,7 @@ async fn create_task_on_grouped_epic_routes_into_sub_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -4026,6 +4070,7 @@ async fn update_repo_path_reroutes_within_grouped_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -4075,6 +4120,7 @@ async fn move_task_to_grouped_epic_routes_into_sub_epic() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -4121,6 +4167,7 @@ async fn move_task_to_non_grouped_epic_lands_directly() {
             base_branch: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -4766,4 +4813,326 @@ mod wrap_up_rebase_seam {
             WrapUpRebaseOutcome::MissingWorktree
         ));
     }
+}
+
+// -- PhoenixRespawn --------------------------------------------------------
+//
+// A phoenix task recreates itself on completion, and the flag MOVES to the
+// copy. See the `== Phoenix ==` section and `PhoenixRespawn` in
+// docs/specs/tasks.allium — each test below names the clause it pins.
+
+/// A backlog phoenix task with every inheritable field set to something
+/// distinguishable, so `WhatTheSuccessorInherits` can be asserted field by
+/// field rather than on a couple of representatives.
+async fn phoenix_task(db: &Arc<dyn db::TaskStore>, epic_id: Option<EpicId>) -> TaskId {
+    let svc = task_svc(db);
+    let id = svc
+        .create_task(CreateTaskParams {
+            title: "Weekly dep audit".into(),
+            description: "check every direct dependency".into(),
+            repo_path: "/repo".to_string(),
+            plan_path: Some("/repo/docs/plans/audit.md".to_string()),
+            epic_id,
+            sort_order: None,
+            tag: Some(TaskTag::Chore),
+            base_branch: Some("develop".to_string()),
+            wrap_up_mode: Some(crate::models::WrapUpMode::Done),
+            auto_run_plan: true,
+            phoenix: true,
+        })
+        .await
+        .unwrap();
+    id
+}
+
+/// The successor of `predecessor`, or `None` when nothing was respawned.
+async fn successor_of(
+    db: &Arc<dyn db::TaskStore>,
+    predecessor: TaskId,
+) -> Option<crate::models::Task> {
+    task_svc(db)
+        .list_tasks(ListTasksFilter::default())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|t| t.id != predecessor && t.status == TaskStatus::Backlog)
+}
+
+#[tokio::test]
+async fn phoenix_task_entering_done_spawns_a_backlog_successor() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    let successor = successor_of(&db, id)
+        .await
+        .expect("entering Done must create a fresh backlog copy");
+    assert_eq!(successor.status, TaskStatus::Backlog);
+    assert!(successor.phoenix, "the flag moves to the successor");
+    assert_eq!(
+        successor.sub_status,
+        SubStatus::default_for(TaskStatus::Backlog)
+    );
+}
+
+/// `TheFlagIsTheReceipt`: the predecessor's flag is cleared exactly when the
+/// successor lands, so the flag's own absence records that it already fired.
+#[tokio::test]
+async fn a_successful_respawn_clears_the_predecessors_flag() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    let predecessor = svc.get_task(id).await.unwrap();
+    assert_eq!(predecessor.status, TaskStatus::Done);
+    assert!(
+        !predecessor.phoenix,
+        "a task that respawned is no longer the live phoenix"
+    );
+    assert!(
+        !predecessor.respawn_failed(),
+        "a cleared flag is what makes respawn_failed false in Done"
+    );
+}
+
+/// `WhatTheSuccessorInherits`: everything the operator configured, and nothing
+/// the finished run produced.
+#[tokio::test]
+async fn the_successor_inherits_the_operators_settings_and_none_of_the_run() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let epic = epic_svc(&db)
+        .create_epic(CreateEpicParams {
+            title: "recurring work".into(),
+            description: "".into(),
+            sort_order: None,
+            parent_epic_id: None,
+            feed_command: None,
+            feed_interval_secs: None,
+        })
+        .await
+        .unwrap();
+    let id = phoenix_task(&db, Some(epic.id)).await;
+    svc.update_task(
+        UpdateTaskParams::for_task(id)
+            .status(TaskStatus::Running)
+            .worktree(FieldUpdate::Set("/repo/.worktrees/wt".to_string()))
+            .tmux_window(FieldUpdate::Set("task-x".to_string())),
+    )
+    .await
+    .unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    let s = successor_of(&db, id).await.unwrap();
+    assert_eq!(s.title, "Weekly dep audit", "title is carried verbatim");
+    assert_eq!(s.description, "check every direct dependency");
+    assert_eq!(s.repo_path, "/repo");
+    assert_eq!(s.tag, Some(TaskTag::Chore));
+    assert_eq!(s.base_branch, "develop");
+    assert_eq!(s.wrap_up_mode, Some(crate::models::WrapUpMode::Done));
+    assert_eq!(s.plan_path.as_deref(), Some("/repo/docs/plans/audit.md"));
+    assert!(s.auto_run_plan);
+    assert_eq!(s.epic_id, Some(epic.id), "EpicMembershipIsInherited");
+
+    assert!(
+        s.worktree.is_none(),
+        "the worktree belongs to the finished run"
+    );
+    assert!(s.tmux_window.is_none());
+    assert!(s.url.is_none());
+    assert!(s.external_id.is_none());
+    assert!(
+        s.sort_order.is_none(),
+        "the copy sorts by its own id, at the bottom of backlog"
+    );
+}
+
+#[tokio::test]
+async fn an_ordinary_task_entering_done_spawns_nothing() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = svc.create_task(make_task_params("/repo")).await.unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    assert!(successor_of(&db, id).await.is_none());
+}
+
+/// `TheFlagIsTheReceipt`, second property: a Done -> Review -> Done round-trip
+/// cannot duplicate, because the first pass cleared the flag.
+#[tokio::test]
+async fn re_entering_done_does_not_spawn_a_second_successor() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+
+    for status in [TaskStatus::Done, TaskStatus::Review, TaskStatus::Done] {
+        svc.update_task(UpdateTaskParams::for_task(id).status(status))
+            .await
+            .unwrap();
+    }
+
+    let backlog = svc
+        .list_tasks(ListTasksFilter {
+            statuses: Some(vec![TaskStatus::Backlog]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(backlog.len(), 1, "exactly one successor, got {backlog:?}");
+}
+
+/// `transitions_to` fires on an actual change of value only — the same
+/// property `DetectTaskDone` relies on.
+#[tokio::test]
+async fn rewriting_done_over_done_does_not_respawn() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+    // Land in Done without the flag ever being set, so the respawn this test
+    // rules out could only come from the no-op rewrite below.
+    svc.update_task(UpdateTaskParams::for_task(id).phoenix(false))
+        .await
+        .unwrap();
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+    svc.update_task(UpdateTaskParams::for_task(id).phoenix(true))
+        .await
+        .unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    assert!(
+        successor_of(&db, id).await.is_none(),
+        "Done -> Done is not a transition into Done"
+    );
+}
+
+/// `FeedTasksAreExempt`: a feed epic recreates and reconciles its own rows, so
+/// a phoenix copy would either duplicate one or be deleted as stale.
+#[tokio::test]
+async fn a_feed_owned_task_does_not_respawn() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+    db.patch_task(id, &db::TaskPatch::new().external_id(Some("pr-42")))
+        .await
+        .unwrap();
+
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Done))
+        .await
+        .unwrap();
+
+    assert!(successor_of(&db, id).await.is_none());
+    assert!(
+        svc.get_task(id).await.unwrap().phoenix,
+        "the flag is ignored, not consumed — nothing respawned to consume it"
+    );
+}
+
+#[tokio::test]
+async fn close_session_done_respawns_a_phoenix_task() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Running))
+        .await
+        .unwrap();
+
+    svc.close_session(id, crate::service::CloseSessionOutcome::Done)
+        .await
+        .unwrap();
+
+    let successor = successor_of(&db, id)
+        .await
+        .expect("the rebase/done branch of ExitSession lands in Done");
+    assert!(successor.phoenix);
+    assert!(!svc.get_task(id).await.unwrap().phoenix);
+}
+
+/// The `pr` branch lands in Review, not Done. The respawn waits for the PR to
+/// merge or for a human to complete the task.
+#[tokio::test]
+async fn close_session_pr_does_not_respawn() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+    svc.update_task(UpdateTaskParams::for_task(id).status(TaskStatus::Running))
+        .await
+        .unwrap();
+
+    svc.close_session(
+        id,
+        crate::service::CloseSessionOutcome::Review {
+            pr_url: crate::models::TaskUrl::new(
+                "https://github.com/o/r/pull/1".to_string(),
+                crate::models::UrlType::Pr,
+            ),
+        },
+    )
+    .await
+    .unwrap();
+
+    assert!(successor_of(&db, id).await.is_none());
+    assert!(
+        svc.get_task(id).await.unwrap().phoenix,
+        "the recurrence survives into Review"
+    );
+}
+
+/// `DoneOutranksTheRespawn`. The half that is enforced by construction:
+/// `respawn_phoenix` returns `()`, so no respawn outcome can reach the caller's
+/// `Result` — which is what keeps `close_session`'s `Err` meaning exactly "the
+/// terminal write did not land", the property its caller gates the tmux
+/// teardown on.
+///
+/// The half this test observes: a close whose respawn is skipped still reports
+/// success and still moves the task, so the completion never waits on the
+/// recurrence. Feed ownership is the skip used here because it is the one the
+/// spec makes reachable without a fault-injecting store — a genuine create
+/// failure takes the same `return`, one branch further down.
+#[tokio::test]
+async fn a_skipped_respawn_does_not_contaminate_the_close_result() {
+    let db = test_db().await;
+    let svc = task_svc(&db);
+    let id = phoenix_task(&db, None).await;
+    db.patch_task(id, &db::TaskPatch::new().external_id(Some("pr-42")))
+        .await
+        .unwrap();
+    svc.update_task(
+        UpdateTaskParams::for_task(id)
+            .status(TaskStatus::Running)
+            .tmux_window(FieldUpdate::Set("task-x".to_string())),
+    )
+    .await
+    .unwrap();
+
+    let closed = svc
+        .close_session(id, crate::service::CloseSessionOutcome::Done)
+        .await
+        .expect("the close succeeded; the respawn is a follow-on, not part of it");
+
+    assert_eq!(closed.window.as_deref(), Some("task-x"));
+    let task = svc.get_task(id).await.unwrap();
+    assert_eq!(task.status, TaskStatus::Done, "the completion sticks");
+    assert!(
+        task.respawn_failed(),
+        "a phoenix flag surviving in Done is the visible 'did not respawn' state"
+    );
 }

@@ -114,7 +114,7 @@ pub(super) const TASK_COLUMNS: &str =
      plan_path, epic_id, sub_status, url, url_type, tag, sort_order, base_branch, external_id, \
      created_at, updated_at, labels, last_pre_tool_use_at, last_notification_at, \
      last_peer_message_sent_at, last_peer_message_received_at, \
-     wrap_up_mode, auto_run_plan, live_subagents, stop_pending, \
+     wrap_up_mode, auto_run_plan, phoenix, live_subagents, stop_pending, \
      live_shells, oldest_live_shell_started_at";
 
 /// The `SET` list every pre-provisioning claim applies — the one definition of
@@ -247,6 +247,7 @@ pub(super) fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         )?,
         wrap_up_mode: parse_wrap_up_mode(row.get("wrap_up_mode")?)?,
         auto_run_plan: row.get("auto_run_plan")?,
+        phoenix: row.get("phoenix")?,
         live_subagents: row.get("live_subagents")?,
         stop_pending: row.get("stop_pending")?,
         live_shells: row.get("live_shells")?,

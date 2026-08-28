@@ -134,6 +134,7 @@ async fn get_epic_matches_list_epics_progress_for_grouped_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -192,6 +193,7 @@ async fn get_epic_shows_subtask_summary() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -209,6 +211,7 @@ async fn get_epic_shows_subtask_summary() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -326,6 +329,7 @@ async fn list_epics_shows_subtask_counts() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -343,6 +347,7 @@ async fn list_epics_shows_subtask_counts() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();

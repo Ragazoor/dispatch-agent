@@ -17,6 +17,7 @@ async fn create_and_get() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -45,6 +46,7 @@ async fn list_all() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -60,6 +62,7 @@ async fn list_all() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -75,6 +78,7 @@ async fn list_all() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -108,6 +112,7 @@ async fn create_task_with_plan() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -131,6 +136,7 @@ async fn create_task_without_plan() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -154,6 +160,7 @@ async fn find_task_by_plan_returns_match() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -178,6 +185,7 @@ async fn find_task_by_plan_returns_none_when_no_match() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -201,6 +209,7 @@ async fn find_task_by_plan_ignores_tasks_without_plan() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -250,6 +259,7 @@ async fn patch_task_applies_all_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -281,6 +291,7 @@ async fn patch_task_none_fields_unchanged() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -308,6 +319,7 @@ async fn create_task_defaults_labels_to_empty() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -331,6 +343,7 @@ async fn patch_task_sets_labels() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -358,6 +371,7 @@ async fn patch_task_clears_labels_to_empty() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -404,6 +418,7 @@ async fn patch_task_round_trips_hook_event_timestamps() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -452,6 +467,7 @@ async fn patch_task_round_trips_peer_message_timestamps() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -504,6 +520,7 @@ async fn patch_task_none_preserves_labels() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -535,6 +552,7 @@ async fn list_all_errors_on_corrupt_labels_json() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -578,6 +596,7 @@ async fn patch_task_sets_tag() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -604,6 +623,7 @@ async fn patch_task_clears_tag() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -633,6 +653,7 @@ async fn patch_task_clears_plan() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -658,6 +679,7 @@ async fn patch_task_sets_dispatch_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -686,6 +708,7 @@ async fn patch_task_clears_dispatch_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -722,6 +745,7 @@ async fn patch_task_status_and_dispatch_together() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -776,6 +800,7 @@ async fn patch_task_status_change_resets_sub_status_in_db() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -808,6 +833,7 @@ async fn task_roundtrip_with_pr_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -840,6 +866,7 @@ async fn task_pr_fields_default_to_none() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -864,6 +891,7 @@ async fn patch_sets_and_clears_typed_url_together() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -903,6 +931,7 @@ async fn patch_task_sets_sort_order() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -929,6 +958,7 @@ async fn patch_task_clears_sort_order() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -958,6 +988,7 @@ async fn task_sub_status_persists() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -984,6 +1015,7 @@ async fn task_sub_status_pr_closed_persists_for_review() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1010,6 +1042,7 @@ async fn task_sub_status_defaults_to_none() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1034,6 +1067,7 @@ async fn create_task_sets_default_sub_status_for_running() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1057,6 +1091,7 @@ async fn create_task_sets_default_sub_status_for_backlog() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1081,6 +1116,7 @@ async fn create_task_with_epic_sort_tag_single_insert() {
             tag: Some(TaskTag::Bug),
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1152,6 +1188,7 @@ async fn delete_task_removes_task() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1848,6 +1885,7 @@ async fn delete_stale_subtree_feed_tasks_never_reports_manual_tasks() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1914,6 +1952,7 @@ async fn delete_stale_subtree_feed_tasks_scopes_to_subtree_and_keeps_set() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2100,6 +2139,7 @@ async fn upsert_feed_tasks_does_not_remove_manual_tasks() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2969,6 +3009,7 @@ mod property_tests {
                         tag: None,
                         wrap_up_mode: None,
                         auto_run_plan: false,
+                        phoenix: false,
                     })
                     .await
                     .unwrap();
@@ -3024,6 +3065,7 @@ mod property_tests {
                         epic_id: None, sort_order: Some(42), tag: None,
                         wrap_up_mode: None,
                         auto_run_plan: false,
+                        phoenix: false,
                     })
                     .await
                     .unwrap();
@@ -3098,6 +3140,7 @@ async fn create_task_wrap_up_mode_defaults_to_none() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3121,6 +3164,7 @@ async fn create_task_with_wrap_up_mode_rebase() {
             tag: None,
             wrap_up_mode: Some(WrapUpMode::Rebase),
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3170,6 +3214,7 @@ async fn patch_auto_run_plan_true() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3196,6 +3241,7 @@ async fn get_task_errors_on_unknown_tag() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3233,6 +3279,7 @@ async fn get_task_errors_on_unknown_wrap_up_mode_while_list_all_skips_it() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3271,6 +3318,7 @@ async fn row_to_task_sub_status_none_string_maps_to_none_variant() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3294,6 +3342,7 @@ async fn row_to_task_base_branch_defaults_to_main() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3320,6 +3369,7 @@ async fn get_task_errors_on_corrupt_sort_order_type() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3364,6 +3414,7 @@ async fn patch_task_all_fields_round_trip() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3460,6 +3511,7 @@ async fn create_task_persists_wrap_up_mode() {
             tag: None,
             wrap_up_mode: Some(WrapUpMode::Rebase),
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3483,6 +3535,7 @@ async fn mark_pr_learnings_gate_shown_sets_once() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3524,6 +3577,7 @@ async fn subtask(
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap()
@@ -3597,6 +3651,72 @@ async fn try_claim_next_backlog_task_skips_non_backlog_subtasks() {
             .unwrap(),
         Some(backlog)
     );
+}
+
+/// `PhoenixIsNeverChained` (docs/specs/epics.allium): the chain passes OVER a
+/// phoenix subtask and takes the next ordinary one behind it. Without the skip,
+/// a phoenix subtask would respawn on completion and be dispatched again
+/// immediately — an epic that never runs out of work.
+#[tokio::test]
+async fn try_claim_next_backlog_task_skips_phoenix_subtasks() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let recurring = phoenix_subtask(&db, epic.id, "recurring", Some(1)).await;
+    let ordinary = subtask(&db, epic.id, "ordinary", TaskStatus::Backlog, Some(2)).await;
+
+    assert_eq!(
+        db.try_claim_next_backlog_task(epic.id, chrono::Utc::now())
+            .await
+            .unwrap(),
+        Some(ordinary),
+        "the phoenix subtask sorts first but is not a candidate"
+    );
+    assert_eq!(
+        db.get_task(recurring).await.unwrap().unwrap().status,
+        TaskStatus::Backlog,
+        "and it is left in backlog, unclaimed"
+    );
+}
+
+/// The fourth normal stopping condition: every backlog subtask left is a
+/// phoenix one, so the chain stops rather than looping.
+#[tokio::test]
+async fn try_claim_next_backlog_task_is_none_when_only_phoenix_subtasks_remain() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    phoenix_subtask(&db, epic.id, "recurring", Some(1)).await;
+    phoenix_subtask(&db, epic.id, "also recurring", Some(2)).await;
+
+    assert!(db
+        .try_claim_next_backlog_task(epic.id, chrono::Utc::now())
+        .await
+        .unwrap()
+        .is_none());
+}
+
+/// Helper: a backlog subtask of `epic_id` carrying the phoenix flag.
+async fn phoenix_subtask(
+    db: &Database,
+    epic_id: EpicId,
+    title: &str,
+    sort_order: Option<i64>,
+) -> TaskId {
+    db.create_task(CreateTaskRequest {
+        title,
+        description: "",
+        repo_path: "/tmp/r",
+        plan: None,
+        status: TaskStatus::Backlog,
+        base_branch: "main",
+        epic_id: Some(epic_id),
+        sort_order,
+        tag: None,
+        wrap_up_mode: None,
+        auto_run_plan: false,
+        phoenix: true,
+    })
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -3683,6 +3803,30 @@ async fn try_claim_next_backlog_task_claims_each_subtask_at_most_once() {
 //
 // The by-id twin of the claim above, backing every dispatch entry point that is
 // handed a specific task (DispatchClaimExclusive in docs/specs/dispatch.allium).
+
+/// The phoenix skip belongs to the CHAIN, not to dispatch. `PhoenixIsNeverChained`
+/// (docs/specs/epics.allium) stops an epic launching agents at a recurring task
+/// on its own; it does not stop a human doing it, which is the entire point of
+/// the flag. Pressing Space on a phoenix backlog card must dispatch it.
+#[tokio::test]
+async fn try_claim_backlog_task_claims_a_phoenix_task_the_chain_would_skip() {
+    let db = in_memory_db().await;
+    let epic = db.create_epic("E", "", None).await.unwrap();
+    let id = phoenix_subtask(&db, epic.id, "recurring", Some(1)).await;
+
+    assert!(db
+        .try_claim_backlog_task(id, chrono::Utc::now())
+        .await
+        .unwrap());
+    assert_eq!(
+        db.get_task(id).await.unwrap().unwrap().status,
+        TaskStatus::Running
+    );
+    assert!(
+        db.get_task(id).await.unwrap().unwrap().phoenix,
+        "dispatching does not consume the flag; only entering Done does"
+    );
+}
 
 #[tokio::test]
 async fn try_claim_backlog_task_applies_the_full_claim() {
@@ -3839,6 +3983,7 @@ async fn batch_patch_sub_status_updates_all_tasks() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3855,6 +4000,7 @@ async fn batch_patch_sub_status_updates_all_tasks() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3896,6 +4042,7 @@ async fn get_total_changes_increases_after_write() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();

@@ -31,6 +31,7 @@ impl App {
             }
             t.wrap_up_mode = edit.wrap_up_mode;
             t.url = edit.url;
+            t.phoenix = edit.phoenix;
             t.updated_at = chrono::Utc::now();
         }
         self.sync_board_selection();
@@ -71,6 +72,10 @@ impl App {
                     tag: None,
                     base_branch: DEFAULT_BASE_BRANCH.to_string(),
                     wrap_up_mode: None,
+                    // Quick dispatch does not offer the phoenix step: a quick
+                    // task is a one-off by construction, and the agent can arm
+                    // the flag through update_task once it knows the work.
+                    phoenix: false,
                 },
                 epic_id,
             },

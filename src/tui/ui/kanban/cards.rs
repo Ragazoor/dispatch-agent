@@ -84,6 +84,11 @@ enum CardIndicator {
     DoneMerged {
         pr_label: String,
     },
+    /// A phoenix task left sitting in Done with its flag intact: `PhoenixRespawn`
+    /// clears the flag exactly when the successor row is created, so this IS the
+    /// "the copy did not land" state (`Task::respawn_failed`). See "Phoenix
+    /// marker" in `docs/specs/core.allium`.
+    RespawnFailed,
     Idle {
         status: TaskStatus,
         age: String,
@@ -172,6 +177,14 @@ fn classify_card_indicator(
         let pr_label = u.label();
         return CardIndicator::ReviewPr { pr_label };
     }
+    // Above DoneMerged deliberately, and that is the only arm it competes with:
+    // every indicator classified earlier presupposes Running or Review (a
+    // worktree, a live agent, a sub-status Done resets), so this cannot mask
+    // one. A task completed by a PR merge whose respawn then failed must report
+    // the failure rather than the merge.
+    if task.respawn_failed() {
+        return CardIndicator::RespawnFailed;
+    }
     if let (TaskStatus::Done, Some(u)) = (status, task.url.as_ref()) {
         let pr_label = u.label();
         return CardIndicator::DoneMerged { pr_label };
@@ -206,7 +219,7 @@ fn classify_card_indicator(
 /// The border colour a card's state claims, or `None` if it claims none.
 ///
 /// The card frame carries *state*, not identity (`core.allium`: "Selection" and
-/// "Border as state"). Red is the four hard failures — the same states whose
+/// "Border as state"). Red is the five hard failures — the same states whose
 /// indicator renders a `⚠`. Note that is an agreement between two independent
 /// exhaustive matches over one enum, not a derivation: `render_card_indicator`
 /// picks the glyph, this picks the border, and only
@@ -226,7 +239,8 @@ fn state_border_color(indicator: &CardIndicator) -> Option<Color> {
         CardIndicator::Unprovisioned
         | CardIndicator::AutoDispatchFailed
         | CardIndicator::Conflict
-        | CardIndicator::Crashed => Some(RED),
+        | CardIndicator::Crashed
+        | CardIndicator::RespawnFailed => Some(RED),
         CardIndicator::Blocked | CardIndicator::Stale { .. } | CardIndicator::StaleShell { .. } => {
             Some(YELLOW)
         }
@@ -316,6 +330,7 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
         }
         CardIndicator::ReviewPr { pr_label } => (format!("\u{25cf} {pr_label}"), CYAN),
         CardIndicator::DoneMerged { pr_label } => (format!("\u{2714} {pr_label} merged"), GREEN),
+        CardIndicator::RespawnFailed => ("\u{26a0} respawn failed".to_string(), RED),
         CardIndicator::Idle {
             status,
             age,
@@ -384,6 +399,20 @@ pub(super) struct ColRenderCtx {
     pub width: u16,
     pub ground: Color,
 }
+
+/// The marker a phoenix task's title line carries (`♻`, U+267B). See "Phoenix
+/// marker" in `docs/specs/core.allium`: it says "this task still owes a
+/// respawn" — normal in backlog, a failure in done.
+pub(super) const PHOENIX_GLYPH: &str = "\u{267b}";
+
+/// Cells the marker costs on line 1: a leading space plus the glyph.
+///
+/// The glyph counts as ONE `char` and draws as TWO columns — it has emoji
+/// presentation in most terminals — so this is the one place on the board where
+/// a `chars().count()` budget is wrong. Every other card glyph (`▎ ✉ ➤ ▸ ✓ ⚠`)
+/// is a single-column BMP character, which is why the rest of the prefix maths
+/// counts characters and gets away with it.
+const PHOENIX_MARKER_WIDTH: usize = 3;
 
 /// Columns of column-ground left visible on each side of a card, so cards float
 /// inside the column instead of tiling flush against its edges.
@@ -457,6 +486,35 @@ fn frame_card(
     ]
 }
 
+/// The marker a task's title line carries for its phoenix flag, or `""`.
+fn phoenix_marker(task: &Task) -> &'static str {
+    if task.phoenix {
+        PHOENIX_GLYPH
+    } else {
+        ""
+    }
+}
+
+/// Every cell on a task card's line 1 other than the title itself, so the
+/// title's budget is what remains.
+///
+/// Kept as one function because the terms are not uniform: most are character
+/// counts, but the phoenix marker is a *rendered* width (see
+/// `PHOENIX_MARKER_WIDTH`). Splitting them across the call site is how the two
+/// measures get confused.
+fn task_card_prefix_width(task: &Task, flash_received: bool, flash_sent: bool) -> usize {
+    // select(2) + stripe(1) + " #NNN "(id_len+3) + flash glyphs (" ✉"/" ➤",
+    // 2 each) + the phoenix marker + the card's own chrome.
+    let id_len = task.id.0.unsigned_abs().max(1).ilog10() as usize + 1;
+    let flash_width = if flash_received { 2 } else { 0 } + if flash_sent { 2 } else { 0 };
+    let phoenix_width = if task.phoenix {
+        PHOENIX_MARKER_WIDTH
+    } else {
+        0
+    };
+    2 + 1 + 3 + id_len + flash_width + phoenix_width + CARD_CHROME_WIDTH
+}
+
 /// Build a styled framed ListItem for a task card in a kanban column.
 /// Line 1: stripe + title
 /// Line 2: status icon + age/activity metadata
@@ -491,12 +549,7 @@ pub(super) fn build_task_list_item<'a>(
         .is_some_and(|t| t.elapsed() < crate::tui::MESSAGE_FLASH_TTL);
     let any_message_flash = has_message_flash || has_message_flash_sent;
 
-    // Prefix: select(2) + stripe(1) + " #NNN "(id_len+3) + optional flash glyphs
-    // (" ✉"/" ➤", 2 each)
-    let id_len = task.id.0.unsigned_abs().max(1).ilog10() as usize + 1;
-    let flash_width =
-        if has_message_flash { 2 } else { 0 } + if has_message_flash_sent { 2 } else { 0 };
-    let prefix_width = 2 + 1 + 3 + id_len + flash_width + CARD_CHROME_WIDTH;
+    let prefix_width = task_card_prefix_width(task, has_message_flash, has_message_flash_sent);
     let max_title = (col_width as usize).saturating_sub(prefix_width);
     let title_text = format_task_title(task, max_title);
 
@@ -525,6 +578,17 @@ pub(super) fn build_task_list_item<'a>(
     }
     if has_message_flash_sent {
         line1_spans.push(Span::styled(" \u{27a4}", Style::default().fg(YELLOW)));
+    }
+    // The marker is an attribute of the task, not a state, so it takes no
+    // colour of its own and contributes nothing to the border — exactly like the
+    // flash glyphs above. In done, the *indicator* beneath says the respawn
+    // failed and the frame turns red; see "Phoenix marker" in core.allium.
+    let marker = phoenix_marker(task);
+    if !marker.is_empty() {
+        line1_spans.push(Span::styled(
+            format!(" {marker}"),
+            Style::default().fg(MUTED),
+        ));
     }
 
     let line1 = Line::from(line1_spans);
@@ -684,7 +748,7 @@ mod tests {
     /// the mistake and the test says which.
     fn every_indicator() -> Vec<(CardIndicator, Option<Color>, &'static str)> {
         vec![
-            // The four hard failures. This is the *membership* claim: these four
+            // The five hard failures. This is the *membership* claim: these five
             // and no others are red. Only `Crashed` is exercised through the
             // renderer, so without this a state quietly promoted into or dropped
             // out of the set would pass every other test.
@@ -696,6 +760,7 @@ mod tests {
             ),
             (CardIndicator::Conflict, Some(RED), "rebase conflict"),
             (CardIndicator::Crashed, Some(RED), "crashed"),
+            (CardIndicator::RespawnFailed, Some(RED), "respawn failed"),
             // The two attention states.
             (CardIndicator::Blocked, Some(YELLOW), "blocked"),
             (
@@ -767,6 +832,105 @@ mod tests {
         ]
     }
 
+    // -- Phoenix marker ----------------------------------------------------
+    //
+    // core.allium's "Phoenix marker": the glyph says "this task still owes a
+    // respawn" in every column. In backlog that is what a phoenix task IS; in
+    // done it means the copy did not land.
+
+    fn phoenix_task(id: i64, status: TaskStatus) -> Task {
+        let mut t = make_task(id, status);
+        t.phoenix = true;
+        t
+    }
+
+    #[test]
+    fn only_a_phoenix_task_carries_the_marker() {
+        assert_eq!(
+            phoenix_marker(&phoenix_task(1, TaskStatus::Backlog)),
+            PHOENIX_GLYPH
+        );
+        assert_eq!(phoenix_marker(&make_task(2, TaskStatus::Backlog)), "");
+    }
+
+    /// The one place on the board where a glyph's rendered width and its
+    /// character count differ: `♻` is drawn two columns wide, so the marker
+    /// costs THREE cells (leading space included) rather than the two a
+    /// `chars().count()` budget would reserve. Under-reserve and every phoenix
+    /// card's title overruns its frame by a column.
+    #[test]
+    fn the_marker_reserves_its_rendered_width_not_its_character_count() {
+        let recurring = phoenix_task(1, TaskStatus::Backlog);
+        let ordinary = make_task(1, TaskStatus::Backlog);
+
+        let extra = task_card_prefix_width(&recurring, false, false)
+            - task_card_prefix_width(&ordinary, false, false);
+
+        assert_eq!(
+            extra, 3,
+            "a space plus a two-column glyph; {PHOENIX_GLYPH:?} counts as one char but draws as two"
+        );
+    }
+
+    /// A phoenix task sitting in done is one whose respawn did not land — the
+    /// flag is cleared exactly when the successor is created. It is a hard
+    /// failure, so it takes the red border and a ⚠ line.
+    #[test]
+    fn a_phoenix_task_left_in_done_classifies_as_respawn_failed() {
+        let now = Utc::now();
+        let app = App::new(vec![]);
+        let task = phoenix_task(1, TaskStatus::Done);
+
+        let indicator = classify_card_indicator(&task, task.status, &app, now);
+
+        assert_eq!(indicator, CardIndicator::RespawnFailed);
+        assert_eq!(state_border_color(&indicator), Some(RED));
+        let text = line_text(&render_card_indicator(indicator, &[]));
+        assert!(text.contains("respawn failed"), "got {text:?}");
+        assert!(
+            text.contains('\u{26a0}'),
+            "the red set renders a warning glyph, got {text:?}"
+        );
+    }
+
+    /// It outranks the merged-PR card: a phoenix task completed by a PR merge
+    /// whose respawn then failed must say so, not report the merge.
+    #[test]
+    fn respawn_failed_outranks_done_merged() {
+        let now = Utc::now();
+        let app = App::new(vec![]);
+        let mut task = phoenix_task(1, TaskStatus::Done);
+        task.url = Some(crate::models::TaskUrl::new(
+            "https://github.com/org/repo/pull/7",
+            crate::models::UrlType::Pr,
+        ));
+
+        assert_eq!(
+            classify_card_indicator(&task, task.status, &app, now),
+            CardIndicator::RespawnFailed
+        );
+    }
+
+    /// A successful respawn clears the flag, so the predecessor's done card is
+    /// an ordinary one — and a phoenix task that has NOT reached done yet is
+    /// not a failure either.
+    #[test]
+    fn respawn_failed_needs_both_the_flag_and_done() {
+        let now = Utc::now();
+        let app = App::new(vec![]);
+        for task in [
+            make_task(1, TaskStatus::Done),
+            phoenix_task(2, TaskStatus::Backlog),
+        ] {
+            assert_ne!(
+                classify_card_indicator(&task, task.status, &app, now),
+                CardIndicator::RespawnFailed,
+                "task {} should not read as a failed respawn",
+                task.id
+            );
+        }
+    }
+
     #[test]
     fn every_indicator_claims_the_border_its_severity_earns() {
         for (indicator, expected, name) in every_indicator() {
@@ -779,7 +943,7 @@ mod tests {
     }
 
     #[test]
-    fn exactly_four_indicators_are_hard_failures() {
+    fn exactly_five_indicators_are_hard_failures() {
         // The counts are the membership claim stated a second way: the per-variant
         // test above would still pass if a variant were *added* to the red set and
         // its expectation updated in the same edit. These numbers make that edit
@@ -789,8 +953,8 @@ mod tests {
         let amber = all.iter().filter(|(_, c, _)| *c == Some(YELLOW)).count();
         let none = all.iter().filter(|(_, c, _)| c.is_none()).count();
         assert_eq!(
-            red, 4,
-            "the hard-failure set must have exactly four members"
+            red, 5,
+            "the hard-failure set must have exactly five members"
         );
         assert_eq!(
             amber, 3,

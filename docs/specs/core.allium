@@ -281,6 +281,14 @@ entity Task {
                                     -- has-plan addendum skips asking the dispatched
                                     -- agent to confirm before implementing (see
                                     -- dispatch.allium's build_prompt guidance)
+    phoenix: Boolean = false  -- a recurring task: entering done creates a fresh backlog
+                              -- copy of it, and the flag MOVES to that copy (see
+                              -- tasks.allium: PhoenixRespawn). Independent of `tag` on
+                              -- purpose — a phoenix task still carries whatever kanban
+                              -- label it wants, and `tag` keeps its two behavioural
+                              -- readers untouched (see "Tag system" in
+                              -- docs/conventions.md). Not a schedule: nothing dispatches
+                              -- a phoenix task, the human does.
     created_at: Timestamp
     updated_at: Timestamp
 
@@ -344,6 +352,13 @@ entity Task {
     -- only when the url is pr-typed; otherwise null. Not persisted; computed
     -- on demand.
     pr_number: if url != null and url.url_type = pr: pr_number_from_url(url.url) else: null
+
+    -- A phoenix task sitting in done is one whose respawn did not land.
+    -- PhoenixRespawn (tasks.allium) clears the flag exactly when the successor
+    -- was created, so a surviving flag in done IS the failure state — there is
+    -- no separate error column to keep in step with it. Surfaced on the card by
+    -- "Phoenix marker" below.
+    respawn_failed: phoenix and status = done
 
     -- live_subagents is a denormalised count of this task's SubagentEntry
     -- rows (see SubagentEntry below); every mutation and clear point
@@ -1336,11 +1351,13 @@ value VisualColumn {
 -- The state colours are a closed set, chosen so that the border never
 -- says anything the card is not already saying elsewhere:
 --
---   RED     the four hard failures — unprovisioned, auto-dispatch
---           failed, rebase conflict, crashed. These are exactly the
---           states whose indicator line already renders a ⚠, so border
---           and glyph agree by construction rather than by two lists
---           being maintained in parallel.
+--   RED     the five hard failures — unprovisioned, auto-dispatch
+--           failed, rebase conflict, crashed, and respawn-failed (a
+--           phoenix task left sitting in done with its flag intact; see
+--           "Phoenix marker"). These are exactly the states whose
+--           indicator line already renders a ⚠, so border and glyph agree
+--           by construction rather than by two lists being maintained in
+--           parallel.
 --   YELLOW  the three attention states — needs-input (blocked), stale,
 --           and stale-shell (a live backgrounded shell running long
 --           enough to look abandoned; see "ShellEntry" and
@@ -1580,6 +1597,35 @@ value VisualColumn {
 -- reasoned about on its own. This change removes a rule from the spec
 -- instead of adding one, which is the main reason it is worth making.
 --
+-- == Phoenix marker ==
+--
+-- A task with phoenix = true carries a recycling glyph (♻ U+267B) on its
+-- title line, in the same position and by the same mechanism as the message
+-- flash glyphs. It says one thing in every column: **this task still owes a
+-- respawn**. In backlog, running and review that is simply what a phoenix
+-- task is. In done it is a failure — PhoenixRespawn clears the flag exactly
+-- when the successor was created (tasks.allium), so a done card still
+-- showing ♻ is a task whose copy did not land. One glyph, one meaning; which
+-- column it sits in is what makes that meaning good or bad news.
+--
+-- The marker is not a state colour. Outside done it takes the resting
+-- neutral border like any healthy card, on the same terms as the message
+-- flash: it is an attribute of the task, not a condition wanting a human.
+-- Inside done it is Task.respawn_failed, which IS such a condition, and that
+-- is what takes the border — see "Card border: cursor and state", where it
+-- is one of the RED set, and it renders a ⚠ indicator line like the rest of
+-- that set.
+--
+-- ♻ is the one card glyph that is not one column wide. Every other glyph on
+-- a card — ▎ (U+258E), ✉ (U+2709), ➤ (U+27A4), ▸ (U+25B8), ✓, ⚠ — is a
+-- single-column BMP character, and the title-width budget is built by
+-- counting characters. ♻ has emoji presentation in most terminals and is
+-- drawn two columns wide, so the budget must reserve its RENDERED width, not
+-- its character count. Get this wrong and the title overflows the card frame
+-- by one column on every phoenix card. This is the only place in the board
+-- where the two measures differ, which is exactly why it is written down
+-- rather than left to be rediscovered.
+--
 -- == Where these rules are enforced ==
 --
 -- Coverage lives in two files, and which one is not arbitrary. Most of it
@@ -1727,7 +1773,7 @@ value VisualColumn {
 --                                                every CardIndicator
 --                                                variant paired with the
 --                                                border it should claim
---   exactly_four_indicators_are_hard_failures    the counts: four red, two
+--   exactly_five_indicators_are_hard_failures    the counts: five red, three
 --                                                amber, and every variant
 --                                                in {red, amber, none}
 --

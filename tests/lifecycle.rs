@@ -52,6 +52,7 @@ async fn full_lifecycle() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -83,6 +84,7 @@ async fn full_lifecycle() {
                 last_peer_message_received_at: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
                 live_subagents: 0,
                 stop_pending: false,
                 live_shells: 0,

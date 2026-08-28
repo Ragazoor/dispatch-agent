@@ -3842,6 +3842,7 @@ async fn auto_run_plan_column_defaults_to_false() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -4243,6 +4244,77 @@ fn migration_v90_is_idempotent_and_survives_a_missing_v88() {
 
     crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn).unwrap();
     crate::db::migrations::migrate_v90_drop_scheduling_fields(&conn).unwrap();
+}
+
+/// v92 arms the phoenix recurrence. Every pre-existing row must land on
+/// `false` — no task written before this migration was recurring — and the
+/// column has to be `NOT NULL` so `row_to_task` can read it as a plain `bool`.
+#[test]
+fn migration_v92_adds_phoenix_defaulting_existing_rows_to_false() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             status TEXT NOT NULL DEFAULT 'backlog'
+         );
+         INSERT INTO tasks(title) VALUES('pre-existing');",
+    )
+    .unwrap();
+
+    crate::db::migrations::migrate_v92_add_phoenix(&conn).unwrap();
+
+    let phoenix: bool = conn
+        .query_row(
+            "SELECT phoenix FROM tasks WHERE title = 'pre-existing'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(!phoenix, "a row that predates the column is not a phoenix");
+
+    let not_null: i64 = conn
+        .query_row(
+            "SELECT \"notnull\" FROM pragma_table_info('tasks') WHERE name = 'phoenix'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(not_null, 1, "phoenix must be NOT NULL");
+}
+
+/// The v72 feed-subtree triggers must survive v92. `ADD COLUMN` should not make
+/// SQLite re-resolve them — that is the hazard v90's `DROP COLUMN` carries, not
+/// this one — but the uniqueness invariant they enforce is worth a tripwire
+/// either way.
+#[test]
+fn migration_v92_leaves_the_feed_subtree_triggers_intact() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "CREATE TABLE tasks (
+             id INTEGER PRIMARY KEY,
+             title TEXT NOT NULL,
+             epic_id INTEGER,
+             external_id TEXT,
+             status TEXT NOT NULL DEFAULT 'backlog'
+         );
+         CREATE TABLE epics (id INTEGER PRIMARY KEY, parent_epic_id INTEGER);",
+    )
+    .unwrap();
+    crate::db::migrations::migrate_v72_add_feed_task_subtree_unique_triggers(&conn).unwrap();
+
+    let before = trigger_names(&conn);
+    crate::db::migrations::migrate_v92_add_phoenix(&conn).unwrap();
+    assert_eq!(before, trigger_names(&conn));
+}
+
+fn trigger_names(conn: &rusqlite::Connection) -> Vec<String> {
+    conn.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
 }
 
 // --- v91: clamp pre-floor feed cadences (core.allium: "Interval literals") ---

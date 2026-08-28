@@ -615,6 +615,7 @@ mod fetch_caller_task_tests {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();

@@ -85,6 +85,7 @@ impl TuiRuntime {
             base_branch: Some(draft.base_branch),
             wrap_up_mode: draft.wrap_up_mode,
             auto_run_plan: false,
+            phoenix: draft.phoenix,
         };
         if let Some(task) = self.create_task(app, params).await {
             app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
@@ -126,6 +127,7 @@ impl TuiRuntime {
                     base_branch: Some(base_branch),
                     wrap_up_mode: None,
                     auto_run_plan: false,
+                    phoenix: false,
                 },
             )
             .await

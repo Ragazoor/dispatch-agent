@@ -29,6 +29,7 @@ async fn full_epic_lifecycle() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -45,6 +46,7 @@ async fn full_epic_lifecycle() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -115,6 +117,7 @@ async fn soft_archive_epic_does_not_violate_foreign_keys() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -172,6 +175,7 @@ async fn epic_stays_in_backlog_while_tasks_active_auto_moves_to_done() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     };
 
     let t1 = db.create_task(req("Task 1")).await.unwrap();

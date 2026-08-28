@@ -43,6 +43,7 @@ async fn seed_task(db_path: &Path, title: &str) -> TaskId {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap()

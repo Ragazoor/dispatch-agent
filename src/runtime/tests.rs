@@ -247,6 +247,7 @@ async fn create_task_returning(
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await?;
     db.get_task(id)
@@ -818,10 +819,13 @@ mod base_branch_history_and_task_exec {
         app.update(Message::Input(
             crate::tui::messages::InputMessage::SubmitBaseBranch("develop".to_string()),
         ));
-        // The wrap-up step is the form's last one; submitting it commits the
+        app.update(Message::Input(
+            crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
+        ));
+        // The phoenix step is the form's last one; submitting it commits the
         // creation (tasks.allium: CreateTask).
         let cmds = app.update(Message::Input(
-            crate::tui::messages::InputMessage::SubmitWrapUpMode(None),
+            crate::tui::messages::InputMessage::SubmitPhoenix(false),
         ));
 
         assert!(
@@ -902,6 +906,7 @@ mod base_branch_history_and_task_exec {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();
@@ -928,6 +933,7 @@ mod base_branch_history_and_task_exec {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();
@@ -3350,6 +3356,7 @@ mod spawn_refresh_from_db_via_msg_tx {
             base_branch: "main",
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -4529,6 +4536,7 @@ mod prepare_inputs {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();
@@ -4889,6 +4897,7 @@ mod spawn_refresh_epic {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -5032,6 +5041,7 @@ mod epic_group_by_repo_migration {
                 tag: None,
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();
@@ -5190,6 +5200,7 @@ mod event_loop {
                 base_branch: "main",
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();

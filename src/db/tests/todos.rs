@@ -191,6 +191,7 @@ async fn insert_todo_with_task_link_round_trips() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -254,6 +255,7 @@ async fn patch_todo_link_sets_and_clears() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();

@@ -684,6 +684,7 @@ fn render_input_form_confirm_retry_shows_options() {
         last_peer_message_received_at: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
         live_subagents: 0,
         stop_pending: false,
         live_shells: 0,

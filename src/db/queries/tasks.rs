@@ -29,6 +29,7 @@ struct OwnedCreateTaskRequest {
     tag: Option<crate::models::TaskTag>,
     wrap_up_mode: Option<WrapUpMode>,
     auto_run_plan: bool,
+    phoenix: bool,
 }
 
 impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
@@ -45,6 +46,7 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             tag,
             wrap_up_mode,
             auto_run_plan,
+            phoenix,
         } = r;
         Self {
             title: title.to_string(),
@@ -58,6 +60,7 @@ impl<'a> From<CreateTaskRequest<'a>> for OwnedCreateTaskRequest {
             tag,
             wrap_up_mode,
             auto_run_plan,
+            phoenix,
         }
     }
 }
@@ -145,6 +148,7 @@ struct OwnedTaskPatch {
     last_peer_message_received_at: Option<Option<chrono::DateTime<chrono::Utc>>>,
     wrap_up_mode: Option<Option<WrapUpMode>>,
     auto_run_plan: Option<bool>,
+    phoenix: Option<bool>,
     stop_pending: Option<bool>,
 }
 
@@ -171,6 +175,7 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             last_peer_message_received_at,
             wrap_up_mode,
             auto_run_plan,
+            phoenix,
             stop_pending,
         } = *p;
         Self {
@@ -193,6 +198,7 @@ impl<'a> From<&TaskPatch<'a>> for OwnedTaskPatch {
             last_peer_message_received_at,
             wrap_up_mode,
             auto_run_plan,
+            phoenix,
             stop_pending,
         }
     }
@@ -274,8 +280,8 @@ impl super::super::TaskCrud for Database {
             conn.execute(
                 "INSERT INTO tasks \
                  (title, description, repo_path, plan_path, status, sub_status, base_branch, \
-                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                  epic_id, sort_order, tag, wrap_up_mode, auto_run_plan, phoenix) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     req.title,
                     req.description,
@@ -289,6 +295,7 @@ impl super::super::TaskCrud for Database {
                     req.tag.map(|t| t.as_str()),
                     req.wrap_up_mode.map(|m| m.as_str()),
                     req.auto_run_plan,
+                    req.phoenix,
                 ],
             )
             .context("Failed to insert task")?;
@@ -414,6 +421,7 @@ impl super::super::TaskCrud for Database {
                 "wrap_up_mode"
             );
             set_field!(sets, values, patch.auto_run_plan, "auto_run_plan");
+            set_field!(sets, values, patch.phoenix, "phoenix");
             set_field!(sets, values, patch.stop_pending, "stop_pending");
 
             sets.push("updated_at = datetime('now')");
@@ -729,12 +737,21 @@ impl super::super::TaskCrud for Database {
             let claim_set = super::CLAIM_SET;
             // The subquery carries the whole selection rule, so the row this
             // updates is chosen and claimed in the same statement.
+            //
+            // `phoenix = 0` is PhoenixIsNeverChained (docs/specs/epics.allium):
+            // a recurring subtask is never auto-dispatched. It closes a loop
+            // with no floor — a phoenix subtask respawns on completion, and
+            // chaining the successor would launch an agent at it immediately,
+            // forever — and it is what the flag means: the human picks the
+            // moment. The chain passes over it and takes the next ordinary
+            // backlog subtask behind it.
             let claimed = conn
                 .query_row(
                     &format!(
                         "UPDATE tasks {claim_set} \
                          WHERE id = (SELECT id FROM tasks \
                                       WHERE epic_id = ?4 AND status = ?5 \
+                                        AND phoenix = 0 \
                                       ORDER BY COALESCE(sort_order, id), id \
                                       LIMIT 1) \
                          RETURNING id"

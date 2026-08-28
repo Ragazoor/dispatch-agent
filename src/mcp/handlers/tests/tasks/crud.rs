@@ -138,6 +138,7 @@ async fn update_task_maps_every_advertised_field_to_params() {
                 "base_branch": "develop",
                 "wrap_up_mode": "pr",
                 "auto_run_plan": true,
+                "phoenix": true,
             }
         })),
     )
@@ -345,6 +346,7 @@ async fn get_task_found() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -516,6 +518,7 @@ async fn update_task_accepts_string_task_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -591,6 +594,7 @@ fn mock_task(id: i64, title: &str) -> crate::models::Task {
         last_peer_message_received_at: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
         live_subagents: 0,
         stop_pending: false,
         live_shells: 0,
@@ -652,6 +656,7 @@ async fn get_task_accepts_string_task_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -692,6 +697,7 @@ async fn update_task_with_plan() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -729,6 +735,7 @@ async fn update_task_title_only() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -770,6 +777,7 @@ async fn update_task_status_optional() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -807,6 +815,7 @@ async fn update_task_title_and_description() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -844,6 +853,7 @@ async fn update_task_repo_path() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -885,6 +895,7 @@ async fn update_task_no_fields_errors() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -918,6 +929,7 @@ async fn patch_task_sets_multiple_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -959,6 +971,7 @@ async fn update_task_without_plan_preserves_existing() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -999,6 +1012,7 @@ async fn update_task_sets_pr_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1332,6 +1346,7 @@ async fn list_tasks_returns_all_when_no_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1349,6 +1364,7 @@ async fn list_tasks_returns_all_when_no_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1383,6 +1399,7 @@ async fn list_tasks_filters_by_single_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1400,6 +1417,7 @@ async fn list_tasks_filters_by_single_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1434,6 +1452,7 @@ async fn list_tasks_filters_by_multiple_statuses() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1451,6 +1470,7 @@ async fn list_tasks_filters_by_multiple_statuses() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1468,6 +1488,7 @@ async fn list_tasks_filters_by_multiple_statuses() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1624,6 +1645,7 @@ async fn update_task_sets_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1665,6 +1687,7 @@ async fn update_task_rejects_invalid_sub_status_for_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1698,6 +1721,7 @@ async fn update_task_rejects_bogus_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1731,6 +1755,7 @@ async fn update_task_sub_status_with_status_change() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1769,6 +1794,7 @@ async fn update_task_status_running_with_needs_input() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1809,6 +1835,7 @@ async fn update_task_sub_status_invalid_for_new_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1843,6 +1870,7 @@ async fn list_tasks_shows_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -1885,6 +1913,7 @@ async fn get_task_shows_sub_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2143,6 +2172,7 @@ async fn list_tasks_filters_by_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2160,6 +2190,7 @@ async fn list_tasks_filters_by_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2209,6 +2240,7 @@ async fn list_tasks_filters_by_status_and_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2226,6 +2258,7 @@ async fn list_tasks_filters_by_status_and_epic_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2278,6 +2311,7 @@ async fn list_tasks_epic_filter_no_match() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2310,6 +2344,7 @@ async fn list_tasks_done_status_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2327,6 +2362,7 @@ async fn list_tasks_done_status_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2374,6 +2410,7 @@ async fn wrap_up_rebase_does_not_change_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2432,6 +2469,7 @@ async fn wrap_up_rebase_does_not_recalculate_epic_status() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2490,6 +2528,7 @@ async fn wrap_up_accepts_string_task_id() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2542,6 +2581,7 @@ async fn get_task_shows_all_fields() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2610,6 +2650,7 @@ async fn get_task_without_epic_omits_epic_line() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2651,6 +2692,7 @@ async fn list_tasks_shows_tag_and_plan_indicators() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2701,6 +2743,7 @@ async fn list_tasks_shows_epic_indicator() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2741,6 +2784,7 @@ async fn list_tasks_truncates_long_descriptions() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2779,6 +2823,7 @@ async fn list_tasks_excludes_archived_by_default() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2796,6 +2841,7 @@ async fn list_tasks_excludes_archived_by_default() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2923,6 +2969,7 @@ async fn update_task_with_base_branch_updates_it() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2968,6 +3015,7 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -2984,6 +3032,7 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3000,6 +3049,7 @@ async fn list_tasks_task_identity_scopes_to_epic_and_excludes_self() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3040,6 +3090,7 @@ async fn list_tasks_task_identity_scopes_to_project_when_no_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3056,6 +3107,7 @@ async fn list_tasks_task_identity_scopes_to_project_when_no_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3093,6 +3145,7 @@ async fn list_tasks_session_identity_sees_all_tasks() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -3108,6 +3161,7 @@ async fn list_tasks_session_identity_sees_all_tasks() {
         tag: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
     })
     .await
     .unwrap();
@@ -3142,6 +3196,7 @@ async fn list_tasks_repo_paths_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3159,6 +3214,7 @@ async fn list_tasks_repo_paths_filter() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3233,6 +3289,7 @@ async fn list_tasks_includes_plan_goal_in_output() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3271,6 +3328,7 @@ async fn list_tasks_falls_back_to_description_when_no_plan() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3332,6 +3390,7 @@ async fn update_task_pr_finalisation_appends_reflection_nudge_by_default() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3379,6 +3438,7 @@ async fn update_task_pr_finalisation_omits_nudge_when_disabled() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3424,6 +3484,7 @@ async fn update_task_pr_set_without_status_does_not_nudge() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3467,6 +3528,7 @@ async fn update_task_status_review_without_pr_url_change_does_not_nudge() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3511,6 +3573,7 @@ async fn update_task_pr_url_already_set_does_not_nudge_again() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3581,6 +3644,7 @@ async fn create_task_task_identity_inherits_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3618,6 +3682,7 @@ async fn create_task_explicit_null_epic_clears_inheritance() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3672,6 +3737,7 @@ async fn get_task_shows_wrap_up_mode_when_set() {
             tag: None,
             wrap_up_mode: Some(crate::models::WrapUpMode::Rebase),
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -3731,5 +3797,137 @@ async fn get_task_omits_verify_command_when_unconfigured() {
     assert!(
         !text.contains("Verify command"),
         "expected no 'Verify command' line in output, got: {text}"
+    );
+}
+
+// -- phoenix ---------------------------------------------------------------
+
+#[tokio::test]
+async fn create_task_accepts_phoenix() {
+    let state = test_state().await;
+
+    let resp = call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "create_task",
+            "arguments": {
+                "title": "Weekly dep audit",
+                "repo_path": "/repo",
+                "phoenix": true
+            }
+        })),
+    )
+    .await;
+
+    let id = extract_created_task_id(&resp);
+    let task = state.db.get_task(id).await.unwrap().unwrap();
+    assert!(task.phoenix);
+}
+
+#[tokio::test]
+async fn create_task_defaults_phoenix_to_false() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+    assert!(!state.db.get_task(task_id).await.unwrap().unwrap().phoenix);
+}
+
+#[tokio::test]
+async fn update_task_sets_and_clears_phoenix() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "phoenix": true }
+        })),
+    )
+    .await;
+    assert!(state.db.get_task(task_id).await.unwrap().unwrap().phoenix);
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "phoenix": false }
+        })),
+    )
+    .await;
+    assert!(!state.db.get_task(task_id).await.unwrap().unwrap().phoenix);
+}
+
+/// Omitting the field is a no-op, not a clear — the same nullable-boolean
+/// semantics `auto_run_plan` has.
+#[tokio::test]
+async fn update_task_omitting_phoenix_leaves_it_alone() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "phoenix": true }
+        })),
+    )
+    .await;
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "title": "renamed" }
+        })),
+    )
+    .await;
+
+    assert!(state.db.get_task(task_id).await.unwrap().unwrap().phoenix);
+}
+
+/// So a dispatched agent wrapping up knows it is finishing THIS run of a
+/// recurring task, not the task itself.
+#[tokio::test]
+async fn get_task_shows_phoenix_when_set_and_omits_it_otherwise() {
+    let state = test_state().await;
+    let task_id = create_task_fixture(&state).await;
+
+    let plain = extract_response_text(
+        &call(
+            &state,
+            "tools/call",
+            Some(json!({ "name": "get_task", "arguments": { "task_id": task_id.0 } })),
+        )
+        .await,
+    );
+    assert!(
+        !plain.contains("Phoenix"),
+        "an ordinary task shows no Phoenix line, got: {plain}"
+    );
+
+    call(
+        &state,
+        "tools/call",
+        Some(json!({
+            "name": "update_task",
+            "arguments": { "task_id": task_id.0, "phoenix": true }
+        })),
+    )
+    .await;
+    let recurring = extract_response_text(
+        &call(
+            &state,
+            "tools/call",
+            Some(json!({ "name": "get_task", "arguments": { "task_id": task_id.0 } })),
+        )
+        .await,
+    );
+    assert!(
+        recurring.contains("Phoenix"),
+        "expected a Phoenix line, got: {recurring}"
     );
 }

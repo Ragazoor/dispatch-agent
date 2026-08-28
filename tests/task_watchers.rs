@@ -71,6 +71,7 @@ async fn subscribe_then_finish_delivers_notification() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -97,6 +98,7 @@ async fn subscribe_then_finish_delivers_notification() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();

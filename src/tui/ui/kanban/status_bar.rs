@@ -218,6 +218,11 @@ fn status_line(app: &App, area: Rect) -> (Line<'static>, Style) {
         InputMode::InputWrapUpMode => {
             hint_text(app, "Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip", YELLOW)
         }
+        InputMode::InputPhoenix => hint_text(
+            app,
+            "Phoenix — recreate this task when it's done? [y/N]",
+            YELLOW,
+        ),
         InputMode::MainSessionDir => {
             let line = crate::tui::ui::caret_field_line(
                 area.width,

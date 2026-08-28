@@ -334,6 +334,7 @@ impl TuiRuntime {
             wrap_up_mode,
             url,
             resolved_url,
+            phoenix,
         } = applied;
 
         let mut params = UpdateTaskParams::for_task(task_id)
@@ -344,7 +345,8 @@ impl TuiRuntime {
             .repo_path(repo_path.clone())
             .tag(Some(tag))
             .base_branch(base_branch.clone())
-            .wrap_up_mode(wrap_up_mode);
+            .wrap_up_mode(wrap_up_mode)
+            .phoenix(phoenix);
         // Only forward a url change when the edit actually altered it.
         if let Some(url_update) = url {
             params = params.url(url_update);
@@ -375,6 +377,7 @@ impl TuiRuntime {
                 base_branch,
                 wrap_up_mode,
                 url: resolved_url,
+                phoenix,
             },
         )))
     }
@@ -845,6 +848,7 @@ mod tests {
 
                 wrap_up_mode: None,
                 auto_run_plan: false,
+                phoenix: false,
             })
             .await
             .unwrap();

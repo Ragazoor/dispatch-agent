@@ -289,6 +289,9 @@ pub enum InputMode {
     },
     InputBaseBranch,
     InputWrapUpMode,
+    /// The creation form's last step: a y/N confirm arming the phoenix
+    /// recurrence (CreateTask in `docs/specs/tasks.allium`).
+    InputPhoenix,
     MainSessionDir,
     /// In-view title input for adding or editing a personal TODO item.
     TodoTitle,
@@ -338,6 +341,7 @@ pub struct TaskDraft {
     pub tag: Option<TaskTag>,
     pub base_branch: String,
     pub wrap_up_mode: Option<WrapUpMode>,
+    pub phoenix: bool,
 }
 
 impl Default for TaskDraft {
@@ -349,6 +353,7 @@ impl Default for TaskDraft {
             tag: None,
             base_branch: DEFAULT_BASE_BRANCH.to_string(),
             wrap_up_mode: None,
+            phoenix: false,
         }
     }
 }
@@ -600,6 +605,7 @@ pub struct TaskEdit {
     /// Resolved post-edit url value (not a delta): `Some` to set, `None` to
     /// clear or leave absent. Applied directly to the in-memory task snapshot.
     pub url: Option<crate::models::TaskUrl>,
+    pub phoenix: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1063,6 +1069,7 @@ mod tests {
             last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
             live_subagents: 0,
             stop_pending: false,
             live_shells: 0,

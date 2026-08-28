@@ -108,6 +108,7 @@ patch_struct! {
         nullable last_peer_message_received_at: chrono::DateTime<chrono::Utc>,
         nullable wrap_up_mode: WrapUpMode,
         plain    auto_run_plan: bool,
+        plain    phoenix:       bool,
         plain    stop_pending: bool,
     }
 }
@@ -129,6 +130,7 @@ pub struct CreateTaskRequest<'a> {
     pub tag: Option<TaskTag>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
+    pub phoenix: bool,
 }
 
 // ---------------------------------------------------------------------------

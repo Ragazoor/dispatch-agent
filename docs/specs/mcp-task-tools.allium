@@ -22,7 +22,7 @@ use "./core.allium" as core
 rule UpdateTaskViaMcp {
     when: McpUpdateTask(task, status?, sub_status?, plan?, title?, description?,
                         repo_path?, sort_order?, url?, url_type?, tag?, epic_id?,
-                        base_branch?, wrap_up_mode?, auto_run_plan?)
+                        base_branch?, wrap_up_mode?, auto_run_plan?, phoenix?)
 
     requires: status != null or sub_status != null or plan != null or title != null
               or description != null or repo_path != null
@@ -31,6 +31,7 @@ rule UpdateTaskViaMcp {
               or base_branch != null
               or wrap_up_mode != omitted
               or auto_run_plan != null
+              or phoenix != null
 
     -- Typed-url validation contract. The url string and its type travel
     -- together; the handler rejects inconsistent combinations before any
@@ -131,12 +132,17 @@ rule UpdateTaskViaMcp {
         if wrap_up_mode != omitted: task.wrap_up_mode = wrap_up_mode
     ensures:
         if auto_run_plan != null: task.auto_run_plan = auto_run_plan
+        -- phoenix is a plain nullable boolean: omitted leaves it alone, true
+        -- and false set it. What it then does is PhoenixRespawn
+        -- (tasks.allium) — and note this tool cannot set status to done, so
+        -- an agent can arm or disarm the recurrence but never trigger it.
+        if phoenix != null: task.phoenix = phoenix
     ensures: task.updated_at = now
 
     @guidance
         -- MCP update_task accepts status, sub_status, plan_path, title,
         -- description, repo_path, sort_order, url, url_type, tag, epic_id,
-        -- base_branch, and wrap_up_mode. It does NOT accept
+        -- base_branch, wrap_up_mode, and phoenix. It does NOT accept
         -- worktree or tmux_window — those are owned by the dispatch flow
         -- and never set via MCP.
         -- wrap_up_mode can be set to "rebase", "pr", or "done" to pre-set
@@ -145,6 +151,12 @@ rule UpdateTaskViaMcp {
         -- auto_run_plan (boolean, not nullable at the Task level) can be
         -- set via create_task or update_task. Omitting it is a no-op on
         -- update; create_task defaults it to false when absent.
+        -- phoenix behaves the same way, and is the one field here an agent is
+        -- expected to set on ITSELF: a dispatched agent that works out the task
+        -- it is running is a recurring one calls update_task(phoenix: true) and
+        -- the recurrence survives its own session. Arming it costs nothing if
+        -- wrong — the flag does nothing until the task reaches done, and the
+        -- human can clear it from the editor.
         -- Note: worktree and tmux_window ARE mutable through the internal
         -- Rust TaskService::update_task API (UpdateTaskParams defines
         -- them; see src/service/tasks/params.rs). The runtime uses that
@@ -241,7 +253,7 @@ rule CreateTaskViaMcp {
     when: McpCreateTask(caller_identity,
                         title, repo_path, description?, plan?,
                         epic_id?, sort_order?, tag?, base_branch?,
-                        wrap_up_mode?, auto_run_plan?)
+                        wrap_up_mode?, auto_run_plan?, phoenix?)
 
     -- caller_identity is supplied by the dispatch HTTP transport, not by
     -- the tool arguments. It is one of:
@@ -274,6 +286,7 @@ rule CreateTaskViaMcp {
         base_branch: base_branch ?? core/config.default_branch,
         wrap_up_mode: wrap_up_mode,
         auto_run_plan: auto_run_plan ?? false,
+        phoenix: phoenix ?? false,
         created_at: now,
         updated_at: now
     )
@@ -346,7 +359,11 @@ rule GetTaskViaMcp {
         --   resolved)], [Tag], [Plan], [<url label>: <url> — the typed label
         --   derived from url.url_type], [Worktree], Base branch,
         --   [Tmux window], [Sort order], [Verify command], [Wrap-up mode],
-        --   Created, Updated.
+        --   [Phoenix], Created, Updated.
+        -- [Phoenix] renders only when the flag is true, and says the task will
+        -- come back — so an agent wrapping up knows it is finishing THIS run of
+        -- a recurring task, not the task itself, and can leave notes for its
+        -- successor in the description rather than only in the commit.
         -- Not surfaced at all: labels, external_id, auto_run_plan, origin, and
         -- the hook timestamps (last_pre_tool_use_at, last_notification_at,
         -- pr_learnings_gate_shown_at).

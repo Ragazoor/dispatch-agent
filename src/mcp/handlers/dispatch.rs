@@ -187,6 +187,10 @@ mcp_tools! {
                 "auto_run_plan": {
                     "type": "boolean",
                     "description": "When true and a plan_path is set, the dispatched agent implements the plan immediately instead of summarizing it and asking for confirmation first. Use only when the plan has already been reviewed (e.g. by the decompose-review skill's work-package confirmation step). Defaults to false."
+                },
+                "phoenix": {
+                    "type": "boolean",
+                    "description": "When true, completing this task automatically recreates it as a fresh backlog copy carrying the same settings, and the flag moves to that copy. A recurring task with no schedule — nothing dispatches the copy, you do. Defaults to false."
                 }
             },
             "required": ["title", "repo_path"]

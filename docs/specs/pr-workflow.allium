@@ -127,6 +127,10 @@ rule PrMerged {
         -- completion_recency_rank(now) is the same completion-recency
         -- helper used by ConfirmDone (tasks.allium): more-recently-completed
         -- tasks sort first among Done items.
+        -- A merged PR on a phoenix task respawns it (tasks.allium:
+        -- PhoenixRespawn), on the same terms as any other route into done: the
+        -- trigger is the status transition, and this one reaches it through the
+        -- same service write path as the rest.
 }
 
 rule PrClosed {
@@ -457,6 +461,19 @@ rule ExitSession {
                 task.stop_pending = false
             task.updated_at = now
 
+    -- A close whose action is rebase or done takes task.status to done, so a
+    -- phoenix task closing through this rule respawns (tasks.allium:
+    -- PhoenixRespawn). The action = pr branch does NOT: it lands in review, and
+    -- the respawn waits for the PR to merge (PrMerged above) or for a human to
+    -- complete the task by hand.
+    --
+    -- Where the respawn sits relative to the chain below is deliberately NOT
+    -- specified, because it cannot matter: AutoDispatchNextSubtask skips
+    -- phoenix subtasks (PhoenixIsNeverChained), so whether the successor row
+    -- exists yet when the chain runs its selection changes nothing it would
+    -- pick. Any implementation ordering is correct, and none of them should be
+    -- relied on.
+    --
     -- Emitted after the terminal mutation and after the task/epic-changed
     -- notifications have landed, so an epic chain keyed on it
     -- (AutoDispatchNextSubtask in epics.allium) sees the closed task in its

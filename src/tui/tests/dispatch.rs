@@ -1759,6 +1759,7 @@ fn quick_dispatch_status_uses_freshly_created_title() {
         last_peer_message_received_at: None,
         wrap_up_mode: None,
         auto_run_plan: false,
+        phoenix: false,
         live_subagents: 0,
         stop_pending: false,
         live_shells: 0,

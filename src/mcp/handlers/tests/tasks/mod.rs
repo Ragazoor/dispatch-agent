@@ -128,6 +128,7 @@ async fn get_epic_shows_subtask_summary() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -145,6 +146,7 @@ async fn get_epic_shows_subtask_summary() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -262,6 +264,7 @@ async fn list_epics_shows_subtask_counts() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -279,6 +282,7 @@ async fn list_epics_shows_subtask_counts() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();
@@ -738,6 +742,7 @@ async fn create_task_in_repo(state: &Arc<McpState>, repo: &str) -> crate::models
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap()
@@ -868,6 +873,7 @@ async fn record_learning_derives_scope_ref_for_epic() {
             tag: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
         })
         .await
         .unwrap();

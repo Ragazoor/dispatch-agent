@@ -671,8 +671,9 @@ rule AutoDispatchNextSubtask {
     ensures:
         if epic != null and epic.auto_dispatch:
             -- First backlog subtask, ordered by sort_order (nulls fall back to
-            -- the task id), then by id.
-            let next = first_by_order(epic.subtasks where status = backlog)
+            -- the task id), then by id. Phoenix subtasks are not candidates —
+            -- see PhoenixIsNeverChained below.
+            let next = first_by_order(epic.subtasks where status = backlog and not phoenix)
             if next != null:
                 DispatchTask(next)
 
@@ -711,15 +712,51 @@ rule AutoDispatchNextSubtask {
         -- keyed by task id, so the closing and opening windows cannot collide.
         -- The guarantee is about database state, not OS-level teardown.
         --
-        -- Three ways the chain stops, all normal outcomes: the closed task has
+        -- Four ways the chain stops, all normal outcomes: the closed task has
         -- no epic; the epic has auto_dispatch = false (see ToggleAutoDispatch);
-        -- or the epic has no backlog subtask left. In each case the epic is
+        -- the epic has no backlog subtask left; or every backlog subtask it has
+        -- left is a phoenix one (see PhoenixIsNeverChained). In each case the epic is
         -- untouched and the close reports a plain "session closed" response,
         -- and the human dispatches the next subtask from the TUI — the same
         -- recovery path auto_dispatch = false already produces. (A close whose
         -- terminal write failed also leaves the epic untouched, but that is a
         -- failure rather than a normal outcome and its response text says so;
         -- see above.)
+        --
+        -- PhoenixIsNeverChained. A subtask with phoenix = true is never a
+        -- candidate, in any epic, whatever its position. Two reasons, and the
+        -- first is a hard one:
+        --
+        --   1. It closes a loop that would otherwise have no floor. A phoenix
+        --      subtask that finished would respawn into backlog (tasks.allium:
+        --      PhoenixRespawn) and this rule would immediately dispatch the
+        --      successor, which would finish, respawn, and be dispatched again
+        --      — an epic that never runs out of work and never stops launching
+        --      agents. The guard lives HERE rather than in PhoenixRespawn
+        --      because the respawn is not the questionable half: creating a
+        --      backlog task is always safe, and launching an agent at it
+        --      unattended is the step that needs the veto.
+        --   2. It is what a phoenix task means. The flag exists so a recurring
+        --      task can be queued without being scheduled — the human picks the
+        --      moment (see the head of the Phoenix section in tasks.allium).
+        --      A phoenix task that auto-dispatched would be a scheduled task
+        --      with extra steps.
+        --
+        -- The skip is a filter, not a stop: the chain passes OVER a phoenix
+        -- subtask and dispatches the next ordinary backlog subtask behind it.
+        -- An epic whose only remaining backlog subtasks are phoenix ones stops,
+        -- and that is the fourth normal stopping condition alongside the three
+        -- below.
+        --
+        -- It belongs to the CHAIN and to nothing else. Human dispatch is
+        -- deliberately unaffected: pressing Space on a phoenix backlog card
+        -- claims and launches it exactly as it would any other, which is the
+        -- entire point of the flag (see the head of the Phoenix section in
+        -- tasks.allium — the recurrence is in the queueing, not the running).
+        -- Concretely, the two claim statements differ here and must keep
+        -- differing: the by-epic claim excludes phoenix rows, the by-id claim
+        -- (DispatchClaimExclusive, dispatch.allium) does not. Adding the filter
+        -- to both would make a phoenix task undispatchable.
         --
         -- Candidate selection. Only direct Task children are candidates,
         -- ordered by sort_order ascending with the task id both as the fallback

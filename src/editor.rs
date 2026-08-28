@@ -84,6 +84,11 @@ pub struct EditorFields {
     /// "infer from the url, or preserve the prior type if the url is unchanged"
     /// at apply time.
     pub url_type: Option<crate::models::UrlType>,
+    /// Parsed phoenix flag, or `None` if the section was empty/absent or
+    /// unparseable (parse failures are recorded in `errors`). `None` is applied
+    /// as `false` in `apply_task_editor_fields` — the same "clear it" the TAG
+    /// and WRAP_UP_MODE sections mean.
+    pub phoenix: Option<bool>,
     pub errors: Vec<EditorParseError>,
 }
 
@@ -216,6 +221,7 @@ pub fn format_editor_content(task: &Task) -> String {
     let wrap_up_mode = task.wrap_up_mode.map(|m| m.as_str()).unwrap_or("");
     let url = task.url.as_ref().map(|u| u.url.as_str()).unwrap_or("");
     let url_type = task.url.as_ref().map(|u| u.url_type.as_str()).unwrap_or("");
+    let phoenix = if task.phoenix { "true" } else { "false" };
     format!(
         "--- TITLE ---\n{title}\n\
          --- DESCRIPTION ---\n{description}\n\
@@ -225,6 +231,7 @@ pub fn format_editor_content(task: &Task) -> String {
          --- TAG ---\n{tag}\n\
          --- BASE_BRANCH ---\n{base_branch}\n\
          --- WRAP_UP_MODE ---\n{wrap_up_mode}\n\
+         --- PHOENIX ---\n{phoenix}\n\
          --- URL ---\n{url}\n\
          --- URL_TYPE ---\n{url_type}\n",
         title = task.title,
@@ -274,6 +281,7 @@ pub struct TaskEditApplied {
     /// prior task to decide whether a DB write is needed), so callers get
     /// the true post-edit value even when `url` itself is `None` (no-op diff).
     pub resolved_url: Option<crate::models::TaskUrl>,
+    pub phoenix: bool,
 }
 
 /// Resolve the desired `Option<TaskUrl>` from the parsed URL string and
@@ -343,6 +351,9 @@ pub fn apply_task_editor_fields(task: &Task, fields: EditorFields) -> TaskEditAp
     } else {
         Some(crate::service::UrlUpdate::Clear)
     };
+    // Non-nullable boolean: `None` (empty/unparseable section) means false, the
+    // same "clear it" tag and wrap_up_mode take from a missing section.
+    let phoenix = fields.phoenix.unwrap_or(false);
     let resolved_plan_path = plan_path.as_option().map(str::to_string);
     TaskEditApplied {
         title,
@@ -356,6 +367,7 @@ pub fn apply_task_editor_fields(task: &Task, fields: EditorFields) -> TaskEditAp
         wrap_up_mode,
         url,
         resolved_url: desired_url,
+        phoenix,
     }
 }
 
@@ -423,6 +435,14 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
         &mut errors,
     );
 
+    let phoenix = parse_section(
+        s.remove("PHOENIX").unwrap_or_default(),
+        "PHOENIX",
+        parse_editor_bool,
+        |raw| format!("not a yes/no value: {raw:?} (valid: true, false, yes, no, on, off, 1, 0)"),
+        &mut errors,
+    );
+
     EditorFields {
         title: s.remove("TITLE").unwrap_or_default(),
         description: s.remove("DESCRIPTION").unwrap_or_default(),
@@ -434,7 +454,23 @@ pub fn parse_editor_content(input: &str) -> EditorFields {
         wrap_up_mode,
         url: s.remove("URL").unwrap_or_default(),
         url_type,
+        phoenix,
         errors,
+    }
+}
+
+/// The PHOENIX section's value grammar.
+///
+/// Deliberately wider than `true`/`false`. The section shares the enum-ish
+/// sections' one parse rule — empty and unparseable are treated identically, so
+/// an unparseable value CLEARS the flag — and accepting every spelling a human
+/// would reach for is what stops that rule quietly ending a recurrence. See
+/// EditTask in `docs/specs/tasks.allium`.
+fn parse_editor_bool(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" => Some(true),
+        "false" | "no" | "off" | "0" => Some(false),
+        _ => None,
     }
 }
 
@@ -588,6 +624,7 @@ mod tests {
             last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
             live_subagents: 0,
             stop_pending: false,
             live_shells: 0,
@@ -1233,6 +1270,7 @@ mod tests {
             vec![
                 "BASE_BRANCH",
                 "DESCRIPTION",
+                "PHOENIX",
                 "PLAN",
                 "REPO_PATH",
                 "STATUS",
@@ -1414,5 +1452,74 @@ mod tests {
             crate::service::FieldUpdate::Set("scripts/fetch-dependabot.sh".into())
         );
         assert_eq!(applied.feed_interval_secs, Some(FEED_INTERVAL_FAST_SECS));
+    }
+
+    fn task_with_phoenix(phoenix: bool) -> Task {
+        let mut t = sample_task();
+        t.phoenix = phoenix;
+        t
+    }
+
+    fn parse_phoenix(section: &str) -> (Option<bool>, Vec<EditorParseError>) {
+        let input = format!("--- TITLE ---\nT\n--- PHOENIX ---\n{section}\n");
+        let fields = parse_editor_content(&input);
+        (fields.phoenix, fields.errors)
+    }
+
+    #[test]
+    fn the_section_round_trips_the_flag() {
+        assert!(format_editor_content(&task_with_phoenix(true)).contains("--- PHOENIX ---\ntrue"));
+        assert!(format_editor_content(&task_with_phoenix(false)).contains("--- PHOENIX ---\nfalse"));
+    }
+
+    /// The wide spelling set is the mitigation for the clear-on-unparseable
+    /// rule below: it makes an accidentally cleared recurrence something a
+    /// human has to work at. See EditTask in docs/specs/tasks.allium.
+    #[test]
+    fn every_documented_spelling_parses_case_insensitively() {
+        for raw in ["true", "TRUE", "True", "yes", "YES", "on", "1"] {
+            assert_eq!(parse_phoenix(raw).0, Some(true), "{raw:?} should be true");
+        }
+        for raw in ["false", "FALSE", "no", "NO", "off", "0"] {
+            assert_eq!(parse_phoenix(raw).0, Some(false), "{raw:?} should be false");
+        }
+    }
+
+    /// PHOENIX joins the enum-ish sections under their one parse rule: empty
+    /// and unparseable are treated identically — no value — and unparseable
+    /// additionally records an error.
+    #[test]
+    fn an_empty_section_yields_no_value_and_no_error() {
+        let (value, errors) = parse_phoenix("");
+        assert_eq!(value, None);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn an_unparseable_section_yields_no_value_and_records_an_error() {
+        let (value, errors) = parse_phoenix("maybe");
+        assert_eq!(value, None);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field, "PHOENIX");
+    }
+
+    /// "No value" means false for this field — the same "clear it" the TAG and
+    /// WRAP_UP_MODE sections mean.
+    #[test]
+    fn no_value_clears_the_flag() {
+        let applied = apply_task_editor_fields(
+            &task_with_phoenix(true),
+            parse_editor_content("--- TITLE ---\nT\n--- PHOENIX ---\n\n"),
+        );
+        assert!(!applied.phoenix);
+    }
+
+    #[test]
+    fn a_true_section_arms_the_flag() {
+        let applied = apply_task_editor_fields(
+            &task_with_phoenix(false),
+            parse_editor_content("--- TITLE ---\nT\n--- PHOENIX ---\nyes\n"),
+        );
+        assert!(applied.phoenix);
     }
 }

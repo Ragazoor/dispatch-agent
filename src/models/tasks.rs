@@ -392,6 +392,16 @@ pub struct Task {
     pub last_peer_message_received_at: Option<DateTime<Utc>>,
     pub wrap_up_mode: Option<WrapUpMode>,
     pub auto_run_plan: bool,
+    /// A recurring task with no schedule. When this task enters Done, a fresh
+    /// Backlog copy of it is created and the flag MOVES to that copy — so it
+    /// fires exactly once, and the flag surviving in Done means the copy did
+    /// not land (`respawn_failed`). See `PhoenixRespawn` and the `== Phoenix ==`
+    /// section in `docs/specs/tasks.allium`.
+    ///
+    /// Deliberately not a `TaskTag`: `tag` selects the dispatch prompt and
+    /// marks review work, and a recurring *chore* is the ordinary case, so the
+    /// two must be able to coexist.
+    pub phoenix: bool,
     /// Number of subagents currently executing for this task. Denormalised
     /// `COUNT(*)` over `task_subagents`, rewritten by every mutation and
     /// every clear point. Read by `classify_agent_activity` (live subagents
@@ -435,6 +445,17 @@ impl Task {
         self.worktree.is_none()
             && self.tmux_window.is_none()
             && matches!(self.status, TaskStatus::Running | TaskStatus::Review)
+    }
+
+    /// Whether this task is a phoenix whose respawn did not land.
+    ///
+    /// `PhoenixRespawn` clears `phoenix` exactly when the successor row was
+    /// created, so a phoenix task sitting in Done is one that still owes a
+    /// respawn — there is no separate error column to keep in step with this.
+    /// Rendered as a red `⚠ respawn failed` card indicator; see "Phoenix
+    /// marker" in `docs/specs/core.allium`.
+    pub fn respawn_failed(&self) -> bool {
+        self.phoenix && self.status == TaskStatus::Done
     }
 
     /// Whether this task can be wrapped up: it has a worktree and is either
@@ -1951,6 +1972,7 @@ pub(in crate::models) mod model_tests {
             last_peer_message_received_at: None,
             wrap_up_mode: None,
             auto_run_plan: false,
+            phoenix: false,
             live_subagents: 0,
             stop_pending: false,
             live_shells: 0,
