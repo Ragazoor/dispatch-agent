@@ -84,11 +84,17 @@ rule CreateTask {
         --
         -- phoenix is set during the TUI creation form (InputPhoenix step, the
         -- last one, after InputWrapUpMode) or via the MCP create_task tool. It
-        -- defaults to false, and the step is a y/N confirm: Enter alone means
-        -- no, so the ordinary task takes one extra keypress and no decision.
+        -- defaults to false, and the step is a single-key picker built on the
+        -- same rule as the InputTag and InputWrapUpMode steps before it:
+        -- 'p' arms the flag, Enter alone declines it, Esc cancels creation,
+        -- and every other key is a no-op that leaves the step open. So the
+        -- ordinary task still takes one extra keypress and no decision, while
+        -- a stray keypress can no longer answer the question by accident.
+        -- The prompt names the option rather than asserting a yes/no, for the
+        -- same reason its siblings do: '[p]hoenix [Enter] no', not '[y/N]'.
         -- Like every other creation-form step, InputPhoenix renders inside the
         -- same bordered "New Task" panel as the rest of the wizard (settled
-        -- fields above, the y/N prompt as the active line) — it is not a
+        -- fields above, the picker prompt as the active line) — it is not a
         -- bare status-bar-only prompt shown after that panel has closed.
         -- Quick-dispatch (CreateQuickTask) does not offer it — a quick task is
         -- a one-off by construction, and the agent can set the flag through

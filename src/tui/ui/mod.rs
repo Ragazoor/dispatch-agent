@@ -6,6 +6,10 @@ mod shared;
 pub mod todos;
 
 pub(in crate::tui) use kanban::build_reparent_tree;
+// The phoenix step's prompt reaches three surfaces, one of them outside this
+// module tree (update/forms.rs), so it is re-exported rather than reached for
+// through the private module.
+pub(in crate::tui) use input_form::PHOENIX_PROMPT;
 pub use kanban::render;
 pub(in crate::tui) use kanban::repo_sync_prompt_text;
 // Only the status bar itself renders the drift segment; the re-export exists so

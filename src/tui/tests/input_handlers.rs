@@ -3018,8 +3018,11 @@ fn esc_in_normal_clears_active_search() {
 
 // -- InputPhoenix ----------------------------------------------------------
 //
-// The creation form's last step (CreateTask in docs/specs/tasks.allium): a y/N
-// confirm, so an ordinary task costs one extra keypress and no decision.
+// The creation form's last step (CreateTask in docs/specs/tasks.allium): a
+// single-key picker on the same rule as the InputTag and InputWrapUpMode steps
+// before it. 'p' arms the recurrence, Enter alone declines it, Esc cancels,
+// and every other key is a no-op — so an ordinary task costs one extra
+// keypress and no decision, and a stray key answers nothing.
 
 /// An app parked on the phoenix step with a filled draft, as the form reaches
 /// it after InputWrapUpMode.
@@ -3062,38 +3065,51 @@ fn submitting_wrap_up_mode_advances_to_the_phoenix_step() {
 }
 
 #[test]
-fn y_arms_the_phoenix_flag_and_creates_the_task() {
+fn p_arms_the_phoenix_flag_and_creates_the_task() {
     let mut app = app_on_phoenix_step();
 
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('y'))));
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('p'))));
 
     assert_eq!(app.input.mode, InputMode::Normal);
     assert!(
         inserted_draft(&cmds).expect("the task is created").phoenix,
-        "y arms the recurrence"
+        "p arms the recurrence"
     );
 }
 
+/// Enter alone means no, so the ordinary task takes one keypress and no
+/// decision.
 #[test]
-fn capital_y_arms_it_too() {
+fn enter_declines_the_flag_and_creates_the_task() {
     let mut app = app_on_phoenix_step();
-    let cmds = without_usage(app.handle_key(make_key(KeyCode::Char('Y'))));
-    assert!(inserted_draft(&cmds).expect("the task is created").phoenix);
+
+    let cmds = without_usage(app.handle_key(make_key(KeyCode::Enter)));
+
+    assert_eq!(app.input.mode, InputMode::Normal);
+    assert!(
+        !inserted_draft(&cmds)
+            .expect("Enter creates the task")
+            .phoenix,
+        "Enter must not arm the recurrence"
+    );
 }
 
-/// Enter alone means no, so the ordinary task takes one keypress and no
-/// decision. Any other printable key means the same.
+/// The step no longer treats "not the affirmative key" as an answer. 'y' is
+/// listed because it WAS the affirmative one, and 'P' because the sibling
+/// pickers are lowercase-only too — neither may create a task by itself.
 #[test]
-fn enter_and_other_keys_leave_the_flag_off_and_create_the_task() {
-    for key in [KeyCode::Enter, KeyCode::Char('n'), KeyCode::Char('q')] {
+fn unrecognised_keys_leave_the_phoenix_step_open() {
+    for key in [KeyCode::Char('y'), KeyCode::Char('P')] {
         let mut app = app_on_phoenix_step();
         let cmds = without_usage(app.handle_key(make_key(key)));
-        assert_eq!(app.input.mode, InputMode::Normal, "{key:?}");
+        assert_eq!(
+            app.input.mode,
+            InputMode::InputPhoenix,
+            "{key:?} must leave the step open"
+        );
         assert!(
-            !inserted_draft(&cmds)
-                .unwrap_or_else(|| panic!("{key:?} should create the task"))
-                .phoenix,
-            "{key:?} must not arm the recurrence"
+            inserted_draft(&cmds).is_none(),
+            "{key:?} must not create a task"
         );
     }
 }

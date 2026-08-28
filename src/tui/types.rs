@@ -289,7 +289,7 @@ pub enum InputMode {
     },
     InputBaseBranch,
     InputWrapUpMode,
-    /// The creation form's last step: a y/N confirm arming the phoenix
+    /// The creation form's last step: a single-key picker arming the phoenix
     /// recurrence (CreateTask in `docs/specs/tasks.allium`).
     InputPhoenix,
     MainSessionDir,

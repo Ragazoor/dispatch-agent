@@ -685,34 +685,20 @@ impl App {
     }
 
     /// The creation form's last step (CreateTask in `docs/specs/tasks.allium`):
-    /// a y/N confirm arming the phoenix recurrence.
+    /// a single-key picker arming the phoenix recurrence.
     ///
-    /// Not built on `handle_char_picker`, and the difference is the point: that
-    /// helper leaves the picker open on an unrecognised character, which is
-    /// right for a menu of several options. This step has one affirmative
-    /// answer, so every other key is the negative one — the form must not trap
-    /// the operator on a question whose default is "no". Esc still cancels
-    /// creation, as it does at every other step.
+    /// Built on `handle_char_picker` like the tag and wrap-up steps before it,
+    /// so declining still costs one keypress and no decision (Enter) while a
+    /// stray key can no longer answer the question on the operator's behalf.
     pub(in crate::tui) fn handle_key_phoenix(&mut self, key: KeyEvent) -> Vec<Command> {
         use crate::tui::messages::InputMessage;
-        let label = key_label(key);
-        match key.code {
-            KeyCode::Esc => self.dispatch_keyed(
-                Message::Input(InputMessage::CancelInput),
-                "phoenix_cancel",
-                &label,
-            ),
-            KeyCode::Char('y') | KeyCode::Char('Y') => self.dispatch_keyed(
-                Message::Input(InputMessage::SubmitPhoenix(true)),
-                "phoenix_confirm_yes",
-                &label,
-            ),
-            _ => self.dispatch_keyed(
-                Message::Input(InputMessage::SubmitPhoenix(false)),
-                "phoenix_confirm_no",
-                &label,
-            ),
-        }
+        self.handle_char_picker(
+            key,
+            "phoenix_picker",
+            |c| (c == 'p').then_some(Message::Input(InputMessage::SubmitPhoenix(true))),
+            Message::Input(InputMessage::SubmitPhoenix(false)),
+            Message::Input(InputMessage::CancelInput),
+        )
     }
 
     /// Quick-dispatch repo picker. Mirrors the shared RepoPathPicker

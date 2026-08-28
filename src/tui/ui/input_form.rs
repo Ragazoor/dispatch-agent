@@ -358,9 +358,23 @@ pub(in crate::tui) fn input_wrap_up_mode_lines(
 /// keeps this pinned to the real count.
 pub(in crate::tui) const PHOENIX_STEP_LINES: u16 = 8;
 
+/// The phoenix step's prompt, shared by all three surfaces that show it: the
+/// form panel's active line (below), the status-bar hint
+/// (`kanban/status_bar.rs`) and the transient status set on entering the step
+/// (`update/forms.rs`). One constant because the three must agree — a panel
+/// advertising `[p]hoenix` under a status bar still advertising `[y/N]` is a
+/// drift no test would catch if each surface carried its own literal.
+///
+/// Kept to 52 columns. `input_panel_height` (kanban/mod.rs) fixes the panel's
+/// height from `PHOENIX_STEP_LINES`, which counts `Line` values rather than
+/// rendered rows, so an active line that soft-wraps pushes the trailing Esc
+/// hint out of the panel on a narrow terminal.
+pub(in crate::tui) const PHOENIX_PROMPT: &str =
+    "Phoenix — recreate when done? [p]hoenix [Enter] no";
+
 /// The form's last step (see docs/specs/tasks.allium's CreateTask guidance):
 /// restates the five prior steps, including wrap_up_mode which is settled by
-/// the time this step is active, then the phoenix y/N confirm.
+/// the time this step is active, then the phoenix picker.
 pub(in crate::tui) fn input_phoenix_lines(app: &App, styles: &FormStyles) -> Vec<Line<'static>> {
     let mut settled = answered_step_lines(app, styles.completed);
     let wrap_up_mode = app
@@ -376,10 +390,7 @@ pub(in crate::tui) fn input_phoenix_lines(app: &App, styles: &FormStyles) -> Vec
     )));
     form_step_page(
         settled,
-        Line::from(Span::styled(
-            "  Phoenix — recreate this task when it's done? [y/N]",
-            styles.active,
-        )),
+        Line::from(Span::styled(format!("  {PHOENIX_PROMPT}"), styles.active)),
         styles.hint,
     )
 }
@@ -692,6 +703,20 @@ mod tests {
             let lines = input_phoenix_lines(app, &form_styles());
             assert_eq!(lines.len(), PHOENIX_STEP_LINES as usize);
         }
+    }
+
+    /// The active line names the option instead of asserting a yes/no, the
+    /// same shape the InputTag and InputWrapUpMode steps use (see CreateTask
+    /// in docs/specs/tasks.allium). `y` is no longer an answer, so it must not
+    /// be advertised as one.
+    #[test]
+    fn input_phoenix_lines_offers_p_and_enter_not_y_slash_n() {
+        let app = crate::tui::App::new(vec![]);
+        let text = lines_text(&input_phoenix_lines(&app, &form_styles()));
+
+        assert!(text.contains("[p]hoenix"), "{text}");
+        assert!(text.contains("[Enter] no"), "{text}");
+        assert!(!text.contains("[y/N]"), "{text}");
     }
 
     // ---- append_repo_path_list -------------------------------------------

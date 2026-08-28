@@ -152,7 +152,7 @@ impl App {
             draft.wrap_up_mode = Some(m);
         }
         self.input.mode = InputMode::InputPhoenix;
-        self.set_status("Phoenix — recreate this task when it's done? [y/N]".to_string());
+        self.set_status(crate::tui::ui::PHOENIX_PROMPT.to_string());
         vec![]
     }
 
