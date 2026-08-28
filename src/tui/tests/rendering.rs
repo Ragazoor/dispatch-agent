@@ -6,6 +6,7 @@ use crate::models::{SubStatus, TaskId, TaskStatus, TaskTag};
 // drift the derived header labels were introduced to stop.
 use crate::tui::ui::palette::{BORDER, MUTED, PURPLE, RED, YELLOW};
 use crossterm::event::KeyCode;
+use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
 use std::time::Instant;
 
@@ -2546,6 +2547,88 @@ async fn epic_view_tints_the_enclosing_panel_but_not_the_column_grounds() {
         ground_cells > 0,
         "the column grounds inside an epic view must stay the uniform neutral, not \
          take the panel's tint"
+    );
+}
+
+/// Whether row `y` is painted with column ground colour anywhere across its
+/// width — the board fills a column's whole area with its ground colour
+/// regardless of card content, so this is true for any row genuinely inside
+/// the kanban board and false for a row that belongs to another band (the
+/// idle input panel's gap, or its bordered box when a form is active).
+fn row_is_board_ground(buf: &Buffer, y: u16) -> bool {
+    let unfocused = ui::column_bg_color(TaskStatus::Review, false);
+    let focused = ui::column_bg_color(TaskStatus::Backlog, true);
+    let area = buf.area();
+    (area.left()..area.right()).any(|x| {
+        let bg = buf[(x, y)].bg;
+        bg == unfocused || bg == focused
+    })
+}
+
+#[tokio::test]
+async fn idle_input_panel_lets_columns_reach_the_status_bar() {
+    // core.allium "Board Vertical Layout": with no input mode active the input
+    // panel is zero height, so the kanban board claims the full remaining
+    // height and columns run uninterrupted down to the status bar — no empty
+    // bordered box in between.
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    let (width, height) = (160, 30);
+    let buf = render_to_buffer(&mut app, width, height);
+
+    let status_bar_row = height - 1;
+    let last_board_row = status_bar_row - 1;
+
+    assert!(
+        row_is_board_ground(&buf, last_board_row),
+        "the row directly above the status bar must be board ground when idle, \
+         not a gap left by the empty input panel"
+    );
+}
+
+#[tokio::test]
+async fn a_status_bar_confirmation_does_not_reserve_the_input_panel() {
+    // core.allium "Board Vertical Layout": a y/n confirmation is prompted in the
+    // status bar, not the input panel, so it is idle from the panel's
+    // perspective — the board must keep full height under it, the same as the
+    // default Normal mode.
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.input.mode = InputMode::ConfirmDelete;
+    let (width, height) = (160, 30);
+    let buf = render_to_buffer(&mut app, width, height);
+
+    let status_bar_row = height - 1;
+    let last_board_row = status_bar_row - 1;
+
+    assert!(
+        row_is_board_ground(&buf, last_board_row),
+        "a status-bar-only confirmation must not leave an empty gap where the \
+         input panel used to sit"
+    );
+}
+
+#[tokio::test]
+async fn active_input_mode_reserves_the_panel_and_shortens_the_board() {
+    // core.allium "Board Vertical Layout": once an input mode is active, the
+    // panel reserves its computed height and renders a bordered, titled box —
+    // and the kanban board shrinks to make room for it, rather than the two
+    // bands overlapping or the board staying full height underneath it.
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.input.mode = InputMode::InputTitle;
+    let (width, height) = (160, 30);
+    let buf = render_to_buffer(&mut app, width, height);
+
+    assert!(
+        buffer_contains(&buf, "New Task"),
+        "the input panel must render its bordered, titled box while a form is active"
+    );
+
+    let status_bar_row = height - 1;
+    let last_board_row = status_bar_row - 1;
+
+    assert!(
+        !row_is_board_ground(&buf, last_board_row),
+        "the row directly above the status bar must belong to the reserved input \
+         panel while a form is active, not the kanban board"
     );
 }
 

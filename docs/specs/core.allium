@@ -2142,6 +2142,40 @@ value FlattenedView {
         and (view.is_board or task.is_descendant_of(view.current_epic))
 }
 
+-- == Board Vertical Layout ==
+
+-- board_vertical_layout:
+--   The board frame is split top to bottom into five bands: the top
+--   indicator bar, the summary row, the kanban board (columns), the input
+--   panel, and the status bar.
+--
+--   The indicator bar, summary row and status bar are each exactly one row.
+--   The kanban board and the input panel share whatever vertical space is
+--   left between them, and that split is governed by the input panel's mode:
+--
+--   Idle: the input panel's height is zero whenever the current input mode
+--   has no form to show in that panel. It draws nothing — no border, no
+--   background — and the kanban board claims the full remaining height, so
+--   columns run uninterrupted down to the status bar. This is the default
+--   (no input mode active) but is not limited to it: a mode whose prompt
+--   is shown elsewhere — a y/n confirmation in the status bar, the live
+--   search bar, the help overlay, the repo-filter popup, an epic/task
+--   picker overlay — is idle from the panel's perspective too, since it has
+--   nothing of its own to draw there.
+--
+--   Active: a mode whose form the panel itself draws (new task, new epic,
+--   quick dispatch, main-session-dir picker, retry confirmation, and so
+--   on) reserves enough rows to show that form, bordered and titled for
+--   the mode. Most such modes need a fixed number of rows; a mode that
+--   lists repositories (quick dispatch, main-session-dir picker, or the
+--   repo-path prompt with an empty query) grows the panel to fit every
+--   matching repo instead, up to the space the board can spare — the
+--   kanban board never drops below a minimum height to make room for it.
+--
+--   Entering or leaving an input mode changes the panel's height
+--   immediately; the kanban board resizes on the same frame, never leaving
+--   a gap or an overlap between the two bands.
+
 -- == Only Active Filter ==
 
 -- only_active_filter:

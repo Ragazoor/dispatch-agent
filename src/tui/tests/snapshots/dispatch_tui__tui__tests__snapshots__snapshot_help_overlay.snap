@@ -33,12 +33,12 @@ expression: rendered
                         ║  [?] this help   [q] quit (or exit epic)                             ║
                         ║  Prefix+Space back to board  Prefix+e toggle tree  (tmux)            ║
                         ║  [?] or [Esc] to close                                               ║
-────────────────────────║                                                                      ║────────────────────────
+                        ║                                                                      ║
                         ║                                                                      ║
                         ║                                                                      ║
                         ║                                                                      ║
                         ╚══════════════════════════════════════════════════════════════════════╝
-
-
-
+                              │                           │                              │
+                              │                           │                              │
+                              │                           │                              │
 [?] or [Esc] to close help

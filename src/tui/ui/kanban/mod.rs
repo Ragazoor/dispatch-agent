@@ -192,6 +192,14 @@ pub(super) fn status_icon(status: TaskStatus) -> &'static str {
 
 /// Compute how tall the detail/input panel should be based on the current input mode.
 /// Expands when a repo list is being shown so all repos (plus cursor) are visible.
+///
+/// Zero for any mode whose prompt is not drawn in this panel — the default
+/// `Normal` mode, but also every mode whose UI lives elsewhere (a y/n
+/// confirmation in the status bar, the live search bar, the help/repo-filter
+/// overlays, an epic/task picker overlay). Reserving rows for those left an
+/// empty bordered box under the columns (core.allium: "Board Vertical
+/// Layout"). The list here must stay the mirror image of [`render_input_form`]'s
+/// match — a mode added to one belongs in the other.
 fn input_panel_height(app: &App, area_height: u16) -> u16 {
     // Fixed overhead: indicators(1) + summary(1) + kanban_min(6) + status_bar(1) = 9
     let overhead: u16 = 9;
@@ -221,7 +229,16 @@ fn input_panel_height(app: &App, area_height: u16) -> u16 {
             let rows = app.board.repo_paths.len() as u16 + 7;
             rows.clamp(8, max_height)
         }
-        _ => 8,
+        InputMode::InputTitle
+        | InputMode::InputTag
+        | InputMode::InputDescription
+        | InputMode::InputRepoPath
+        | InputMode::InputBaseBranch
+        | InputMode::InputWrapUpMode
+        | InputMode::ConfirmRetry(_)
+        | InputMode::InputEpicTitle
+        | InputMode::InputEpicDescription => 8,
+        _ => 0,
     }
 }
 

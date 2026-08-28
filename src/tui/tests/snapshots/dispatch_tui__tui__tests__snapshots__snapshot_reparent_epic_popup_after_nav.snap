@@ -33,12 +33,12 @@ expression: rendered
                               │                                                          │
                               │                                                          │
                               │                                                          │
-──────────────────────────────│                                                          │──────────────────────────────
+                              │                                                          │
                               │                                                          │
                               │                                                          │
                               │                                                          │
                               │                                                          │
                               │ j/k:navigate  l/Space/→:expand  h/←:collapse  Enter:selec│
                               ╰──────────────────────────────────────────────────────────╯
-
+                              │                           │                              │
 Select new parent: navigate tree above, Enter to select
