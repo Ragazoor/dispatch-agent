@@ -1734,9 +1734,8 @@ fn quick_dispatch_status_uses_freshly_created_title() {
     // reordering those two messages would silently break the title.
     let mut app = App::new(vec![]);
     let task = Task {
-        id: TaskId(42),
         title: "Quick task".to_string(),
-        ..Default::default()
+        ..make_task(42, TaskStatus::Backlog)
     };
 
     app.update(Message::Task(crate::tui::messages::TaskMessage::Created {

@@ -659,13 +659,11 @@ fn render_input_form_confirm_retry_shows_options() {
     let mut app = make_app();
     // Replace task 5 as a crashed Running task with worktree and tmux
     let crashed_task = Task {
-        id: TaskId(5),
         title: "Crashed task".to_string(),
-        status: TaskStatus::Running,
         worktree: Some("/tmp/wt".to_string()),
         tmux_window: Some("win5".to_string()),
         sub_status: SubStatus::Crashed,
-        ..Default::default()
+        ..make_task(5, TaskStatus::Running)
     };
     app.board.tasks.push(crashed_task);
     app.input.mode = InputMode::ConfirmRetry(TaskId(5));

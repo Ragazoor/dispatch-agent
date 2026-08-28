@@ -574,7 +574,6 @@ fn mock_task(id: i64, title: &str) -> crate::models::Task {
         title: title.to_string(),
         description: "mock description".to_string(),
         repo_path: "/mock/repo".to_string(),
-        status: crate::models::TaskStatus::Backlog,
         ..Default::default()
     }
 }

@@ -12,7 +12,7 @@ use super::worktree::{
 };
 use super::*;
 
-use crate::models::{EpicId, Task, TaskId, TaskStatus};
+use crate::models::{EpicId, Task, TaskId};
 use crate::process::{AgentBinaries, MockProcessRunner, SUBPROCESS_TIMEOUT};
 use crate::tmux;
 use std::time::Duration;
@@ -80,7 +80,6 @@ pub(super) fn make_task(repo_path: &str) -> Task {
         title: "Fix bug".to_string(),
         description: "A nasty crash".to_string(),
         repo_path: repo_path.to_string(),
-        status: TaskStatus::Backlog,
         ..Default::default()
     }
 }

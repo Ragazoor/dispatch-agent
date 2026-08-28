@@ -7,11 +7,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 #[test]
 fn task_created_adds_to_list() {
     let task = Task {
-        id: TaskId(42),
         title: "New Task".to_string(),
         description: "desc".to_string(),
-        repo_path: "/repo".to_string(),
-        ..Default::default()
+        ..make_task(42, TaskStatus::Backlog)
     };
     let mut app = App::new(vec![]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
@@ -674,13 +672,11 @@ fn editor_result_description_cancelled_cancels_input() {
 fn editor_result_task_edit_returns_finalize_command() {
     // Non-description EditKind variants route through a FinalizeEditorResult
     // command so the runtime applies the edit via services.
-    use crate::models::{Task, TaskId};
     let task = Task {
-        id: TaskId(42),
         title: "t".into(),
         description: "d".into(),
         repo_path: "/r".into(),
-        ..Default::default()
+        ..make_task(42, TaskStatus::Backlog)
     };
     let mut app = App::new(vec![task.clone()]);
     let cmds = app.update(Message::Editor(
