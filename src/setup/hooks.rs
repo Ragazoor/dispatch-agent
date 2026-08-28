@@ -97,26 +97,6 @@ mod tests {
     }
 
     #[test]
-    fn hook_script_forwards_post_tool_use_file_events() {
-        // Additive to the PreToolUse|PostToolUse arm: on PostToolUse only, for
-        // tracked tools, the script must forward to the new hook-file-event
-        // subcommand, extracting the path from the per-tool field.
-        let s = hook_script();
-        assert!(
-            s.contains("hook-file-event"),
-            "hook must forward tracked-tool PostToolUse calls to `dispatch hook-file-event`"
-        );
-        assert!(
-            s.contains("tool_input.file_path"),
-            "Read/Write/Edit must extract tool_input.file_path"
-        );
-        assert!(
-            s.contains("tool_input.notebook_path"),
-            "NotebookEdit must extract tool_input.notebook_path, not file_path"
-        );
-    }
-
-    #[test]
     fn hook_script_forwards_send_message_calls() {
         // Additive to the PreToolUse|PostToolUse arm, alongside file events:
         // on PostToolUse only, an observed native SendMessage call must
@@ -367,115 +347,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn hook_forwards_file_event_on_post_tool_use_for_each_tracked_tool() {
-        // Read/Write/Edit extract tool_input.file_path; NotebookEdit extracts
-        // tool_input.notebook_path instead (and must ignore a stray file_path
-        // in the same payload).
-        for (id, tool, path, tool_input) in [
-            (
-                111,
-                "Read",
-                "/tmp/foo.rs",
-                r#"{"file_path":"/tmp/foo.rs"}"#.to_string(),
-            ),
-            (
-                112,
-                "Write",
-                "/tmp/bar.rs",
-                r#"{"file_path":"/tmp/bar.rs"}"#.to_string(),
-            ),
-            (
-                113,
-                "Edit",
-                "/tmp/baz.rs",
-                r#"{"file_path":"/tmp/baz.rs"}"#.to_string(),
-            ),
-            (
-                114,
-                "NotebookEdit",
-                "/tmp/nb.ipynb",
-                r#"{"notebook_path":"/tmp/nb.ipynb","file_path":"/tmp/wrong.rs"}"#.to_string(),
-            ),
-        ] {
-            let (_tmp, repo, script_path, observed, path_env) =
-                spawn_hook_harness(&format!("{id}-tree"));
-            let payload = format!(
-                r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"{tool}","tool_input":{tool_input}}}"#,
-                repo.display()
-            );
-            invoke_hook(&script_path, &repo, &path_env, &payload);
-
-            let log = std::fs::read_to_string(&observed).unwrap_or_default();
-            assert!(
-                log.contains(&format!("hook-file-event {id} --tool {tool} --path {path}")),
-                "expected hook-file-event forwarded for {tool}; got: {log:?}"
-            );
-            assert!(
-                log.contains(&format!("hook {id} pre_tool_use")),
-                "pre_tool_use must still fire on PostToolUse for {tool}; got: {log:?}"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hook_does_not_forward_file_event_on_pre_tool_use() {
-        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("115-tree");
-        let payload = format!(
-            r#"{{"cwd":"{}","hook_event_name":"PreToolUse","tool_name":"Read","tool_input":{{"file_path":"/tmp/foo.rs"}}}}"#,
-            repo.display()
-        );
-        invoke_hook(&script_path, &repo, &path, &payload);
-
-        let log = std::fs::read_to_string(&observed).unwrap_or_default();
-        assert!(
-            log.contains("hook 115 pre_tool_use"),
-            "pre_tool_use must still fire on PreToolUse; got: {log:?}"
-        );
-        assert!(
-            !log.contains("hook-file-event"),
-            "hook-file-event must not fire on PreToolUse; got: {log:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hook_does_not_forward_file_event_for_untracked_tool() {
-        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("116-tree");
-        let payload = format!(
-            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{{"command":"ls"}}}}"#,
-            repo.display()
-        );
-        invoke_hook(&script_path, &repo, &path, &payload);
-
-        let log = std::fs::read_to_string(&observed).unwrap_or_default();
-        assert!(log.contains("hook 116 pre_tool_use"));
-        assert!(
-            !log.contains("hook-file-event"),
-            "hook-file-event must not fire for an untracked tool like Bash; got: {log:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn hook_does_not_forward_file_event_when_path_missing() {
-        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("117-tree");
-        let payload = format!(
-            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"Edit","tool_input":{{}}}}"#,
-            repo.display()
-        );
-        invoke_hook(&script_path, &repo, &path, &payload);
-
-        let log = std::fs::read_to_string(&observed).unwrap_or_default();
-        assert!(log.contains("hook 117 pre_tool_use"));
-        assert!(
-            !log.contains("hook-file-event"),
-            "malformed payload (missing path) must be skipped, not forwarded; got: {log:?}"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn hook_skips_dispatch_mcp_tools_on_post_tool_use() {
         let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("118-tree");
         let payload = format!(
@@ -489,7 +360,10 @@ mod tests {
             !log.contains("hook 118 pre_tool_use"),
             "mcp__dispatch__ tools must still be skipped entirely; got: {log:?}"
         );
-        assert!(!log.contains("hook-file-event"));
+        assert!(
+            log.trim().is_empty(),
+            "the early exit must precede every PostToolUse observer; got: {log:?}"
+        );
     }
 
     #[cfg(unix)]

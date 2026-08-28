@@ -10,7 +10,6 @@ pub mod db;
 pub mod dispatch;
 pub mod editor;
 pub mod feed;
-pub mod file_events;
 pub mod git;
 pub mod mcp;
 pub mod models;

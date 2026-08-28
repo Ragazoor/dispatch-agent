@@ -150,7 +150,6 @@ dispatch hook <id> <kind> [--kind <notification-kind>]
 dispatch hook-subagent <id> <start|stop|clear> [--agent-id <id>] [--session-id <id>]
 dispatch hook-shell <id> <start|stop> [--shell-id <id>] [--session-id <id>]
 dispatch hook-peer-message <id> --target <session> --body <text>
-dispatch hook-file-event <id> --tool <Read|Write|Edit|NotebookEdit> --path <path>
 dispatch pr-gate <id>                            # PreToolUse gate on the first `gh pr create`
 dispatch caller-headers                          # headersHelper: $PWD → X-Caller-* headers
 

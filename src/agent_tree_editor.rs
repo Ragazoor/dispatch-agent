@@ -9,7 +9,7 @@
 //! epic editor, so one `$EDITOR` means one thing everywhere
 //! (docs/specs/core.allium: `editor_fallback`).
 
-use std::path::{Component, Path};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
@@ -60,17 +60,21 @@ pub fn open_in_editor(
     // A `..` in a selection path would address a file outside the worktree,
     // which no rendered node can name — the tree is built from path segments —
     // but the pane is deliberately rooted at the worktree and this keeps it so.
-    if relative
-        .components()
-        .any(|c| matches!(c, Component::ParentDir | Component::RootDir))
-    {
+    //
+    // The same guard the tree itself is built through
+    // (`agent_tree::relative_components`), deliberately: two hand-rolled copies
+    // of "is this path safely below the root" are two things that can drift
+    // apart on which components they accept.
+    if crate::agent_tree::relative_components(relative).is_none() {
         bail!("{}: not a path inside the worktree", relative.display());
     }
 
     let absolute = root.join(relative);
-    // The event log records touches, never deletions, so a node outlives a file
-    // the agent removed. Checked before splitting so the failure is a message
-    // rather than an editor sitting on an empty buffer.
+    // A Deleted node is refused before it ever reaches here (see `handle_key`'s
+    // RefuseToOpenDeletedAgentTreeFile arm), so what this catches is the
+    // remaining window: a file that vanished between the last git query and the
+    // keypress. Checked before splitting so the failure is a message rather than
+    // an editor sitting on an empty buffer.
     if !absolute.is_file() {
         bail!("{}: no longer exists", relative.display());
     }

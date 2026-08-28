@@ -1,22 +1,24 @@
 //! `dispatch agent-tree <task_id>` — a small, standalone ratatui loop that
-//! renders one task's file-touch tree (see `docs/specs/agent-tree.allium`'s
+//! renders one task's changed-file tree (see `docs/specs/agent-tree.allium`'s
 //! `AgentTreeCompanionPane` surface and `RefreshAgentTree` rule).
 //!
-//! Deliberately NOT part of the board TUI's `App`/message loop: this runs
-//! as its own process in a tmux companion pane (subtask 5 wires up the
-//! split; this subtask only builds the standalone renderer).
+//! Deliberately NOT part of the board TUI's `App`/message loop: this runs as its
+//! own process in a tmux companion pane.
 //!
-//! Renders subtask 3's touched-paths-only tree (`agent_tree::build_tree`)
-//! as-is. It does not merge in a full worktree filesystem scan — the
-//! Allium spec's `TreeScanExclusions` open question (which subtrees a
-//! fuller scan should skip) remains unresolved and out of scope here.
+//! Git is the sole source of truth for what the tree shows — see the spec's
+//! `AgentTreeIsGitDerived` guarantee. This module owns the running of git
+//! ([`git_changes`]) and the polling loop around it; parsing its output and
+//! folding the result into a tree belong to `crate::agent_tree`. It does not
+//! merge in a full worktree filesystem scan and never will: git already answers
+//! the question a scan was meant to approximate, which is what resolved the
+//! spec's old `TreeScanExclusions` question.
 
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -30,28 +32,75 @@ use ratatui::widgets::{Block, Borders};
 use ratatui::{Frame, Terminal};
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
-use crate::agent_tree::{build_tree, FileOperation, TreeNode, TreeNodeKind};
+use crate::agent_tree::{
+    build_tree, parse_name_status, parse_untracked, FileChange, GitFileChange, TreeNode,
+    TreeNodeKind,
+};
 use crate::agent_tree_editor::{current_pane_from_env, open_in_editor};
 use crate::db::{Database, TaskRead};
 use crate::editor::editor_from_env;
-use crate::file_events::file_events_path;
 use crate::models::TaskId;
-use crate::process::{ProcessRunner, RealProcessRunner};
-use crate::tui::ui::palette::{BLUE, FG, YELLOW};
+use crate::process::{stderr_str, ProcessRunner, RealProcessRunner};
+use crate::tui::ui::palette::{FG, GREEN, RED, YELLOW};
 
 /// Redraw cadence — see `docs/specs/agent-tree.allium`'s
 /// `config.agent_tree_refresh_interval`. Doubles as the crossterm event
 /// poll timeout, so a key press and a plain timer tick share one wait.
 const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
+/// How long one git query may run before it is killed and treated as a failure
+/// — `config.agent_tree_git_timeout` in the spec.
+///
+/// Deliberately far below [`crate::process::SUBPROCESS_TIMEOUT`], which the
+/// board's other git calls use. Those run on a worker while the TUI stays live;
+/// these run inline in this loop, so the timeout is also the longest this pane
+/// can ignore a keypress.
+const GIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A one-line failure notice, tagged with which of the two writers set it.
+/// Rendered in the pane's bottom border, and while one is set the whole border
+/// is drawn red — see `AgentTreeNoticeRedensBorder`.
+///
+/// The tag is what lets a recovering git query clear its own stale notice
+/// without also wiping the answer to a keypress the user made half a second ago
+/// (see [`RenderState::clear_git_notice`] and the spec's `NoticeSource`).
+/// Modelled as a variant rather than a field beside the text because the two
+/// are only ever meaningful together — which is exactly what the spec's
+/// `notice_source: NoticeSource when error_notice != null` says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Notice {
+    Git(String),
+    Editor(String),
+}
+
+impl Notice {
+    pub fn git(text: impl Into<String>) -> Self {
+        Self::Git(text.into())
+    }
+
+    pub fn editor(text: impl Into<String>) -> Self {
+        Self::Editor(text.into())
+    }
+
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Git(text) | Self::Editor(text) => text,
+        }
+    }
+}
+
 fn node_label(node: &TreeNode) -> Line<'static> {
     let (badge, style) = match node.badge {
         None => return Line::from(Span::styled(node.name.clone(), Style::default().fg(FG))),
-        Some(FileOperation::Modified) => (
+        Some(FileChange::Added) => ("[Added]", Style::default().fg(GREEN)),
+        Some(FileChange::Modified) => (
             "[Modified]",
             Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
         ),
-        Some(FileOperation::Read) => ("[Read]", Style::default().fg(BLUE)),
+        Some(FileChange::Deleted) => (
+            "[Deleted]",
+            Style::default().fg(RED).add_modifier(Modifier::BOLD),
+        ),
     };
     Line::from(vec![
         Span::raw(format!("{} ", node.name)),
@@ -90,9 +139,9 @@ fn to_items(children: &[TreeNode], path: &mut Vec<String>) -> Vec<TreeItem<'stat
         .collect()
 }
 
-/// Convert subtask 3's touched-paths tree into `tui_tree_widget` items.
-/// The root node itself is not rendered as a wrapping item — its children
-/// become the top-level list, like a normal file browser.
+/// Convert the changed-paths tree into `tui_tree_widget` items. The root node
+/// itself is not rendered as a wrapping item — its children become the
+/// top-level list, like a normal file browser.
 ///
 /// A node is identified by its own name segment, which is all the widget
 /// requires (identifiers must be unique among siblings only — it already
@@ -105,24 +154,114 @@ pub fn build_tree_items(root: &TreeNode) -> Vec<TreeItem<'static, String>> {
     to_items(&root.children, &mut Vec::new())
 }
 
+/// Run the two git queries behind the tree and return everything they reported,
+/// with paths relative to `root`.
+///
+/// The pair is the spec's `AgentTreeGitQuery`:
+///
+///   1. `git diff --name-status --no-renames -z --merge-base <base>` — every
+///      tracked change against the merge-base of `base_branch` and HEAD,
+///      committed or not, because the diff is taken against the WORKING TREE.
+///      An agent that commits mid-session does not watch its work vanish.
+///   2. `git ls-files --others --exclude-standard -z` — files the agent created
+///      and has not staged, which a diff cannot see. All of them are Added.
+///
+/// Rename detection is off (`--no-renames`): with it on a rename is one entry
+/// naming two paths, which the three-value [`FileChange`] vocabulary cannot
+/// express. Off, git reports the same rename as a delete plus an add — which is
+/// both true and what a file tree should show.
+///
+/// `-z` on both is load-bearing, not a style choice: git's default output
+/// C-quotes any path containing a non-ASCII byte and separates fields with a
+/// tab, so `src/é.rs` would arrive as `"src/\303\251.rs"` and render as that
+/// literal string. See [`parse_name_status`] for the full reasoning.
+///
+/// A path both queries name (`git rm --cached foo`) is resolved by `build_tree`
+/// on precedence, not on the order these two run in.
+///
+/// Both commands are read-only: nothing here fetches, commits, stages or writes
+/// to the index, which is what keeps the pane's `ReadOnlyObservation` guarantee
+/// true while it runs git against a worktree an agent is actively using.
+pub fn git_changes(
+    root: &Path,
+    base_branch: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<Vec<GitFileChange>> {
+    let root = root.to_string_lossy().into_owned();
+
+    let diff = run_git(
+        runner,
+        &[
+            "-C",
+            &root,
+            "diff",
+            "--name-status",
+            "--no-renames",
+            "-z",
+            "--merge-base",
+            base_branch,
+        ],
+    )?;
+    let untracked = run_git(
+        runner,
+        &[
+            "-C",
+            &root,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    )?;
+
+    let mut changes = parse_name_status(&diff);
+    changes.extend(parse_untracked(&untracked));
+    Ok(changes)
+}
+
+/// Run one git command, returning its stdout or an error carrying git's own
+/// first line of stderr — that line is what reaches the user's border, so it
+/// has to say something they can act on ("unknown revision", "index.lock").
+///
+/// Stdout is returned untrimmed. [`crate::process::stdout_str`] trims the whole
+/// buffer, which would eat a leading space off the first `-z` path; these two
+/// commands emit NUL-delimited records where every byte between delimiters
+/// belongs to the filename.
+fn run_git(runner: &dyn ProcessRunner, args: &[&str]) -> Result<String> {
+    let output = runner
+        .run_with_timeout("git", args, GIT_TIMEOUT)
+        .context("could not run git")?;
+    if !output.status.success() {
+        let stderr = stderr_str(&output);
+        let detail = stderr
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .unwrap_or("git failed");
+        return Err(anyhow!("git: {detail}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
 /// Tree-widget navigation/expansion state, plus tracking of which
 /// directories have already been auto-expanded once.
 ///
-/// A directory's `expanded` flag (set by `agent_tree::build_tree`) is
-/// monotonic: the file-events log is append-only, so once a directory has
-/// a touched descendant it always will. `sync_expansion` uses this to open
-/// a directory automatically exactly once — the first rebuild where it's
-/// touched — and never force it open again, so a user's manual collapse of
-/// an already-touched directory survives later redraws. Only a directory
-/// that becomes touched for the first time opens on its own.
+/// A directory's `expanded` flag (set by `agent_tree::build_tree`) is treated as
+/// monotonic for auto-expansion purposes: `sync_expansion` opens a directory
+/// automatically exactly once — the first rebuild where it holds a change — and
+/// never forces it open again, so a user's manual collapse survives later
+/// redraws. Unlike the event-log design this replaced, a directory CAN stop
+/// being changed (the agent reverts its last edit there); if it later changes
+/// again it is treated as newly changed and opens again, which is the right
+/// behaviour and not worth a second set to prevent.
 pub struct RenderState {
     pub tree_state: TreeState<String>,
     auto_expanded: HashSet<Vec<String>>,
     /// A one-line failure notice, rendered in the pane's bottom border and
-    /// cleared by the next key press. Opening a file is the only action in this
-    /// pane that can fail visibly to the user — see
-    /// `AgentTreeEditorOpenFailureIsVisible` in docs/specs/agent-tree.allium.
-    pub notice: Option<String>,
+    /// cleared by the next key press. Two things set it: a failed git query
+    /// and a failed file open. While it is set the border is drawn red — see
+    /// `AgentTreeNoticeRedensBorder` in docs/specs/agent-tree.allium.
+    pub notice: Option<Notice>,
     /// Whether a lone `g` is waiting for the second half of the `gg` chord.
     /// Unlike the board's chord this one carries no deadline, so there is no
     /// timestamp beside it — see `AgentTreeGgChordNeverExpires` in
@@ -154,8 +293,18 @@ impl RenderState {
         (self.viewport_rows / 2).max(1)
     }
 
-    /// Auto-open every directory with a touched descendant, exactly once
-    /// per directory — see the struct doc comment on monotonicity.
+    /// Clear a notice left by a failed git query, leaving an editor-open notice
+    /// alone. Called after every SUCCESSFUL query: a working git retracts its
+    /// own complaint, but must not swallow the answer to a keypress the user
+    /// made moments ago (`RefreshAgentTree`'s clearing expression).
+    fn clear_git_notice(&mut self) {
+        if matches!(self.notice, Some(Notice::Git(_))) {
+            self.notice = None;
+        }
+    }
+
+    /// Auto-open every directory holding a change, exactly once per directory —
+    /// see the struct doc comment.
     pub fn sync_expansion(&mut self, root: &TreeNode) {
         self.sync_expansion_at(&root.children, &mut Vec::new());
     }
@@ -185,7 +334,7 @@ impl Default for RenderState {
     }
 }
 
-/// Render subtask 3's tree, with `[Modified]`/`[Read]` badges, into `area`.
+/// Render the tree, with `[Added]`/`[Modified]`/`[Deleted]` badges, into `area`.
 /// Does no I/O of its own — used by both the real polling loop and snapshot
 /// tests. It is not, however, read-only in `state`: besides the widget's own
 /// cursor bookkeeping it records `viewport_rows`, which the half-page motions
@@ -209,11 +358,18 @@ pub fn render(
     // The bottom border is the pane's only place to say anything: the tree fills
     // the rest, and stealing a row for a status line would move every node the
     // moment a notice appeared.
+    //
+    // The whole border reddens with it. A single line of border text is easy to
+    // miss, and a tree left on screen after a failed git query
+    // (AgentTreeGitFailureKeepsLastGoodTree) is indistinguishable from a correct
+    // one at a glance — the red frame is the part that carries across the room.
     if let Some(notice) = &state.notice {
-        block = block.title_bottom(Line::from(Span::styled(
-            format!(" {notice} "),
-            Style::default().fg(YELLOW).add_modifier(Modifier::BOLD),
-        )));
+        block = block
+            .border_style(Style::default().fg(RED))
+            .title_bottom(Line::from(Span::styled(
+                format!(" {} ", notice.text()),
+                Style::default().fg(RED).add_modifier(Modifier::BOLD),
+            )));
     }
 
     match Tree::new(&items) {
@@ -233,43 +389,6 @@ pub fn render(
     }
 }
 
-fn read_events_file(path: &Path) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(e) => {
-            tracing::warn!(
-                error = ?e,
-                path = %path.display(),
-                "agent-tree: failed to read file-events log, showing empty tree"
-            );
-            String::new()
-        }
-    }
-}
-
-fn worktree_title(root: &Path) -> String {
-    root.file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| root.to_string_lossy().into_owned())
-}
-
-/// `(len, modified)` for the events file, or `None` if it doesn't exist yet.
-/// Used to skip re-reading and re-parsing the log on a poll tick where
-/// nothing has actually landed — the log is append-only and only grows for
-/// the life of the task, so a size/mtime match means "no new lines."
-fn file_stamp(path: &Path) -> Option<(u64, std::time::SystemTime)> {
-    let meta = std::fs::metadata(path).ok()?;
-    let modified = meta.modified().ok()?;
-    Some((meta.len(), modified))
-}
-
-fn rebuild(root: &Path, events_path: &Path, state: &mut RenderState) -> TreeNode {
-    let tree = build_tree(root, &read_events_file(events_path));
-    state.sync_expansion(&tree);
-    tree
-}
-
 /// What the event loop should do after `handle_key` has processed a key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyAction {
@@ -283,25 +402,26 @@ pub enum KeyAction {
     OpenInEditor(PathBuf),
 }
 
-/// What kind of node the widget's current selection names, if any. A selection
-/// path is exactly a node's chain of name segments below the root (see
+/// The node the widget's current selection names, if any. A selection path is
+/// exactly a node's chain of name segments below the root (see
 /// `build_tree_items` and `sync_expansion_at`), so resolving it is
 /// `TreeNode::node_at`.
 ///
-/// Fails closed, and this is the one place that rule is stated: `None` for an
-/// empty selection — which `node_at` would otherwise resolve to the root, itself
-/// a directory — and `None` for a path that resolves to nothing, i.e. a stale
-/// selection left over from before a rebuild.
-fn selected_kind(root: &TreeNode, selected: &[String]) -> Option<TreeNodeKind> {
+/// Fails closed, and this is the one place that rule is stated — every key that
+/// acts on the selection goes through here: `None` for an empty selection —
+/// which `node_at` would otherwise resolve to the root, itself a directory —
+/// and `None` for a path that resolves to nothing, i.e. a stale selection left
+/// over from before a rebuild.
+fn selected_node<'a>(root: &'a TreeNode, selected: &[String]) -> Option<&'a TreeNode> {
     if selected.is_empty() {
         return None;
     }
-    root.node_at(selected).map(|node| node.kind)
+    root.node_at(selected)
 }
 
 /// Whether the selection is a directory, and so has something to open.
 fn selected_is_directory(root: &TreeNode, selected: &[String]) -> bool {
-    selected_kind(root, selected) == Some(TreeNodeKind::Directory)
+    selected_node(root, selected).map(|node| node.kind) == Some(TreeNodeKind::Directory)
 }
 
 /// Apply one key press to the view state — see `docs/specs/agent-tree.allium`'s
@@ -319,7 +439,7 @@ fn selected_is_directory(root: &TreeNode, selected: &[String]) -> bool {
 /// Pure with respect to everything but `state`, so the loop's key handling is
 /// testable without a terminal, an event source, or a tmux server.
 pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> KeyAction {
-    // Any key acknowledges a failure notice — docs/specs/agent-tree.allium's
+    // Any key acknowledges a notice — docs/specs/agent-tree.allium's
     // ClearAgentTreeErrorNotice. Cleared before dispatching, so a key that sets
     // a fresh one wins.
     state.notice = None;
@@ -388,13 +508,26 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
         // arms — so an unselectable or stale selection reaches neither.
         KeyCode::Char(' ') | KeyCode::Enter => {
             let selected = state.tree_state.selected();
-            match selected_kind(root, selected) {
-                Some(TreeNodeKind::File) => {
+            match selected_node(root, selected).map(|n| (n.kind, n.badge)) {
+                // A node badged Deleted names a file that is, by definition,
+                // not there. Refuse and say so rather than handing the editor a
+                // path it will open as an empty "new file" buffer — which looks
+                // like an answer, and which saving would recreate. See
+                // RefuseToOpenDeletedAgentTreeFile in
+                // docs/specs/agent-tree.allium.
+                Some((TreeNodeKind::File, Some(FileChange::Deleted))) => {
+                    let path: PathBuf = selected.iter().collect();
+                    state.notice = Some(Notice::editor(format!(
+                        "{}: deleted, nothing to open",
+                        path.display()
+                    )));
+                }
+                Some((TreeNodeKind::File, _)) => {
                     return KeyAction::OpenInEditor(selected.iter().collect())
                 }
                 // `toggle_selected` reports whether anything changed; the loop
                 // redraws unconditionally, so the answer is discarded.
-                Some(TreeNodeKind::Directory) => {
+                Some((TreeNodeKind::Directory, _)) => {
                     state.tree_state.toggle_selected();
                 }
                 None => {}
@@ -417,13 +550,22 @@ fn open_selected(root: &Path, relative: &Path, runner: &dyn ProcessRunner) -> Re
 fn run_loop<B: Backend>(
     terminal: &mut Terminal<B>,
     root: &Path,
-    events_path: &Path,
+    base_branch: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
-    let title = worktree_title(root);
     let mut state = RenderState::new();
-    let mut tree = rebuild(root, events_path, &mut state);
-    let mut last_stamp = file_stamp(events_path);
+    let mut tree = build_tree(root, &[]);
+    // `build_tree` names the root node after the worktree directory, which is
+    // exactly the pane title — so there is one basename computation, not two.
+    let title = tree.name.clone();
+
+    // Draw the empty tree BEFORE the first query. git runs inline in this
+    // single-threaded loop, so a slow first query — a cold index, a large repo
+    // — is time the pane has painted nothing and still shows whatever tmux left
+    // in that cell. One frame of an empty bordered pane is a better answer than
+    // a stale one; the query below fills it in immediately after.
+    terminal.draw(|frame| render(frame, frame.area(), &tree, &mut state, &title))?;
+    refresh(root, base_branch, runner, &mut tree, &mut state);
 
     loop {
         terminal.draw(|frame| render(frame, frame.area(), &tree, &mut state, &title))?;
@@ -450,40 +592,81 @@ fn run_loop<B: Backend>(
                             error = %e,
                             "failed to open the selected file in an editor"
                         );
-                        state.notice = Some(e.to_string());
+                        state.notice = Some(Notice::editor(e.to_string()));
                     }
                 }
             }
             continue;
         }
 
-        // Poll timed out with no key event: the ~1s timer tick. Only
-        // re-read and rebuild the tree if the file actually changed.
-        let stamp = file_stamp(events_path);
-        if stamp != last_stamp {
-            last_stamp = stamp;
-            tree = rebuild(root, events_path, &mut state);
+        // Poll timed out with no key event: the ~1s timer tick.
+        refresh(root, base_branch, runner, &mut tree, &mut state);
+    }
+}
+
+/// One refresh pass: ask git, and rebuild only if the answer moved.
+///
+/// A failed query leaves `changes` and `tree` untouched and sets a notice — the
+/// spec's `AgentTreeGitFailureKeepsLastGoodTree`. The commonest failure is a
+/// transient index lock taken by the agent's own git commands, and blanking the
+/// tree on that would make the pane flicker empty exactly when the user most
+/// wants to watch it.
+///
+/// The unchanged-result short-circuit is a performance optimisation with one
+/// behavioural consequence worth stating: the user's manual expansion state
+/// survives a tick precisely because nothing is rebuilt on it.
+fn refresh(
+    root: &Path,
+    base_branch: &str,
+    runner: &dyn ProcessRunner,
+    tree: &mut TreeNode,
+    state: &mut RenderState,
+) {
+    match git_changes(root, base_branch, runner) {
+        Ok(fresh) => {
+            state.clear_git_notice();
+            // Compared as TREES, not as change lists. The tree is what the user
+            // sees, so it is the thing whose sameness matters — and two change
+            // lists that differ only in a duplicate entry render identically,
+            // which a list comparison would mistake for news.
+            let rebuilt = build_tree(root, &fresh);
+            if rebuilt != *tree {
+                *tree = rebuilt;
+                state.sync_expansion(tree);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                root = %root.display(),
+                base_branch,
+                error = %e,
+                "agent-tree: git query failed, keeping the last good tree"
+            );
+            // `{:#}`, not `{}`: anyhow's plain Display prints only the outermost
+            // context, so a git that could not be spawned at all — or that
+            // overran GIT_TIMEOUT — would put the bare word "git" in the
+            // border and nothing else. Those are the two failures the user can
+            // least afford to have unexplained.
+            state.notice = Some(Notice::git(format!("{e:#}")));
         }
     }
 }
 
 /// Entry point for `dispatch agent-tree <task_id>`. Standalone ratatui loop
 /// — not part of the board TUI's `App`/message loop (see the module-level
-/// doc comment). Resolves the task's worktree from the DB once, then polls
-/// `<data_dir>/file-events/<task_id>.jsonl` on a 1-second timer.
+/// doc comment). Resolves the task's worktree and base branch from the DB once,
+/// then re-queries git on a 1-second timer.
 pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
     let database = Database::open(db_path).await?;
     let task = database
         .get_task(TaskId(task_id))
         .await?
         .with_context(|| format!("task {task_id} not found"))?;
+    let base_branch = task.base_branch.clone();
     let worktree = task
         .worktree
         .with_context(|| format!("task {task_id} has no worktree"))?;
     let root = PathBuf::from(worktree);
-
-    let data_dir = db_path.parent().unwrap_or_else(|| Path::new("."));
-    let events_path = file_events_path(data_dir, task_id);
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -491,7 +674,7 @@ pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, &root, &events_path, &RealProcessRunner);
+    let result = run_loop(&mut terminal, &root, &base_branch, &RealProcessRunner);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -511,26 +694,35 @@ mod tests {
         PathBuf::from("/repo")
     }
 
-    /// One JSONL line for a file-event, varying only `path`/`operation`.
-    /// `schema_version`/`timestamp`/`task_id`/`tool` don't affect tree-
-    /// building (only `path` and `operation` do — see subtask 3's
-    /// `agent_tree::build_tree`), so fixed placeholders are fine here.
-    fn event(path: &str, operation: &str) -> String {
-        format!(
-            r#"{{"schema_version":"1.0.0","timestamp":"2026-07-27T12:00:00Z","task_id":"1","tool":"read","path":"{path}","operation":"{operation}"}}"#
-        )
+    fn changed(path: &str, change: FileChange) -> GitFileChange {
+        GitFileChange {
+            path: PathBuf::from(path),
+            change,
+        }
+    }
+
+    fn modified(path: &str) -> GitFileChange {
+        changed(path, FileChange::Modified)
+    }
+
+    fn deleted(path: &str) -> GitFileChange {
+        changed(path, FileChange::Deleted)
+    }
+
+    fn added(path: &str) -> GitFileChange {
+        changed(path, FileChange::Added)
     }
 
     #[test]
     fn empty_tree_produces_no_items() {
-        let tree = build_tree(&root(), "");
+        let tree = build_tree(&root(), &[]);
         let items = build_tree_items(&tree);
         assert!(items.is_empty());
     }
 
     #[test]
-    fn touched_file_becomes_a_leaf_item_named_by_relative_path() {
-        let tree = build_tree(&root(), &event("/repo/a.rs", "read"));
+    fn changed_file_becomes_a_leaf_item_named_by_relative_path() {
+        let tree = build_tree(&root(), &[modified("a.rs")]);
         let items = build_tree_items(&tree);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].identifier(), "a.rs");
@@ -538,8 +730,8 @@ mod tests {
     }
 
     #[test]
-    fn touched_dir_becomes_a_non_leaf_item() {
-        let tree = build_tree(&root(), &event("/repo/src/a.rs", "read"));
+    fn changed_dir_becomes_a_non_leaf_item() {
+        let tree = build_tree(&root(), &[modified("src/a.rs")]);
         let items = build_tree_items(&tree);
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].identifier(), "src");
@@ -552,7 +744,7 @@ mod tests {
     /// path segments the same vector (see `sync_expansion_at`).
     #[test]
     fn node_identifier_is_its_own_name_segment() {
-        let tree = build_tree(&root(), &event("/repo/a/b/c.rs", "read"));
+        let tree = build_tree(&root(), &[modified("a/b/c.rs")]);
         let items = build_tree_items(&tree);
         let a = &items[0];
         assert_eq!(a.identifier(), "a");
@@ -563,13 +755,8 @@ mod tests {
     }
 
     #[test]
-    fn two_touched_roots_produce_two_top_level_items_sorted_by_name() {
-        let jsonl = format!(
-            "{}\n{}",
-            event("/repo/z.rs", "read"),
-            event("/repo/a.rs", "read")
-        );
-        let tree = build_tree(&root(), &jsonl);
+    fn two_changed_roots_produce_two_top_level_items_sorted_by_name() {
+        let tree = build_tree(&root(), &[modified("z.rs"), modified("a.rs")]);
         let items = build_tree_items(&tree);
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].identifier(), "a.rs");
@@ -577,8 +764,8 @@ mod tests {
     }
 
     #[test]
-    fn sync_expansion_opens_newly_touched_directory() {
-        let tree = build_tree(&root(), &event("/repo/src/a.rs", "read"));
+    fn sync_expansion_opens_newly_changed_directory() {
+        let tree = build_tree(&root(), &[modified("src/a.rs")]);
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
         assert!(state.tree_state.opened().contains(&vec!["src".to_string()]));
@@ -586,30 +773,31 @@ mod tests {
 
     #[test]
     fn sync_expansion_does_not_reopen_a_manually_closed_directory() {
-        let jsonl = event("/repo/src/a.rs", "read");
-        let tree = build_tree(&root(), &jsonl);
+        let changes = [modified("src/a.rs")];
+        let tree = build_tree(&root(), &changes);
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
         assert!(state.tree_state.close(&["src".to_string()]));
 
-        // Rebuild the same tree (as a fresh poll of an unchanged file would)
-        // and sync again: "src" was already auto-expanded once, so the
+        // Rebuild the same tree (as a fresh poll with an unchanged answer
+        // would) and sync again: "src" was already auto-expanded once, so the
         // manual close must survive.
-        let tree_again = build_tree(&root(), &jsonl);
+        let tree_again = build_tree(&root(), &changes);
         state.sync_expansion(&tree_again);
         assert!(!state.tree_state.opened().contains(&vec!["src".to_string()]));
     }
 
     #[test]
-    fn sync_expansion_opens_a_newly_touched_sibling_without_reopening_a_closed_one() {
-        let first_event = event("/repo/src/a.rs", "read");
+    fn sync_expansion_opens_a_newly_changed_sibling_without_reopening_a_closed_one() {
         let mut state = RenderState::new();
-        state.sync_expansion(&build_tree(&root(), &first_event));
+        state.sync_expansion(&build_tree(&root(), &[modified("src/a.rs")]));
         assert!(state.tree_state.close(&["src".to_string()]));
 
-        // A second poll picks up a brand-new touch under a different directory.
-        let jsonl = format!("{}\n{}", first_event, event("/repo/docs/b.md", "read"));
-        state.sync_expansion(&build_tree(&root(), &jsonl));
+        // A second poll picks up a brand-new change under a different directory.
+        state.sync_expansion(&build_tree(
+            &root(),
+            &[modified("src/a.rs"), added("docs/b.md")],
+        ));
 
         assert!(
             !state.tree_state.opened().contains(&vec!["src".to_string()]),
@@ -620,13 +808,13 @@ mod tests {
                 .tree_state
                 .opened()
                 .contains(&vec!["docs".to_string()]),
-            "newly touched dir must auto-open"
+            "newly changed dir must auto-open"
         );
     }
 
     #[test]
     fn sync_expansion_opens_nested_ancestor_directories() {
-        let tree = build_tree(&root(), &event("/repo/a/b/c.rs", "read"));
+        let tree = build_tree(&root(), &[modified("a/b/c.rs")]);
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
         let opened = state.tree_state.opened();
@@ -652,8 +840,8 @@ mod tests {
         lines.join("\n")
     }
 
-    fn render_to_string(jsonl: &str, title: &str, width: u16, height: u16) -> String {
-        let tree = build_tree(&root(), jsonl);
+    fn render_to_string(changes: &[GitFileChange], title: &str, width: u16, height: u16) -> String {
+        let tree = build_tree(&root(), changes);
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
@@ -673,14 +861,14 @@ mod tests {
     }
 
     impl KeyRig {
-        fn new(jsonl: &str) -> Self {
-            Self::sized(jsonl, 12)
+        fn new(changes: &[GitFileChange]) -> Self {
+            Self::sized(changes, 12)
         }
 
         /// `height` is the whole pane, borders included, so the visible row
         /// count the half-page motions divide is `height - 2`.
-        fn sized(jsonl: &str, height: u16) -> Self {
-            let tree = build_tree(&root(), jsonl);
+        fn sized(changes: &[GitFileChange], height: u16) -> Self {
+            let tree = build_tree(&root(), changes);
             let mut state = RenderState::new();
             state.sync_expansion(&tree);
             let terminal = Terminal::new(TestBackend::new(50, height)).expect("terminal");
@@ -722,7 +910,7 @@ mod tests {
             self.state.tree_state.selected().to_vec()
         }
 
-        /// The selected node's single name segment, for the flat-file logs the
+        /// The selected node's single name segment, for the flat-file trees the
         /// jump-motion tests use.
         fn selected_name(&self) -> String {
             self.selected().join("/")
@@ -736,39 +924,34 @@ mod tests {
 
     /// Two top-level files plus a directory holding one file. Sorted by name,
     /// so the flattened view is: a.rs, src, src/lib.rs, z.rs.
-    fn three_node_log() -> String {
-        format!(
-            "{}\n{}\n{}",
-            event("/repo/a.rs", "read"),
-            event("/repo/src/lib.rs", "modified"),
-            event("/repo/z.rs", "read")
-        )
+    fn three_node_changes() -> Vec<GitFileChange> {
+        vec![added("a.rs"), modified("src/lib.rs"), modified("z.rs")]
     }
 
     #[test]
     fn q_exits_the_renderer() {
-        let mut rig = KeyRig::new("");
+        let mut rig = KeyRig::new(&[]);
         assert_eq!(rig.press(KeyCode::Char('q')), KeyAction::Exit);
     }
 
     #[test]
     fn ctrl_c_exits_the_renderer() {
         let mut state = RenderState::new();
-        let tree = build_tree(&root(), "");
+        let tree = build_tree(&root(), &[]);
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(handle_key(&mut state, &tree, key), KeyAction::Exit);
     }
 
     #[test]
     fn a_bare_c_does_not_exit_the_renderer() {
-        let mut rig = KeyRig::new("");
+        let mut rig = KeyRig::new(&[]);
         assert_eq!(rig.press(KeyCode::Char('c')), KeyAction::Continue);
     }
 
     #[test]
     fn down_and_j_both_move_the_cursor_down() {
         for code in [KeyCode::Down, KeyCode::Char('j')] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             assert_eq!(rig.press(code), KeyAction::Continue);
             assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
             rig.press(code);
@@ -779,7 +962,7 @@ mod tests {
     #[test]
     fn up_and_k_both_move_the_cursor_up() {
         for code in [KeyCode::Up, KeyCode::Char('k')] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             rig.press(KeyCode::Down);
             rig.press(KeyCode::Down);
             assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
@@ -791,7 +974,7 @@ mod tests {
     #[test]
     fn right_and_l_both_expand_the_selected_directory() {
         for code in [KeyCode::Right, KeyCode::Char('l')] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             // "src" auto-expanded on first sync; collapse it so expanding is
             // an observable change.
             rig.press(KeyCode::Down);
@@ -809,7 +992,7 @@ mod tests {
     #[test]
     fn left_and_h_both_collapse_the_selected_directory() {
         for code in [KeyCode::Left, KeyCode::Char('h')] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             rig.press(KeyCode::Down);
             rig.press(KeyCode::Down);
             assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
@@ -822,7 +1005,7 @@ mod tests {
 
     #[test]
     fn h_on_a_child_moves_the_cursor_to_its_parent() {
-        let mut rig = KeyRig::new(&three_node_log());
+        let mut rig = KeyRig::new(&three_node_changes());
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
@@ -840,7 +1023,7 @@ mod tests {
     #[test]
     fn space_and_enter_both_toggle_the_selected_directory() {
         for code in [KeyCode::Char(' '), KeyCode::Enter] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             rig.press(KeyCode::Char('j'));
             rig.press(KeyCode::Char('j'));
             assert_eq!(rig.selected(), vec!["src".to_string()], "{code:?}");
@@ -874,7 +1057,7 @@ mod tests {
             KeyCode::Char('l'),
             KeyCode::Right,
         ] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             rig.press(KeyCode::Char('j'));
             assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
             let before = rig.state.tree_state.opened().clone();
@@ -889,7 +1072,7 @@ mod tests {
     /// next `h`, so step-out silently needed two presses (#3834).
     #[test]
     fn h_after_space_on_a_file_steps_out_to_the_parent_in_one_press() {
-        let mut rig = KeyRig::new(&three_node_log());
+        let mut rig = KeyRig::new(&three_node_changes());
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
@@ -897,7 +1080,6 @@ mod tests {
             rig.selected(),
             vec!["src".to_string(), "lib.rs".to_string()]
         );
-
         rig.press(KeyCode::Char(' '));
         rig.press(KeyCode::Char('h'));
         assert_eq!(rig.selected(), vec!["src".to_string()]);
@@ -909,7 +1091,7 @@ mod tests {
     #[test]
     fn space_and_enter_on_a_file_ask_to_open_it_in_an_editor() {
         for code in [KeyCode::Char(' '), KeyCode::Enter] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             rig.press(KeyCode::Char('j'));
             assert_eq!(rig.selected(), vec!["a.rs".to_string()], "{code:?}");
 
@@ -923,7 +1105,7 @@ mod tests {
 
     #[test]
     fn opening_a_nested_file_carries_its_whole_relative_path() {
-        let mut rig = KeyRig::new(&three_node_log());
+        let mut rig = KeyRig::new(&three_node_changes());
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
@@ -938,11 +1120,61 @@ mod tests {
         );
     }
 
+    /// A deleted file has nothing to open. The press is refused with a notice
+    /// rather than handing the editor a path it would open as an empty buffer —
+    /// see RefuseToOpenDeletedAgentTreeFile in docs/specs/agent-tree.allium.
+    #[test]
+    fn space_and_enter_on_a_deleted_file_refuse_with_a_notice() {
+        for code in [KeyCode::Char(' '), KeyCode::Enter] {
+            let mut rig = KeyRig::new(&[deleted("gone.rs")]);
+            rig.press(KeyCode::Char('j'));
+            assert_eq!(rig.selected(), vec!["gone.rs".to_string()], "{code:?}");
+
+            assert_eq!(rig.press(code), KeyAction::Continue, "{code:?}");
+            let notice = rig.state.notice.as_ref().expect("notice set");
+            assert!(
+                notice.text().contains("gone.rs") && notice.text().contains("deleted"),
+                "{code:?}: got {notice:?}"
+            );
+        }
+    }
+
+    /// A nested deleted file names its whole relative path in the notice, so
+    /// the user can tell two same-named files apart.
+    #[test]
+    fn refusing_a_nested_deleted_file_names_its_whole_path() {
+        let mut rig = KeyRig::new(&[deleted("src/old.rs")]);
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(
+            rig.selected(),
+            vec!["src".to_string(), "old.rs".to_string()]
+        );
+
+        assert_eq!(rig.press(KeyCode::Enter), KeyAction::Continue);
+        let notice = rig.state.notice.as_ref().expect("notice set");
+        assert!(notice.text().contains("src/old.rs"), "got {notice:?}");
+    }
+
+    /// Added and Modified files still open — only Deleted is refused.
+    #[test]
+    fn added_and_modified_files_still_open() {
+        for change in [FileChange::Added, FileChange::Modified] {
+            let mut rig = KeyRig::new(&[changed("a.rs", change)]);
+            rig.press(KeyCode::Char('j'));
+            assert_eq!(
+                rig.press(KeyCode::Enter),
+                KeyAction::OpenInEditor(PathBuf::from("a.rs")),
+                "{change:?}"
+            );
+        }
+    }
+
     /// The directory behaviour is unchanged: Space/Enter still toggles, and must
     /// not ask to open anything.
     #[test]
     fn space_on_a_directory_still_toggles_and_does_not_open() {
-        let mut rig = KeyRig::new(&three_node_log());
+        let mut rig = KeyRig::new(&three_node_changes());
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
         assert_eq!(rig.selected(), vec!["src".to_string()]);
@@ -953,7 +1185,7 @@ mod tests {
 
     #[test]
     fn space_with_nothing_selected_does_nothing() {
-        let mut rig = KeyRig::new(&three_node_log());
+        let mut rig = KeyRig::new(&three_node_changes());
         assert!(rig.selected().is_empty());
         assert_eq!(rig.press(KeyCode::Char(' ')), KeyAction::Continue);
     }
@@ -963,7 +1195,7 @@ mod tests {
     #[test]
     fn l_and_right_on_a_file_still_do_nothing() {
         for code in [KeyCode::Char('l'), KeyCode::Right] {
-            let mut rig = KeyRig::new(&three_node_log());
+            let mut rig = KeyRig::new(&three_node_changes());
             rig.press(KeyCode::Char('j'));
             assert_eq!(rig.press(code), KeyAction::Continue, "{code:?}");
         }
@@ -971,8 +1203,8 @@ mod tests {
 
     #[test]
     fn any_key_clears_a_pending_notice() {
-        let mut rig = KeyRig::new(&three_node_log());
-        rig.state.notice = Some("src/gone.rs: no longer exists".to_string());
+        let mut rig = KeyRig::new(&three_node_changes());
+        rig.state.notice = Some(Notice::editor("src/gone.rs: no longer exists"));
 
         rig.press(KeyCode::Char('j'));
 
@@ -987,16 +1219,15 @@ mod tests {
     /// `count` top-level files, `f01.rs`..`fNN.rs`. Flat and zero-padded, so
     /// the flattened view is exactly the files in that order and a landing row
     /// is nameable without counting directories.
-    fn flat_files_log(count: usize) -> String {
+    fn flat_file_changes(count: usize) -> Vec<GitFileChange> {
         (1..=count)
-            .map(|n| event(&format!("/repo/f{n:02}.rs"), "read"))
-            .collect::<Vec<_>>()
-            .join("\n")
+            .map(|n| modified(&format!("f{n:02}.rs")))
+            .collect()
     }
 
     #[test]
     fn gg_jumps_to_the_first_visible_node() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         for _ in 0..4 {
             rig.press(KeyCode::Char('j'));
         }
@@ -1013,7 +1244,7 @@ mod tests {
 
     #[test]
     fn a_lone_g_moves_nothing() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
         let before = rig.selected();
@@ -1026,7 +1257,7 @@ mod tests {
     /// key — and that key must still do its own job.
     #[test]
     fn a_key_between_the_two_gs_disarms_the_chord_and_still_acts() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
 
@@ -1044,7 +1275,7 @@ mod tests {
 
     #[test]
     fn g_then_a_second_g_after_many_other_keys_needs_a_fresh_pair() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('g'));
         rig.press(KeyCode::Char('j'));
@@ -1057,7 +1288,7 @@ mod tests {
 
     #[test]
     fn shift_g_jumps_to_the_last_visible_node() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         assert_eq!(rig.press(KeyCode::Char('G')), KeyAction::Continue);
         assert_eq!(rig.selected_name(), "f06.rs");
     }
@@ -1066,12 +1297,7 @@ mod tests {
     /// the last row becomes `src` itself — and the jump must not reopen it.
     #[test]
     fn shift_g_skips_rows_a_collapsed_directory_hides() {
-        let jsonl = format!(
-            "{}\n{}",
-            event("/repo/a.rs", "read"),
-            event("/repo/src/lib.rs", "modified")
-        );
-        let mut rig = KeyRig::new(&jsonl);
+        let mut rig = KeyRig::new(&[modified("a.rs"), modified("src/lib.rs")]);
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('h'));
@@ -1084,12 +1310,7 @@ mod tests {
 
     #[test]
     fn gg_lands_on_the_first_row_without_expanding_it() {
-        let jsonl = format!(
-            "{}\n{}",
-            event("/repo/src/lib.rs", "modified"),
-            event("/repo/z.rs", "read")
-        );
-        let mut rig = KeyRig::new(&jsonl);
+        let mut rig = KeyRig::new(&[modified("src/lib.rs"), modified("z.rs")]);
         rig.press(KeyCode::Char('j'));
         rig.press(KeyCode::Char('h'));
         assert!(!rig.is_open(&["src"]), "precondition: src is collapsed");
@@ -1106,7 +1327,7 @@ mod tests {
     /// selects the first row, exactly as `j`/`k` do.
     #[test]
     fn ctrl_d_moves_the_cursor_half_a_page_down() {
-        let mut rig = KeyRig::new(&flat_files_log(20));
+        let mut rig = KeyRig::new(&flat_file_changes(20));
         rig.press(KeyCode::Char('j'));
         assert_eq!(rig.press_ctrl(KeyCode::Char('d')), KeyAction::Continue);
         assert_eq!(rig.selected_name(), "f06.rs");
@@ -1116,7 +1337,7 @@ mod tests {
 
     #[test]
     fn ctrl_u_moves_the_cursor_half_a_page_up() {
-        let mut rig = KeyRig::new(&flat_files_log(20));
+        let mut rig = KeyRig::new(&flat_file_changes(20));
         rig.press(KeyCode::Char('G'));
         assert_eq!(rig.selected_name(), "f20.rs");
 
@@ -1126,7 +1347,7 @@ mod tests {
 
     #[test]
     fn ctrl_d_clamps_at_the_last_visible_node() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         rig.press(KeyCode::Char('j'));
         rig.press_ctrl(KeyCode::Char('d'));
         rig.press_ctrl(KeyCode::Char('d'));
@@ -1135,7 +1356,7 @@ mod tests {
 
     #[test]
     fn ctrl_u_clamps_at_the_first_visible_node() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         rig.press(KeyCode::Char('j'));
         rig.press_ctrl(KeyCode::Char('u'));
         assert_eq!(rig.selected_name(), "f01.rs");
@@ -1145,12 +1366,12 @@ mod tests {
     /// 20-row pane (18 visible) jumps 9, where the default 12-row one jumps 5.
     #[test]
     fn half_a_page_scales_with_the_pane_height() {
-        let mut tall = KeyRig::sized(&flat_files_log(20), 20);
+        let mut tall = KeyRig::sized(&flat_file_changes(20), 20);
         tall.press(KeyCode::Char('j'));
         tall.press_ctrl(KeyCode::Char('d'));
         assert_eq!(tall.selected_name(), "f10.rs");
 
-        let mut short = KeyRig::sized(&flat_files_log(20), 8);
+        let mut short = KeyRig::sized(&flat_file_changes(20), 8);
         short.press(KeyCode::Char('j'));
         short.press_ctrl(KeyCode::Char('d'));
         assert_eq!(short.selected_name(), "f04.rs");
@@ -1160,7 +1381,7 @@ mod tests {
     /// so the floor is one row.
     #[test]
     fn a_pane_too_short_to_halve_still_moves_one_row() {
-        let mut rig = KeyRig::sized(&flat_files_log(6), 3);
+        let mut rig = KeyRig::sized(&flat_file_changes(6), 3);
         rig.press(KeyCode::Char('j'));
         rig.press_ctrl(KeyCode::Char('d'));
         assert_eq!(rig.selected_name(), "f02.rs");
@@ -1171,14 +1392,14 @@ mod tests {
     #[test]
     fn jump_motions_are_no_ops_on_an_empty_tree() {
         for keys in [vec!['g', 'g'], vec!['G']] {
-            let mut rig = KeyRig::new("");
+            let mut rig = KeyRig::new(&[]);
             for key in keys {
                 assert_eq!(rig.press(KeyCode::Char(key)), KeyAction::Continue);
             }
             assert!(rig.selected().is_empty());
         }
 
-        let mut rig = KeyRig::new("");
+        let mut rig = KeyRig::new(&[]);
         assert_eq!(rig.press_ctrl(KeyCode::Char('d')), KeyAction::Continue);
         assert_eq!(rig.press_ctrl(KeyCode::Char('u')), KeyAction::Continue);
         assert!(rig.selected().is_empty());
@@ -1188,17 +1409,244 @@ mod tests {
     /// that did the disarming.
     #[test]
     fn q_after_a_lone_g_still_exits() {
-        let mut rig = KeyRig::new(&flat_files_log(6));
+        let mut rig = KeyRig::new(&flat_file_changes(6));
         rig.press(KeyCode::Char('g'));
         assert_eq!(rig.press(KeyCode::Char('q')), KeyAction::Exit);
     }
 
+    // ---- git_changes: the two commands ------------------------------------
+
+    use crate::process::MockProcessRunner;
+
+    /// A `-z` stream: NUL after every field, exactly as git emits it.
+    fn nul(fields: &[&str]) -> String {
+        fields.iter().map(|f| format!("{f}\0")).collect()
+    }
+
+    /// Both git commands succeed, with the given `-z` stdout, in call order.
+    /// `diff` alternates status and path; `untracked` is bare paths.
+    fn git_rig(diff: &[&str], untracked: &[&str]) -> MockProcessRunner {
+        MockProcessRunner::new(vec![
+            MockProcessRunner::ok_with_stdout(nul(diff).as_bytes()),
+            MockProcessRunner::ok_with_stdout(nul(untracked).as_bytes()),
+        ])
+    }
+
+    /// The first git command fails with `stderr`; nothing is queued after it, so
+    /// a second call would panic — which is what
+    /// `a_failing_diff_does_not_run_the_untracked_listing` relies on.
+    fn failing_git_rig(stderr: &str) -> MockProcessRunner {
+        MockProcessRunner::new(vec![MockProcessRunner::fail(stderr)])
+    }
+
+    #[test]
+    fn git_changes_runs_a_merge_base_diff_and_an_untracked_listing() {
+        let runner = git_rig(&["M", "src/a.rs"], &[]);
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+
+        assert_eq!(changes, vec![modified("src/a.rs")]);
+        assert_eq!(
+            runner.flattened_calls(),
+            vec![
+                "git -C /wt diff --name-status --no-renames -z --merge-base main".to_string(),
+                "git -C /wt ls-files --others --exclude-standard -z".to_string(),
+            ]
+        );
+    }
+
+    /// Git C-quotes any path with a non-ASCII byte, and separates the status
+    /// from the path with a tab, unless `-z` is passed — so `src/é.rs` would
+    /// arrive as the literal `"src/\303\251.rs"`, a name that renders wrong and
+    /// opens nothing. Both queries must pass it.
+    #[test]
+    fn both_git_queries_ask_for_nul_delimited_output() {
+        let runner = git_rig(&[], &[]);
+        git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        for call in runner.flattened_calls() {
+            assert!(
+                call.split(' ').any(|arg| arg == "-z"),
+                "without -z, quoting breaks non-ASCII names; got {call}"
+            );
+        }
+    }
+
+    /// The payoff of the flag above: a non-ASCII path survives end to end, from
+    /// git's stdout to a node the tree can name.
+    #[test]
+    fn a_non_ascii_path_survives_parsing_and_tree_building() {
+        let runner = git_rig(&["M", "src/é.rs"], &["docs/naïve.md"]);
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        assert_eq!(changes, vec![modified("src/é.rs"), added("docs/naïve.md")]);
+
+        let tree = build_tree(&root(), &changes);
+        assert_eq!(
+            tree.node_at(&["src", "é.rs"]).expect("é.rs").badge,
+            Some(FileChange::Modified)
+        );
+        assert_eq!(
+            tree.node_at(&["docs", "naïve.md"]).expect("naïve.md").badge,
+            Some(FileChange::Added)
+        );
+    }
+
+    /// Both queries are bounded, so a git blocked on an index lock the agent
+    /// itself holds cannot wedge the renderer's single-threaded loop.
+    #[test]
+    fn both_git_queries_are_bounded_by_a_timeout() {
+        let runner = git_rig(&[], &[]);
+        git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        assert_eq!(
+            runner.recorded_timeouts(),
+            vec![Some(GIT_TIMEOUT), Some(GIT_TIMEOUT)]
+        );
+    }
+
+    /// The diff is taken against the working tree, so a committed change is
+    /// still reported. That is the whole reason the baseline is the merge-base
+    /// rather than HEAD — see AgentTreeBaselineIsTaskBaseBranch.
+    #[test]
+    fn git_changes_uses_the_tasks_own_base_branch() {
+        let runner = git_rig(&[], &[]);
+        git_changes(Path::new("/wt"), "develop", &runner).expect("ok");
+        assert!(
+            runner.flattened_calls()[0].ends_with("--merge-base develop"),
+            "got {:?}",
+            runner.flattened_calls()[0]
+        );
+    }
+
+    #[test]
+    fn git_changes_reports_untracked_files_as_added() {
+        let runner = git_rig(&["M", "a.rs"], &["new.rs", "docs/draft.md"]);
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        assert_eq!(
+            changes,
+            vec![modified("a.rs"), added("new.rs"), added("docs/draft.md")]
+        );
+    }
+
+    #[test]
+    fn git_changes_reports_deletions() {
+        let runner = git_rig(&["D", "src/old.rs"], &[]);
+        let changes = git_changes(Path::new("/wt"), "main", &runner).expect("ok");
+        assert_eq!(changes, vec![deleted("src/old.rs")]);
+    }
+
+    #[test]
+    fn git_changes_on_a_clean_worktree_reports_nothing() {
+        let runner = git_rig(&[], &[]);
+        assert!(git_changes(Path::new("/wt"), "main", &runner)
+            .expect("ok")
+            .is_empty());
+    }
+
+    /// A failing git surfaces its own first stderr line, because that line is
+    /// what reaches the user's border and has to say something actionable.
+    #[test]
+    fn git_changes_fails_with_gits_own_message() {
+        let runner = failing_git_rig("fatal: not a valid object name: nosuchbranch\n");
+        let err = git_changes(Path::new("/wt"), "nosuchbranch", &runner)
+            .expect_err("must fail")
+            .to_string();
+        assert!(err.contains("nosuchbranch"), "got {err}");
+    }
+
+    /// A failure in the FIRST command short-circuits — the second must not run
+    /// against a repo we already know we cannot read.
+    #[test]
+    fn a_failing_diff_does_not_run_the_untracked_listing() {
+        let runner = failing_git_rig("fatal: not a git repository\n");
+        let _ = git_changes(Path::new("/wt"), "main", &runner);
+        assert_eq!(runner.recorded_calls().len(), 1);
+    }
+
+    // ---- refresh: failure keeps the last good tree ------------------------
+
+    /// The spec's AgentTreeGitFailureKeepsLastGoodTree: a failed query leaves
+    /// the tree exactly as it was and says so. Blanking on a transient index
+    /// lock — the commonest failure, taken by the agent's own git — would make
+    /// the pane flicker empty.
+    #[test]
+    fn a_failed_git_query_keeps_the_last_good_tree_and_sets_a_notice() {
+        let mut state = RenderState::new();
+        let mut tree = build_tree(&root(), &[]);
+
+        let good = git_rig(&["M", "src/a.rs"], &[]);
+        refresh(&root(), "main", &good, &mut tree, &mut state);
+        assert!(tree.node_at(&["src", "a.rs"]).is_some());
+        assert!(state.notice.is_none());
+
+        let bad = failing_git_rig("fatal: unable to read index.lock\n");
+        refresh(&root(), "main", &bad, &mut tree, &mut state);
+
+        assert!(
+            tree.node_at(&["src", "a.rs"]).is_some(),
+            "the last good tree must survive"
+        );
+        let notice = state.notice.as_ref().expect("notice set");
+        assert!(matches!(notice, Notice::Git(_)), "got {notice:?}");
+        assert!(notice.text().contains("index.lock"), "got {notice:?}");
+    }
+
+    /// A working git retracts its own complaint on the next tick.
+    #[test]
+    fn a_recovering_git_query_clears_its_own_notice() {
+        let mut state = RenderState::new();
+        let mut tree = build_tree(&root(), &[]);
+
+        let bad = failing_git_rig("fatal: unable to read index.lock\n");
+        refresh(&root(), "main", &bad, &mut tree, &mut state);
+        assert!(state.notice.is_some());
+
+        let good = git_rig(&["M", "a.rs"], &[]);
+        refresh(&root(), "main", &good, &mut tree, &mut state);
+        assert!(state.notice.is_none());
+    }
+
+    /// ...but it must not swallow the answer to a keypress the user made half a
+    /// second ago. The two notices share one field and one line of border, so
+    /// the source is what keeps them apart — see NoticeSource in the spec.
+    #[test]
+    fn a_successful_git_query_leaves_an_editor_notice_alone() {
+        let mut state = RenderState::new();
+        let mut tree = build_tree(&root(), &[]);
+        state.notice = Some(Notice::editor("no editor configured"));
+
+        let good = git_rig(&["M", "a.rs"], &[]);
+        refresh(&root(), "main", &good, &mut tree, &mut state);
+
+        let notice = state.notice.as_ref().expect("editor notice must survive");
+        assert!(matches!(notice, Notice::Editor(_)), "got {notice:?}");
+    }
+
+    /// A revert un-badges the file with no bookkeeping: git stops reporting it,
+    /// so the node goes. This is the second half of task #4408 — a file that is
+    /// not modified must not show as modified.
+    #[test]
+    fn a_reverted_file_disappears_from_the_tree() {
+        let mut state = RenderState::new();
+        let mut tree = build_tree(&root(), &[]);
+
+        let dirty = git_rig(&["M", "a.rs"], &[]);
+        refresh(&root(), "main", &dirty, &mut tree, &mut state);
+        assert!(tree.node_at(&["a.rs"]).is_some());
+
+        let clean = git_rig(&[], &[]);
+        refresh(&root(), "main", &clean, &mut tree, &mut state);
+        assert!(
+            tree.node_at(&["a.rs"]).is_none(),
+            "a reverted file must leave the tree"
+        );
+    }
+
+    // ---- Snapshots ---------------------------------------------------------
+
     #[test]
     fn snapshot_notice_is_shown_in_the_bottom_border() {
-        let tree = build_tree(&root(), &three_node_log());
+        let tree = build_tree(&root(), &three_node_changes());
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
-        state.notice = Some("src/gone.rs: no longer exists".to_string());
+        state.notice = Some(Notice::editor("src/gone.rs: no longer exists"));
         let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
         terminal
             .draw(|frame| render(frame, frame.area(), &tree, &mut state, "dispatch"))
@@ -1212,27 +1660,60 @@ mod tests {
         insta::assert_snapshot!(rendered);
     }
 
+    /// The border reddens with the notice — see AgentTreeNoticeRedensBorder.
+    /// Asserted on the styled buffer, not the plain text, because the whole
+    /// point is that the frame carries where a line of text does not.
+    #[test]
+    fn a_notice_reddens_the_whole_border() {
+        let tree = build_tree(&root(), &three_node_changes());
+        let mut state = RenderState::new();
+        state.sync_expansion(&tree);
+        let mut terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
+
+        terminal
+            .draw(|frame| render(frame, frame.area(), &tree, &mut state, "dispatch"))
+            .expect("draw");
+        let corner = terminal.backend().buffer()[(0, 0)].clone();
+        assert_ne!(
+            corner.style().fg,
+            Some(RED),
+            "no notice: the border must not be red"
+        );
+
+        state.notice = Some(Notice::git("git: fatal: unable to read index.lock"));
+        terminal
+            .draw(|frame| render(frame, frame.area(), &tree, &mut state, "dispatch"))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+        for (x, y) in [(0u16, 0u16), (49, 0), (0, 11), (49, 11)] {
+            assert_eq!(
+                buf[(x, y)].style().fg,
+                Some(RED),
+                "corner ({x},{y}) must be red while a notice shows"
+            );
+        }
+    }
+
     #[test]
     fn snapshot_empty_tree_shows_bare_title() {
-        let rendered = render_to_string("", "dispatch", 50, 10);
+        let rendered = render_to_string(&[], "dispatch", 50, 10);
         insta::assert_snapshot!(rendered);
     }
 
     #[test]
-    fn snapshot_modified_and_read_badges() {
-        let jsonl = format!(
-            "{}\n{}",
-            event("/repo/src/lib.rs", "modified"),
-            event("/repo/README.md", "read")
-        );
-        let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
+    fn snapshot_added_modified_and_deleted_badges() {
+        let changes = vec![
+            added("src/new.rs"),
+            modified("src/lib.rs"),
+            deleted("README.md"),
+        ];
+        let rendered = render_to_string(&changes, "dispatch", 50, 12);
         insta::assert_snapshot!(rendered);
     }
 
     #[test]
     fn snapshot_nested_directories_auto_expanded() {
-        let jsonl = event("/repo/a/b/c.rs", "modified");
-        let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
+        let rendered = render_to_string(&[modified("a/b/c.rs")], "dispatch", 50, 12);
         insta::assert_snapshot!(rendered);
     }
 
@@ -1240,12 +1721,11 @@ mod tests {
     /// so the only one that can catch a key-representation mismatch: an
     /// assertion over `opened()` can encode a key that matches no node and
     /// still pass, because `TreeState::open` reports success on it (#3811).
-    /// Every directory on the way to a touched file is expanded, so the
+    /// Every directory on the way to a changed file is expanded, so the
     /// leaf is on screen with no keypresses.
     #[test]
-    fn deeply_nested_touched_file_is_visible_without_manual_expansion() {
-        let jsonl = event("/repo/a/b/c/d/leaf.rs", "modified");
-        let rendered = render_to_string(&jsonl, "dispatch", 50, 12);
+    fn deeply_nested_changed_file_is_visible_without_manual_expansion() {
+        let rendered = render_to_string(&[modified("a/b/c/d/leaf.rs")], "dispatch", 50, 12);
         assert!(
             rendered.contains("leaf.rs"),
             "the leaf must be visible unaided; rendered:\n{rendered}"
@@ -1258,15 +1738,15 @@ mod tests {
 
     #[test]
     fn manually_collapsed_nested_directory_stays_collapsed_on_refresh() {
-        let jsonl = event("/repo/a/b/c.rs", "read");
-        let tree = build_tree(&root(), &jsonl);
+        let changes = [modified("a/b/c.rs")];
+        let tree = build_tree(&root(), &changes);
         let mut state = RenderState::new();
         state.sync_expansion(&tree);
 
         let nested = vec!["a".to_string(), "b".to_string()];
         assert!(state.tree_state.close(&nested));
 
-        state.sync_expansion(&build_tree(&root(), &jsonl));
+        state.sync_expansion(&build_tree(&root(), &changes));
         assert!(!state.tree_state.opened().contains(&nested));
     }
 }

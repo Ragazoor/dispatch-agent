@@ -826,8 +826,9 @@ rule HookPeerMessageSent {
         -- Implemented by `dispatch hook-peer-message <sender_id> --target
         -- <to> --body <message>` (src/main.rs, cmd_hook_peer_message),
         -- invoked from `plugin/hooks/scripts/task-status-hook`'s
-        -- `PostToolUse` case — additive alongside that same case's existing
-        -- file-event forwarding, gated on `tool_name == "SendMessage"`
+        -- `PostToolUse` case — one of that case's additive observers,
+        -- alongside the backgrounded-shell forwarding, and gated on
+        -- `tool_name == "SendMessage"`
         -- rather than the `mcp__dispatch__*` skip (a native tool call is
         -- never skipped by that filter). `TaskService::record_peer_message_sent`
         -- (src/service/tasks/crud.rs) does the two stamps and also appends a

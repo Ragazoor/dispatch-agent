@@ -142,28 +142,13 @@ enum Commands {
         #[arg(long)]
         body: String,
     },
-    /// Append a file-touch event (Read/Write/Edit/NotebookEdit) to a task's
-    /// file-events JSONL log (see `docs/specs/agent-tree.allium`). Deliberately
-    /// independent of `Hook`/`HookEventKind` — this command never touches
-    /// `TaskService` or the database, and does not affect task-activity
-    /// classification.
-    HookFileEvent {
-        /// Task ID
-        id: i64,
-        /// Claude Code tool name: Read, Write, Edit, or NotebookEdit
-        #[arg(long)]
-        tool: String,
-        /// File path from the tool's payload (`tool_input.file_path`, or
-        /// `tool_input.notebook_path` for NotebookEdit)
-        #[arg(long)]
-        path: String,
-    },
     /// Render a standalone companion file-tree pane for one task's agent,
-    /// fed by its file-events JSONL log (see docs/specs/agent-tree.allium).
-    /// A small ratatui loop — deliberately not part of the board TUI's
-    /// App/message loop; runs as its own process in a tmux pane.
+    /// showing what git reports as changed in its worktree (see
+    /// docs/specs/agent-tree.allium). A small ratatui loop — deliberately not
+    /// part of the board TUI's App/message loop; runs as its own process in a
+    /// tmux pane.
     AgentTree {
-        /// Task ID whose file-events log to render
+        /// Task ID whose worktree to render
         task_id: i64,
     },
     /// statusLine decorator for Claude Code: record the subscription
@@ -486,17 +471,6 @@ async fn cmd_hook_shell(
     let (svc, _data_dir) = open_hook_service(db).await?;
     let outcome = svc.record_shell_event(models::TaskId(id), event).await;
     report_hook_outcome(id, outcome)
-}
-
-async fn cmd_hook_file_event(
-    db: &std::path::Path,
-    id: i64,
-    tool: String,
-    path: String,
-) -> Result<()> {
-    let data_dir = hook_data_dir(db)?;
-    dispatch_tui::file_events::append_file_event(data_dir, id, &tool, &path).await;
-    Ok(())
 }
 
 async fn cmd_agent_tree(db: &std::path::Path, task_id: i64) -> Result<()> {
@@ -892,9 +866,6 @@ async fn run_async(db: &std::path::Path, command: Commands) -> Result<()> {
         } => cmd_hook_shell(db, id, action, shell_id, session_id).await?,
         Commands::HookPeerMessage { id, target, body } => {
             cmd_hook_peer_message(db, id, target, body).await?
-        }
-        Commands::HookFileEvent { id, tool, path } => {
-            cmd_hook_file_event(db, id, tool, path).await?
         }
         Commands::AgentTree { task_id } => cmd_agent_tree(db, task_id).await?,
         Commands::PrGate { id } => cmd_pr_gate(db, id).await?,

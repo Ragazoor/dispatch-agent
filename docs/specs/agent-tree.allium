@@ -2,31 +2,48 @@
 -- agent-tree.allium
 --
 -- Scope: The agent file tree panel — a companion pane living inside each
---        agent's own tmux window that shows which files that agent has read
---        and modified.
--- Includes: The capture pipeline (a PostToolUse-driven, per-task JSONL event
---           log of Read/Write/Edit/NotebookEdit tool calls); the companion
---           pane's lifecycle (split at agent-window creation, global toggle
---           keybinding bound alongside the board TUI, kill-pane + re-split);
---           and the tree/badge rendering rules (worktree-rooted tree, Modified
---           badge beating Read, auto-expanded directories).
--- Excludes: Task-activity classification and the existing activity-signal hook
---           (see agent-health.allium — HookPreToolUse fires for both PreToolUse
---           and PostToolUse and is NOT modified by anything in this spec);
+--        agent's own tmux window that shows which files in that agent's
+--        worktree have changed.
+-- Includes: The git query that answers "what changed" (a diff of the worktree
+--           against the merge-base with the task's base branch, plus untracked
+--           files); the companion pane's lifecycle (split at agent-window
+--           creation, global toggle keybinding bound alongside the board TUI,
+--           kill-pane + re-split); and the tree/badge rendering rules
+--           (worktree-rooted tree, Added/Modified/Deleted badges,
+--           auto-expanded directories).
+-- Excludes: Task-activity classification and the activity-signal hook (see
+--           agent-health.allium — HookPreToolUse fires for both PreToolUse and
+--           PostToolUse and is NOT modified by anything in this spec);
 --           MCP tool-call auditing and slow-DB warnings (see
 --           observability.allium, which deliberately scopes out hook events);
 --           the board TUI's own split pane, which joins a whole agent window
 --           next to the kanban board (see split-pane.allium — a different pane,
 --           in a different window, with a different lifecycle);
 --           agent-window creation itself and the main-session window (see
---           dispatch.allium).
+--           dispatch.allium); repository synchronisation and drift measurement,
+--           which run their own git commands for a different purpose (see
+--           repo-sync.allium).
 --
--- Two deliberately decoupled halves. CAPTURE is driven by Claude Code hooks and
--- runs whether or not anything is watching: a dispatched agent fills its event
--- log even when the board TUI is not running and no pane is open. RENDER is a
--- standalone process inside the agent's own tmux window that tails that log.
--- Neither half touches the board TUI's state, its DB refresh cycle, or the
--- kanban App — the whole feature is invisible to the board process.
+-- GIT IS THE SOLE SOURCE OF TRUTH. The pane runs git against the worktree and
+-- renders what git reports; it stores nothing, remembers nothing between
+-- refreshes, and derives nothing from the agent's tool calls. Three
+-- consequences follow, and they are the whole point of the design:
+--   * A deleted file is reported as deleted, because git reports deletions.
+--   * A file edited and then reverted stops being badged, because git stops
+--     reporting it. Nothing has to retract anything.
+--   * A file changed by a shell command, a script or a formatter is badged
+--     like any other, because git does not care which tool wrote it.
+--
+-- An earlier design derived the tree from a hook-driven, append-only log of
+-- Read/Write/Edit/NotebookEdit tool calls. It could express none of the three
+-- above: the log records touches, never outcomes, so it could not see a
+-- deletion, could not retract a badge, and could not see a shell edit at all.
+-- That capture pipeline is gone — not dormant — and with it the Read badge,
+-- which git cannot supply. See AgentTreeIsGitDerived.
+--
+-- The pane remains a standalone process inside the agent's own tmux window. It
+-- does not touch the board TUI's state, its DB refresh cycle, or the kanban
+-- App — the whole feature is invisible to the board process.
 
 use "./core.allium" as core
 
@@ -34,54 +51,49 @@ use "./core.allium" as core
 -- Enumerations
 ------------------------------------------------------------
 
--- The Claude Code tools whose calls are captured. Every other tool call
--- (including Bash, Grep, Glob, Task and every mcp__dispatch__* call) produces
--- no FileEvent — see the BashGap note on CaptureFileEvent.
-enum TrackedFileTool { read | write | edit | notebook_edit }
-
--- What a captured tool call did to the file. Also the badge vocabulary: a
--- rendered node's badge is a FileOperation, so badge precedence
--- (modified beats read) is a comparison within one named enum rather than
--- across two anonymous ones.
-enum FileOperation { read | modified }
+-- What git says happened to a file, relative to the base. Also the badge
+-- vocabulary: a rendered node's badge is a FileChange, so there is exactly one
+-- enum for both, and a badge cannot say anything git did not.
+--
+-- Three values, not more. Git's own porcelain distinguishes further (type
+-- changes, copies, unmerged), but the user is scanning for "what did this
+-- agent do to my repo", and those all answer it as one of these three.
+-- CollapsedGitStatusLetters records the mapping.
+enum FileChange { added | modified | deleted }
 
 enum TreeNodeKind { file | directory }
+
+-- Which of the two writers set the pane's current notice. The pane shows one
+-- notice at a time in one line of border, so the two have to share a field —
+-- and a successful refresh must clear a stale "git failed" without also
+-- wiping the answer to a keypress the user made half a second ago. See
+-- RefreshAgentTree's clearing expression.
+enum NoticeSource { git_query | editor_open }
 
 ------------------------------------------------------------
 -- Value Types
 ------------------------------------------------------------
 
--- One line in <dispatch_data_dir>/<file_events_subdir>/<task_id>.jsonl.
--- Every captured tool call becomes one FileEvent, serialised as a single JSON
--- object on its own line. Events for a task accumulate in a single file named
--- by the task's integer ID, under the centralized data dir (parent of the
--- SQLite database) so the log outlives worktree cleanup — the same storage
--- shape observability.allium uses for TrajectoryEntry.
---
--- The file shard coincides exactly with the natural serialization boundary:
--- one task, one agent session, one strictly serial tool-call stream, so at
--- most one process ever appends to a given task's file at a time. That, not
--- precedent, is why an append-only file is safe here.
-value FileEvent {
-    schema_version: String        -- semver string, e.g. "1.0.0"
-    timestamp:      Timestamp     -- UTC, RFC 3339
-    task_id:        String        -- stringified Task.id of the agent that tooled
-    tool:           TrackedFileTool
-    path:           String        -- path exactly as the tool reported it
-                                  -- (absolute); relativised at render time
-    operation:      FileOperation -- read for read; modified for the other three
+-- One changed file, as git reported it on the last successful query. Nothing
+-- persists these: they exist for the duration of one refresh pass and are
+-- discarded once the nodes are built. There is no log, no schema version and
+-- no timestamp, because there is nothing to read back later — the next refresh
+-- asks git again.
+value GitFileChange {
+    path:   String       -- relative to the pane root, exactly as git reports it
+    change: FileChange
 }
 
 -- One row of the rendered tree. Nodes are derived, not stored: they are
--- recomputed from the task's FileEvent log on every refresh, so a node
--- carries no identity of its own. A node exists only for a touched path or an
--- ancestor directory of one — an untouched file or directory never gets a
--- node, rather than appearing collapsed (see RefreshAgentTree).
+-- recomputed from a fresh git query on every refresh, so a node carries no
+-- identity of its own. A node exists only for a changed path or an ancestor
+-- directory of one — an unchanged file or directory never gets a node, rather
+-- than appearing collapsed (see RefreshAgentTree).
 value AgentTreeNode {
     pane_root: String            -- the pane root this node was rendered under
     path:      String            -- path relative to pane_root
     kind:      TreeNodeKind
-    badge:     FileOperation?    -- null for directories and for untouched files
+    badge:     FileChange?       -- null for directories; never null for files
     expanded:  Boolean           -- directories only; always false for files
 }
 
@@ -98,10 +110,14 @@ entity AgentTreePane {
     -- (see OneCompanionPanePerAgentWindow).
     window: core/TmuxWindow
 
-    -- The task whose event log feeds this pane. Required: a companion pane
-    -- exists only for a task-agent window. The main-session window has no task
-    -- and gets no pane at all — see SplitAgentTreePaneOnAgentLaunch's
-    -- "Resolves MainSessionPaneScope" note.
+    -- The task this pane renders. Required: a companion pane exists only for a
+    -- task-agent window. The main-session window has no task and gets no pane
+    -- at all — see SplitAgentTreePaneOnAgentLaunch's "Resolves
+    -- MainSessionPaneScope" note.
+    --
+    -- The task supplies two things the git query needs and nothing else can:
+    -- its worktree (pane.root) and its base_branch (the diff baseline — see
+    -- AgentTreeBaselineIsTaskBaseBranch).
     task: core/Task
 
     -- Absolute directory the tree is rooted at: always the task's worktree path
@@ -113,8 +129,19 @@ entity AgentTreePane {
     -- The tmux pane exists only while the pane is shown; hiding kills it.
     tmux_pane: core/TmuxPane when status = shown
 
-    -- Stamped on every refresh; drives the redraw timer (see RefreshAgentTree).
+    -- Stamped on every refresh attempt, successful or not; drives the redraw
+    -- timer (see RefreshAgentTree). Stamped even on a failed query so a
+    -- repeatedly-failing git cannot turn the refresh trigger into a spin.
     last_rendered_at: Timestamp
+
+    -- What the last SUCCESSFUL git query returned. The rendered tree is a
+    -- function of this and nothing else, which is what makes "keep the last
+    -- good tree" a statement about one field rather than about the renderer's
+    -- internals: a failed query leaves it alone (see
+    -- AgentTreeGitFailureKeepsLastGoodTree). Empty before the first successful
+    -- query, and empty is also the honest answer for a worktree with no
+    -- changes yet — both render an empty tree.
+    rendered_changes: [GitFileChange]
 
     -- The editor pane opened from this tree, if any. At most one per agent
     -- window (see OneEditorPanePerAgentWindow): opening a second file replaces
@@ -128,10 +155,18 @@ entity AgentTreePane {
     -- when the pane is reused (see ReplaceAgentTreeEditorFile).
     editor_file: String? when editor_pane != null
 
-    -- Why the last attempt to open a file failed, shown in this pane's own
-    -- border until the next keypress. The only thing the pane ever reports to
-    -- the user (see AgentTreeEditorOpenFailureIsVisible).
+    -- Why the last thing the pane tried to do failed, shown in this pane's own
+    -- border until the next keypress. Two things set it: a failed file open
+    -- (see AgentTreeEditorOpenFailureIsVisible) and a failed git query (see
+    -- AgentTreeGitFailureKeepsLastGoodTree). The only thing the pane ever
+    -- reports to the user, and while it is set the pane's border is drawn in
+    -- the error colour (see AgentTreeNoticeRedensBorder).
     error_notice: String?
+
+    -- Which writer set error_notice. Exists only so a recovering git query can
+    -- clear its own stale notice without clearing an editor-open notice the
+    -- user has had barely a second to read.
+    notice_source: NoticeSource when error_notice != null
 
     transitions status {
         shown -> hidden
@@ -144,22 +179,30 @@ entity AgentTreePane {
 ------------------------------------------------------------
 
 config {
-    file_event_schema_version: String = "1.0.0"
-
-    -- Subdirectory within the dispatch data dir that holds per-task file-event
-    -- logs. Sibling of observability.allium's trajectory_subdir.
-    file_events_subdir: String = "file-events"
-
     -- Width of the companion pane as a percentage of the agent window.
     -- Deliberately narrower than the board's own 40% split-pane: Claude's CLI
     -- output needs the room, and a file tree is mostly short path segments.
     agent_tree_pane_percent: Integer = 30
 
-    -- Redraw cadence. The renderer re-reads an append-only file it already has
-    -- open, so a one-second poll is cheap; it is also well below the point
-    -- where a follow-along view feels laggy. Not tied to the board TUI's
-    -- tick_interval — the two processes are independent.
+    -- Redraw cadence. Each tick runs the git query (see AgentTreeGitQuery) and
+    -- rebuilds only if its answer changed, so the visible cost of a one-second
+    -- poll is two short-lived git processes per open pane. That is well below
+    -- the point where a follow-along view feels laggy, and git's own index
+    -- caching makes a repeated no-change query cheap. Not tied to the board
+    -- TUI's tick_interval — the two processes are independent.
     agent_tree_refresh_interval: Duration = 1.second
+
+    -- How long a single git query may run before it is killed and treated as a
+    -- failure. A pane must never wedge on a git that is blocked on an index
+    -- lock the agent itself holds; the refresh timer would then stop ticking
+    -- and the pane would freeze rather than merely go stale.
+    --
+    -- Deliberately far below the 2-minute timeout the board's other git calls
+    -- use. Those run on a worker while a TUI stays live; this one runs inline
+    -- in the renderer's own single-threaded loop, so its timeout is also the
+    -- longest the pane can ignore a keypress. Five seconds is generous for a
+    -- name-only diff and short enough that a wedged git reads as a hiccup.
+    agent_tree_git_timeout: Duration = 5.seconds
 
     -- The tmux key (pressed after the tmux prefix) that toggles the companion
     -- pane. "e" for explorer: unbound in tmux's default key table, so the
@@ -181,96 +224,6 @@ config {
 ------------------------------------------------------------
 -- Rules
 ------------------------------------------------------------
-
--- == Capture ==
-
-rule CaptureFileEvent {
-    -- After a dispatched agent completes a file-touching tool call, append one
-    -- FileEvent to that task's event log.
-    when: AgentFileToolCompleted(task, tool, path)
-
-    -- A tool call that reported no file path (a malformed payload, or a tool
-    -- schema change that renamed the path field) is skipped, not captured and
-    -- not an error. Soft-fail: the agent's tool call must not be disturbed by
-    -- anything this rule does.
-    requires: path != ""
-
-    ensures: append_jsonl(
-        path: dispatch_data_dir
-              + "/" + config.file_events_subdir
-              + "/" + str(task.id) + ".jsonl",
-        entry: FileEvent {
-            schema_version: config.file_event_schema_version,
-            timestamp: now,
-            task_id: str(task.id),
-            tool: tool,
-            path: path,
-            operation: if tool = read: read else: modified
-        }
-    )
-
-    @guidance
-        -- == Where the trigger comes from ==
-        -- AgentFileToolCompleted is emitted by the PostToolUse half of the
-        -- shell hook's existing PreToolUse|PostToolUse case arm, only for the
-        -- four tracked tools, and only when a path was extracted from the
-        -- payload.
-        --
-        -- ADDITIVE, NOT A REPLACEMENT. The same case arm's existing
-        -- `dispatch hook <id> pre_tool_use` call is untouched: it still fires
-        -- on BOTH events and for ALL tools (minus the mcp__dispatch__* early
-        -- exit), which is what keeps agent-health.allium's HookPreToolUse
-        -- stamping last_pre_tool_use_at. This rule adds a second, independent
-        -- call on the PostToolUse half; it does not gate, reorder or replace
-        -- the activity signal, and it introduces no new HookEventKind variant.
-        -- record_hook_event never sees a tool name or a file path — that enum
-        -- and that service path stay narrowly scoped to task-activity/
-        -- sub-status classification, and this capture deliberately routes
-        -- around them through its own CLI subcommand.
-        --
-        -- == Per-tool path field ==
-        -- Read, Write and Edit report the path as tool_input.file_path;
-        -- NotebookEdit reports it as tool_input.notebook_path. The mapping is
-        -- per-tool and must be revisited if Claude Code changes tool schemas —
-        -- a rename shows up as a silently empty path, which this rule's
-        -- requires clause turns into "no event" rather than a crash.
-        --
-        -- == The Bash gap ==
-        -- Files touched only through Bash (mv, sed -i, redirects) carry no
-        -- structured path in the payload and are therefore invisible to the
-        -- tree. Mitigated outside this spec by a global agent rule file that
-        -- steers agents toward Read/Write/Edit over raw shell file operations.
-        -- A blocking PreToolUse hook is the documented fallback if that proves
-        -- insufficient; it is out of scope here.
-        --
-        -- == Success is assumed ==
-        -- Whether the PostToolUse payload reliably signals a FAILED tool call
-        -- (an Edit whose old_string did not match, a Write denied by
-        -- permissions) is unconfirmed. Every captured PostToolUse is therefore
-        -- treated as a successful touch. Accepted inaccuracy: a file can carry
-        -- a Modified badge on the strength of an edit that did not land.
-        --
-        -- == Independent of the board ==
-        -- Capture runs in the agent's own short-lived hook process. It needs no
-        -- board TUI, no companion pane and no MCP connection, so an agent
-        -- dispatched with the board closed still builds a complete log, and a
-        -- pane opened later shows the whole history from the first tool call.
-}
-
-rule FileEventWriteFailureIsSilent {
-    -- Event-log writes are best-effort. File I/O errors (permission denied,
-    -- disk full) must not propagate into the agent's tool call.
-    when: FileEventWriteFailed(task_id, error)
-
-    ensures: FileEventWriteWarning(task_id: task_id, error: error)
-
-    @guidance
-        -- Mirrors observability.allium's TrajectoryWriteFailureIsSilent: the
-        -- append is wrapped in a fallible block, the error goes to a warn-level
-        -- log, and the hook process exits successfully anyway. No retry, no
-        -- buffering, no dead-letter file. A dropped event costs one missing
-        -- badge, which is not worth failing an agent's tool call over.
-}
 
 -- == Companion Pane Lifecycle ==
 --
@@ -365,10 +318,10 @@ rule SplitAgentTreePaneOnAgentLaunch {
         --
         -- The new pane runs a standalone tree renderer for this task
         -- (`dispatch agent-tree <task_id>`), not part of the board's App. It
-        -- opens even when the task's log is still empty, in which case the tree
-        -- it shows is empty too: only touched paths and their ancestors are
-        -- rendered, so a pane opened before the agent's first file tool call
-        -- shows nothing but the root (see RefreshAgentTree).
+        -- opens on a worktree the agent has not changed yet, in which case the
+        -- tree it shows is empty: only changed paths and their ancestors are
+        -- rendered, so a pane opened before the agent's first edit shows
+        -- nothing but the root (see RefreshAgentTree).
         --
         -- NO RETROFIT. Creation is triggered only by window creation, so agent
         -- windows that already existed when this feature shipped never grow a
@@ -411,22 +364,19 @@ rule SplitAgentTreePaneOnAgentLaunch {
         -- Resolves MainSessionPaneScope: the main-session window is EXCLUDED
         -- from the split, so AgentLaunched is the only trigger that ever creates
         -- a companion pane, and AgentTreePane.task is required rather than
-        -- optional. The main session has no task and no worktree, so its pane
-        -- would render an always-empty tree forever: the capture hook derives its
-        -- task id from the worktree's numeric branch prefix and would exit
-        -- without capturing anything, and `dispatch agent-tree` takes a REQUIRED
-        -- task id (src/cli/agent_tree.rs) so there is no id to launch it with.
-        -- Such a pane would also be covered by neither pane-teardown rule below,
-        -- since both key off a Task. Consistency across the three
-        -- window-creation paths was the original motivation and is not worth a
-        -- permanently empty pane that nothing can tear down.
+        -- optional. The main session has no task and so no worktree to root a
+        -- tree at and no base branch to diff against; `dispatch agent-tree`
+        -- takes a REQUIRED task id (src/cli/agent_tree.rs), so there is no id to
+        -- launch it with in the first place. Such a pane would also be covered
+        -- by neither pane-teardown rule below, since both key off a Task.
+        -- Consistency across the three window-creation paths was the original
+        -- motivation and is not worth a pane nothing can tear down.
         --
-        -- The alternative the question also offered — teaching capture to
-        -- attribute main-session tool calls to a non-task log — is not merely
-        -- deferred but rejected: it would require a second log identity, a
-        -- renderer that accepts no task, and teardown rules keyed off something
-        -- other than a Task, to earn a tree of a directory the user is already
-        -- looking at.
+        -- The alternative the question also offered — inventing a non-task
+        -- identity for the main session — is not merely deferred but rejected:
+        -- it would require a renderer that accepts no task, a baseline chosen
+        -- from nowhere, and teardown rules keyed off something other than a
+        -- Task, to earn a tree of a directory the user is already looking at.
         --
         -- Asserted in tests/tmux_lifecycle.rs
         -- (main_session_window_has_a_single_pane), so the absence is covered
@@ -449,7 +399,7 @@ rule HideAgentTreePane {
         -- matching the board's own enter/exit split mechanism (kill-pane, then
         -- re-split on the way back). The cost is that the renderer process dies
         -- and restarts on the next show; that is cheap, because all its state
-        -- comes from re-reading the append-only event log.
+        -- comes from one git query it can just run again.
         --
         -- == The editor pane is NOT hidden with it ==
         -- Only the tree pane is killed. An editor pane opened from it stays
@@ -582,9 +532,10 @@ rule ShowAgentTreePane {
 
     @guidance
         -- Re-splits the window at config.agent_tree_pane_percent and restarts
-        -- the renderer, which rebuilds the full tree from the event log — so a
-        -- hide/show cycle loses no history, only the scroll position and any
-        -- manual expand/collapse the user had done.
+        -- the renderer, which rebuilds the full tree from a fresh git query —
+        -- so a hide/show cycle loses nothing but the scroll position and any
+        -- manual expand/collapse the user had done. Being stateless is what
+        -- makes this true: there is no history to lose.
         --
         -- == IMPLEMENTED ==
         -- `pane.status = hidden` above is read the same live way
@@ -656,8 +607,8 @@ rule DiscardAgentTreePaneOnWindowCleared {
 -- == Rendering ==
 
 rule RefreshAgentTree {
-    -- A shown pane redraws on a timer, picking up whatever lines have landed in
-    -- the event log since the last pass.
+    -- A shown pane redraws on a timer, asking git afresh each time what has
+    -- changed in the worktree.
     when: pane: AgentTreePane.last_rendered_at + config.agent_tree_refresh_interval <= now
 
     -- Hidden panes have no renderer process. The timestamp is not advanced
@@ -665,100 +616,205 @@ rule RefreshAgentTree {
     -- happens immediately on show.
     requires: pane.status = shown
 
-    -- Events for this pane's task, restricted to paths that lie under the
-    -- pane's root. A tool call against a file outside the worktree (a global
-    -- config file, a sibling repo) is still captured in the log, but has no
-    -- node in a tree rooted at the worktree and so contributes nothing here.
-    let events = file_events_under(file_events_for(pane.task), pane.root)
+    -- The git query succeeded. A failed query is the other rule
+    -- (AgentTreeGitFailureKeepsLastGoodTree), and the two are mutually
+    -- exclusive on this guard so exactly one of them fires per tick.
+    requires: git_changes(pane.root, pane.task.base_branch).ok
+
+    let changes = git_changes(pane.root, pane.task.base_branch).value
 
     ensures: pane.last_rendered_at = now
+    ensures: pane.rendered_changes = changes
+
+    -- A working git clears its own stale failure notice, and nothing else. An
+    -- editor-open notice is the answer to a keypress the user made moments ago
+    -- and survives every refresh until they press the next key.
+    ensures: pane.error_notice =
+        if old(pane.notice_source) = editor_open: old(pane.error_notice)
+        else: null
+
     ensures:
-        for entry in touched_tree(events):
+        for entry in changed_tree(changes):
             AgentTreeNodeRendered(
                 pane: pane,
                 node: AgentTreeNode {
                     pane_root: pane.root,
                     path: entry.path,
                     kind: entry.kind,
-                    -- Badge precedence: a file that was both read and modified
-                    -- shows Modified. Directories are never badged.
+                    -- A file's badge is exactly what git said about it.
+                    -- Directories are never badged: a directory is in the tree
+                    -- only as a route to a changed file, and git says nothing
+                    -- about directories.
                     badge:
                         if entry.kind = directory: null
-                        else if events_for_path(events, entry.path).any(e => e.operation = modified): modified
-                        else if events_for_path(events, entry.path).count > 0: read
-                        else: null,
+                        else: change_for_path(changes, entry.path),
                     -- Auto-expand: a directory opens exactly when something
-                    -- under it was touched, so the path to every badge is
-                    -- visible without the view degenerating into a full repo
-                    -- browser.
+                    -- under it changed, so the path to every badge is visible
+                    -- without the view degenerating into a full repo browser.
                     expanded: entry.kind = directory
-                              and has_touched_descendant(events, entry.path)
+                              and has_changed_descendant(changes, entry.path)
                 }
             )
 
     @guidance
+        -- == AgentTreeGitQuery: what "asking git" means ==
+        -- Two commands, both run against pane.root and both bounded by
+        -- config.agent_tree_git_timeout:
+        --
+        --   1. A name-and-status diff of the WORKING TREE against the
+        --      merge-base of pane.task.base_branch and HEAD, with rename
+        --      detection off.
+        --   2. A listing of untracked files, honouring the repo's ignore
+        --      rules.
+        --
+        -- Both ask git for NUL-delimited output. Git's default is to C-quote
+        -- any path containing a non-ASCII byte, so a file whose name holds an
+        -- accented letter comes back C-quoted, with the letter replaced by its
+        -- octal escapes — which would be rendered as that literal string and
+        -- would open nothing. NUL delimiting also makes a path containing a space, a tab
+        -- or a newline unambiguous, and means no field may be trimmed: every
+        -- byte between delimiters is part of the filename.
+        --
+        -- The first covers every tracked change the agent has made for this
+        -- task, committed or not — that is the point of diffing the working
+        -- tree against the merge-base rather than against HEAD. An agent that
+        -- commits mid-session does not watch its work vanish from the pane.
+        -- The second covers files the agent created and has not staged, which
+        -- a diff cannot see.
+        --
+        -- == CollapsedGitStatusLetters ==
+        -- Git's status letters map onto FileChange as:
+        --   A, and every untracked path from the second command -> added
+        --   D                                                   -> deleted
+        --   M, T (type change), and anything else recognised     -> modified
+        -- A letter this mapping does not recognise is skipped rather than
+        -- guessed at, in line with this repo's soft-fail-decoding convention,
+        -- and so is a malformed output line. One unparseable line must not
+        -- blank the tree.
+        --
+        -- Rename detection is OFF deliberately. With it on, a rename is one
+        -- entry naming two paths, which the three-value FileChange vocabulary
+        -- cannot express. With it off, git reports the same rename as a
+        -- deletion of the old path and an addition of the new one — which is
+        -- both true and exactly what the user wants to see in a file tree.
+        --
+        -- == ChangePrecedence: when both queries name one path ==
+        -- The two overlap. `git rm --cached foo` leaves foo reported as a
+        -- deletion by the diff AND listed as untracked, because it is out of
+        -- the index but still on disk. The badge is resolved by precedence —
+        -- added beats deleted beats modified — and NOT by which query ran
+        -- first. Added wins that particular collision because the file is
+        -- there, which is the more useful of the two true statements; deleted
+        -- beats modified because a deletion is the more consequential fact and
+        -- the one a file tree exists to show. Stating it as precedence rather
+        -- than as "the later query wins" is what stops the order of two
+        -- commands from silently deciding a badge.
+        --
         -- == The three rendering rules, in one place ==
         --   1. ROOT. The tree is rooted at the pane's root — the task's
-        --      worktree, never the parent repo. Node paths are relative to it;
-        --      the log stores absolute paths, so relativisation happens here.
-        --      A node exists only for a touched path or an ancestor directory
-        --      of one; an untouched sibling never gets a node at all, so the
-        --      tree is a projection of the event log, not the filesystem.
-        --   2. BADGES. Write, Edit and NotebookEdit produce Modified; Read
-        --      produces Read; a file with both shows Modified. Modified wins
-        --      because "this agent changed this file" is the fact the user is
-        --      scanning for, and it is strictly the more consequential of the
-        --      two.
+        --      worktree, never the parent repo. Node paths are relative to it.
+        --      A node exists only for a changed path or an ancestor directory
+        --      of one; an unchanged sibling never gets a node at all, so the
+        --      tree is a projection of the git result, not of the filesystem.
+        --   2. BADGES. Every file node carries exactly one of added, modified
+        --      or deleted, taken from git. There is no precedence to resolve
+        --      and no badge to retract: git reports one status per path, and
+        --      the next refresh replaces it wholesale.
         --   3. EXPANSION. Every directory node is, by construction, an
-        --      ancestor of a touched path, so every directory that appears is
-        --      expanded — there is no untouched, collapsed directory to
+        --      ancestor of a changed path, so every directory that appears is
+        --      expanded — there is no unchanged, collapsed directory to
         --      reveal. A manual collapse is not overwritten by the next
-        --      refresh; only newly-touched paths add new nodes.
+        --      refresh; only newly-changed paths add new nodes.
         --
         -- == Black boxes ==
-        -- touched_tree(events) derives (path, kind) entries for every distinct
-        -- touched path and each of its ancestor directories, deduplicated.
-        -- events_for_path / has_touched_descendant are pure lookups over the
-        -- already-loaded event set. A malformed line in the log is skipped
-        -- rather than aborting the refresh, so one bad append cannot blank the
-        -- tree.
+        -- git_changes(root, base) runs the two commands above and returns
+        -- either the parsed set of GitFileChanges or a failure.
+        -- changed_tree(changes) derives (path, kind) entries for every changed
+        -- path and each of its ancestor directories, deduplicated.
+        -- change_for_path / has_changed_descendant are pure lookups over the
+        -- already-loaded change set.
         --
-        -- == NOT IMPLEMENTED — DEFERRED: the worktree_tree traversal ==
-        -- Scoped to the traversal only. The refresh cadence, the file-stamp
-        -- short-circuit, badge precedence and auto-expansion all ship as
-        -- written; what does not ship is walking the worktree.
+        -- == Resolves TreeScanExclusions ==
+        -- The predecessor of this rule left open which subtrees a fuller
+        -- worktree traversal should skip, because an unfiltered eager scan of
+        -- a large repo is slow and mostly noise. The question is now moot and
+        -- the open question is removed: git already answers exactly the
+        -- question the scan was meant to approximate, and it already applies
+        -- the repo's own ignore rules. There is no traversal to exclude
+        -- anything from.
         --
-        -- The shipped renderer performs NO filesystem traversal at all. Its
-        -- tree is built purely from the event log (build_tree in
-        -- src/agent_tree.rs, called by src/cli/agent_tree.rs), so it contains
-        -- exactly the touched paths plus the ancestor directories needed to
-        -- reach them. Untouched siblings are absent, not collapsed. Two
-        -- consequences follow, and they are the shipped behaviour:
-        --   * An empty event log renders an EMPTY tree, not the worktree with
-        --     nothing badged.
-        --   * The tree is not a repo browser the user can open into. There is
-        --     nothing under an untouched directory to expand, because untouched
-        --     directories are not rendered.
+        -- The consequence is unchanged and intended: an unchanged worktree
+        -- renders an EMPTY tree, not a repo browser. The pane answers "what
+        -- has changed here", not "what is here".
         --
-        -- Merging the event-derived tree with a real directory listing was
-        -- deliberately left to a follow-up, and TreeScanExclusions is the
-        -- question that gates it: an unfiltered eager scan of a large repo is
-        -- both slow and mostly noise. Until it is answered, a touched-paths-only
-        -- tree is the honest description of what the pane shows.
-        --
-        -- == Implementation notes ==
-        -- The renderer is a small standalone ratatui loop reusing the existing
-        -- tree widget dependency; it is not part of the board's App and shares
-        -- none of its state.
+        -- == Only rebuild when the answer changes ==
+        -- The tick runs the query every time, but re-syncing expansion is
+        -- skipped when the derived tree is identical to the one already
+        -- rendered. The comparison is on the TREE, not on the raw change set:
+        -- the tree is what the user sees, and two change sets differing only
+        -- by a duplicate entry render the same. This is a performance
+        -- short-circuit with one behavioural consequence worth stating: the
+        -- user's manual expansion state is preserved across ticks precisely
+        -- because nothing is re-synced on a no-change tick.
         --
         -- == Auto-expansion must be verified by RENDERING ==
         -- The EXPANSION clause above has to be covered by rendering a deeply
-        -- nested touched path and asserting the LEAF is on screen — not by
+        -- nested changed path and asserting the LEAF is on screen — not by
         -- inspecting the tree widget's open-set. Asking the widget to open a
         -- directory reports success even when the key identifies no node, so
         -- an open-set assertion can encode the wrong key and pass while every
         -- nested directory renders collapsed. That was the shipped behaviour
         -- until #3811, under a green open-set test.
+}
+
+rule AgentTreeGitFailureKeepsLastGoodTree {
+    -- The same timer tick, when git could not answer: the base branch does not
+    -- exist, the index is locked, the worktree is gone, git is not on PATH, or
+    -- the query overran config.agent_tree_git_timeout.
+    when: pane: AgentTreePane.last_rendered_at + config.agent_tree_refresh_interval <= now
+
+    requires: pane.status = shown
+    requires: not git_changes(pane.root, pane.task.base_branch).ok
+
+    -- Stamped anyway, so the next tick is a normal tick rather than an
+    -- immediate retry: a persistently broken git must not spin.
+    ensures: pane.last_rendered_at = now
+
+    -- The last good tree stays on screen. Not restated as an assignment
+    -- because the point is the ABSENCE of one — rendered_changes is the only
+    -- input to the tree, and this rule does not touch it.
+    ensures: pane.rendered_changes = old(pane.rendered_changes)
+
+    ensures: pane.error_notice = git_failure_reason(pane.root, pane.task.base_branch)
+    ensures: pane.notice_source = git_query
+    ensures: pane.status = shown
+
+    @guidance
+        -- == Why keep the tree rather than blank it ==
+        -- The commonest failure by far is a transient index lock, taken by the
+        -- agent's own git commands a few times a minute. Blanking on that
+        -- would make the pane flicker empty during exactly the moments the
+        -- user most wants to watch it. A stale tree that says it is stale is
+        -- more useful than an empty one that cannot say why.
+        --
+        -- The notice and the reddened border are what make this honest — see
+        -- AgentTreeNoticeRedensBorder. Without them, keeping the tree would be
+        -- indistinguishable from the tree being correct.
+        --
+        -- == Same notice channel as an editor-open failure ==
+        -- error_notice is one field with two writers, and it is cleared by the
+        -- next keypress (ClearAgentTreeErrorNotice) regardless of which one set
+        -- it. Clearing a git-failure notice on a keypress is not a lie: if git
+        -- is still failing, the very next tick sets it again. The user is never
+        -- left looking at a stale tree with no notice for longer than one
+        -- refresh interval.
+        --
+        -- == Not the same as an empty result ==
+        -- A successful query returning nothing is RefreshAgentTree with an
+        -- empty change set: the tree legitimately empties, and no notice is
+        -- shown. Only a query that could not run reaches this rule. The two
+        -- must never be conflated — "you have changed nothing" and "I could not
+        -- find out" are different statements.
 }
 
 -- == Companion Pane Input ==
@@ -785,14 +841,14 @@ rule ExitAgentTreeRenderer {
         -- Reaches the same hidden state HideAgentTreePane describes, by a
         -- different route: the renderer returns from its event loop rather than
         -- the board issuing kill-pane. Nothing is lost either way, since the
-        -- whole tree is re-derived from the append-only event log.
+        -- whole tree is re-derived from a fresh git query.
         --
-        -- Capture is unaffected. The agent keeps appending FileEvents with no
-        -- pane open, so a renderer started later shows the full history — which
-        -- is the point of decoupling the two halves. But because
-        -- ShowAgentTreePane is deferred and no toggle key is bound, there is
-        -- today no way to start one: exiting the renderer closes the tree for the
-        -- remaining life of that agent window.
+        -- Nothing is missed while no pane is open. The agent keeps changing
+        -- files, and a renderer started later sees all of it in one query,
+        -- because git is asked about the worktree's current state rather than
+        -- replayed from a record kept while nobody was watching. Pressing the
+        -- toggle key brings the tree straight back, fully populated
+        -- (ShowAgentTreePane).
 }
 
 rule OpenAgentTreeFileInEditor {
@@ -802,8 +858,13 @@ rule OpenAgentTreeFileInEditor {
 
     requires: node.kind = file
     requires: pane.editor_pane = null
-    -- The agent may have deleted the file since touching it. The event log is
-    -- append-only and records no deletions, so a node can outlive its file.
+    -- A deleted node names a file that is, by definition, not there. Refusing
+    -- on the badge rather than only on the filesystem check is what makes the
+    -- refusal predictable to the user: the badge they are looking at is the
+    -- reason. See NoEditorForDeletedNode.
+    requires: node.badge != deleted
+    -- And the filesystem is still consulted, because a file can vanish between
+    -- the last refresh and the keypress without the badge having caught up.
     requires: file_exists(pane.root + "/" + node.path)
 
     ensures: pane.editor_pane = core/TmuxPane.created()
@@ -856,6 +917,7 @@ rule ReplaceAgentTreeEditorFile {
 
     requires: node.kind = file
     requires: pane.editor_pane != null
+    requires: node.badge != deleted
     requires: file_exists(pane.root + "/" + node.path)
 
     -- The pane itself survives, so there is no new TmuxPane to create and
@@ -888,14 +950,13 @@ rule AgentTreeEditorOpenFailureIsVisible {
     when: AgentTreeEditorOpenFailed(pane, reason)
 
     ensures: pane.error_notice = reason
+    ensures: pane.notice_source = editor_open
     ensures: pane.status = shown
 
     @guidance
-        -- Deliberately the OPPOSITE of FileEventWriteFailureIsSilent, and the
-        -- difference is who is waiting. A dropped file-event is a background
-        -- write nobody asked for, so it costs one badge and a log line. This is
-        -- the direct response to a keypress: a silent no-op is indistinguishable
-        -- from a broken key, and the user would press it again.
+        -- A silent no-op is indistinguishable from a broken key, and the user
+        -- would press it again. This is the direct response to a keypress, so
+        -- it must say something.
         --
         -- The notice names the reason and nothing else — there is one line of
         -- border to say it in. It is also logged, because the pane's copy is
@@ -906,17 +967,50 @@ rule AgentTreeEditorOpenFailureIsVisible {
         -- not a state change.
         --
         -- Covers four failures with one rule because they are one event to the
-        -- user: the file no longer exists (the log records touches, never
-        -- deletions, so a node outlives its file), the selected path does not lie
-        -- inside pane.root, the renderer cannot identify the pane it is running
-        -- in (it was started outside tmux), and the tmux split or replace itself
-        -- failed.
+        -- user: the selected node is badged deleted (see NoEditorForDeletedNode),
+        -- the selected path does not lie inside pane.root, the renderer cannot
+        -- identify the pane it is running in (it was started outside tmux), and
+        -- the tmux split or replace itself failed. The file-is-gone case that
+        -- used to head this list is now the first of them, and it is no longer a
+        -- surprise: a deleted file is badged as deleted before the user presses
+        -- anything.
         --
         -- The out-of-root case is unreachable through the surface as specified —
         -- every node's path is built from segments below the root — and is
         -- rejected anyway rather than trusted to stay that way, since the pane's
         -- rooting at the worktree (TaskPaneRootIsTaskWorktree) is the whole
         -- reason a path is relative in the first place.
+}
+
+rule RefuseToOpenDeletedAgentTreeFile {
+    -- Space or Enter on a node the tree has badged deleted. There is no file to
+    -- show, so no editor pane is opened or replaced — the pane says why instead.
+    when: OpenSelectedAgentTreeFile(user, pane, node)
+
+    requires: node.kind = file
+    requires: node.badge = deleted
+
+    ensures: AgentTreeEditorOpenFailed(pane: pane, reason: deleted_file_reason(node.path))
+
+    @guidance
+        -- The complement of the node.badge != deleted guard on
+        -- OpenAgentTreeFileInEditor and ReplaceAgentTreeEditorFile: between the
+        -- three of them, every press of Space or Enter on a file node has
+        -- exactly one outcome, and none of them is silence.
+        --
+        -- == Why not open it anyway ==
+        -- Most editors given a nonexistent path open an empty "new file"
+        -- buffer. That is actively misleading here: the user pressed Enter to
+        -- see what was in a file the agent deleted, and an empty buffer looks
+        -- like an answer. Worse, saving it would recreate the file — a write to
+        -- the worktree originating from a pane whose whole guarantee is that it
+        -- does not write to the worktree.
+        --
+        -- == The content is not lost, just not here ==
+        -- The deleted file's content is still in git, and reading it back is a
+        -- git operation, not a file open. Whether the pane should offer that
+        -- (showing the pre-deletion content, or the diff) is deliberately not
+        -- specified — see the ShowDeletedFileContent open question.
 }
 
 rule ClearAgentTreeErrorNotice {
@@ -927,6 +1021,7 @@ rule ClearAgentTreeErrorNotice {
     requires: pane.error_notice != null
 
     ensures: pane.error_notice = null
+    ensures: pane.notice_source = null
 
     @guidance
         -- The next keypress is the earliest moment the user has demonstrably
@@ -943,46 +1038,16 @@ rule ClearAgentTreeErrorNotice {
 -- Invariants
 ------------------------------------------------------------
 --
--- The node-scoped black boxes below (events_for_node,
--- has_touched_descendant_node) are the node-only counterparts of
--- RefreshAgentTree's event-scoped ones (events_for_path,
--- has_touched_descendant): an invariant is handed a rendered node, not the
--- event set the refresh pass had in scope, so it re-derives the events for
+-- The node-scoped black boxes below (change_for_node,
+-- has_changed_descendant_node) are the node-only counterparts of
+-- RefreshAgentTree's change-set-scoped ones (change_for_path,
+-- has_changed_descendant): an invariant is handed a rendered node, not the
+-- change set the refresh pass had in scope, so it re-derives the change for
 -- that node from its pane_root and path.
 
--- Every persisted event must carry the current schema version; readers
--- dispatch on it, so an event without one is unreadable.
-invariant FileEventHasSchemaVersion {
-    for e in FileEvents:
-        e.schema_version != ""
-}
-
--- A captured event always names a file. CaptureFileEvent guards on this, so it
--- holds by construction.
-invariant FileEventHasPath {
-    for e in FileEvents:
-        e.path != ""
-}
-
--- operation is a projection of tool, not an independent field: Read maps to
--- read, and each of the three editing tools maps to modified. Nothing may
--- record a read-only tool as a modification, or vice versa.
-invariant FileEventOperationMatchesTool {
-    for e in FileEvents:
-        (e.tool = read implies e.operation = read)
-        and (e.tool != read implies e.operation = modified)
-}
-
--- An event's task_id must identify a real task. Events only ever come from a
--- hook that resolved the id from a live worktree.
-invariant FileEventReferencesRealTask {
-    for e in FileEvents:
-        core/Task.exists(e.task_id)
-}
-
 -- One companion pane per agent window. A second split in the same window would
--- steal room from the agent's own pane and leave two renderers tailing the same
--- log.
+-- steal room from the agent's own pane and leave two renderers querying git
+-- against the same worktree.
 invariant OneCompanionPanePerAgentWindow {
     for a in AgentTreePanes:
         for b in AgentTreePanes:
@@ -1027,27 +1092,49 @@ invariant TaskPaneRootIsTaskWorktree {
         p.root = p.task.worktree?.path
 }
 
--- Modified beats Read: no node may show a Read badge while a modifying event
--- exists for it.
-invariant ModifiedBadgeWinsOverRead {
+-- A file node's badge is exactly what git said about that path, never anything
+-- the renderer inferred. This is the whole design in one line: there is no
+-- second source to disagree with, no precedence to resolve, and no way for a
+-- badge to outlive the fact behind it.
+invariant BadgeIsWhatGitSaid {
     for n in AgentTreeNodes:
-        n.badge = read implies not events_for_node(n).any(e => e.operation = modified)
+        n.kind = file implies n.badge = change_for_node(n)
 }
 
--- Expansion is a directory-only property, and it follows touched descendants
--- exactly: no expanded file nodes, no expanded-but-untouched directories, no
+-- Every file node has a badge. The contrapositive is the fix for the bug this
+-- design exists to close: a path git does not report has no node at all, so
+-- there is no unbadged file node sitting in the tree implying "touched, but
+-- unchanged".
+invariant EveryFileNodeIsBadged {
+    for n in AgentTreeNodes:
+        n.kind = file implies n.badge != null
+}
+
+-- Expansion is a directory-only property, and it follows changed descendants
+-- exactly: no expanded file nodes, no expanded-but-unchanged directories, no
 -- collapsed directory hiding a badge on first render.
-invariant DirectoryExpansionFollowsTouchedDescendants {
+invariant DirectoryExpansionFollowsChangedDescendants {
     for n in AgentTreeNodes:
         (n.expanded implies n.kind = directory)
-        and (n.kind = directory implies n.expanded = has_touched_descendant_node(n))
+        and (n.kind = directory implies n.expanded = has_changed_descendant_node(n))
 }
 
 -- Files are never badged as directories are: a directory carries no badge, so a
--- badge on a node always means "this exact file was touched".
+-- badge on a node always means "git reports this exact file as changed".
 invariant OnlyFilesCarryBadges {
     for n in AgentTreeNodes:
         n.kind = directory implies n.badge = null
+}
+
+-- A node badged deleted never has an editor pane showing it. The guards on
+-- OpenAgentTreeFileInEditor and ReplaceAgentTreeEditorFile hold this by
+-- construction; stating it as an invariant is what makes the two guards one
+-- rule rather than two coincidences.
+invariant NoEditorForDeletedNode {
+    for p in AgentTreePanes:
+        for n in AgentTreeNodes:
+            (n.pane_root = p.root and n.badge = deleted)
+                implies p.editor_file != n.path
 }
 
 ------------------------------------------------------------
@@ -1134,11 +1221,62 @@ surface AgentTreeCompanionPane {
         -- key handling a pure function of the keys pressed, with no clock in
         -- it.
 
+    @guarantee AgentTreeIsGitDerived
+        -- Everything this surface shows about a file comes from git, and only
+        -- from git. The pane does not observe the agent's tool calls, keeps no
+        -- log, and remembers nothing across a refresh beyond the last good
+        -- answer. There is therefore no state that can disagree with the
+        -- repository, and no badge that has to be retracted when the agent
+        -- undoes something.
+        --
+        -- The user-visible shape of that: a file the agent opened but did not
+        -- change is not in the tree; a file the agent deleted is in the tree,
+        -- badged deleted; a file changed by a shell command is in the tree like
+        -- any other. There is no Read badge, because git cannot supply one, and
+        -- inventing a second source to supply it is the thing this guarantee
+        -- forbids.
+
+    @guarantee AgentTreeBaselineIsTaskBaseBranch
+        -- "Changed" always means "changed relative to the merge-base of this
+        -- task's base branch and this worktree's HEAD" — never relative to
+        -- HEAD alone, and never relative to the branch tip. Two consequences
+        -- the user depends on:
+        --
+        --   * Committing does not empty the pane. An agent that commits
+        --     mid-session still sees its own work, because the baseline is
+        --     behind the commit.
+        --   * Other people's work on the base branch never appears. The
+        --     baseline is the merge-base, not the current base tip, so commits
+        --     that landed on the base branch after this task branched are not
+        --     the agent's changes and are not shown as such.
+
+    @guarantee AgentTreeNoticeRedensBorder
+        -- Whenever pane.error_notice is set, the pane's border is drawn in the
+        -- error colour, not just the notice text. One rule, every notice — a
+        -- failed git query and a failed file open look equally wrong, because
+        -- they equally mean "what you are looking at is not what you asked
+        -- for".
+        --
+        -- The border is what makes a stale tree honest. A tree kept on screen
+        -- after a failed query (AgentTreeGitFailureKeepsLastGoodTree) is
+        -- indistinguishable from a correct one at a glance; a red frame is
+        -- visible from across the room, and a single line of border text is
+        -- not. Both are shown, and the border is the one that carries.
+        --
+        -- It clears with the notice, on the next keypress
+        -- (ClearAgentTreeErrorNotice).
+
     @guarantee ReadOnlyObservation
-        -- The pane only reads the task's event log. It never writes to the
-        -- worktree, never mutates the task, and never issues an MCP call.
-        -- Killing it, or never opening it, cannot change what the agent does or
-        -- what the board shows.
+        -- The pane only reads: it runs git queries that inspect the worktree
+        -- and change nothing in it. It never writes to the worktree, never
+        -- mutates the task, and never issues an MCP call. Killing it, or never
+        -- opening it, cannot change what the agent does or what the board
+        -- shows.
+        --
+        -- The git commands this pane runs are read-only by construction — a
+        -- diff and a file listing. Nothing here fetches, commits, stages,
+        -- checks out or writes to the index, and an agent's own git operations
+        -- must never be disturbed by the pane observing them.
         --
         -- OpenSelectedAgentTreeFile does not breach this, and the distinction is
         -- worth stating precisely: the renderer launches an editor process in a
@@ -1157,23 +1295,23 @@ surface AgentTreeCompanionPane {
 
     @guidance
         -- The pane's initial state is shown, so an agent window opens with the
-        -- tree already visible. Everything the pane displays is derived from
-        -- the event log, so it survives its own restart: toggling off and on
-        -- rebuilds the same badges.
+        -- tree already visible. Everything the pane displays is derived from a
+        -- git query, so it survives its own restart: toggling off and on
+        -- rebuilds the same badges, because it asks the same question again.
         --
         -- The cursor position and the user's manual expansions do NOT survive a
         -- restart. They live in the renderer process and are modelled nowhere in
         -- this spec — see the AgentTreeViewState open question. What does survive
         -- a refresh is the manual expansion state within one renderer's life: a
-        -- directory the user collapsed stays collapsed when new events land.
+        -- directory the user collapsed stays collapsed when new changes land.
 }
 
 ------------------------------------------------------------
 -- Open Questions
 ------------------------------------------------------------
 
-open question "AgentTreeViewState: the renderer's cursor position and the set of directories the user has manually expanded or collapsed are real, observable state — CollapseSelectedAgentTreeNode and friends act on them, and DirectoryExpansionFollowsTouchedDescendants only constrains the first render, not what the user does afterwards. They are currently modelled nowhere. Should AgentTreePane carry them as fields (making the manual-override behaviour rule-expressible and the invariant honest about when it applies), or is per-process view state deliberately below this spec's abstraction line?"
+open question "AgentTreeViewState: the renderer's cursor position and the set of directories the user has manually expanded or collapsed are real, observable state — CollapseSelectedAgentTreeNode and friends act on them, and DirectoryExpansionFollowsChangedDescendants only constrains the first render, not what the user does afterwards. They are currently modelled nowhere. Should AgentTreePane carry them as fields (making the manual-override behaviour rule-expressible and the invariant honest about when it applies), or is per-process view state deliberately below this spec's abstraction line?"
 
-open question "EventLogRetention: <dispatch_data_dir>/<file_events_subdir>/<task_id>.jsonl grows unbounded for the life of a task. A long agent session touching the same files repeatedly writes one line per touch, and nothing truncates, rotates or caps the file — the same gap observability.allium records for trajectory files. Should there be a size cap, a dedup-on-write, or a wrap-up-time truncation?"
+open question "ShowDeletedFileContent: pressing Space or Enter on a node badged deleted is refused (RefuseToOpenDeletedAgentTreeFile), but the file's pre-deletion content is still in git and could be shown — as a read-only buffer of the base version, or as the deletion diff. Doing so would mean the pane can display content git holds but the worktree does not, which is a different capability from launching an editor on a path. Should the pane offer it, and if so through the same key or a separate one?"
 
-open question "OutOfWorktreeTouches: events whose path lies outside the pane root are captured but contribute no node, so an agent reading a global config file or a sibling repo leaves no visible trace. Should those touches be surfaced somewhere in the pane (a flat outside-worktree section) or is silently dropping them from the tree the intended behaviour?"
+open question "IgnoredFileChanges: git's ignore rules decide what the pane can see, so an agent writing to an ignored path (a build artefact, a scratch file, a local config) leaves no trace in the tree at all. That is usually right — an ignored file is ignored for a reason — but it does mean the pane cannot show an agent scribbling somewhere it should not. Is silent omission the intended behaviour, or should ignored changes be surfaced somewhere distinguishable?"
