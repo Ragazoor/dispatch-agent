@@ -247,65 +247,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn hook_dispatches_user_prompt_submit_event() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-        use std::process::{Command, Stdio};
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("789-bar");
 
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let repo = tmp.path().join("repo");
-        std::fs::create_dir_all(&repo).unwrap();
-        run(&["git", "init", "-q", "-b", "789-bar"], &repo);
-        run(&["git", "config", "user.email", "t@e.st"], &repo);
-        run(&["git", "config", "user.name", "T"], &repo);
-        std::fs::write(repo.join("README"), "x").unwrap();
-        run(&["git", "add", "."], &repo);
-        run(&["git", "commit", "-q", "-m", "init"], &repo);
-
-        let script_path = tmp.path().join("task-status-hook");
-        std::fs::write(&script_path, hook_script()).unwrap();
-        let mut perm = std::fs::metadata(&script_path).unwrap().permissions();
-        perm.set_mode(0o755);
-        std::fs::set_permissions(&script_path, perm).unwrap();
-
-        let bin = tmp.path().join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let observed = tmp.path().join("dispatch.log");
-        let shim = format!(
-            "#!/usr/bin/env bash\necho \"$@\" >> {}\n",
-            observed.display()
-        );
-        let dispatch_shim = bin.join("dispatch");
-        std::fs::write(&dispatch_shim, shim).unwrap();
-        let mut p = std::fs::metadata(&dispatch_shim).unwrap().permissions();
-        p.set_mode(0o755);
-        std::fs::set_permissions(&dispatch_shim, p).unwrap();
-
-        let path = format!(
-            "{}:{}",
-            bin.display(),
-            std::env::var("PATH").unwrap_or_default()
-        );
         let payload = format!(
             r#"{{"cwd":"{}","hook_event_name":"UserPromptSubmit","prompt":"hi"}}"#,
             repo.display()
         );
-        let mut child = Command::new("bash")
-            .arg(&script_path)
-            .env("PATH", &path)
-            .current_dir(&repo)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn hook");
-        child
-            .stdin
-            .as_mut()
-            .unwrap()
-            .write_all(payload.as_bytes())
-            .unwrap();
-        let status = child.wait().expect("wait");
-        assert!(status.success(), "hook script exited non-zero");
+        invoke_hook(&script_path, &repo, &path, &payload);
 
         let log = std::fs::read_to_string(&observed).unwrap_or_default();
         assert!(
