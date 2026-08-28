@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::db::{RemovedFeedTask, TaskStore};
 use crate::mcp::McpEvent;
-use crate::models::{EpicId, MIN_FEED_INTERVAL_SECS};
+use crate::models::{Epic, EpicId, MIN_FEED_INTERVAL_SECS};
 use crate::process::ProcessRunner;
 
 pub(crate) use cycle::{FeedCycle, FeedCycleOutcome};
@@ -182,6 +182,49 @@ const DEFAULT_FEED_INTERVAL: Duration = Duration::from_secs(60);
 /// concerns stay independent.
 const FEED_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
+/// Whether `epic` is due to run this tick, given `last_run` and `now`.
+///
+/// The feed-cadence floor is enforced on read (feeds.allium: FeedTick).
+/// Write-time validation is what normally keeps a sub-floor row from
+/// existing, so reaching the below-floor arm means the value arrived by a
+/// path that bypassed the service — a hand-edited database, or a bug — and
+/// the runner must not make it work anyway. Skipped rather than clamped: a
+/// clamped feed would run at a cadence nobody chose while looking healthy.
+///
+/// This also covers the negative case, which failed differently and worse.
+/// The `as u64` this replaces wrapped a negative into an effectively
+/// infinite cadence, so the feed went permanently silent with nothing
+/// logged.
+fn epic_due(epic: &Epic, last_run: &HashMap<EpicId, Instant>, now: Instant) -> bool {
+    let interval = match epic.feed_interval_secs {
+        Some(s) if s < MIN_FEED_INTERVAL_SECS => {
+            tracing::warn!(
+                epic_id = epic.id.0,
+                epic_title = %epic.title,
+                feed_interval_secs = s,
+                min_feed_interval_secs = MIN_FEED_INTERVAL_SECS,
+                "FeedRunner: feed_interval_secs is below the minimum; \
+                 not polling this epic until it is corrected"
+            );
+            return false;
+        }
+        // The guard above proves `s >= MIN_FEED_INTERVAL_SECS`, which is
+        // positive, so this conversion is lossless. `unsigned_abs`
+        // rather than the `as u64` it replaces: `as` is what turned a
+        // negative into a near-infinite cadence, and if a later edit
+        // ever weakened the guard, `as` would silently do that again.
+        Some(s) => Duration::from_secs(s.unsigned_abs()),
+        None => DEFAULT_FEED_INTERVAL,
+    };
+
+    let elapsed = last_run
+        .get(&epic.id)
+        .map(|t| now.saturating_duration_since(*t))
+        .unwrap_or(Duration::MAX);
+
+    elapsed >= interval
+}
+
 pub struct FeedRunner {
     db: Arc<dyn TaskStore>,
     notify: mpsc::UnboundedSender<McpEvent>,
@@ -320,6 +363,7 @@ impl FeedRunner {
             }
         });
 
+        let now = Instant::now();
         for epic in epics {
             // Scheduling only reads feed_command to decide whether this epic is
             // pollable at all; the command the cycle actually runs is re-read
@@ -328,86 +372,55 @@ impl FeedRunner {
                 continue;
             }
 
-            // The feed-cadence floor, enforced on read (feeds.allium:
-            // FeedTick). Write-time validation is what normally keeps a
-            // sub-floor row from existing, so reaching this branch means the
-            // value arrived by a path that bypassed the service — a
-            // hand-edited database, or a bug — and the runner must not make it
-            // work anyway. Skipped rather than clamped: a clamped feed would
-            // run at a cadence nobody chose while looking healthy.
-            //
-            // This also covers the negative case, which failed differently and
-            // worse. The `as u64` this replaces wrapped a negative into an
-            // effectively infinite cadence, so the feed went permanently
-            // silent with nothing logged.
-            let interval = match epic.feed_interval_secs {
-                Some(s) if s < MIN_FEED_INTERVAL_SECS => {
-                    tracing::warn!(
-                        epic_id = epic.id.0,
-                        epic_title = %epic.title,
-                        feed_interval_secs = s,
-                        min_feed_interval_secs = MIN_FEED_INTERVAL_SECS,
-                        "FeedRunner: feed_interval_secs is below the minimum; \
-                         not polling this epic until it is corrected"
-                    );
-                    continue;
-                }
-                // The guard above proves `s >= MIN_FEED_INTERVAL_SECS`, which is
-                // positive, so this conversion is lossless. `unsigned_abs`
-                // rather than the `as u64` it replaces: `as` is what turned a
-                // negative into a near-infinite cadence, and if a later edit
-                // ever weakened the guard, `as` would silently do that again.
-                Some(s) => Duration::from_secs(s.unsigned_abs()),
-                None => DEFAULT_FEED_INTERVAL,
-            };
-
-            let elapsed = self
-                .last_run
-                .get(&epic.id)
-                .map(|t| t.elapsed())
-                .unwrap_or(Duration::MAX);
-
-            if elapsed < interval {
+            if !epic_due(&epic, &self.last_run, now) {
                 continue;
             }
 
-            self.last_run.insert(epic.id, Instant::now());
-
-            let cycle = cycle::FeedCycle {
-                db: self.db.clone(),
-                runner: self.runner.clone(),
-                guard: Arc::clone(&self.guard),
-                epic_id: epic.id,
-                epic_title: epic.title,
-                known_paths: Some(Arc::clone(&known_paths)),
-                command_timeout: FEED_COMMAND_TIMEOUT,
-            };
-            let notify = self.notify.clone();
-
-            // Spawned, so a slow feed command cannot stall the poll loop. The
-            // claim is taken INSIDE the cycle rather than here: `tick` must not
-            // block, so contention is resolved by whichever spawned cycle
-            // reaches try_claim first, and the loser returns Busy.
-            let _handle = tokio::task::spawn(async move {
-                match cycle.run().await {
-                    // The cycle has already torn down every removed task's
-                    // worktree by the time it returns, so these notifications
-                    // mean "reconciled and cleaned up" (feeds.allium
-                    // RoleRoutedFeedSync).
-                    FeedCycleOutcome::Synced { affected_epics, .. } => {
-                        for id in affected_epics {
-                            let _ = notify.send(McpEvent::EpicChanged(id));
-                        }
-                    }
-                    // Both already logged by the cycle. The auto-poll path adds
-                    // no TUI surface, per feeds.allium FeedCommandFailure ("the
-                    // TUI is NOT notified"); a dropped request is not a failure.
-                    FeedCycleOutcome::Busy | FeedCycleOutcome::Failed(_) => {}
-                }
-            });
-            #[cfg(test)]
-            self.spawned.push(_handle);
+            self.last_run.insert(epic.id, now);
+            self.spawn_epic_cycle(epic.id, epic.title, Arc::clone(&known_paths));
         }
+    }
+
+    /// Spawn one epic's feed cycle, so a slow feed command cannot stall the
+    /// poll loop. The claim is taken INSIDE the cycle rather than here:
+    /// `tick` must not block, so contention is resolved by whichever spawned
+    /// cycle reaches try_claim first, and the loser returns Busy.
+    fn spawn_epic_cycle(
+        &mut self,
+        epic_id: EpicId,
+        epic_title: String,
+        known_paths: Arc<Vec<String>>,
+    ) {
+        let cycle = cycle::FeedCycle {
+            db: self.db.clone(),
+            runner: self.runner.clone(),
+            guard: Arc::clone(&self.guard),
+            epic_id,
+            epic_title,
+            known_paths: Some(known_paths),
+            command_timeout: FEED_COMMAND_TIMEOUT,
+        };
+        let notify = self.notify.clone();
+
+        let _handle = tokio::task::spawn(async move {
+            match cycle.run().await {
+                // The cycle has already torn down every removed task's
+                // worktree by the time it returns, so these notifications
+                // mean "reconciled and cleaned up" (feeds.allium
+                // RoleRoutedFeedSync).
+                FeedCycleOutcome::Synced { affected_epics, .. } => {
+                    for id in affected_epics {
+                        let _ = notify.send(McpEvent::EpicChanged(id));
+                    }
+                }
+                // Both already logged by the cycle. The auto-poll path adds
+                // no TUI surface, per feeds.allium FeedCommandFailure ("the
+                // TUI is NOT notified"); a dropped request is not a failure.
+                FeedCycleOutcome::Busy | FeedCycleOutcome::Failed(_) => {}
+            }
+        });
+        #[cfg(test)]
+        self.spawned.push(_handle);
     }
 }
 
@@ -976,6 +989,68 @@ mod tests {
             "DEFAULT_FEED_INTERVAL ({DEFAULT_FEED_INTERVAL:?}) must not be below the floor \
              of {MIN_FEED_INTERVAL_SECS}s"
         );
+    }
+
+    // --- epic_due: the extracted per-epic predicate ---
+
+    fn cadence_test_epic(interval_secs: Option<i64>) -> crate::models::Epic {
+        crate::models::Epic {
+            id: EpicId(1),
+            title: "Cadence Test".to_string(),
+            description: String::new(),
+            status: TaskStatus::Backlog,
+            plan_path: None,
+            sort_order: None,
+            auto_dispatch: false,
+            parent_epic_id: None,
+            feed_command: Some("echo hi".to_string()),
+            feed_interval_secs: interval_secs,
+            group_by_repo: false,
+            feed_role: crate::models::FeedRole::None,
+            origin: crate::models::EpicOrigin::Manual,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn epic_due_is_true_when_never_run() {
+        let epic = cadence_test_epic(Some(MIN_FEED_INTERVAL_SECS));
+        let last_run = HashMap::new();
+        assert!(epic_due(&epic, &last_run, Instant::now()));
+    }
+
+    #[test]
+    fn epic_due_is_false_before_the_interval_elapses() {
+        let epic = cadence_test_epic(Some(3600));
+        let mut last_run = HashMap::new();
+        let now = Instant::now();
+        last_run.insert(epic.id, now);
+        assert!(!epic_due(&epic, &last_run, now));
+    }
+
+    #[test]
+    fn epic_due_is_true_once_the_interval_elapses() {
+        let epic = cadence_test_epic(Some(MIN_FEED_INTERVAL_SECS));
+        let mut last_run = HashMap::new();
+        let started = Instant::now();
+        last_run.insert(epic.id, started);
+        let now = started + Duration::from_secs(MIN_FEED_INTERVAL_SECS as u64);
+        assert!(epic_due(&epic, &last_run, now));
+    }
+
+    #[test]
+    fn epic_due_rejects_an_interval_below_the_floor() {
+        let epic = cadence_test_epic(Some(MIN_FEED_INTERVAL_SECS - 1));
+        let last_run = HashMap::new();
+        assert!(!epic_due(&epic, &last_run, Instant::now()));
+    }
+
+    #[test]
+    fn epic_due_rejects_a_negative_interval_rather_than_wrapping() {
+        let epic = cadence_test_epic(Some(-5));
+        let last_run = HashMap::new();
+        assert!(!epic_due(&epic, &last_run, Instant::now()));
     }
 
     /// Write-time validation is what normally keeps a sub-floor row from

@@ -315,6 +315,122 @@ fn select_start_point(runner: &dyn ProcessRunner, repo_path: &str, base: &str) -
     }
 }
 
+/// The paths and names a worktree is provisioned under, derived once from the
+/// task so every later phase of `provision_worktree` shares one source of
+/// truth for them.
+struct WorktreePaths {
+    repo_path: String,
+    worktree_name: String,
+    worktree_path: String,
+    tmux_window: String,
+}
+
+/// Derive a task's worktree and tmux-window names from its repo path and
+/// title. No branching: a rejected `repo_path` is the only failure mode.
+fn worktree_paths(task: &Task) -> Result<WorktreePaths> {
+    let repo_path = validate_repo_path(&task.repo_path).map_err(|e| anyhow::anyhow!(e))?;
+    let slug = slugify(&task.title);
+    let worktree_name = format!("{}-{slug}", task.id);
+    let worktree_path = format!("{repo_path}/.worktrees/{worktree_name}");
+    let tmux_window = build_tmux_window_name(task.id);
+    Ok(WorktreePaths {
+        repo_path,
+        worktree_name,
+        worktree_path,
+        tmux_window,
+    })
+}
+
+/// Make `origin/<base>` current and choose the ref a new worktree branch
+/// should start from — or establish that neither is possible and say why.
+///
+/// The fetch runs unconditionally — even when reusing an existing worktree
+/// directory — so `origin/<base>` stays fresh for whatever rebases onto it
+/// later. On a fresh worktree an unreachable origin aborts here rather than
+/// quietly producing a worktree based on a stale local ref; on the reuse path
+/// it is downgraded to a warning. See `FetchPolicy`.
+///
+/// `select_start_point` (below) runs on the reuse path too, and that is
+/// deliberate rather than wasted work: `reused_rebase_preamble` targets
+/// whatever `start_point` reports, so skipping the measurement here would
+/// leave that preamble pointing at the wrong ref — the same
+/// `git rebase origin/main`-onto-a-local-based-branch history-duplication
+/// hazard this branch exists to remove.
+fn resolve_start_point(
+    runner: &dyn ProcessRunner,
+    repo_path: &str,
+    base: Option<BaseRef<'_>>,
+    reused_worktree: bool,
+    timeout: Duration,
+) -> Result<(Option<StartPoint>, Option<String>)> {
+    let policy = if reused_worktree {
+        FetchPolicy::BestEffort
+    } else {
+        FetchPolicy::Required
+    };
+    let base_ref = match base {
+        Some(base_ref) => base_ref,
+        None => return Ok((None, None)),
+    };
+    match fetch_origin(runner, repo_path, base_ref.name(), timeout, policy)? {
+        FetchOutcome::Fetched => {
+            let sp = match base_ref {
+                BaseRef::PrHead(b) => StartPoint::Remote {
+                    base: b.to_string(),
+                },
+                BaseRef::Branch(b) => select_start_point(runner, repo_path, b),
+            };
+            Ok((Some(sp), None))
+        }
+        FetchOutcome::NoOriginRef(warning) => match base_ref {
+            // There is no other candidate ref: local `<base>` is the only
+            // thing that exists, so falling back to it (with a `Note:` the
+            // agent can see) is the right call.
+            BaseRef::Branch(b) => Ok((
+                Some(StartPoint::Local {
+                    base: b.to_string(),
+                }),
+                Some(warning),
+            )),
+            // A PR head branch must never fall back to a local branch of
+            // the same name — see `BaseRef::PrHead`'s doc comment. If
+            // origin doesn't have it, there is nothing safe to base the
+            // review on, so abort rather than silently reviewing the
+            // wrong code.
+            BaseRef::PrHead(b) => anyhow::bail!(
+                "origin has no branch {b}; refusing to base a PR review on a local branch \
+                 of the same name"
+            ),
+        },
+        // Reuse path only. Nothing is being created from this ref, so the
+        // choice only sets the preamble's rebase target.
+        FetchOutcome::Unreachable(warning) => match base_ref {
+            // `origin/<base>` could not be refreshed, so pointing the
+            // preamble at it risks replaying local <base>'s unpushed
+            // commits under new SHAs. Local <base> is the ref we can vouch
+            // for, and the one wrap-up rebases onto.
+            BaseRef::Branch(b) => Ok((
+                Some(StartPoint::Local {
+                    base: b.to_string(),
+                }),
+                Some(warning),
+            )),
+            // A review must never be handed a local branch of the same
+            // name — see `BaseRef::PrHead`. The reused worktree already
+            // holds the PR's code from the previous attempt, so staying
+            // pinned to the origin ref is both safe and honest: if the
+            // preamble's rebase cannot reach it, the agent sees that
+            // directly, and the `Note:` explains why.
+            BaseRef::PrHead(b) => Ok((
+                Some(StartPoint::Remote {
+                    base: b.to_string(),
+                }),
+                Some(warning),
+            )),
+        },
+    }
+}
+
 /// Create a git worktree and open a tmux window.
 /// Shared by `dispatch_agent`, `research_agent`, and `quick_dispatch_agent`,
 /// all of which reach it via `dispatch_with_prompt`.
@@ -328,11 +444,12 @@ pub(super) fn provision_worktree(
     base: Option<BaseRef<'_>>,
     timeout: Duration,
 ) -> Result<ProvisionResult> {
-    let repo_path = validate_repo_path(&task.repo_path).map_err(|e| anyhow::anyhow!(e))?;
-    let slug = slugify(&task.title);
-    let worktree_name = format!("{}-{slug}", task.id);
-    let worktree_path = format!("{repo_path}/.worktrees/{worktree_name}");
-    let tmux_window = build_tmux_window_name(task.id);
+    let WorktreePaths {
+        repo_path,
+        worktree_name,
+        worktree_path,
+        tmux_window,
+    } = worktree_paths(task)?;
 
     tracing::info!(task_id = task.id.0, %worktree_path, ?base, "provisioning worktree");
 
@@ -341,84 +458,8 @@ pub(super) fn provision_worktree(
     // anything and an unreachable origin has nothing to corrupt.
     let reused_worktree = std::path::Path::new(&worktree_path).exists();
 
-    // The fetch runs unconditionally — even when reusing an existing worktree
-    // directory — so `origin/<base>` stays fresh for whatever rebases onto it
-    // later. On a fresh worktree an unreachable origin aborts here rather than
-    // quietly producing a worktree based on a stale local ref; on the reuse
-    // path it is downgraded to a warning. See `FetchPolicy`.
-    //
-    // `select_start_point` (below) runs on the reuse path too, and that is
-    // deliberate rather than wasted work: `reused_rebase_preamble` targets
-    // whatever `start_point` reports, so skipping the measurement here would
-    // leave that preamble pointing at the wrong ref — the same
-    // `git rebase origin/main`-onto-a-local-based-branch history-duplication
-    // hazard this branch exists to remove.
-    let policy = if reused_worktree {
-        FetchPolicy::BestEffort
-    } else {
-        FetchPolicy::Required
-    };
-    let (start_point, fetch_warning): (Option<StartPoint>, Option<String>) = match base {
-        Some(base_ref) => match fetch_origin(runner, &repo_path, base_ref.name(), timeout, policy)?
-        {
-            FetchOutcome::Fetched => {
-                let sp = match base_ref {
-                    BaseRef::PrHead(b) => StartPoint::Remote {
-                        base: b.to_string(),
-                    },
-                    BaseRef::Branch(b) => select_start_point(runner, &repo_path, b),
-                };
-                (Some(sp), None)
-            }
-            FetchOutcome::NoOriginRef(warning) => match base_ref {
-                // There is no other candidate ref: local `<base>` is the only
-                // thing that exists, so falling back to it (with a `Note:` the
-                // agent can see) is the right call.
-                BaseRef::Branch(b) => (
-                    Some(StartPoint::Local {
-                        base: b.to_string(),
-                    }),
-                    Some(warning),
-                ),
-                // A PR head branch must never fall back to a local branch of
-                // the same name — see `BaseRef::PrHead`'s doc comment. If
-                // origin doesn't have it, there is nothing safe to base the
-                // review on, so abort rather than silently reviewing the
-                // wrong code.
-                BaseRef::PrHead(b) => anyhow::bail!(
-                    "origin has no branch {b}; refusing to base a PR review on a local branch \
-                     of the same name"
-                ),
-            },
-            // Reuse path only. Nothing is being created from this ref, so the
-            // choice only sets the preamble's rebase target.
-            FetchOutcome::Unreachable(warning) => match base_ref {
-                // `origin/<base>` could not be refreshed, so pointing the
-                // preamble at it risks replaying local <base>'s unpushed
-                // commits under new SHAs. Local <base> is the ref we can vouch
-                // for, and the one wrap-up rebases onto.
-                BaseRef::Branch(b) => (
-                    Some(StartPoint::Local {
-                        base: b.to_string(),
-                    }),
-                    Some(warning),
-                ),
-                // A review must never be handed a local branch of the same
-                // name — see `BaseRef::PrHead`. The reused worktree already
-                // holds the PR's code from the previous attempt, so staying
-                // pinned to the origin ref is both safe and honest: if the
-                // preamble's rebase cannot reach it, the agent sees that
-                // directly, and the `Note:` explains why.
-                BaseRef::PrHead(b) => (
-                    Some(StartPoint::Remote {
-                        base: b.to_string(),
-                    }),
-                    Some(warning),
-                ),
-            },
-        },
-        None => (None, None),
-    };
+    let (start_point, fetch_warning) =
+        resolve_start_point(runner, &repo_path, base, reused_worktree, timeout)?;
 
     let start_ref = start_point.as_ref().map(StartPoint::git_ref);
 
