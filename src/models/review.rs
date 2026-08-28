@@ -48,28 +48,6 @@ impl ReviewDecision {
         }
     }
 
-    /// Stable string for database storage. Not the same as `as_str()` (display)
-    /// or `parse()` (GitHub wire format).
-    pub fn as_db_str(&self) -> &'static str {
-        match self {
-            Self::ReviewRequired => "ReviewRequired",
-            Self::WaitingForResponse => "WaitingForResponse",
-            Self::ChangesRequested => "ChangesRequested",
-            Self::Approved => "Approved",
-        }
-    }
-
-    /// Parse from database string. Inverse of `as_db_str`.
-    pub fn from_db_str(s: &str) -> Option<Self> {
-        match s {
-            "ReviewRequired" => Some(Self::ReviewRequired),
-            "WaitingForResponse" => Some(Self::WaitingForResponse),
-            "ChangesRequested" => Some(Self::ChangesRequested),
-            "Approved" => Some(Self::Approved),
-            _ => None,
-        }
-    }
-
     /// Parse from GitHub GraphQL `reviewDecision` field value.
     /// Note: `WaitingForResponse` has no wire value — it is derived client-side.
     pub fn parse(s: &str) -> Option<Self> {
@@ -104,15 +82,6 @@ mod tests {
             ReviewDecision::WaitingForResponse.as_str(),
             "Waiting for Response"
         );
-    }
-
-    #[test]
-    fn review_decision_from_db_str_unknown_returns_none() {
-        assert_eq!(ReviewDecision::from_db_str(""), None);
-        assert_eq!(ReviewDecision::from_db_str("bogus"), None);
-        // DB strings are PascalCase; lowercase must not match
-        assert_eq!(ReviewDecision::from_db_str("review_required"), None);
-        assert_eq!(ReviewDecision::from_db_str("approved"), None);
     }
 
     #[test]
@@ -187,16 +156,6 @@ mod tests {
         );
         assert_eq!(ReviewDecision::parse("bogus"), None);
         assert_eq!(ReviewDecision::parse(""), None);
-    }
-
-    #[test]
-    fn review_decision_db_roundtrip() {
-        for decision in ReviewDecision::ALL {
-            let s = decision.as_db_str();
-            let parsed = ReviewDecision::from_db_str(s)
-                .unwrap_or_else(|| panic!("failed to parse db str: {s}"));
-            assert_eq!(parsed, decision);
-        }
     }
 
     // --- pr_number_from_url ---

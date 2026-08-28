@@ -94,7 +94,7 @@ enum CardIndicator {
         age: String,
         staleness: Staleness,
         plan_indicator: &'static str,
-        tag_suffix: &'static str,
+        tag_suffix: String,
     },
 }
 
@@ -197,16 +197,10 @@ fn classify_card_indicator(
     } else {
         ""
     };
-    let tag_suffix = match task.tag {
-        Some(crate::models::TaskTag::Bug) => " [bug]",
-        Some(crate::models::TaskTag::Feature) => " [feat]",
-        Some(crate::models::TaskTag::Chore) => " [chore]",
-        Some(crate::models::TaskTag::PrReview) => " [pr-rev]",
-        Some(crate::models::TaskTag::Research) => " [research]",
-        Some(crate::models::TaskTag::Fix) => " [fix]",
-        Some(crate::models::TaskTag::Dependabot) => " [dep]",
-        None => "",
-    };
+    let tag_suffix = task
+        .tag
+        .map(|t| format!(" [{}]", t.short_label()))
+        .unwrap_or_default();
     CardIndicator::Idle {
         status,
         age,
@@ -824,7 +818,7 @@ mod tests {
                     age: "1h".to_string(),
                     staleness: Staleness::Fresh,
                     plan_indicator: "",
-                    tag_suffix: "",
+                    tag_suffix: String::new(),
                 },
                 None,
                 "idle",

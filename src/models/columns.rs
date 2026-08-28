@@ -75,13 +75,6 @@ impl VisualColumn {
             .position(|vc| vc.parent_status == status)
             .unwrap_or(0)
     }
-
-    pub fn parent_group_span(status: TaskStatus) -> usize {
-        Self::ALL
-            .iter()
-            .filter(|vc| vc.parent_status == status)
-            .count()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,14 +216,6 @@ mod tests {
         assert_eq!(VisualColumn::parent_group_start(TaskStatus::Running), 1);
         assert_eq!(VisualColumn::parent_group_start(TaskStatus::Review), 4);
         assert_eq!(VisualColumn::parent_group_start(TaskStatus::Done), 7);
-    }
-
-    #[test]
-    fn visual_column_parent_group_span() {
-        assert_eq!(VisualColumn::parent_group_span(TaskStatus::Backlog), 1);
-        assert_eq!(VisualColumn::parent_group_span(TaskStatus::Running), 3);
-        assert_eq!(VisualColumn::parent_group_span(TaskStatus::Review), 3);
-        assert_eq!(VisualColumn::parent_group_span(TaskStatus::Done), 1);
     }
 
     #[test]

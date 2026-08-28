@@ -30,7 +30,13 @@ impl AheadBehind {
     }
 
     /// Both sides non-zero: local and origin have each moved independently.
-    /// This is the case resolved by merging rather than rebasing.
+    /// This is the case resolved by merging rather than rebasing — the one
+    /// `ReportRepoSyncFailure`'s `push_rejected` exception names, where the
+    /// merge commit is already local when the push fails. `SyncRepo` handles
+    /// it through the unconditional `git merge` (fast-forwards when
+    /// `ahead = 0`, merge commit otherwise) rather than a branch on this
+    /// value, so it stays a `derived` value on `AheadBehind`
+    /// (`docs/specs/repo-sync.allium`) with no direct caller.
     pub fn is_diverged(&self) -> bool {
         self.ahead > 0 && self.behind > 0
     }
