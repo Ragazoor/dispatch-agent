@@ -74,6 +74,10 @@ rule CreateTask {
         -- last one, after InputWrapUpMode) or via the MCP create_task tool. It
         -- defaults to false, and the step is a y/N confirm: Enter alone means
         -- no, so the ordinary task takes one extra keypress and no decision.
+        -- Like every other creation-form step, InputPhoenix renders inside the
+        -- same bordered "New Task" panel as the rest of the wizard (settled
+        -- fields above, the y/N prompt as the active line) — it is not a
+        -- bare status-bar-only prompt shown after that panel has closed.
         -- Quick-dispatch (CreateQuickTask) does not offer it — a quick task is
         -- a one-off by construction, and the agent can set the flag through
         -- update_task once it knows what the work is.

@@ -295,10 +295,11 @@ pub(in crate::tui) fn input_base_branch_lines<'a>(
 
 /// The four steps answered before the wrap-up picker, restated above it.
 ///
-/// Split out rather than inlined into its one caller because the wrap-up
-/// picker is the creation form's *last* step, and a step added after it would
-/// want exactly this list — which is also why the sibling step renderers above
-/// build their settled lines inline: none of them is the tail.
+/// Split out because it is shared by two tail steps: the wrap-up picker
+/// itself, and `input_phoenix_lines` (the step after it, which appends its own
+/// settled wrap_up_mode line on top of this). The sibling step renderers above
+/// build their settled lines inline instead — none of them has a step after it
+/// that needs to restate their answers.
 fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
     let summary = DraftSummary::from_input(&app.input);
     let draft = app.input.task_draft.as_ref();
@@ -324,8 +325,9 @@ fn answered_step_lines(app: &App, completed: Style) -> Vec<Line<'static>> {
 ///
 /// A tail step is settled summaries, one active line, then this footer.
 /// `active` is the part that differs per step — a styled span for a
-/// single-key picker, a [`caret_field`] for a free-text one. Only the wrap-up
-/// picker uses it today; it is the shape a step added after it would take.
+/// single-key picker, a [`caret_field`] for a free-text one. The wrap-up and
+/// phoenix pickers use it today; it is the shape a step added after them
+/// would take.
 fn form_step_page<'a>(mut settled: Vec<Line<'a>>, active: Line<'a>, hint: Style) -> Vec<Line<'a>> {
     settled.push(active);
     settled.push(Line::from(""));
@@ -341,6 +343,41 @@ pub(in crate::tui) fn input_wrap_up_mode_lines(
         answered_step_lines(app, styles.completed),
         Line::from(Span::styled(
             "  Wrap-up: [r]ebase  [p]r  [d]one  [Enter] skip",
+            styles.active,
+        )),
+        styles.hint,
+    )
+}
+
+/// The number of lines [`input_phoenix_lines`] always returns: 5 settled
+/// (title, tag, repo, base branch, wrap_up_mode) + active + blank + hint.
+/// Draft content changes what those lines say, never how many there are, so
+/// `input_panel_height` (kanban/mod.rs) uses this literal directly instead of
+/// building the real `Vec` on every frame just to read its length.
+/// `input_phoenix_lines_always_returns_a_fixed_line_count` below is what
+/// keeps this pinned to the real count.
+pub(in crate::tui) const PHOENIX_STEP_LINES: u16 = 8;
+
+/// The form's last step (see docs/specs/tasks.allium's CreateTask guidance):
+/// restates the five prior steps, including wrap_up_mode which is settled by
+/// the time this step is active, then the phoenix y/N confirm.
+pub(in crate::tui) fn input_phoenix_lines(app: &App, styles: &FormStyles) -> Vec<Line<'static>> {
+    let mut settled = answered_step_lines(app, styles.completed);
+    let wrap_up_mode = app
+        .input
+        .task_draft
+        .as_ref()
+        .and_then(|d| d.wrap_up_mode)
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| "skip".to_string());
+    settled.push(Line::from(Span::styled(
+        format!("  Wrap-up: {wrap_up_mode}"),
+        styles.completed,
+    )));
+    form_step_page(
+        settled,
+        Line::from(Span::styled(
+            "  Phoenix — recreate this task when it's done? [y/N]",
             styles.active,
         )),
         styles.hint,
@@ -579,6 +616,82 @@ mod tests {
         let summary = DraftSummary::from_input(&input);
 
         assert_eq!(summary.title, "my task");
+    }
+
+    // ---- input_phoenix_lines ----------------------------------------------
+
+    fn form_styles() -> FormStyles {
+        FormStyles {
+            completed: Style::default(),
+            active: Style::default(),
+            hint: Style::default(),
+        }
+    }
+
+    fn lines_text(lines: &[Line<'_>]) -> String {
+        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn input_phoenix_lines_restates_every_prior_step() {
+        use crate::models::WrapUpMode;
+
+        let mut app = crate::tui::App::new(vec![]);
+        app.input.task_draft = Some(crate::tui::TaskDraft {
+            title: "My task".to_string(),
+            tag: Some(crate::models::TaskTag::Bug),
+            repo_path: "/some/repo".to_string(),
+            base_branch: "main".to_string(),
+            wrap_up_mode: Some(WrapUpMode::Rebase),
+            ..Default::default()
+        });
+
+        let text = lines_text(&input_phoenix_lines(&app, &form_styles()));
+
+        assert!(text.contains("Title: My task"), "got:\n{text}");
+        assert!(text.contains("Tag: bug"), "got:\n{text}");
+        assert!(text.contains("Repo: /some/repo"), "got:\n{text}");
+        assert!(text.contains("Base branch: main"), "got:\n{text}");
+        assert!(text.contains("Wrap-up: rebase"), "got:\n{text}");
+        assert!(text.contains("Phoenix"), "got:\n{text}");
+        assert!(text.contains("[Esc] cancel"), "got:\n{text}");
+    }
+
+    #[test]
+    fn input_phoenix_lines_shows_skip_when_wrap_up_mode_unset() {
+        let mut app = crate::tui::App::new(vec![]);
+        app.input.task_draft = Some(crate::tui::TaskDraft {
+            wrap_up_mode: None,
+            ..Default::default()
+        });
+
+        let text = lines_text(&input_phoenix_lines(&app, &form_styles()));
+
+        assert!(text.contains("Wrap-up: skip"), "got:\n{text}");
+    }
+
+    #[test]
+    fn input_phoenix_lines_always_returns_a_fixed_line_count() {
+        // PHOENIX_STEP_LINES (kanban/mod.rs) is a literal, not derived from
+        // this function, precisely because the count below never moves —
+        // draft content changes what a line says, never how many lines
+        // input_phoenix_lines produces. This test is what would catch a
+        // future step edit going out of sync with that literal.
+        let empty_draft = crate::tui::App::new(vec![]);
+        let mut full_draft = crate::tui::App::new(vec![]);
+        full_draft.input.task_draft = Some(crate::tui::TaskDraft {
+            title: "My task".to_string(),
+            tag: Some(crate::models::TaskTag::Bug),
+            repo_path: "/some/repo".to_string(),
+            base_branch: "main".to_string(),
+            wrap_up_mode: Some(crate::models::WrapUpMode::Rebase),
+            ..Default::default()
+        });
+
+        for app in [&empty_draft, &full_draft] {
+            let lines = input_phoenix_lines(app, &form_styles());
+            assert_eq!(lines.len(), PHOENIX_STEP_LINES as usize);
+        }
     }
 
     // ---- append_repo_path_list -------------------------------------------

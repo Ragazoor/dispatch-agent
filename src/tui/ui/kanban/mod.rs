@@ -19,9 +19,9 @@ mod tests;
 
 use super::input_form::{
     confirm_retry_lines, input_base_branch_lines, input_description_lines,
-    input_epic_description_lines, input_epic_title_lines, input_repo_path_lines, input_tag_lines,
-    input_title_lines, input_wrap_up_mode_lines, main_session_dir_lines, quick_dispatch_lines,
-    FormStyles,
+    input_epic_description_lines, input_epic_title_lines, input_phoenix_lines,
+    input_repo_path_lines, input_tag_lines, input_title_lines, input_wrap_up_mode_lines,
+    main_session_dir_lines, quick_dispatch_lines, FormStyles, PHOENIX_STEP_LINES,
 };
 use super::palette::{
     header_label_focused, header_label_unfocused, mix, ARCHIVE_STRIPE, BLUE, BOARD_GROUND,
@@ -238,6 +238,15 @@ fn input_panel_height(app: &App, area_height: u16) -> u16 {
         | InputMode::ConfirmRetry(_)
         | InputMode::InputEpicTitle
         | InputMode::InputEpicDescription => 8,
+        // A literal, not a derived count: unlike QuickDispatch/MainSessionDir
+        // above, input_phoenix_lines's line *count* never varies with draft
+        // content (every settled field is exactly one line, filled or not),
+        // so building the real Vec here just to read its length would be
+        // pure waste on a path that reruns every frame. `PHOENIX_STEP_LINES`
+        // pins the invariant; input_form.rs's
+        // `input_phoenix_lines_always_returns_a_fixed_line_count` test is
+        // what catches the constant drifting if a step ever adds a line.
+        InputMode::InputPhoenix => (PHOENIX_STEP_LINES + 2).clamp(8, max_height),
         _ => 0,
     }
 }
@@ -545,6 +554,7 @@ fn render_input_form(frame: &mut Frame, app: &App, area: Rect) -> bool {
         InputMode::InputRepoPath => input_repo_path_lines(app, area, &styles),
         InputMode::InputBaseBranch => input_base_branch_lines(app, area, &styles),
         InputMode::InputWrapUpMode => input_wrap_up_mode_lines(app, &styles),
+        InputMode::InputPhoenix => input_phoenix_lines(app, &styles),
         InputMode::QuickDispatch => quick_dispatch_lines(app, area, &styles),
         InputMode::MainSessionDir => main_session_dir_lines(app, area, &styles),
         InputMode::ConfirmRetry(id) => confirm_retry_lines(app, *id),

@@ -111,6 +111,58 @@ fn input_repo_path_shows_none_when_no_tag() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// InputPhoenix — creation-form panel (issue 4466: the step must render in
+// this panel like every other creation-form step, not only in the status bar)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn input_panel_height_reserves_room_for_phoenix_step() {
+    let mut app = make_test_app();
+    app.input.mode = InputMode::InputPhoenix;
+    assert!(
+        input_panel_height(&app, 24) > 0,
+        "InputPhoenix must reserve panel rows like the other creation-form steps"
+    );
+}
+
+#[test]
+fn render_input_form_draws_phoenix_step_in_the_panel() {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    let mut app = make_test_app();
+    app.input.mode = InputMode::InputPhoenix;
+    app.input.task_draft = Some(TaskDraft {
+        title: "My task".into(),
+        tag: Some(TaskTag::Bug),
+        repo_path: "/some/repo".into(),
+        base_branch: "main".into(),
+        wrap_up_mode: Some(crate::models::WrapUpMode::Rebase),
+        ..Default::default()
+    });
+
+    let backend = TestBackend::new(60, 12);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut drew_form = false;
+    terminal
+        .draw(|f| {
+            let area = Rect::new(0, 0, 60, 12);
+            drew_form = render_input_form(f, &app, area);
+        })
+        .unwrap();
+
+    assert!(drew_form, "InputPhoenix must render inside the form panel");
+
+    let buf = terminal.backend().buffer().clone();
+    let text: String = (0..buf.area().height)
+        .map(|y| buf_row(&buf, y))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("New Task"), "got:\n{text}");
+    assert!(text.contains("My task"), "got:\n{text}");
+    assert!(text.contains("Phoenix"), "got:\n{text}");
+}
+
 fn render_list_item_to_buf(item: ListItem<'static>, width: u16, height: u16) -> Buffer {
     use ratatui::{backend::TestBackend, widgets::List, Terminal};
     let backend = TestBackend::new(width, height);
