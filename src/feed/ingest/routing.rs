@@ -127,40 +127,14 @@ pub(super) async fn route_and_group_entries(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::models::{SubStatus, TaskStatus, TaskTag};
+    use crate::models::TaskTag;
 
     fn make_task(id: i64, epic_id: Option<i64>) -> Task {
-        let now = chrono::Utc::now();
         Task {
             id: TaskId(id),
-            title: String::new(),
-            description: String::new(),
-            repo_path: String::new(),
-            status: TaskStatus::Backlog,
-            worktree: None,
-            tmux_window: None,
-            plan_path: None,
             epic_id: epic_id.map(EpicId),
-            sub_status: SubStatus::None,
-            url: None,
             tag: Some(TaskTag::PrReview),
-            sort_order: None,
-            base_branch: "main".into(),
-            external_id: None,
-            labels: Vec::new(),
-            created_at: now,
-            updated_at: now,
-            last_pre_tool_use_at: None,
-            last_notification_at: None,
-            last_peer_message_sent_at: None,
-            last_peer_message_received_at: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            phoenix: false,
-            live_subagents: 0,
-            stop_pending: false,
-            live_shells: 0,
-            oldest_live_shell_started_at: None,
+            ..Default::default()
         }
     }
 

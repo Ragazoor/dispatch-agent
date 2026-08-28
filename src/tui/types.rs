@@ -1018,7 +1018,7 @@ impl LayoutCache {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use crate::models::{SubStatus, TaskId};
+    use crate::models::TaskId;
     use chrono::Utc;
 
     fn make_test_epic(id: i64, parent: Option<i64>) -> Epic {
@@ -1043,37 +1043,12 @@ mod tests {
     }
 
     fn make_test_task(id: i64, status: TaskStatus, epic: Option<i64>) -> Task {
-        let now = Utc::now();
         Task {
             id: TaskId(id),
             title: format!("Task {id}"),
-            description: String::new(),
-            repo_path: "/repo".to_string(),
             status,
-            sub_status: SubStatus::None,
-            worktree: None,
-            tmux_window: None,
-            plan_path: None,
             epic_id: epic.map(EpicId),
-            url: None,
-            tag: None,
-            sort_order: None,
-            base_branch: "main".into(),
-            external_id: None,
-            labels: Vec::new(),
-            created_at: now,
-            updated_at: now,
-            last_pre_tool_use_at: None,
-            last_notification_at: None,
-            last_peer_message_sent_at: None,
-            last_peer_message_received_at: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            phoenix: false,
-            live_subagents: 0,
-            stop_pending: false,
-            live_shells: 0,
-            oldest_live_shell_started_at: None,
+            ..Default::default()
         }
     }
 

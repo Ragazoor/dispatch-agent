@@ -82,38 +82,15 @@ pub(in crate::tui) fn resolve_pending_g_via_idle_tick(app: &mut App) -> Vec<Comm
 /// fixture `is_unprovisioned` (rendering "⚠ no worktree" on every card). Tests
 /// that want an unprovisioned or detached task clear the fields explicitly.
 pub(in crate::tui) fn make_task(id: i64, status: TaskStatus) -> Task {
-    let now = chrono::Utc::now();
     let provisioned = matches!(status, TaskStatus::Running | TaskStatus::Review);
     Task {
         id: TaskId(id),
         title: format!("Task {id}"),
-        description: String::new(),
-        repo_path: String::from("/repo"),
         status,
         worktree: provisioned.then(|| format!("/repo/.worktrees/{id}-task-{id}")),
         tmux_window: provisioned.then(|| format!("task-{id}")),
-        plan_path: None,
-        epic_id: None,
         sub_status: SubStatus::default_for(status),
-        url: None,
-        tag: None,
-        sort_order: None,
-        base_branch: "main".into(),
-        external_id: None,
-        labels: Vec::new(),
-        created_at: now,
-        updated_at: now,
-        last_pre_tool_use_at: None,
-        last_notification_at: None,
-        last_peer_message_sent_at: None,
-        last_peer_message_received_at: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        phoenix: false,
-        live_subagents: 0,
-        stop_pending: false,
-        live_shells: 0,
-        oldest_live_shell_started_at: None,
+        ..Default::default()
     }
 }
 

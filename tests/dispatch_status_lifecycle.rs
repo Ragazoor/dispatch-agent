@@ -5,41 +5,14 @@
 //! breaks the user-facing feedback contract is caught even if the
 //! TUI-internal helpers are refactored.
 
-use dispatch_tui::models::{SubStatus, Task, TaskId, TaskStatus};
+use dispatch_tui::models::{Task, TaskId};
 use dispatch_tui::tui::{App, Message};
 
 fn make_task(id: i64, title: &str) -> Task {
-    let now = chrono::Utc::now();
     Task {
         id: TaskId(id),
         title: title.to_string(),
-        description: String::new(),
-        repo_path: "/repo".to_string(),
-        status: TaskStatus::Backlog,
-        worktree: None,
-        tmux_window: None,
-        plan_path: None,
-        epic_id: None,
-        sub_status: SubStatus::default_for(TaskStatus::Backlog),
-        url: None,
-        tag: None,
-        sort_order: None,
-        base_branch: "main".into(),
-        external_id: None,
-        labels: Vec::new(),
-        created_at: now,
-        updated_at: now,
-        last_pre_tool_use_at: None,
-        last_notification_at: None,
-        last_peer_message_sent_at: None,
-        last_peer_message_received_at: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        phoenix: false,
-        live_subagents: 0,
-        stop_pending: false,
-        live_shells: 0,
-        oldest_live_shell_started_at: None,
+        ..Default::default()
     }
 }
 

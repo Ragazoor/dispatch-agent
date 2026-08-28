@@ -560,6 +560,84 @@ where
     Ok(signals)
 }
 
+/// A placeholder Task for building fixtures with struct-update syntax
+/// (`Task { field: value, ..Default::default() }`). `id`, `title`,
+/// `description`, and `repo_path` are meaningless placeholders — callers that
+/// care about them should always set them explicitly.
+impl Default for Task {
+    fn default() -> Self {
+        let now = Utc::now();
+        Task {
+            id: TaskId(0),
+            title: String::new(),
+            description: String::new(),
+            repo_path: "/repo".to_string(),
+            status: TaskStatus::Backlog,
+            worktree: None,
+            tmux_window: None,
+            plan_path: None,
+            epic_id: None,
+            sub_status: SubStatus::None,
+            url: None,
+            tag: None,
+            sort_order: None,
+            base_branch: DEFAULT_BASE_BRANCH.to_string(),
+            external_id: None,
+            labels: Vec::new(),
+            created_at: now,
+            updated_at: now,
+            last_pre_tool_use_at: None,
+            last_notification_at: None,
+            last_peer_message_sent_at: None,
+            last_peer_message_received_at: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+            phoenix: false,
+            live_subagents: 0,
+            stop_pending: false,
+            live_shells: 0,
+            oldest_live_shell_started_at: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn default_task_has_sensible_placeholder_values() {
+        let task = Task::default();
+        assert_eq!(task.id, TaskId(0));
+        assert_eq!(task.title, "");
+        assert_eq!(task.description, "");
+        assert_eq!(task.repo_path, "/repo");
+        assert_eq!(task.status, TaskStatus::Backlog);
+        assert_eq!(task.sub_status, SubStatus::None);
+        assert_eq!(task.base_branch, "main");
+        assert!(task.labels.is_empty());
+        assert!(task.worktree.is_none());
+        assert!(task.tmux_window.is_none());
+        assert!(task.plan_path.is_none());
+        assert!(task.epic_id.is_none());
+        assert!(task.url.is_none());
+        assert!(task.tag.is_none());
+        assert!(task.sort_order.is_none());
+        assert!(task.external_id.is_none());
+        assert!(task.last_pre_tool_use_at.is_none());
+        assert!(task.last_notification_at.is_none());
+        assert!(task.last_peer_message_sent_at.is_none());
+        assert!(task.last_peer_message_received_at.is_none());
+        assert!(task.wrap_up_mode.is_none());
+        assert!(!task.auto_run_plan);
+        assert!(!task.phoenix);
+        assert_eq!(task.live_subagents, 0);
+        assert!(!task.stop_pending);
+        assert_eq!(task.live_shells, 0);
+        assert!(task.oldest_live_shell_started_at.is_none());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DispatchMode
 // ---------------------------------------------------------------------------
@@ -1946,37 +2024,10 @@ pub(in crate::models) mod model_tests {
     /// A bare Backlog task fixture: no worktree, no tmux window, no url.
     /// Sibling `models` test modules build on it by overwriting fields.
     pub(in crate::models) fn make_task_with(plan: Option<&str>, tag: Option<TaskTag>) -> Task {
-        let now = chrono::Utc::now();
         Task {
-            id: TaskId(1),
-            title: String::new(),
-            description: String::new(),
-            repo_path: String::new(),
-            status: TaskStatus::Backlog,
-            worktree: None,
-            tmux_window: None,
             plan_path: plan.map(String::from),
-            epic_id: None,
-            sub_status: SubStatus::None,
-            url: None,
             tag,
-            sort_order: None,
-            base_branch: "main".into(),
-            external_id: None,
-            labels: Vec::new(),
-            created_at: now,
-            updated_at: now,
-            last_pre_tool_use_at: None,
-            last_notification_at: None,
-            last_peer_message_sent_at: None,
-            last_peer_message_received_at: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            phoenix: false,
-            live_subagents: 0,
-            stop_pending: false,
-            live_shells: 0,
-            oldest_live_shell_started_at: None,
+            ..Default::default()
         }
     }
 

@@ -7,10 +7,11 @@ fn test_task(id: i64, title: &str) -> Task {
 }
 
 fn test_task_repo(id: i64, title: &str, repo: &str) -> Task {
-    let mut t = make_task(id, TaskStatus::Backlog);
-    t.title = title.to_string();
-    t.repo_path = repo.to_string();
-    t
+    Task {
+        title: title.to_string(),
+        repo_path: repo.to_string(),
+        ..make_task(id, TaskStatus::Backlog)
+    }
 }
 
 #[test]

@@ -56,7 +56,6 @@ async fn full_lifecycle() {
         })
         .await
         .unwrap();
-    let now = chrono::Utc::now();
     let cmds = app.update(Message::Task(
         dispatch_tui::tui::messages::TaskMessage::Created {
             task: Box::new(Task {
@@ -64,31 +63,8 @@ async fn full_lifecycle() {
                 title: "Fix auth bug".to_string(),
                 description: "Users can't log in".to_string(),
                 repo_path: "/repo".to_string(),
-                status: TaskStatus::Backlog,
-                worktree: None,
-                tmux_window: None,
                 plan_path: Some("plan.md".into()),
-                epic_id: None,
-                sub_status: dispatch_tui::models::SubStatus::None,
-                url: None,
-                tag: None,
-                sort_order: None,
-                base_branch: "main".into(),
-                external_id: None,
-                labels: Vec::new(),
-                created_at: now,
-                updated_at: now,
-                last_pre_tool_use_at: None,
-                last_notification_at: None,
-                last_peer_message_sent_at: None,
-                last_peer_message_received_at: None,
-                wrap_up_mode: None,
-                auto_run_plan: false,
-                phoenix: false,
-                live_subagents: 0,
-                stop_pending: false,
-                live_shells: 0,
-                oldest_live_shell_started_at: None,
+                ..Default::default()
             }),
         },
     ));

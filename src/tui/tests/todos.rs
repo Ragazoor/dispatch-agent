@@ -7,37 +7,10 @@ use crate::tui::App;
 use chrono::Utc;
 
 fn make_todo_test_task(id: TaskId, title: &str) -> crate::models::Task {
-    use crate::models::*;
-    Task {
+    crate::models::Task {
         id,
         title: title.to_string(),
-        description: String::new(),
-        repo_path: "/repo".into(),
-        status: TaskStatus::Backlog,
-        sub_status: SubStatus::None,
-        worktree: None,
-        tmux_window: None,
-        plan_path: None,
-        epic_id: None,
-        url: None,
-        tag: None,
-        sort_order: None,
-        base_branch: "main".into(),
-        external_id: None,
-        labels: vec![],
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        last_pre_tool_use_at: None,
-        last_notification_at: None,
-        last_peer_message_sent_at: None,
-        last_peer_message_received_at: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        phoenix: false,
-        live_subagents: 0,
-        stop_pending: false,
-        live_shells: 0,
-        oldest_live_shell_started_at: None,
+        ..Default::default()
     }
 }
 

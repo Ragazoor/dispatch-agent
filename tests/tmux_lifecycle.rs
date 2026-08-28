@@ -27,7 +27,7 @@ mod tmux_harness;
 use std::path::{Path, PathBuf};
 
 use dispatch_tui::dispatch;
-use dispatch_tui::models::{SubStatus, Task, TaskId, TaskStatus};
+use dispatch_tui::models::{Task, TaskId};
 use dispatch_tui::process::ProcessRunner;
 use dispatch_tui::tmux;
 
@@ -193,31 +193,7 @@ fn task(id: i64, repo: &Path) -> Task {
         title: "Some task".to_string(),
         description: "Do the thing".to_string(),
         repo_path: repo.to_string_lossy().into_owned(),
-        status: TaskStatus::Backlog,
-        worktree: None,
-        tmux_window: None,
-        plan_path: None,
-        epic_id: None,
-        sub_status: SubStatus::None,
-        url: None,
-        tag: None,
-        sort_order: None,
-        base_branch: "main".to_string(),
-        external_id: None,
-        labels: Vec::new(),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        last_pre_tool_use_at: None,
-        last_notification_at: None,
-        last_peer_message_sent_at: None,
-        last_peer_message_received_at: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        phoenix: false,
-        live_subagents: 0,
-        stop_pending: false,
-        live_shells: 0,
-        oldest_live_shell_started_at: None,
+        ..Default::default()
     }
 }
 

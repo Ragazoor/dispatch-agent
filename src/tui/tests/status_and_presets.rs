@@ -658,37 +658,14 @@ fn render_input_form_quick_dispatch_shows_repo_selection() {
 fn render_input_form_confirm_retry_shows_options() {
     let mut app = make_app();
     // Replace task 5 as a crashed Running task with worktree and tmux
-    let now = chrono::Utc::now();
     let crashed_task = Task {
         id: TaskId(5),
         title: "Crashed task".to_string(),
-        description: String::new(),
-        repo_path: "/repo".to_string(),
         status: TaskStatus::Running,
         worktree: Some("/tmp/wt".to_string()),
         tmux_window: Some("win5".to_string()),
-        plan_path: None,
-        epic_id: None,
         sub_status: SubStatus::Crashed,
-        url: None,
-        tag: None,
-        sort_order: None,
-        base_branch: "main".into(),
-        external_id: None,
-        labels: Vec::new(),
-        created_at: now,
-        updated_at: now,
-        last_pre_tool_use_at: None,
-        last_notification_at: None,
-        last_peer_message_sent_at: None,
-        last_peer_message_received_at: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        phoenix: false,
-        live_subagents: 0,
-        stop_pending: false,
-        live_shells: 0,
-        oldest_live_shell_started_at: None,
+        ..Default::default()
     };
     app.board.tasks.push(crashed_task);
     app.input.mode = InputMode::ConfirmRetry(TaskId(5));

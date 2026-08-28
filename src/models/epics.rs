@@ -362,33 +362,10 @@ mod tests {
         Task {
             id: TaskId(id),
             title: format!("Task {id}"),
-            description: String::new(),
-            repo_path: "/repo".to_string(),
             status,
             sub_status,
-            worktree: None,
-            tmux_window: None,
-            plan_path: None,
             epic_id: epic.map(EpicId),
-            url: None,
-            tag: None,
-            sort_order: None,
-            base_branch: "main".into(),
-            external_id: None,
-            labels: Vec::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_pre_tool_use_at: None,
-            last_notification_at: None,
-            last_peer_message_sent_at: None,
-            last_peer_message_received_at: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            phoenix: false,
-            live_subagents: 0,
-            stop_pending: false,
-            live_shells: 0,
-            oldest_live_shell_started_at: None,
+            ..Default::default()
         }
     }
 
@@ -590,74 +567,25 @@ mod tests {
 
     #[test]
     fn task_epic_id_defaults_to_none() {
-        let now = Utc::now();
         let task = Task {
             id: TaskId(1),
             title: "Test".to_string(),
             description: "Desc".to_string(),
             repo_path: "/repo".to_string(),
-            status: TaskStatus::Backlog,
-            worktree: None,
-            tmux_window: None,
-            plan_path: None,
-            epic_id: None,
-            sub_status: SubStatus::None,
-            url: None,
-            tag: None,
-            sort_order: None,
-            base_branch: "main".into(),
-            external_id: None,
-            labels: Vec::new(),
-            created_at: now,
-            updated_at: now,
-            last_pre_tool_use_at: None,
-            last_notification_at: None,
-            last_peer_message_sent_at: None,
-            last_peer_message_received_at: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            phoenix: false,
-            live_subagents: 0,
-            stop_pending: false,
-            live_shells: 0,
-            oldest_live_shell_started_at: None,
+            ..Default::default()
         };
         assert!(task.epic_id.is_none());
     }
 
     #[test]
     fn task_with_epic_id() {
-        let now = Utc::now();
         let task = Task {
             id: TaskId(1),
             title: "Test".to_string(),
             description: "Desc".to_string(),
             repo_path: "/repo".to_string(),
-            status: TaskStatus::Backlog,
-            worktree: None,
-            tmux_window: None,
-            plan_path: None,
             epic_id: Some(EpicId(5)),
-            sub_status: SubStatus::None,
-            url: None,
-            tag: None,
-            sort_order: None,
-            base_branch: "main".into(),
-            external_id: None,
-            labels: Vec::new(),
-            created_at: now,
-            updated_at: now,
-            last_pre_tool_use_at: None,
-            last_notification_at: None,
-            last_peer_message_sent_at: None,
-            last_peer_message_received_at: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            phoenix: false,
-            live_subagents: 0,
-            stop_pending: false,
-            live_shells: 0,
-            oldest_live_shell_started_at: None,
+            ..Default::default()
         };
         assert_eq!(task.epic_id, Some(EpicId(5)));
     }
@@ -731,33 +659,8 @@ mod tests {
         Task {
             id: TaskId(1),
             title: "T".to_string(),
-            description: "".to_string(),
             repo_path: "/repo".to_string(),
-            status: TaskStatus::Backlog,
-            sub_status: SubStatus::None,
-            worktree: None,
-            tmux_window: None,
-            plan_path: None,
-            epic_id: None,
-            url: None,
-            tag: None,
-            sort_order: None,
-            base_branch: "main".into(),
-            external_id: None,
-            labels: Vec::new(),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-            last_pre_tool_use_at: None,
-            last_notification_at: None,
-            last_peer_message_sent_at: None,
-            last_peer_message_received_at: None,
-            wrap_up_mode: None,
-            auto_run_plan: false,
-            phoenix: false,
-            live_subagents: 0,
-            stop_pending: false,
-            live_shells: 0,
-            oldest_live_shell_started_at: None,
+            ..Default::default()
         }
     }
 

@@ -6,37 +6,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
 fn task_created_adds_to_list() {
-    let now = chrono::Utc::now();
     let task = Task {
         id: TaskId(42),
         title: "New Task".to_string(),
         description: "desc".to_string(),
         repo_path: "/repo".to_string(),
-        status: TaskStatus::Backlog,
-        worktree: None,
-        tmux_window: None,
-        plan_path: None,
-        epic_id: None,
-        sub_status: SubStatus::None,
-        url: None,
-        tag: None,
-        sort_order: None,
-        base_branch: "main".into(),
-        external_id: None,
-        labels: Vec::new(),
-        created_at: now,
-        updated_at: now,
-        last_pre_tool_use_at: None,
-        last_notification_at: None,
-        last_peer_message_sent_at: None,
-        last_peer_message_received_at: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        phoenix: false,
-        live_subagents: 0,
-        stop_pending: false,
-        live_shells: 0,
-        oldest_live_shell_started_at: None,
+        ..Default::default()
     };
     let mut app = App::new(vec![]);
     let cmds = app.update(Message::Task(crate::tui::messages::TaskMessage::Created {
@@ -699,37 +674,13 @@ fn editor_result_description_cancelled_cancels_input() {
 fn editor_result_task_edit_returns_finalize_command() {
     // Non-description EditKind variants route through a FinalizeEditorResult
     // command so the runtime applies the edit via services.
-    use crate::models::{Task, TaskId, TaskStatus};
+    use crate::models::{Task, TaskId};
     let task = Task {
         id: TaskId(42),
         title: "t".into(),
         description: "d".into(),
         repo_path: "/r".into(),
-        status: TaskStatus::Backlog,
-        worktree: None,
-        tmux_window: None,
-        plan_path: None,
-        epic_id: None,
-        sub_status: crate::models::SubStatus::None,
-        url: None,
-        tag: None,
-        sort_order: None,
-        base_branch: "main".into(),
-        external_id: None,
-        labels: Vec::new(),
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
-        last_pre_tool_use_at: None,
-        last_notification_at: None,
-        last_peer_message_sent_at: None,
-        last_peer_message_received_at: None,
-        wrap_up_mode: None,
-        auto_run_plan: false,
-        phoenix: false,
-        live_subagents: 0,
-        stop_pending: false,
-        live_shells: 0,
-        oldest_live_shell_started_at: None,
+        ..Default::default()
     };
     let mut app = App::new(vec![task.clone()]);
     let cmds = app.update(Message::Editor(
