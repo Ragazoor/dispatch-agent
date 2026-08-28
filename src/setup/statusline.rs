@@ -21,14 +21,16 @@ use std::path::Path;
 /// run — see the module doc comment above.
 pub(crate) const SETTINGS_FILE_NAME: &str = "dispatch-statusline.json";
 
-/// The fixed snapshot file name, under the data directory (the database's
-/// parent).
+/// The fixed snapshot file name, beside the *default* database — never beside
+/// whichever database the current process has open.
 ///
-/// Shared because two independent sites must agree on it: setup bakes this path
-/// into the generated `--snapshot` argument (`src/setup/mod.rs`), and the TUI
-/// reads it back (`src/runtime/mod.rs`). If those two ever disagreed the badge
-/// would silently never appear — indistinguishable from "no subscription data" —
-/// so the name lives in one place rather than as two literals.
+/// Read from exactly one place, [`crate::budget_snapshot_path`], which both the
+/// publisher (the `--snapshot` argument baked into the settings file) and the
+/// reader (the TUI's budget indicator) go through. Routing both through one
+/// function is what makes them agree: if they ever disagreed the badge would
+/// silently go stale — indistinguishable from "no subscription data". See
+/// `docs/specs/dispatch.allium`:
+/// `SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase`.
 ///
 /// Tests deliberately keep their own literal instead of importing this: an
 /// expectation derived from the same constant as the code under test asserts

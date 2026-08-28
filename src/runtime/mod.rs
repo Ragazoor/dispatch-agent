@@ -449,9 +449,12 @@ impl TuiRuntime {
             .parent()
             .unwrap_or(std::path::Path::new("."))
             .to_path_buf();
-        let budget_snapshot_path = data_dir
-            .clone()
-            .join(crate::setup::statusline::RATE_LIMITS_FILE_NAME);
+        // Deliberately not derived from `db_path`: the subscription windows are
+        // account-global, so a run against a throwaway database must publish
+        // and read the same location as every other session. See
+        // docs/specs/dispatch.allium:
+        // SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase.
+        let budget_snapshot_path = crate::budget_snapshot_path();
 
         // Best-effort: recreate ~/.claude/dispatch-statusline.json if it's
         // missing. Every dispatch-spawned Claude session is launched with

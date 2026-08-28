@@ -1659,6 +1659,26 @@ surface StatusLineDecorator {
         -- operator's own command meant to say would be a worse outcome than
         -- showing none of it.
 
+    @guarantee SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase
+        -- The subscription windows are account-global, so the snapshot has
+        -- exactly one location per machine. Both sides agree on it
+        -- unconditionally: the location the decorator is told to publish to,
+        -- and the location TokenBudgetIndicator reads. Neither varies with
+        -- which task database the process that computed it happened to be
+        -- running against.
+        --
+        -- The decorator's settings are written by whichever dispatch process
+        -- notices they are missing or wrong, and they then govern every Claude
+        -- session started afterwards. Deriving the location from the open
+        -- database instead let one run against a throwaway database — a
+        -- developer's scratch database, or a test that boots the runtime
+        -- against a temporary one — silently repoint every later session at a
+        -- directory belonging to that run. Sessions kept publishing, the
+        -- indicator kept reading its own unchanged location, and the result
+        -- was a permanently stale readout with no failure reported anywhere:
+        -- indistinguishable, to the operator, from an account that had simply
+        -- stopped reporting.
+
     @guarantee NeverChainsToItself
         -- When the status line the decorator would stand in for is itself a
         -- dispatch statusline invocation, nothing is chained. An empty status

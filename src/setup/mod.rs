@@ -264,6 +264,11 @@ pub(super) struct SetupPaths {
     pub legacy_mcp_path: PathBuf,
     pub tmux_conf_path: PathBuf,
     pub statusline_path: PathBuf,
+    /// Where the statusLine decorator is told to publish the budget snapshot.
+    /// Fixed per machine and independent of `--db` — see
+    /// `docs/specs/dispatch.allium`:
+    /// `SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase`.
+    pub budget_snapshot_path: PathBuf,
 }
 
 impl SetupPaths {
@@ -278,6 +283,7 @@ impl SetupPaths {
             legacy_mcp_path,
             tmux_conf_path: tmux::tmux_conf_path()?,
             statusline_path,
+            budget_snapshot_path: crate::budget_snapshot_path(),
         })
     }
 }
@@ -381,9 +387,11 @@ pub(super) async fn run_setup_in(
     // 2b. Status line — dispatch-owned settings file that chains to the
     // user's existing statusLine.command (see src/setup/statusline.rs).
     let chain = statusline::discover_chain(&paths.claude_dir);
-    let snapshot_path = data_dir.join(statusline::RATE_LIMITS_FILE_NAME);
-    match statusline::write_settings_file(&paths.statusline_path, &snapshot_path, chain.as_deref())
-    {
+    match statusline::write_settings_file(
+        &paths.statusline_path,
+        &paths.budget_snapshot_path,
+        chain.as_deref(),
+    ) {
         Ok(true) => println!(
             "Status line: wrote {} (budget indicator){}",
             display_for(&paths.statusline_path),
@@ -1123,6 +1131,7 @@ mod tests {
             legacy_mcp_path: claude_dir.join(".mcp.json"),
             tmux_conf_path: root.join(".tmux.conf"),
             statusline_path: claude_dir.join(statusline::SETTINGS_FILE_NAME),
+            budget_snapshot_path: root.join("data").join("rate-limits.json"),
         }
     }
 
@@ -1187,14 +1196,23 @@ mod tests {
         let statusline_json: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&paths.statusline_path).unwrap()).unwrap();
         assert_eq!(statusline_json["statusLine"]["type"], "command");
-        let expected_snapshot = data_dir.path().join("rate-limits.json");
         let expected_command = format!(
             "dispatch statusline --snapshot '{}'",
-            expected_snapshot.display()
+            paths.budget_snapshot_path.display()
         );
         assert_eq!(
             statusline_json["statusLine"]["command"], expected_command,
-            "command must point at the snapshot path derived from data_dir"
+            "command must point at the machine-wide snapshot location, which is \
+             independent of the database's own directory"
+        );
+        assert!(
+            !statusline_json["statusLine"]["command"]
+                .as_str()
+                .unwrap()
+                .contains(&data_dir.path().display().to_string()),
+            "the open database's directory must not reach the settings file \
+             (docs/specs/dispatch.allium: \
+             SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase)"
         );
         assert!(
             !paths.claude_dir.join("settings.json").exists(),

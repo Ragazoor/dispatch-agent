@@ -36,3 +36,32 @@ pub fn default_db_path() -> std::path::PathBuf {
         });
     base.join("dispatch").join("tasks.db")
 }
+
+/// The one budget-snapshot location on this machine.
+///
+/// Takes no database argument, deliberately. The Claude subscription windows it
+/// holds are account-global, so publisher and reader must agree on a single
+/// location that does not vary with whichever task database the current process
+/// happens to have open — see `docs/specs/dispatch.allium`:
+/// `SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase`.
+pub(crate) fn budget_snapshot_path() -> std::path::PathBuf {
+    default_db_path().with_file_name(crate::setup::statusline::RATE_LIMITS_FILE_NAME)
+}
+
+#[cfg(test)]
+mod budget_snapshot_path_tests {
+    /// The snapshot sits beside the default database, under its own fixed name.
+    /// The file name is spelled out rather than imported from the constant the
+    /// code reads: an expectation derived from the code under test asserts
+    /// nothing.
+    #[test]
+    fn sits_beside_the_default_database() {
+        let path = super::budget_snapshot_path();
+
+        assert_eq!(
+            path.file_name(),
+            Some(std::ffi::OsStr::new("rate-limits.json"))
+        );
+        assert_eq!(path.parent(), super::default_db_path().parent());
+    }
+}

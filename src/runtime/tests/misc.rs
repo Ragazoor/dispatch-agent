@@ -972,4 +972,28 @@ mod bootstrap {
             "bootstrap must wire up a feed runner for the runtime to own"
         );
     }
+
+    /// The budget snapshot location is account-global and fixed per machine, so
+    /// booting against a throwaway database must not move it into that
+    /// database's directory (docs/specs/dispatch.allium:
+    /// SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase). Deriving it from
+    /// the open database is what let a single `cargo test` run silently
+    /// repoint every later Claude session at a temp directory.
+    #[tokio::test]
+    async fn budget_snapshot_path_ignores_the_open_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("bootstrap.db");
+
+        let bootstrap = TuiRuntime::bootstrap(&db_path, 0)
+            .await
+            .expect("bootstrap must succeed against a fresh, writable db path");
+
+        assert!(
+            !bootstrap
+                .runtime
+                .budget_snapshot_path
+                .starts_with(dir.path()),
+            "the snapshot location must not follow the throwaway database"
+        );
+    }
 }

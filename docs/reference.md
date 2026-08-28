@@ -396,6 +396,9 @@ The dispatch plugin may not be installed. Run `dispatch setup` to install it.
 **Budget badge not showing in the top row**
 The status line isn't wired up, or no rate-limit payload has arrived yet. Run `dispatch setup` to (re)write `~/.claude/dispatch-statusline.json`, then start (or restart) a dispatch-spawned Claude session — the badge appears once its statusLine hook has fired at least once. Chain drift (an out-of-band edit to `~/.claude/settings.json`'s `statusLine.command` after setup ran) and schema drift (an unrecognised hook payload shape) are documented here rather than enforced by a `doctor` check; re-running `dispatch setup` re-discovers the current chain.
 
+**Budget badge shows but is dimmed and never updates**
+The badge is reading a snapshot nothing writes any more. Check where the decorator was told to publish — `grep snapshot ~/.claude/dispatch-statusline.json` — and compare it against the path the TUI reads (`<data_dir>/rate-limits.json`). If they differ, re-run `dispatch setup`. Note that **already-running sessions keep publishing to the old location**: Claude Code reads `statusLine.command` once at session start, so a corrected settings file only takes effect for sessions started afterwards. Until the old sessions exit, the readout stays stale. Older dispatch versions could get into this state on their own, by deriving the location from whichever database the process had open — see `docs/specs/dispatch.allium`: `SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase`.
+
 **Agent window disappeared but task is still Running**
 Press `Space` on the Running task to reopen a tmux window in the existing worktree and resume the agent.
 
