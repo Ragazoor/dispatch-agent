@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::mcp::identity::CallerIdentity;
 use crate::mcp::McpState;
-use crate::models::TaskStatus;
+use crate::models::{EpicId, Task, TaskId, TaskStatus};
 use crate::service::{
     CreateTaskParams, ListTasksFilter, ServiceError, UpdateTaskParams, UrlUpdate,
 };
@@ -169,6 +169,45 @@ pub(crate) async fn handle_get_task(
     }
 }
 
+/// Read each unique plan file once to avoid repeated I/O per task.
+async fn build_plan_goal_cache(tasks: &[Task]) -> HashMap<String, String> {
+    let mut cache = HashMap::new();
+    for t in tasks {
+        if let Some(path) = t.plan_path.as_deref() {
+            if !cache.contains_key(path) {
+                let goal = super::plan_goal(path).await.unwrap_or_default();
+                cache.insert(path.to_owned(), goal);
+            }
+        }
+    }
+    cache
+}
+
+/// Resolve the epic/exclusion scope for `list_tasks`. A task caller inherits
+/// its own epic as the default scope, unless the request explicitly names an
+/// `epic_id` or `repo_paths` — an explicit scope always overrides inheritance.
+/// A session caller has no inherited scope.
+async fn resolve_list_scope(
+    state: &McpState,
+    id: &Option<Value>,
+    identity: &CallerIdentity,
+    parsed: &ListTasksArgs,
+) -> Result<(Option<EpicId>, Option<TaskId>), JsonRpcResponse> {
+    match identity {
+        CallerIdentity::Task(caller_id) => {
+            let caller = fetch_caller_task(&*state.db, id, *caller_id).await?;
+            let has_explicit_scope = parsed.epic_id.is_some() || parsed.repo_paths.is_some();
+            let epic = if has_explicit_scope {
+                None
+            } else {
+                caller.epic_id
+            };
+            Ok((epic, Some(caller.id)))
+        }
+        CallerIdentity::Session => Ok((None, None)),
+    }
+}
+
 pub(crate) async fn handle_list_tasks(
     state: &McpState,
     id: Option<Value>,
@@ -181,28 +220,16 @@ pub(crate) async fn handle_list_tasks(
     };
     tracing::info!(status = ?parsed.status, identity = ?identity, "MCP list_tasks");
 
+    let (derived_epic_id, exclude_task_id) =
+        match resolve_list_scope(state, &id, identity, &parsed).await {
+            Ok(scope) => scope,
+            Err(resp) => return resp,
+        };
+
     let status_filter: Option<Vec<TaskStatus>> = parsed.status.map(StatusFilter::into_vec);
-
-    let (derived_epic_id, exclude_task_id) = match identity {
-        CallerIdentity::Task(caller_id) => {
-            let caller = match fetch_caller_task(&*state.db, &id, *caller_id).await {
-                Ok(t) => t,
-                Err(resp) => return resp,
-            };
-            let has_explicit_scope = parsed.epic_id.is_some() || parsed.repo_paths.is_some();
-            let epic = if has_explicit_scope {
-                None
-            } else {
-                caller.epic_id
-            };
-            (epic, Some(caller.id))
-        }
-        CallerIdentity::Session => (None, None),
-    };
-
     let epic_id = parsed.epic_id.or(derived_epic_id);
 
-    match state
+    let filtered = match state
         .task_svc
         .list_tasks(ListTasksFilter {
             statuses: status_filter,
@@ -212,44 +239,34 @@ pub(crate) async fn handle_list_tasks(
         })
         .await
     {
-        Ok(filtered) => {
-            if filtered.is_empty() {
-                return JsonRpcResponse::ok(
-                    id,
-                    json!({"content": [{"type": "text", "text": "No tasks found"}]}),
-                );
-            }
-            let epic_titles = super::build_epic_titles(state).await;
-            // Read each unique plan file once to avoid repeated I/O per task.
-            let plan_goals: HashMap<String, String> = {
-                let mut cache = HashMap::new();
-                for t in &filtered {
-                    if let Some(path) = t.plan_path.as_deref() {
-                        if !cache.contains_key(path) {
-                            let goal = super::plan_goal(path).await.unwrap_or_default();
-                            cache.insert(path.to_owned(), goal);
-                        }
-                    }
-                }
-                cache
-            };
-            let lines: Vec<String> = filtered
-                .iter()
-                .map(|t| {
-                    let goal = match t.plan_path.as_deref().and_then(|p| plan_goals.get(p)) {
-                        Some(g) if !g.is_empty() => g.clone(),
-                        _ => super::description_preview(&t.description),
-                    };
-                    super::format_task_line(t, &epic_titles, &goal)
-                })
-                .collect();
-            JsonRpcResponse::ok(
-                id,
-                json!({"content": [{"type": "text", "text": lines.join("\n")}]}),
-            )
-        }
-        Err(e) => service_err_to_response(id, e),
+        Ok(filtered) => filtered,
+        Err(e) => return service_err_to_response(id, e),
+    };
+
+    if filtered.is_empty() {
+        return JsonRpcResponse::ok(
+            id,
+            json!({"content": [{"type": "text", "text": "No tasks found"}]}),
+        );
     }
+    let (epic_titles, plan_goals) = tokio::join!(
+        super::build_epic_titles(state),
+        build_plan_goal_cache(&filtered)
+    );
+    let lines: Vec<String> = filtered
+        .iter()
+        .map(|t| {
+            let goal = match t.plan_path.as_deref().and_then(|p| plan_goals.get(p)) {
+                Some(g) if !g.is_empty() => g.clone(),
+                _ => super::description_preview(&t.description),
+            };
+            super::format_task_line(t, &epic_titles, &goal)
+        })
+        .collect();
+    JsonRpcResponse::ok(
+        id,
+        json!({"content": [{"type": "text", "text": lines.join("\n")}]}),
+    )
 }
 
 // ---------------------------------------------------------------------------

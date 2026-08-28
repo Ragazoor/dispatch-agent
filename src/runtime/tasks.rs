@@ -625,6 +625,43 @@ impl TuiRuntime {
         })
     }
 
+    /// Body of [`Self::spawn_refresh_epic`]. Falls back to a full board refresh
+    /// if the epic is gone.
+    async fn refresh_epic_into(
+        db: Arc<dyn crate::db::TaskReadStore>,
+        tx: tokio::sync::mpsc::UnboundedSender<Message>,
+        epic_id: crate::models::EpicId,
+    ) {
+        let epic = match db.get_epic(epic_id).await {
+            Ok(Some(epic)) => epic,
+            Ok(None) => return TuiRuntime::do_full_board_refresh(db, tx).await,
+            Err(e) => {
+                let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
+                    TuiRuntime::db_error("refreshing epic", e),
+                )));
+                return;
+            }
+        };
+        let _ = tx.send(Message::Epic(crate::tui::messages::EpicMessage::Updated(
+            epic,
+        )));
+
+        let tasks = match db.list_tasks_for_epic(epic_id).await {
+            Ok(tasks) => tasks,
+            Err(e) => {
+                let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
+                    TuiRuntime::db_error("listing epic tasks", e),
+                )));
+                return;
+            }
+        };
+        for task in tasks {
+            let _ = tx.send(Message::Task(crate::tui::messages::TaskMessage::Updated(
+                Box::new(task),
+            )));
+        }
+    }
+
     /// Spawn an epic + its tasks reload. Falls back to full refresh if epic is gone.
     pub(super) fn spawn_refresh_epic(
         &self,
@@ -632,40 +669,7 @@ impl TuiRuntime {
     ) -> tokio::task::JoinHandle<()> {
         let db = Arc::clone(&self.database);
         let tx = self.msg_tx.clone();
-        tokio::spawn(async move {
-            match db.get_epic(epic_id).await {
-                Ok(Some(epic)) => {
-                    let _ = tx.send(Message::Epic(crate::tui::messages::EpicMessage::Updated(
-                        epic,
-                    )));
-                    match db.list_tasks_for_epic(epic_id).await {
-                        Ok(tasks) => {
-                            for task in tasks {
-                                let _ = tx.send(Message::Task(
-                                    crate::tui::messages::TaskMessage::Updated(Box::new(task)),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Message::System(
-                                crate::tui::messages::SystemMessage::Error(TuiRuntime::db_error(
-                                    "listing epic tasks",
-                                    e,
-                                )),
-                            ));
-                        }
-                    }
-                }
-                Ok(None) => {
-                    TuiRuntime::do_full_board_refresh(db, tx).await;
-                }
-                Err(e) => {
-                    let _ = tx.send(Message::System(crate::tui::messages::SystemMessage::Error(
-                        TuiRuntime::db_error("refreshing epic", e),
-                    )));
-                }
-            }
-        })
+        tokio::spawn(TuiRuntime::refresh_epic_into(db, tx, epic_id))
     }
 
     /// Full board refresh on the command-queue path, i.e. inline on the render

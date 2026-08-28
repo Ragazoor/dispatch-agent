@@ -536,6 +536,115 @@ tell the user the task still needs closing by hand.",
 // MCP handler
 // ---------------------------------------------------------------------------
 
+/// The `"initialize"` arm of [`handle_mcp`]. Per spec: if the client offers a
+/// version we support, echo it back to use that version for the session;
+/// otherwise reply with our latest supported version (the client may then
+/// abort).
+fn negotiate_initialize(id: Option<Value>, params: Option<Value>) -> JsonRpcResponse {
+    let client_version = params
+        .as_ref()
+        .and_then(|p| p.get("protocolVersion"))
+        .and_then(Value::as_str);
+    let negotiated = match client_version {
+        Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v,
+        _ => SERVER_PROTOCOL_VERSION,
+    };
+    JsonRpcResponse::ok(
+        id,
+        json!({
+            "protocolVersion": negotiated,
+            "capabilities": {
+                "tools": {}
+            },
+            "serverInfo": {
+                "name": "dispatch",
+                "version": "0.1.0"
+            }
+        }),
+    )
+}
+
+/// The `"tools/call"` arm of [`handle_mcp`]: resolves caller identity,
+/// dispatches the tool, and records trajectory/usage as a side effect.
+async fn handle_tools_call(
+    state: &McpState,
+    id: Option<Value>,
+    identity_result: &Result<CallerIdentity, IdentityError>,
+    params: Option<Value>,
+) -> JsonRpcResponse {
+    let identity = match identity_result.as_ref() {
+        Ok(i) => i,
+        Err(e) => return JsonRpcResponse::err(id, INVALID_REQUEST, e.to_string()),
+    };
+
+    let params = params.unwrap_or(Value::Null);
+    let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
+    let args = params.get("arguments").cloned().unwrap_or(Value::Null);
+
+    let start = std::time::Instant::now();
+    let start_utc = Utc::now();
+    let resp = dispatch_tool(state, id, identity, tool_name, args.clone()).await;
+
+    if let CallerIdentity::Task(task_id) = identity {
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let result_value = match &resp.error {
+            Some(err) => serde_json::json!({"error": err.message}),
+            None => resp.result.clone().unwrap_or(Value::Null),
+        };
+        let entry = trajectory::TrajectoryEntry {
+            timestamp: start_utc,
+            task_id: task_id.0,
+            method: tool_name.to_string(),
+            args,
+            result: result_value,
+            duration_ms,
+        };
+        let data_dir = state.data_dir.clone();
+        let bg_done = state.test_hooks.bg_write_done_tx.clone();
+        tokio::spawn(async move {
+            trajectory::append_entry(&data_dir, &entry).await;
+            if let Some(tx) = &bg_done {
+                let _ = tx.send(crate::mcp::BackgroundWrite::Trajectory);
+            }
+        });
+    }
+
+    // Fire-and-forget usage recording. Skipped when no tool name was
+    // resolved (e.g. malformed request) to avoid recording empty rows.
+    if !tool_name.is_empty() {
+        let actor = match identity {
+            CallerIdentity::Task(_) => crate::models::UsageActor::Agent,
+            CallerIdentity::Session => crate::models::UsageActor::Human,
+        };
+        let db = Arc::clone(&state.db);
+        let tool = tool_name.to_string();
+        let bg_done = state.test_hooks.bg_write_done_tx.clone();
+        tokio::spawn(async move {
+            crate::service::record_usage_event_logged(
+                db.as_ref(),
+                &crate::models::UsageEvent {
+                    category: crate::models::UsageCategory::McpTool,
+                    action: tool,
+                    detail: None,
+                    actor,
+                },
+            )
+            .await;
+            if let Some(tx) = &bg_done {
+                let _ = tx.send(crate::mcp::BackgroundWrite::Usage);
+            }
+        });
+    }
+
+    // Per MCP spec, tool-execution failures belong in `result` with
+    // `isError: true` — not as a JSON-RPC protocol error. Re-wrap any
+    // error returned by the tool dispatch path.
+    match resp.error {
+        Some(err) => tool_error(resp.id, err.message),
+        None => resp,
+    }
+}
+
 pub async fn handle_mcp(
     State(state): State<Arc<McpState>>,
     Extension(identity_result): Extension<Result<CallerIdentity, IdentityError>>,
@@ -553,110 +662,10 @@ pub async fn handle_mcp(
 
     let id = req.id;
     let response = match req.method.as_str() {
-        "initialize" => {
-            // Per spec: if the client offers a version we support, echo it
-            // back to use that version for the session; otherwise reply with
-            // our latest supported version (the client may then abort).
-            let client_version = req
-                .params
-                .as_ref()
-                .and_then(|p| p.get("protocolVersion"))
-                .and_then(Value::as_str);
-            let negotiated = match client_version {
-                Some(v) if SUPPORTED_PROTOCOL_VERSIONS.contains(&v) => v,
-                _ => SERVER_PROTOCOL_VERSION,
-            };
-            JsonRpcResponse::ok(
-                id,
-                json!({
-                    "protocolVersion": negotiated,
-                    "capabilities": {
-                        "tools": {}
-                    },
-                    "serverInfo": {
-                        "name": "dispatch",
-                        "version": "0.1.0"
-                    }
-                }),
-            )
-        }
-
+        "initialize" => negotiate_initialize(id, req.params),
         "ping" => JsonRpcResponse::ok(id, json!({})),
-
         "tools/list" => JsonRpcResponse::ok(id, tool_definitions()),
-
-        "tools/call" => match identity_result.as_ref() {
-            Err(e) => JsonRpcResponse::err(id, INVALID_REQUEST, e.to_string()),
-            Ok(identity) => {
-                let params = req.params.unwrap_or(Value::Null);
-                let tool_name = params.get("name").and_then(Value::as_str).unwrap_or("");
-                let args = params.get("arguments").cloned().unwrap_or(Value::Null);
-
-                let start = std::time::Instant::now();
-                let start_utc = Utc::now();
-                let resp = dispatch_tool(&state, id, identity, tool_name, args.clone()).await;
-
-                if let CallerIdentity::Task(task_id) = identity {
-                    let duration_ms = start.elapsed().as_millis() as u64;
-                    let result_value = match &resp.error {
-                        Some(err) => serde_json::json!({"error": err.message}),
-                        None => resp.result.clone().unwrap_or(Value::Null),
-                    };
-                    let entry = trajectory::TrajectoryEntry {
-                        timestamp: start_utc,
-                        task_id: task_id.0,
-                        method: tool_name.to_string(),
-                        args,
-                        result: result_value,
-                        duration_ms,
-                    };
-                    let data_dir = state.data_dir.clone();
-                    let bg_done = state.test_hooks.bg_write_done_tx.clone();
-                    tokio::spawn(async move {
-                        trajectory::append_entry(&data_dir, &entry).await;
-                        if let Some(tx) = &bg_done {
-                            let _ = tx.send(crate::mcp::BackgroundWrite::Trajectory);
-                        }
-                    });
-                }
-
-                // Fire-and-forget usage recording. Skipped when no tool name was
-                // resolved (e.g. malformed request) to avoid recording empty rows.
-                if !tool_name.is_empty() {
-                    let actor = match identity {
-                        CallerIdentity::Task(_) => crate::models::UsageActor::Agent,
-                        CallerIdentity::Session => crate::models::UsageActor::Human,
-                    };
-                    let db = Arc::clone(&state.db);
-                    let tool = tool_name.to_string();
-                    let bg_done = state.test_hooks.bg_write_done_tx.clone();
-                    tokio::spawn(async move {
-                        crate::service::record_usage_event_logged(
-                            db.as_ref(),
-                            &crate::models::UsageEvent {
-                                category: crate::models::UsageCategory::McpTool,
-                                action: tool,
-                                detail: None,
-                                actor,
-                            },
-                        )
-                        .await;
-                        if let Some(tx) = &bg_done {
-                            let _ = tx.send(crate::mcp::BackgroundWrite::Usage);
-                        }
-                    });
-                }
-
-                // Per MCP spec, tool-execution failures belong in `result` with
-                // `isError: true` — not as a JSON-RPC protocol error. Re-wrap any
-                // error returned by the tool dispatch path.
-                match resp.error {
-                    Some(err) => tool_error(resp.id, err.message),
-                    None => resp,
-                }
-            }
-        },
-
+        "tools/call" => handle_tools_call(&state, id, &identity_result, req.params).await,
         other => JsonRpcResponse::err(id, METHOD_NOT_FOUND, format!("Method not found: {other}")),
     };
 
