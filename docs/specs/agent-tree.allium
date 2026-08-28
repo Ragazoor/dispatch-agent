@@ -1077,13 +1077,30 @@ surface AgentTreeCompanionPane {
 
         -- Keys handled by the renderer inside the pane itself, unprefixed,
         -- while the pane has tmux focus. Every one but the exit key acts on
-        -- the view only. Each cursor and expansion action carries a vim motion
-        -- and an arrow key bound to the same action; the two are exact aliases,
-        -- so nothing distinguishes which one the user pressed. Toggle is the
-        -- exception, keyed by Space and Enter.
+        -- the view only. Each one-step cursor and expansion action carries a
+        -- vim motion and an arrow key bound to the same action; the two are
+        -- exact aliases, so nothing distinguishes which one the user pressed.
+        -- Toggle is the exception, keyed by Space and Enter, and so are the
+        -- four jump motions below, which are vim-only: Home/End/PageUp/PageDown
+        -- are deliberately left unbound.
         ExitAgentTreeRenderer(user, pane)              -- q, Ctrl-C
         MoveAgentTreeCursorUp(user, pane)              -- k, Up
         MoveAgentTreeCursorDown(user, pane)            -- j, Down
+
+        -- The four jump motions all move the cursor within the pane's list of
+        -- *visible* rows — the rows a collapsed directory hides are skipped, so
+        -- a jump never lands the cursor on something the user cannot see, and
+        -- never opens or closes a directory to get there. All four clamp: a
+        -- jump that would run past either end stops at that end, and on an
+        -- empty tree every one of them is a no-op.
+        JumpAgentTreeCursorToTop(user, pane)           -- gg
+        JumpAgentTreeCursorToBottom(user, pane)        -- G
+
+        -- Half a page is half the pane's current visible height, so the
+        -- distance tracks how tall the pane has been dragged. A pane too short
+        -- to show two rows still moves the cursor by one, never zero.
+        MoveAgentTreeCursorHalfPageDown(user, pane)    -- Ctrl-D
+        MoveAgentTreeCursorHalfPageUp(user, pane)      -- Ctrl-U
 
         -- Collapse doubles as "step out": when the selected node is already
         -- closed (or is a file), the cursor moves to its parent instead.
@@ -1100,6 +1117,22 @@ surface AgentTreeCompanionPane {
         -- opens. Toggle is therefore directory-only in the same way expand is.
         ToggleSelectedAgentTreeNode(user, pane)        -- Space, Enter (directory)
         OpenSelectedAgentTreeFile(user, pane, node)    -- Space, Enter (file)
+
+    @guarantee AgentTreeGgChordNeverExpires
+        -- `gg` is a two-key chord, and unlike the board's `gg` (core.allium's
+        -- config.gg_chord_timeout) it has no time limit. A lone `g` arms the
+        -- chord and does nothing else; the chord completes only on a second
+        -- `g`, however long the user takes to press it. Any other key
+        -- disarms the chord and is then handled normally, exactly as if the
+        -- `g` had never been pressed — so a lone `g` is never observable as
+        -- anything but a swallowed keystroke.
+        --
+        -- The board needs a timeout because its idle tick has to reclaim a
+        -- stale chord; this pane does not, because `g` is bound to nothing
+        -- else here. Nothing is waiting on the chord to expire, so nothing has
+        -- to measure how long it has been pending. That keeps the renderer's
+        -- key handling a pure function of the keys pressed, with no clock in
+        -- it.
 
     @guarantee ReadOnlyObservation
         -- The pane only reads the task's event log. It never writes to the

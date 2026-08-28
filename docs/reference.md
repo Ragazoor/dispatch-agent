@@ -83,6 +83,9 @@ pane's own view only, except `Space`/`Enter` on a file, which opens an editor.
 | `k` / `↑` | Move the cursor up |
 | `h` / `←` | Collapse the selected directory, or move to its parent |
 | `l` / `→` | Expand the selected directory (a no-op on a file) |
+| `gg` | Jump to the first visible row. A two-key chord with **no** timeout, unlike the board's `gg` — a lone `g` waits as long as you like for the second one, and any other key cancels it and then does its own job |
+| `G` | Jump to the last visible row |
+| `Ctrl+D` / `Ctrl+U` | Move the cursor half a pane-height down / up |
 | `Space` / `Enter` | On a directory: toggle it open/closed. On a file: open it in `$VISUAL`, else `$EDITOR`, else `vi`, in a full-width pane below taking 60% of the window height. Focus stays in the tree, so you can keep browsing; the next file you open **replaces** that pane, killing whatever was running in it |
 | `q` / `Ctrl+C` | Close the pane |
 

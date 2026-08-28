@@ -123,6 +123,16 @@ pub struct RenderState {
     /// pane that can fail visibly to the user — see
     /// `AgentTreeEditorOpenFailureIsVisible` in docs/specs/agent-tree.allium.
     pub notice: Option<String>,
+    /// Whether a lone `g` is waiting for the second half of the `gg` chord.
+    /// Unlike the board's chord this one carries no deadline, so there is no
+    /// timestamp beside it — see `AgentTreeGgChordNeverExpires` in
+    /// docs/specs/agent-tree.allium for why a clock would buy nothing here.
+    pending_g: bool,
+    /// Rows the tree had to draw into at the last render — the pane's height
+    /// less its two borders. Recorded by [`render`] because the half-page
+    /// motions are defined against the *visible* height, which only the
+    /// renderer knows, and `handle_key` never sees a `Rect`.
+    viewport_rows: usize,
 }
 
 impl RenderState {
@@ -131,7 +141,17 @@ impl RenderState {
             tree_state: TreeState::default(),
             auto_expanded: HashSet::new(),
             notice: None,
+            pending_g: false,
+            viewport_rows: 0,
         }
+    }
+
+    /// How far `Ctrl-D`/`Ctrl-U` move: half the last-rendered visible height,
+    /// floored at one row. A pane too short to show two rows would otherwise
+    /// halve to zero and turn both motions into no-ops, which reads as a
+    /// broken key rather than a small pane.
+    fn half_page(&self) -> usize {
+        (self.viewport_rows / 2).max(1)
     }
 
     /// Auto-open every directory with a touched descendant, exactly once
@@ -166,7 +186,11 @@ impl Default for RenderState {
 }
 
 /// Render subtask 3's tree, with `[Modified]`/`[Read]` badges, into `area`.
-/// Pure — used by both the real polling loop and snapshot tests.
+/// Does no I/O of its own — used by both the real polling loop and snapshot
+/// tests. It is not, however, read-only in `state`: besides the widget's own
+/// cursor bookkeeping it records `viewport_rows`, which the half-page motions
+/// then read. A `handle_key` that has never been preceded by a `render` sees
+/// the fallback height, so tests must draw before they press.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -175,6 +199,10 @@ pub fn render(
     title: &str,
 ) {
     let items = build_tree_items(root);
+    // The half-page motions are defined against the rows the user can actually
+    // see, and this is the only place that number exists. Recorded on every
+    // draw, so resizing the pane resizes the jump with no further plumbing.
+    state.viewport_rows = usize::from(area.height.saturating_sub(2));
     let mut block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "));
@@ -277,8 +305,9 @@ fn selected_is_directory(root: &TreeNode, selected: &[String]) -> bool {
 }
 
 /// Apply one key press to the view state — see `docs/specs/agent-tree.allium`'s
-/// `AgentTreeCompanionPane` surface for the bindings. Cursor and expansion keys
-/// each have a vim motion and an arrow key bound to the same action.
+/// `AgentTreeCompanionPane` surface for the bindings. One-step cursor and
+/// expansion keys each have a vim motion and an arrow key bound to the same
+/// action; the four jump motions (`gg`, `G`, `Ctrl-D`, `Ctrl-U`) are vim-only.
 ///
 /// Space and Enter dispatch on the selected node's kind — a directory toggles, a
 /// file opens — and expand is directory-only, which is why `root` is a
@@ -294,6 +323,25 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
     // ClearAgentTreeErrorNotice. Cleared before dispatching, so a key that sets
     // a fresh one wins.
     state.notice = None;
+
+    // The `gg` chord, resolved before anything else so every other arm below
+    // can assume no chord is in flight. Taking the flag disarms it
+    // unconditionally: a second `g` completes the chord, and any other key
+    // falls through to its own arm having quietly cancelled it. See
+    // AgentTreeGgChordNeverExpires in docs/specs/agent-tree.allium — there is
+    // no deadline, so the only thing that can end a pending chord is the next
+    // key, whenever it comes.
+    let was_pending_g = std::mem::take(&mut state.pending_g);
+    if key.code == KeyCode::Char('g') && !key.modifiers.contains(KeyModifiers::CONTROL) {
+        if was_pending_g {
+            state.tree_state.select_first();
+        } else {
+            state.pending_g = true;
+        }
+        return KeyAction::Continue;
+    }
+
+    let half_page = state.half_page();
     // `TreeState`'s navigation methods return whether anything changed; the
     // loop redraws unconditionally, so the answer is discarded.
     match key.code {
@@ -306,6 +354,25 @@ pub fn handle_key(state: &mut RenderState, root: &TreeNode, key: KeyEvent) -> Ke
         }
         KeyCode::Char('j') | KeyCode::Down => {
             state.tree_state.key_down();
+        }
+        // Jump motions. All four resolve against the identifiers of the last
+        // render — the visible rows — so a collapsed directory's children are
+        // skipped and nothing is expanded to reach a target. `select_relative`
+        // clamps its result to the last visible row for us; `saturating_sub`
+        // clamps the other end. With nothing selected yet they all land on the
+        // first row, matching what `j`/`k` already do from that state.
+        KeyCode::Char('G') => {
+            state.tree_state.select_last();
+        }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state
+                .tree_state
+                .select_relative(|current| current.map_or(0, |c| c.saturating_add(half_page)));
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            state
+                .tree_state
+                .select_relative(|current| current.map_or(0, |c| c.saturating_sub(half_page)));
         }
         KeyCode::Char('h') | KeyCode::Left => {
             state.tree_state.key_left();
@@ -607,10 +674,16 @@ mod tests {
 
     impl KeyRig {
         fn new(jsonl: &str) -> Self {
+            Self::sized(jsonl, 12)
+        }
+
+        /// `height` is the whole pane, borders included, so the visible row
+        /// count the half-page motions divide is `height - 2`.
+        fn sized(jsonl: &str, height: u16) -> Self {
             let tree = build_tree(&root(), jsonl);
             let mut state = RenderState::new();
             state.sync_expansion(&tree);
-            let terminal = Terminal::new(TestBackend::new(50, 12)).expect("terminal");
+            let terminal = Terminal::new(TestBackend::new(50, height)).expect("terminal");
             let mut rig = Self {
                 tree,
                 state,
@@ -631,17 +704,28 @@ mod tests {
         /// Press a key, then redraw as the real loop does — so a following
         /// press sees the identifiers the new view actually rendered.
         fn press(&mut self, code: KeyCode) -> KeyAction {
-            let action = handle_key(
-                &mut self.state,
-                &self.tree,
-                KeyEvent::new(code, KeyModifiers::NONE),
-            );
+            self.press_with(code, KeyModifiers::NONE)
+        }
+
+        /// Press a key with Ctrl held.
+        fn press_ctrl(&mut self, code: KeyCode) -> KeyAction {
+            self.press_with(code, KeyModifiers::CONTROL)
+        }
+
+        fn press_with(&mut self, code: KeyCode, modifiers: KeyModifiers) -> KeyAction {
+            let action = handle_key(&mut self.state, &self.tree, KeyEvent::new(code, modifiers));
             self.draw();
             action
         }
 
         fn selected(&self) -> Vec<String> {
             self.state.tree_state.selected().to_vec()
+        }
+
+        /// The selected node's single name segment, for the flat-file logs the
+        /// jump-motion tests use.
+        fn selected_name(&self) -> String {
+            self.selected().join("/")
         }
 
         fn is_open(&self, path: &[&str]) -> bool {
@@ -893,6 +977,220 @@ mod tests {
         rig.press(KeyCode::Char('j'));
 
         assert!(rig.state.notice.is_none());
+    }
+
+    // ---- Jump motions: gg, G, Ctrl-D, Ctrl-U ------------------------------
+    //
+    // See the AgentTreeCompanionPane surface and the
+    // AgentTreeGgChordNeverExpires guarantee in docs/specs/agent-tree.allium.
+
+    /// `count` top-level files, `f01.rs`..`fNN.rs`. Flat and zero-padded, so
+    /// the flattened view is exactly the files in that order and a landing row
+    /// is nameable without counting directories.
+    fn flat_files_log(count: usize) -> String {
+        (1..=count)
+            .map(|n| event(&format!("/repo/f{n:02}.rs"), "read"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn gg_jumps_to_the_first_visible_node() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        for _ in 0..4 {
+            rig.press(KeyCode::Char('j'));
+        }
+        assert_ne!(
+            rig.selected_name(),
+            "f01.rs",
+            "precondition: moved off row 0"
+        );
+
+        rig.press(KeyCode::Char('g'));
+        assert_eq!(rig.press(KeyCode::Char('g')), KeyAction::Continue);
+        assert_eq!(rig.selected_name(), "f01.rs");
+    }
+
+    #[test]
+    fn a_lone_g_moves_nothing() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        let before = rig.selected();
+
+        assert_eq!(rig.press(KeyCode::Char('g')), KeyAction::Continue);
+        assert_eq!(rig.selected(), before, "a lone g must be swallowed");
+    }
+
+    /// The chord has no clock, so the only thing that can end it is another
+    /// key — and that key must still do its own job.
+    #[test]
+    fn a_key_between_the_two_gs_disarms_the_chord_and_still_acts() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+
+        rig.press(KeyCode::Char('g'));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(rig.selected_name(), "f03.rs", "the j must still move down");
+
+        rig.press(KeyCode::Char('g'));
+        assert_eq!(
+            rig.selected_name(),
+            "f03.rs",
+            "the disarmed chord must not complete on the next lone g"
+        );
+    }
+
+    #[test]
+    fn g_then_a_second_g_after_many_other_keys_needs_a_fresh_pair() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('g'));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+
+        rig.press(KeyCode::Char('g'));
+        rig.press(KeyCode::Char('g'));
+        assert_eq!(rig.selected_name(), "f01.rs");
+    }
+
+    #[test]
+    fn shift_g_jumps_to_the_last_visible_node() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        assert_eq!(rig.press(KeyCode::Char('G')), KeyAction::Continue);
+        assert_eq!(rig.selected_name(), "f06.rs");
+    }
+
+    /// A jump lands on a *visible* row. Collapsing `src` hides `lib.rs`, so
+    /// the last row becomes `src` itself — and the jump must not reopen it.
+    #[test]
+    fn shift_g_skips_rows_a_collapsed_directory_hides() {
+        let jsonl = format!(
+            "{}\n{}",
+            event("/repo/a.rs", "read"),
+            event("/repo/src/lib.rs", "modified")
+        );
+        let mut rig = KeyRig::new(&jsonl);
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('h'));
+        assert!(!rig.is_open(&["src"]), "precondition: src is collapsed");
+
+        rig.press(KeyCode::Char('G'));
+        assert_eq!(rig.selected_name(), "src");
+        assert!(!rig.is_open(&["src"]), "a jump must not expand anything");
+    }
+
+    #[test]
+    fn gg_lands_on_the_first_row_without_expanding_it() {
+        let jsonl = format!(
+            "{}\n{}",
+            event("/repo/src/lib.rs", "modified"),
+            event("/repo/z.rs", "read")
+        );
+        let mut rig = KeyRig::new(&jsonl);
+        rig.press(KeyCode::Char('j'));
+        rig.press(KeyCode::Char('h'));
+        assert!(!rig.is_open(&["src"]), "precondition: src is collapsed");
+
+        rig.press(KeyCode::Char('G'));
+        rig.press(KeyCode::Char('g'));
+        rig.press(KeyCode::Char('g'));
+        assert_eq!(rig.selected_name(), "src");
+        assert!(!rig.is_open(&["src"]), "a jump must not expand anything");
+    }
+
+    /// A 12-row pane has 10 visible rows, so half a page is 5. The leading `j`
+    /// establishes a selection: with nothing selected a half-page motion just
+    /// selects the first row, exactly as `j`/`k` do.
+    #[test]
+    fn ctrl_d_moves_the_cursor_half_a_page_down() {
+        let mut rig = KeyRig::new(&flat_files_log(20));
+        rig.press(KeyCode::Char('j'));
+        assert_eq!(rig.press_ctrl(KeyCode::Char('d')), KeyAction::Continue);
+        assert_eq!(rig.selected_name(), "f06.rs");
+        rig.press_ctrl(KeyCode::Char('d'));
+        assert_eq!(rig.selected_name(), "f11.rs");
+    }
+
+    #[test]
+    fn ctrl_u_moves_the_cursor_half_a_page_up() {
+        let mut rig = KeyRig::new(&flat_files_log(20));
+        rig.press(KeyCode::Char('G'));
+        assert_eq!(rig.selected_name(), "f20.rs");
+
+        assert_eq!(rig.press_ctrl(KeyCode::Char('u')), KeyAction::Continue);
+        assert_eq!(rig.selected_name(), "f15.rs");
+    }
+
+    #[test]
+    fn ctrl_d_clamps_at_the_last_visible_node() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        rig.press(KeyCode::Char('j'));
+        rig.press_ctrl(KeyCode::Char('d'));
+        rig.press_ctrl(KeyCode::Char('d'));
+        assert_eq!(rig.selected_name(), "f06.rs");
+    }
+
+    #[test]
+    fn ctrl_u_clamps_at_the_first_visible_node() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        rig.press(KeyCode::Char('j'));
+        rig.press_ctrl(KeyCode::Char('u'));
+        assert_eq!(rig.selected_name(), "f01.rs");
+    }
+
+    /// The distance is half the pane's *current* height, not a constant: a
+    /// 20-row pane (18 visible) jumps 9, where the default 12-row one jumps 5.
+    #[test]
+    fn half_a_page_scales_with_the_pane_height() {
+        let mut tall = KeyRig::sized(&flat_files_log(20), 20);
+        tall.press(KeyCode::Char('j'));
+        tall.press_ctrl(KeyCode::Char('d'));
+        assert_eq!(tall.selected_name(), "f10.rs");
+
+        let mut short = KeyRig::sized(&flat_files_log(20), 8);
+        short.press(KeyCode::Char('j'));
+        short.press_ctrl(KeyCode::Char('d'));
+        assert_eq!(short.selected_name(), "f04.rs");
+    }
+
+    /// A pane with a single visible row halves to zero. Zero is not a motion,
+    /// so the floor is one row.
+    #[test]
+    fn a_pane_too_short_to_halve_still_moves_one_row() {
+        let mut rig = KeyRig::sized(&flat_files_log(6), 3);
+        rig.press(KeyCode::Char('j'));
+        rig.press_ctrl(KeyCode::Char('d'));
+        assert_eq!(rig.selected_name(), "f02.rs");
+        rig.press_ctrl(KeyCode::Char('u'));
+        assert_eq!(rig.selected_name(), "f01.rs");
+    }
+
+    #[test]
+    fn jump_motions_are_no_ops_on_an_empty_tree() {
+        for keys in [vec!['g', 'g'], vec!['G']] {
+            let mut rig = KeyRig::new("");
+            for key in keys {
+                assert_eq!(rig.press(KeyCode::Char(key)), KeyAction::Continue);
+            }
+            assert!(rig.selected().is_empty());
+        }
+
+        let mut rig = KeyRig::new("");
+        assert_eq!(rig.press_ctrl(KeyCode::Char('d')), KeyAction::Continue);
+        assert_eq!(rig.press_ctrl(KeyCode::Char('u')), KeyAction::Continue);
+        assert!(rig.selected().is_empty());
+    }
+
+    /// `q` still exits with a chord armed — disarming must not swallow the key
+    /// that did the disarming.
+    #[test]
+    fn q_after_a_lone_g_still_exits() {
+        let mut rig = KeyRig::new(&flat_files_log(6));
+        rig.press(KeyCode::Char('g'));
+        assert_eq!(rig.press(KeyCode::Char('q')), KeyAction::Exit);
     }
 
     #[test]
