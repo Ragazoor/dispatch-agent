@@ -1,4 +1,4 @@
-//! Domain model. PROBE-MARKER-3
+//! Domain model.
 //!
 //! Types are split per concern into submodules and re-exported here, so
 //! external code continues to use flat paths (`models::Task`, `models::Epic`,
