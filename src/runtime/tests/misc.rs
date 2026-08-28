@@ -205,6 +205,59 @@ mod load_init_helpers {
     }
 
     #[tokio::test]
+    async fn load_repo_filter_loads_paths_and_mode() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.set_setting_string(
+            "repo_filter",
+            &serde_json::to_string(&vec!["/repo/a".to_string(), "/repo/b".to_string()]).unwrap(),
+        )
+        .await
+        .unwrap();
+        db.set_setting_string("repo_filter_mode", RepoFilterMode::Exclude.as_str())
+            .await
+            .unwrap();
+        let mut app = empty_app();
+
+        load_repo_filter(&db, &mut app).await;
+
+        assert_eq!(
+            app.repo_filter(),
+            &["/repo/a".to_string(), "/repo/b".to_string()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+        );
+        assert_eq!(app.repo_filter_mode(), RepoFilterMode::Exclude);
+    }
+
+    #[tokio::test]
+    async fn load_repo_filter_leaves_defaults_when_nothing_saved() {
+        let db = Database::open_in_memory().await.unwrap();
+        let mut app = empty_app();
+
+        load_repo_filter(&db, &mut app).await;
+
+        assert!(app.repo_filter().is_empty());
+        assert_eq!(app.repo_filter_mode(), RepoFilterMode::Include);
+    }
+
+    #[tokio::test]
+    async fn load_repo_filter_ignores_an_unparseable_saved_mode() {
+        let db = Database::open_in_memory().await.unwrap();
+        db.set_setting_string("repo_filter_mode", "bogus")
+            .await
+            .unwrap();
+        let mut app = empty_app();
+
+        load_repo_filter(&db, &mut app).await;
+
+        assert_eq!(
+            app.repo_filter_mode(),
+            RepoFilterMode::Include,
+            "an unparseable saved mode must leave the default in place"
+        );
+    }
+
+    #[tokio::test]
     async fn load_filter_presets_returns_none_on_success() {
         let db = Database::open_in_memory().await.unwrap();
         let mut app = empty_app();
@@ -846,6 +899,76 @@ mod repo_sync {
         assert!(
             status.contains("no such repo"),
             "the reason must reach the status line, got: {status}"
+        );
+    }
+}
+
+mod invalidate_feed_cache {
+    use super::*;
+
+    /// A live receiver observes the invalidate signal.
+    #[tokio::test]
+    async fn notifies_the_feed_runner_of_a_change() {
+        let (rt, _app) = test_runtime().await;
+        let mut watch_rx = rt
+            .feed_invalidate_tx
+            .as_ref()
+            .expect("make_runtime always wires up a live feed runner")
+            .subscribe();
+
+        rt.invalidate_feed_cache();
+
+        tokio::time::timeout(TEST_TIMEOUT, watch_rx.changed())
+            .await
+            .expect("invalidate_feed_cache must notify the feed runner within the timeout")
+            .expect("the sender must still be alive");
+    }
+
+    /// Best-effort: no live receiver (e.g. the feed runner was never
+    /// started) must not panic.
+    #[tokio::test]
+    async fn is_a_noop_without_a_receiver() {
+        let (mut rt, _app) = test_runtime().await;
+        rt.feed_invalidate_tx = None;
+
+        rt.invalidate_feed_cache();
+    }
+}
+
+mod bootstrap {
+    use super::*;
+
+    /// The happy path: opens a real (temp-file-backed) database, spawns the
+    /// MCP server and feed runner in the background, and hydrates the
+    /// returned `App`/`TuiRuntime` from persisted settings. Binds port 0 so
+    /// the OS picks a free ephemeral port — this pins the startup wiring,
+    /// not the MCP server's own behaviour.
+    #[tokio::test]
+    async fn wires_up_a_working_app_and_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("bootstrap.db");
+
+        let bootstrap = TuiRuntime::bootstrap(&db_path, 0)
+            .await
+            .expect("bootstrap must succeed against a fresh, writable db path");
+
+        assert!(
+            bootstrap.app.tasks().is_empty(),
+            "a fresh database has no tasks to hydrate"
+        );
+        assert!(
+            bootstrap
+                .runtime
+                .database
+                .list_all()
+                .await
+                .unwrap()
+                .is_empty(),
+            "the returned runtime must be backed by the same freshly-opened database"
+        );
+        assert!(
+            bootstrap.runtime.feed_runner.is_some(),
+            "bootstrap must wire up a feed runner for the runtime to own"
         );
     }
 }

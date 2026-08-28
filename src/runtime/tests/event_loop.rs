@@ -237,6 +237,72 @@ async fn apply_loop_event_mcp_refresh_spawns_and_yields_no_commands() {
     );
 }
 
+/// An MCP `TaskChanged` event spawns a targeted refresh of just that task
+/// (`spawn_refresh_task`), not a full board refresh.
+#[tokio::test]
+async fn apply_loop_event_mcp_task_changed_spawns_a_targeted_refresh() {
+    let db = test_db().await;
+    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db.clone(), msg_tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+    let mut app = empty_app();
+    rt.exec_insert_task(
+        &mut app,
+        tui::TaskDraft {
+            title: "Changed elsewhere".into(),
+            description: "".into(),
+            repo_path: "/repo".into(),
+            ..Default::default()
+        },
+        None,
+    )
+    .await;
+    let id = app.tasks()[0].id;
+
+    let cmds = apply_loop_event(
+        &mut app,
+        LoopEvent::Mcp(mcp::McpEvent::TaskChanged(id)),
+        &rt,
+    );
+
+    assert!(cmds.is_empty(), "the refresh is spawned, not queued");
+    let msg = recv_msg(&mut msg_rx).await;
+    assert!(
+        matches!(
+            &msg,
+            Message::Task(crate::tui::messages::TaskMessage::Updated(t)) if t.id == id
+        ),
+        "expected an Updated message for the changed task, got: {msg:?}"
+    );
+}
+
+/// An MCP `EpicChanged` event spawns a targeted refresh of just that epic
+/// (`spawn_refresh_epic`), and also invalidates the feed cache so a newly
+/// added feed_command becomes visible on the next poll.
+#[tokio::test]
+async fn apply_loop_event_mcp_epic_changed_spawns_a_targeted_refresh() {
+    let db = test_db().await;
+    let epic = db.create_epic("Changed elsewhere", "", None).await.unwrap();
+    let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
+    let rt = make_runtime(db, msg_tx, Arc::new(MockProcessRunner::new(vec![]))).await;
+    let mut app = empty_app();
+
+    let cmds = apply_loop_event(
+        &mut app,
+        LoopEvent::Mcp(mcp::McpEvent::EpicChanged(epic.id)),
+        &rt,
+    );
+
+    assert!(cmds.is_empty(), "the refresh is spawned, not queued");
+    let msg = recv_msg(&mut msg_rx).await;
+    assert!(
+        matches!(
+            &msg,
+            Message::Epic(crate::tui::messages::EpicMessage::Updated(e)) if e.id == epic.id
+        ),
+        "expected an Updated message for the changed epic, got: {msg:?}"
+    );
+}
+
 /// Driving `run_loop` (on a headless `TestBackend`) with a `q`→`y` quit
 /// sequence exits the loop cleanly, after draining the queued key events.
 #[tokio::test]
@@ -273,6 +339,150 @@ async fn run_loop_exits_cleanly_on_quit_sequence() {
 
     assert!(result.is_ok(), "run_loop returned an error: {result:?}");
     assert!(app.should_quit(), "the quit sequence must set should_quit");
+}
+
+/// A live `feed_runner` is started (`.take()` + `start()`) exactly once, at
+/// the top of `run_loop` — the sibling `run_loop_exits_cleanly_on_quit_sequence`
+/// test deliberately nils it out to avoid this, so it never drives that arm.
+#[tokio::test]
+async fn run_loop_starts_a_live_feed_runner_before_the_first_command() {
+    let (mut rt, mut app) = test_runtime().await;
+    assert!(
+        rt.feed_runner.is_some(),
+        "precondition: the fixture wires up a feed runner"
+    );
+
+    let (key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
+    let (_msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
+    let (_mcp_tx, mut mcp_rx) = mpsc::unbounded_channel::<mcp::McpEvent>();
+    let mut tick = quiet_tick();
+
+    key_tx.send(KeyEvent::from(KeyCode::Char('q'))).unwrap();
+    key_tx.send(KeyEvent::from(KeyCode::Char('y'))).unwrap();
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+    let result = tokio::time::timeout(
+        TEST_TIMEOUT,
+        run_loop(
+            &mut app,
+            &mut terminal,
+            &mut key_rx,
+            &mut msg_rx,
+            &mut mcp_rx,
+            &mut tick,
+            &mut rt,
+        ),
+    )
+    .await
+    .expect("run_loop should exit well within the timeout");
+
+    assert!(result.is_ok(), "run_loop returned an error: {result:?}");
+    assert!(
+        rt.feed_runner.is_none(),
+        "run_loop must take() the feed runner to start it in the background"
+    );
+}
+
+/// `execute_commands` drains not just the commands it is handed but every
+/// command those handlers cascade into (`commands::dispatch` can return
+/// follow-on commands, which `queue.extend(extra)` feeds back into the same
+/// loop) — a test that only calls `commands::dispatch` once would miss that.
+mod execute_commands {
+    use super::*;
+    use crate::tui::commands::EditorCommand;
+
+    async fn run(rt: &TuiRuntime, app: &mut App, cmds: Vec<Command>) {
+        let (_key_tx, mut key_rx) = mpsc::unbounded_channel::<KeyEvent>();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        super::execute_commands(app, cmds, rt, &mut terminal, &mut key_rx)
+            .await
+            .unwrap();
+    }
+
+    /// `Editor(FinalizeResult)` cascades into a follow-on `Task` command
+    /// (`exec_finalize_editor_result`'s return value) — the queue must drain
+    /// that cascade, not just the top-level command it was handed.
+    #[tokio::test]
+    async fn drains_a_cascaded_follow_on_command() {
+        let (rt, mut app) = test_runtime().await;
+        let task = create_task_returning(
+            &**rt.db_write(),
+            "Old title",
+            "Old description",
+            "/repo",
+            None,
+            models::TaskStatus::Backlog,
+        )
+        .await
+        .unwrap();
+        app.update(Message::Task(crate::tui::messages::TaskMessage::Refresh(
+            vec![task.clone()],
+        )));
+
+        let edited = "--- TITLE ---\nNew title\n\
+            --- DESCRIPTION ---\nNew description\n\
+            --- REPO_PATH ---\n\n\
+            --- STATUS ---\n\n\
+            --- PLAN ---\n\n\
+            --- TAG ---\n\n\
+            --- BASE_BRANCH ---\n\n";
+
+        run(
+            &rt,
+            &mut app,
+            vec![Command::Editor(EditorCommand::FinalizeResult {
+                kind: crate::tui::EditKind::TaskEdit(Box::new(task.clone())),
+                outcome: crate::tui::EditorOutcome::Saved(edited.into()),
+            })],
+        )
+        .await;
+
+        let stored = rt.database.get_task(task.id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.title, "New title",
+            "the cascaded follow-on command must reach the DB, not just the \
+             top-level FinalizeResult handler"
+        );
+    }
+
+    /// Multiple independent top-level commands are all executed, in order —
+    /// not just the first one popped from the queue.
+    #[tokio::test]
+    async fn executes_every_top_level_command_in_order() {
+        let (rt, mut app) = test_runtime().await;
+        rt.exec_insert_task(
+            &mut app,
+            tui::TaskDraft {
+                title: "First".into(),
+                description: "".into(),
+                repo_path: "/repo".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .await;
+        let id = app.tasks()[0].id;
+
+        run(
+            &rt,
+            &mut app,
+            vec![
+                Command::Settings(SettingsCommand::SaveRepoPath("/some/repo".into())),
+                Command::Task(crate::tui::commands::TaskCommand::Delete(id)),
+            ],
+        )
+        .await;
+
+        assert!(
+            app.repo_paths().contains(&"/some/repo".to_string()),
+            "the first queued command must run"
+        );
+        assert!(
+            rt.database.get_task(id).await.unwrap().is_none(),
+            "the second queued command must also run, not just the first"
+        );
+    }
 }
 
 /// The three result arms
