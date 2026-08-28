@@ -2602,3 +2602,285 @@ fn bracket_left_in_empty_archive_is_noop() {
     assert!(cmds.is_empty());
     assert_eq!(app.selection().row(archive_col), 0);
 }
+
+// --- handle_navigate_row: archive column (j/k inside the archive list) ---
+
+#[test]
+fn navigate_row_down_in_archive_moves_and_stays_in_sync_with_list_state() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+        make_task(2, TaskStatus::Archived),
+        make_task(3, TaskStatus::Archived),
+    ]);
+    let archive_col = TaskStatus::COLUMN_COUNT + 1;
+    app.selection_mut().set_column(archive_col);
+
+    let cmds = app.update(Message::NavigateRow(1));
+    assert!(cmds.is_empty());
+    assert_eq!(app.selection().row(archive_col), 1);
+    assert_eq!(*app.archive.list_state.selected_mut(), Some(1));
+}
+
+#[test]
+fn navigate_row_up_in_archive_clamps_at_first() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+        make_task(2, TaskStatus::Archived),
+    ]);
+    let archive_col = TaskStatus::COLUMN_COUNT + 1;
+    app.selection_mut().set_column(archive_col);
+
+    app.update(Message::NavigateRow(-5));
+    assert_eq!(
+        app.selection().row(archive_col),
+        0,
+        "clamps at first archived row"
+    );
+    assert_eq!(*app.archive.list_state.selected_mut(), Some(0));
+}
+
+#[test]
+fn navigate_row_down_in_archive_clamps_at_last() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+        make_task(2, TaskStatus::Archived),
+    ]);
+    let archive_col = TaskStatus::COLUMN_COUNT + 1;
+    app.selection_mut().set_column(archive_col);
+
+    app.update(Message::NavigateRow(5));
+    assert_eq!(
+        app.selection().row(archive_col),
+        1,
+        "clamps at last archived row"
+    );
+    assert_eq!(*app.archive.list_state.selected_mut(), Some(1));
+}
+
+#[test]
+fn navigate_row_in_empty_archive_is_noop() {
+    let mut app = App::new(vec![]);
+    let archive_col = TaskStatus::COLUMN_COUNT + 1;
+    app.selection_mut().set_column(archive_col);
+
+    let cmds = app.update(Message::NavigateRow(1));
+    assert!(cmds.is_empty());
+    assert_eq!(app.selection().row(archive_col), 0);
+}
+
+// --- handle_navigate_row / _first / _last: invalid-column defensive guards ---
+//
+// Columns are normally 0 (unselected/toggle-row sentinel) through
+// COLUMN_COUNT + 1 (archive). Nothing in the app ever drives the selection
+// to column 0 or past the archive column, but the handlers guard against it
+// defensively — exercise those guards directly by poking the selection.
+
+#[test]
+fn navigate_row_messages_are_noop_for_invalid_columns() {
+    for col in [0, TaskStatus::COLUMN_COUNT + 2] {
+        for msg in [
+            Message::NavigateRow(1),
+            Message::NavigateRowFirst,
+            Message::NavigateRowLast,
+        ] {
+            let mut app = make_app();
+            app.selection_mut().set_column(col);
+            let cmds = app.update(msg.clone());
+            assert!(cmds.is_empty(), "col {col} should be a no-op for {msg:?}");
+        }
+    }
+}
+
+// --- handle_navigate_row: empty-column tail (moving up from an empty column) ---
+
+#[test]
+fn navigate_row_up_in_empty_column_moves_to_toggle_row() {
+    let mut app = App::new(vec![]);
+    app.selection_mut().set_column(1); // empty Backlog
+    assert!(!app.on_select_all(), "precondition");
+
+    let cmds = app.update(Message::NavigateRow(-1));
+    assert!(cmds.is_empty());
+    assert!(
+        app.on_select_all(),
+        "moving up in an empty column should land on the toggle row"
+    );
+}
+
+// --- handle_reorder_item: guards that return early ---
+
+#[test]
+fn reorder_item_in_archive_column_is_noop() {
+    let mut app = App::new(vec![
+        make_task(1, TaskStatus::Archived),
+        make_task(2, TaskStatus::Archived),
+    ]);
+    app.selection_mut().set_column(TaskStatus::COLUMN_COUNT + 1);
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ReorderItem(1),
+    ));
+    assert!(cmds.is_empty(), "archive column has no reorderable items");
+}
+
+#[test]
+fn reorder_item_is_noop_for_invalid_columns() {
+    for col in [0, TaskStatus::COLUMN_COUNT + 2] {
+        let mut app = make_app();
+        app.selection_mut().set_column(col);
+        let cmds = app.update(Message::Task(
+            crate::tui::messages::TaskMessage::ReorderItem(1),
+        ));
+        assert!(cmds.is_empty(), "col {col} should be a no-op");
+    }
+}
+
+// --- handle_reorder_item: epic branches ---
+//
+// Epics and tasks share a column (Backlog is never flattened), so an epic
+// card can sit anywhere in the reorder list — alone, or interleaved with
+// task cards.
+
+#[test]
+fn reorder_epic_down_swaps_sort_order_and_persists_with_status_none() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic(10), make_epic(20)];
+    app.selection_mut().set_column(1); // Backlog
+    app.selection_mut().set_row(1, 0); // cursor on epic 10 (lower effective sort, row 0)
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ReorderItem(1),
+    ));
+
+    let e10 = app.board.epics.iter().find(|e| e.id == EpicId(10)).unwrap();
+    let e20 = app.board.epics.iter().find(|e| e.id == EpicId(20)).unwrap();
+    assert_eq!(e10.sort_order, Some(20));
+    assert_eq!(e20.sort_order, Some(10));
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| matches!(
+                c,
+                Command::Epic(crate::tui::commands::EpicCommand::Persist { status: None, .. })
+            ))
+            .count(),
+        2,
+        "both epics should be persisted with status untouched"
+    );
+    assert_eq!(app.selection().row(1), 1, "cursor follows the moved epic");
+}
+
+#[test]
+fn reorder_epic_up_swaps_sort_order_and_persists_with_status_none() {
+    let mut app = App::new(vec![]);
+    app.board.epics = vec![make_epic(10), make_epic(20)];
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 1); // cursor on epic 20 (row 1)
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ReorderItem(-1),
+    ));
+
+    let e10 = app.board.epics.iter().find(|e| e.id == EpicId(10)).unwrap();
+    let e20 = app.board.epics.iter().find(|e| e.id == EpicId(20)).unwrap();
+    assert_eq!(e20.sort_order, Some(10));
+    assert_eq!(e10.sort_order, Some(20));
+    assert_eq!(
+        cmds.iter()
+            .filter(|c| matches!(
+                c,
+                Command::Epic(crate::tui::commands::EpicCommand::Persist { status: None, .. })
+            ))
+            .count(),
+        2
+    );
+    assert_eq!(app.selection().row(1), 0, "cursor follows the moved epic");
+}
+
+#[test]
+fn reorder_task_down_into_epic_persists_both_and_swaps_sort_order() {
+    let mut app = App::new(vec![make_task(1, TaskStatus::Backlog)]);
+    app.board.epics = vec![make_epic(10)];
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 0); // cursor on task 1 (lower effective sort than epic 10)
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ReorderItem(1),
+    ));
+
+    let task = app.find_task(TaskId(1)).unwrap();
+    let epic = app.board.epics.iter().find(|e| e.id == EpicId(10)).unwrap();
+    assert_eq!(task.sort_order, Some(10));
+    assert_eq!(epic.sort_order, Some(1));
+    assert_eq!(
+        cmds.len(),
+        2,
+        "swapping across the task/epic boundary persists both"
+    );
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Task(crate::tui::commands::TaskCommand::Persist(_))
+    )));
+    assert!(cmds.iter().any(|c| matches!(
+        c,
+        Command::Epic(crate::tui::commands::EpicCommand::Persist { .. })
+    )));
+    assert_eq!(app.selection().row(1), 1);
+}
+
+#[test]
+fn reorder_epic_up_into_task_persists_both_and_swaps_sort_order() {
+    // task 1 + epic 10 in Backlog, cursor on the epic (higher effective sort).
+    let mut app = make_app_with_epic_selected();
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ReorderItem(-1),
+    ));
+
+    let task = app.find_task(TaskId(1)).unwrap();
+    let epic = app.board.epics.iter().find(|e| e.id == EpicId(10)).unwrap();
+    assert_eq!(epic.sort_order, Some(1));
+    assert_eq!(task.sort_order, Some(10));
+    assert_eq!(cmds.len(), 2);
+    assert_eq!(app.selection().row(1), 0);
+}
+
+// --- handle_reorder_item: equal-effective-sort tie break (`sort_order: None`
+// items falling back to `id.0`, the realistic path for freshly-created items) ---
+
+#[test]
+fn reorder_tied_effective_sort_moving_down_offsets_mover_by_plus_one() {
+    // Task id 7 and epic id 7 both have sort_order: None, so both fall back to
+    // an effective sort value of 7 — a genuine tie. Tasks are placed in the
+    // item list before epics, so the task sorts first (row 0) on the tie.
+    let mut app = App::new(vec![make_task(7, TaskStatus::Backlog)]);
+    app.board.epics = vec![make_epic(7)];
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 0); // cursor on task 7
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ReorderItem(1),
+    ));
+
+    let task = app.find_task(TaskId(7)).unwrap();
+    let epic = app.board.epics.iter().find(|e| e.id == EpicId(7)).unwrap();
+    assert_eq!(task.sort_order, Some(8), "tied mover moving down gets +1");
+    assert_eq!(epic.sort_order, Some(7));
+    assert_eq!(cmds.len(), 2);
+}
+
+#[test]
+fn reorder_tied_effective_sort_moving_up_offsets_mover_by_minus_one() {
+    let mut app = App::new(vec![make_task(8, TaskStatus::Backlog)]);
+    app.board.epics = vec![make_epic(8)];
+    app.selection_mut().set_column(1);
+    app.selection_mut().set_row(1, 1); // cursor on epic 8 (ties with task 8, sorts second)
+
+    let cmds = app.update(Message::Task(
+        crate::tui::messages::TaskMessage::ReorderItem(-1),
+    ));
+
+    let task = app.find_task(TaskId(8)).unwrap();
+    let epic = app.board.epics.iter().find(|e| e.id == EpicId(8)).unwrap();
+    assert_eq!(epic.sort_order, Some(7), "tied mover moving up gets -1");
+    assert_eq!(task.sort_order, Some(8));
+    assert_eq!(cmds.len(), 2);
+}
