@@ -1318,7 +1318,7 @@ fn provision_worktree_creates_new_when_dir_missing() {
 ///
 /// This is the load-bearing assertion for that invariant in
 /// docs/specs/tasks.allium. The surviving tripwire elsewhere
-/// (`src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`)
+/// (`src/runtime/tests/task_exec.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree`)
 /// only asserts that consumers do not *check* for sharing; it would stay
 /// green if the id prefix were dropped here. This one fails instead — pick the
 /// worst case, two tasks whose titles slugify identically, so the id is the only
@@ -2839,8 +2839,8 @@ fn teardown_task_with_neither_worktree_nor_window_runs_no_commands() {
 // A window-only kill failure needs no test of its own: the kill runs before the
 // worktree arm, so `teardown_task_kill_window_failure_propagates` below already
 // drives the identical path to the same `?`. What the *wrapper* does with that
-// error is the interesting half, and lives in src/runtime/tests.rs::
-// exec_cleanup_window_only_kill_failure_still_applies_the_follow_up.
+// error is the interesting half, and lives in
+// src/runtime/tests/task_exec.rs::exec_cleanup_window_only_kill_failure_still_applies_the_follow_up.
 
 #[test]
 fn teardown_task_no_tmux_window_arg_skips_tmux() {

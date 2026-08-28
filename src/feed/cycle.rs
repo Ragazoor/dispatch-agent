@@ -316,7 +316,7 @@ mod tests {
     /// proceeds — proving only that one call returned is not enough (see
     /// feeds.allium SerialisedFeedCycle's bounded-cost note). Reuses the
     /// FIFO shape from
-    /// `src/runtime/tests.rs::manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight`:
+    /// `src/runtime/tests/feeds.rs::manual_refresh_is_dropped_while_a_real_auto_poll_cycle_is_in_flight`:
     /// `cat <fifo>` blocks forever because nothing ever opens the write end,
     /// so the hang is genuine, not a timed sleep that would end on its own.
     #[tokio::test]

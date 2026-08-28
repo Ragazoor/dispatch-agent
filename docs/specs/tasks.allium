@@ -917,7 +917,7 @@ rule MoveTaskToEpic {
 -- cleanup_of_a_stateless_row_runs_no_commands, cleanup_continues_after_a_failure,
 -- cleanup_serialises_same_repo_removals), plus
 -- src/feed/mod.rs::tick_removed_task_tears_down_its_worktree and
--- src/runtime/tests.rs::exec_trigger_epic_feed_removed_task_tears_down_its_worktree
+-- src/runtime/tests/feeds.rs::exec_trigger_epic_feed_removed_task_tears_down_its_worktree
 -- for the wiring on each feed path.
 --
 -- Coverage of WorktreeIsNeverShared, in two layers.
@@ -931,7 +931,7 @@ rule MoveTaskToEpic {
 -- fabricating the impossible two-rows-one-path state and asserting the teardown
 -- still removes the worktree, so a reinstated guard fails the suite rather than
 -- passing silently:
--- src/runtime/tests.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree.
+-- src/runtime/tests/task_exec.rs::exec_cleanup_tears_down_even_if_another_row_names_the_worktree.
 --
 -- It sits on the archive/delete path deliberately, and there used to be a second
 -- one beside the feed wrapper's own cleanup tests (a comment there records which).
@@ -1291,7 +1291,7 @@ rule EditTask {
         -- implements and tests it (sort_order_for_status_transition, run
         -- inside TaskService::update_task; see
         -- update_task_archived_to_backlog_is_unaffected_by_done_rule in
-        -- src/service/tasks/tests.rs).
+        -- src/service/tasks/tests/crud.rs).
 }
 
 ------------------------------------------------------------

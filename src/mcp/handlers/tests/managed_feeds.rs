@@ -252,7 +252,7 @@ async fn set_provisions_managed_epics() {
 /// was removed (docs/plans/archive/2026-07-31-3809-keybinding-pruning-implementation.md §6) this is
 /// the only path that can enable a feed, so it is the only thing holding that
 /// invariant up. Guards the runtime-side half at
-/// `src/runtime/tests.rs::mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed`.
+/// `src/runtime/tests/feeds.rs::mcp_refresh_invalidates_feed_runner_cache_after_enabling_a_feed`.
 #[tokio::test]
 async fn set_notifies_the_runtime_so_the_feed_cache_is_invalidated() {
     let (notify_tx, mut notify_rx) = tokio::sync::mpsc::unbounded_channel::<crate::mcp::McpEvent>();

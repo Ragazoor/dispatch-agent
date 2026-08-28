@@ -121,7 +121,7 @@ pub fn notify_tmux(
 }
 
 /// Test-only fixtures for a `tmux capture-pane -p` snapshot, shared by this
-/// module's own tests and by `src/service/tasks/tests.rs` (both in-crate, so
+/// module's own tests and by `src/service/tasks/tests/watchers.rs` (both in-crate, so
 /// both can reach a `pub(crate)` item here) — one hand-written byte string
 /// per shape, rather than three independent copies that could drift apart.
 /// `tests/task_watchers.rs` and `tests/tmux_send_message_pane_state.rs` are
