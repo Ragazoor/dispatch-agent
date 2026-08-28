@@ -222,9 +222,7 @@ mod load_init_helpers {
 
         assert_eq!(
             app.repo_filter(),
-            &["/repo/a".to_string(), "/repo/b".to_string()]
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>()
+            &std::collections::HashSet::from(["/repo/a".to_string(), "/repo/b".to_string()])
         );
         assert_eq!(app.repo_filter_mode(), RepoFilterMode::Exclude);
     }

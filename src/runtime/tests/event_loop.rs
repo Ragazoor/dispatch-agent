@@ -285,6 +285,11 @@ async fn apply_loop_event_mcp_epic_changed_spawns_a_targeted_refresh() {
     let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
     let rt = make_runtime(db, msg_tx, Arc::new(MockProcessRunner::new(vec![]))).await;
     let mut app = empty_app();
+    let mut invalidate_rx = rt
+        .feed_invalidate_tx
+        .as_ref()
+        .expect("make_runtime always wires up a live feed runner")
+        .subscribe();
 
     let cmds = apply_loop_event(
         &mut app,
@@ -293,6 +298,10 @@ async fn apply_loop_event_mcp_epic_changed_spawns_a_targeted_refresh() {
     );
 
     assert!(cmds.is_empty(), "the refresh is spawned, not queued");
+    tokio::time::timeout(TEST_TIMEOUT, invalidate_rx.changed())
+        .await
+        .expect("EpicChanged must invalidate the feed cache within the timeout")
+        .expect("the sender must still be alive");
     let msg = recv_msg(&mut msg_rx).await;
     assert!(
         matches!(
