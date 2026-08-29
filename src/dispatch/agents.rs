@@ -236,16 +236,16 @@ pub fn resync_agent_tree_pane(window: &TmuxWindow, runner: &dyn ProcessRunner) {
 /// own context (learnings, plan, etc.) while keeping the post-provision launch
 /// logic in one place.
 ///
-/// `permission_mode` controls Claude's `--permission-mode` flag:
-/// `None` launches in Claude's default (auto) mode, used by every task
-/// agent except research. `Some("plan")` is used by the research agent so
-/// investigation stays read-only.
+/// No `--permission-mode` flag is ever passed: every task agent launches in
+/// Claude's default (auto) mode, so an unattended dispatch is not left parked
+/// on an approval dialog. A mode that must not change code says so in its
+/// prompt instead — see `build_research_prompt`. This is
+/// `EveryTaskAgentLaunchesInAutoMode` in `docs/specs/dispatch.allium`.
 fn dispatch_with_prompt(
     task: &Task,
     make_prompt: impl FnOnce() -> String,
     runner: &dyn ProcessRunner,
     base_branch: Option<&str>,
-    permission_mode: Option<&str>,
 ) -> Result<DispatchResult> {
     if task.repo_path.is_empty() {
         anyhow::bail!(
@@ -294,10 +294,6 @@ fn dispatch_with_prompt(
          {prompt}"
     );
     let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
-    let permission_flag = match permission_mode {
-        Some(mode) => format!(" --permission-mode {mode}"),
-        None => String::new(),
-    };
     // The binary goes *after* the script as bash's `$0`, not inside it. Inside
     // the single-quoted body it would sit under two quoting layers (the pane's
     // shell strips the outer quotes, then bash parses what's left), and a path
@@ -307,7 +303,7 @@ fn dispatch_with_prompt(
     let name_flag = session_name_flag(task.id);
     let claude_cmd = format!(
         "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
-         && \"$0\" {DISPATCH_PLUGIN_DIR}{name_flag}{permission_flag} \"$prompt\"' {claude}"
+         && \"$0\" {DISPATCH_PLUGIN_DIR}{name_flag} \"$prompt\"' {claude}"
     );
 
     // Anything failing here happens after the worktree and tmux window both
@@ -381,7 +377,6 @@ pub fn dispatch_agent(
         },
         runner,
         Some(&task.base_branch),
-        None,
     )
 }
 
@@ -403,7 +398,6 @@ pub fn research_agent(
         },
         runner,
         Some(&task.base_branch),
-        Some("plan"),
     )
 }
 
@@ -425,7 +419,6 @@ pub fn quick_dispatch_agent(
         },
         runner,
         Some(&task.base_branch),
-        None,
     )
 }
 

@@ -76,15 +76,14 @@ mod dispatch_seam {
             stored.tmux_window.as_ref().map(|w| w.as_str()),
             Some(result.tmux_window.as_str())
         );
-        // The `Dispatch` half of the mode routing: the standard agent is the
-        // one that restricts nothing. Its `Research` twin is the next test.
+        // The `Dispatch` half of the mode routing. Every launcher now shares
+        // one permission mode (`EveryTaskAgentLaunchesInAutoMode`), so the
+        // prompt is what tells the two apart. Its `Research` twin is below.
+        let prompt =
+            std::fs::read_to_string(format!("{}/.claude-prompt", result.worktree_path)).unwrap();
         assert!(
-            !runner
-                .flattened_calls()
-                .join("\n")
-                .contains("--permission-mode"),
-            "standard dispatch must not restrict permissions: {:?}",
-            runner.recorded_calls()
+            !prompt.contains(crate::dispatch::RESEARCH_AGENT_INTRO),
+            "standard dispatch must not reach build_research_prompt: {prompt}"
         );
     }
 
@@ -201,10 +200,11 @@ mod dispatch_seam {
     }
 
     /// Mode routing, the match that used to be written out twice: `Research`
-    /// launches the read-only research agent, the only one that passes
-    /// `--permission-mode plan`.
+    /// launches the research agent. Every launcher now shares one permission
+    /// mode (`EveryTaskAgentLaunchesInAutoMode`), so the prompt — not the argv
+    /// — is what identifies which agent the mode reached.
     #[tokio::test]
-    async fn research_mode_launches_the_read_only_research_agent() {
+    async fn research_mode_launches_the_research_agent() {
         let db = test_db().await;
         let runner = DispatchScript::dispatch().shared_runner();
         let (svc, task, _dir) = fixture(&db, runner.clone()).await;
@@ -213,17 +213,14 @@ mod dispatch_seam {
             .dispatch(request(task, DispatchMode::Research, DispatchClaim::Take))
             .await;
 
+        let DispatchOutcome::Launched(result) = outcome else {
+            panic!("expected Launched, got {outcome:?}");
+        };
+        let prompt =
+            std::fs::read_to_string(format!("{}/.claude-prompt", result.worktree_path)).unwrap();
         assert!(
-            matches!(outcome, DispatchOutcome::Launched(_)),
-            "expected Launched, got {outcome:?}"
-        );
-        assert!(
-            runner
-                .flattened_calls()
-                .join("\n")
-                .contains("--permission-mode plan"),
-            "research mode must launch with plan permissions: {:?}",
-            runner.recorded_calls()
+            prompt.contains(crate::dispatch::RESEARCH_AGENT_INTRO),
+            "research mode must reach build_research_prompt: {prompt}"
         );
     }
 

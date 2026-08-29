@@ -1488,9 +1488,10 @@ async fn dispatch_task_dispatch_agent_claims_then_provisions() {
     assert_eq!(claimed.status, models::TaskStatus::Running);
 }
 
-/// `Research` must reach the read-only research agent, the only launcher that
-/// passes `--permission-mode plan`. The mode travels on the command, so a
-/// dispatcher arm that dropped it would launch an editing agent instead.
+/// `Research` must reach the research agent. The mode travels on the command,
+/// so a dispatcher arm that dropped it would launch a standard agent instead.
+/// Every launcher shares one permission mode
+/// (`EveryTaskAgentLaunchesInAutoMode`), so the prompt is the marker.
 #[tokio::test]
 async fn dispatch_task_dispatch_agent_carries_the_mode_to_the_launcher() {
     let repo = provisioned_repo("1-test-task");
@@ -1516,10 +1517,11 @@ async fn dispatch_task_dispatch_agent_carries_the_mode_to_the_launcher() {
         h.next_msg().await,
         Message::Task(crate::tui::messages::TaskMessage::Dispatched { .. })
     ));
-    let argv = h.mock.flattened_calls().join("\n");
+    let prompt = std::fs::read_to_string(repo.path().join(".worktrees/1-test-task/.claude-prompt"))
+        .expect("dispatch should write the prompt file");
     assert!(
-        argv.contains("--permission-mode plan"),
-        "research mode must launch with plan permissions: {argv}"
+        prompt.contains(crate::dispatch::RESEARCH_AGENT_INTRO),
+        "research mode must reach build_research_prompt: {prompt}"
     );
 }
 

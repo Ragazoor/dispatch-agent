@@ -643,9 +643,12 @@ mod default_tests {
 /// Determines how a backlog task should be dispatched. Most tasks route to
 /// `Dispatch`, which produces the unified prompt skeleton (with-plan or
 /// no-plan variant). The `research` tag is the only one with a dedicated
-/// agent — its prompt keeps the agent in read-only mode while it presents
-/// findings to the user. Other tags (`pr_review`, `fix`, `dependabot`) are
-/// kanban labels and route through the unified `Dispatch` path.
+/// agent — its prompt instructs the agent to make no code changes while it
+/// presents findings to the user. That is an instruction, not an enforced
+/// permission boundary (`EveryTaskAgentLaunchesInAutoMode` in
+/// `docs/specs/dispatch.allium`). Other tags (`pr_review`, `fix`,
+/// `dependabot`) are kanban labels and route through the unified
+/// `Dispatch` path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchMode {
     Dispatch,
@@ -715,7 +718,7 @@ impl TaskTag {
         }
     }
 
-    /// Whether this tag routes to a read-only PR-review agent (PR review or
+    /// Whether this tag routes to a PR-review agent (PR review or
     /// Dependabot). Review tasks skip the plan/implement flow and, when they
     /// carry a PR URL, base their worktree on the PR's branch.
     pub fn is_review(&self) -> bool {

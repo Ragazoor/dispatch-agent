@@ -905,28 +905,6 @@ fn dispatch_sends_claude_command() {
         calls[5].1.iter().any(|a| a.contains("claude")),
         "send-keys should include claude"
     );
-    assert!(
-        !calls[5].1.iter().any(|a| a.contains("--permission-mode")),
-        "dispatch_agent send-keys should omit --permission-mode (auto/default)"
-    );
-}
-
-#[test]
-fn dispatch_agent_uses_default_permission_mode() {
-    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
-
-    let script = DispatchScript::dispatch();
-    let mock = script.runner();
-
-    let task = make_task(&repo_path);
-    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
-
-    let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 5, "claude");
-    assert!(
-        !send_keys_arg.contains("--permission-mode"),
-        "dispatch_agent should use default (auto) mode — no --permission-mode flag, got: {send_keys_arg}"
-    );
 }
 
 #[test]
@@ -978,40 +956,73 @@ fn dispatch_agent_succeeds_even_if_companion_pane_split_fails() {
     );
 }
 
-#[test]
-fn research_agent_uses_plan_permission_mode() {
-    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+/// One row of the launcher table below: a name, and a thunk that drives that
+/// launcher end to end and hands back the `claude` command it sent.
+type LaunchCase = (&'static str, fn() -> String);
 
+/// Drive one `dispatch_with_prompt` launcher through the standard mock script
+/// and return the `claude` command it sent to tmux.
+fn dispatched_claude_cmd(launch: impl FnOnce(&Task, &MockProcessRunner)) -> String {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
     let script = DispatchScript::dispatch();
     let mock = script.runner();
-
     let task = make_task(&repo_path);
-    research_agent(&task, &mock, None).unwrap();
 
-    let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 5, "claude");
-    assert!(
-        send_keys_arg.contains("--permission-mode plan"),
-        "research_agent should use --permission-mode plan to keep investigation read-only, got: {send_keys_arg}"
-    );
+    launch(&task, &mock);
+
+    find_call_arg(
+        &mock.recorded_calls(),
+        script.index_of(Step::SendKeysLiteral),
+        "claude",
+    )
 }
 
+/// `EveryTaskAgentLaunchesInAutoMode` in `docs/specs/dispatch.allium`. The
+/// guarantee is "no exceptions", so the assertion is made once, over every
+/// launcher, rather than per-launcher: a variant that reintroduces a permission
+/// flag fails here even if it ships with a passing test of its own. Adding a
+/// launcher means adding a row.
 #[test]
-fn quick_dispatch_agent_uses_default_permission_mode() {
-    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+fn no_task_agent_passes_a_permission_mode_flag() {
+    let launchers: [LaunchCase; 4] = [
+        ("dispatch_agent", || {
+            dispatched_claude_cmd(|task, mock| {
+                dispatch_agent(task, mock, None, &LearningInjections::default()).unwrap();
+            })
+        }),
+        ("research_agent", || {
+            dispatched_claude_cmd(|task, mock| {
+                research_agent(task, mock, None).unwrap();
+            })
+        }),
+        ("quick_dispatch_agent", || {
+            dispatched_claude_cmd(|task, mock| {
+                quick_dispatch_agent(task, mock, None, &LearningInjections::default()).unwrap();
+            })
+        }),
+        // Not a dispatch_with_prompt caller — resume_agent hand-builds its own
+        // claude command, which is exactly why it belongs in this table: the
+        // parameter removal cannot reach it, so only an assertion can.
+        ("resume_agent", || {
+            let (_dir, worktree_path) = make_test_repo();
+            let script = DispatchScript::resume();
+            let mock = script.runner();
+            resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
+            find_call_arg(
+                &mock.recorded_calls(),
+                script.index_of(Step::SendKeysLiteral),
+                "claude",
+            )
+        }),
+    ];
 
-    let script = DispatchScript::dispatch();
-    let mock = script.runner();
-
-    let task = make_task(&repo_path);
-    quick_dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
-
-    let calls = mock.recorded_calls();
-    let send_keys_arg = find_call_arg(&calls, 5, "claude");
-    assert!(
-        !send_keys_arg.contains("--permission-mode"),
-        "quick_dispatch_agent should use default (auto) mode — no --permission-mode flag, got: {send_keys_arg}"
-    );
+    for (name, launch) in launchers {
+        let claude_cmd = launch();
+        assert!(
+            !claude_cmd.contains("--permission-mode"),
+            "{name} must launch in auto mode with no --permission-mode flag, got: {claude_cmd}"
+        );
+    }
 }
 
 // --- PR-based review worktree start point ---

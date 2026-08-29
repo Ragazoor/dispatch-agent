@@ -483,6 +483,11 @@ Then, before making any changes:\n\
     )
 }
 
+/// The research prompt's opening line. Routing tests across the runtime and
+/// service layers assert on it to prove `DispatchMode::Research` reached this
+/// builder, so it is a shared constant rather than a literal they each repeat.
+pub(crate) const RESEARCH_AGENT_INTRO: &str = "You are a research agent.";
+
 pub(super) fn build_research_prompt(
     task_id: TaskId,
     title: &str,
@@ -501,7 +506,7 @@ Do NOT make code changes.";
 
     let block = task_block(task_id, title, description, epic);
     render_task_prompt(
-        "You are a research agent.",
+        RESEARCH_AGENT_INTRO,
         IntroSpacing::BlankLine,
         &block,
         ctx,

@@ -24,6 +24,11 @@ pub use agents::{
     toggle_agent_tree_pane, DispatchInputs, MAIN_SESSION_WINDOW,
 };
 pub use finish::{finish_task, FinishContext, FinishError};
+// Test-only re-export: `prompts` is private, and the routing tests in
+// `src/runtime/tests/` and `src/service/tasks/tests/` assert on this marker to
+// prove `DispatchMode::Research` reached `build_research_prompt`.
+#[cfg(test)]
+pub(crate) use prompts::RESEARCH_AGENT_INTRO;
 pub use prompts::{build_and_record_injections, EpicContext, LearningInjections};
 pub use split_panes::{join_task_window_into_pane, swap_task_window_into_pane};
 pub(crate) use trust::{claude_json_path, is_trusted_at, trust_at};

@@ -230,6 +230,29 @@ rule DispatchTask {
         -- "dispatch" whichever design step the prompt names, per
         -- OneNameForStartingATask above.
 
+    @guarantee EveryTaskAgentLaunchesInAutoMode
+        -- Every task-agent launch starts Claude in auto mode — i.e.
+        -- with no --permission-mode flag at all — with no exceptions.
+        -- This holds for DispatchTask, DispatchResearchTask, quick
+        -- dispatch and ResumeTask alike: an agent edits files without a
+        -- per-edit approval prompt, so an unattended launch is not left
+        -- blocked on a dialog nobody is watching.
+        -- ResumeTask is named deliberately. It does not share the
+        -- dispatch launch path — it composes its own claude command —
+        -- so it is the one launcher the guarantee reaches only by
+        -- assertion, not by construction.
+        -- What differentiates the modes is the prompt content, never the
+        -- permission flag. A mode that must not change code says so in
+        -- its prompt — see DispatchResearchTask, whose addendum carries
+        -- the "Do NOT make code changes" instruction.
+        -- Research was formerly the sole exception, launching with
+        -- --permission-mode plan to make investigation read-only by
+        -- construction. That traded an unattended agent for an enforced
+        -- one: plan mode parks the agent on an approval dialog for work
+        -- the research prompt already forbids, and a research session
+        -- that must ask before every read is slower without being safer.
+        -- The instruction now carries the whole constraint.
+
     @guidance
         -- == Subagent state reset ==
         -- A fresh dispatch clears every core/SubagentEntry left over from a
@@ -517,12 +540,8 @@ rule DispatchTask {
         -- Invariant: the preamble's target is always the resolved base
         -- branch (task.base_branch, or else the detected default), never a
         -- literal "main".
-        -- Task-agent dispatches launch Claude in auto mode by default —
-        -- i.e. without a --permission-mode flag — so agents can edit
-        -- files without per-edit approval. The Research agent is the
-        -- sole exception: it launches with --permission-mode plan so
-        -- investigation stays read-only. The prompt content — not the
-        -- permission flag — differentiates the other modes.
+        -- The launch carries no --permission-mode flag, for any mode —
+        -- see EveryTaskAgentLaunchesInAutoMode above.
 
         -- == Unified prompt skeleton ==
         -- Every task-agent prompt produced by build_prompt /
@@ -717,9 +736,11 @@ rule DispatchResearchTask {
         -- description by reading code, docs, and external resources.
         -- It presents findings to the user and waits for instructions.
         -- The agent makes no code changes and does not wrap up autonomously.
-        -- Uses --permission-mode plan — the sole exception among task
-        -- dispatches; every other task agent launches with no
-        -- --permission-mode flag.
+        -- Launches in auto mode with no --permission-mode flag, exactly
+        -- like every other task agent (EveryTaskAgentLaunchesInAutoMode).
+        -- "Do NOT make code changes" is a prompt instruction, not an
+        -- enforced permission boundary — the agent is trusted to honour
+        -- it rather than blocked from disobeying it.
         -- Prompt note: build_research_prompt emits a stripped-down
         -- trailing block — only {mcp_tools_instruction}, no tdd,
         -- allium, learning_tools, or wrap_up. The research agent

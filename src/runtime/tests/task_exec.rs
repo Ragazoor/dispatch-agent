@@ -279,9 +279,10 @@ async fn exec_dispatch_sends_dispatched_message() {
 /// Mode routing at the board's entry point. The `DispatchMode` match lives once
 /// (`dispatch::run_agent_for_mode`) and the service seam takes it too, so this
 /// is the assertion that the board reaches the *same* match: `Research` must
-/// launch the read-only research agent, the only one that passes
-/// `--permission-mode plan`. Its twin at the seam is
-/// `service::tasks::tests::dispatch_seam::research_mode_launches_the_read_only_research_agent`.
+/// launch the research agent. Every launcher shares one permission mode
+/// (`EveryTaskAgentLaunchesInAutoMode`), so the prompt identifies the agent.
+/// Its twin at the seam is
+/// `service::tasks::tests::dispatch_seam::research_mode_launches_the_research_agent`.
 #[tokio::test]
 async fn exec_dispatch_agent_routes_research_mode_to_the_research_agent() {
     let dir = tempfile::tempdir().unwrap();
@@ -318,10 +319,11 @@ async fn exec_dispatch_agent_routes_research_mode_to_the_research_agent() {
         "Expected Dispatched, got: {msg:?}"
     );
 
-    let argv = mock.flattened_calls().join("\n");
+    let prompt = std::fs::read_to_string(format!("{repo}/.worktrees/1-test-task/.claude-prompt"))
+        .expect("dispatch should write the prompt file");
     assert!(
-        argv.contains("--permission-mode plan"),
-        "research mode must launch with plan permissions: {argv}"
+        prompt.contains(crate::dispatch::RESEARCH_AGENT_INTRO),
+        "research mode must reach build_research_prompt: {prompt}"
     );
 }
 
