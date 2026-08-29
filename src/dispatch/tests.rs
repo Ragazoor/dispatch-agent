@@ -1,4 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+use super::agents::prompt_launch_command;
 use super::mock_sequence::{
     pr_view_reply, DispatchScript, FinishRun, PrHead, Step, COMPANION_PANE_ID,
 };
@@ -3664,5 +3665,87 @@ fn a_dispatch_that_cannot_write_the_config_launches_without_the_flag() {
     assert!(
         !launch.contains("--mcp-config"),
         "no config written means no flag, got: {launch}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The prompt is an operand, not a flag value —
+// PromptIsSeparatedFromTheLaunchFlags (docs/specs/dispatch.allium)
+// ---------------------------------------------------------------------------
+
+/// Executed rather than string-compared, on the same terms as
+/// `claude_quoted_survives_the_launcher_command_shape` in `src/process.rs`: the
+/// hazard is in how a real shell splits this command and how a real CLI then
+/// parses the argv it produces, and neither is visible in the format string.
+///
+/// `--mcp-config` is variadic (`<configs...>`) — it consumes every following
+/// word up to the next `-`-prefixed one. `agent_launch_flags` ends with it, so
+/// without the separator the prompt becomes a second MCP configuration, Claude
+/// Code resolves it as a file path relative to the worktree, and the launch
+/// fails before the agent ever starts.
+#[test]
+fn the_prompt_reaches_claude_as_an_operand_not_as_a_flag_value() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let stub = dir.path().join("claude-stub");
+    std::fs::write(&stub, "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\"; done\n").unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let prompt = "This worktree was reused from a previous attempt";
+    std::fs::write(dir.path().join(".claude-prompt"), prompt).unwrap();
+
+    // The exact flag tail `agent_launch_flags` produces: the variadic one last.
+    let cmd = prompt_launch_command(
+        &crate::process::shell_quote(&stub.to_string_lossy()),
+        "--name task-42 --mcp-config /tmp/dispatch-mcp.json",
+    );
+    let out = std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&cmd)
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "launcher command failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let argv: Vec<String> = String::from_utf8(out.stdout)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect();
+
+    assert_eq!(
+        argv,
+        vec![
+            "--name",
+            "task-42",
+            "--mcp-config",
+            "/tmp/dispatch-mcp.json",
+            "--",
+            prompt,
+        ],
+        "the prompt must arrive as one operand behind a `--` separator, got: {argv:?}"
+    );
+}
+
+/// The separator has to survive into the command the launch actually sends, not
+/// just the builder: the format string in `dispatch_with_prompt` is where it
+/// would be dropped.
+#[test]
+fn the_dispatch_launch_command_separates_the_prompt_from_the_flags() {
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    let task = make_task(&repo_path);
+
+    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+
+    let calls = mock.recorded_calls();
+    let launch = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
+    assert!(
+        launch.contains(r#" -- "$prompt""#),
+        "the prompt must be passed behind a `--` separator, got: {launch}"
     );
 }

@@ -313,6 +313,30 @@ rule DispatchTask {
         -- the session name along with the identity — a loud failure in place of
         -- the silent one this guarantee exists to prevent.
 
+    @guarantee PromptIsSeparatedFromTheLaunchFlags
+        -- A launch that passes the prompt as a positional argument puts a bare
+        -- `--` between the flags and the prompt. The prompt is then the
+        -- program's operand, whatever the flags in front of it are.
+        --
+        -- Without it the launch is only accidentally correct. Claude Code's
+        -- `--mcp-config` is VARIADIC (`<configs...>`): it keeps consuming
+        -- following words until the next `-`-prefixed one. Ending the flags
+        -- with it — which AgentCarriesItsOwnCallerIdentity above is exactly
+        -- what made happen — hands the prompt to `--mcp-config` as a second
+        -- configuration. Claude Code then resolves the prompt as a file path
+        -- relative to the worktree and refuses to start: "Invalid MCP
+        -- configuration: Failed to read file". Every dispatch fails, and the
+        -- error names a path made of the worktree and the first line of the
+        -- prompt.
+        --
+        -- So the separator is normative, not a reordering of the flags. Putting
+        -- a single-valued flag last would also work today and would break
+        -- silently the next time the flag order changed or a variadic flag was
+        -- added; nothing about the flag string would say why the order mattered.
+        --
+        -- Only the prompt-carrying launch needs it. ResumeTask passes
+        -- `--continue`, a `-`-prefixed word, which ends the variadic by itself.
+
     @guidance
         -- == Subagent state reset ==
         -- A fresh dispatch clears every core/SubagentEntry left over from a

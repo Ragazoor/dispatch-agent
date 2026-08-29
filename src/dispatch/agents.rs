@@ -251,6 +251,31 @@ pub fn resync_agent_tree_pane(window: &TmuxWindow, runner: &dyn ProcessRunner) {
     }
 }
 
+/// The command a prompt-carrying launch sends to the agent's tmux window: read
+/// `.claude-prompt`, delete it, and run `claude` with `launch_flags` and the
+/// prompt.
+///
+/// `claude` must already be one shell word ([`AgentBinaries::claude_quoted`]).
+/// It is passed as bash's `$0`, *after* the single-quoted script body rather
+/// than inside it: inside, it would sit under two quoting layers (the pane's
+/// shell strips the outer quotes, then bash parses what is left) and a path
+/// with a space would need escaping twice to survive both.
+///
+/// The `--` before the prompt is normative, not tidiness
+/// (`PromptIsSeparatedFromTheLaunchFlags` in docs/specs/dispatch.allium).
+/// Claude Code's `--mcp-config` is variadic (`<configs...>`) and
+/// [`agent_launch_flags`] ends with it, so without the separator the prompt is
+/// consumed as a second MCP configuration, resolved as a file path relative to
+/// the worktree, and the launch fails with "Invalid MCP configuration" before
+/// the agent starts. Reordering the flags so a single-valued one came last
+/// would work today and break silently the next time the order changed.
+pub(super) fn prompt_launch_command(claude: &str, launch_flags: &str) -> String {
+    format!(
+        "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
+         && \"$0\" {launch_flags} -- \"$prompt\"' {claude}"
+    )
+}
+
 /// Provision worktree, build the prompt, write the prompt file, launch Claude
 /// via tmux.
 ///
@@ -317,17 +342,9 @@ fn dispatch_with_prompt(
          {prompt}"
     );
     let prompt_file = format!("{}/.claude-prompt", provision.worktree_path);
-    // The binary goes *after* the script as bash's `$0`, not inside it. Inside
-    // the single-quoted body it would sit under two quoting layers (the pane's
-    // shell strips the outer quotes, then bash parses what's left), and a path
-    // with a space would need escaping twice to survive both. As `$0` it is one
-    // ordinary shell word, quoted once like every other launch site.
     let claude = runner.agent_binaries().claude_quoted();
     let launch_flags = agent_launch_flags(task.id, &provision.worktree_path, runner);
-    let claude_cmd = format!(
-        "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
-         && \"$0\" {launch_flags} \"$prompt\"' {claude}"
-    );
+    let claude_cmd = prompt_launch_command(&claude, &launch_flags);
 
     // Anything failing here happens after the worktree and tmux window both
     // exist — a fresh worktree (this attempt's own `git worktree add`) and the
