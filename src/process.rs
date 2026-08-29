@@ -84,7 +84,7 @@ impl AgentBinaries {
 /// The pass-through case is load-bearing, not an optimisation: the default binary
 /// names are plain, so the only change to production's emitted command string is
 /// the `$0` indirection itself — no quoting noise on top of it.
-fn shell_quote(s: &str) -> String {
+pub(crate) fn shell_quote(s: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
     if !s.is_empty() && s.chars().all(safe) {
         return s.to_string();
@@ -272,13 +272,61 @@ pub trait ProcessRunner: Send + Sync {
     fn agent_binaries(&self) -> AgentBinaries {
         AgentBinaries::default()
     }
+
+    /// Claude Code's user-global config file (`~/.claude.json`), read by
+    /// `dispatch::caller_identity` to derive the per-task MCP config an agent
+    /// is launched with.
+    ///
+    /// `None` means "no config to read from", and it is the default
+    /// deliberately: the opposite default would have every fixture in the suite
+    /// reaching for the developer's real file unless it remembered to opt out.
+    /// Only [`RealProcessRunner`] names it.
+    ///
+    /// This rides with the runner for the same reason [`Self::agent_binaries`]
+    /// does, and with the same caveat — see that method's note on why the
+    /// trait-narrowing convention does not apply. The launch sites that read it
+    /// — both of them through `agents::agent_launch_flags` — already hold a
+    /// runner and nothing else that could carry a per-environment path.
+    ///
+    /// One asymmetry with `agent_binaries` worth naming: ITS default is the
+    /// production-correct value, so a runner built without thinking still
+    /// behaves. This one's default is the degraded value, so production has to
+    /// opt in and forgetting is invisible. That is the price of the safe
+    /// direction — the opposite default would let a test reach the operator's
+    /// real file by omission, which is worse and leaves no trace either.
+    fn claude_json_path(&self) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Real implementation — wraps std::process::Command
 // ---------------------------------------------------------------------------
 
-pub struct RealProcessRunner;
+/// The production runner.
+///
+/// `claude_json` is HANDED IN, never looked up here. Startup resolves the
+/// operator's `$HOME`-derived locations once (`runtime::StartupPaths`) and
+/// passes them down; a fresh lookup buried in a launcher is exactly what
+/// `SettingsLocationIsAnExplicitStartupInput` (docs/specs/dispatch.allium)
+/// rules out, and it is what would let a run that is not the operator's own
+/// session reach the operator's configuration. [`Default`] leaves it unset, so
+/// a runner built for work that never launches an agent names no file at all.
+#[derive(Default)]
+pub struct RealProcessRunner {
+    claude_json: Option<std::path::PathBuf>,
+}
+
+impl RealProcessRunner {
+    /// A runner for the launch paths, told where Claude Code's user-global
+    /// config lives. The one caller is TUI startup, which has the resolved
+    /// [`StartupPaths`](crate::runtime::StartupPaths).
+    pub fn with_claude_json(claude_json: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            claude_json: Some(claude_json.into()),
+        }
+    }
+}
 
 impl ProcessRunner for RealProcessRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<Output> {
@@ -286,6 +334,10 @@ impl ProcessRunner for RealProcessRunner {
             .args(args)
             .output()
             .with_context(|| format!("failed to run {program}"))
+    }
+
+    fn claude_json_path(&self) -> Option<std::path::PathBuf> {
+        self.claude_json.clone()
     }
 
     fn run_with_timeout(&self, program: &str, args: &[&str], timeout: Duration) -> Result<Output> {
@@ -345,6 +397,10 @@ pub struct MockProcessRunner {
     responses: Mutex<VecDeque<(Option<Duration>, Result<Output>)>>,
     window_lookup: WindowLookup,
     binaries: AgentBinaries,
+    /// The `~/.claude.json` stand-in this runner reports, or `None` (the
+    /// default) for a runner that names no file. See
+    /// [`ProcessRunner::claude_json_path`] for why the default is inert.
+    claude_json: Option<std::path::PathBuf>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -365,7 +421,16 @@ impl MockProcessRunner {
             responses: Mutex::new(VecDeque::from(responses)),
             window_lookup: WindowLookup::AnyName(Mutex::new(Vec::new())),
             binaries: AgentBinaries::default(),
+            claude_json: None,
         }
+    }
+
+    /// Point this runner's caller-identity config derivation at `path`, so a
+    /// test exercises the real read-and-write without going anywhere near the
+    /// developer's own `~/.claude.json`.
+    pub fn with_claude_json(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.claude_json = Some(path.into());
+        self
     }
 
     /// Restrict this fake tmux server to exactly these window names, so a name
@@ -586,6 +651,10 @@ impl MockProcessRunner {
 
 #[cfg(any(test, feature = "test-support"))]
 impl ProcessRunner for MockProcessRunner {
+    fn claude_json_path(&self) -> Option<std::path::PathBuf> {
+        self.claude_json.clone()
+    }
+
     fn run(&self, program: &str, args: &[&str]) -> Result<Output> {
         let (delay, response) = self.record_and_pop(program, args, None);
         if let Some(d) = delay {
@@ -670,7 +739,42 @@ mod tests {
     /// real runner inherits, and no production code overrides it.
     #[test]
     fn real_process_runner_uses_default_agent_binaries() {
-        assert_eq!(RealProcessRunner.agent_binaries(), AgentBinaries::default());
+        assert_eq!(
+            RealProcessRunner::default().agent_binaries(),
+            AgentBinaries::default()
+        );
+    }
+
+    /// The default must be inert. The opposite default would have every
+    /// fixture in the suite reading the developer's real `~/.claude.json`
+    /// unless it remembered to opt out, and the one that forgot would leave no
+    /// trace.
+    #[test]
+    fn claude_json_path_defaults_to_none() {
+        assert!(MockProcessRunner::new(vec![]).claude_json_path().is_none());
+    }
+
+    /// Handed in, never looked up: a runner nobody told about the operator's
+    /// config cannot reach it. See `SettingsLocationIsAnExplicitStartupInput`.
+    #[test]
+    fn real_process_runner_names_no_claude_json_until_it_is_given_one() {
+        assert!(RealProcessRunner::default().claude_json_path().is_none());
+    }
+
+    #[test]
+    fn real_process_runner_reports_the_claude_json_startup_handed_it() {
+        let path = std::path::PathBuf::from("/some/where/.claude.json");
+        assert_eq!(
+            RealProcessRunner::with_claude_json(path.clone()).claude_json_path(),
+            Some(path)
+        );
+    }
+
+    #[test]
+    fn mock_process_runner_reports_the_claude_json_it_was_built_with() {
+        let path = std::path::Path::new("/tmp/some-claude.json");
+        let mock = MockProcessRunner::new(vec![]).with_claude_json(path);
+        assert_eq!(mock.claude_json_path().as_deref(), Some(path));
     }
 
     #[test]
@@ -756,7 +860,7 @@ mod tests {
 
     #[test]
     fn real_run_with_timeout_returns_output_on_success() {
-        let runner = RealProcessRunner;
+        let runner = RealProcessRunner::default();
         let result = runner.run_with_timeout("true", &[], Duration::from_secs(5));
         assert!(result.is_ok(), "expected success, got: {result:?}");
         assert!(result.unwrap().status.success());
@@ -764,7 +868,7 @@ mod tests {
 
     #[test]
     fn real_run_with_timeout_kills_stuck_process_and_returns_error() {
-        let runner = RealProcessRunner;
+        let runner = RealProcessRunner::default();
         // sleep 10 will be killed after 100ms timeout
         let result = runner.run_with_timeout("sleep", &["10"], Duration::from_millis(100));
         assert!(result.is_err(), "expected timeout error, got success");
@@ -777,7 +881,7 @@ mod tests {
 
     #[test]
     fn real_run_with_timeout_captures_stdout() {
-        let runner = RealProcessRunner;
+        let runner = RealProcessRunner::default();
         let result = runner.run_with_timeout("echo", &["hello"], Duration::from_secs(5));
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -791,7 +895,7 @@ mod tests {
 
     #[test]
     fn real_run_missing_binary_returns_error() {
-        let runner = RealProcessRunner;
+        let runner = RealProcessRunner::default();
         let result = runner.run(MISSING_BINARY, &[]);
         assert!(result.is_err(), "expected spawn error, got: {result:?}");
         let msg = format!("{:#}", result.unwrap_err());
@@ -803,7 +907,7 @@ mod tests {
 
     #[test]
     fn real_run_with_timeout_missing_binary_returns_error() {
-        let runner = RealProcessRunner;
+        let runner = RealProcessRunner::default();
         let result = runner.run_with_timeout(MISSING_BINARY, &[], Duration::from_secs(5));
         assert!(result.is_err(), "expected spawn error, got: {result:?}");
         let msg = format!("{:#}", result.unwrap_err());

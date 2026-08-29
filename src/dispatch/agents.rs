@@ -29,6 +29,29 @@ fn session_name_flag(task_id: TaskId) -> String {
     format!(" --name {}", TmuxWindow::for_task(task_id))
 }
 
+/// The flags every TASK agent's `claude` command line carries: the plugin dir
+/// and settings, the session name, and this task's caller-identity MCP config.
+///
+/// One seam for both launch sites (`dispatch_with_prompt` and `resume_agent`),
+/// because forgetting one of these is silent. `AgentCarriesItsOwnCallerIdentity`
+/// (docs/specs/dispatch.allium) says the config is owed by every launch, and
+/// `CallerIdentityDependsOnTheLaunch` (docs/specs/mcp-task-tools.allium) says a
+/// launch that omits it is indistinguishable at the MCP end from a session that
+/// is not an agent at all — so a third launcher composing its own flag string
+/// would reintroduce exactly the bug this exists to fix, and nothing would say
+/// so. Coming through here, forgetting it also drops `--plugin-dir` and
+/// `--name`, which fails loudly.
+///
+/// `create_main_session` deliberately does NOT use this: it opens a plain
+/// interactive session belonging to no task, so it has no identity to carry.
+fn agent_launch_flags(task_id: TaskId, worktree_path: &str, runner: &dyn ProcessRunner) -> String {
+    format!(
+        "{DISPATCH_PLUGIN_DIR}{}{}",
+        session_name_flag(task_id),
+        super::caller_identity::mcp_config_flag(runner, worktree_path, task_id)
+    )
+}
+
 /// Width of the `dispatch agent-tree` companion pane, as a percentage of the
 /// agent window — narrower than [`tmux::split_window_horizontal`]'s 40%
 /// (the board's own split-pane feature), since the agent's own `claude` CLI
@@ -300,10 +323,10 @@ fn dispatch_with_prompt(
     // with a space would need escaping twice to survive both. As `$0` it is one
     // ordinary shell word, quoted once like every other launch site.
     let claude = runner.agent_binaries().claude_quoted();
-    let name_flag = session_name_flag(task.id);
+    let launch_flags = agent_launch_flags(task.id, &provision.worktree_path, runner);
     let claude_cmd = format!(
         "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
-         && \"$0\" {DISPATCH_PLUGIN_DIR}{name_flag} \"$prompt\"' {claude}"
+         && \"$0\" {launch_flags} \"$prompt\"' {claude}"
     );
 
     // Anything failing here happens after the worktree and tmux window both
@@ -545,10 +568,12 @@ pub fn resume_agent(
     tmux::ensure_split_hook(runner).context("failed to ensure tmux split hook")?;
 
     let claude = runner.agent_binaries().claude_quoted();
-    let name_flag = session_name_flag(task_id);
+    // Below the live-window early return above, deliberately: these flags cost
+    // a config write, and a resume that only reattaches launches nothing.
+    let launch_flags = agent_launch_flags(task_id, worktree_path, runner);
     tmux::send_keys(
         &tmux_window,
-        &format!("{claude} {DISPATCH_PLUGIN_DIR}{name_flag} --continue"),
+        &format!("{claude} {launch_flags} --continue"),
         runner,
     )
     .context("failed to send resume keys to tmux window")?;

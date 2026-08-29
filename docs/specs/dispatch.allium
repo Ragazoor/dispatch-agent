@@ -253,6 +253,66 @@ rule DispatchTask {
         -- that must ask before every read is slower without being safer.
         -- The instruction now carries the whole constraint.
 
+    @guarantee AgentCarriesItsOwnCallerIdentity
+        -- Every agent launch hands Claude Code a per-task MCP configuration
+        -- that declares the dispatch server with a FIXED
+        -- `X-Caller-Task-Id: <task.id>` header. The agent's identity travels
+        -- with the launch, decided by the launcher that already knows which
+        -- task it is starting.
+        --
+        -- It cannot be derived at the agent's end. The
+        -- `dispatch caller-headers` headersHelper that `dispatch setup`
+        -- installs in Claude Code's user-global config reads its own working
+        -- directory to recognise a `.worktrees/<id>-<slug>` path — and Claude
+        -- Code runs a helper declared there from ITS OWN config directory, not
+        -- from the session's. The helper therefore answers "session" for every
+        -- dispatched agent, correctly for the directory it was handed and
+        -- uselessly for the question being asked. Nothing in the environment it
+        -- receives names the session's workspace, so no amount of repair to the
+        -- helper can recover the answer.
+        --
+        -- Where that entry lives is HANDED to the launch, not looked up by it,
+        -- on the same terms and for the same reason as
+        -- SettingsLocationIsAnExplicitStartupInput below: startup resolves the
+        -- operator's locations once and passes them down, so a run that is not
+        -- the operator's own session is handed locations of its own and cannot
+        -- reach theirs. A launch told about no such location writes no
+        -- configuration, which is the best-effort arm below.
+        --
+        -- The per-task configuration is DERIVED FROM the user's own `dispatch`
+        -- entry rather than composed from scratch: the entry is copied, its
+        -- headersHelper dropped, and the fixed header put in its place. So the
+        -- transport and the URL — including a non-default port — cannot drift
+        -- from what `dispatch setup` wrote, and there is no second place that
+        -- has to be taught the port.
+        --
+        -- The configuration is ADDITIVE, never exclusive. It overrides the
+        -- same-named user entry and leaves every other MCP server the operator
+        -- has configured available to the agent; an agent launched with only
+        -- the dispatch server would silently lose tools the task may need.
+        --
+        -- It lives in the worktree's own git administrative directory. That
+        -- keeps it out of `git status`, so an agent cannot commit it into the
+        -- repository it is working on, and it is removed by the
+        -- `git worktree remove` that TaskTeardown already performs — see
+        -- CallerIdentityConfigGoesWithTheWorktree in tasks.allium. Nothing
+        -- else deletes it and nothing needs to.
+        --
+        -- BEST-EFFORT, and it degrades in one direction only: if the
+        -- configuration cannot be written the agent is launched WITHOUT it,
+        -- never with a path that does not exist. The failure is warn-logged and
+        -- costs the caller-identity surfaces (see
+        -- CallerIdentityDependsOnTheLaunch in mcp-task-tools.allium) — exactly
+        -- the state the system was already in — which is not worth trading a
+        -- launched agent for.
+        --
+        -- Owed by every launch, not only by provisioning: resuming into an
+        -- existing worktree (ResumeTask) launches an agent and therefore owes
+        -- it too. Both launches compose their flags through one seam, so a
+        -- third launcher that bypassed it would lose the plugin directory and
+        -- the session name along with the identity — a loud failure in place of
+        -- the silent one this guarantee exists to prevent.
+
     @guidance
         -- == Subagent state reset ==
         -- A fresh dispatch clears every core/SubagentEntry left over from a
@@ -771,6 +831,14 @@ rule ResumeTask {
             AgentLaunched(task: task, mode: resume)
 
     @guidance
+        -- Resuming launches an agent, so it writes the same per-task MCP
+        -- configuration a provisioning launch does — see
+        -- AgentCarriesItsOwnCallerIdentity in DispatchTask. Resume is the one
+        -- launch path that never provisions; without this its agent would be
+        -- the only one left unidentifiable. The write is owed only where an
+        -- agent is actually launched: the live-window branch below launches
+        -- nothing and needs nothing.
+        --
         -- Resuming reattaches the agent in the existing worktree. When no live
         -- window is found (the common case), it spawns a fresh tmux window and
         -- moves the task back to running, reusing the same ensures as a

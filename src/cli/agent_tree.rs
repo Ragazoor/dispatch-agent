@@ -674,7 +674,12 @@ pub async fn run(db_path: &Path, task_id: i64) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_loop(&mut terminal, &root, &base_branch, &RealProcessRunner);
+    let result = run_loop(
+        &mut terminal,
+        &root,
+        &base_branch,
+        &RealProcessRunner::default(),
+    );
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;

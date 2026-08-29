@@ -1682,8 +1682,12 @@ fn caller_headers_emits_session_header_outside_a_worktree() {
     assert_eq!(v["X-Caller-Kind"], "session");
 }
 
+/// The helper has one answer. Standing inside a worktree — the shape it used to
+/// read a task identity out of — changes nothing, because Claude Code never runs
+/// it there: a user-global helper runs from Claude Code's own configuration
+/// directory. A dispatched agent's identity comes from its launch instead.
 #[test]
-fn caller_headers_emits_task_header_inside_a_worktree() {
+fn caller_headers_emits_session_even_inside_a_worktree() {
     let tmp = tempfile::tempdir().unwrap();
     let wt = tmp.path().join(".worktrees").join("3840-some-slug");
     std::fs::create_dir_all(&wt).unwrap();
@@ -1694,5 +1698,9 @@ fn caller_headers_emits_task_header_inside_a_worktree() {
         .unwrap();
     assert!(out.status.success(), "caller-headers must exit 0");
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["X-Caller-Task-Id"], "3840");
+    assert_eq!(v["X-Caller-Kind"], "session");
+    assert!(
+        v.get("X-Caller-Task-Id").is_none(),
+        "the helper must never claim a task identity: {v}"
+    );
 }

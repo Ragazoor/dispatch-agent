@@ -799,6 +799,15 @@ rule MoveTaskToEpic {
 --   * worktree, no window -> steps 2 and 3.
 --   * neither -> nothing.
 --
+-- CallerIdentityConfigGoesWithTheWorktree. Step 2 is also what releases the
+-- per-task MCP configuration each launch writes (AgentCarriesItsOwnCallerIdentity
+-- in dispatch.allium). It is deliberately placed inside the worktree's own git
+-- administrative directory, which `git worktree remove` deletes along with the
+-- worktree, so teardown gains no fourth step and no separate failure mode. A
+-- teardown that leaves the worktree in place (WorktreeReleaseIsGated below)
+-- leaves the configuration with it, which is correct: the same worktree
+-- re-dispatched is the same task, and the file it holds still names it.
+--
 -- Step 1 is NOT contingent on step 2 having something to remove. Making the
 -- whole teardown conditional on the worktree leaks the window of a window-only
 -- task, and it is what the archive/delete path did until #4096 while the feed

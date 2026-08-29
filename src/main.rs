@@ -176,11 +176,13 @@ enum Commands {
         /// Shell command to run (executed via sh -c)
         command: String,
     },
-    /// Emit a JSON object of HTTP headers identifying the current caller.
+    /// Emit a JSON object of HTTP headers identifying the caller as a
+    /// non-dispatched session.
     ///
-    /// Used as a headersHelper in Claude Code's ~/.claude.json — invoked on every
-    /// MCP session start and reconnect. Pure path parser; reads only $PWD,
-    /// no DB access.
+    /// Used as a headersHelper in Claude Code's ~/.claude.json — invoked on
+    /// every MCP session start and reconnect. Reads nothing at all: it has one
+    /// answer, and a dispatched agent's identity comes from its launch
+    /// instead.
     CallerHeaders,
     /// Manage per-repo settings (verify command, etc.).
     Repo {
@@ -616,8 +618,7 @@ fn cmd_statusline(snapshot: &str, chain: Option<&str>) -> ! {
 }
 
 fn cmd_caller_headers() -> Result<()> {
-    let cwd = std::env::current_dir()?;
-    let (stdout, code) = dispatch_tui::cli::caller_headers::resolve_headers_for_path(&cwd);
+    let (stdout, code) = dispatch_tui::cli::caller_headers::resolve_headers();
     if code == 0 {
         println!("{stdout}");
     } else {
@@ -685,7 +686,7 @@ async fn cmd_repo_status(database: &db::Database, no_fetch: bool) -> Result<()> 
         .map(|path| {
             let expanded = expand_tilde(path);
             tokio::task::spawn_blocking(move || {
-                let runner = dispatch_tui::process::RealProcessRunner;
+                let runner = dispatch_tui::process::RealProcessRunner::default();
                 dispatch_tui::repo_sync::measure_repo(&expanded, !no_fetch, &runner)
             })
         })
@@ -737,7 +738,7 @@ async fn cmd_repo_sync(database: &db::Database, path: Option<String>) -> Result<
         }
     }
 
-    let runner = dispatch_tui::process::RealProcessRunner;
+    let runner = dispatch_tui::process::RealProcessRunner::default();
     let mut failed = 0;
     for target in &targets {
         let expanded = expand_tilde(target);
@@ -816,7 +817,7 @@ fn cmd_toggle_agent_tree_pane(db: &std::path::Path, window: String) -> Result<()
         tracing::warn!(%window, "agent-tree toggle called with a non-window target");
         return Ok(());
     };
-    let runner = dispatch_tui::process::RealProcessRunner;
+    let runner = dispatch_tui::process::RealProcessRunner::default();
     if let Err(e) = dispatch::toggle_agent_tree_pane(&window, &runner) {
         tracing::warn!(%window, error = %e, "failed to toggle agent-tree companion pane");
     }

@@ -34,6 +34,13 @@ into your branch and re-run the suite before reporting completion; a green run
 against a stale base proves nothing. Assume a function you did not write may have
 been rewritten since you read it.
 
+**Compare against `main`, not `origin/main`.** A sibling agent wrapping up with
+the rebase path fast-forwards the *local* `main` in the parent checkout and does
+not push, so `HEAD..origin/main` can be empty while `HEAD..main` holds the very
+commit that moved your base. Fetching first does not help — there is nothing on
+the remote to fetch. Substituting `origin/main` here reads as "main has not
+moved" and is wrong in exactly the case this check exists for.
+
 **A clean merge doesn't mean no conflict.** `HEAD..main` isn't only a code-conflict
 check. A sibling task's commit can record a *design decision* — in a
 `docs/plans/` doc or an Allium guarantee — that directly contradicts what you're

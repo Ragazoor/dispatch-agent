@@ -4,10 +4,20 @@ use anyhow::Result;
 use serde_json::{json, Map, Value};
 
 use super::{read_json_file, write_json_file};
+use crate::models::TaskId;
 
 // ---------------------------------------------------------------------------
 // MCP config merging
 // ---------------------------------------------------------------------------
+
+/// The name of the MCP server entry dispatch owns, in Claude Code's config.
+///
+/// Written here and matched by `dispatch::caller_identity`, whose per-task
+/// entry must reuse it in order to OVERRIDE this one rather than sit beside it.
+/// Renaming it in only one of the two places drops every agent back to no
+/// caller identity, and says so nowhere the compiler can see — which is why
+/// both ends read this constant.
+pub(crate) const SERVER_NAME: &str = "dispatch";
 
 pub struct MergeResult {
     pub value: Value,
@@ -19,6 +29,40 @@ pub struct MergeResult {
 /// Uses the absolute path of the currently-running dispatch binary so
 /// the helper invocation is unambiguous regardless of `$PATH`. Falls
 /// back to the bare command name if `current_exe()` is unavailable.
+/// The installed `dispatch` entry, restated to identify `task_id` by a fixed
+/// header instead of by a helper.
+///
+/// Read-back of what [`merge_mcp_config`] wrote, and it lives beside it so the
+/// two cannot drift: this knows the `mcpServers` key path, the server name, and
+/// which key it has to strip.
+///
+/// Deriving from the installed entry rather than composing a fresh one is what
+/// keeps the transport and URL — a non-default port above all — from having to
+/// be taught to a second place.
+///
+/// Dropping `headersHelper` is required, not tidiness: with both present the
+/// two would answer the same request, and a request carrying both identity
+/// headers is rejected outright (`CallerIdentity::from_headers` → `Conflict`).
+///
+/// `None` when there is no config to read, or no `dispatch` entry in it.
+pub(crate) fn dispatch_entry_identifying(
+    claude_json: &std::path::Path,
+    task_id: TaskId,
+) -> Option<Value> {
+    let json = read_json_file(claude_json).ok().flatten()?;
+    let mut entry = json
+        .get("mcpServers")?
+        .get(SERVER_NAME)?
+        .as_object()
+        .cloned()?;
+    entry.remove("headersHelper");
+    entry.insert(
+        "headers".to_string(),
+        json!({ crate::mcp::identity::HEADER_TASK_ID: task_id.0.to_string() }),
+    );
+    Some(json!({ "mcpServers": { SERVER_NAME: Value::Object(entry) } }))
+}
+
 fn caller_headers_helper() -> String {
     let exe = std::env::current_exe()
         .ok()
@@ -31,6 +75,12 @@ pub fn merge_mcp_config(existing: Option<Value>, port: u16) -> MergeResult {
     let server_entry = json!({
         "type": "http",
         "url": format!("http://localhost:{port}/mcp"),
+        // Serves non-dispatched sessions only. A dispatched agent's launch
+        // overrides this entry with one that drops this key and carries a fixed
+        // caller-task header instead — see `dispatch_entry_identifying` below,
+        // and `dispatch::caller_identity` for why the helper cannot answer for
+        // an agent. Removing the strip without removing this would put both
+        // identity headers on the wire, which is rejected outright.
         "headersHelper": caller_headers_helper(),
     });
 
@@ -42,13 +92,13 @@ pub fn merge_mcp_config(existing: Option<Value>, port: u16) -> MergeResult {
     let servers = root.entry("mcpServers").or_insert_with(|| json!({}));
 
     if let Value::Object(servers_map) = servers {
-        if servers_map.get("dispatch") == Some(&server_entry) {
+        if servers_map.get(SERVER_NAME) == Some(&server_entry) {
             return MergeResult {
                 value: Value::Object(root),
                 changed: false,
             };
         }
-        servers_map.insert("dispatch".to_string(), server_entry);
+        servers_map.insert(SERVER_NAME.to_string(), server_entry);
     }
 
     MergeResult {
@@ -73,7 +123,7 @@ pub fn remove_mcp_config(mcp_path: &std::path::Path) -> Result<bool> {
     };
 
     let had_dispatch = if let Some(Value::Object(servers)) = root.get_mut("mcpServers") {
-        servers.remove("dispatch").is_some()
+        servers.remove(SERVER_NAME).is_some()
     } else {
         false
     };

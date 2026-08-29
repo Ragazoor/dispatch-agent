@@ -477,7 +477,13 @@ impl TuiRuntime {
         });
 
         // Spawn MCP server with notification channel.
-        let runner: Arc<dyn ProcessRunner> = Arc::new(RealProcessRunner);
+        // Handed the operator's config location rather than looking it up — see
+        // `SettingsLocationIsAnExplicitStartupInput`. This one runner backs the
+        // MCP server, the feed runner and `TaskService`, so every launch path
+        // gets the same answer.
+        let runner: Arc<dyn ProcessRunner> = Arc::new(RealProcessRunner::with_claude_json(
+            paths.claude_json_path.clone(),
+        ));
         let data_dir = db_path
             .parent()
             .unwrap_or(std::path::Path::new("."))

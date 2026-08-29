@@ -20,6 +20,7 @@ use crate::db::Database;
 use crate::process::RealProcessRunner;
 use crate::tmux;
 
+pub(crate) use config::dispatch_entry_identifying;
 pub use config::{merge_mcp_config, remove_mcp_config, MergeResult};
 pub use plugins::{install_example_script, remove_plugin, seed_feed_epics};
 
@@ -307,7 +308,7 @@ pub async fn run_setup(port: u16, yes: bool, db_path: &Path) -> Result<()> {
         port,
         yes,
         &StdinConfirmer,
-        &RealProcessRunner,
+        &RealProcessRunner::default(),
     )
     .await
 }

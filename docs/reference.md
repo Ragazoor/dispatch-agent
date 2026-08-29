@@ -151,7 +151,7 @@ dispatch hook-subagent <id> <start|stop|clear> [--agent-id <id>] [--session-id <
 dispatch hook-shell <id> <start|stop> [--shell-id <id>] [--session-id <id>]
 dispatch hook-peer-message <id> --target <session> --body <text>
 dispatch pr-gate <id>                            # PreToolUse gate on the first `gh pr create`
-dispatch caller-headers                          # headersHelper: $PWD → X-Caller-* headers
+dispatch caller-headers                          # headersHelper: always emits X-Caller-Kind: session
 
 # Agent-tree companion pane
 dispatch agent-tree <task-id>                    # standalone file-tree renderer for one agent

@@ -149,7 +149,7 @@ impl TmuxServer {
         SocketRunner {
             socket: self.socket.clone(),
             binaries: self.agent_binaries(),
-            inner: RealProcessRunner,
+            inner: RealProcessRunner::default(),
         }
     }
 

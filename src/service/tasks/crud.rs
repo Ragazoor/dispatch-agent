@@ -147,7 +147,11 @@ impl TaskService {
     /// Construct a `TaskService` that shells out for real. Named so that the
     /// non-hermetic choice is visible at the call site; see [`new`](Self::new).
     pub fn new_with_real_runner(db: Arc<dyn db::TaskStore>) -> Self {
-        Self::new(db, Arc::new(crate::process::RealProcessRunner))
+        // `RealProcessRunner::default()` names no `~/.claude.json`, so an agent
+        // dispatched through a service built here would carry no caller
+        // identity. No caller does that today (pr-gate, hooks, plan attach);
+        // one that needs to must hand the runner the path, as TUI startup does.
+        Self::new(db, Arc::new(crate::process::RealProcessRunner::default()))
     }
 
     /// Override the clock used for timestamping. Tests inject a

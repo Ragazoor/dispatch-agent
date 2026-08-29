@@ -125,6 +125,41 @@ pub(crate) fn make_test_repo_with_worktree(
     (dir, repo_path, worktree_dir)
 }
 
+/// Turn `<base>/.worktrees/<slug>` into a real LINKED worktree: the directory,
+/// its git admin directory, and the `gitdir:` pointer git writes between them.
+/// Returns the worktree path and its admin directory.
+///
+/// `pub(crate)` for the same reason as [`make_test_repo_with_worktree`] above —
+/// `dispatch::caller_identity`'s own tests need this precondition, and a second
+/// copy is how the two would drift the day the pointer's shape changes.
+pub(crate) fn make_linked_worktree(
+    base: &std::path::Path,
+    slug: &str,
+) -> (String, std::path::PathBuf) {
+    let worktree = base.join(".worktrees").join(slug);
+    std::fs::create_dir_all(&worktree).unwrap();
+    let admin = base.join(".git").join("worktrees").join(slug);
+    std::fs::create_dir_all(&admin).unwrap();
+    std::fs::write(
+        worktree.join(".git"),
+        format!("gitdir: {}\n", admin.display()),
+    )
+    .unwrap();
+    (worktree.to_string_lossy().into_owned(), admin)
+}
+
+/// A `~/.claude.json` holding exactly the entry `dispatch setup` writes.
+pub(crate) fn claude_json_with_dispatch_entry(dir: &std::path::Path) -> std::path::PathBuf {
+    let path = dir.join("claude.json");
+    std::fs::write(
+        &path,
+        serde_json::to_string(&crate::setup::merge_mcp_config(None, crate::DEFAULT_PORT).value)
+            .unwrap(),
+    )
+    .unwrap();
+    path
+}
+
 #[test]
 fn find_call_arg_returns_matching_arg() {
     let calls = vec![
@@ -3546,4 +3581,88 @@ fn spawn_constant_contains_no_whitespace_hazard() {
             "no runtime interpolation allowed in the spawn constant: {token}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Caller identity at the launch — AgentCarriesItsOwnCallerIdentity
+// (docs/specs/dispatch.allium)
+//
+// The headersHelper cannot identify a dispatched agent: Claude Code runs a
+// user-global helper from its own config directory, so `dispatch caller-headers`
+// never sees the worktree and answers "session" every time. The launcher says
+// it instead, through a per-task MCP config named on the `claude` command line.
+// These assert the launch carries it; the file's own contents and placement are
+// covered in `super::caller_identity`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dispatch_launches_claude_with_the_per_task_mcp_config() {
+    let (dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let (_worktree, admin) = make_linked_worktree(dir.path(), "42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script
+        .runner()
+        .with_claude_json(claude_json_with_dispatch_entry(dir.path()));
+    let task = make_task(&repo_path);
+
+    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+
+    let calls = mock.recorded_calls();
+    let launch = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
+    assert!(
+        launch.contains(&format!(
+            "--mcp-config {}",
+            admin.join("dispatch-mcp.json").display()
+        )),
+        "the launch must name the task's own MCP config, got: {launch}"
+    );
+    // Asserted on the composed command, not only on the flag builder: strict
+    // mode could be added to this format string without the unit test noticing.
+    assert!(
+        !launch.contains("--strict-mcp-config"),
+        "strict mode strips every other MCP server the operator configured, got: {launch}"
+    );
+}
+
+#[test]
+fn resume_launches_claude_with_the_per_task_mcp_config() {
+    // Resume is the one launch path that never provisions, so it writes the
+    // config itself rather than inheriting one.
+    let dir = tempfile::TempDir::new().unwrap();
+    let (worktree_path, admin) = make_linked_worktree(dir.path(), "42-fix-bug");
+    let script = DispatchScript::resume();
+    let mock = script
+        .runner()
+        .with_claude_json(claude_json_with_dispatch_entry(dir.path()));
+
+    resume_agent(TaskId(42), &worktree_path, &mock).unwrap();
+
+    let calls = mock.recorded_calls();
+    let launch = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
+    assert!(
+        launch.contains(&format!(
+            "--mcp-config {}",
+            admin.join("dispatch-mcp.json").display()
+        )),
+        "resume must carry caller identity too, got: {launch}"
+    );
+}
+
+#[test]
+fn a_dispatch_that_cannot_write_the_config_launches_without_the_flag() {
+    // Degrading to the old behaviour (no caller identity) is acceptable.
+    // Naming a file that does not exist is not — it breaks the launch itself.
+    let (_dir, repo_path, _worktree_dir) = make_test_repo_with_worktree("42-fix-bug");
+    let script = DispatchScript::dispatch();
+    let mock = script.runner();
+    let task = make_task(&repo_path);
+
+    dispatch_agent(&task, &mock, None, &LearningInjections::default()).unwrap();
+
+    let calls = mock.recorded_calls();
+    let launch = find_call_arg(&calls, script.index_of(Step::SendKeysLiteral), "claude");
+    assert!(
+        !launch.contains("--mcp-config"),
+        "no config written means no flag, got: {launch}"
+    );
 }

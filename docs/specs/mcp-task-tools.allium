@@ -257,12 +257,28 @@ rule CreateTaskViaMcp {
 
     -- caller_identity is supplied by the dispatch HTTP transport, not by
     -- the tool arguments. It is one of:
-    --   Task(task_id)   — dispatched agent; CWD matched .worktrees/<id>-<slug>
+    --   Task(task_id)   — a dispatched agent
     --   Session         — any non-dispatched session
     --
-    -- The X-Caller-Task-Id and X-Caller-Kind HTTP headers are produced
-    -- by the `dispatch caller-headers` headersHelper installed in
-    -- Claude Code's user-global config (~/.claude.json) by `dispatch setup`.
+    -- The two identities reach the transport by different routes, and the
+    -- headersHelper supplies only one of them:
+    --   Task(id) — a fixed X-Caller-Task-Id header in the per-task MCP
+    --     configuration the launcher writes for that agent (see
+    --     AgentCarriesItsOwnCallerIdentity in dispatch.allium).
+    --   Session — X-Caller-Kind: session, from the
+    --     `dispatch caller-headers` headersHelper installed in Claude Code's
+    --     user-global config (~/.claude.json) by `dispatch setup`.
+    --
+    -- TheHelperAnswersSessionUnconditionally. The helper takes no reading of
+    -- its surroundings and has no second answer to give: `session` is the
+    -- whole of it. It once derived a task identity by inspecting its own
+    -- working directory for a worktree path, which could not work — Claude
+    -- Code runs a user-global helper from its own configuration directory,
+    -- so the directory it inspected was never the agent's (see
+    -- CallerIdentityDependsOnTheLaunch below). Keeping that derivation as an
+    -- unreachable branch would leave two mechanisms answering "which task is
+    -- this agent", one of them a dead end that the next investigation of a
+    -- wrong caller identity would search first.
 
     -- A Task-kind caller must reference an existing task.
     requires:
@@ -302,11 +318,24 @@ rule CreateTaskViaMcp {
 
     @guidance
         -- Dispatched agents never pass caller_task_id explicitly — the
-        -- transport carries identity. The dispatched-agent's worktree
-        -- path (`.worktrees/<task-id>-<slug>`) is parsed by the
-        -- `dispatch caller-headers` headersHelper, which emits
-        -- `X-Caller-Task-Id: <id>` on every MCP request.
-        -- Non-dispatched sessions emit `X-Caller-Kind: session` instead.
+        -- transport carries identity.
+        --
+        -- CallerIdentityDependsOnTheLaunch. A dispatched agent is identified
+        -- because its LAUNCH said so, not because anything at the agent's end
+        -- worked out which task it is. The headersHelper cannot: Claude Code
+        -- runs a user-global helper from its own config directory, so a helper
+        -- that tried to recognise a `.worktrees/<id>-<slug>` working directory
+        -- would never see one. It therefore answers `session` and nothing else
+        -- (TheHelperAnswersSessionUnconditionally above), which for a
+        -- dispatched agent is indistinguishable, here, from a genuine
+        -- non-dispatched session.
+        --
+        -- The degradation is therefore silent and one-directional: an agent
+        -- launched without its per-task configuration inherits no epic below
+        -- and gets no auto-scoping in ListTasksViaMcp, with no error on
+        -- either surface. Neither rule can detect the difference, so the
+        -- obligation lives entirely on the dispatch side — see
+        -- AgentCarriesItsOwnCallerIdentity in dispatch.allium.
         -- Passing epic_id: null explicitly (as opposed to omitting it)
         -- means "no epic" even when the caller has one.
         --
@@ -584,7 +613,9 @@ rule AttachPlanViaCli {
 --     no longer exists on the filesystem. Operator-only housekeeping.
 --   • `dispatch hook <id> <kind> [--kind K]` — see HookNotification in agent-health.allium.
 --   • `dispatch pr-gate <id>` — see PrLearningsGate in pr-workflow.allium.
---   • `dispatch caller-headers` — see CreateTaskViaMcp guidance.
+--   • `dispatch caller-headers` — prints the session identity header and
+--     exits 0, always. Reads nothing: not its arguments, not its working
+--     directory, not the database. See CreateTaskViaMcp guidance.
 --   • `dispatch verify-feed <command>` — see VerifyFeed in feeds.allium.
 --
 -- There is deliberately NO CLI surface for listing tasks or changing a
