@@ -280,7 +280,12 @@ fn init_app_log_subscriber(data_dir: &std::path::Path) -> Result<()> {
 async fn cmd_tui(db: &std::path::Path, port: u16) -> Result<()> {
     let data_dir = db.parent().unwrap_or(std::path::Path::new("."));
     init_app_log_subscriber(data_dir)?;
-    runtime::run_tui(db, port).await
+    // The one place the TUI path resolves the operator's `$HOME`-derived
+    // locations. Startup is handed the result, so nothing inside it can reach
+    // the operator's real config on its own — see docs/specs/dispatch.allium:
+    // SettingsLocationIsAnExplicitStartupInput.
+    let paths = runtime::StartupPaths::resolve()?;
+    runtime::run_tui(db, port, &paths).await
 }
 
 async fn cmd_pr_gate(db: &std::path::Path, id: i64) -> Result<()> {

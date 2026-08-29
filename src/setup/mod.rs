@@ -27,6 +27,12 @@ pub use plugins::{install_example_script, remove_plugin, seed_feed_epics};
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+/// Path to Claude Code's user-global configuration directory (`~/.claude`).
+///
+/// Every caller resolves this once and then passes the result around — see
+/// [`SetupPaths::resolve`], [`UninstallPaths::resolve`] and
+/// `runtime::StartupPaths::resolve`. Nothing re-derives it mid-flow, which is
+/// what lets a test point a whole flow at a temp directory.
 pub(super) fn claude_dir() -> Result<PathBuf> {
     let home = std::env::var("HOME").context("$HOME is not set")?;
     Ok(PathBuf::from(home).join(".claude"))
@@ -276,7 +282,7 @@ impl SetupPaths {
     fn resolve() -> Result<Self> {
         let claude_dir = claude_dir()?;
         let legacy_mcp_path = claude_dir.join(".mcp.json");
-        let statusline_path = claude_dir.join(statusline::SETTINGS_FILE_NAME);
+        let statusline_path = statusline::settings_path(&claude_dir);
         Ok(Self {
             claude_dir,
             mcp_path: user_global_config_path()?,
@@ -451,7 +457,7 @@ impl UninstallPaths {
             legacy_mcp_path: claude_dir.join(".mcp.json"),
             plugin_path: plugins::plugin_dir()?,
             db_path: crate::default_db_path(),
-            statusline_path: claude_dir.join(statusline::SETTINGS_FILE_NAME),
+            statusline_path: statusline::settings_path(&claude_dir),
         })
     }
 }
@@ -1130,7 +1136,7 @@ mod tests {
             mcp_path: root.join(".claude.json"),
             legacy_mcp_path: claude_dir.join(".mcp.json"),
             tmux_conf_path: root.join(".tmux.conf"),
-            statusline_path: claude_dir.join(statusline::SETTINGS_FILE_NAME),
+            statusline_path: statusline::settings_path(&claude_dir),
             budget_snapshot_path: root.join("data").join("rate-limits.json"),
         }
     }

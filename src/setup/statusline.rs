@@ -21,6 +21,14 @@ use std::path::Path;
 /// run — see the module doc comment above.
 pub(crate) const SETTINGS_FILE_NAME: &str = "dispatch-statusline.json";
 
+/// The settings file's full path under a resolved `~/.claude` directory.
+///
+/// One helper rather than an open-coded `join` at each site, so every caller
+/// agrees on the layout: setup, uninstall, TUI startup and their tests.
+pub(crate) fn settings_path(claude_dir: &Path) -> std::path::PathBuf {
+    claude_dir.join(SETTINGS_FILE_NAME)
+}
+
 /// The fixed snapshot file name, beside the *default* database — never beside
 /// whichever database the current process has open.
 ///

@@ -365,9 +365,19 @@ Two rules make it temporary rather than permanent: the comment must name the spe
 
 Tests live inline behind `#[cfg(test)]` blocks (or in sibling `tests/` sub-modules) in the same file as the production code. Large files like `src/models/tasks.rs` (≈1700 LOC) are roughly half tests. If a file looks unexpectedly large, check how much of it is `#[cfg(test)]` before concluding the production code is complex.
 
-## Test-injectable path fields on `TuiRuntime`
+## Test-injectable paths — never resolve `$HOME` at the point of use
 
-When a handler's only route to a real filesystem path is a free function that hardcodes it (e.g. `$HOME/...`), the fix is a `PathBuf` field on `TuiRuntime` that defaults to the real path in production and is overridden with a tempfile in tests — not a parameter threaded through every call site, and not mutating `$HOME` itself (see "No `tokio::time::sleep` in tests" for the same reasoning against mutating shared process state from a test). `budget_snapshot_path` (`src/runtime/mod.rs`, read by `exec_refresh_budget`) established the pattern; `claude_json_path` (read/written by the trust-gated `TaskCommand` arms via `dispatch::is_trusted_at`/`dispatch::trust_at`) is the second instance. Test fixtures that build a `TuiRuntime` directly (`make_runtime`, `editor_runtime`) default the field to a nonexistent path, so a test that never overrides it fails safe (read as absent, write fails) instead of silently touching the real file.
+Nothing may reach a real `$HOME`-derived path by calling a resolver where it needs the value. The path is resolved once, as far out as the flow goes, and passed inward. Never mutate `$HOME` itself to redirect it either (see "No `tokio::time::sleep` in tests" for the same reasoning against mutating shared process state from a test).
+
+Which of the two shapes you want depends on *when* the value is needed.
+
+**A `PathBuf` field on `TuiRuntime`**, for a path read after startup, by a handler. It defaults to the real path in production and a test overrides it with a tempfile. `budget_snapshot_path` (`src/runtime/mod.rs`, read by `exec_refresh_budget`) established the pattern. Test fixtures that build a `TuiRuntime` directly (`make_runtime`, `editor_runtime`) default such a field to a nonexistent path, so a test that never overrides it fails safe (read as absent, write fails) instead of silently touching the real file.
+
+**A resolved-paths struct**, for a path needed *during* startup or setup — before any long-lived struct exists to hang a field on. A field override comes too late there, and one parameter per path grows the signature every time a new operator-owned file is discovered. `SetupPaths::resolve` and `UninstallPaths::resolve` (`src/setup/mod.rs`) established it; `StartupPaths::resolve` (`src/runtime/mod.rs`) is the startup one, carrying both the Claude config directory and the trust store, resolved once in `src/main.rs` and handed to `run_tui`. Add the next operator-owned path as a field on the existing struct, not as another parameter.
+
+The two compose: `claude_json_path` is a `TuiRuntime` field *and* comes from `StartupPaths`, because the trust-gated `TaskCommand` arms read it long after bootstrap set it.
+
+Getting this wrong is not a style problem. `TuiRuntime::bootstrap` resolved `$HOME/.claude` internally for a while, so every `cargo test` rewrote the developer's own Claude Code settings file. Nothing failed and nothing reported it. See docs/specs/dispatch.allium: StatusLineDecorator, `SettingsLocationIsAnExplicitStartupInput`.
 
 ## `unsafe`
 

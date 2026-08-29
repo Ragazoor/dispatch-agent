@@ -309,7 +309,7 @@ mod ensure_statusline_settings_file {
         let claude_dir = dir.path().join("claude");
         let snapshot_path = dir.path().join("data").join("rate-limits.json");
 
-        ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+        ensure_statusline_settings_file(&claude_dir, &snapshot_path).unwrap();
 
         let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
         assert!(settings_path.exists(), "settings file must be created");
@@ -323,14 +323,14 @@ mod ensure_statusline_settings_file {
         let claude_dir = dir.path().join("claude");
         let snapshot_path = dir.path().join("data").join("rate-limits.json");
 
-        ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+        ensure_statusline_settings_file(&claude_dir, &snapshot_path).unwrap();
         let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
         let first = std::fs::read_to_string(&settings_path).unwrap();
 
         // A normal TUI start on an already-configured machine must not rewrite
         // the file (setup's write_settings_file already guarantees this; this
         // asserts bootstrap doesn't bypass that guarantee).
-        ensure_statusline_settings_file_in(&claude_dir, &snapshot_path).unwrap();
+        ensure_statusline_settings_file(&claude_dir, &snapshot_path).unwrap();
         let second = std::fs::read_to_string(&settings_path).unwrap();
         assert_eq!(first, second);
     }
@@ -346,7 +346,7 @@ mod ensure_statusline_settings_file {
         let claude_dir = blocker.join("claude");
         let snapshot_path = dir.path().join("rate-limits.json");
 
-        let result = ensure_statusline_settings_file_in(&claude_dir, &snapshot_path);
+        let result = ensure_statusline_settings_file(&claude_dir, &snapshot_path);
 
         assert!(
             result.is_err(),
@@ -939,6 +939,21 @@ mod invalidate_feed_cache {
 mod bootstrap {
     use super::*;
 
+    /// Temp-backed `StartupPaths` plus a database path, the fixture every
+    /// test here needs. A bootstrap test must never be handed the operator's
+    /// real locations — see docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `SettingsLocationIsAnExplicitStartupInput` — so this is the only shape
+    /// a new one should use.
+    fn fixture() -> (tempfile::TempDir, std::path::PathBuf, StartupPaths) {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("bootstrap.db");
+        let paths = StartupPaths {
+            claude_dir: dir.path().join("claude"),
+            claude_json_path: dir.path().join(".claude.json"),
+        };
+        (dir, db_path, paths)
+    }
+
     /// The happy path: opens a real (temp-file-backed) database, spawns the
     /// MCP server and feed runner in the background, and hydrates the
     /// returned `App`/`TuiRuntime` from persisted settings. Binds port 0 so
@@ -946,10 +961,9 @@ mod bootstrap {
     /// not the MCP server's own behaviour.
     #[tokio::test]
     async fn wires_up_a_working_app_and_runtime() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("bootstrap.db");
+        let (_dir, db_path, paths) = fixture();
 
-        let bootstrap = TuiRuntime::bootstrap(&db_path, 0)
+        let bootstrap = TuiRuntime::bootstrap(&db_path, 0, &paths)
             .await
             .expect("bootstrap must succeed against a fresh, writable db path");
 
@@ -981,10 +995,9 @@ mod bootstrap {
     /// repoint every later Claude session at a temp directory.
     #[tokio::test]
     async fn budget_snapshot_path_ignores_the_open_database() {
-        let dir = tempfile::tempdir().unwrap();
-        let db_path = dir.path().join("bootstrap.db");
+        let (dir, db_path, paths) = fixture();
 
-        let bootstrap = TuiRuntime::bootstrap(&db_path, 0)
+        let bootstrap = TuiRuntime::bootstrap(&db_path, 0, &paths)
             .await
             .expect("bootstrap must succeed against a fresh, writable db path");
 
@@ -994,6 +1007,59 @@ mod bootstrap {
                 .budget_snapshot_path
                 .starts_with(dir.path()),
             "the snapshot location must not follow the throwaway database"
+        );
+    }
+
+    /// docs/specs/dispatch.allium: StatusLineDecorator,
+    /// `SettingsLocationIsAnExplicitStartupInput`. Startup is *handed* the
+    /// operator's locations; it resolves none of them itself. Both halves of
+    /// the statusline write are covered here:
+    ///
+    /// - the file lands under the `claude_dir` it was given, and
+    /// - the chain is discovered from that same directory's `settings.json`,
+    ///   so reads are scoped to it too, not just writes.
+    ///
+    /// `HOME` is deliberately not repointed to prove the same thing:
+    /// `std::env::set_var` is `unsafe` and races every other test in the
+    /// process (see the note in src/editor.rs).
+    #[tokio::test]
+    async fn statusline_settings_file_is_scoped_to_the_supplied_claude_dir() {
+        let (_dir, db_path, paths) = fixture();
+        std::fs::create_dir_all(&paths.claude_dir).unwrap();
+        std::fs::write(
+            paths.claude_dir.join("settings.json"),
+            r#"{"statusLine":{"command":"my-own-statusline"}}"#,
+        )
+        .unwrap();
+
+        TuiRuntime::bootstrap(&db_path, 0, &paths)
+            .await
+            .expect("bootstrap must succeed against a fresh, writable db path");
+
+        let written =
+            std::fs::read_to_string(crate::setup::statusline::settings_path(&paths.claude_dir))
+                .expect("the settings file must land in the directory startup was handed");
+        assert!(
+            written.contains("my-own-statusline"),
+            "bootstrap must discover the chain from the directory it was \
+             handed, not from one it resolved itself: {written}"
+        );
+    }
+
+    /// The trust store is the other operator-owned file bootstrap wires up.
+    /// It comes from the same `StartupPaths`, so a run that is not the
+    /// operator's session cannot reach `$HOME/.claude.json` either.
+    #[tokio::test]
+    async fn trust_store_path_comes_from_the_supplied_paths() {
+        let (_dir, db_path, paths) = fixture();
+
+        let bootstrap = TuiRuntime::bootstrap(&db_path, 0, &paths)
+            .await
+            .expect("bootstrap must succeed against a fresh, writable db path");
+
+        assert_eq!(
+            bootstrap.runtime.claude_json_path, paths.claude_json_path,
+            "the trust store path must be the one startup was handed"
         );
     }
 }

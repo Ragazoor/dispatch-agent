@@ -115,30 +115,29 @@ fn teardown_tmux_for_tui(original_name: Option<&TmuxWindow>, runner: &dyn Proces
     }
 }
 
-/// Best-effort recreation of `~/.claude/dispatch-statusline.json`, the
+/// Best-effort recreation of `<claude_dir>/dispatch-statusline.json`, the
 /// dispatch-owned statusLine settings file every dispatch-spawned Claude
 /// session is launched with via `--settings`. `dispatch setup` normally
 /// writes this file (`setup::run_setup_in`); this is a safety net for a user
 /// who pulled a branch introducing that dependency without re-running setup.
 ///
+/// Rewrites whenever the content differs from what this build would write,
+/// not only when the file is absent — `write_settings_file` delegates to
+/// `write_file_if_changed`, so a stale chain or snapshot path is corrected
+/// too, and identical bytes are left alone.
+///
 /// Reuses `setup::statusline`'s command-building logic rather than
 /// duplicating the format string, which would let the two drift.
+///
+/// `claude_dir` is supplied by the caller — see [`StartupPaths`].
 ///
 /// Synchronous (touches the filesystem) — callers must run this on a
 /// blocking thread (`tokio::task::spawn_blocking`), never inline in an async
 /// context.
-fn ensure_statusline_settings_file(snapshot_path: &Path) -> Result<()> {
-    let claude_dir = crate::setup::claude_dir()?;
-    ensure_statusline_settings_file_in(&claude_dir, snapshot_path)
-}
-
-/// Injectable core of [`ensure_statusline_settings_file`]: takes the
-/// `~/.claude` directory explicitly so tests can point it at a temp dir
-/// instead of the real `$HOME`.
-fn ensure_statusline_settings_file_in(claude_dir: &Path, snapshot_path: &Path) -> Result<()> {
+fn ensure_statusline_settings_file(claude_dir: &Path, snapshot_path: &Path) -> Result<()> {
     // No `create_dir_all` here: `write_settings_file` creates its parent, and
     // `discover_chain` treats a missing directory as "nothing to chain to".
-    let settings_path = claude_dir.join(crate::setup::statusline::SETTINGS_FILE_NAME);
+    let settings_path = crate::setup::statusline::settings_path(claude_dir);
     let chain = crate::setup::statusline::discover_chain(claude_dir);
     crate::setup::statusline::write_settings_file(&settings_path, snapshot_path, chain.as_deref())?;
     Ok(())
@@ -147,6 +146,38 @@ fn ensure_statusline_settings_file_in(claude_dir: &Path, snapshot_path: &Path) -
 // ---------------------------------------------------------------------------
 // Bootstrap — composition root for TuiRuntime startup
 // ---------------------------------------------------------------------------
+
+/// The `$HOME`-derived locations TUI startup needs, resolved once by
+/// [`StartupPaths::resolve`] and then passed around.
+///
+/// Startup never looks these up itself: it is handed them. That is what keeps
+/// a run which is not the operator's own session — a test booting the runtime
+/// above all — off the operator's real configuration, with no lookup left
+/// inside `bootstrap` to reach it. See docs/specs/dispatch.allium:
+/// StatusLineDecorator, `SettingsLocationIsAnExplicitStartupInput`.
+///
+/// The same shape, and the same reason, as `setup::SetupPaths` and
+/// `setup::UninstallPaths`.
+pub struct StartupPaths {
+    /// Claude Code's configuration directory (`~/.claude`), whose
+    /// dispatch-owned statusLine settings file startup brings up to date.
+    claude_dir: std::path::PathBuf,
+    /// Claude Code's trust store (`~/.claude.json`), read and written by the
+    /// trust-gated dispatch arms via `TuiRuntime::claude_json_path`.
+    claude_json_path: std::path::PathBuf,
+}
+
+impl StartupPaths {
+    /// Resolve the real `$HOME`-derived locations used in production. The one
+    /// call site is `src/main.rs`; everything downstream takes the resolved
+    /// struct.
+    pub fn resolve() -> Result<Self> {
+        Ok(Self {
+            claude_dir: crate::setup::claude_dir()?,
+            claude_json_path: dispatch::claude_json_path(),
+        })
+    }
+}
 
 /// Everything built by `TuiRuntime::bootstrap` that `run_tui` needs after
 /// the composition root returns.
@@ -161,7 +192,9 @@ struct Bootstrap {
 // run_tui — entry point for the TUI mode
 // ---------------------------------------------------------------------------
 
-pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
+/// `paths` carries the operator's `$HOME`-derived locations, resolved by the
+/// caller — see [`StartupPaths`].
+pub async fn run_tui(db_path: &Path, port: u16, paths: &StartupPaths) -> Result<()> {
     if std::env::var("TMUX").is_err() {
         anyhow::bail!("dispatch tui must be run inside a tmux session (TMUX is not set)");
     }
@@ -171,7 +204,7 @@ pub async fn run_tui(db_path: &Path, port: u16) -> Result<()> {
         mut runtime,
         mut mcp_notify_rx,
         mut msg_rx,
-    } = TuiRuntime::bootstrap(db_path, port).await?;
+    } = TuiRuntime::bootstrap(db_path, port, paths).await?;
 
     // Set up terminal
     enable_raw_mode()?;
@@ -353,9 +386,9 @@ struct TuiRuntime {
     /// Path the trust-gated `TaskCommand` arms (`TrustAndDispatch`,
     /// `CheckTrustAndDispatch`, `QuickDispatch`, `TrustAndQuickDispatch`) read
     /// and write via `dispatch::is_trusted_at`/`dispatch::trust_at`. Defaults
-    /// to the real `$HOME/.claude.json` (`dispatch::claude_json_path`) in
-    /// production; a test overrides it with a tempfile so exercising these
-    /// arms never touches the machine's actual Claude Code trust store.
+    /// to the real `$HOME/.claude.json` in production, via
+    /// [`StartupPaths::resolve`]; a test overrides it with a tempfile so
+    /// exercising these arms never touches the machine's actual trust store.
     claude_json_path: std::path::PathBuf,
 }
 
@@ -401,7 +434,7 @@ impl TuiRuntime {
     ///
     /// The `#[cfg(test)]` / `#[cfg(not(test))]` embedding-service split lives
     /// here so call sites don't branch on `cfg`.
-    async fn bootstrap(db_path: &Path, port: u16) -> Result<Bootstrap> {
+    async fn bootstrap(db_path: &Path, port: u16, paths: &StartupPaths) -> Result<Bootstrap> {
         // Open database and load initial tasks.
         let database = Arc::new(db::Database::open(db_path).await?);
         let tasks = database.list_all().await?;
@@ -456,19 +489,20 @@ impl TuiRuntime {
         // SnapshotLocationIsFixedNotDerivedFromTheOpenDatabase.
         let budget_snapshot_path = crate::budget_snapshot_path();
 
-        // Best-effort: recreate ~/.claude/dispatch-statusline.json if it's
-        // missing. Every dispatch-spawned Claude session is launched with
-        // `--settings ~/.claude/dispatch-statusline.json` (the spawn constant
-        // in src/dispatch/prompts.rs); `claude` refuses to start at all if
-        // that file doesn't exist. Normally `dispatch setup` writes it, but a
-        // user who pulls a branch that added this dependency without
-        // re-running setup would otherwise get a dead pane on every dispatch.
-        // Must never block or fail startup — see docs/reference.md
+        // Best-effort: bring the dispatch-owned statusLine settings file up to
+        // date under `paths.claude_dir`. Every dispatch-spawned Claude session
+        // is launched with `--settings ~/.claude/dispatch-statusline.json`
+        // (the spawn constant in src/dispatch/prompts.rs); `claude` refuses to
+        // start at all if that file doesn't exist. Normally `dispatch setup`
+        // writes it, but a user who pulls a branch that added this dependency
+        // without re-running setup would otherwise get a dead pane on every
+        // dispatch. Must never block or fail startup — see docs/reference.md
         // Troubleshooting for the user-facing recovery path.
         {
             let snapshot_path = budget_snapshot_path.clone();
+            let claude_dir = paths.claude_dir.clone();
             match tokio::task::spawn_blocking(move || {
-                ensure_statusline_settings_file(&snapshot_path)
+                ensure_statusline_settings_file(&claude_dir, &snapshot_path)
             })
             .await
             {
@@ -494,11 +528,11 @@ impl TuiRuntime {
 
         // Create App and hydrate all persisted settings.
         let mut app = App::new(tasks);
-        let (paths, base_branch_pairs) = tokio::join!(
+        let (repo_paths, base_branch_pairs) = tokio::join!(
             database.list_repo_paths(),
             database.list_all_base_branches()
         );
-        app.update(Message::RepoPathsUpdated(paths.unwrap_or_default()));
+        app.update(Message::RepoPathsUpdated(repo_paths.unwrap_or_default()));
         app.update(Message::BaseBranchesUpdated(group_base_branches_by_repo(
             base_branch_pairs.unwrap_or_default(),
         )));
@@ -544,7 +578,7 @@ impl TuiRuntime {
             emb_svc,
             last_change_count: AtomicI64::new(-1),
             budget_snapshot_path,
-            claude_json_path: dispatch::claude_json_path(),
+            claude_json_path: paths.claude_json_path.clone(),
         };
 
         // Load initial todo open-count so the board footer shows it immediately.

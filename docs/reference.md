@@ -391,7 +391,7 @@ Verify the dispatch plugin is installed: `ls ~/.claude/plugins/local/dispatch/ho
 The dispatch plugin may not be installed. Run `dispatch setup` to install it.
 
 **Agents fail to start with `Settings file not found`**
-`~/.claude/dispatch-statusline.json` is missing — every dispatch-spawned Claude session is launched with `--settings` pointing at it (see Setup above). Run `dispatch setup` to recreate it, or restart `dispatch tui`, which recreates the file automatically if it's absent.
+`~/.claude/dispatch-statusline.json` is missing — every dispatch-spawned Claude session is launched with `--settings` pointing at it (see Setup above). Run `dispatch setup` to recreate it, or restart `dispatch tui`, which rewrites the file automatically whenever its content differs from what the current build would write — absence included.
 
 **Budget badge not showing in the top row**
 The status line isn't wired up, or no rate-limit payload has arrived yet. Run `dispatch setup` to (re)write `~/.claude/dispatch-statusline.json`, then start (or restart) a dispatch-spawned Claude session — the badge appears once its statusLine hook has fired at least once. Chain drift (an out-of-band edit to `~/.claude/settings.json`'s `statusLine.command` after setup ran) and schema drift (an unrecognised hook payload shape) are documented here rather than enforced by a `doctor` check; re-running `dispatch setup` re-discovers the current chain.
