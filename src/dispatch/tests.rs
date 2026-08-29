@@ -2592,9 +2592,14 @@ fn resume_agent_names_the_session_after_the_task() {
         send_keys_arg.contains("--name task-42"),
         "resume_agent should name the session task-<id>, got: {send_keys_arg}"
     );
+    // Nothing may follow the flags here: the variadic `--mcp-config` would
+    // swallow it instead of claude receiving it as an operand. `--continue` is
+    // `-`-prefixed and ends the variadic by itself, so resume needs no `--`;
+    // one that grew an operand would (see PromptIsSeparatedFromTheLaunchFlags
+    // in docs/specs/dispatch.allium).
     assert!(
         send_keys_arg.ends_with("--continue"),
-        "resume must still pass --continue last, got: {send_keys_arg}"
+        "nothing may follow the resume flags, got: {send_keys_arg}"
     );
 }
 
@@ -2656,9 +2661,10 @@ fn resume_agent_launches_the_runners_claude_binary() {
         send_keys_arg.starts_with("/stub/bin/claude-stub --plugin-dir"),
         "resume_agent must launch the runner's claude binary, got: {send_keys_arg}"
     );
+    // Nothing may follow the flags here — see the sibling resume test above.
     assert!(
         send_keys_arg.ends_with("--continue"),
-        "resume must still pass --continue, got: {send_keys_arg}"
+        "nothing may follow the resume flags, got: {send_keys_arg}"
     );
 }
 
@@ -3710,11 +3716,8 @@ fn the_prompt_reaches_claude_as_an_operand_not_as_a_flag_value() {
         "launcher command failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let argv: Vec<String> = String::from_utf8(out.stdout)
-        .unwrap()
-        .lines()
-        .map(str::to_string)
-        .collect();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let argv: Vec<&str> = stdout.lines().collect();
 
     assert_eq!(
         argv,

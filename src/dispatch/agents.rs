@@ -267,8 +267,7 @@ pub fn resync_agent_tree_pane(window: &TmuxWindow, runner: &dyn ProcessRunner) {
 /// [`agent_launch_flags`] ends with it, so without the separator the prompt is
 /// consumed as a second MCP configuration, resolved as a file path relative to
 /// the worktree, and the launch fails with "Invalid MCP configuration" before
-/// the agent starts. Reordering the flags so a single-valued one came last
-/// would work today and break silently the next time the order changed.
+/// the agent starts.
 pub(super) fn prompt_launch_command(claude: &str, launch_flags: &str) -> String {
     format!(
         "bash -c 'prompt=$(cat .claude-prompt) && rm -f .claude-prompt \
