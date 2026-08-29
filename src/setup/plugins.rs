@@ -1083,13 +1083,65 @@ mod tests {
         );
     }
 
+    /// Every sub-skill wrap-up invokes is a place the agent can mistake the
+    /// sub-skill's end for the session's end and go idle — retro and simplify
+    /// both needed explicit guards for exactly that. Summarize sat in the
+    /// closing sequence, between `wrap_up` and `exit_session`, which is the
+    /// worst possible place to stall: the rebase has already fast-forwarded
+    /// base_branch and the task is stuck in its old status. It bought a recap
+    /// the user rarely needed, so it is gone rather than guarded (task #4505).
+    #[test]
+    fn wrap_up_skill_does_not_invoke_summarize() {
+        let content = skill_body("wrap-up");
+        assert!(
+            !content.contains(r#"skill: "summarize""#),
+            "wrap-up must not invoke the summarize skill — a sub-skill call \
+             between wrap_up and exit_session is a stall point on the one path \
+             where stalling has already touched base_branch"
+        );
+    }
+
+    /// A preset `wrap_up_mode` is the user's answer, given earlier. Suppressing
+    /// the question without carrying the wrap-up through leaves the agent idle
+    /// with the question it was told not to ask unanswered, and nothing reaches
+    /// base_branch until a human notices (task #4505, observed twice).
+    #[test]
+    fn wrap_up_skill_carries_a_preset_mode_through_without_asking_or_stopping() {
+        let content = skill_body("wrap-up");
+        let step_2 = content
+            .split("## Step 2")
+            .nth(1)
+            .and_then(|s| s.split("## Step 3").next())
+            .expect("wrap-up skill must have a Step 2 that reads the task");
+        assert!(
+            step_2.contains("Wrap-up mode:"),
+            "Step 2 must read the preset mode off the line get_task actually \
+             prints (`Wrap-up mode: <mode>`) — the response is prose, not JSON, \
+             so an agent told to look for a `wrap_up_mode` field can find \
+             nothing and fall through to the question it was meant to skip"
+        );
+        assert!(
+            step_2.contains("Step 4"),
+            "Step 2 must say what a preset mode does to the question step \
+             (Step 4), or the agent has to infer it"
+        );
+        let lowered = step_2.to_lowercase();
+        assert!(
+            lowered.contains("do not stop") || lowered.contains("don't stop"),
+            "a preset mode must come with an explicit instruction not to stop \
+             part-way — suppressing the question alone is what left agents idle \
+             at a blank prompt"
+        );
+    }
+
     #[test]
     fn summarize_skill_does_not_claim_unconditional_finality() {
-        // wrap-up invokes summarize mid-flow, in its closing sequence: after
-        // retro and before wrap_up/exit_session. An unconditional "this is
-        // always the final step" claim reads as an
-        // instruction to stop the whole session right there, which is how
-        // wrap-up gets stuck after summarize and never reaches exit_session.
+        // summarize is usually run standalone (/summarize), but any skill may
+        // invoke it mid-flow as a sub-step. An unconditional "this is always
+        // the final step" claim reads as an instruction to stop the whole
+        // session right there, stranding whatever the caller had left to do.
+        // wrap-up used to be that caller and stalled exactly this way, which
+        // is why its call is gone — see wrap_up_skill_does_not_invoke_summarize.
         let content = skill_body("summarize");
         assert!(
             !content.contains("always the final step"),

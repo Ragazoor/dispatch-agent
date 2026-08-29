@@ -42,11 +42,13 @@ If the branch does not match the `{id}-{slug}` pattern, stop and tell the user:
 
 ## Step 2: Get task details
 
-Call the `dispatch` MCP tool `get_task` with the task ID from Step 1. Read the `base_branch` field from the response and use it wherever the instructions below refer to `{base_branch}`. If the field is absent or empty, fall back to `main`. (The rebase path resolves the real base branch server-side from the task record, so `{base_branch}` only matters for the diff/PR commands you run locally.)
+Call the `dispatch` MCP tool `get_task` with the task ID from Step 1. The response is prose, one labelled line per field — read the values off the labels named below, and treat a missing line as the field being unset. Read `Base branch: <name>` and use that name wherever the instructions below refer to `{base_branch}`. If the line is absent or empty, fall back to `main`. (The rebase path resolves the real base branch server-side from the task record, so `{base_branch}` only matters for the diff/PR commands you run locally.)
 
-Also read the `wrap_up_mode` field. If it is set (`rebase`, `pr`, or `done`) **and** no argument was provided at invocation, treat it exactly like an argument: skip Step 4 (AskUserQuestion) and proceed to Step 5 with that action.
+Also read `Wrap-up mode: <mode>`. The line is printed only when a mode is set, so its presence is the signal. If it is there (`rebase`, `pr`, or `done`) **and** no argument was provided at invocation, treat it exactly like an argument: skip Step 4 (AskUserQuestion) and proceed to Step 5 with that action.
 
-Also read the `Verify command` field, if present, and hold onto it for Step 7. If it is absent, there is nothing to verify and Step 7 is a no-op.
+A preset mode is the user's answer, given earlier — not permission to skip the wrap-up itself. Everything from here is yours to run without further input from anyone: retro, commit, verify, `wrap_up`, `exit_session`. Do not stop to confirm the mode you just read, do not report that you are about to wrap up and wait, and do not end your turn anywhere before `exit_session` returns. This is worth stating plainly because the failure is silent and has happened twice: the agent suppressed the question, went idle at a blank prompt, and left the branch unmerged and the task stuck in `running` until a human noticed. A preset mode that only removes the question is strictly worse than no preset mode at all.
+
+Also read `Verify command: <command>`, if present, and hold onto it for Step 7. If the line is absent, there is nothing to verify and Step 7 is a no-op.
 
 ## Step 3: Simplify code changes (conditional)
 
@@ -143,13 +145,13 @@ If it fails, fix the issues, then go back to Step 6 to commit the fix, and re-ru
 
 ## Step 8: The closing sequence
 
-Every path ends with the same four steps. Only Step C differs by action, plus the PR path's authoring work which happens *before* this sequence (see *The PR path* below). The task moves to "done" (rebase, done) or "review" (pr) automatically — don't set the status by hand.
+Every path ends with the same three steps. Only Step B differs by action, plus the PR path's authoring work which happens *before* this sequence (see *The PR path* below). The task moves to "done" (rebase, done) or "review" (pr) automatically — don't set the status by hand.
 
-**A. Summarise behaviour changes.** Invoke the `summarize` skill (`Skill({ skill: "summarize" })`) and show the user the result, which leads with how behaviour changed. This is the user's last recap before the session closes. Skip it on the PR path — the PR body you just wrote already serves this purpose, and repeating it wastes the user's attention.
+Run the three back to back in one turn. Each is a tool call, not a milestone to report on: there is nothing here for the user to read or approve, and every pause is a chance to go idle with `base_branch` already fast-forwarded and the task still stuck in its old status.
 
-**B. Rate retrieved knowledge.** See *Rate retrieved knowledge* below.
+**A. Rate retrieved knowledge.** See *Rate retrieved knowledge* below.
 
-**C. Call `wrap_up`** with `task_id` (the integer from Step 1) and `action`. This returns an **Exit token** (a UUID string). It does not close the session and does not move the task's status — that all waits for Step D. What it does beyond issuing the token depends on the action:
+**B. Call `wrap_up`** with `task_id` (the integer from Step 1) and `action`. This returns an **Exit token** (a UUID string). It does not close the session and does not move the task's status — that all waits for Step C. What it does beyond issuing the token depends on the action:
 
 | action | what `wrap_up` does | notes |
 |---|---|---|
@@ -159,9 +161,9 @@ Every path ends with the same four steps. Only Step C differs by action, plus th
 
 If `wrap_up` returns an error, show the user the exact message and stop. Do not call `exit_session` — you have no valid token, and the task stays in its current status. For a rebase conflict, suggest resolution steps.
 
-**D. Call `exit_session`** with `task_id`, `token` (from Step C), `action` (must match the action you passed to `wrap_up`), and `pr_url` on the pr path only. This single call applies the terminal state change, clears the tmux window, and consumes the token — atomically. There is no follow-up call; this closes the loop.
+**C. Call `exit_session`** with `task_id`, `token` (from Step B), `action` (must match the action you passed to `wrap_up`), and `pr_url` on the pr path only. This single call applies the terminal state change, clears the tmux window, and consumes the token — atomically. There is no follow-up call; this closes the loop.
 
-Do not stop between C and D. Skipping `exit_session` leaves the tmux window alive and the task stuck in its old status — and on the PR path, the PR unrecorded.
+Do not stop between B and C. Skipping `exit_session` leaves the tmux window alive and the task stuck in its old status — and on the PR path, the PR unrecorded.
 
 ### Don't dispatch the epic's next subtask yourself
 
@@ -284,10 +286,10 @@ EOF
 
 `{owner}` is the first part of the repo slug. The `{owner}:{branch}` format is required so `gh` resolves the branch in the same repo as `--repo` (rather than your authenticated user's namespace).
 
-`gh pr create` prints the PR URL on stdout. Capture it — it is the `pr_url` you pass to `exit_session` in Step D.
+`gh pr create` prints the PR URL on stdout. Capture it — it is the `pr_url` you pass to `exit_session` in Step C.
 
 If `gh` reports `a pull request for branch '...' already exists`, parse the URL it returns and use that — the PR already exists and your job is just to record it.
 
 ### Then run the closing sequence
 
-Go to Step 8 with `action="pr"`, skipping Step A (the PR body is your summary). The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down between the two calls. Don't reorder to "close first, then finish up".
+Go to Step 8 with `action="pr"`. The ordering matters: `wrap_up(action="pr")` deliberately doesn't move the task to Review or set the PR url — that's deferred to `exit_session`. Until `exit_session` runs, dispatch has no PR-merge polling armed for this task, so a merge can't tear the session down between the two calls. Don't reorder to "close first, then finish up".

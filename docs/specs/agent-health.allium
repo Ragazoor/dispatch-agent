@@ -270,6 +270,28 @@ rule HookPreToolUse {
         -- `dispatch hook`. The Rust service layer never sees the tool
         -- name; it only receives the HookEventKind (PreToolUse,
         -- Notification, Stop).
+        --
+        -- One tool name is inspected for a second purpose, in the same
+        -- script and for the same reason the service layer cannot do it:
+        -- a PreToolUse for Claude Code's AskUserQuestion tool means the
+        -- agent has opened a question dialog and cannot proceed until a
+        -- human answers it. That is a block, not activity, so the script
+        -- follows the plain activity signal with a
+        -- Notification(elicitation_dialog) for the same task, and
+        -- HookNotification's Raise path turns it into needs_input. Without
+        -- it a blocked agent is indistinguishable from a working one: no
+        -- Claude Code Notification hook fires for AskUserQuestion, so the
+        -- task would sit in Active with a fresh last_pre_tool_use_at for as
+        -- long as the question went unanswered — which is exactly how an
+        -- agent waiting on the /wrap-up question stalled unnoticed for
+        -- fifty minutes.
+        --
+        -- Only PreToolUse raises. The answer arrives as this same tool's
+        -- PostToolUse, whose ordinary activity stamp puts
+        -- last_pre_tool_use_at ahead of last_notification_at again and so
+        -- clears the block through the existing classifier — no second
+        -- translated event, and no dependence on a matching
+        -- elicitation_complete ever being emitted.
 }
 
 rule HookStop {
@@ -772,6 +794,14 @@ rule HookNotification {
         -- Only the raise path triggers NotifyNeedsInput (desktop notification),
         -- because that fires on the transition into needs_input. When the agent
         -- resumes after a raise, HookPreToolUse resets sub_status to active.
+        --
+        -- Not every Notification(elicitation_dialog) originates in a Claude
+        -- Code Notification hook. The shell hook also synthesises one from a
+        -- PreToolUse for the AskUserQuestion tool, which raises no
+        -- notification of its own — see HookPreToolUse's guidance. This rule
+        -- treats both identically on purpose: an agent blocked on a question
+        -- it asked is in the same state as one blocked on a dialog Claude
+        -- Code announced, and the raise path is what makes that visible.
         --
         -- Backward compatibility: `--kind` is optional. Hook scripts (or older
         -- Claude Code payloads) that omit it fall into the raise branch via the

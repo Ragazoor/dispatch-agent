@@ -95,6 +95,6 @@ Output the summary to the user. Do not offer to post the summary anywhere unless
 
 If this skill was invoked standalone (the user ran `/summarize` or asked to "summarize"/"recap"), this is the final step — stop here.
 
-If this skill was invoked as a sub-step of another skill (most commonly `wrap-up`, which runs it in its closing sequence, after retro and before `wrap_up`/`exit_session`), it is **not** the final step: immediately resume the calling skill's next instruction in the same turn. Do not stop here.
+If this skill was invoked as a sub-step of another skill, it is **not** the final step: immediately resume the calling skill's next instruction in the same turn. Do not stop here.
 
-The summary can be reused directly as the body of a PR (in wrap-up) or as notes for a follow-up task.
+The summary can be reused directly as the body of a PR or as notes for a follow-up task.

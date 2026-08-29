@@ -41,6 +41,19 @@ case "$EVENT" in
         [[ "$TOOL" == mcp__dispatch__* ]] && exit 0
         dispatch hook "$ID" pre_tool_use
 
+        # An agent that opens the AskUserQuestion dialog is blocked on a human,
+        # but Claude Code fires no Notification hook for it — so the activity
+        # stamp above would be the only signal, and the task would read as
+        # Active for as long as the question went unanswered. Synthesise the
+        # notification Claude Code doesn't send, so the block is visible as
+        # needs_input (task #4505). It must come *after* the stamp above, or the
+        # tick classifier sees a newer last_pre_tool_use_at and clears the raise.
+        # PostToolUse deliberately does not raise: that is the answer arriving,
+        # and its activity stamp is what clears the block.
+        if [[ "$EVENT" == "PreToolUse" && "$TOOL" == "AskUserQuestion" ]]; then
+            dispatch hook "$ID" notification --kind elicitation_dialog
+        fi
+
         # Additive: PostToolUse-only observers. None of these gates, reorders or
         # replaces the activity signal above.
         if [[ "$EVENT" == "PostToolUse" ]]; then

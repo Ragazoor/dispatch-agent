@@ -3726,13 +3726,12 @@ async fn get_task_shows_wrap_up_mode_when_set() {
     )
     .await;
     let text = extract_response_text(&resp);
+    // The exact label matters, not just the words: get_task returns prose, and
+    // the /wrap-up skill reads the mode off this line by name. A rename here
+    // silently sends the skill back to asking a question it was told to skip.
     assert!(
-        text.to_lowercase().contains("wrap-up") || text.to_lowercase().contains("wrap_up"),
-        "expected wrap-up mode in output, got: {text}"
-    );
-    assert!(
-        text.contains("rebase"),
-        "expected rebase in output, got: {text}"
+        text.contains("Wrap-up mode: rebase"),
+        "expected 'Wrap-up mode: rebase' in output, got: {text}"
     );
 }
 

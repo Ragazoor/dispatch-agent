@@ -262,6 +262,74 @@ mod tests {
         );
     }
 
+    /// An agent that opens Claude Code's AskUserQuestion dialog is blocked on a
+    /// human, but Claude Code raises no Notification hook for it — so without
+    /// this translation the task keeps a fresh activity stamp and reads as
+    /// Active for as long as the question goes unanswered. That is how an agent
+    /// waiting on the /wrap-up question stalled unnoticed (task #4505).
+    #[cfg(unix)]
+    #[test]
+    fn hook_raises_needs_input_when_the_agent_opens_a_question_dialog() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("4505-askq");
+
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PreToolUse","tool_name":"AskUserQuestion"}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            log.contains("hook 4505 notification --kind elicitation_dialog"),
+            "a PreToolUse for AskUserQuestion must be forwarded as an \
+             elicitation_dialog notification so the task shows needs_input; \
+             got: {log:?}"
+        );
+        // The activity stamp still goes out, and must land *before* the raise:
+        // last_notification_at has to end up newer than last_pre_tool_use_at or
+        // the tick classifier reclassifies the block as Active.
+        let pre_tool_use_line = log
+            .lines()
+            .position(|l| l.trim() == "hook 4505 pre_tool_use")
+            .expect("the ordinary activity signal must still be sent");
+        let raise_line = log
+            .lines()
+            .position(|l| l.contains("notification --kind elicitation_dialog"))
+            .expect("checked above");
+        assert!(
+            pre_tool_use_line < raise_line,
+            "the activity stamp must precede the raise, or the raise is \
+             immediately overwritten; got: {log:?}"
+        );
+    }
+
+    /// The answer arrives as the same tool's PostToolUse. Its ordinary activity
+    /// stamp is what clears the block, so re-raising there would leave the task
+    /// stuck in needs_input after the human already answered.
+    #[cfg(unix)]
+    #[test]
+    fn hook_does_not_re_raise_when_the_question_is_answered() {
+        let (_tmp, repo, script_path, observed, path) = spawn_hook_harness("4506-askq");
+
+        let payload = format!(
+            r#"{{"cwd":"{}","hook_event_name":"PostToolUse","tool_name":"AskUserQuestion"}}"#,
+            repo.display()
+        );
+        invoke_hook(&script_path, &repo, &path, &payload);
+
+        let log = std::fs::read_to_string(&observed).unwrap_or_default();
+        assert!(
+            !log.contains("notification"),
+            "PostToolUse for AskUserQuestion is the answer arriving, not a new \
+             block — it must not raise; got: {log:?}"
+        );
+        assert!(
+            log.contains("hook 4506 pre_tool_use"),
+            "PostToolUse must still stamp activity, which is what clears the \
+             block; got: {log:?}"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn hook_forwards_notification_kind_from_payload() {

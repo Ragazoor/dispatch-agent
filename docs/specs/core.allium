@@ -203,7 +203,12 @@ enum RetrievalSource { prompt_injection | procedural | query_learnings }
 
 -- WrapUpMode records the preferred wrap-up path for a task, set at creation
 -- time by the user or agent. When set, the /wrap-up skill honours it instead
--- of prompting the user.
+-- of prompting the user: the mode IS the user's answer, given earlier, so the
+-- skill runs the whole wrap-up on it — through wrap_up and exit_session —
+-- without asking anything and without returning to an idle prompt part-way.
+-- A preset mode that only suppressed the question would be worse than no mode
+-- at all: the agent would go idle with the question it was told not to ask
+-- unanswered, and nothing would reach base_branch until a human noticed.
 --   rebase — rebase the task branch onto base_branch and fast-forward it
 --   pr     — agent authors and creates a draft PR (no git ops done by dispatch)
 --   done   — close without any git operations; task moves to Done directly
