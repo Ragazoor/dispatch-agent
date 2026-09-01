@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Verify every `src/…` and `docs/…` path mentioned in our agent-facing docs
 # actually exists, and that every `file:NN` line citation is in range. By
-# default scans CLAUDE.md plus every docs/*.md and docs/specs/*.allium. The
-# globs are deliberately non-recursive, which excludes docs/plans/,
+# default scans README.md and CLAUDE.md plus every docs/*.md and
+# docs/specs/*.allium. The globs are deliberately non-recursive, which
+# excludes docs/plans/,
 # docs/superpowers/, and docs/research/ — those are dated artifacts, so a
 # reference that has since gone stale is expected, not a defect. Pass an
 # explicit path to scan a single file instead.
@@ -24,7 +25,11 @@ else
     # Globbed, not hand-listed: a doc added under docs/ is covered the moment it
     # lands, with nothing to remember. nullglob so an empty match expands to
     # nothing rather than to a literal `docs/*.md` that then "does not exist".
-    DOCS=(CLAUDE.md)
+    # README.md is the repo's front page and the one doc written for people who
+    # have not cloned yet, so a dead link there costs the most. It sat outside
+    # this list until #4501, which is how three stale docs/images/ references
+    # survived a rename.
+    DOCS=(README.md CLAUDE.md)
     shopt -s nullglob
     DOCS+=(docs/*.md docs/specs/*.allium)
     shopt -u nullglob

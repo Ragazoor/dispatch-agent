@@ -103,9 +103,12 @@ run_defaults() {
     defaults_out="$(cd "$DEFAULTS_DIR" && bash "$CHECKER" 2>&1)" || defaults_status=$?
 }
 
-# A brand-new topic doc and a brand-new spec, neither named anywhere.
+# A brand-new topic doc and a brand-new spec, neither named anywhere, plus the
+# README — the repo's front page, whose three dead image links sat unnoticed
+# until #4501 because it was outside the default scan list.
 printf 'Stale: `src/gone-from-newdoc.rs`.\n' >"$DEFAULTS_DIR/docs/newdoc.md"
 printf 'Stale: `src/gone-from-newspec.rs`.\n' >"$DEFAULTS_DIR/docs/specs/newspec.allium"
+printf 'Stale: `src/gone-from-readme.rs`.\n' >"$DEFAULTS_DIR/README.md"
 run_defaults
 
 if [[ "$defaults_status" != 1 ]]; then
@@ -124,10 +127,16 @@ if [[ "$defaults_out" != *'src/gone-from-newspec.rs'* ]]; then
     echo "  output: $defaults_out" >&2
     failures=$((failures + 1))
 fi
+if [[ "$defaults_out" != *'src/gone-from-readme.rs'* ]]; then
+    echo "FAIL: default scan does not cover README.md" >&2
+    echo "  output: $defaults_out" >&2
+    failures=$((failures + 1))
+fi
 
 # With the living docs clean, the dated artifacts must not turn the run red.
 printf 'Clean: `src/real.rs`.\n' >"$DEFAULTS_DIR/docs/newdoc.md"
 printf 'Clean: `src/real.rs`.\n' >"$DEFAULTS_DIR/docs/specs/newspec.allium"
+printf 'Clean: `src/real.rs`.\n' >"$DEFAULTS_DIR/README.md"
 run_defaults
 
 if [[ "$defaults_status" != 0 ]]; then
