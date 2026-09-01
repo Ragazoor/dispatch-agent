@@ -4,7 +4,7 @@ use crate::models::{test_tmux_window, SubStatus, TaskId, TaskStatus, TaskTag};
 // Palette constants come from the palette, never retyped as literals here: a
 // hand-copied RGB goes stale silently when the palette moves, which is the exact
 // drift the derived header labels were introduced to stop.
-use crate::tui::ui::palette::{BORDER, MUTED, PURPLE, RED, YELLOW};
+use crate::tui::ui::palette::{BORDER, GREEN, MUTED, PURPLE, RED, YELLOW};
 use crossterm::event::KeyCode;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
@@ -335,6 +335,75 @@ async fn truncate_respects_max_length() {
         10
     );
     assert!(ui::truncate("hello world this is long", 10).ends_with('…'));
+}
+
+/// Read back the foreground colour of the text INSIDE a `[badge]` on a card's
+/// metadata line. Locates the literal `[text]` run in the buffer and returns
+/// the colour of its first inner character — the brackets themselves are not
+/// what carries the claim.
+fn badge_fg(buf: &ratatui::buffer::Buffer, text: &str) -> Option<Color> {
+    let needle = format!("[{text}]");
+    let chars: Vec<char> = needle.chars().collect();
+    for y in buf.area.top()..buf.area.bottom() {
+        'x: for x in buf.area.left()..buf.area.right() {
+            if x as usize + chars.len() > buf.area.right() as usize {
+                continue;
+            }
+            for (i, c) in chars.iter().enumerate() {
+                if buf[(x + i as u16, y)].symbol() != c.to_string() {
+                    continue 'x;
+                }
+            }
+            // First character past the opening bracket.
+            return Some(buf[(x + 1, y)].fg);
+        }
+    }
+    None
+}
+
+#[tokio::test]
+async fn ci_status_badge_is_coloured_by_state() {
+    // core.allium "Card label badges": labels are muted grey, and the three
+    // CI-status texts are the one exception — they take the same state colours
+    // the card indicator uses for the same three meanings. The exception is by
+    // exact text match, so an unrecognised `ci:` value stays muted rather than
+    // guessing a colour.
+    let mut tasks = Vec::new();
+    for (i, label) in [
+        "ci:pass",
+        "ci:fail",
+        "ci:pending",
+        "ci:flaky", // not in the vocabulary
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut task = make_task(i as i64 + 1, TaskStatus::Backlog);
+        // A plain label alongside the CI one, to prove ordinary badges are
+        // unaffected on the very same card.
+        task.labels = vec![label.to_string(), "dispatch".to_string()];
+        tasks.push(task);
+    }
+    let mut app = App::new(tasks);
+    let buf = render_to_buffer(&mut app, 160, 30);
+
+    assert_eq!(badge_fg(&buf, "ci:pass"), Some(GREEN), "[ci:pass] is green");
+    assert_eq!(badge_fg(&buf, "ci:fail"), Some(RED), "[ci:fail] is red");
+    assert_eq!(
+        badge_fg(&buf, "ci:pending"),
+        Some(YELLOW),
+        "[ci:pending] is yellow"
+    );
+    assert_eq!(
+        badge_fg(&buf, "ci:flaky"),
+        Some(MUTED),
+        "an unrecognised ci: value renders as an ordinary muted badge"
+    );
+    assert_eq!(
+        badge_fg(&buf, "dispatch"),
+        Some(MUTED),
+        "an ordinary label stays muted"
+    );
 }
 
 #[tokio::test]

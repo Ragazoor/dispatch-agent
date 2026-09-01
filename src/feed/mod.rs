@@ -27,7 +27,7 @@ pub(crate) use ingest::{run_feed_sync_by_role, FeedItemWithTarget, SyncMode};
 // src/main.rs is a separate bin crate and is one of this function's three
 // callers. See feeds.allium's FeedItemParse block.
 pub use parse::parse_feed_items;
-pub use routing::route;
+pub use routing::{excluded_from_reviews, route};
 
 /// Log-and-discard on `Err` for the feed writes that report what they deleted,
 /// keeping the `Ok` payload so the removed rows reach

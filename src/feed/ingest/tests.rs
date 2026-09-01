@@ -1855,3 +1855,221 @@ async fn additive_flat_sync_keeps_a_task_absent_from_the_emission() {
 // `route_routed_inserts_into_role_sub_epic` and the other
 // `route_routed_*` / `role_routed_*` tests above, which exercise
 // `run_role_routed_feed_sync` directly — no separate test needed here.
+
+// --- ExcludeOwnAuthored (feeds.allium: "Own-authored PRs are excluded before
+// routing") ---
+
+/// An emitted PR the user authored is dropped before routing: it lands in NO
+/// role sub-epic, not even Bots, and not on the parent.
+#[tokio::test]
+async fn role_routed_drops_own_authored_pr_entirely() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    db.patch_epic(
+        parent.id,
+        &EpicPatch::new().feed_role(FeedRole::ReviewsParent),
+    )
+    .await
+    .unwrap();
+
+    let items = vec![
+        // Own-authored, and carrying the signal that would otherwise put it in
+        // My Reviews.
+        make_signal_item(
+            "pr-mine",
+            "https://github.com/org/repo/pull/1",
+            vec![Signal::Reviewed, Signal::AuthorMe],
+        ),
+        // A genuine review, to prove the filter is not just emptying the sync.
+        make_signal_item(
+            "pr-theirs",
+            "https://github.com/org/repo/pull/2",
+            vec![Signal::DirectRequest],
+        ),
+    ];
+
+    run_role_routed_feed_sync(
+        &*db,
+        parent.id,
+        entries(&items, &["", ""], &["main", "main"]),
+    )
+    .await
+    .unwrap();
+
+    let my = role_sub_epic(&db, parent.id, FeedRole::MyReviews).await;
+    let team = role_sub_epic(&db, parent.id, FeedRole::TeamReviews).await;
+    let bots = role_sub_epic(&db, parent.id, FeedRole::Bots).await;
+
+    let my_ids: Vec<String> = db
+        .list_tasks_for_epic(my)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter_map(|t| t.external_id)
+        .collect();
+    assert_eq!(
+        my_ids,
+        vec!["pr-theirs".to_string()],
+        "an own-authored PR must not reach My Reviews"
+    );
+    assert!(db.list_tasks_for_epic(team).await.unwrap().is_empty());
+    assert!(
+        db.list_tasks_for_epic(bots).await.unwrap().is_empty(),
+        "an excluded PR is dropped, not rerouted to Bots"
+    );
+    assert!(
+        db.list_tasks_for_epic(parent.id).await.unwrap().is_empty(),
+        "an excluded PR must not be stranded on the parent either"
+    );
+}
+
+/// The exclusion is unconditional: an own-authored PR that ALSO carries
+/// team_request and author_bot is still dropped, never routed to Team or Bots.
+#[tokio::test]
+async fn role_routed_drops_own_authored_pr_even_with_team_and_bot_signals() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    db.patch_epic(
+        parent.id,
+        &EpicPatch::new().feed_role(FeedRole::ReviewsParent),
+    )
+    .await
+    .unwrap();
+
+    let items = vec![make_signal_item(
+        "pr-mine",
+        "https://github.com/org/repo/pull/1",
+        vec![Signal::AuthorMe, Signal::TeamRequest, Signal::AuthorBot],
+    )];
+
+    run_role_routed_feed_sync(&*db, parent.id, entries(&items, &[""], &["main"]))
+        .await
+        .unwrap();
+
+    for role in [FeedRole::MyReviews, FeedRole::TeamReviews, FeedRole::Bots] {
+        let sub = role_sub_epic(&db, parent.id, role).await;
+        assert!(
+            db.list_tasks_for_epic(sub).await.unwrap().is_empty(),
+            "{role:?} must be empty — the author_me exclusion is unconditional"
+        );
+    }
+}
+
+/// An own-authored PR already sitting in a role sub-epic is REMOVED on the next
+/// reconcile: it is absent from the keep-set, so the stale delete reaches it
+/// exactly as it reaches a merged PR. A manual task alongside it survives.
+#[tokio::test]
+async fn role_routed_removes_existing_task_for_own_authored_pr() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    db.patch_epic(
+        parent.id,
+        &EpicPatch::new().feed_role(FeedRole::ReviewsParent),
+    )
+    .await
+    .unwrap();
+
+    // Cycle 1: the PR arrives WITHOUT author_me, so it is ingested normally.
+    let before = vec![make_signal_item(
+        "pr-mine",
+        "https://github.com/org/repo/pull/1",
+        vec![Signal::DirectRequest],
+    )];
+    run_role_routed_feed_sync(&*db, parent.id, entries(&before, &[""], &["main"]))
+        .await
+        .unwrap();
+
+    let my = role_sub_epic(&db, parent.id, FeedRole::MyReviews).await;
+    assert_eq!(
+        db.list_tasks_for_epic(my).await.unwrap().len(),
+        1,
+        "precondition: the PR is in My Reviews before the exclusion applies"
+    );
+
+    // A hand-created task in the same sub-epic must be untouched.
+    let manual_id = db
+        .create_task(CreateTaskRequest {
+            title: "Manual",
+            description: "",
+            repo_path: "/repo",
+            plan: None,
+            status: TaskStatus::Backlog,
+            base_branch: "main",
+            epic_id: Some(my),
+            sort_order: None,
+            tag: None,
+            wrap_up_mode: None,
+            auto_run_plan: false,
+            phoenix: false,
+        })
+        .await
+        .unwrap();
+
+    // Cycle 2: the same PR now carries author_me.
+    let after = vec![make_signal_item(
+        "pr-mine",
+        "https://github.com/org/repo/pull/1",
+        vec![Signal::DirectRequest, Signal::AuthorMe],
+    )];
+    run_role_routed_feed_sync(&*db, parent.id, entries(&after, &[""], &["main"]))
+        .await
+        .unwrap();
+
+    let remaining: Vec<Option<String>> = db
+        .list_tasks_for_epic(my)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|t| t.external_id)
+        .collect();
+    assert_eq!(
+        remaining,
+        vec![None],
+        "the feed task for the own-authored PR is deleted; the manual task stays"
+    );
+    assert!(
+        db.list_tasks_for_epic(my)
+            .await
+            .unwrap()
+            .iter()
+            .any(|t| t.id == manual_id),
+        "the manual task is still there, by id"
+    );
+}
+
+/// The exclusion applies on the additive (DegradedNonEmptyEmission) path too:
+/// it shrinks what is inserted. The removal the exclusion would otherwise imply
+/// is skipped with every other removal on that path, so a pre-existing task
+/// survives a tainted cycle.
+#[tokio::test]
+async fn additive_role_routed_sync_does_not_insert_own_authored_pr() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let parent = db.create_epic("Reviews", "", None).await.unwrap();
+    db.patch_epic(
+        parent.id,
+        &EpicPatch::new().feed_role(FeedRole::ReviewsParent),
+    )
+    .await
+    .unwrap();
+
+    let items = vec![make_signal_item(
+        "pr-mine",
+        "https://github.com/org/repo/pull/1",
+        vec![Signal::DirectRequest, Signal::AuthorMe],
+    )];
+
+    super::role_routed::run_role_routed_feed_sync(
+        &*db,
+        parent.id,
+        entries(&items, &[""], &["main"]),
+        SyncMode::Additive,
+    )
+    .await
+    .unwrap();
+
+    let my = role_sub_epic(&db, parent.id, FeedRole::MyReviews).await;
+    assert!(
+        db.list_tasks_for_epic(my).await.unwrap().is_empty(),
+        "an excluded item is not inserted on the additive path either"
+    );
+}

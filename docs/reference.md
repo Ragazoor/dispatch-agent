@@ -253,6 +253,18 @@ epics' `feed_interval_secs`, so they are not a separate kind of cadence.
 Reference templates ship in `scripts/` (`fetch-reviews.sh`, `fetch-cve.sh`) with
 empty repo/org placeholders — edit them before use.
 
+**PRs you authored never appear** in any of the three review sub-epics. The
+runtime drops every emitted item carrying the `author-me` signal before routing
+it, so an own-authored PR already on the board is removed on the next poll. This
+is enforced in dispatch, not in the script, precisely so it holds for a
+`scripts/local/` copy you edited months ago.
+
+**CI status shows as a card label** — `[ci:pass]` green, `[ci:fail]` red,
+`[ci:pending]` yellow, and no label at all when the PR has no checks. This one
+*does* come from the script (`fetch-reviews.sh` resolves it in a batched
+`gh api graphql` call after dedup), so a `scripts/local/` copy predating the
+feature keeps working but shows no CI labels until you re-copy the template.
+
 Managed epics are identified by **role**, not title: rename `My Reviews` to
 `My PRs` and the rename survives every reconcile. If you **archive** a managed
 epic, dispatch leaves it archived (it is not resurrected); re-enable it by

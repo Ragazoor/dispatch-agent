@@ -283,6 +283,8 @@ entity Task {
                                -- Ordered, and the order is load-bearing: badges render in
                                -- declaration order so a feed script controls which label
                                -- appears first on the card. Duplicates are retained.
+                               -- Presentation, including the three CI-status texts that
+                               -- take a state colour, is "Card label badges" below.
     base_branch: String = "main" -- the branch this task rebases onto / targets for PRs
     external_id: String?  -- stable identifier for tasks sourced from a feed epic (see feeds.allium); null for hand-created tasks. Unique per (epic, external_id) when set.
     last_pre_tool_use_at: Timestamp?  -- wallclock of the most recent PreToolUse hook; null when the agent has never tooled (or after Stop)
@@ -1590,6 +1592,43 @@ value VisualColumn {
 -- The trade is recorded here so that it is read rather than
 -- rediscovered.
 --
+-- == Card label badges ==
+--
+-- A task's labels render on the card's metadata line, after the status
+-- indicator, each as a bracketed badge `[text]` in declaration order (see
+-- Task.labels). They are muted grey: a label is context, not state, and must
+-- not compete with the indicator to its left for the eye.
+--
+-- CI status is the ONE exception. Three label texts are a shared vocabulary
+-- between the feed and this renderer (see "CI status label" in feeds.allium)
+-- and take a state colour instead of the muted grey:
+--
+--   [ci:pass]     green
+--   [ci:fail]     red
+--   [ci:pending]  yellow
+--
+-- These are the same three colours the card indicator uses for the same three
+-- meanings, deliberately: a red badge means the same thing on a card
+-- regardless of which element carries it.
+--
+-- Colour is what makes the badge worth having. The information a reviewer
+-- acts on is "is this one broken", and scanning a column of identically-grey
+-- badges to read their text is not scanning — it is reading every card. A red
+-- badge in a grey row is found without reading anything.
+--
+-- The exception is by exact text match on those three strings and is
+-- deliberately NOT a general prefix rule ("colour anything starting `ci:`").
+-- Any other label, including an unrecognised `ci:` value from a newer feed
+-- script, renders as an ordinary muted badge. This mirrors the lenient decode
+-- feeds.allium applies to unknown signals: a vocabulary the renderer does not
+-- know degrades to the plain presentation rather than to a wrong colour or a
+-- panic.
+--
+-- Badge colour is text colour only. A badge does not get a fill, a border or
+-- a bold weight — the card surface stays uniform ("Column ground and card
+-- surface") and the frame keeps its own meaning ("Card border: cursor and
+-- state"). Nothing about the badge changes with the cursor.
+--
 -- == Message flash ==
 --
 -- When a task sends or receives a native cross-session message (task #4098
@@ -1735,6 +1774,13 @@ value VisualColumn {
 --                                                rendered content width
 --                                                against column width: the
 --                                                difference is exactly four
+--   ci_status_badge_is_coloured_by_state         the three CI-status badge
+--                                                texts read back green / red
+--                                                / yellow, an ordinary label
+--                                                on the same card reads back
+--                                                muted, and an unrecognised
+--                                                `ci:` value reads back muted
+--                                                too ("Card label badges")
 --   render_v2_task_card_shows_stripe             the quarter block ▎ is
 --                                                present and the superseded
 --                                                cursor half block ▌ is

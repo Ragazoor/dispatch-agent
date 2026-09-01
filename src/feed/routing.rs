@@ -12,6 +12,36 @@ use crate::models::{FeedRole, Signal};
 /// repos.conf repo list) is treated the same as `DirectRequest`: it still
 /// loses to the bot rule, so an org-scoped bot PR routes to `Bots` unless it
 /// is also reviewed/commented (engagement wins).
+/// The `!has(Signal::AuthorMe)` guard below is UNREACHABLE from the role-routed
+/// path — [`excluded_from_reviews`] drops every `AuthorMe` item before routing.
+/// It is retained rather than removed because `route` is total over the whole
+/// signal set and must stay correct for an input this caller happens never to
+/// hand it.
+/// Pure exclusion predicate (`ExcludeOwnAuthored` in `docs/specs/feeds.allium`):
+/// true when a feed item must not reach the review subtree at all. Evaluated
+/// BEFORE [`route`], so an excluded item is never routed, never inserted, and
+/// never enters the reconcile's keep-set — an existing task for one is deleted
+/// by the same stale pass that removes a merged PR.
+///
+/// Exactly one signal excludes: `AuthorMe`. A PR the user wrote is not review
+/// work for the user. The exclusion is unconditional — `TeamRequest` or
+/// `AuthorBot` alongside it does not rescue the item — because authorship is
+/// what makes it not review work, regardless of who else was asked.
+///
+/// Only as good as the signal: the feed script derives `AuthorMe` from the
+/// authenticated user's login, and that lookup soft-fails to empty rather than
+/// failing the feed. A cycle where it failed emits no `AuthorMe` at all, so own
+/// PRs surface until the next successful poll. Self-healing, and deliberately
+/// preferred to dropping the emission.
+///
+/// This lives in the runtime rather than in `scripts/fetch-reviews.sh` on
+/// purpose: feed scripts are user-owned copies, so a fix to the shipped
+/// template never reaches the copy that actually runs. See the contract's
+/// "WHY IN THE RUNTIME AND NOT IN THE SCRIPT" note.
+pub fn excluded_from_reviews(signals: &[Signal]) -> bool {
+    signals.contains(&Signal::AuthorMe)
+}
+
 pub fn route(signals: &[Signal]) -> FeedRole {
     let has = |s: Signal| signals.contains(&s);
     let engaged = (has(Signal::Reviewed) || has(Signal::Commented)) && !has(Signal::AuthorMe);
@@ -96,5 +126,63 @@ mod tests {
             route(&[OrgReview, AuthorBot, Reviewed]),
             FeedRole::MyReviews
         );
+    }
+
+    // --- excluded_from_reviews (ExcludeOwnAuthored) ---
+
+    #[test]
+    fn author_me_is_excluded() {
+        assert!(excluded_from_reviews(&[AuthorMe]));
+    }
+
+    #[test]
+    fn empty_is_not_excluded() {
+        assert!(!excluded_from_reviews(&[]));
+    }
+
+    // OnlyAuthorMe: no other signal excludes.
+    #[test]
+    fn no_other_signal_excludes() {
+        for s in [
+            DirectRequest,
+            TeamRequest,
+            Reviewed,
+            Commented,
+            AuthorBot,
+            OrgReview,
+        ] {
+            assert!(
+                !excluded_from_reviews(&[s]),
+                "{s:?} must not exclude an item"
+            );
+        }
+    }
+
+    // OnlyAuthorMe: and no combination of other signals rescues an author_me
+    // item. The exclusion is unconditional, NOT "drop from my_reviews only".
+    #[test]
+    fn author_me_excluded_alongside_every_other_signal() {
+        for s in [
+            DirectRequest,
+            TeamRequest,
+            Reviewed,
+            Commented,
+            AuthorBot,
+            OrgReview,
+        ] {
+            assert!(
+                excluded_from_reviews(&[AuthorMe, s]),
+                "author_me + {s:?} must still be excluded"
+            );
+        }
+        assert!(excluded_from_reviews(&[
+            DirectRequest,
+            TeamRequest,
+            Reviewed,
+            Commented,
+            AuthorBot,
+            AuthorMe,
+            OrgReview,
+        ]));
     }
 }

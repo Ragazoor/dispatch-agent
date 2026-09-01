@@ -347,10 +347,27 @@ fn render_card_indicator(indicator: CardIndicator, labels: &[String]) -> Line<'s
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             format!("[{chip}]"),
-            Style::default().fg(MUTED),
+            Style::default().fg(label_color(chip)),
         ));
     }
     Line::from(spans)
+}
+
+/// Colour for one `[label]` badge (core.allium "Card label badges"). Labels are
+/// muted grey — context, not state — except the three CI-status texts, which
+/// take the same colours the card indicator uses for the same three meanings.
+///
+/// Matched by EXACT text, deliberately not by a `ci:` prefix: an unrecognised
+/// value from a newer feed script renders as an ordinary muted badge rather
+/// than guessing a colour. Same leniency feed ingest applies to unknown
+/// signals.
+fn label_color(chip: &str) -> Color {
+    match chip {
+        "ci:pass" => GREEN,
+        "ci:fail" => RED,
+        "ci:pending" => YELLOW,
+        _ => MUTED,
+    }
 }
 
 /// Render a decorative epic-header separator row (non-selectable).

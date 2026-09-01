@@ -54,6 +54,17 @@
 #   Plus per-PR author signals: "author-bot" when the author login ends in
 #   "[bot]" (Renovate/Dependabot), "author-me" when the author is the gh user.
 #
+#   A FINAL pass, after dedup, attaches each PR's CI status as a label:
+#     - "ci:pass"    the head commit's check rollup succeeded
+#     - "ci:fail"    the rollup failed or errored
+#     - "ci:pending" the rollup is running, or expected but not started
+#   A PR with NO checks gets NO ci label: absence means "nothing ran", which is
+#   distinct from all three and must not be collapsed into "pass". `gh search
+#   prs --json` exposes no check field at all, so this is a separate request —
+#   ONE batched `gh api graphql` per poll over every deduped PR, not one call
+#   per PR. A failed fetch degrades to no ci label, never a wrong one, and
+#   never fails the emission.
+#
 #   A PR matched by several searches appears ONCE, with its signals merged
 #   (unioned) — the dedup groups by URL and unions the signal arrays.
 #
@@ -62,7 +73,7 @@
 #   PRs are INCLUDED, with a "draft" label appended so the TUI card shows it.
 #
 # Output format (FeedItem):
-#   [{"external_id":"review:org/repo#42","title":"#42 PR title","description":"...","url":"...","status":"backlog","tag":"pr-review","labels":["@author","repo"],"signals":["team-request","reviewed"]}]
+#   [{"external_id":"review:org/repo#42","title":"#42 PR title","description":"...","url":"...","status":"backlog","tag":"pr-review","labels":["@author","repo","ci:pass"],"signals":["team-request","reviewed"]}]
 #
 # Routing is handled by dispatch, not here. The signal vocabulary is the wire
 # contract with the role router (see docs/specs/feeds.allium, enum Signal).
@@ -85,6 +96,11 @@ ORGS=()
 # "app/kognic-renovate". Falls back to skipping that pass when bots.conf is
 # absent or lists no authors.
 BOT_AUTHORS=()
+
+# Node ids per batched CI-status query. GraphQL `nodes(ids: [...])` caps at 100;
+# 50 leaves headroom and keeps the argument list well inside any command-line
+# limit. Raising it reduces calls per poll, never correctness.
+CI_BATCH=50
 
 # Per-repo cap on the bot-author pass. Applied to each (repo x author) query
 # individually — see search_bot_prs for why it is not one capped multi-repo
@@ -146,7 +162,7 @@ search_prs() {
   if ! raw=$(gh search prs \
     --state=open \
     "${scope_flags[@]}" \
-    --json number,title,body,url,repository,isDraft,author \
+    --json id,number,title,body,url,repository,isDraft,author \
     --limit 100 \
     -- $qualifier); then
     echo "fetch-reviews: gh search prs ($qualifier) failed" >&2
@@ -168,6 +184,12 @@ to_feed_items() {
     (.author.login // "") as $login |
     ($login | test("\\[bot\\]$")) as $is_bot |
     {
+      # Transient: the GraphQL node id of this PR, used to key the batched
+      # CI-status lookup and STRIPPED before the array is emitted.
+      # Underscore-prefixed so it cannot be mistaken for a FeedItem field.
+      # NOTE: no apostrophes in this jq program -- it sits inside a
+      # single-quoted bash string, and one would close it.
+      _pr_id: .id,
       external_id: ("review:" + .repository.nameWithOwner + "#" + (.number | tostring)),
       title: ("#" + (.number | tostring) + " " + .title),
       description: ((.body // "") | .[0:500]),
@@ -212,7 +234,7 @@ search_bot_prs() {
       if ! raw=$(gh search prs \
         --state=open \
         --repo "$repo" \
-        --json number,title,body,url,repository,isDraft,author \
+        --json id,number,title,body,url,repository,isDraft,author \
         --limit "$BOT_LIMIT" \
         --sort created \
         --order desc \
@@ -226,10 +248,68 @@ search_bot_prs() {
   done
 }
 
+# GraphQL for the batched CI-status lookup. One request covers up to CI_BATCH
+# PRs. `commits(last:1)` is the PR's head commit; its statusCheckRollup is null
+# when nothing ran, which is a distinct outcome from any state and must stay
+# distinct (no label, not "pass").
+CI_QUERY='query($ids:[ID!]!){nodes(ids:$ids){... on PullRequest{id commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}'
+
+# Map the deduped FeedItem array on $1 to a JSON object {node_id: ci_label} on
+# stdout, batching CI_BATCH ids per `gh api graphql` call.
+#
+# Every failure mode degrades to a MISSING entry, never a wrong one: a failed
+# request, an unresolvable id, a null rollup and an upstream state this script
+# does not recognise all leave the PR with no ci label. That is the honest
+# reading — "we do not know" looks like "nothing ran", and both are better than
+# a green badge on a red PR.
+fetch_ci_labels() {
+  local items="$1" acc='{}' raw i j
+  local -a ids=() args=()
+
+  # `|| true`: an items array with no _pr_id (nothing emitted) is not an error.
+  mapfile -t ids < <(printf '%s' "$items" | jq -r '.[]._pr_id // empty' || true)
+  if [[ ${#ids[@]} -eq 0 ]]; then
+    printf '%s' "$acc"
+    return 0
+  fi
+
+  for ((i = 0; i < ${#ids[@]}; i += CI_BATCH)); do
+    args=()
+    for ((j = i; j < i + CI_BATCH && j < ${#ids[@]}; j++)); do
+      args+=(-F "ids[]=${ids[j]}")
+    done
+
+    if ! raw=$(gh api graphql -f query="$CI_QUERY" "${args[@]}"); then
+      echo "fetch-reviews: gh api graphql (ci status) failed" >&2
+      continue
+    fi
+
+    acc=$(jq -n --argjson acc "$acc" --argjson raw "$raw" '
+      $acc + ([
+        $raw.data.nodes[]?
+        | select(. != null and .id != null)
+        | {
+            key: .id,
+            value: (
+              .commits.nodes[0].commit.statusCheckRollup.state
+              | if   . == "SUCCESS"                    then "ci:pass"
+                elif . == "FAILURE" or . == "ERROR"    then "ci:fail"
+                elif . == "PENDING" or . == "EXPECTED" then "ci:pending"
+                else null end
+            )
+          }
+        | select(.value != null)
+      ] | from_entries)
+    ')
+  done
+
+  printf '%s' "$acc"
+}
+
 # Run every search, then dedup by URL MERGING the signal arrays (a PR matched
 # by several queries keeps all its signals). NOT unique_by, which would drop
 # all but one object and lose the other queries' signals.
-{
+deduped=$({
   search_prs "review-requested:@me" "team-request" repo_flags
   search_prs "user-review-requested:@me" "direct-request" repo_flags
   search_prs "reviewed-by:@me" "reviewed" repo_flags
@@ -248,4 +328,13 @@ search_bot_prs() {
   search_bot_prs
 } | jq -s 'add
   | group_by(.url)
-  | map(.[0] + {signals: (map(.signals[]) | unique)})'
+  | map(.[0] + {signals: (map(.signals[]) | unique)})')
+
+# Attach the CI label and strip the transient node id. `del` runs on every item
+# whether or not it got a label, so _pr_id never reaches the wire format.
+printf '%s' "$deduped" | jq --argjson ci "$(fetch_ci_labels "$deduped")" '
+  map(
+    (._pr_id // "") as $id
+    | del(._pr_id)
+    | if $ci[$id] then .labels += [$ci[$id]] else . end
+  )'

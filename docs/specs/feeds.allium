@@ -89,14 +89,92 @@ contract RouteSignals {
         -- (feed::routing::tests::*).
 }
 
+-- ExcludeOwnAuthored is the pure predicate that decides whether a PR item
+-- reaches the review subtree AT ALL. It runs BEFORE RouteSignals: an excluded
+-- item is never routed, never inserted, and never enters the reconcile's
+-- keep-set, so an existing task for it is deleted by the same stale pass that
+-- removes a merged PR.
+--
+-- Exactly one signal excludes: author_me. A PR the user wrote is not review
+-- work for the user. Such PRs did reach my_reviews in practice — the
+-- involvement qualifiers are not all self-exclusive (only
+-- `commenter:@me -author:@me` spells the exclusion out), and route's fallback
+-- sends an otherwise-unmatched item to my_reviews. Which qualifier let a given
+-- own-authored PR in does not matter here: the item arrives carrying author_me
+-- either way, and that is what this contract acts on.
+--
+-- The exclusion is UNCONDITIONAL — it is not "drop from my_reviews only". An
+-- own-authored PR that also carries team_request or author_bot is dropped too,
+-- because the user authoring it is what makes it not review work, regardless
+-- of who else was asked.
+--
+-- LIMIT OF THE MECHANISM. The exclusion is only as good as the signal, and
+-- author_me is derived by the SCRIPT by comparing each PR author login against
+-- the authenticated user's. That lookup soft-fails to empty rather than
+-- failing the feed, so a transient failure emits no author_me on any item that
+-- cycle and own-authored PRs surface until the next successful poll. This is
+-- accepted: degrading author_me detection is strictly better than dropping the
+-- whole emission, and the exclusion is self-healing on the following cycle.
+--
+-- WHY IN THE RUNTIME AND NOT IN THE SCRIPT. Adding `-author:@me` to the
+-- review qualifiers in scripts/fetch-reviews.sh would exclude the same PRs,
+-- and is deliberately NOT the chosen mechanism. Feed scripts are USER-OWNED:
+-- the shipped script is a template the user copies to scripts/local/ and
+-- edits, so a fix to the template does not reach the copy that actually runs.
+-- The runtime is the one place the exclusion holds for every existing
+-- deployment and for any other script that emits author_me. This is the same
+-- reasoning as the DELIBERATE EXCEPTION in Scope: PR-routing policy for the
+-- reviews_parent path lives in the runtime so it is centralised and
+-- leak-free. The author_me signal already existed for exactly this
+-- distinction; this contract is what finally acts on it.
+--
+-- Consequence for RouteSignals: rule 1's `and not author_me` guard is now
+-- UNREACHABLE from the role-routed path — no author_me item survives to be
+-- routed. The guard is retained rather than removed: route is a total pure
+-- function over the whole Signal set (its Total invariant), so it must stay
+-- defined and correct for an input this caller happens never to hand it.
+
+contract ExcludeOwnAuthored {
+    excluded: (signals: Set<Signal>) -> Boolean
+
+    @invariant Total
+        -- excluded is defined for every possible signal set, including the
+        -- empty set (which is not excluded).
+
+    @invariant Pure
+        -- excluded depends only on its signals argument. No I/O, no DB
+        -- access, no async, no observation of clock or external state.
+
+    @invariant OnlyAuthorMe
+        -- excluded(signals) is true exactly when author_me is in signals.
+        -- No other signal excludes, and no combination of other signals
+        -- rescues an author_me item.
+
+    @invariant PrecedesRouting
+        -- excluded is evaluated before route. An excluded item is never
+        -- passed to route, so no routing outcome can contradict it.
+
+    @guidance
+        -- Implementation: src/feed/routing.rs::excluded_from_reviews,
+        -- re-exported as crate::feed::excluded_from_reviews, applied in
+        -- src/feed/ingest/role_routed.rs::run_role_routed_feed_sync before
+        -- src/feed/ingest/routing.rs::route_and_group_entries. Coverage:
+        -- src/feed/routing.rs tests (feed::routing::tests::*) for the
+        -- predicate, src/feed/ingest/tests.rs for the reconcile behaviour.
+}
+
 ------------------------------------------------------------
 -- Enumerations
 ------------------------------------------------------------
 
 -- Signal is a routing hint a feed script attaches to a FeedItem. Signals are
 -- routed into the right feed bucket (the sub-epic whose core/FeedRole matches)
--- by the RouteSignals contract below. They carry no meaning for ingest itself
+-- by the RouteSignals contract above. They carry no meaning for ingest itself
 -- beyond being stored on the Task and fed to that routing function.
+--
+-- author_me is the one signal that is not merely a routing hint: it EXCLUDES
+-- the item from the review subtree entirely, before routing runs at all (see
+-- the ExcludeOwnAuthored contract above).
 enum Signal { direct_request | team_request | reviewed | commented | author_bot | author_me | org_review }
 
 ------------------------------------------------------------
@@ -325,6 +403,50 @@ value FeedItem {
 -- "draft" entry in `labels` so the TUI card surfaces draft status as a
 -- badge (see cards.rs render_card_indicator, which renders every `labels`
 -- entry as a `[label]` badge — no dedicated draft-badge code path needed).
+--
+-- == CI status label ==
+--
+-- Every emitted PR also carries its CI status as a `labels` entry, so the
+-- card says whether the PR is mergeable without the user opening it. The
+-- vocabulary is exactly three strings:
+--
+--   - "ci:pass"    the PR head commit's check rollup succeeded
+--   - "ci:fail"    the rollup failed or errored
+--   - "ci:pending" the rollup is still running, or expected but not started
+--
+-- A PR with NO checks at all gets NO ci label — absence of the badge means
+-- "nothing ran", which is distinct from all three states above and must not
+-- be collapsed into "pass". These three strings are a wire vocabulary shared
+-- with the card renderer, which colours them (see "Card label badges" in
+-- core.allium); a fourth value would render as a plain badge, not fail.
+--
+-- Every uncertain outcome collapses to the SAME absent label: no checks, an
+-- upstream status value this vocabulary does not cover, and a failed status
+-- fetch (below) all leave the PR unlabelled. "We do not know" therefore looks
+-- exactly like "nothing ran". That conflation is accepted deliberately: the
+-- alternative is a fourth badge meaning "unknown", which costs a card row of
+-- attention to say nothing, and the one outcome that must never be guessed is
+-- a green badge on a red PR.
+--
+-- The label applies to EVERY emitted PR, in all three role sub-epics. A bot
+-- PR's CI status is if anything the most useful of the three: a green
+-- Renovate bump is the one that can be merged without reading it.
+--
+-- The status is a SEPARATE FETCH. `gh search prs --json` exposes no check
+-- field at all, so the review and bot-author passes above cannot carry it.
+-- After dedup, the script resolves the status for the whole deduped set and
+-- merges the label in. That resolution is BATCHED — many PRs per request, not
+-- one request per PR: the per-PR cost would scale with the bot backlog, which
+-- the bot-author pass deliberately allows to reach 20 per (repo x bot). The
+-- batch size is a script constant, so an ordinary emission costs one request
+-- and only a very large one costs a second; the number of requests is a cost
+-- property, not a behavioural one.
+--
+-- A FAILED status fetch degrades to NO ci label on the affected PRs, never to
+-- a wrong one and never to a failed emission. CI status is decoration on an
+-- item whose identity and routing are already fully determined; losing it
+-- must not cost the user the review card itself. The failure goes to stderr,
+-- which FeedCommandStderrOnSuccess surfaces without failing the cycle.
 --
 -- The script takes NO scope argument. It emits the full involved-PR set once;
 -- the dispatch role router (feed_role = reviews_parent) splits that single
@@ -1047,6 +1169,27 @@ rule RoleRoutedFeedSync {
     -- provisioning — see epics.allium ProvisionManagedEpics); only the parent
     -- is polled, and only this rule writes into the subtree.
     --
+    -- == Own-authored PRs are excluded before routing ==
+    --
+    -- The emission is FILTERED before anything else happens to it: every item
+    -- carrying author_me is dropped (the ExcludeOwnAuthored contract above).
+    -- The kept set is what the routing loop, the insert/update pass and the
+    -- stale keep-set all see, so an excluded item is not merely routed
+    -- elsewhere — it does not exist for this reconcile.
+    --
+    -- The consequence for an item that WAS present is deliberate: because it
+    -- is absent from the keep-set, the subtree delete removes its task exactly
+    -- as it removes a merged PR, TaskTeardown included. So enabling this
+    -- exclusion cleans out own-authored PRs already sitting in the subtree on
+    -- the next poll, rather than leaving them stranded until they merge. A
+    -- MANUAL task (external_id = null) is never touched, so a task the user
+    -- created for their own PR by hand — or a dispatch task that opened it —
+    -- is unaffected.
+    --
+    -- The filter runs on the additive (DegradedNonEmptyEmission) path too: it
+    -- shrinks what gets inserted, and the deletes it would otherwise imply are
+    -- skipped along with every other removal on that path.
+    --
     -- == Global identity and the move ==
     --
     -- Task identity across the subtree is GLOBAL by external_id (NOT
@@ -1156,8 +1299,15 @@ rule RoleRoutedFeedSync {
         let team = role_sub_epic(epic, team_reviews)
         let bots = role_sub_epic(epic, bots)
 
-        for item in items:
-            -- route only ever yields my_reviews / team_reviews / bots.
+        -- Drop own-authored items up front (ExcludeOwnAuthored). `kept` — not
+        -- `items` — is what the rest of this rule reconciles against, INCLUDING
+        -- the stale-delete keep-set below, so an excluded item that already had
+        -- a task loses it on this cycle.
+        let kept = items.filter(i => not excluded(i.signals))
+
+        for item in kept:
+            -- route only ever yields my_reviews / team_reviews / bots. It is
+            -- never reached for an excluded item.
             let role = route(item.signals)
             let role_target =
                 if role = team_reviews: team
@@ -1223,7 +1373,7 @@ rule RoleRoutedFeedSync {
             for task in Tasks where (task.epic.parent_epic_id = epic.id
                                      or task.epic.parent_epic_id in {my.id, team.id, bots.id})
                                 and task.external_id != null:
-                if not items.any(i => i.external_id = task.external_id):
+                if not kept.any(i => i.external_id = task.external_id):
                     not exists task
                     TaskTeardown(task)
 

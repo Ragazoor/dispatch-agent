@@ -189,6 +189,10 @@ async fn recalculate_subtree(
 ///   (`set_task_epic_id` + `patch_task`), preserving status / sub_status /
 ///   worktree / tmux_window / sort_order — an in-flight review agent keeps its
 ///   session.
+/// - A PR the user authored themselves (`Signal::AuthorMe`) is dropped before
+///   any of this: see [`crate::feed::excluded_from_reviews`]. Because it is
+///   absent from the keep-set, an existing task for one is removed like a
+///   merged PR's.
 /// - A PR seen for the first time is inserted into its target role sub-epic.
 /// - A PR absent from the emission (merged/closed) is removed by a **single**
 ///   subtree-scoped delete, run once with the union of all emitted ids so a
@@ -223,6 +227,16 @@ pub(super) async fn run_role_routed_feed_sync(
     let roles = ensure_role_sub_epics(db, parent_id).await?;
     let (existing, pre_existing_repo_group_ids) =
         build_existing_task_index(db, parent_id, &roles).await?;
+
+    // Phase 0: drop own-authored items (feeds.allium ExcludeOwnAuthored). This
+    // runs BEFORE routing and before the keep-set is built, so an excluded item
+    // is neither inserted nor retained — an existing task for one is removed by
+    // the stale pass below exactly as a merged PR would be.
+    let entries: Vec<FeedItemWithTarget> = entries
+        .into_iter()
+        .filter(|e| !crate::feed::excluded_from_reviews(&e.item.signals))
+        .collect();
+
     let routed = route_and_group_entries(db, parent_id, entries, &existing, &roles).await?;
 
     // Phase 2 runs in both modes — inserts, field refreshes and the moves
